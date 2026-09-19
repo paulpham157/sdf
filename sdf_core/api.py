@@ -40,13 +40,16 @@ class TaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     objective_id: str | None = None
     idempotency_key: str = Field(min_length=1, max_length=200)
-    acceptance_criteria: list[str] = []
+    acceptance_criteria: list[str] = Field(default_factory=list)
 
 
 class RunTaskRequest(BaseModel):
     fixture_dir: str
     instructions: str = "complete the task"
-    commands: list[list[str]] = []
+    commands: list[list[str]] = Field(default_factory=list)
+    criterion_checks: dict[str, list[list[str]]] | None = Field(
+        default=None, description="Explicit criterion checks take precedence over legacy commands, including an empty mapping."
+    )
     validation_target_kind: str | None = None
     validation_target_id: str | None = None
 
@@ -60,6 +63,7 @@ class EvidenceResponse(BaseModel):
     exit_code: int | None
     artifact_ref: str | None
     confidence: float
+    criterion: str | None = None
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -71,7 +75,10 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def node_payload(node: GraphNodeRow) -> dict[str, Any]:
-    return {"id": node.id, "kind": node.kind, "title": node.title, "owner": node.owner, "source": node.source}
+    payload = {"id": node.id, "kind": node.kind, "title": node.title, "owner": node.owner, "source": node.source}
+    if node.metadata_json is not None:
+        payload["metadata"] = node.metadata_json
+    return payload
 
 
 def edge_payload(edge: DecisionEdgeRow) -> dict[str, Any]:
@@ -211,7 +218,19 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
     evidence = db.get(EvidenceRow, evidence_id)
     if evidence is None:
         raise HTTPException(status_code=404, detail="evidence not found")
-    return evidence
+    node = db.get(GraphNodeRow, evidence_id)
+    criterion = (node.metadata_json or {}).get("criterion") if node else None
+    return {
+        "id": evidence.id,
+        "attempt_id": evidence.attempt_id,
+        "kind": evidence.kind,
+        "status": evidence.status,
+        "command": evidence.command,
+        "exit_code": evidence.exit_code,
+        "artifact_ref": evidence.artifact_ref,
+        "confidence": evidence.confidence,
+        "criterion": criterion,
+    }
 
 
 @app.post("/tasks/{task_id}/run")
@@ -240,6 +259,7 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
             fixture=fixture,
             instructions=payload.instructions,
             commands=payload.commands,
+            criterion_checks=payload.criterion_checks,
             validation_target=target,
         )
     except (ValueError, FileExistsError) as exc:

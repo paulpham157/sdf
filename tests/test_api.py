@@ -6,6 +6,21 @@ from sdf_core.api import app
 client = TestClient(app)
 
 
+def test_omitted_mapping_keeps_legacy_command_observable(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n")
+    client.post("/tasks", json={"id": "TASK-LEGACY-OBS", "title": "observe", "idempotency_key": "legacy-observe"})
+    result = client.post("/tasks/TASK-LEGACY-OBS/run", json={
+        "fixture_dir": str(fixture), "commands": [["python", "-c", "print('legacy-observation')"]],
+    })
+    assert result.status_code == 200
+    assert result.json()["task_status"] == "inconclusive"
+    trace = client.get("/tasks/TASK-LEGACY-OBS/trace").json()
+    observed = [client.get(f"/evidence/{n['id']}").json() for n in trace["nodes"] if n["kind"] == "evidence"]
+    assert any("legacy-observation" in item["command"] for item in observed)
+
+
 def test_can_create_business_intent_chain_and_trace_it():
     context = client.post(
         "/business-contexts",
@@ -64,12 +79,16 @@ def test_run_endpoint_executes_fixture_and_updates_task(tmp_path):
     (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
     created = client.post(
         "/tasks",
-        json={"id": "TASK-RUN-001", "title": "Run fixture", "idempotency_key": "task-run-001", "acceptance_criteria": []},
+        json={"id": "TASK-RUN-001", "title": "Run fixture", "idempotency_key": "task-run-001", "acceptance_criteria": ["command succeeds"]},
     )
     assert created.status_code == 201
     response = client.post(
         "/tasks/TASK-RUN-001/run",
-        json={"fixture_dir": str(fixture), "commands": [["python", "-c", "print('ok')"]]},
+        json={
+            "fixture_dir": str(fixture),
+            "commands": [["python", "-c", "print('ok')"]],
+            "criterion_checks": {"command succeeds": [["python", "-c", "print('ok')"]]},
+        },
     )
     assert response.status_code == 200
     assert response.json()["task_status"] == "succeeded"
@@ -86,9 +105,11 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     fixture.mkdir()
     (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
     client.post("/assumptions", json={"id": "ASSUMPTION-API-001", "title": "change is safe", "owner": "product", "source": "test"})
-    client.post("/tasks", json={"id": "TASK-TRACE-001", "title": "trace", "idempotency_key": "task-trace-001", "acceptance_criteria": []})
+    client.post("/tasks", json={"id": "TASK-TRACE-001", "title": "trace", "idempotency_key": "task-trace-001", "acceptance_criteria": ["command succeeds"]})
     response = client.post("/tasks/TASK-TRACE-001/run", json={
-        "fixture_dir": str(fixture), "commands": [["python", "-c", "print('ok')"]],
+        "fixture_dir": str(fixture),
+        "commands": [["python", "-c", "print('ok')"]],
+        "criterion_checks": {"command succeeds": [["python", "-c", "print('ok')"]]},
         "validation_target_kind": "assumption", "validation_target_id": "ASSUMPTION-API-001",
     })
     assert response.status_code == 200
@@ -97,4 +118,33 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     assert "ASSUMPTION-API-001" in ids
     assert any(node["kind"] == "artifact" for node in trace["nodes"])
     evidence_id = next(node["id"] for node in trace["nodes"] if node["kind"] == "evidence")
-    assert client.get(f"/evidence/{evidence_id}").status_code == 200
+    evidence_response = client.get(f"/evidence/{evidence_id}")
+    assert evidence_response.status_code == 200
+    assert evidence_response.json()["criterion"] == "command succeeds"
+    assert evidence_response.json()["artifact_ref"].endswith("-OUTPUT")
+
+
+def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    created = client.post(
+        "/tasks",
+        json={
+            "id": "TASK-MISSING-COVERAGE-001",
+            "title": "Missing coverage",
+            "idempotency_key": "task-missing-coverage-001",
+            "acceptance_criteria": ["health check is deterministic"],
+        },
+    )
+    assert created.status_code == 201
+    response = client.post(
+        "/tasks/TASK-MISSING-COVERAGE-001/run",
+        json={"fixture_dir": str(fixture), "commands": [["python", "-c", "print('arbitrary pass')"]]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["task_status"] == "inconclusive"
+    trace = client.get("/tasks/TASK-MISSING-COVERAGE-001/trace").json()
+    evidence = next(node for node in trace["nodes"] if node["kind"] == "evidence")
+    assert evidence["title"] == "INCONCLUSIVE"

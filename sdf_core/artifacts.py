@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from .evaluator import Evidence
+
 
 @dataclass(frozen=True)
 class Artifact:
@@ -52,6 +54,30 @@ class ArtifactStore:
     def capture_process(self, *, artifact_id: str, stdout: str, stderr: str, exit_code: int) -> Artifact:
         payload = json.dumps({"stdout": stdout, "stderr": stderr, "exit_code": exit_code}, ensure_ascii=False, indent=2).encode("utf-8")
         return self._write(artifact_id, "process_log", payload)
+
+    def capture_evaluator_output(self, *, artifact_id: str, evidence: Evidence) -> Artifact:
+        """Persist the evaluator's output as the provenance artifact for Evidence.
+
+        The evaluator output is intentionally separate from the agent process
+        log. Callers can therefore prove which deterministic check produced an
+        Evidence record without treating agent narration as a test result.
+        """
+        payload = json.dumps(
+            {
+                "attempt_id": evidence.attempt_id,
+                "evidence_id": evidence.evidence_id,
+                "criterion": evidence.criterion,
+                "status": evidence.status,
+                "command": evidence.command,
+                "exit_code": evidence.exit_code,
+                "stdout": evidence.stdout,
+                "stderr": evidence.stderr,
+                "confidence": evidence.confidence,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        return self._write(artifact_id, "evaluator_output", payload)
 
     def _write(self, artifact_id: str, kind: str, payload: bytes) -> Artifact:
         self.root.mkdir(parents=True, exist_ok=True)

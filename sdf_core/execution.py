@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,7 +23,17 @@ class ExecutionService:
         self.adapter = adapter or FakeNativeAdapter("app.py", "print('updated')\n")
         self.evaluator = evaluator or DeterministicEvaluator()
 
-    def run(self, *, task_id: str, dispatch_key: str, fixture: Path, instructions: str, commands: list[list[str]], validation_target: tuple[str, str] | None = None):
+    def run(
+        self,
+        *,
+        task_id: str,
+        dispatch_key: str,
+        fixture: Path,
+        instructions: str,
+        commands: list[list[str]],
+        criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
+        validation_target: tuple[str, str] | None = None,
+    ):
         existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
         if existing:
             return existing
@@ -71,14 +82,117 @@ class ExecutionService:
             task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
             self.db.commit()
             return attempt
-        evaluation = self.evaluator.evaluate(attempt_id=attempt_id, workspace=workspace, commands=commands)
+        evaluation = self.evaluator.evaluate(
+            attempt_id=attempt_id,
+            workspace=workspace,
+            commands=commands,
+            criteria=tuple(task.acceptance_criteria or ()),
+            criterion_checks=criterion_checks,
+        )
         for evidence in evaluation.evidence:
-            self.db.add(EvidenceRow(id=evidence.evidence_id, attempt_id=attempt_id, kind=evidence.kind, status=evidence.status, command=evidence.command, exit_code=evidence.exit_code, artifact_ref=process.artifact_id, confidence=evidence.confidence, created_at=utcnow()))
-            self.db.add(GraphNodeRow(id=evidence.evidence_id, kind="evidence", title=evidence.status, source=evidence.command, owner="evaluator", confidence=evidence.confidence, created_at=utcnow()))
-            self.db.add(DecisionEdgeRow(source_kind="evidence", source_id=evidence.evidence_id, target_kind="attempt", target_id=attempt_id, relation="measures", source="evaluator", owner="evaluator", confidence=evidence.confidence, created_at=utcnow(), evidence_ref=process.artifact_id))
-            if validation_target:
-                relation = "validates" if evidence.status == "PASS" else "contradicts" if evidence.status == "FAIL" else "measures"
-                self.db.add(DecisionEdgeRow(source_kind="evidence", source_id=evidence.evidence_id, target_kind=validation_target[0], target_id=validation_target[1], relation=relation, source="evaluator", owner="evaluator", confidence=evidence.confidence, created_at=utcnow(), evidence_ref=process.artifact_id))
+            evaluator_artifact = self.artifacts.capture_evaluator_output(
+                artifact_id=f"{evidence.evidence_id}-OUTPUT",
+                evidence=evidence,
+            )
+            self.db.add(
+                ArtifactRow(
+                    id=evaluator_artifact.artifact_id,
+                    attempt_id=attempt_id,
+                    kind=evaluator_artifact.kind,
+                    uri=str(evaluator_artifact.path),
+                    sha256=evaluator_artifact.sha256,
+                    size_bytes=evaluator_artifact.size_bytes,
+                    created_at=utcnow(),
+                )
+            )
+            self.db.add(
+                GraphNodeRow(
+                    id=evaluator_artifact.artifact_id,
+                    kind="artifact",
+                    title=evaluator_artifact.kind,
+                    source=str(evaluator_artifact.path),
+                    owner="evaluator",
+                    confidence=evidence.confidence,
+                    created_at=utcnow(),
+                    metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion},
+                )
+            )
+            self.db.add(
+                DecisionEdgeRow(
+                    source_kind="artifact",
+                    source_id=evaluator_artifact.artifact_id,
+                    target_kind="attempt",
+                    target_id=attempt_id,
+                    relation="measures",
+                    source="evaluator",
+                    owner="evaluator",
+                    confidence=evidence.confidence,
+                    created_at=utcnow(),
+                    evidence_ref=evaluator_artifact.artifact_id,
+                )
+            )
+            self.db.add(
+                EvidenceRow(
+                    id=evidence.evidence_id,
+                    attempt_id=attempt_id,
+                    kind=evidence.kind,
+                    status=evidence.status,
+                    command=evidence.command,
+                    exit_code=evidence.exit_code,
+                    artifact_ref=evaluator_artifact.artifact_id,
+                    confidence=evidence.confidence,
+                    created_at=utcnow(),
+                )
+            )
+            self.db.add(
+                GraphNodeRow(
+                    id=evidence.evidence_id,
+                    kind="evidence",
+                    title=evidence.status,
+                    source=evidence.command,
+                    owner="evaluator",
+                    confidence=evidence.confidence,
+                    created_at=utcnow(),
+                    metadata_json={"criterion": evidence.criterion, "artifact_ref": evaluator_artifact.artifact_id},
+                )
+            )
+            self.db.add(
+                DecisionEdgeRow(
+                    source_kind="evidence",
+                    source_id=evidence.evidence_id,
+                    target_kind="attempt",
+                    target_id=attempt_id,
+                    relation="measures",
+                    source="evaluator",
+                    owner="evaluator",
+                    confidence=evidence.confidence,
+                    created_at=utcnow(),
+                    evidence_ref=evaluator_artifact.artifact_id,
+                )
+            )
+            # Only an explicitly mapped criterion can create a validation
+            # edge. A passing legacy command is an observation, never proof of
+            # a business hypothesis.
+            if validation_target and evidence.criterion is not None:
+                relation = "measures"
+                if evidence.status == "FAIL":
+                    relation = "contradicts"
+                elif evidence.status == "PASS" and evaluation.status == "PASS":
+                    relation = "validates"
+                self.db.add(
+                    DecisionEdgeRow(
+                        source_kind="evidence",
+                        source_id=evidence.evidence_id,
+                        target_kind=validation_target[0],
+                        target_id=validation_target[1],
+                        relation=relation,
+                        source="evaluator",
+                        owner="evaluator",
+                        confidence=evidence.confidence,
+                        created_at=utcnow(),
+                        evidence_ref=evaluator_artifact.artifact_id,
+                    )
+                )
         task_state = {"PASS": TaskState.SUCCEEDED, "FAIL": TaskState.FAILED, "INCONCLUSIVE": TaskState.INCONCLUSIVE}[evaluation.status]
         task.status = transition_task(TaskState(task.status), task_state).value
         self.db.commit()

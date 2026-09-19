@@ -24,9 +24,17 @@ def test_vertical_slice_runs_against_postgresql(tmp_path: Path):
     Session = sessionmaker(engine, expire_on_commit=False)
     with Session() as db:
         db.add(GraphNodeRow(id="ASSUMPTION-PG-001", kind="assumption", title="postgres works", source="test", owner="product", confidence=1.0, created_at=utcnow()))
-        db.add(TaskRow(id="TASK-PG-001", title="postgres slice", status="created", idempotency_key="task-pg-001", acceptance_criteria=[], created_at=utcnow()))
+        db.add(TaskRow(id="TASK-PG-001", title="postgres slice", status="created", idempotency_key="task-pg-001", acceptance_criteria=["command succeeds"], created_at=utcnow()))
         db.commit()
         service = ExecutionService(db, workspace_root=tmp_path / "workspaces", artifact_root=tmp_path / "artifacts", adapter=FakeNativeAdapter("app.py", "print('new')\n"))
-        attempt = service.run(task_id="TASK-PG-001", dispatch_key="dispatch-pg-001", fixture=fixture, instructions="update", commands=[["python", "-c", "print('ok')"]], validation_target=("assumption", "ASSUMPTION-PG-001"))
+        attempt = service.run(
+            task_id="TASK-PG-001",
+            dispatch_key="dispatch-pg-001",
+            fixture=fixture,
+            instructions="update",
+            commands=[["python", "-c", "print('ok')"]],
+            criterion_checks={"command succeeds": [["python", "-c", "print('ok')"]]},
+            validation_target=("assumption", "ASSUMPTION-PG-001"),
+        )
         assert attempt.status == "completed"
         assert db.get(TaskRow, "TASK-PG-001").status == "succeeded"
