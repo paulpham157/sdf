@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.sdf-artifacts/
+.sdf-workspaces/
+*.py[cod]
