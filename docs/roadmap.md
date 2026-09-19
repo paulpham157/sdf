@@ -1,0 +1,40 @@
+# Active SDF roadmap
+
+This roadmap follows accepted ADR-0004 and supersedes earlier ACP/A2A activation phases in the architecture DOCX, converted graph documents and protocol research. Those artifacts describe earlier architecture decisions until synchronized; they must not create active protocol implementation tasks.
+
+## P0 Core correctness
+
+The deterministic fixture demonstration exists, but Core v0 is not complete. Close acceptance-criteria coverage, graph reference integrity, append-only Evidence, evaluator artifact provenance, dispatch/retry correctness and failure recovery gaps. Verify behavior against PostgreSQL and trace from Objective to change and evaluation; do not equate an arbitrary passing command with validation of a business assumption.
+
+## P1 Tool Proxy and Policy
+
+Prove an allowed action executes and a denied action has no side effects. Bind authorization and audit records to the Attempt. Enforce filesystem, process and network limits outside agent cooperation; test a direct bypass attempt. No execution against a real repository until containment is demonstrated in disposable fixtures.
+
+## P2 Herdr runtime integration
+
+First identify the authoritative Herdr repository, version, license and actual API. Verify session control and sandbox compatibility. The intended design is SDF Control Plane → internal Agent Runtime → HerdrRuntime → Herdr → one coding agent in an enforced sandbox. Tool actions pass through Tool Proxy authorization before execution.
+
+Track session identity, agent/model, workspace, process identity where available, lifecycle timestamps, last event, status, exit code and timeout. Prove start, input, output, cancellation, termination and reconnect without duplicate execution. Retain fake runtime tests. Missing operations must be recorded explicitly; do not invent a Herdr contract.
+
+## P3 Event stream and observability
+
+Normalize verified runtime observations into SDF events with Attempt/session correlation, ordering and replay handling. Runtime start, output and exit events do not certify task success. TOOL_REQUESTED and POLICY_DECIDED originate from trusted SDF action boundaries, not interpreted terminal text. Feed state, evaluation, audit and metrics; a UI may consume these later.
+
+## P4 Multi-agent routing
+
+After one real agent completes the verified fixture loop, add other agents through the same runtime boundary. Route by demonstrated capability, historical success, latency, cost, availability and load. Multiple agents alone are not a reason to introduce another protocol.
+
+## Excluded from the active roadmap
+
+ACP adapters and A2A gateways have no planned phase or automatic activation gate. A future external-client or independent-SDF integration requirement requires a separate architecture decision. Herdr is the intended execution provider, not the owner of SDF domain state.
+
+## Next implementation slices
+
+1. Close one full acceptance-criteria → evaluation artifact → Evidence → trace loop, including a negative case.
+2. Execute and deny a tool action with Attempt-bound policy audit.
+3. Demonstrate sandbox enforcement against proxy bypass in a disposable fixture.
+4. Verify the Herdr contract and run one agent session through cancellation and reconnect. Blocked by containment and provider verification.
+5. Complete a real agent change through independent evaluation and trace. Blocked by slices 1 and 4.
+6. Normalize and replay lifecycle events; then qualify additional agents for routing.
+
+These slices are a proposed implementation breakdown, not completed work. Historical resolved Core tickets do not establish production readiness.

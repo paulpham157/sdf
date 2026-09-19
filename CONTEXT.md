@@ -69,9 +69,25 @@ An execution adapter for a coding agent that does not require a portable protoco
 _Avoid_: fallback hack
 
 **ACP**:
-Agent Client Protocol v1, the optional client/editor-to-coding-agent boundary.
+Agent Client Protocol, a client/editor-to-coding-agent protocol referenced in historical architecture discussions.
 _Avoid_: unqualified ACP, Agent Communication Protocol
 
 **A2A**:
-Agent2Agent Protocol, the optional agent-system-to-agent-system delegation boundary.
+Agent2Agent Protocol, an agent-system-to-agent-system protocol referenced in historical architecture discussions.
 _Avoid_: coding-session protocol
+
+**Agent Runtime**:
+The execution boundary through which SDF controls an agent session associated with an Attempt.
+_Avoid_: domain core, Task owner
+
+**Runtime Session**:
+An execution resource linked to an Attempt whose connection and process lifecycle are distinct from the Task outcome.
+_Avoid_: Task, Evidence
+
+**Tool Proxy**:
+The SDF action boundary that obtains a Policy Decision before executing a requested tool action.
+_Avoid_: terminal output parser, sandbox
+
+**Policy Decision**:
+An SDF authorization result for an action, resource and execution identity in a specific context.
+_Avoid_: agent consent, successful execution
