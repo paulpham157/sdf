@@ -10,6 +10,11 @@ from sdf_core.model import utcnow
 from sqlalchemy.orm import sessionmaker
 
 
+class RaisingEvaluator:
+    def evaluate(self, **kwargs):
+        raise RuntimeError("evaluator crashed")
+
+
 def test_execution_closes_objective_to_evidence_loop(tmp_path: Path):
     fixture = tmp_path / "fixture"
     fixture.mkdir()
@@ -84,6 +89,41 @@ def test_duplicate_dispatch_returns_existing_attempt(tmp_path: Path):
         first = service.run(task_id="TASK-002", dispatch_key="dispatch-002", fixture=fixture, instructions="update", commands=[])
         second = service.run(task_id="TASK-002", dispatch_key="dispatch-002", fixture=fixture, instructions="update", commands=[])
         assert second.id == first.id
+
+
+def test_dispatch_key_cannot_be_reused_for_another_task(tmp_path: Path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add_all([
+            TaskRow(id="TASK-DISPATCH-A", title="a", status="created", idempotency_key="dispatch-task-a", acceptance_criteria=[], created_at=utcnow()),
+            TaskRow(id="TASK-DISPATCH-B", title="b", status="created", idempotency_key="dispatch-task-b", acceptance_criteria=[], created_at=utcnow()),
+        ])
+        db.commit()
+        service = ExecutionService(db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "artifacts")
+        service.run(task_id="TASK-DISPATCH-A", dispatch_key="shared-dispatch", fixture=fixture, instructions="a", commands=[])
+        with pytest.raises(ValueError, match="belongs to task"):
+            service.run(task_id="TASK-DISPATCH-B", dispatch_key="shared-dispatch", fixture=fixture, instructions="b", commands=[])
+
+
+def test_evaluator_failure_settles_attempt_and_task(tmp_path: Path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(TaskRow(id="TASK-EVAL-CRASH", title="crash", status="created", idempotency_key="eval-crash", acceptance_criteria=[], created_at=utcnow()))
+        db.commit()
+        service = ExecutionService(db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "artifacts", evaluator=RaisingEvaluator())
+        with pytest.raises(RuntimeError, match="evaluator crashed"):
+            service.run(task_id="TASK-EVAL-CRASH", dispatch_key="eval-crash", fixture=fixture, instructions="change", commands=[])
+        assert db.get(TaskRow, "TASK-EVAL-CRASH").status == "failed"
+        attempt = db.query(__import__("sdf_core.db", fromlist=["AttemptRow"]).AttemptRow).one()
+        assert attempt.status == "completed"
 
 
 def test_failed_evaluation_contradicts_assumption_and_fails_task(tmp_path: Path):

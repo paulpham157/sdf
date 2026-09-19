@@ -41,6 +41,7 @@ def upgrade():
         sa.Column("kind", sa.String(40), nullable=False), sa.Column("status", sa.String(32), nullable=False),
         sa.Column("command", sa.Text(), nullable=False), sa.Column("exit_code", sa.Integer(), nullable=True),
         sa.Column("artifact_ref", sa.String(120), nullable=True), sa.Column("confidence", sa.Float(), nullable=False),
+        sa.Column("criterion", sa.String(500), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False))
     op.create_index("ix_evidence_attempt_id", "evidence", ["attempt_id"])
     op.create_table("decision_edges",

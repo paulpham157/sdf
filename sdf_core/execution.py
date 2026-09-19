@@ -36,6 +36,8 @@ class ExecutionService:
     ):
         existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
         if existing:
+            if existing.task_id != task_id:
+                raise ValueError(f"dispatch key already belongs to task: {existing.task_id}")
             return existing
         task = self.db.get(TaskRow, task_id)
         if task is None:
@@ -57,7 +59,11 @@ class ExecutionService:
         self.db.commit()
 
         before = fixture
-        workspace = self.workspaces.create(attempt_id, fixture)
+        try:
+            workspace = self.workspaces.create(attempt_id, fixture)
+        except Exception:
+            self._fail_attempt(task, attempt)
+            raise
         try:
             result = self.adapter.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
         except Exception:
@@ -66,8 +72,12 @@ class ExecutionService:
             task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
             self.db.commit()
             raise
-        diff = self.artifacts.capture_diff(artifact_id=f"{attempt_id}-DIFF", before=before, after=workspace, files=result.changed_files)
-        process = self.artifacts.capture_process(artifact_id=f"{attempt_id}-LOG", stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_code)
+        try:
+            diff = self.artifacts.capture_diff(artifact_id=f"{attempt_id}-DIFF", before=before, after=workspace, files=result.changed_files)
+            process = self.artifacts.capture_process(artifact_id=f"{attempt_id}-LOG", stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_code)
+        except Exception:
+            self._fail_attempt(task, attempt)
+            raise
         for artifact in (diff, process):
             self.db.add(ArtifactRow(id=artifact.artifact_id, attempt_id=attempt_id, kind=artifact.kind, uri=str(artifact.path), sha256=artifact.sha256, size_bytes=artifact.size_bytes, created_at=utcnow()))
             self.db.add(GraphNodeRow(id=artifact.artifact_id, kind="artifact", title=artifact.kind, source=str(artifact.path), owner="execution", confidence=1.0, created_at=utcnow()))
@@ -82,13 +92,17 @@ class ExecutionService:
             task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
             self.db.commit()
             return attempt
-        evaluation = self.evaluator.evaluate(
-            attempt_id=attempt_id,
-            workspace=workspace,
-            commands=commands,
-            criteria=tuple(task.acceptance_criteria or ()),
-            criterion_checks=criterion_checks,
-        )
+        try:
+            evaluation = self.evaluator.evaluate(
+                attempt_id=attempt_id,
+                workspace=workspace,
+                commands=commands,
+                criteria=tuple(task.acceptance_criteria or ()),
+                criterion_checks=criterion_checks,
+            )
+        except Exception:
+            self._fail_attempt(task, attempt)
+            raise
         for evidence in evaluation.evidence:
             evaluator_artifact = self.artifacts.capture_evaluator_output(
                 artifact_id=f"{evidence.evidence_id}-OUTPUT",
@@ -141,6 +155,7 @@ class ExecutionService:
                     exit_code=evidence.exit_code,
                     artifact_ref=evaluator_artifact.artifact_id,
                     confidence=evidence.confidence,
+                    criterion=evidence.criterion,
                     created_at=utcnow(),
                 )
             )
@@ -197,3 +212,12 @@ class ExecutionService:
         task.status = transition_task(TaskState(task.status), task_state).value
         self.db.commit()
         return attempt
+
+    def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> None:
+        if attempt.status == AttemptState.RUNNING.value:
+            attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.FAILED).value
+        if task.status == TaskState.RUNNING.value:
+            task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
+        if task.status == TaskState.EVALUATING.value:
+            task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
+        self.db.commit()

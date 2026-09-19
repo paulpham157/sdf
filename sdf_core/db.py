@@ -81,6 +81,7 @@ class EvidenceRow(Base):
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     artifact_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
+    criterion: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

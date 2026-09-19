@@ -11,7 +11,7 @@ Coordinator owns tracker status, integration review and commits. Workers own the
 | 01 | acceptance_wave + coordinator | resolved | Reviewed; 26 local tests pass, PostgreSQL skipped |
 | 05 | herdr_verify | needs-info | Documented contract researched; live lifecycle proof outstanding |
 | 10 | architecture_sync | needs-info | Content synchronized; full-page render outstanding |
-| 02 | integrity_recovery | claimed | Integrity, dispatch and recovery; includes criterion provenance invariant |
+| 02 | integrity_recovery + coordinator | resolved | Dispatch/recovery and relational criterion provenance; concurrency/append-only hardening remains follow-up |
 | 03–04, 06–09 | coordinator | queued | Start only after blocking tickets pass review |
 
 Existing Core tickets 01, 04, 05 and 06 were reopened to record incomplete acceptance criteria. Their historical test results remain partial evidence, not milestone completion.

@@ -219,7 +219,7 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
     if evidence is None:
         raise HTTPException(status_code=404, detail="evidence not found")
     node = db.get(GraphNodeRow, evidence_id)
-    criterion = (node.metadata_json or {}).get("criterion") if node else None
+    criterion = evidence.criterion
     return {
         "id": evidence.id,
         "attempt_id": evidence.attempt_id,
