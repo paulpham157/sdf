@@ -579,10 +579,10 @@ policy change → unit tests → simulation/eval → review → signed bundle �
 # 17. Recommended OSS/Framework stack
 
 # 18. MVP và Production roadmap
-## 18.1 MVP tối thiểu
+## 18.1 MVP tối thiểu của SDF Core v0
 1.  Task Manager + State Manager trên PostgreSQL.
 2.  Workflow graph/controller.
-3.  Agent Interface Router: ACP v1 + native fallback cho ít nhất 2 coding agents; capability negotiation + interface SLO metrics.
+3.  Agent Interface Router: chỉ một native adapter trong Core v0. ACP v1 là hạng mục interoperability sau Core v0, chỉ thêm khi có integration coding agent thứ hai hoặc nhu cầu editor/client portability được xác nhận.
 4.  Workspace/Sandbox + Worker Manager cơ bản; execution events đi thẳng vào SDF Event Stream.
 5.  Policy/Guardrail + Tool Proxy.
 6.  Evaluator deterministic (tests/build/lint/acceptance).
