@@ -12,7 +12,8 @@ Coordinator owns tracker status, integration review and commits. Workers own the
 | 05 | herdr_verify | needs-info | Documented contract researched; live lifecycle proof outstanding |
 | 10 | architecture_sync | needs-info | Content synchronized; full-page render outstanding |
 | 02 | integrity_recovery + coordinator | resolved | Dispatch/recovery and relational criterion provenance; concurrency/append-only hardening remains follow-up |
-| 03 | tool_policy | resolved | Attempt-bound Policy Decision, scoped allowlist, audit seam, zero-side-effect denial |
-| 04, 06–09 | coordinator | queued | Start only after blocking tickets pass review |
+| 03 | tool_policy | needs-info | Policy seam passes local tests; runtime integration and durable Attempt/audit semantics outstanding |
+| 04 | sandbox | needs-info | Local fixture boundary passes; OS-level containment/live proof outstanding |
+| 06–09 | coordinator | queued | Start only after blocking tickets pass review |
 
 Existing Core tickets 01, 04, 05 and 06 were reopened to record incomplete acceptance criteria. Their historical test results remain partial evidence, not milestone completion.

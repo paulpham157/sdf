@@ -1,6 +1,6 @@
 # 03 Tool Proxy and Policy
 
-Status: resolved
+Status: needs-info
 Blocked by: 02
 
 ## What to build and acceptance
@@ -25,3 +25,8 @@ Verification: focused `6 passed`; full `.venv/bin/pytest -q` `34 passed, 1
 skipped`; compile check passed. This is local deterministic evidence only.
 Audit persistence and OS filesystem/process/network containment remain out of
 scope for this ticket and are tracked by later persistence/sandbox work.
+
+Review boundary: the seam is not yet wired into `POST /tasks/{id}/run`, does
+not verify Attempt existence/active state, and has no durable replay/idempotency
+guard. Keep this ticket `needs-info` until runtime integration and durable
+action/audit semantics are implemented.
