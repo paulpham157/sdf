@@ -1,28 +1,27 @@
 <!-- converted from Software_Decision_Fabric_Architecture_Final_VI_v1.5.docx -->
 
 Software Decision Fabric (SDF)
-Architecture, Intent/Decision Graph, Business Economics, Protocols, FinOps, Safety, Operations & Handoff
+Architecture, Intent/Decision Graph, Business Economics, Execution Runtime, FinOps, Safety, Operations & Handoff
 Bản tổng hợp cuối cùng của các quyết định kiến trúc và nguyên tắc triển khai
 FINAL 1.5  •  19/09/2026
 
 
 # 1. Executive summary
-SDF không phải một coding agent mới mà là control/decision/learning system phía trên nhiều agent và runtime. Research thesis trung tâm là Intent/Decision Graph: duy trì traceability hai chiều từ business objective, economic assumption và policy tới architecture decision, requirement, task, code/release, rồi quay lại runtime evidence để xác minh hoặc bác bỏ giả định ban đầu. Business Context và Business Economics đi trước architecture; FinOps là economic control plane xuyên build, release và runtime. Agent interoperability được tách thành ba protocol boundary: ACP cho boundary client-to-coding-agent, A2A cho boundary agent-system-to-agent-system, MCP cho boundary agent-to-tools/resources; native adapter luôn tồn tại như fallback nếu protocol adapter không đạt SLO. Human interface thuộc SDF Console và các external adapters, không nằm trên critical execution path. Software do SDF tạo ra phải mang theo source + tests + SBOM/provenance + Project Passport + Policy Pack + Intent/Decision snapshot + economics/ + finops/ để human hoặc một SDF khác tiếp quản cả technical intent lẫn business intent.
-Business Context / Customer / Market
-              ↓
-      Business Economics
-   Cost / Value / Pricing
-              ↓
-       Intent/Decision Graph
-              ↓
-             SDF
- Control + Policy + Learning
-       ┌──────┼──────┐
-      A2A    ACP     MCP
-       │      │       │
- Agent/SDF  Coding   Tools
- Systems    Agents   APIs
-              ↓
+SDF không phải một coding agent mới mà là control/decision/learning system phía trên agent runtime. Research thesis trung tâm là Intent/Decision Graph: duy trì traceability hai chiều từ business objective, economic assumption và policy tới architecture decision, requirement, task, code/release, rồi quay lại runtime evidence để xác minh hoặc bác bỏ giả định ban đầu. Business Context và Business Economics đi trước architecture; FinOps là economic control plane xuyên build, release và runtime. Core v0 dùng một internal Agent Runtime interface và một execution provider dự kiến là HerdrRuntime, còn Tool Proxy, Policy và sandbox chịu trách nhiệm kiểm soát hành động. ACP/A2A chỉ được giữ như historical research và không thuộc active roadmap. Human interface thuộc SDF Console và các external adapters, không nằm trên critical execution path. Software do SDF tạo ra phải mang theo source + tests + SBOM/provenance + Project Passport + Policy Pack + Intent/Decision snapshot + economics/ + finops/ để human hoặc một SDF khác tiếp quản cả technical intent lẫn business intent.
+┌───────────────┐
+       │ Internal Agent │
+       │    Runtime     │
+       └───────┬───────┘
+               ↓
+          HerdrRuntime
+   (intended, pending verification)
+               ↓
+     One coding agent / harness
+               ↓
+     Enforced Sandbox / Worker
+               ↓
+     Tool Proxy + Policy → Tools
+               ↓
  Software + Maintainability + Economic Package
 
 # 2. SDF được build để làm gì?
@@ -43,32 +42,17 @@ Business Context / Customer / Market
 
 # 3. Kiến trúc tổng thể: các plane
 
-BUSINESS CONTEXT / ECONOMICS
-Customer | Use case | Value | Market | Contract | Price Corridor
-                         ↓
-                 INTENT / DECISION GRAPH
-Objective → Assumption → Constraint → ADR → Requirement → Task
-      ↑                                              ↓
-Runtime Evidence ← Metric / Eval ← Release ← Code / Infrastructure
-                         ↓
-HUMAN / WORK SYSTEMS
-Jira | Linear | GitHub Issues | Notion | SDF Console | Backstage
-                         ↓
-                    SDF CONTROL
-Task / Planner / State / Router / Scheduler / Release / Environment
-        ┌────────────────┼────────────────┐
-        ↓                ↓                ↓
- Memory + Context     Policy Plane     Quality + Learning
-        └────────────────┼────────────────┘
-                         ↓
-                 PROTOCOL / INTEROP
-             A2A      ACP      MCP
-              │        │        │
-        Agent systems  │      Tools/APIs
-                       ↓
-             Coding Agents + Native Fallback
-                         ↓
-                Sandbox / Worker Runtime
+EXECUTION RUNTIME
+       Internal Agent Runtime
+                  ↓
+              HerdrRuntime
+       (intended, pending verification)
+                  ↓
+        One coding agent / harness
+                  ↓
+       Enforced Sandbox / Worker
+                  ↓
+       Tool Proxy + Policy → Tools
                          ↓
        CI → signed artifact → GitOps/CD → Runtime
                          ↓
@@ -77,8 +61,6 @@ Task / Planner / State / Router / Scheduler / Release / Environment
                 FinOps / Actual Economics
                          ↓
         Evidence updates Decision Graph → ADAPT
-
-OUTPUT: software + SBOM/provenance + Project Passport + Policy Pack + Decision Graph + economics/ + finops/
 ## 3.1 Research thesis trung tâm: Business Intent → Engineering Decisions → Runtime Evidence → Learning
 Vấn đề khó nhất không phải gọi nhiều agent. SDF phải giữ được mối liên hệ nhân-quả/traceability đủ tốt giữa điều business muốn đạt, các giả định và constraint, quyết định kiến trúc/kỹ thuật, implementation/release và evidence thật từ production. Nếu liên kết này mất đi, SDF có thể maintain code nhưng không biết hệ thống còn phục vụ đúng business model hay không.
 Business Goal
@@ -404,75 +386,81 @@ DETECTED → TRIAGED → CONTAINED → MITIGATING → RECOVERING → RESOLVED �
 6.  Validate recovery: command exit 0 không đồng nghĩa incident resolved; phải kiểm SLO/business transaction.
 7.  Postmortem: root cause, contributing factors, detection gaps, guardrail gaps, regression test, policy/memory update.
 
-# 11. Execution & Protocol Plane: ACP, A2A, MCP và native fallback
-Final architecture không dùng một “agent gateway” proprietary làm contract duy nhất. SDF tách rõ semantic protocol khỏi runtime: ACP điều khiển coding agent, A2A delegate giữa các agent systems/SDF, MCP truy cập tools/resources; sandbox/worker manager vẫn chịu trách nhiệm process, isolation, resource limit và recovery.
-## 11.1 Ba protocol boundary
-MCP = Agent-to-Tool / Resource
-ACP = Client/SDF-to-Coding Agent
-A2A = Agent-System-to-Agent-System / SDF-to-SDF
+# 11. Execution Runtime Plane: internal runtime and historical interoperability notes
+ADR-0004 supersedes the earlier protocol-first execution direction. The active SDF Core v0 path is SDF Control Plane → internal Agent Runtime → intended HerdrRuntime → one coding agent → enforced sandbox → Tool Proxy/Policy → tools. Herdr remains an intended execution/session provider pending verification of its authoritative repository, version, license and supported lifecycle operations; this document makes no claim that those operations have been verified. ACP (Agent Client Protocol) and A2A (Agent2Agent Protocol) remain below as historical interoperability research only. They are removed from the active roadmap and do not belong in the Core v0 execution path. MCP may be evaluated at the tool/resource boundary, but Tool Proxy and Policy remain the enforcement boundary.
+## 11.1 Current execution runtime boundary
+SDF Control Plane
+      ↓
+Internal Agent Runtime
+      ↓
+HerdrRuntime (intended; pending verification)
+      ↓
+One coding agent / harness
+      ↓
+Enforced Sandbox / Worker
+      ↓
+Tool Proxy + Policy
+      ↓
+Tools and workspace
 
-Các protocol không thay Task Manager, Scheduler, State Manager,
-Sandbox Manager, Event Bus hoặc Policy Plane.
-## 11.2 ACP: primary interface có điều kiện
-ACP v1 là stable protocol contract cho client-to-coding-agent. SDF nên pin stable v1, dùng initialize/capability negotiation, stream session/update trực tiếp vào SDF event stream và không giả định mọi ACP agent có cùng capability. Các v2/unstable features chỉ bật sau negotiation và không được trở thành dependency bắt buộc của core.
-Task → Router → Agent Interface
-                 ├─ ACP v1  (preferred when healthy)
-                 └─ Native  (fallback)
+SDF remains the source of truth for Task, Attempt, State, Budget, Policy, Evaluator, Evidence and Decision Graph. Herdr owns session/process lifecycle only; it does not become an SDF domain model or protocol contract.
+## 11.2 Internal Agent Runtime contract
+AgentRuntime is the intentionally small internal contract for execution/session control: start, send, stream, cancel, status and terminate. It carries an SDF Attempt correlation but does not own Task, policy, evaluation or Evidence. Tool requests must cross the SDF Tool Proxy and Policy boundary; terminal output is not a trusted tool request.
+The first runtime slice supports one agent and keeps a fake runtime for deterministic tests. Required behavior is dispatch, streamed output, timeout, cancellation, reconnect and verified termination. These are SDF acceptance criteria to validate against the chosen provider; they are not claims about Herdr support.
+Task → Runtime Dispatch → AgentRuntime
+                      ↓
+                  HerdrRuntime
+                      ↓
+             Runtime events → SDF Event Stream
+                      ↘ Evaluator / Audit / Metrics
+Runtime behavior must be measured with Evidence, not inferred from an attractive interface design. The Capability Registry should record provider latency and reliability for session start, first event, final result, cancellation, reconnect and failure.
+## 11.3 HerdrRuntime intended first implementation
+HerdrRuntime is the intended first real implementation of AgentRuntime because the architecture identifies Herdr as a persistent terminal/session fleet. Before implementation, verify the authoritative repository, version, license and actual operations. Until containment and provider verification are complete, run real agents only against bounded disposable fixtures with restricted authority. Keep the fake runtime for deterministic tests and record missing operations explicitly.
+runtime: herdr
+verification:
+  repository: pending
+  version: pending
+  license: pending
+  lifecycle_operations: pending
 
-ACP event → SDF Event Stream → WebSocket/SSE → SDF Console
-           ↘ Evaluation / Audit / Metrics
-Độ ổn định phải được đo bằng evidence, không dựa vào việc protocol “đẹp” về kiến trúc. Capability Registry nên giữ latency/reliability theo từng interface: spawn, initialize, session create, time-to-first-agent-event, time-to-first-text, final result, cancellation và failure rate.
-## 11.3 Native adapter fallback và interface SLO
-Nếu ACP adapter của Codex/Claude/Pi/Hermes chậm, treo hoặc mất event, Router được phép chuyển sang native adapter. Native path không phải failure của architecture; nó là safety valve giúp SDF không khóa critical path vào maturity của một protocol implementation.
-agent: codex
-interfaces:
-  acp:
-    enabled: true
-    p95_ttft_ms: measured
-    reliability: measured
-  native:
-    enabled: true
-    p95_ttft_ms: measured
-    reliability: measured
+session:
+  attempt_id: required
+  session_id: provider-assigned
+  agent: one selected agent
+  workspace: disposable fixture
+  status: start | running | cancelling | completed | failed | terminated
 
-Router chooses by capability + SLO + policy + cost.
-## 11.4 A2A: delegation giữa agent systems và SDF
-A2A phù hợp cho capability-level delegation: Security Agent, FinOps Agent, Release Agent, Incident Agent hoặc một SDF ở tổ chức khác. A2A Task chỉ là một remote delegation/attempt; SDF Task vẫn là logical work unit giữ dependency, budget, acceptance criteria, attempts, cost, policy và Intent/Decision linkage.
-SDF Task
-   ↓ Capability Router
-A2A Gateway
-   ├─ Security Agent
-   ├─ FinOps Agent
-   ├─ Incident Agent
-   └─ Another SDF
+Runtime selection remains an internal SDF decision; no external protocol is required.
+## 11.4 Historical interoperability research superseded by ADR-0004
+Historical note: A2A means Agent2Agent Protocol and ACP means Agent Client Protocol. The following protocol analysis records the earlier architecture research; it is retained for traceability and does not create implementation work. ADR-0004 removes ACP adapters and A2A gateways from the active roadmap. Reopening either requires a concrete external-client or independent-agent-system requirement and a new architecture decision.
+Earlier research considered A2A suitable for capability-level delegation to Security, FinOps, Release or Incident agents and to an independent SDF. That option is intentionally historical: the current system uses an internal runtime boundary, and an A2A Task must not become the SDF source of truth if a future requirement reopens the decision.
+HISTORICAL OPTION — NOT ACTIVE
+SDF Task → future external-delegation decision → A2A Gateway
 
-A2A boundary → identity + authN/authZ + OPA + data classification + audit
-## 11.5 MCP: tool/resource boundary
-MCP nằm dưới agent/harness và chỉ nên chuẩn hóa tool/resource access. Tool Proxy/Policy vẫn phải quyết định principal/action/resource/context trước tool call; MCP không được trở thành đường bypass guardrail.
+No A2A gateway is part of Core v0. A future gateway would still require identity, authorization, data classification, budget and audit.
+## 11.5 Tool Proxy, Policy and optional MCP boundary
+Tool Proxy evaluates policy before executing an action. An enforced sandbox constrains filesystem, process and network access even if an agent bypasses the proxy. MCP may be evaluated as a tool/resource integration, but it is not an authorization boundary and must not bypass Tool Proxy or Policy.
 ## 11.6 Runtime backends
-Protocol interface không thay sandbox/runtime. SDF vẫn cần Worker/Sandbox Manager để provision workspace, process, CPU/RAM/disk/network limits, checkpoint/recovery và cleanup.
+AgentRuntime does not replace sandbox/runtime. SDF still needs a Worker/Sandbox Manager for workspace provisioning, process lifecycle, CPU/RAM/disk/network limits, checkpoint/recovery and cleanup.
 - E2B Runtime / Firecracker: hướng sandbox-first cho untrusted/multi-tenant execution; self-host cần Linux/KVM.
 - Docker + gVisor: MVP đơn giản hơn nếu threat model thấp hơn.
 - Orca: optional engineering cockpit cho worktree/diff/browser/human review; không nằm trong core backend.
-- Herdr: optional persistent terminal/session fleet; không làm protocol contract.
+- HerdrRuntime: intended first execution/session provider; repository, version, license and lifecycle operations remain pending verification.
 - AI SDK Harness/custom adapter: có thể tồn tại như implementation helper, không phải architectural dependency bắt buộc.
-## 11.7 Final execution path
-SDF Control
-    ↓
-Capability + Interface Router
-    ├──────── A2A → remote/specialist agent system
-    │
-    └─ coding task
-          ↓
-       ACP v1 ───fallback──→ Native Adapter
-          ↓                     ↓
-       Coding Agent / Harness
-          ↓
-      Sandbox / Worker
-          ↓
-       Tools via MCP / native tool proxy
-          ↓
-   Events → SDF Event Stream → Eval / Audit / Console
+## 11.7 Current execution path
+SDF Control Plane
+      ↓
+Internal Agent Runtime
+      ↓
+HerdrRuntime (intended; pending verification)
+      ↓
+One coding agent / harness
+      ↓
+Enforced Sandbox / Worker
+      ↓
+Tool Proxy + Policy → Tools
+      ↓
+Events → SDF Event Stream → Evaluator / Audit / Console
 # 12. Task systems: Jira, Linear, GitHub Issues
 Trong mô hình tổ chức đang thiết kế ở đây, ba hệ thống phục vụ ba audience/độ phân giải khác nhau: Jira cho delivery/governance và stakeholders quan tâm tiến độ/năng suất; Linear cho engineering leads/technical decision-makers; GitHub Issues cho internal technical execution. Không cần chọn một và loại hai cái còn lại.
 
@@ -497,18 +485,13 @@ Git/.hoh    = portable canonical project knowledge
 Critical knowledge nên được promote từ agent/private memory thành project knowledge. Repo vẫn là portable canonical artifact; Notion và OpenViking là projection tối ưu cho human và machine.
 ## 13.2 SDF Console = primary human interface
 Human collaboration không nên nằm trong critical path của agent execution. SDF Console đọc event stream trực tiếp từ SDF và hiển thị task progress, streaming agent output, approvals, policy decisions, release status, alerts, incidents, cost/economics và Decision Graph.
-ACP / Native / A2A events
-          ↓
-    SDF Event Stream
-          ↓
-     WebSocket / SSE
-          ↓
-       SDF Console
-          ├─ task / agent streams
-          ├─ approvals
-          ├─ incident room
-          ├─ release / policy / cost views
-          └─ Decision Graph navigation
+Runtime events
+      ↓
+SDF Event Stream
+      ↓
+WebSocket / SSE
+      ↓
+SDF Console
 ## 13.3 External collaboration adapters are optional
 Chat/collaboration products chỉ là adapters/projections: có thể nối Slack/Teams/email/ticketing hoặc một collaboration tool khác khi cần. Buzz bị loại khỏi final core architecture vì external-agent integration path hiện không đạt mức latency/reliability mong muốn trong trải nghiệm thực tế; SDF không được phụ thuộc vào một collaboration frontend để agent trả kết quả.
 Chỉ project các event có ý nghĩa cho human như TASK_STARTED, AGENT_BLOCKED, EVALUATION_FAILED, APPROVAL_REQUIRED, INCIDENT_DETECTED, RELEASE_PROMOTION và TASK_COMPLETED; raw token/heartbeat/tool-noise ở observability/event store.
@@ -582,7 +565,7 @@ policy change → unit tests → simulation/eval → review → signed bundle �
 ## 18.1 MVP tối thiểu của SDF Core v0
 1.  Task Manager + State Manager trên PostgreSQL.
 2.  Workflow graph/controller.
-3.  Agent Interface Router: chỉ một native adapter trong Core v0. ACP v1 là hạng mục interoperability sau Core v0, chỉ thêm khi có integration coding agent thứ hai hoặc nhu cầu editor/client portability được xác nhận.
+3.  Internal Agent Runtime: một implementation đầu tiên cho một coding agent; HerdrRuntime là provider dự kiến sau khi sandbox và Herdr contract được xác minh. ACP/A2A không thuộc Core v0 execution path.
 4.  Workspace/Sandbox + Worker Manager cơ bản; execution events đi thẳng vào SDF Event Stream.
 5.  Policy/Guardrail + Tool Proxy.
 6.  Evaluator deterministic (tests/build/lint/acceptance).
@@ -598,6 +581,9 @@ policy change → unit tests → simulation/eval → review → signed bundle �
 16.  Economic constraints gate cho architecture/release và Project Passport economics/finops artifacts.
 ## 18.2 Chỉ thêm khi có nhu cầu
 
+Core v0 uses Internal Agent Runtime + one provider implementation, with Tool Proxy/Policy and enforced sandbox as execution boundaries. HerdrRuntime is intended pending verification; ACP/A2A remain historical research and are excluded from the active roadmap.
+Historical A2A activation criteria: a future independent-agent-system or external-SDF requirement would need a separate architecture decision; no A2A gateway is planned.
+Historical ACP activation criteria: a future external-client or coding-agent interoperability requirement would need a separate architecture decision; no ACP adapter is planned.
 # 19. Resource & Deployment Sizing
 Resource requirement của SDF nên được tính theo active agent concurrency và mức độ self-host, không chỉ theo số user. SDF control core tương đối nhẹ; sandbox/build workload, observability stack và local inference mới là các cost/resource driver lớn.
 ## 19.1 Nguyên tắc capacity planning
@@ -997,7 +983,7 @@ Decision Graph
 - Agent sinh output ≠ agent quyết định output đúng.
 - Guardrails phải chặn trước hành động nguy hiểm; Evaluator xác minh sau execution.
 - Memory không phải state; context không phải memory dump.
-- Agent interface và runtime phải pluggable: ACP v1 là portable primary interface khi đạt SLO; native adapter là fallback; sandbox/runtime có thể thay mà không đổi core SDF.
+- Agent runtime và provider phải pluggable: Core sở hữu Internal Agent Runtime; HerdrRuntime là intended provider pending verification; sandbox/runtime có thể thay mà không đổi SDF domain core.
 - Incident handling là priority workflow riêng.
 - Evolution chỉ xảy ra dựa trên evidence; security/policy changes phải có kiểm soát.
 - Human task systems là projections của work graph; execution state vẫn thuộc SDF.
@@ -1015,77 +1001,12 @@ Decision Graph
 - FinOps phải tối ưu cost per accepted outcome và unit economics, không chỉ provider bill hoặc cost per token.
 - Cost attribution, tags/labels và economic baselines là first-class generated artifacts để handoff sang SDF khác.
 - Alert ≠ incident: Alert Router xử lý signal/severity/audience; Incident Manager chỉ nhận các tình huống cần coordinated response.
-- ACP/A2A/MCP là ba boundary khác nhau: coding-session, agent-system delegation và tool/resource integration; không dùng một protocol để thay toàn bộ orchestration stack.
-- Protocol reliability phải đo bằng SLO: spawn/init/session/TTFT/final/cancel/failure; Router được phép chọn native path khi adapter không đạt SLO.
+- Internal Agent Runtime, Tool Proxy/Policy và enforced sandbox là các execution boundaries; ACP/A2A research remains historical and is not an active Core v0 dependency.
+- Runtime provider reliability must be measured by SLO: start, output, final result, cancel, reconnect and failure; the internal runtime may select a provider only from measured evidence.
 - Human collaboration không nằm trên execution critical path; agent events phải đi trực tiếp vào SDF Event Stream rồi mới project ra Console/chat/ticketing.
 - Capacity planning dựa trên active agent concurrency, sandbox/build workload và telemetry volume; GPU chỉ thuộc local inference strategy.
 # 25. Kiến trúc đề xuất cuối cùng
-BUSINESS CONTEXT
-               Customer / Use case / Market / Contract
-                              ↓
-                    BUSINESS ECONOMICS
-             Cost / Value / Alternatives / Pricing
-                              ↓
-                    Economic Constraints
-                              ↓
-                  INTENT / DECISION GRAPH
- Objective -- Assumption -- Constraint -- ADR -- Requirement -- Task
-      ↑                                                   ↓
- Evidence / Metrics ← Evaluation ← Release ← Change / Code / IaC
-                              ↓
-Jira / Linear / GitHub Issues      Notion / SDF Console / Backstage
-             \                         /
-              └────── HUMAN PLANES ───┘
-                              ↓
-                    ┌──────────────────────┐
-                    │      SDF CONTROL     │
-                    │ Task / Planner       │
-                    │ State / Router       │
-                    │ Scheduler            │
-                    │ Release / Env Mgr    │
-                    └──────────┬───────────┘
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        ↓                      ↓                      ↓
- Memory / Context         Policy Plane         Quality / Learning
- OpenViking              OPA/Cedar/...         Eval / Experience
- Context Builder         Policy Registry       Evolver
-        └──────────────────────┼──────────────────────┘
-                               ↓
-                    PROTOCOL / INTEROP LAYER
-          ┌────────────────────┼────────────────────┐
-          ↓                    ↓                    ↓
-         A2A                  ACP                  MCP
- Agent/SDF delegation   Coding agent session   Tools/resources
-          │                    │                    │
-          │             Native fallback            │
-          │                    ↓                    │
-          └──────────→ Coding Agents / Harnesses ←─┘
-                               ↓
-                     Sandbox / Worker Manager
-                               ↓
-                       Source / PR / Code
-                               ↓
-             CI → signed immutable artifact → Release
-                               ↓
-                    GitOps / Environments
-                               ↓
-                  Observability / Alert Router
-                               ↓
-                    Incident / Runtime Metrics
-                               ↓
-                 FINOPS / ACTUAL ECONOMICS
-        Cost attribution / forecast / unit economics / optimization
-                               ↓
-         Runtime evidence updates Decision Graph → ADAPT
-
-HUMAN INTERFACE
-ACP/A2A/native events → SDF Event Stream → WebSocket/SSE → SDF Console
-External chat/ticket/email adapters are optional projections.
-
-PORTABLE OUTPUT
-source + tests + SBOM/provenance + Project Passport + Policy Pack
-+ Intent/Decision Graph snapshot + business context + economics/ + finops/ + release/catalog metadata
+Runtime events → SDF Event Stream → WebSocket/SSE → SDF Console
 
 # 26. Những điểm cần xác minh trước khi production
 - Re-verify exact license/version của mọi OSS dependency tại thời điểm release; không dựa vào một snapshot thảo luận.
@@ -1106,9 +1027,9 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 - Benchmark estimated vs actual infrastructure cost và calibrate Infracost/FOCUS/OpenCost mappings theo cloud/provider thực tế.
 - Define FinOps remediation levels và approval boundary; không cho autonomous cost optimization xóa/downsize production resource không reversible.
 - Test Alert Router dedup/correlation/escalation để tránh notification storm và bảo đảm SEV cao thật sự tới on-call.
-- Benchmark cùng workload qua native vs ACP cho từng critical agent; đặt SLO cho initialize/session/TTFT/final/cancel và tự động fallback khi protocol path xuống cấp.
-- Pin ACP stable v1 và A2A released 1.x contract; unstable/preview protocol features phải capability-gated và không được thành dependency bắt buộc.
-- Threat-model A2A như network/organization boundary: identity, mTLS/OAuth as applicable, OPA authorization, data classification, budget và audit trước delegation.
+- Verify the HerdrRuntime contract on one agent: start/input/output/status/cancel/terminate/reconnect, session correlation, timeout cleanup and duplicate-dispatch behavior.
+- Keep ACP/A2A research versioned as historical context; reopen either only through a concrete requirement and a new ADR.
+- Prove Tool Proxy/Policy and enforced sandbox boundaries before granting a real agent access beyond disposable fixtures.
 - Load-test SDF Event Stream/Console tách biệt khỏi agent execution để UI/chat outage không làm mất hoặc block result.
 - Benchmark active sandbox density trên worker thực tế; capacity plan phải dựa trên p95 RAM/CPU/disk/network của build/test workload, không chỉ idle agent count.
 # 27. Glossary
@@ -1126,7 +1047,7 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | FinOps / Cost Governance Plane | Thu thập, phân bổ, forecast, cảnh báo và tối ưu chi phí của SDF lẫn generated product. | FOCUS cost model, Attribution, Budget, Forecast, Anomaly, Unit Economics, Optimization, FinOps Policy |
 | Control Plane | Quyết định work được phân rã, sắp lịch và route như thế nào. | Planner, Task Manager, Router, Scheduler, State Manager, Capability Registry |
 | Memory Plane | Lưu knowledge dài hạn và xây context phù hợp cho từng agent. | Memory Manager/Provider, Context Builder, Project Knowledge |
-| Execution Plane | Chạy coding agents trong workspace/sandbox có isolation và lifecycle rõ ràng. | ACP Client, Native Adapter, Workspace Manager, Sandbox/Worker Runtime, Agents |
+| Execution Plane | Chạy coding agents trong workspace/sandbox có isolation và lifecycle rõ ràng. | Internal Agent Runtime, intended HerdrRuntime, Workspace Manager, Enforced Sandbox/Worker, one Agent |
 | Safety Plane | Ngăn hành động không hợp lệ hoặc nguy hiểm. | Validator, Policy Engine, Guardrail, Secrets, Budget, Human Approval |
 | Quality & Learning Plane | Đo correctness và dùng evidence để cải thiện hệ thống. | Evaluator, Experience Store, Benchmark Suite, Evolver |
 | Operations Plane | Vận hành SDF như một distributed system. | Observability, Alert Router, Audit, Checkpoint/Recovery, Incident Manager |
@@ -1135,14 +1056,14 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | Software Catalog Plane | Index software/service: owner, repo, APIs, dependencies, runtime, environments, SLOs, runbooks. | Backstage hoặc catalog tương đương, dependency/ownership graph |
 | Release & Environment Plane | Biến verified artifact thành release có kiểm soát qua environments, promotion, canary và rollback. | CI, Artifact Registry, Release Manager, Environment Manager, Argo CD/Rollouts |
 | Policy & Governance Plane | Định nghĩa policy hierarchy, phân phối policy, decision logs và Policy Pack cho generated products. | OPA/Rego, Conftest, Kyverno, Cedar, Policy Registry, Evidence/Audit |
-| Protocol & Interop Plane | Chuẩn hóa giao tiếp giữa SDF, coding agents, agent systems và tools; protocol failure không được làm mất khả năng thực thi. | ACP v1, A2A 1.0, MCP, capability negotiation, native fallback |
+| Historical Interoperability Notes | Retained historical research; does not define an active Core v0 execution plane. | ACP/A2A/MCP historical notes; current boundary is Internal Agent Runtime + Tool Proxy/Policy + enforced sandbox |
 | Khái niệm | Câu hỏi nó trả lời |
 | --- | --- |
 | Task Manager | Work là gì? Lifecycle hiện tại là gì? Parent/child/dependency/acceptance criteria ra sao? |
 | Scheduler | Khi nào chạy? Resource/priority/concurrency thế nào? |
 | Router | Agent/model/execution backend nào phù hợp? |
 | State Manager | Trạng thái hệ thống hiện tại là gì? |
-| Agent Interface Router | ACP/native/A2A interface và execution backend nào phù hợp? |
+| Agent Interface Router | Internal Agent Runtime và execution provider nào phù hợp? |
 | LangGraph/Workflow Engine | Flow xử lý task đi qua những node/transition nào? |
 | Storage: PostgreSQL là source of truth tốt cho current/system state. Git/filesystem giữ code state và artifacts lớn. Không nhét toàn bộ source/diff lớn vào database. |
 | --- |
@@ -1178,10 +1099,10 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | --- |
 | Protocol | Vai trò trong SDF | Không nên dùng để thay |
 | --- | --- | --- |
-| ACP v1 | Session/prompt/update/permission/cancel với coding agents; primary portable interface khi adapter đạt SLO. | Scheduler, sandbox lifecycle, task source-of-truth |
-| A2A 1.0 | Discovery/delegation giữa specialist agents, remote agent systems hoặc SDF khác. | Internal event bus, SDF Task Manager, low-level shell/tool calls |
-| MCP | Chuẩn tool/resource integration cho agent. | Agent orchestration hoặc coding-session lifecycle |
-| Native adapter | Fallback/escape hatch khi protocol adapter chậm, thiếu capability hoặc không ổn định. | Không phải protocol cross-vendor; cần maintain theo agent |
+| ACP v1 | Historical ACP v1 research: session/prompt/update/permission/cancel with coding agents; excluded from active Core v0 roadmap. | Scheduler, sandbox lifecycle, task source-of-truth |
+| A2A 1.0 | Historical A2A 1.0 research: discovery/delegation between specialist agents or SDFs; requires a future concrete requirement and separate ADR. | Internal event bus, SDF Task Manager, low-level shell/tool calls |
+| MCP | MCP may be evaluated at the tool/resource boundary; Tool Proxy and Policy remain the enforcement boundary. | Agent orchestration hoặc coding-session lifecycle |
+| Native adapter | Current Internal Agent Runtime seam; HerdrRuntime is the intended first provider pending verification. | Không phải protocol cross-vendor; cần maintain theo agent |
 | System | Audience/Plane | Thông tin nên hiển thị |
 | --- | --- | --- |
 | Jira | Business / Delivery / Governance Plane | Progress, ownership, risks, dependency, delivery, productivity/compliance view |
@@ -1227,10 +1148,10 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | Durable workflow (khi scale) | Temporal | Chỉ thêm khi có long-running workflow, crash/restart, distributed workers. |
 | State / Task / Experience | PostgreSQL | Source of truth cho machine state và analytics. |
 | Memory / Context | OpenViking hoặc pluggable MemoryProvider | Giữ abstraction để tránh lock-in/license constraints. |
-| Coding-agent interface | ACP v1 + native adapters | ACP preferred when capability/SLO pass; native fallback mandatory for critical agents. |
+| Coding-agent interface | Internal Agent Runtime + HerdrRuntime (intended) + fake runtime for deterministic tests | One provider first; validate lifecycle, containment and Evidence before adding another provider. |
 | Sandbox | E2B Runtime / Docker+gVisor / Firecracker | Chọn theo threat model và multi-tenancy. |
 | Human coding cockpit | Orca (optional) | Không bắt buộc trong core backend. |
-| Terminal fleet runtime | Herdr (optional) | Phù hợp headless/remote sessions; audit license. |
+| Terminal fleet runtime | HerdrRuntime (intended; verify repository, version, license and lifecycle API) | Persistent terminal/session fleet candidate for the first runtime integration; no Herdr API is claimed verified. |
 | Policy engine | OPA | ALLOW/DENY/APPROVAL decisions. |
 | MCP / Tool gateway | MCP + Tool Proxy; ContextForge/agentgateway optional | MCP standardizes tools/resources; Policy/Tool Proxy remains enforcement boundary. |
 | Model gateway/budget | LiteLLM Proxy | Provider abstraction, fallback, budget/routing. |
@@ -1263,8 +1184,8 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | Cost dashboards | Grafana | Unit economics, budget, forecast, attribution and anomaly visualization. |
 | Alert routing | Alertmanager + SDF Alert Router | Dedup/group/severity/audience routing; incident creation remains SDF domain logic. |
 | Intent / Decision Graph | PostgreSQL edge model first | Nodes/edges + evidence refs in core DB; only add a dedicated graph engine when traversal scale/analytics justify it. |
-| Agent-system interoperability | A2A 1.0 adapter/gateway | Use for specialist agents, remote agent systems and SDF--SDF delegation; keep SDF Task as source-of-truth logical work. |
-| Protocol telemetry | OpenTelemetry + SDF interface metrics | Measure spawn/init/session/TTFT/final/cancel/failure per ACP/native/A2A interface. |
+| Agent-system interoperability | A2A historical research only; no active gateway roadmap | Reopen only through a concrete independent-agent-system requirement and a new ADR. |
+| Protocol telemetry | OpenTelemetry + SDF runtime metrics | Measure session start/output/cancel/termination/reconnect/failure per runtime provider. |
 | Nhu cầu thực tế xuất hiện | Thêm |
 | --- | --- |
 | Workflow kéo dài hàng giờ/ngày, cần durable resume | Temporal |
@@ -1272,10 +1193,10 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | Multi-tenant/untrusted code mạnh | Firecracker/E2B microVM isolation |
 | Đủ eval history để tối ưu tự động | DSPy/GEPA + Evolver |
 | Human needs deep coding cockpit | Orca |
-| Nhiều persistent terminal agents trên nhiều host | Herdr |
+| One intended execution/session provider | HerdrRuntime integration after repository/license/API verification |
 | Enterprise issue/governance integrations | Jira/Linear adapters, audit/compliance extensions |
-| Cross-agent / cross-organization delegation | A2A 1.0 gateway + identity/policy boundary |
-| ACP adapter không đạt latency/reliability SLO | Native adapter path + evidence-based interface routing |
+| Future independent-agent-system requirement | Separate architecture decision; excluded from active roadmap |
+| Additional runtime provider need | Internal Agent Runtime provider routing based on measured evidence |
 | Profile | CPU | RAM | Storage | Ghi chú |
 | --- | --- | --- | --- | --- |
 | Dev / API-first | 8–12 vCPU | 16–32 GB | 250–500 GB SSD | LLM API, E2B Cloud, Langfuse Cloud, CI hosted; không GPU. |
@@ -1311,7 +1232,7 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | Task memory | Thường discard hoặc summarize nếu còn giá trị. |
 | Project memory | Bắt buộc export/promote nếu cần để maintain. |
 | Organization memory | Tùy access/policy; không tự động bàn giao. |
-| Khuyến nghị thực dụng: Core commercial backend nên ưu tiên API-first, sandbox-first và permissive-license components. Orca nên là optional coding cockpit; Herdr là optional terminal fleet runtime; memory provider cần abstraction để thay thế khi license/maturity không phù hợp. Giá trị riêng của sản phẩm nằm ở SDF control logic, evaluation policy, experience model, incident workflows, routing/evolution và portability. |
+| Khuyến nghị thực dụng: Core commercial backend nên ưu tiên API-first, sandbox-first và permissive-license components. Orca nên là optional coding cockpit; HerdrRuntime là execution/session provider dự kiến, pending repository, license, API and lifecycle verification; memory provider cần abstraction để thay thế khi license/maturity không phù hợp. Giá trị riêng của sản phẩm nằm ở SDF control logic, evaluation policy, experience model, incident workflows, routing/evolution và portability. |
 | --- |
 | Term | Nghĩa trong tài liệu này |
 | --- | --- |
@@ -1343,9 +1264,9 @@ source + tests + SBOM/provenance + Project Passport + Policy Pack
 | Unit Economics | Chi phí/giá trị trên một đơn vị business có ý nghĩa: customer, transaction, request, inference, successful task... |
 | Alert Router | Layer nhận signals, deduplicate/group/correlate, gán severity/audience và route notification hoặc escalate thành incident. |
 | Intent/Decision Graph | Portable graph linking objectives, assumptions, constraints, ADRs, tasks, changes and releases to runtime evidence. |
-| ACP | Agent Client Protocol: contract client/SDF -- coding agent cho initialize, session, prompt, streaming updates, permission/cancel; v1 là baseline stable trong tài liệu này. |
-| A2A | Agent2Agent Protocol: contract giữa independent agent systems/SDFs cho discovery, delegation, task/message/artifact exchange. |
+| ACP | Agent Client Protocol (historical): earlier client/SDF -- coding agent contract research; excluded from active roadmap. |
+| A2A | Agent2Agent Protocol (historical): earlier independent-agent-system delegation research; excluded from active roadmap. |
 | MCP | Model Context Protocol: tool/resource integration boundary; không thay agent orchestration hoặc coding-session lifecycle. |
-| Native Adapter | Agent-specific integration path dùng làm fallback khi protocol adapter thiếu capability hoặc không đạt latency/reliability SLO. |
+| Native Adapter | Historical native-adapter term; current seam is Internal Agent Runtime with a provider implementation. |
 | SDF Event Stream | Canonical realtime stream của agent/task/policy/release/incident events; UI/collaboration systems consume từ đây thay vì nằm trên execution critical path. |
 | SDF Console | Primary human interface cho task/agent streams, approvals, policy/release/incident/cost views và Decision Graph. |

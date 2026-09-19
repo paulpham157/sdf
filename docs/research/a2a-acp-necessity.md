@@ -1,5 +1,7 @@
 # A2A và ACP có thực sự cần thiết cho SDF không?
 
+> **Superseded by ADR-0004 (2026-09-19):** This document records the earlier A2A/ACP research and remains in the repository for traceability. The current SDF roadmap excludes ACP adapters and A2A gateways, uses an internal Agent Runtime with intended HerdrRuntime integration, and requires a new concrete requirement plus a new ADR before either protocol is reconsidered. See [`docs/adr/0004-internal-runtime-and-enforced-tool-policy.md`](../adr/0004-internal-runtime-and-enforced-tool-policy.md) and [`docs/roadmap.md`](../roadmap.md).
+
 Ngày nghiên cứu: 2026-09-19  
 Phạm vi: `Software_Decision_Fabric_Architecture_Final_VI_v1.5.docx`, đối chiếu với đặc tả chính thức của A2A và Agent Client Protocol (ACP).
 
