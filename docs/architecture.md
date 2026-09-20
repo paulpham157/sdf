@@ -25,7 +25,7 @@ Tool actions are Attempt-bound and pass through the Tool Proxy. The proxy obtain
 ```text
 SDF Control Plane (this host)
   → Internal Agent Runtime
-  → HerdrRuntime + remote Herdr transport (SSH/API)
+  → HerdrRuntime + persistent E2B Herdr transport (SSH/API is an alternate deployment)
   → Herdr workspace inside the execution sandbox
   → one coding agent
   → Tool Proxy + Policy Decision
@@ -34,10 +34,12 @@ SDF Control Plane (this host)
 
 The control plane must not require the coding agent to run on the SDF host.
 `HerdrRuntime` therefore accepts an injected transport; the local subprocess
-runner is only a test/development fallback, while a deployment selects a
-remote transport whose endpoint runs the pinned Herdr binary in the sandbox
-environment. SSH is a transport, not containment: the E2B/process boundary
-must still enforce filesystem, process and network limits.
+runner is only a test/development fallback. The preferred deployment transport
+is a persistent E2B sandbox (`create --detach`, repeated `sandbox exec`, then
+`kill`), so prompt/reconnect/cancel can address the same Herdr process and
+workspace. SSH/API is an alternate transport when Herdr is hosted elsewhere.
+Transport is not containment: the E2B/process boundary must still enforce
+filesystem, process and network limits.
 
 The current implementation retains deterministic fake adapters for tests. A live provider must demonstrate session start, input, output, cancellation, termination, reconnect, and non-duplicated execution before it can support milestone claims.
 

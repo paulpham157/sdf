@@ -54,11 +54,12 @@ provider reconnect remains live-unverified.
 
 The long-term topology is now explicit: SDF remains the control plane and
 Herdr plus the coding agent run in the execution environment. `HerdrRuntime`
-accepts an injected `HerdrTransport`; `SshHerdrTransport` provides a safe
-argument-vector bridge to a remote pinned Herdr binary, while local subprocess
+accepts an injected `HerdrTransport`; the preferred `E2BHerdrTransport` keeps
+one persistent E2B sandbox for repeated Herdr commands, while
+`SshHerdrTransport` is an alternate hosted deployment. Local subprocess
 execution remains only a development fallback. `bind_remote_workspace()` keeps
-the sandbox path opaque to the SDF host. SSH is transport only and does not
-replace E2B/process containment.
+the sandbox path opaque to the SDF host. Transport is not containment and does
+not replace E2B/process policy.
 
 The binding record has an explicit `as_dict()`/`from_mapping()` contract with
 strict non-empty identity validation, so durable storage cannot silently
