@@ -25,19 +25,25 @@ are still gated.
 
 ## Follow-up implementation
 
-Added `sdf_core/herdr_runtime.py` as a provider adapter over the documented JSON
+Added `sdf_core/herdr_runtime.py` as a provider adapter over the Herdr 0.9.x
 CLI surface. It correlates workspace/pane/agent-session identifiers to the SDF
-Attempt, maps start/send/read/status/reconnect, and is idempotent per Attempt.
-Cancellation and termination deliberately raise an unsupported-operation error
-until process cleanup is proven. Fake-runner contract tests pass; no live Herdr
-session or provider call was made.
+Attempt, maps start/prompt/read/status/reconnect, and is idempotent per Attempt.
+It accepts Herdr's wrapped JSON control responses and raw terminal output, and
+restores durable bindings without redispatching.
+
+Cancellation sends `ctrl+c` and only records `CANCELLED` after
+`pane process-info` shows that the agent is no longer foreground. Termination
+closes the bound pane and performs the same process check, accepting an
+already-closed pane as cleanup evidence. These checks are covered by local
+fake-runner tests; they do not establish SDF containment or descendant cleanup.
 
 `RuntimeAgentAdapter` now binds the per-Attempt disposable workspace into a
 workspace-aware runtime before `start()`. `HerdrRuntime` preserves that binding
 and passes it to `workspace create --cwd`, so a future provider-backed run can
-produce artifacts from the same workspace that SDF evaluates. This is still a
-local contract test; Herdr cancellation, termination and live containment are
-unverified.
+produce artifacts from the same workspace that SDF evaluates. This remains a
+local contract test until it is run from a Herdr-managed environment with the
+pinned binary; provider prompt/reconnect/cancel/terminate and descendant
+cleanup remain live gates.
 
 Added `HerdrBindingSnapshot`/`restore_binding()` so a durable Attempt/session,
 workspace and pane identity can be restored after process restart without

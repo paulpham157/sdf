@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError, HerdrUnsupportedOperation
+from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError
 from sdf_core.runtime import RuntimeStatus
 
 
@@ -23,8 +23,14 @@ class FakeHerdr:
             return json.dumps({"output": "accepted"})
         if tuple(command[1:3]) == ("agent", "get"):
             return json.dumps({"status": "done"})
-        if tuple(command[1:3]) == ("session", "snapshot"):
-            return json.dumps({"sessions": [{"agentSessionId": "agent-1", "status": "working"}]})
+        if tuple(command[1:3]) == ("api", "snapshot"):
+            return json.dumps({"snapshot": {"agents": [{"name": "agent-1", "status": "working", "pane_id": "pane-1"}]}})
+        if tuple(command[1:3]) == ("agent", "send-keys"):
+            return ""
+        if tuple(command[1:3]) == ("pane", "process-info"):
+            return json.dumps({"process_info": {"foreground_processes": [{"pid": 1, "name": "zsh"}]}})
+        if tuple(command[1:3]) == ("pane", "close"):
+            return json.dumps({"type": "ok"})
         raise AssertionError(command)
 
 
@@ -78,6 +84,31 @@ def test_herdr_runtime_maps_documented_cli_lifecycle_and_correlates_attempt():
     assert all(timeout == 3210 for _, timeout in runner.calls)
 
 
+def test_herdr_runtime_accepts_09_wrappers_and_raw_prompt_read_output():
+    def runner(command, timeout_ms):
+        operation = tuple(command[1:3])
+        if operation == ("workspace", "create"):
+            return json.dumps({"result": {"workspace": {"workspace_id": "ws-9"}, "root_pane": {"pane_id": "pane-9"}}})
+        if operation == ("agent", "start"):
+            return json.dumps({"result": {"agent": {"name": "codex-9", "agent_status": "idle", "pane_id": "pane-9"}}})
+        if operation == ("agent", "prompt"):
+            return ""
+        if operation == ("agent", "read"):
+            return "hello from agent\n"
+        if operation == ("agent", "get"):
+            return json.dumps({"result": {"agent": {"name": "codex-9", "agent_status": "done"}}})
+        if operation == ("api", "snapshot"):
+            return json.dumps({"result": {"snapshot": {"agents": [{"name": "codex-9", "pane_id": "pane-9"}]}}})
+        raise AssertionError(command)
+
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-09", agent="codex")
+    assert session.session_id == "codex-9"
+    assert runtime.send(session.session_id, "hello").output == ("hello from agent",)
+    assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
+    assert runtime.reconnect(session.session_id).session_id == "codex-9"
+
+
 def test_herdr_runtime_start_is_idempotent_for_attempt():
     runner = FakeHerdr()
     runtime = HerdrRuntime(runner=runner)
@@ -129,13 +160,18 @@ def test_herdr_restore_rejects_attempt_rebinding_to_another_session():
         runtime.restore_binding(HerdrBindingSnapshot("attempt", "session-b", "codex", "w", "p"))
 
 
-def test_herdr_runtime_does_not_claim_unverified_cancellation_or_termination():
+def test_herdr_runtime_cancels_only_after_agent_process_is_gone():
     runtime = HerdrRuntime(runner=FakeHerdr())
     session = runtime.start(attempt_id="ATTEMPT-103", agent="codex")
-    with pytest.raises(HerdrUnsupportedOperation):
-        runtime.cancel(session.session_id)
-    with pytest.raises(HerdrUnsupportedOperation):
-        runtime.terminate(session.session_id)
+    cancelled = runtime.cancel(session.session_id)
+    assert cancelled.status is RuntimeStatus.CANCELLED
+
+
+def test_herdr_runtime_terminates_by_closing_bound_pane():
+    runtime = HerdrRuntime(runner=FakeHerdr())
+    session = runtime.start(attempt_id="ATTEMPT-104", agent="codex")
+    terminated = runtime.terminate(session.session_id)
+    assert terminated.status is RuntimeStatus.TERMINATED
 
 
 def test_herdr_runtime_rejects_malformed_provider_payload():

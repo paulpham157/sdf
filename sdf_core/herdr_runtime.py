@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -199,7 +200,7 @@ class HerdrRuntime(AgentRuntime):
         sessions: tuple[Mapping[str, Any], ...] = ()
         session_error: str | None = None
         try:
-            payload = self._object([self._binary, "session", "list", "--json"])
+            payload = self._object(self._command("session", "list", "--json"))
             values = payload.get("sessions", ())
             if not isinstance(values, list) or not all(isinstance(value, Mapping) for value in values):
                 raise HerdrRuntimeError("Herdr session list did not contain session objects")
@@ -229,22 +230,35 @@ class HerdrRuntime(AgentRuntime):
         if existing_id is not None:
             return self._sessions[existing_id]
 
-        workspace_args = [self._binary, "workspace", "create", "--json"]
-        if self._session:
-            workspace_args.extend(("--session", self._session))
+        workspace_args = self._command("workspace", "create")
         workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
         if workspace_dir is not None:
             workspace_args.extend(("--cwd", str(workspace_dir)))
         workspace = self._object(workspace_args)
-        workspace_id = self._required_string(workspace, "workspaceId")
-        pane_id = self._required_string(workspace, "paneId")
+        root_pane = workspace.get("root_pane", workspace.get("rootPane", workspace))
+        if not isinstance(root_pane, Mapping):
+            root_pane = workspace
+        workspace_record = workspace.get("workspace", workspace)
+        if not isinstance(workspace_record, Mapping):
+            workspace_record = workspace
+        workspace_id = self._required_string(workspace_record, "workspaceId", "workspace_id")
+        pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
-        start_args = [self._binary, "agent", "start", agent, "--kind", agent, "--pane", pane_id, "--json"]
-        if self._session:
-            start_args.extend(("--session", self._session))
+        start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
         started = self._object(start_args)
-        session_id = self._required_string(started, "agentSessionId", "sessionId")
-        status = self._status(started.get("status", "working"))
+        started_agent = started.get("agent", started)
+        if not isinstance(started_agent, Mapping):
+            started_agent = started
+        session_id = self._required_string(
+            started,
+            "agentSessionId",
+            "sessionId",
+        ) if any(key in started for key in ("agentSessionId", "sessionId")) else self._required_string(
+            started_agent,
+            "name",
+            "agentName",
+        )
+        status = self._status(started_agent.get("status", started_agent.get("agent_status", started.get("status", "working"))))
         session = RuntimeSession(session_id, attempt_id, agent, status)
         self._bindings[session_id] = _Binding(attempt_id, agent, workspace_id, pane_id)
         self._sessions[session_id] = session
@@ -252,61 +266,103 @@ class HerdrRuntime(AgentRuntime):
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
         binding, current = self._known(session_id)
-        args = [self._binary, "agent", "prompt", session_id, input_text, "--wait", "--until", "idle", "--json"]
-        if self._session:
-            args.extend(("--session", self._session))
-        payload = self._object(args)
-        status = self._status(payload.get("status", "working"))
-        output = self._output(payload, current.output)
-        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output)
+        args = self._command("agent", "prompt", session_id, input_text, "--wait", "--until", "idle")
+        raw = self._raw(args)
+        payload: Mapping[str, Any] = {}
+        if raw.strip():
+            try:
+                parsed = self._decode(raw)
+                if isinstance(parsed, Mapping):
+                    payload = parsed
+            except HerdrRuntimeError:
+                # The 0.9.x CLI returns an empty body for a successful prompt;
+                # terminal output is read through ``agent read`` below.
+                payload = {}
+        status = self._status(payload.get("status", payload.get("agent_status", "working"))) if payload else RuntimeStatus.RUNNING
+        output = self.stream(session_id)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output or current.output)
         self._sessions[session_id] = updated
         return updated
 
     def stream(self, session_id: str) -> tuple[str, ...]:
         binding, current = self._known(session_id)
-        args = [self._binary, "agent", "read", session_id, "--json"]
-        if self._session:
-            args.extend(("--session", self._session))
-        payload = self._object(args)
-        output = self._output(payload, current.output)
+        args = self._command("agent", "read", session_id, "--source", "recent-unwrapped", "--lines", "200")
+        raw = self._raw(args)
+        try:
+            payload = self._decode(raw)
+        except HerdrRuntimeError:
+            payload = None
+        if isinstance(payload, Mapping):
+            output = self._output(payload, current.output)
+        else:
+            output = tuple(line for line in raw.splitlines() if line.strip()) or current.output
         updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, current.status, output)
         self._sessions[session_id] = updated
         return output
 
     def status(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)
-        args = [self._binary, "agent", "get", session_id, "--json"]
-        if self._session:
-            args.extend(("--session", self._session))
+        args = self._command("agent", "get", session_id)
         payload = self._object(args)
+        agent_payload = payload.get("agent", payload)
+        if not isinstance(agent_payload, Mapping):
+            agent_payload = payload
         updated = RuntimeSession(
             current.session_id,
             binding.attempt_id,
             binding.agent,
-            self._status(payload.get("status", current.status.value)),
+            self._status(agent_payload.get("status", agent_payload.get("agent_status", current.status.value))),
             self._output(payload, current.output),
         )
         self._sessions[session_id] = updated
         return updated
 
     def cancel(self, session_id: str) -> RuntimeSession:
-        self._known(session_id)
-        raise HerdrUnsupportedOperation("Herdr per-agent cancellation is not verified")
+        binding, current = self._known(session_id)
+        # Herdr exposes validated key injection rather than a named cancel
+        # method.  ctrl+c is therefore a cancellation request; only promote
+        # it to CANCELLED after process inspection proves the agent executable
+        # is no longer foreground in the pane.
+        self._raw(self._command("agent", "send-keys", session_id, "ctrl+c"))
+        self._wait_agent_not_foreground(binding)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.CANCELLED, current.output)
+        self._sessions[session_id] = updated
+        return updated
 
     def terminate(self, session_id: str) -> RuntimeSession:
-        self._known(session_id)
-        raise HerdrUnsupportedOperation("Herdr per-agent termination is not verified")
+        binding, current = self._known(session_id)
+        # Closing the dedicated pane is the documented hard cleanup surface.
+        # A successful close, or an already-closed pane, is the only evidence
+        # accepted here; no terminal text is treated as proof of termination.
+        try:
+            self._raw(self._command("pane", "close", binding.pane_id))
+        except HerdrRuntimeError as exc:
+            if "not found" not in str(exc).lower() and "closed" not in str(exc).lower():
+                raise
+        try:
+            self._wait_agent_not_foreground(binding)
+        except HerdrRuntimeError as exc:
+            if "not found" not in str(exc).lower() and "closed" not in str(exc).lower():
+                raise
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.TERMINATED, current.output)
+        self._sessions[session_id] = updated
+        return updated
 
     def reconnect(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)
-        args = [self._binary, "session", "snapshot", "--json"]
-        if self._session:
-            args.extend(("--session", self._session))
+        args = self._command("api", "snapshot")
         payload = self._object(args)
-        records = payload.get("sessions", payload.get("agents", []))
+        snapshot = payload.get("snapshot", payload)
+        if not isinstance(snapshot, Mapping):
+            raise HerdrRuntimeError("Herdr snapshot did not contain a snapshot object")
+        records = snapshot.get("agents", snapshot.get("sessions", []))
         if not isinstance(records, list) or not any(
             isinstance(record, Mapping)
-            and record.get("agentSessionId", record.get("sessionId")) == session_id
+            and (
+                record.get("agentSessionId", record.get("sessionId")) == session_id
+                or record.get("name") == session_id
+                or record.get("pane_id", record.get("paneId")) == binding.pane_id
+            )
             for record in records
         ):
             raise HerdrRuntimeError("session snapshot did not contain the requested agent session")
@@ -318,20 +374,68 @@ class HerdrRuntime(AgentRuntime):
         except KeyError as exc:
             raise KeyError(f"unknown Herdr agent session: {session_id}") from exc
 
+    def _wait_agent_not_foreground(self, binding: _Binding) -> None:
+        deadline = time.monotonic() + self._timeout_ms / 1000
+        while True:
+            try:
+                self._assert_agent_not_foreground(binding)
+                return
+            except HerdrRuntimeError as exc:
+                if "not found" in str(exc).lower() or "closed" in str(exc).lower():
+                    return
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
+    def _assert_agent_not_foreground(self, binding: _Binding) -> None:
+        payload = self._object(self._command("pane", "process-info", "--pane", binding.pane_id))
+        info = payload.get("process_info", payload)
+        if not isinstance(info, Mapping):
+            raise HerdrRuntimeError("Herdr process-info response was not an object")
+        processes = info.get("foreground_processes", ())
+        if not isinstance(processes, list):
+            raise HerdrRuntimeError("Herdr process-info response omitted foreground_processes")
+        agent_name = binding.agent.lower()
+        for process in processes:
+            if not isinstance(process, Mapping):
+                continue
+            haystack = " ".join(
+                str(process.get(key, ""))
+                for key in ("name", "argv0", "cmdline")
+            ).lower()
+            if agent_name and agent_name in haystack:
+                raise HerdrRuntimeError("Herdr agent process is still foreground after cancellation")
+
     def _object(self, command: Sequence[str]) -> dict[str, Any]:
+        payload = self._decode(self._raw(command))
+        if not isinstance(payload, dict):
+            raise HerdrRuntimeError("Herdr response was not a JSON object")
+        result = payload.get("result")
+        if isinstance(result, dict):
+            return result
+        return payload
+
+    def _raw(self, command: Sequence[str]) -> str:
         try:
-            raw = self._runner(command, self._timeout_ms)
+            return self._runner(command, self._timeout_ms)
         except HerdrRuntimeError:
             raise
         except Exception as exc:
             raise HerdrRuntimeError(f"Herdr command failed: {exc}") from exc
+
+    @staticmethod
+    def _decode(raw: str) -> Any:
         try:
-            payload = json.loads(raw)
+            return json.loads(raw)
         except (TypeError, json.JSONDecodeError) as exc:
             raise HerdrRuntimeError("Herdr response was not valid JSON") from exc
-        if not isinstance(payload, dict):
-            raise HerdrRuntimeError("Herdr response was not a JSON object")
-        return payload
+
+    def _command(self, *parts: str) -> list[str]:
+        command = [self._binary]
+        if self._session:
+            command.extend(("--session", self._session))
+        command.extend(parts)
+        return command
 
     @staticmethod
     def _required_string(payload: Mapping[str, Any], *keys: str) -> str:
