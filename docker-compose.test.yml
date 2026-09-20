@@ -1,0 +1,19 @@
+name: sdfa-test-dependencies
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sdf_core
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # Keep the test database off the default PostgreSQL port.
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sdf_core"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    tmpfs:
+      - /var/lib/postgresql/data

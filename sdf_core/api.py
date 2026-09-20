@@ -5,15 +5,21 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow, make_engine, make_session_factory
+from .db import AttemptRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, RuntimeEventRow, TaskRow, make_engine, make_session_factory
+from .escalation import ModelTier
 from .execution import ExecutionService
 from .adapter import FakeNativeAdapter
+from .measurement import build_scorecard_from_db
+from .policy import ActionRequest, AllowlistPolicy
+from .containment import MacOSSandboxBackend
+from .e2b_containment import E2BContainmentBackend
 
 
 DATABASE_URL = os.getenv("SDF_DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -33,6 +39,11 @@ class NodeRequest(BaseModel):
 
 class ObjectiveRequest(NodeRequest):
     business_context_id: str
+    success_metric: str | None = Field(default=None, max_length=500)
+    baseline: float | None = None
+    target: float | None = None
+    measurement_source: str | None = Field(default=None, max_length=500)
+    measurement_window: str | None = Field(default=None, max_length=120)
 
 
 class TaskRequest(BaseModel):
@@ -44,6 +55,7 @@ class TaskRequest(BaseModel):
 
 
 class RunTaskRequest(BaseModel):
+    dispatch_key: str | None = Field(default=None, min_length=1, max_length=200)
     fixture_dir: str
     instructions: str = "complete the task"
     commands: list[list[str]] = Field(default_factory=list)
@@ -52,6 +64,64 @@ class RunTaskRequest(BaseModel):
     )
     validation_target_kind: str | None = None
     validation_target_id: str | None = None
+    parent_attempt_id: str | None = None
+    model_tier: ModelTier = ModelTier.BASIC
+    cost_usd: float = Field(default=0.0, ge=0.0)
+    provider: str | None = Field(default=None, max_length=120)
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    escalation_reason: str | None = Field(default=None, max_length=500)
+
+
+class ToolActionRequest(BaseModel):
+    """Structured Tool Proxy input; terminal text is intentionally absent."""
+
+    actor: str = Field(min_length=1, max_length=120)
+    tool: str = Field(min_length=1, max_length=120)
+    action: str = Field(min_length=1, max_length=120)
+    resource: str = Field(min_length=1, max_length=500)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+def configured_tool_policy() -> AllowlistPolicy:
+    """Build the server-side allowlist; an unset list fails closed.
+
+    ``SDF_TOOL_ALLOWLIST`` is a deployment configuration seam containing
+    comma-separated ``tool:action`` pairs, for example
+    ``filesystem:read,filesystem:write``.  The HTTP caller cannot expand it.
+    """
+
+    configured = os.getenv("SDF_TOOL_ALLOWLIST", "")
+    allowed: set[tuple[str, str]] = set()
+    for item in configured.split(","):
+        tool, separator, action = item.strip().partition(":")
+        if separator and tool and action:
+            allowed.add((tool, action))
+    # Agent egress inside E2B remains available. This is the separate
+    # structured SDF network action, which is not yet routed through the box;
+    # keep it disabled even if an operator lists it above.
+    if os.getenv("SDF_CONTAINMENT_BACKEND", "").strip().lower() == "e2b":
+        allowed.discard(("network", "request"))
+    return AllowlistPolicy(allowed, name="server-configured-allowlist")
+
+
+def configured_containment() -> tuple[object | None, bool]:
+    """Return explicit containment configuration for public tool actions."""
+
+    backend_name = os.getenv("SDF_CONTAINMENT_BACKEND", "").strip().lower()
+    smoke_passed = os.getenv("SDF_CONTAINMENT_SMOKE", "").strip().lower() == "passed"
+    # A backend binary is not evidence of enforcement.  Operators must run
+    # the disposable smoke harness and explicitly promote its result before
+    # public process actions can use the backend.
+    if backend_name == "macos" and smoke_passed:
+        backend = MacOSSandboxBackend()
+    elif backend_name == "e2b" and smoke_passed:
+        backend = E2BContainmentBackend(template=os.getenv("SDF_E2B_TEMPLATE", "base"))
+    else:
+        backend = None
+    required = os.getenv("SDF_REQUIRE_CONTAINMENT", "1").strip().lower() not in {"0", "false", "no"}
+    return backend, required
 
 
 class EvidenceResponse(BaseModel):
@@ -120,7 +190,17 @@ def create_business_context(payload: NodeRequest, db: Session = Depends(get_db))
 def create_objective(payload: ObjectiveRequest, db: Session = Depends(get_db)):
     if not db.get(GraphNodeRow, payload.business_context_id):
         raise HTTPException(status_code=404, detail="business context not found")
+    metric_fields = {
+        "success_metric": payload.success_metric,
+        "baseline": payload.baseline,
+        "target": payload.target,
+        "source": payload.measurement_source or payload.source,
+        "owner": payload.owner,
+        "measurement_window": payload.measurement_window,
+    }
+    metric_metadata = {key: value for key, value in metric_fields.items() if value is not None}
     node = add_node(db, node_id=payload.id, kind="objective", title=payload.title, owner=payload.owner, source=payload.source)
+    node.metadata_json = {"metric": metric_metadata} if metric_metadata else None
     db.add(DecisionEdgeRow(
         source_kind="business_context", source_id=payload.business_context_id,
         target_kind="objective", target_id=payload.id, relation="motivates",
@@ -210,7 +290,29 @@ def get_task_trace(task_id: str, db: Session = Depends(get_db)):
                 seen.add(related_node)
                 queue.append(related_node)
     ordered_nodes = list(nodes.values())
-    return {"nodes": [node_payload(n) for n in ordered_nodes], "edges": [edge_payload(e) for e in edges]}
+    attempt_ids = db.scalars(select(AttemptRow.id).where(AttemptRow.task_id == task_id)).all()
+    runtime_events = db.scalars(
+        select(RuntimeEventRow)
+        .where(RuntimeEventRow.attempt_id.in_(attempt_ids))
+        .order_by(RuntimeEventRow.attempt_id, RuntimeEventRow.sequence)
+    ).all()
+    return {
+        "nodes": [node_payload(n) for n in ordered_nodes],
+        "edges": [edge_payload(e) for e in edges],
+        "runtime_events": [
+            {
+                "source": event.source,
+                "attempt_id": event.attempt_id,
+                "session_id": event.session_id,
+                "sequence": event.sequence,
+                "kind": event.kind,
+                "status": event.status,
+                "payload": event.payload,
+                "created_at": event.created_at,
+            }
+            for event in runtime_events
+        ],
+    }
 
 
 @app.get("/evidence/{evidence_id}", response_model=EvidenceResponse)
@@ -230,6 +332,88 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
         "artifact_ref": evidence.artifact_ref,
         "confidence": evidence.confidence,
         "criterion": criterion,
+    }
+
+
+@app.get("/attempts/{attempt_id}/runtime-events")
+def get_runtime_events(attempt_id: str, db: Session = Depends(get_db)):
+    if db.get(AttemptRow, attempt_id) is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    rows = db.scalars(
+        select(RuntimeEventRow)
+        .where(RuntimeEventRow.attempt_id == attempt_id)
+        .order_by(RuntimeEventRow.sequence)
+    ).all()
+    return [
+        {
+            "source": row.source,
+            "attempt_id": row.attempt_id,
+            "session_id": row.session_id,
+            "sequence": row.sequence,
+            "kind": row.kind,
+            "status": row.status,
+            "payload": row.payload,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+@app.get("/scorecard")
+def get_scorecard(db: Session = Depends(get_db)):
+    """Return the deterministic local scorecard; it is not production impact proof."""
+
+    return build_scorecard_from_db(db).as_dict()
+
+
+@app.post("/attempts/{attempt_id}/actions")
+def execute_tool_action(attempt_id: str, payload: ToolActionRequest, db: Session = Depends(get_db)):
+    """Execute one explicit, Attempt-bound Tool Proxy action.
+
+    The endpoint accepts only structured fields.  Authorization comes from
+    server configuration, never from the request body, and a missing
+    workspace or inactive Attempt fails closed.
+    """
+
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    workspace = Path(".sdf-workspaces") / attempt_id
+    if not workspace.is_dir():
+        raise HTTPException(status_code=409, detail="attempt workspace not found")
+    service = ExecutionService(
+        db,
+        workspace_root=Path(".sdf-workspaces"),
+        artifact_root=Path(".sdf-artifacts"),
+    )
+    request = ActionRequest(
+        attempt_id=attempt_id,
+        actor=payload.actor,
+        tool=payload.tool,
+        action=payload.action,
+        resource=payload.resource,
+        context=payload.context,
+    )
+    containment_backend, require_containment = configured_containment()
+    result = service.execute_tool(
+        attempt_id=attempt_id,
+        request=request,
+        policy=configured_tool_policy(),
+        containment_backend=containment_backend,
+        require_containment=require_containment,
+    )
+    db.commit()
+    value = result.value
+    if value is not None and not isinstance(value, (str, int, float, bool, list, dict)):
+        value = str(value)
+    return {
+        "attempt_id": attempt_id,
+        "action_id": request.action_id,
+        "status": result.status.value,
+        "effect": result.decision.effect.value,
+        "reason": result.decision.reason,
+        "value": value,
+        "error": result.error,
     }
 
 
@@ -255,14 +439,35 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
     try:
         attempt = service.run(
             task_id=task_id,
-            dispatch_key=f"http-{task_id}-{payload.instructions}",
+            dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
             fixture=fixture,
             instructions=payload.instructions,
             commands=payload.commands,
             criterion_checks=payload.criterion_checks,
             validation_target=target,
+            parent_attempt_id=payload.parent_attempt_id,
+            model_tier=payload.model_tier,
+            cost_usd=payload.cost_usd,
+            provider=payload.provider,
+            latency_ms=payload.latency_ms,
+            input_tokens=payload.input_tokens,
+            output_tokens=payload.output_tokens,
+            escalation_reason=payload.escalation_reason,
         )
     except (ValueError, FileExistsError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     task = db.get(TaskRow, task_id)
-    return {"task_id": task_id, "task_status": task.status, "attempt_id": attempt.id, "attempt_status": attempt.status}
+    return {
+        "task_id": task_id,
+        "task_status": task.status,
+        "attempt_id": attempt.id,
+        "attempt_status": attempt.status,
+        "parent_attempt_id": attempt.parent_attempt_id,
+        "model_tier": attempt.model_tier,
+        "cost_usd": attempt.cost_usd,
+        "provider": attempt.provider,
+        "latency_ms": attempt.latency_ms,
+        "input_tokens": attempt.input_tokens,
+        "output_tokens": attempt.output_tokens,
+        "escalation_reason": attempt.escalation_reason,
+    }
