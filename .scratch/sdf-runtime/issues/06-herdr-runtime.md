@@ -1,6 +1,6 @@
 # 06 One agent through HerdrRuntime
 
-Status: ready-for-agent
+Status: claimed
 Blocked by: 04, 05
 
 ## What to build and acceptance
