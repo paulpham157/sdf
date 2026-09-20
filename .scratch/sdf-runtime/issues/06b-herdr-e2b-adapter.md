@@ -24,10 +24,12 @@ Follow ADR-0004 and preserve ACP/A2A exclusion.
 ## Answer
 
 Implemented `sdf_core/herdr_e2b.py` with deterministic plan generation and a
-live-gated command seam. Dry-run returns the planned `e2b-box run`, `pull` and
-`kill` lifecycle without network access. Live mode requires `E2B_API_KEY` and
-the installed `e2b-box` plugin, then correlates `attempt_id`, `sandboxId`,
-`herdrSessionId` and provider status from JSON.
+live-gated command seam. Dry-run returns the planned `sync`, `e2b-box run`,
+`pull` and `kill` lifecycle without network access. Live mode runs from the
+validated checkout with a sanitized environment and timeout/process cleanup;
+it requires `E2B_API_KEY` and the installed `e2b-box` plugin, then correlates
+`attempt_id`, `sandboxId`, `herdrSessionId`, `workspaceId` and provider status
+from JSON.
 
 Verification: focused adapter tests and the full local suite pass. The local
 machine has `herdr 0.7.3` and `e2b 2.16.1`, but no `e2b-box` command or live
