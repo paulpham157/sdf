@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .runtime import AgentRuntime, RuntimeController, RuntimeStatus
+
 
 @dataclass(frozen=True)
 class AdapterResult:
@@ -36,3 +38,44 @@ class FakeNativeAdapter:
             changed_files=(self.relative_file,),
             stdout=f"fake adapter applied: {instructions}",
         )
+
+
+class RuntimeAgentAdapter:
+    """Adapt the internal AgentRuntime into the existing artifact pipeline."""
+
+    def __init__(self, runtime: AgentRuntime | RuntimeController):
+        self.runtime = runtime
+
+    def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
+        before = self._snapshot(workspace)
+        bind_workspace = getattr(self.runtime, "bind_workspace", None)
+        if callable(bind_workspace):
+            bind_workspace(attempt_id, workspace)
+        session = self.runtime.start(attempt_id=attempt_id, agent="native-runtime")
+        self.runtime.send(session.session_id, instructions)
+        output = self.runtime.stream(session.session_id)
+        final = self.runtime.status(session.session_id)
+        changed = self._changed(before, self._snapshot(workspace))
+        completed = final.status is RuntimeStatus.COMPLETED
+        return AdapterResult(
+            attempt_id=attempt_id,
+            status="completed" if completed else final.status.value,
+            changed_files=changed,
+            stdout="\n".join(output),
+            stderr="" if completed else f"runtime ended in {final.status.value}",
+            exit_code=0 if completed else 1,
+        )
+
+    @staticmethod
+    def _snapshot(workspace: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(workspace)): path.read_bytes()
+            for path in workspace.rglob("*")
+            if path.is_file()
+        }
+
+    @staticmethod
+    def _changed(before: dict[str, bytes], after: dict[str, bytes]) -> tuple[str, ...]:
+        return tuple(sorted({*before, *after} - {
+            path for path in before.keys() & after.keys() if before[path] == after[path]
+        }))

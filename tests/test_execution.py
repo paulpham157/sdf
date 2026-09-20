@@ -3,10 +3,12 @@ import json
 import pytest
 
 from sdf_core.adapter import FakeNativeAdapter
-from sdf_core.db import Base, GraphNodeRow, TaskRow, make_engine
+from sdf_core.db import Base, GraphNodeRow, RuntimeEventRow, TaskRow, make_engine
 from sdf_core.evaluator import DeterministicEvaluator
 from sdf_core.execution import ExecutionService
 from sdf_core.model import utcnow
+from sdf_core.policy import ActionRequest, AllowlistPolicy
+from sdf_core.tools import InMemoryAuditSink, ToolExecutionStatus
 from sqlalchemy.orm import sessionmaker
 
 
@@ -181,3 +183,48 @@ def test_unmapped_command_does_not_validate_assumption(tmp_path: Path):
         assert attempt.status == "completed"
         assert db.get(TaskRow, "TASK-UNMAPPED-001").status == "inconclusive"
         assert not db.query(DecisionEdgeRow).filter_by(target_id="ASSUMPTION-UNMAPPED-001", relation="validates").first()
+
+
+def test_execution_service_routes_structured_tool_action_through_attempt_workspace(tmp_path: Path):
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(TaskRow(id="TASK-TOOL-INTEGRATION", title="tool", status="created", idempotency_key="tool-integration", acceptance_criteria=[], created_at=utcnow()))
+        db.add(__import__("sdf_core.db", fromlist=["AttemptRow"]).AttemptRow(
+            id="ATTEMPT-TOOL-INTEGRATION", task_id="TASK-TOOL-INTEGRATION", status="running",
+            dispatch_key="tool-integration-dispatch", agent="codex", created_at=utcnow(),
+        ))
+        db.commit()
+        workspace = tmp_path / "workspaces" / "ATTEMPT-TOOL-INTEGRATION"
+        workspace.mkdir(parents=True)
+        service = ExecutionService(db, workspace_root=tmp_path / "workspaces", artifact_root=tmp_path / "artifacts")
+        audit = InMemoryAuditSink()
+        result = service.execute_tool(
+            attempt_id="ATTEMPT-TOOL-INTEGRATION",
+            request=ActionRequest(
+                attempt_id="ATTEMPT-TOOL-INTEGRATION", actor="agent:codex",
+                tool="filesystem", action="write", resource="result.txt",
+                context={"data": "from-tool"},
+            ),
+            policy=AllowlistPolicy({("filesystem", "write")}),
+            audit=audit,
+        )
+        assert result.status is ToolExecutionStatus.EXECUTED
+        assert (workspace / "result.txt").read_text() == "from-tool"
+        assert len(audit.records) == 2
+        events = db.query(RuntimeEventRow).filter_by(
+            source="tool-proxy", attempt_id="ATTEMPT-TOOL-INTEGRATION"
+        ).all()
+        assert [event.kind for event in events] == ["tool_policy_decided", "tool_action_executed"]
+
+        process_result = service.execute_tool(
+            attempt_id="ATTEMPT-TOOL-INTEGRATION",
+            request=ActionRequest(
+                attempt_id="ATTEMPT-TOOL-INTEGRATION", actor="agent:codex",
+                tool="process", action="run", resource=".",
+                context={"command": ["python", "-c", "print('must be contained')"]},
+            ),
+            policy=AllowlistPolicy({("process", "run")}),
+        )
+        assert process_result.status is ToolExecutionStatus.FAILED
+        assert "containment" in (process_result.error or "").lower()

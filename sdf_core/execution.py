@@ -5,14 +5,27 @@ from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .adapter import FakeNativeAdapter, NativeAdapter
 from .artifacts import ArtifactStore, WorkspaceManager
 from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow
+from .escalation import ModelTier
 from .evaluator import DeterministicEvaluator
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
+from .policy import ActionRequest, Policy
+from .tools import (
+    AuditSink,
+    SandboxToolExecutor,
+    SqlAlchemyAuditSink,
+    SqlAlchemyAttemptGuard,
+    SqlAlchemyToolEventSink,
+    ToolExecution,
+    ToolProxy,
+)
+from .sandbox import FixtureSandbox
 
 
 class ExecutionService:
@@ -33,6 +46,14 @@ class ExecutionService:
         commands: list[list[str]],
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
         validation_target: tuple[str, str] | None = None,
+        parent_attempt_id: str | None = None,
+        model_tier: ModelTier = ModelTier.BASIC,
+        cost_usd: float = 0.0,
+        provider: str | None = None,
+        latency_ms: float | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        escalation_reason: str | None = None,
     ):
         existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
         if existing:
@@ -42,16 +63,49 @@ class ExecutionService:
         task = self.db.get(TaskRow, task_id)
         if task is None:
             raise ValueError(f"task not found: {task_id}")
+        if cost_usd < 0:
+            raise ValueError("cost_usd must not be negative")
+        if latency_ms is not None and latency_ms < 0:
+            raise ValueError("latency_ms must not be negative")
+        if input_tokens is not None and input_tokens < 0:
+            raise ValueError("input_tokens must not be negative")
+        if output_tokens is not None and output_tokens < 0:
+            raise ValueError("output_tokens must not be negative")
+        model_tier = ModelTier(model_tier)
+        parent = self.db.get(AttemptRow, parent_attempt_id) if parent_attempt_id else None
+        if parent_attempt_id and (parent is None or parent.task_id != task_id):
+            raise ValueError("parent attempt not found for task")
         if validation_target:
             target = self.db.get(GraphNodeRow, validation_target[1])
             if target is None or target.kind != validation_target[0]:
                 raise ValueError(f"validation target not found: {validation_target[0]}:{validation_target[1]}")
         attempt_id = f"ATTEMPT-{uuid4().hex[:12]}"
-        attempt = AttemptRow(id=attempt_id, task_id=task_id, status=AttemptState.CREATED.value, dispatch_key=dispatch_key, agent="native", created_at=utcnow())
+        attempt = AttemptRow(
+            id=attempt_id, task_id=task_id, status=AttemptState.CREATED.value,
+            dispatch_key=dispatch_key, agent="native", parent_attempt_id=parent_attempt_id,
+            model_tier=model_tier.value, cost_usd=cost_usd, created_at=utcnow(),
+            provider=provider, latency_ms=latency_ms, input_tokens=input_tokens,
+            output_tokens=output_tokens, escalation_reason=escalation_reason,
+        )
         self.db.add(attempt)
         self.db.add(GraphNodeRow(id=attempt_id, kind="attempt", title="Native execution attempt", source="execution", owner="sdf", confidence=1.0, created_at=utcnow()))
         self.db.add(DecisionEdgeRow(source_kind="attempt", source_id=attempt_id, target_kind="task", target_id=task_id, relation="implements", source="execution", owner="sdf", confidence=1.0, created_at=utcnow()))
-        self.db.flush()
+        if parent is not None:
+            self.db.add(DecisionEdgeRow(source_kind="attempt", source_id=attempt_id, target_kind="attempt", target_id=parent.id, relation="depends_on", source="escalation", owner="sdf", confidence=1.0, created_at=utcnow()))
+        try:
+            self.db.flush()
+        except IntegrityError:
+            # A concurrent dispatcher may have won the unique dispatch-key
+            # claim between our initial read and INSERT. Roll back only this
+            # losing unit of work, then return the durable winner when it is
+            # for the same Task; never silently cross a task boundary.
+            self.db.rollback()
+            winner = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
+            if winner is not None:
+                if winner.task_id != task_id:
+                    raise ValueError(f"dispatch key already belongs to task: {winner.task_id}")
+                return winner
+            raise
         task.status = transition_task(TaskState(task.status), TaskState.READY).value
         task.status = transition_task(TaskState(task.status), TaskState.RUNNING).value
         attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.DISPATCHED).value
@@ -156,6 +210,7 @@ class ExecutionService:
                     artifact_ref=evaluator_artifact.artifact_id,
                     confidence=evidence.confidence,
                     criterion=evidence.criterion,
+                    measured_at=utcnow(),
                     created_at=utcnow(),
                 )
             )
@@ -212,6 +267,52 @@ class ExecutionService:
         task.status = transition_task(TaskState(task.status), task_state).value
         self.db.commit()
         return attempt
+
+    def execute_tool(
+        self,
+        *,
+        attempt_id: str,
+        request: ActionRequest,
+        policy: Policy,
+        audit: AuditSink | None = None,
+        containment_backend: object | None = None,
+        require_containment: bool = True,
+    ) -> ToolExecution:
+        """Run one structured action inside an Attempt workspace.
+
+        This is the integration seam used by runtime adapters: it derives the
+        disposable workspace from the Attempt identity, binds policy and audit
+        to the same SQLAlchemy state source, and rejects cross-attempt requests
+        before touching the filesystem or process executor.
+        """
+
+        if request.attempt_id != attempt_id:
+            raise ValueError("tool request is not bound to the requested attempt")
+        attempt = self.db.get(AttemptRow, attempt_id)
+        if attempt is None:
+            raise ValueError(f"attempt not found: {attempt_id}")
+        workspace = self.workspaces.root / attempt_id
+        if not workspace.is_dir():
+            raise ValueError(f"attempt workspace not found: {attempt_id}")
+        durable_audit = audit or SqlAlchemyAuditSink(self.db)
+        proxy = ToolProxy(
+            policy=policy,
+            executor=SandboxToolExecutor(
+                FixtureSandbox(
+                    workspace,
+                    containment_backend=containment_backend,
+                    require_containment=require_containment,
+                    allow_network=getattr(containment_backend, "network_egress_allowed", False),
+                ),
+                network_actions_allowed=getattr(containment_backend, "network_actions_allowed", True),
+            ),
+            audit=durable_audit,
+            attempt_guard=SqlAlchemyAttemptGuard(self.db),
+            event_sink=SqlAlchemyToolEventSink(self.db),
+        )
+        result = proxy.execute(request)
+        self.db.commit()
+        return result
 
     def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> None:
         if attempt.status == AttemptState.RUNNING.value:

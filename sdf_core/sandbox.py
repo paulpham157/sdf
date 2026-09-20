@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .containment import ContainmentUnavailable
+
 
 class SandboxViolation(PermissionError):
     """A requested fixture operation would leave the sandbox boundary."""
@@ -105,6 +107,8 @@ class FixtureSandbox:
         max_output_bytes: int = 64 * 1024,
         allow_network: bool = False,
         network_executor: NetworkExecutor | None = None,
+        containment_backend: Any | None = None,
+        require_containment: bool = False,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -119,6 +123,8 @@ class FixtureSandbox:
         self.max_output_bytes = max_output_bytes
         self.allow_network = allow_network
         self.network_executor = network_executor
+        self.containment_backend = containment_backend
+        self.require_containment = require_containment
 
     def resolve(self, relative: str | Path, *, allow_root: bool = True) -> Path:
         """Resolve a fixture path, rejecting traversal and symlink escapes."""
@@ -219,6 +225,11 @@ class FixtureSandbox:
         if output_limit <= 0:
             raise ValueError("max_output_bytes must be positive")
 
+        if self.require_containment and self.containment_backend is None:
+            raise ContainmentUnavailable(
+                "OS containment backend is required for arbitrary child execution"
+            )
+
         child_env = {
             "PATH": os.environ.get("PATH", ""),
             "HOME": str(self.root),
@@ -233,6 +244,31 @@ class FixtureSandbox:
             child_env.update({str(key): str(value) for key, value in env.items()})
         # A caller-provided environment cannot silently turn network access on.
         child_env["SDF_NETWORK"] = "allowed" if self.allow_network else "denied"
+
+        if self.containment_backend is not None:
+            started_at = time.monotonic()
+            completed = self.containment_backend.run(
+                args,
+                root=self.root,
+                cwd=run_cwd,
+                env=child_env,
+                timeout_seconds=timeout,
+                allow_network=self.allow_network,
+            )
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+            return ProcessResult(
+                command=args,
+                cwd=run_cwd,
+                pid=getattr(completed, "pid", -1),
+                returncode=completed.returncode,
+                stdout=stdout[:output_limit],
+                stderr=stderr[:output_limit],
+                timed_out=False,
+                output_truncated=len(stdout.encode()) > output_limit or len(stderr.encode()) > output_limit,
+                cleanup_completed=True,
+                duration_seconds=time.monotonic() - started_at,
+            )
 
         started_at = time.monotonic()
         process = subprocess.Popen(

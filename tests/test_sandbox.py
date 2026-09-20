@@ -11,6 +11,7 @@ from sdf_core.sandbox import (
     NetworkAccessDenied,
     SandboxViolation,
 )
+from sdf_core.containment import ContainmentUnavailable
 
 
 def make_sandbox(tmp_path: Path) -> FixtureSandbox:
@@ -72,6 +73,13 @@ def test_process_cwd_cannot_escape_fixture(tmp_path: Path):
 
     with pytest.raises(SandboxViolation, match="absolute|outside sandbox"):
         sandbox.run([sys.executable, "-c", "pass"], cwd=tmp_path)
+
+
+def test_untrusted_process_fails_closed_without_os_containment(tmp_path: Path):
+    sandbox = FixtureSandbox(tmp_path / "fixture", require_containment=True)
+
+    with pytest.raises(ContainmentUnavailable, match="OS containment backend"):
+        sandbox.run([sys.executable, "-c", "open('/tmp/sdf-bypass', 'w').write('escape')"])
 
 
 def test_network_is_denied_by_default_without_calling_injected_executor(tmp_path: Path):
