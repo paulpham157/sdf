@@ -17,7 +17,7 @@ Coordinator owns tracker status, integration review and commits. Workers own the
 | 06 | runtime_seam | needs-info | Internal AgentRuntime + FakeRuntime seam; Herdr integration remains gated |
 | 06b | herdr_e2b | needs-info | Dry-run adapter passes; e2b-box plugin, credentials and live lifecycle proof outstanding |
 | 07a | model_escalation | queued | Evaluator-driven basic → medium → high policy with bounded Attempt lineage |
-| 07b | impact_measurement | queued | Objective metrics, attribution fields and deterministic v0 scorecard |
+| 07b | impact_measurement | resolved | Objective metrics, attribution fields and deterministic v0 scorecard implemented; 80 local tests pass. Attempt cost/tier population deferred to 07a |
 | 07–09 | coordinator | queued | Start only after blocking tickets pass review |
 
 Existing Core tickets 01, 04, 05 and 06 were reopened to record incomplete acceptance criteria. Their historical test results remain partial evidence, not milestone completion.
