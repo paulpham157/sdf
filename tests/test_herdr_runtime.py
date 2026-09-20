@@ -146,6 +146,26 @@ def test_herdr_runtime_restores_durable_binding_without_redispatch():
     assert not any(tuple(command[1:3]) == ("agent", "start") for command, _ in runner.calls)
 
 
+def test_herdr_runtime_reconnects_after_adapter_restart_from_snapshot():
+    first_runner = FakeHerdr()
+    first = HerdrRuntime(runner=first_runner)
+    session = first.start(attempt_id="ATTEMPT-RESTART", agent="codex")
+    snapshot = HerdrBindingSnapshot(
+        attempt_id=session.attempt_id,
+        session_id=session.session_id,
+        agent=session.agent,
+        workspace_id="ws-1",
+        pane_id="pane-1",
+    )
+
+    restarted_runner = FakeHerdr()
+    restarted = HerdrRuntime(runner=restarted_runner)
+    restored = restarted.restore_binding(snapshot)
+
+    assert restarted.reconnect(restored.session_id).status is RuntimeStatus.COMPLETED
+    assert not any(tuple(command[1:3]) == ("agent", "start") for command, _ in restarted_runner.calls)
+
+
 def test_herdr_binding_snapshot_round_trips_and_rejects_incomplete_payload():
     snapshot = HerdrBindingSnapshot("a", "s", "codex", "w", "p")
     assert HerdrBindingSnapshot.from_mapping(snapshot.as_dict()) == snapshot
