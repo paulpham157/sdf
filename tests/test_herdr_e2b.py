@@ -37,3 +37,24 @@ def test_live_result_correlates_provider_ids_without_network(tmp_path: Path, mon
     assert result.herdr_session_id == "hs-1"
     assert result.workspace_id == "w-1"
     assert result.attempt_id == "ATTEMPT-009"
+    assert result.cleanup_attempted is True
+    assert result.cleanup_succeeded is True
+
+
+def test_live_failure_still_attempts_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str, ...]] = []
+
+    def runner(command, *_):
+        calls.append(tuple(command))
+        if command[1] == "run":
+            return "not-json"
+        return "{}"
+
+    adapter = HerdrE2BAdapter(runner=runner, environ={"E2B_API_KEY": "<REDACTED>"})
+    monkeypatch.setattr("sdf_core.herdr_e2b.shutil.which", lambda _: "/usr/local/bin/e2b-box")
+    plan = adapter.plan(attempt_id="ATTEMPT-CLEANUP", checkout=tmp_path, template="codex", agent="codex")
+
+    with pytest.raises(E2BAdapterError, match="invalid JSON"):
+        adapter.execute(plan, live=True)
+
+    assert [command[1] for command in calls] == ["sync", "run", "kill"]

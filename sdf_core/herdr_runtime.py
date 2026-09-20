@@ -1,0 +1,370 @@
+"""Provider adapter for the documented Herdr CLI surface.
+
+This module intentionally keeps the provider boundary small and explicit.  It
+is useful for contract tests and for a future pinned Herdr smoke test; it does
+not pretend that Herdr provides SDF policy, sandbox containment, or verified
+cancel/terminate semantics.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+from .runtime import AgentRuntime, RuntimeSession, RuntimeStatus
+
+
+class HerdrRuntimeError(RuntimeError):
+    """The provider boundary returned an unusable response."""
+
+
+class HerdrUnsupportedOperation(HerdrRuntimeError):
+    """Herdr does not provide a verified operation for this lifecycle call."""
+
+
+HerdrRunner = Callable[[Sequence[str], int], str]
+
+
+@dataclass(frozen=True, slots=True)
+class HerdrProbeResult:
+    """Local CLI capability observation; not proof of a running agent."""
+
+    version: str | None
+    sessions: tuple[Mapping[str, Any], ...]
+    version_error: str | None = None
+    session_error: str | None = None
+
+    @property
+    def cli_available(self) -> bool:
+        return self.version is not None
+
+    def matches(self, expected_version: str) -> bool:
+        return self.version == expected_version
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "sessions": [dict(session) for session in self.sessions],
+            "version_error": self.version_error,
+            "session_error": self.session_error,
+            "cli_available": self.cli_available,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _Binding:
+    attempt_id: str
+    agent: str
+    workspace_id: str
+    pane_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class HerdrBindingSnapshot:
+    """Durable identifiers required to restore a runtime after restart."""
+
+    attempt_id: str
+    session_id: str
+    agent: str
+    workspace_id: str
+    pane_id: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "attempt_id": self.attempt_id,
+            "session_id": self.session_id,
+            "agent": self.agent,
+            "workspace_id": self.workspace_id,
+            "pane_id": self.pane_id,
+        }
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "HerdrBindingSnapshot":
+        if not isinstance(payload, Mapping):
+            raise TypeError("Herdr binding snapshot must be a mapping")
+        values = {
+            key: payload.get(key)
+            for key in ("attempt_id", "session_id", "agent", "workspace_id", "pane_id")
+        }
+        if not all(isinstance(value, str) and value.strip() for value in values.values()):
+            raise ValueError("Herdr binding snapshot fields must be non-empty strings")
+        return cls(**values)
+
+
+class HerdrRuntime(AgentRuntime):
+    """Map SDF's internal runtime seam to Herdr's JSON CLI commands.
+
+    The command forms follow the first-party CLI documentation, while the
+    runner is injectable so all local tests remain provider-free.  A real
+    deployment must pin and smoke-test the Herdr version before using this
+    adapter for an Attempt.
+    """
+
+    def __init__(
+        self,
+        *,
+        runner: HerdrRunner | None = None,
+        timeout_ms: int = 30_000,
+        herdr_binary: str = "herdr",
+        session: str | None = None,
+        workspace_dir: Path | None = None,
+        expected_version: str | None = None,
+    ) -> None:
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
+        self._runner = runner or self._run
+        self._timeout_ms = timeout_ms
+        self._binary = herdr_binary
+        self._session = session
+        self._workspace_dir = workspace_dir
+        self.expected_version = expected_version
+        self._bindings: dict[str, _Binding] = {}
+        self._sessions: dict[str, RuntimeSession] = {}
+        self._attempt_workspaces: dict[str, Path] = {}
+
+    def restore_binding(self, snapshot: HerdrBindingSnapshot) -> RuntimeSession:
+        """Restore an Attempt/session binding without dispatching the agent."""
+
+        for value, name in (
+            (snapshot.attempt_id, "attempt_id"),
+            (snapshot.session_id, "session_id"),
+            (snapshot.agent, "agent"),
+            (snapshot.workspace_id, "workspace_id"),
+            (snapshot.pane_id, "pane_id"),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be non-empty")
+        existing = self._bindings.get(snapshot.session_id)
+        if existing is not None and (
+            existing.attempt_id != snapshot.attempt_id
+            or existing.workspace_id != snapshot.workspace_id
+            or existing.pane_id != snapshot.pane_id
+        ):
+            raise HerdrRuntimeError("session binding conflicts with restored identity")
+        bound_session = next(
+            (session_id for session_id, binding in self._bindings.items()
+             if binding.attempt_id == snapshot.attempt_id and session_id != snapshot.session_id),
+            None,
+        )
+        if bound_session is not None:
+            raise HerdrRuntimeError("attempt is already bound to a different restored session")
+        session = self._sessions.get(snapshot.session_id)
+        if session is None:
+            session = RuntimeSession(
+                snapshot.session_id,
+                snapshot.attempt_id,
+                snapshot.agent,
+                RuntimeStatus.RUNNING,
+            )
+            self._sessions[snapshot.session_id] = session
+        self._bindings[snapshot.session_id] = _Binding(
+            snapshot.attempt_id,
+            snapshot.agent,
+            snapshot.workspace_id,
+            snapshot.pane_id,
+        )
+        return session
+
+    def bind_workspace(self, attempt_id: str, workspace: Path) -> None:
+        """Bind the disposable SDF workspace before starting an Attempt."""
+
+        if not isinstance(attempt_id, str) or not attempt_id.strip():
+            raise ValueError("attempt_id must be non-empty")
+        path = Path(workspace).expanduser().resolve()
+        if not path.is_dir():
+            raise ValueError("workspace must be an existing directory")
+        existing = self._attempt_workspaces.get(attempt_id)
+        if existing is not None and existing != path:
+            raise HerdrRuntimeError("attempt is already bound to a different workspace")
+        self._attempt_workspaces[attempt_id] = path
+
+    def probe(self) -> HerdrProbeResult:
+        """Probe installed binary identity and session-list JSON support."""
+
+        version: str | None = None
+        version_error: str | None = None
+        try:
+            raw_version = self._runner([self._binary, "--version"], self._timeout_ms)
+            match = re.search(r"(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)", raw_version.strip())
+            if match is None:
+                raise HerdrRuntimeError("Herdr version response was not recognized")
+            version = match.group(1)
+        except Exception as exc:
+            version_error = str(exc)
+
+        sessions: tuple[Mapping[str, Any], ...] = ()
+        session_error: str | None = None
+        try:
+            payload = self._object([self._binary, "session", "list", "--json"])
+            values = payload.get("sessions", ())
+            if not isinstance(values, list) or not all(isinstance(value, Mapping) for value in values):
+                raise HerdrRuntimeError("Herdr session list did not contain session objects")
+            sessions = tuple(values)
+        except Exception as exc:
+            session_error = str(exc)
+        return HerdrProbeResult(version, sessions, version_error, session_error)
+
+    def require_compatible(self) -> HerdrProbeResult:
+        """Fail closed when a configured pinned version is not installed."""
+
+        result = self.probe()
+        if not result.cli_available:
+            raise HerdrRuntimeError(result.version_error or "Herdr CLI is unavailable")
+        if self.expected_version is not None and not result.matches(self.expected_version):
+            raise HerdrRuntimeError(
+                f"Herdr version mismatch: expected {self.expected_version}, found {result.version}"
+            )
+        return result
+
+    def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
+        if not attempt_id.strip() or not agent.strip():
+            raise ValueError("attempt_id and agent must be non-empty")
+        if self.expected_version is not None:
+            self.require_compatible()
+        existing_id = next((sid for sid, b in self._bindings.items() if b.attempt_id == attempt_id), None)
+        if existing_id is not None:
+            return self._sessions[existing_id]
+
+        workspace_args = [self._binary, "workspace", "create", "--json"]
+        if self._session:
+            workspace_args.extend(("--session", self._session))
+        workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
+        if workspace_dir is not None:
+            workspace_args.extend(("--cwd", str(workspace_dir)))
+        workspace = self._object(workspace_args)
+        workspace_id = self._required_string(workspace, "workspaceId")
+        pane_id = self._required_string(workspace, "paneId")
+
+        start_args = [self._binary, "agent", "start", agent, "--kind", agent, "--pane", pane_id, "--json"]
+        if self._session:
+            start_args.extend(("--session", self._session))
+        started = self._object(start_args)
+        session_id = self._required_string(started, "agentSessionId", "sessionId")
+        status = self._status(started.get("status", "working"))
+        session = RuntimeSession(session_id, attempt_id, agent, status)
+        self._bindings[session_id] = _Binding(attempt_id, agent, workspace_id, pane_id)
+        self._sessions[session_id] = session
+        return session
+
+    def send(self, session_id: str, input_text: str) -> RuntimeSession:
+        binding, current = self._known(session_id)
+        args = [self._binary, "agent", "prompt", session_id, input_text, "--wait", "--until", "idle", "--json"]
+        if self._session:
+            args.extend(("--session", self._session))
+        payload = self._object(args)
+        status = self._status(payload.get("status", "working"))
+        output = self._output(payload, current.output)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output)
+        self._sessions[session_id] = updated
+        return updated
+
+    def stream(self, session_id: str) -> tuple[str, ...]:
+        binding, current = self._known(session_id)
+        args = [self._binary, "agent", "read", session_id, "--json"]
+        if self._session:
+            args.extend(("--session", self._session))
+        payload = self._object(args)
+        output = self._output(payload, current.output)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, current.status, output)
+        self._sessions[session_id] = updated
+        return output
+
+    def status(self, session_id: str) -> RuntimeSession:
+        binding, current = self._known(session_id)
+        args = [self._binary, "agent", "get", session_id, "--json"]
+        if self._session:
+            args.extend(("--session", self._session))
+        payload = self._object(args)
+        updated = RuntimeSession(
+            current.session_id,
+            binding.attempt_id,
+            binding.agent,
+            self._status(payload.get("status", current.status.value)),
+            self._output(payload, current.output),
+        )
+        self._sessions[session_id] = updated
+        return updated
+
+    def cancel(self, session_id: str) -> RuntimeSession:
+        self._known(session_id)
+        raise HerdrUnsupportedOperation("Herdr per-agent cancellation is not verified")
+
+    def terminate(self, session_id: str) -> RuntimeSession:
+        self._known(session_id)
+        raise HerdrUnsupportedOperation("Herdr per-agent termination is not verified")
+
+    def reconnect(self, session_id: str) -> RuntimeSession:
+        binding, current = self._known(session_id)
+        args = [self._binary, "session", "snapshot", "--json"]
+        if self._session:
+            args.extend(("--session", self._session))
+        payload = self._object(args)
+        records = payload.get("sessions", payload.get("agents", []))
+        if not isinstance(records, list) or not any(
+            isinstance(record, Mapping)
+            and record.get("agentSessionId", record.get("sessionId")) == session_id
+            for record in records
+        ):
+            raise HerdrRuntimeError("session snapshot did not contain the requested agent session")
+        return self.status(session_id)
+
+    def _known(self, session_id: str) -> tuple[_Binding, RuntimeSession]:
+        try:
+            return self._bindings[session_id], self._sessions[session_id]
+        except KeyError as exc:
+            raise KeyError(f"unknown Herdr agent session: {session_id}") from exc
+
+    def _object(self, command: Sequence[str]) -> dict[str, Any]:
+        try:
+            raw = self._runner(command, self._timeout_ms)
+        except HerdrRuntimeError:
+            raise
+        except Exception as exc:
+            raise HerdrRuntimeError(f"Herdr command failed: {exc}") from exc
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise HerdrRuntimeError("Herdr response was not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise HerdrRuntimeError("Herdr response was not a JSON object")
+        return payload
+
+    @staticmethod
+    def _required_string(payload: Mapping[str, Any], *keys: str) -> str:
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        raise HerdrRuntimeError(f"Herdr response missing {' or '.join(keys)}")
+
+    @staticmethod
+    def _status(value: Any) -> RuntimeStatus:
+        normalized = str(value).lower()
+        if normalized in {"done", "completed", "complete"}:
+            return RuntimeStatus.COMPLETED
+        if normalized in {"cancelled", "canceled"}:
+            return RuntimeStatus.CANCELLED
+        if normalized in {"terminated", "closed", "exited"}:
+            return RuntimeStatus.TERMINATED
+        return RuntimeStatus.RUNNING
+
+    @staticmethod
+    def _output(payload: Mapping[str, Any], fallback: tuple[str, ...]) -> tuple[str, ...]:
+        value = payload.get("output", payload.get("text"))
+        if value is None:
+            return fallback
+        if isinstance(value, str):
+            return (value,)
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return tuple(value)
+        raise HerdrRuntimeError("Herdr output must be a string or list of strings")
+
+    def _run(self, command: Sequence[str], timeout_ms: int) -> str:
+        process = subprocess.run(command, capture_output=True, text=True, timeout=timeout_ms / 1000)
+        if process.returncode != 0:
+            raise HerdrRuntimeError(f"Herdr command failed: {process.stderr[-1000:]}")
+        return process.stdout

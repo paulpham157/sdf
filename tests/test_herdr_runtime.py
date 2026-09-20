@@ -1,0 +1,144 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError, HerdrUnsupportedOperation
+from sdf_core.runtime import RuntimeStatus
+
+
+class FakeHerdr:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, command, timeout_ms):
+        self.calls.append((tuple(command), timeout_ms))
+        if tuple(command[1:3]) == ("workspace", "create"):
+            return json.dumps({"workspaceId": "ws-1", "paneId": "pane-1"})
+        if tuple(command[1:3]) == ("agent", "start"):
+            return json.dumps({"agentSessionId": "agent-1", "status": "working"})
+        if tuple(command[1:3]) == ("agent", "prompt"):
+            return json.dumps({"status": "idle", "output": "accepted"})
+        if tuple(command[1:3]) == ("agent", "read"):
+            return json.dumps({"output": "accepted"})
+        if tuple(command[1:3]) == ("agent", "get"):
+            return json.dumps({"status": "done"})
+        if tuple(command[1:3]) == ("session", "snapshot"):
+            return json.dumps({"sessions": [{"agentSessionId": "agent-1", "status": "working"}]})
+        raise AssertionError(command)
+
+
+def test_herdr_probe_records_installed_identity_without_claiming_live_agent():
+    def runner(command, timeout_ms):
+        assert timeout_ms > 0
+        if tuple(command[1:]) == ("--version",):
+            return "herdr 0.7.3\n"
+        if tuple(command[1:]) == ("session", "list", "--json"):
+            return json.dumps({"sessions": [{"name": "default", "running": False}]})
+        raise AssertionError(command)
+
+    result = HerdrRuntime(runner=runner).probe()
+    assert result.version == "0.7.3"
+    assert result.cli_available is True
+    assert result.matches("0.7.3") is True
+    assert result.sessions[0]["running"] is False
+    assert result.as_dict()["cli_available"] is True
+    assert result.as_dict()["sessions"][0]["running"] is False
+
+
+def test_herdr_expected_version_gate_fails_closed():
+    def runner(command, timeout_ms):
+        if tuple(command[1:]) == ("--version",):
+            return "herdr 0.7.3\n"
+        if tuple(command[1:]) == ("session", "list", "--json"):
+            return json.dumps({"sessions": []})
+        raise AssertionError(command)
+
+    runtime = HerdrRuntime(runner=runner, expected_version="0.9.1")
+    with pytest.raises(HerdrRuntimeError, match="version mismatch"):
+        runtime.require_compatible()
+
+
+def test_herdr_runtime_maps_documented_cli_lifecycle_and_correlates_attempt():
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner, timeout_ms=3210)
+
+    session = runtime.start(attempt_id="ATTEMPT-101", agent="codex")
+    assert session.session_id == "agent-1"
+    assert session.attempt_id == "ATTEMPT-101"
+    assert session.status is RuntimeStatus.RUNNING
+
+    updated = runtime.send(session.session_id, "hello")
+    # Herdr's ``idle`` means the agent is ready/observed, not evaluator
+    # acceptance or terminal task completion.
+    assert updated.status is RuntimeStatus.RUNNING
+    assert runtime.stream(session.session_id) == ("accepted",)
+    assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
+    assert runtime.reconnect(session.session_id).session_id == "agent-1"
+    assert all(timeout == 3210 for _, timeout in runner.calls)
+
+
+def test_herdr_runtime_start_is_idempotent_for_attempt():
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner)
+    first = runtime.start(attempt_id="ATTEMPT-102", agent="codex")
+    second = runtime.start(attempt_id="ATTEMPT-102", agent="codex")
+    assert second == first
+    assert sum(tuple(command[1:3]) == ("agent", "start") for command, _ in runner.calls) == 1
+
+
+def test_herdr_runtime_binds_attempt_workspace_before_start(tmp_path: Path):
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner)
+    runtime.bind_workspace("ATTEMPT-WORKSPACE", tmp_path)
+    runtime.start(attempt_id="ATTEMPT-WORKSPACE", agent="codex")
+    workspace_commands = [command for command, _ in runner.calls if tuple(command[1:3]) == ("workspace", "create")]
+    assert workspace_commands
+    assert "--cwd" in workspace_commands[0]
+    assert str(tmp_path.resolve()) in workspace_commands[0]
+
+
+def test_herdr_runtime_restores_durable_binding_without_redispatch():
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner)
+    restored = runtime.restore_binding(HerdrBindingSnapshot(
+        attempt_id="ATTEMPT-RESTORED",
+        session_id="agent-1",
+        agent="codex",
+        workspace_id="ws-1",
+        pane_id="pane-1",
+    ))
+
+    assert restored.attempt_id == "ATTEMPT-RESTORED"
+    reconnected = runtime.reconnect("agent-1")
+    assert reconnected.session_id == "agent-1"
+    assert not any(tuple(command[1:3]) == ("agent", "start") for command, _ in runner.calls)
+
+
+def test_herdr_binding_snapshot_round_trips_and_rejects_incomplete_payload():
+    snapshot = HerdrBindingSnapshot("a", "s", "codex", "w", "p")
+    assert HerdrBindingSnapshot.from_mapping(snapshot.as_dict()) == snapshot
+    with pytest.raises(ValueError, match="non-empty strings"):
+        HerdrBindingSnapshot.from_mapping({"attempt_id": "a"})
+
+
+def test_herdr_restore_rejects_attempt_rebinding_to_another_session():
+    runtime = HerdrRuntime(runner=FakeHerdr())
+    runtime.restore_binding(HerdrBindingSnapshot("attempt", "session-a", "codex", "w", "p"))
+    with pytest.raises(HerdrRuntimeError, match="different restored session"):
+        runtime.restore_binding(HerdrBindingSnapshot("attempt", "session-b", "codex", "w", "p"))
+
+
+def test_herdr_runtime_does_not_claim_unverified_cancellation_or_termination():
+    runtime = HerdrRuntime(runner=FakeHerdr())
+    session = runtime.start(attempt_id="ATTEMPT-103", agent="codex")
+    with pytest.raises(HerdrUnsupportedOperation):
+        runtime.cancel(session.session_id)
+    with pytest.raises(HerdrUnsupportedOperation):
+        runtime.terminate(session.session_id)
+
+
+def test_herdr_runtime_rejects_malformed_provider_payload():
+    runtime = HerdrRuntime(runner=lambda *_: "not-json")
+    with pytest.raises(HerdrRuntimeError, match="JSON"):
+        runtime.start(attempt_id="ATTEMPT-104", agent="codex")
