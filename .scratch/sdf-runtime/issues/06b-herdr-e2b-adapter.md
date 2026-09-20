@@ -60,6 +60,15 @@ killed the box. The agent exited 1 because the sandbox lacked Meta credentials
 (`muse login`/`META_API_KEY`); therefore this proves plugin provisioning and
 cleanup, not successful agent output or the full Herdr lifecycle.
 
+Live Codex smoke (2026-09-21): after saving the local borrowed Codex session
+as `codex-personal`, `e2b-box run -t codex --kill --json` provisioned sandbox
+`is4oy5va37yj7wxa98s9q`, executed Codex `v0.153.4` in the box, returned
+`HERDR_E2B_CODEX_SMOKE` with exit code 0, pulled without overwriting the dirty
+tree, and killed the box. Post-run `e2b-box status --json` reported
+`tracked:false` and `e2b-box list --json` was empty. This is live Herdr-E2B
+plugin + Codex execution and cleanup evidence; prompt/reconnect/cancel of the
+SDF `HerdrRuntime` adapter still requires a persistent session API test.
+
 Live smoke evidence (2026-09-21): with the installed `e2b-box` 0.5.0 plugin
 and configured E2B key, a disposable git fixture completed `sync -> exec ->
 pull -> kill`. The remote command returned JSON `ok=true`, `exitCode=0`, the
