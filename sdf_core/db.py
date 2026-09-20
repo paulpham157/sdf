@@ -58,6 +58,46 @@ class AttemptRow(Base):
     dispatch_key: Mapped[str] = mapped_column(String(200), unique=True)
     agent: Mapped[str] = mapped_column(String(120))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    parent_attempt_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    model_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    model_profile: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    escalation_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
+
+
+class ObjectiveMetricRow(Base):
+    """One declared outcome metric per Objective. Without it, no business claim."""
+
+    __tablename__ = "objective_metrics"
+    __table_args__ = (CheckConstraint("measurement_window_days > 0", name="ck_objective_metrics_window"),)
+    objective_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    metric_name: Mapped[str] = mapped_column(String(120))
+    baseline: Mapped[float] = mapped_column(Float)
+    target: Mapped[float] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String(40))
+    source: Mapped[str] = mapped_column(String(500))
+    owner: Mapped[str] = mapped_column(String(120))
+    measurement_window_days: Mapped[int] = mapped_column(Integer)
+    declared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class OutcomeObservationRow(Base):
+    __tablename__ = "outcome_observations"
+    __table_args__ = (CheckConstraint("mode IN ('synthetic','live')", name="ck_outcome_observations_mode"),)
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    objective_id: Mapped[str] = mapped_column(String(120), index=True)
+    metric_name: Mapped[str] = mapped_column(String(120))
+    value: Mapped[float] = mapped_column(Float)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str] = mapped_column(String(500))
+    mode: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class ArtifactRow(Base):
@@ -83,6 +123,7 @@ class EvidenceRow(Base):
     confidence: Mapped[float] = mapped_column(Float)
     criterion: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
 
 
 def make_engine(url: str = "sqlite+pysqlite:///:memory:"):
