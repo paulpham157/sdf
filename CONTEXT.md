@@ -111,3 +111,11 @@ _Avoid_: duplicated task, retry count only
 **Escalation Exhausted**:
 A terminal Task outcome meaning the maximum Attempts, Model Tier or hard cost ceiling was reached without an accepted result.
 _Avoid_: agent failed, infinite retry
+
+**Accepted Outcome**:
+A Task result supported by independent Evidence that satisfies its explicit acceptance criteria and, where defined, its Objective outcome metric.
+_Avoid_: agent completed, evaluator ran
+
+**Impact Measurement**:
+The attributable change in an Objective's outcome compared with its declared baseline over a defined measurement window.
+_Avoid_: task count, token count, dashboard activity
