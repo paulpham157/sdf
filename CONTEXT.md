@@ -91,3 +91,23 @@ _Avoid_: terminal output parser, sandbox
 **Policy Decision**:
 An SDF authorization result for an action, resource and execution identity in a specific context.
 _Avoid_: agent consent, successful execution
+
+**Model Tier**:
+An ordered cost/capability class for model selection: `basic`, `medium` or `high`.
+_Avoid_: provider, model name
+
+**Model Profile**:
+A configured description of a model's capabilities, cost limits, latency expectations and provider identity.
+_Avoid_: model tier, agent
+
+**Escalation Policy**:
+The SDF rule that maps verified Attempt outcomes and budget state to the next Model Tier.
+_Avoid_: agent fallback, retry prompt
+
+**Attempt Lineage**:
+The parent-child chain linking a later Attempt to the earlier Attempt whose Evidence caused a retry or escalation.
+_Avoid_: duplicated task, retry count only
+
+**Escalation Exhausted**:
+A terminal Task outcome meaning the maximum Attempts, Model Tier or hard cost ceiling was reached without an accepted result.
+_Avoid_: agent failed, infinite retry
