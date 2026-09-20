@@ -2,6 +2,7 @@
 name = "sdf-core"
 version = "0.1.0"
 description = "Software Decision Fabric Core vertical slice"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
