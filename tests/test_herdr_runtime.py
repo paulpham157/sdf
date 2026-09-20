@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError
+from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError, SshHerdrTransport
 from sdf_core.runtime import RuntimeStatus
 
 
@@ -127,6 +127,37 @@ def test_herdr_runtime_binds_attempt_workspace_before_start(tmp_path: Path):
     assert workspace_commands
     assert "--cwd" in workspace_commands[0]
     assert str(tmp_path.resolve()) in workspace_commands[0]
+
+
+def test_herdr_runtime_can_bind_workspace_in_remote_execution_environment():
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner)
+    runtime.bind_remote_workspace("ATTEMPT-REMOTE", "/workspace/attempt-remote")
+    runtime.start(attempt_id="ATTEMPT-REMOTE", agent="codex")
+    workspace_commands = [command for command, _ in runner.calls if tuple(command[1:3]) == ("workspace", "create")]
+    assert "--cwd" in workspace_commands[0]
+    assert "/workspace/attempt-remote" in workspace_commands[0]
+
+
+def test_ssh_herdr_transport_builds_remote_command_without_shell_interpolation():
+    calls = []
+
+    def executor(command, timeout_ms):
+        calls.append((tuple(command), timeout_ms))
+        return "ok"
+
+    transport = SshHerdrTransport(
+        host="sandbox.example",
+        user="runner",
+        port=2222,
+        herdr_binary="/opt/herdr/bin/herdr",
+        executor=executor,
+    )
+    assert transport.run(["herdr", "agent", "prompt", "agent-1", "say hi"], 1234) == "ok"
+    assert calls == [(
+        ("ssh", "-p", "2222", "runner@sandbox.example", "/opt/herdr/bin/herdr", "agent", "prompt", "agent-1", "say hi"),
+        1234,
+    )]
 
 
 def test_herdr_runtime_restores_durable_binding_without_redispatch():

@@ -52,6 +52,14 @@ workspace and pane identity can be restored after process restart without
 calling `agent start` again. Conflicting restored identities are rejected;
 provider reconnect remains live-unverified.
 
+The long-term topology is now explicit: SDF remains the control plane and
+Herdr plus the coding agent run in the execution environment. `HerdrRuntime`
+accepts an injected `HerdrTransport`; `SshHerdrTransport` provides a safe
+argument-vector bridge to a remote pinned Herdr binary, while local subprocess
+execution remains only a development fallback. `bind_remote_workspace()` keeps
+the sandbox path opaque to the SDF host. SSH is transport only and does not
+replace E2B/process containment.
+
 The binding record has an explicit `as_dict()`/`from_mapping()` contract with
 strict non-empty identity validation, so durable storage cannot silently
 restore a partial Attempt/session binding.

@@ -14,7 +14,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .runtime import AgentRuntime, RuntimeSession, RuntimeStatus
 
@@ -28,6 +28,70 @@ class HerdrUnsupportedOperation(HerdrRuntimeError):
 
 
 HerdrRunner = Callable[[Sequence[str], int], str]
+
+
+class HerdrTransport(Protocol):
+    """Control-plane transport for a Herdr endpoint.
+
+    The transport runs Herdr control commands in the execution environment;
+    the SDF process remains the caller and never becomes the agent runtime.
+    """
+
+    def run(self, command: Sequence[str], timeout_ms: int) -> str: ...
+
+
+class SshHerdrTransport:
+    """Run Herdr CLI commands on a remote execution host over SSH.
+
+    This is an explicit transport seam, not a claim that SSH itself provides
+    sandboxing. The remote host must run the pinned Herdr service and enforce
+    the selected sandbox boundary (for example an E2B-backed worker).
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        user: str | None = None,
+        port: int | None = None,
+        herdr_binary: str = "herdr",
+        identity_file: Path | None = None,
+        executor: HerdrRunner | None = None,
+    ) -> None:
+        if not host.strip():
+            raise ValueError("remote Herdr host must be non-empty")
+        if port is not None and not 0 < port < 65536:
+            raise ValueError("remote Herdr port must be between 1 and 65535")
+        if not herdr_binary.strip():
+            raise ValueError("remote Herdr binary must be non-empty")
+        self.host = host
+        self.user = user
+        self.port = port
+        self.herdr_binary = herdr_binary
+        self.identity_file = identity_file
+        self._executor = executor or self._run
+
+    def run(self, command: Sequence[str], timeout_ms: int) -> str:
+        remote = [self.herdr_binary, *command[1:]] if command else [self.herdr_binary]
+        target = f"{self.user}@{self.host}" if self.user else self.host
+        ssh = ["ssh"]
+        if self.port is not None:
+            ssh.extend(("-p", str(self.port)))
+        if self.identity_file is not None:
+            ssh.extend(("-i", str(self.identity_file.expanduser())))
+        return self._executor([*ssh, target, *remote], timeout_ms)
+
+    @staticmethod
+    def _run(command: Sequence[str], timeout_ms: int) -> str:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_ms / 1000,
+        )
+        if process.returncode != 0:
+            raise HerdrRuntimeError(f"remote Herdr command failed: {process.stderr[-1000:]}")
+        return process.stdout
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +173,7 @@ class HerdrRuntime(AgentRuntime):
         self,
         *,
         runner: HerdrRunner | None = None,
+        transport: HerdrTransport | None = None,
         timeout_ms: int = 30_000,
         herdr_binary: str = "herdr",
         session: str | None = None,
@@ -117,7 +182,12 @@ class HerdrRuntime(AgentRuntime):
     ) -> None:
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be positive")
-        self._runner = runner or self._run
+        if runner is not None and transport is not None:
+            raise ValueError("configure runner or transport, not both")
+        if transport is not None:
+            self._runner = transport.run
+        else:
+            self._runner = runner or self._run
         self._timeout_ms = timeout_ms
         self._binary = herdr_binary
         self._session = session
@@ -125,7 +195,7 @@ class HerdrRuntime(AgentRuntime):
         self.expected_version = expected_version
         self._bindings: dict[str, _Binding] = {}
         self._sessions: dict[str, RuntimeSession] = {}
-        self._attempt_workspaces: dict[str, Path] = {}
+        self._attempt_workspaces: dict[str, Path | str] = {}
 
     def restore_binding(self, snapshot: HerdrBindingSnapshot) -> RuntimeSession:
         """Restore an Attempt/session binding without dispatching the agent."""
@@ -182,6 +252,23 @@ class HerdrRuntime(AgentRuntime):
         if existing is not None and existing != path:
             raise HerdrRuntimeError("attempt is already bound to a different workspace")
         self._attempt_workspaces[attempt_id] = path
+
+    def bind_remote_workspace(self, attempt_id: str, workspace: str) -> None:
+        """Bind a workspace path that exists in the execution environment.
+
+        The control plane must not resolve or inspect this path locally. Herdr
+        receives it through the configured transport and creates the agent pane
+        there.
+        """
+
+        if not isinstance(attempt_id, str) or not attempt_id.strip():
+            raise ValueError("attempt_id must be non-empty")
+        if not isinstance(workspace, str) or not workspace.strip():
+            raise ValueError("remote workspace must be non-empty")
+        existing = self._attempt_workspaces.get(attempt_id)
+        if existing is not None and str(existing) != workspace:
+            raise HerdrRuntimeError("attempt is already bound to a different workspace")
+        self._attempt_workspaces[attempt_id] = workspace
 
     def probe(self) -> HerdrProbeResult:
         """Probe installed binary identity and session-list JSON support."""
