@@ -1,9 +1,9 @@
 """Provider adapter for the documented Herdr CLI surface.
 
-This module intentionally keeps the provider boundary small and explicit.  It
-is useful for contract tests and for a future pinned Herdr smoke test; it does
-not pretend that Herdr provides SDF policy, sandbox containment, or verified
-cancel/terminate semantics.
+This module intentionally keeps the provider boundary small and explicit. It
+maps the pinned Herdr CLI lifecycle and verifies pane-level cleanup through
+process-info; it does not pretend that Herdr provides SDF policy or sandbox
+containment.
 """
 
 from __future__ import annotations
@@ -395,10 +395,16 @@ class HerdrRuntime(AgentRuntime):
         processes = info.get("foreground_processes", ())
         if not isinstance(processes, list):
             raise HerdrRuntimeError("Herdr process-info response omitted foreground_processes")
+        shell_pid = info.get("shell_pid")
+        if shell_pid is not None and not isinstance(shell_pid, int):
+            raise HerdrRuntimeError("Herdr process-info shell_pid was not an integer")
         agent_name = binding.agent.lower()
         for process in processes:
             if not isinstance(process, Mapping):
                 continue
+            pid = process.get("pid")
+            if shell_pid is not None and pid != shell_pid:
+                raise HerdrRuntimeError("Herdr pane still has a foreground child process after cleanup")
             haystack = " ".join(
                 str(process.get(key, ""))
                 for key in ("name", "argv0", "cmdline")

@@ -19,9 +19,9 @@ duplicate starts return the existing session, and send/stream/status/
 cancel/terminate/reconnect are covered by local tests.
 
 Verification: focused runtime tests pass; full suite and compile checks pass.
-This is only a local seam. Herdr start/send/stream/cancel/terminate/reconnect
-and real-provider process cleanup remain unverified because tickets 04 and 05
-are still gated.
+This is only a local seam. The provider lifecycle and real-provider process
+cleanup still require a Herdr-managed live run; ticket 05 remains the live
+verification gate.
 
 ## Follow-up implementation
 
@@ -32,10 +32,12 @@ It accepts Herdr's wrapped JSON control responses and raw terminal output, and
 restores durable bindings without redispatching.
 
 Cancellation sends `ctrl+c` and only records `CANCELLED` after
-`pane process-info` shows that the agent is no longer foreground. Termination
-closes the bound pane and performs the same process check, accepting an
-already-closed pane as cleanup evidence. These checks are covered by local
-fake-runner tests; they do not establish SDF containment or descendant cleanup.
+`pane process-info` shows that the pane has no foreground process other than
+its shell. Termination closes the bound pane and performs the same process
+check, accepting an already-closed pane as cleanup evidence. A regression test
+keeps a `sleep` child in the foreground and proves cleanup is rejected. These
+checks cover the Herdr-observable pane process tree; they do not establish SDF
+containment for detached/background descendants.
 
 `RuntimeAgentAdapter` now binds the per-Attempt disposable workspace into a
 workspace-aware runtime before `start()`. `HerdrRuntime` preserves that binding

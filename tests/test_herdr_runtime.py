@@ -174,6 +174,36 @@ def test_herdr_runtime_terminates_by_closing_bound_pane():
     assert terminated.status is RuntimeStatus.TERMINATED
 
 
+def test_herdr_runtime_does_not_accept_a_remaining_foreground_child():
+    calls = 0
+
+    def runner(command, timeout_ms):
+        nonlocal calls
+        operation = tuple(command[1:3])
+        if operation == ("workspace", "create"):
+            return json.dumps({"workspaceId": "ws-child", "paneId": "pane-child"})
+        if operation == ("agent", "start"):
+            return json.dumps({"agentSessionId": "agent-child", "status": "working"})
+        if operation == ("agent", "send-keys"):
+            return ""
+        if operation == ("pane", "process-info"):
+            calls += 1
+            return json.dumps({"process_info": {
+                "shell_pid": 10,
+                "foreground_processes": [
+                    {"pid": 10, "name": "zsh"},
+                    {"pid": 11, "name": "sleep", "argv0": "sleep"},
+                ],
+            }})
+        raise AssertionError(command)
+
+    runtime = HerdrRuntime(runner=runner, timeout_ms=20)
+    session = runtime.start(attempt_id="ATTEMPT-CHILD", agent="codex")
+    with pytest.raises(HerdrRuntimeError, match="foreground child"):
+        runtime.cancel(session.session_id)
+    assert calls >= 1
+
+
 def test_herdr_runtime_rejects_malformed_provider_payload():
     runtime = HerdrRuntime(runner=lambda *_: "not-json")
     with pytest.raises(HerdrRuntimeError, match="JSON"):
