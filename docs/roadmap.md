@@ -38,3 +38,19 @@ ACP adapters and A2A gateways have no planned phase or automatic activation gate
 6. Normalize and replay lifecycle events; then qualify additional agents for routing.
 
 These slices are a proposed implementation breakdown, not completed work. Historical resolved Core tickets do not establish production readiness.
+
+## Current local evidence boundary
+
+The fixture/evaluator loop, append-only Evidence and graph-edge guards, durable
+Tool Proxy audit/events, measured routing, Herdr/E2B seams, workspace binding,
+and fail-closed public process actions are implemented and covered by local
+tests. Public process actions can now select an explicit E2B containment backend
+(`SDF_CONTAINMENT_BACKEND=e2b`), which syncs, executes, pulls, and kills a
+disposable box; the structured SDF `network.request` action is explicitly
+disabled in that mode while the coding agent retains E2B network egress. The
+live E2B process path has also verified an HTTPS request to the E2B endpoint;
+this is provider egress evidence, not a general outbound allowlist. The
+remaining milestone claims require external evidence: a disposable live Herdr
+session, verified cancellation/termination, and PostgreSQL concurrency/trigger
+proof. Until those gates pass, no real repository is authorized and local green
+tests must not be reported as production proof.

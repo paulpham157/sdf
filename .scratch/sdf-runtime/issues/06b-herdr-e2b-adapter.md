@@ -16,8 +16,9 @@ provider returns them. Never treat terminal output as Evidence.
 ## Verification
 
 Local tests cover deterministic plan generation, missing-credential failure,
-and JSON result correlation. Live E2B provisioning, agent execution, diff
-pull and teardown remain unverified until disposable credentials are provided.
+and JSON result correlation. Live E2B provisioning, command execution, diff
+pull and teardown now have a disposable CLI smoke; full SDF adapter
+correlation and network policy remain unverified.
 
 Follow ADR-0004 and preserve ACP/A2A exclusion.
 
@@ -32,6 +33,34 @@ it requires `E2B_API_KEY` and the installed `e2b-box` plugin, then correlates
 from JSON.
 
 Verification: focused adapter tests and the full local suite pass. The local
-machine has `herdr 0.7.3` and `e2b 2.16.1`, but no `e2b-box` command or live
-credentials; therefore provisioning, agent execution, pull and teardown remain
-unverified.
+machine has Herdr 0.9.1, E2B CLI 2.16.1 and e2b-box 0.5.0; a disposable
+provider lifecycle smoke has passed, while full SDF adapter correlation
+remains unverified.
+
+Live execution now attempts `kill` in a `finally` block after sync/run/pull
+failures, preserving the primary provider error while preventing an avoidable
+leaked sandbox. A regression test covers malformed run JSON and verifies the
+cleanup command is still issued. This is lifecycle contract evidence only;
+provider teardown remains unverified without a live disposable sandbox.
+
+Successful results now expose `cleanup_attempted` and `cleanup_succeeded`, so a
+caller can gate downstream artifact acceptance on explicit teardown evidence
+instead of inferring it from provider output.
+
+Live smoke evidence (2026-09-21): with the installed `e2b-box` 0.5.0 plugin
+and configured E2B key, a disposable git fixture completed `sync -> exec ->
+pull -> kill`. The remote command returned JSON `ok=true`, `exitCode=0`, the
+pulled marker was verified locally, and the sandbox was explicitly killed.
+This proves the provider CLI lifecycle, not yet the full SDF Attempt-bound
+adapter or E2B network-deny policy.
+
+SDF-bound live evidence (2026-09-21): `ExecutionService.execute_tool()` ran a
+real `process.run` through `E2BContainmentBackend` for
+`ATTEMPT-LIVE-E2B-20260921`. The action received ID
+`ACTION-374413d6e6198a51adc3d75ca1f289e0ffedff1837d21b6d3f9f48150bc7bb4b`,
+the E2B sandbox was `irjxx6neqsa85eo4v5ym5`, exit code was `0`, and the pulled
+process artifact was `ATTEMPT-LIVE-E2B-20260921-PROCESS` with SHA-256
+`a53c0909b9d0b8a5d37081e1871be081a8c898ee3fcce2f07b8f0547e6758554`.
+Durable audit events (`policy_decided`, `action_claimed`, `action_executed`)
+all carried the same Attempt ID. Post-cleanup `e2b-box status --json` returned
+`tracked:false`.

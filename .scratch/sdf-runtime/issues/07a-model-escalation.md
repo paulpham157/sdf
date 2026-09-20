@@ -1,6 +1,6 @@
 # 07a Model policy and escalation
 
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 02
 
 ## What to build and acceptance
@@ -21,3 +21,11 @@ agent's self-report as an escalation signal.
 Cover PASS, FAIL, INCONCLUSIVE, timeout, policy failure, budget exhaustion,
 maximum-tier exhaustion and stable parent-child Attempt lineage. Record local
 versus live evidence before resolution.
+
+## Answer
+
+Implemented provider-neutral `ModelTier`, bounded `EscalationPolicy`,
+`create_escalated_attempt`, Attempt `parent_attempt_id`/tier/cost metadata and
+ExecutionService lineage wiring. PASS never escalates; verified failure,
+inconclusive, timeout and policy/tool failure can escalate until attempt,
+tier or cost bounds are reached. Covered by deterministic local tests.

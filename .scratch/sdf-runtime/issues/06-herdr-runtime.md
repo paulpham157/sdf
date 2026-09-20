@@ -22,3 +22,28 @@ Verification: focused runtime tests pass; full suite and compile checks pass.
 This is only a local seam. Herdr start/send/stream/cancel/terminate/reconnect
 and real-provider process cleanup remain unverified because tickets 04 and 05
 are still gated.
+
+## Follow-up implementation
+
+Added `sdf_core/herdr_runtime.py` as a provider adapter over the documented JSON
+CLI surface. It correlates workspace/pane/agent-session identifiers to the SDF
+Attempt, maps start/send/read/status/reconnect, and is idempotent per Attempt.
+Cancellation and termination deliberately raise an unsupported-operation error
+until process cleanup is proven. Fake-runner contract tests pass; no live Herdr
+session or provider call was made.
+
+`RuntimeAgentAdapter` now binds the per-Attempt disposable workspace into a
+workspace-aware runtime before `start()`. `HerdrRuntime` preserves that binding
+and passes it to `workspace create --cwd`, so a future provider-backed run can
+produce artifacts from the same workspace that SDF evaluates. This is still a
+local contract test; Herdr cancellation, termination and live containment are
+unverified.
+
+Added `HerdrBindingSnapshot`/`restore_binding()` so a durable Attempt/session,
+workspace and pane identity can be restored after process restart without
+calling `agent start` again. Conflicting restored identities are rejected;
+provider reconnect remains live-unverified.
+
+The binding record has an explicit `as_dict()`/`from_mapping()` contract with
+strict non-empty identity validation, so durable storage cannot silently
+restore a partial Attempt/session binding.

@@ -26,7 +26,70 @@ skipped`; compile check passed. This is local deterministic evidence only.
 Audit persistence and OS filesystem/process/network containment remain out of
 scope for this ticket and are tracked by later persistence/sandbox work.
 
+Follow-up implementation added `SandboxToolExecutor` plus a durable
+`SqlAlchemyAuditSink` (migration `0006_tool_audits`) and regression coverage for
+Attempt-bound persisted decisions. The ticket remains `needs-info` because
+the live OS-level containment and full `POST /tasks/{id}/run` integration are
+not yet proven.
+
 Review boundary: the seam is not yet wired into `POST /tasks/{id}/run`, does
 not verify Attempt existence/active state, and has no durable replay/idempotency
 guard. Keep this ticket `needs-info` until runtime integration and durable
 action/audit semantics are implemented.
+
+Additional hardening is now in place: `SqlAlchemyAttemptGuard` rejects missing
+or terminal Attempts before the executor runs, and `SqlAlchemyAuditSink` uses
+the durable `(attempt_id, action_id, event)` identity from migration `0008` to
+ignore audit redelivery. The ticket remains `needs-info` only for full run
+endpoint wiring and live OS-level containment proof.
+
+`ExecutionService.execute_tool()` now wires a structured ActionRequest through
+the Attempt workspace, FixtureSandbox, ToolProxy, AttemptGuard and durable audit
+seam. The task-run endpoint remains separate from tool messages; callers use
+the explicit `/attempts/{attempt_id}/actions` boundary rather than trusting
+terminal text or arbitrary HTTP commands.
+
+`ExecutionService.execute_tool()` now defaults to durable SQLAlchemy audit plus
+normalized `tool-proxy` runtime events, even when a caller supplies an
+additional in-memory audit consumer. Integration coverage verifies both event
+records for an allowed action.
+
+The public `POST /attempts/{attempt_id}/actions` boundary now accepts only a
+structured action payload. It uses the server-side `SDF_TOOL_ALLOWLIST`
+configuration (unset means deny-all), requires an active Attempt workspace,
+and returns the durable policy/execution outcome. API tests cover default
+deny/no side effect and configured allow with persisted tool-proxy events.
+Live OS-level containment remains a separate unresolved gate.
+
+Live E2B containment evidence (2026-09-21) now covers the structured process
+path: one Attempt-bound action executed in a disposable E2B box, its process
+artifact was pulled and hashed, the three durable audit events shared the
+Attempt identity, and the box was cleaned up (`tracked:false`). E2B network
+deny remains unproven and is intentionally fail-closed by the backend.
+
+The structured SDF network policy is now explicit: `network.request` is denied
+at both the server allowlist and executor layers whenever
+`SDF_CONTAINMENT_BACKEND=e2b`, even if an operator lists the action in
+`SDF_TOOL_ALLOWLIST`. This does not restrict the coding agent's own E2B
+network egress.
+
+An Attempt-bound E2B process live smoke returned HTTP 200 from `e2b.dev` on
+2026-09-21, confirming that agent egress remains functional while the separate
+structured action stays denied.
+
+Sequential redelivery of an already executed structured action is now fenced
+by the durable `ACTION_EXECUTED` audit identity, so the executor is not called
+again for the same `(attempt_id, action_id)`. This is local replay evidence;
+cross-process claim races still require the PostgreSQL/concurrency gate.
+
+The replay fence also treats a durable `ACTION_FAILED` outcome as terminal:
+redelivery returns the recorded failure without re-invoking an executor. A
+caller must issue a new action identity to request an intentional retry.
+
+Tool audit rows are now append-only at the ORM boundary, with PostgreSQL
+migration `0011_tool_audit_append_only` adding the direct-SQL trigger fence.
+
+Before executor invocation, durable `action_claimed` insertion now gives one
+delivery the action identity; concurrent redelivery loses the claim and does
+not invoke the executor. The PostgreSQL race behavior still needs a live
+multi-session integration gate, while SQLite covers the deterministic contract.
