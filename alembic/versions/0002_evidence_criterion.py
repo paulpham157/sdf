@@ -13,8 +13,14 @@ depends_on = None
 
 
 def upgrade():
-    op.add_column("evidence", sa.Column("criterion", sa.String(500), nullable=True))
+    bind = op.get_bind()
+    columns = {column["name"] for column in sa.inspect(bind).get_columns("evidence")}
+    if "criterion" not in columns:
+        op.add_column("evidence", sa.Column("criterion", sa.String(500), nullable=True))
 
 
 def downgrade():
-    op.drop_column("evidence", "criterion")
+    bind = op.get_bind()
+    columns = {column["name"] for column in sa.inspect(bind).get_columns("evidence")}
+    if "criterion" in columns:
+        op.drop_column("evidence", "criterion")

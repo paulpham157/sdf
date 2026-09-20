@@ -16,3 +16,33 @@ Review carry-forward: criterion identity currently lives in graph metadata plus 
 Added relational criterion provenance and Alembic revision `0002_evidence_criterion`; evidence lookup reads the Evidence row directly. Dispatch keys cannot be reused across tasks, workspace/artifact/evaluator failures settle state, and regression coverage covers cross-task collisions and evaluator failure. Local suite: 28 passed, 1 PostgreSQL test skipped; migration SQL generation passed. Concurrent PostgreSQL claim races and full append-only/reference enforcement remain explicitly deferred to the next persistence hardening slice.
 
 Record behavior checks and exact local/live boundary before resolution. Follow ADR-0004 and the parent spec. Review before commit.
+
+Follow-up hardening adds an ORM persistence guard: evaluator `EvidenceRow`
+updates and deletes fail before flush, while inserts remain append-only. A
+regression test covers both mutation paths. The session guard is complemented
+by a PostgreSQL database trigger below; concurrent PostgreSQL verification
+remains deployment work.
+
+Migration `0009_evidence_append_only` adds the PostgreSQL trigger/function
+fence for UPDATE/DELETE; SQLite deliberately remains on the ORM guard because
+the trigger syntax is vendor-specific. Fresh SQLite migration to head passes.
+
+Decision edges now validate source/target identity before flush, including
+same-transaction GraphNode/Task/Attempt endpoints and previously committed
+rows. Dangling source/target regressions pass; edge rollback leaves no partial
+reference.
+
+Migration `0010_decision_edge_integrity` adds the corresponding PostgreSQL
+trigger for direct SQL writes, covering GraphNode/Task/Attempt endpoint kinds.
+SQLite migration to head remains green; PostgreSQL trigger execution still
+requires the integration database gate.
+
+`ExecutionService.run()` now recovers a losing unique `dispatch_key` insert:
+it rolls back the loser and returns the same-task durable winner, while
+cross-task reuse remains rejected. This is the local race-recovery seam;
+concurrent PostgreSQL execution still needs the integration test gate.
+
+Tool Proxy action delivery now has a separate durable `action_claimed` fence;
+only the delivery that acquires the unique claim may invoke the executor.
+SQLite contract tests pass, while concurrent PostgreSQL claim behavior remains
+an integration-database gate.
