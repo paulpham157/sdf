@@ -47,6 +47,19 @@ Successful results now expose `cleanup_attempted` and `cleanup_succeeded`, so a
 caller can gate downstream artifact acceptance on explicit teardown evidence
 instead of inferring it from provider output.
 
+Clarification: `e2b-box` is the installed Herdr-E2B plugin (`herdr-e2b 0.5.0`);
+it is not the same thing as a generic E2B template containing a `herdr`
+binary. The plugin's configured headless template is `muse` and invokes
+`muse exec` inside the E2B box. A generic template such as `openclaw-agent`
+does not provide Herdr automatically.
+
+Live plugin smoke (2026-09-21): `e2b-box run --task ... --kill --json`
+provisioned sandbox `iy58nvph9ujq1y7xykzg0` with template `muse`, wrote the
+task, attempted the agent, pulled without overwriting the dirty local tree, and
+killed the box. The agent exited 1 because the sandbox lacked Meta credentials
+(`muse login`/`META_API_KEY`); therefore this proves plugin provisioning and
+cleanup, not successful agent output or the full Herdr lifecycle.
+
 Live smoke evidence (2026-09-21): with the installed `e2b-box` 0.5.0 plugin
 and configured E2B key, a disposable git fixture completed `sync -> exec ->
 pull -> kill`. The remote command returned JSON `ok=true`, `exitCode=0`, the
