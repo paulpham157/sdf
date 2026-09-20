@@ -58,7 +58,7 @@ class E2BHerdrTransport:
             raise ValueError("Herdr command must not be empty")
         remote = [self.herdr_binary, *command[1:]]
         return self._runner(
-            (self.e2b_binary, "sandbox", "exec", sandbox_id, *remote),
+            (self.e2b_binary, "sandbox", "exec", sandbox_id, "--", *remote),
             timeout_ms,
             self._cli_env(),
         )

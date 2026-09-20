@@ -26,6 +26,8 @@ def test_e2b_herdr_transport_keeps_one_sandbox_for_multiple_commands():
     assert transport.sandbox_id == "irjxx6neqsa85eo4v5ym5"
     assert sum(command[1:3] == ("sandbox", "create") for command, _, _ in calls) == 1
     assert sum(command[1:3] == ("sandbox", "exec") for command, _, _ in calls) == 2
+    exec_command = next(command for command, _, _ in calls if command[1:3] == ("sandbox", "exec"))
+    assert exec_command[4:6] == ("--", "herdr")
     transport.close()
     assert transport.sandbox_id is None
     assert sum(command[1:3] == ("sandbox", "kill") for command, _, _ in calls) == 1
