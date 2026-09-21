@@ -104,11 +104,15 @@ class E2BHerdrTransport:
         api_key = self._environ.get("E2B_API_KEY")
         if not api_key:
             raise HerdrRuntimeError("E2B Herdr transport requires E2B_API_KEY")
-        return {
+        env = {
             "PATH": self._environ.get("PATH", ""),
             "HOME": self._environ.get("HOME", str(Path.home())),
             "E2B_API_KEY": api_key,
         }
+        domain = self._environ.get("E2B_DOMAIN")
+        if domain:
+            env["E2B_DOMAIN"] = domain
+        return env
 
     @staticmethod
     def _run(command: Sequence[str], timeout_ms: int, env: Mapping[str, str]) -> str:

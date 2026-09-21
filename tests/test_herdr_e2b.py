@@ -26,9 +26,15 @@ def test_live_mode_fails_closed_without_key_or_plugin(tmp_path: Path):
 
 
 def test_live_result_correlates_provider_ids_without_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    environments = []
+
+    def runner(command, *_args):
+        environments.append(dict(_args[-1]))
+        return '{"ok":true,"status":"done","sandboxId":"sb-1","herdrSessionId":"hs-1","workspaceId":"w-1"}' if command[1] == "run" else "{}"
+
     adapter = HerdrE2BAdapter(
-        runner=lambda command, *_: '{"ok":true,"status":"done","sandboxId":"sb-1","herdrSessionId":"hs-1","workspaceId":"w-1"}' if command[1] == "run" else "{}",
-        environ={"E2B_API_KEY": "<REDACTED>"},
+        runner=runner,
+        environ={"E2B_API_KEY": "<REDACTED>", "E2B_DOMAIN": "e2b.dev"},
     )
     monkeypatch.setattr("sdf_core.herdr_e2b.shutil.which", lambda _: "/usr/local/bin/e2b-box")
     plan = adapter.plan(attempt_id="ATTEMPT-009", checkout=tmp_path, template="codex", agent="codex")
@@ -39,6 +45,7 @@ def test_live_result_correlates_provider_ids_without_network(tmp_path: Path, mon
     assert result.attempt_id == "ATTEMPT-009"
     assert result.cleanup_attempted is True
     assert result.cleanup_succeeded is True
+    assert all(env["E2B_DOMAIN"] == "e2b.dev" for env in environments)
 
 
 def test_live_failure_still_attempts_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

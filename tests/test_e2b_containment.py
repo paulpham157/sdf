@@ -31,7 +31,7 @@ def test_e2b_run_syncs_execs_pulls_and_kills(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
     cwd = root / "subdir"
     cwd.mkdir(parents=True)
-    backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "<REDACTED>"})
+    backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "<REDACTED>", "E2B_DOMAIN": "e2b.dev"})
     result = backend.run(["python", "-c", "print('ok')"], root=root, cwd=cwd, env={"SDF_NETWORK": "denied"}, timeout_seconds=2)
 
     assert result.returncode == 0
@@ -39,6 +39,7 @@ def test_e2b_run_syncs_execs_pulls_and_kills(tmp_path: Path, monkeypatch):
     assert [call[0][1] for call in calls] == ["-t", "exec", "pull", "kill"]
     assert "cd subdir" in calls[1][0][-1]
     assert "SDF_NETWORK=denied" in calls[1][0][-1]
+    assert all(call[3]["E2B_DOMAIN"] == "e2b.dev" for call in calls)
 
 
 def test_e2b_allows_agent_network_egress_when_requested(tmp_path: Path, monkeypatch):

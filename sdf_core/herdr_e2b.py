@@ -88,7 +88,13 @@ class HerdrE2BAdapter:
             raise E2BAdapterError("live E2B execution requires E2B_API_KEY")
         if shutil.which("e2b-box") is None:
             raise E2BAdapterError("live E2B execution requires the e2b-box plugin command")
-        env = {"PATH": self._environ.get("PATH", ""), "HOME": self._environ.get("HOME", ""), "E2B_API_KEY": self._environ["E2B_API_KEY"]}
+        env = {
+            "PATH": self._environ.get("PATH", ""),
+            "HOME": self._environ.get("HOME", ""),
+            "E2B_API_KEY": self._environ["E2B_API_KEY"],
+        }
+        if self._environ.get("E2B_DOMAIN"):
+            env["E2B_DOMAIN"] = self._environ["E2B_DOMAIN"]
         payload: dict[str, Any] | None = None
         primary_error: Exception | None = None
         cleanup_attempted = False

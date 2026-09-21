@@ -18,7 +18,7 @@ def test_e2b_herdr_transport_keeps_one_sandbox_for_multiple_commands():
     transport = E2BHerdrTransport(
         template="herdr-codex",
         runner=runner,
-        environ={"E2B_API_KEY": "<REDACTED>", "PATH": "/bin"},
+        environ={"E2B_API_KEY": "<REDACTED>", "E2B_DOMAIN": "e2b.dev", "PATH": "/bin"},
     )
     runtime = HerdrRuntime(transport=transport)
     assert runtime._raw(runtime._command("agent", "read", "agent-1")) == "{\"result\":{}}"
@@ -31,6 +31,7 @@ def test_e2b_herdr_transport_keeps_one_sandbox_for_multiple_commands():
     transport.close()
     assert transport.sandbox_id is None
     assert sum(command[1:3] == ("sandbox", "kill") for command, _, _ in calls) == 1
+    assert all(env["E2B_DOMAIN"] == "e2b.dev" for _, _, env in calls)
 
 
 def test_e2b_herdr_transport_requires_api_key_before_provisioning():

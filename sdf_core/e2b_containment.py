@@ -105,6 +105,8 @@ class E2BContainmentBackend:
             "HOME": self._environ.get("HOME", ""),
             "E2B_API_KEY": self._environ["E2B_API_KEY"],
         }
+        if self._environ.get("E2B_DOMAIN"):
+            cli_env["E2B_DOMAIN"] = self._environ["E2B_DOMAIN"]
         synced = False
         primary_error: Exception | None = None
         result: subprocess.CompletedProcess[str] | None = None
