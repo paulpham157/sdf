@@ -10,4 +10,5 @@ cleanup() {
 trap cleanup EXIT
 
 docker compose -f "$compose_file" up -d --wait postgres
-SDF_POSTGRES_TEST_URL="$database_url" .venv/bin/pytest -q tests/test_postgres_integration.py
+SDF_DATABASE_URL="$database_url" .venv/bin/alembic upgrade head
+SDF_DATABASE_URL="$database_url" SDF_POSTGRES_TEST_URL="$database_url" .venv/bin/pytest -q tests/test_postgres_integration.py
