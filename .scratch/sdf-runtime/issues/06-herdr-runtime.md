@@ -64,3 +64,12 @@ not replace E2B/process policy.
 The binding record has an explicit `as_dict()`/`from_mapping()` contract with
 strict non-empty identity validation, so durable storage cannot silently
 restore a partial Attempt/session binding.
+
+Live lifecycle verification (2026-09-21): Herdr 0.9.1 named session
+`sdf-lifecycle-smoke` created workspace `w1`/pane `w1:p1`, started Codex,
+returned the marker `HERDR_LIFECYCLE_OK`, and exposed a persistent Herdr agent
+snapshot. A fresh adapter instance restored the durable binding without
+redispatch, then completed `reconnect -> cancel -> terminate`; the final
+snapshot had no agents or workspaces and the session was stopped. Active-work
+cancellation, E2B network policy, and descendant cleanup remain separate live
+gates, so this ticket stays `needs-info`.

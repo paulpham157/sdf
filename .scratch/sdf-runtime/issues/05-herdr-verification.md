@@ -31,3 +31,12 @@ Live smoke evidence (2026-09-21): Herdr 0.9.1 created a disposable named
 session, workspace, and Codex agent (`interactive_ready=true`); a pane command
 returned observable output. The workspace and session were then closed/stopped
 cleanly. Full prompt/reconnect/termination semantics remain unverified.
+
+Follow-up live lifecycle smoke (2026-09-21): named session
+`sdf-lifecycle-smoke` ran Herdr 0.9.1 with workspace `w1`, pane `w1:p1`, and
+Codex agent. Prompt returned `HERDR_LIFECYCLE_OK`; a fresh `HerdrRuntime`
+restored the Attempt binding and `reconnect` returned `running`, followed by
+`cancel` and `terminate`. The post-terminate Herdr snapshot contained zero
+agents, panes, layouts, and workspaces; the named session was stopped. This
+proves the provider lifecycle path for an idle agent, not E2B containment or
+active-work cancellation.
