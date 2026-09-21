@@ -158,7 +158,7 @@ def build_scorecard_from_db(db: Session) -> Scorecard:
             attempt_number=attempt_numbers[attempt.task_id],
             evidence_count=len(rows),
             trace_complete=trace_complete,
-            cost_usd=attempt.cost_usd,
+            cost_usd=attempt.cost_usd or 0.0,
             accepted_evidence_seconds=accepted_seconds,
             escalated=attempt.parent_attempt_id is not None,
             escalation_exhausted=task is not None and task.status == "escalation_exhausted",

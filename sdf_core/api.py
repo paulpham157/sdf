@@ -4,7 +4,7 @@ import os
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
@@ -12,7 +12,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import AttemptRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, RuntimeEventRow, TaskRow, make_engine, make_session_factory
+from .db import (
+    AttemptRow,
+    Base,
+    DecisionEdgeRow,
+    EvidenceRow,
+    GraphNodeRow,
+    ObjectiveMetricRow,
+    OutcomeObservationRow,
+    RuntimeEventRow,
+    TaskRow,
+    make_engine,
+    make_session_factory,
+)
 from .escalation import ModelTier
 from .execution import ExecutionService
 from .adapter import FakeNativeAdapter
@@ -20,6 +32,8 @@ from .measurement import build_scorecard_from_db
 from .policy import ActionRequest, AllowlistPolicy
 from .containment import MacOSSandboxBackend
 from .e2b_containment import E2BContainmentBackend
+from .impact import MetricDeclaration, build_scorecard, measure_objective
+from .impact_repository import load_metric_declaration, load_observations, load_scorecard_facts
 
 
 DATABASE_URL = os.getenv("SDF_DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -82,6 +96,24 @@ class ToolActionRequest(BaseModel):
     action: str = Field(min_length=1, max_length=120)
     resource: str = Field(min_length=1, max_length=500)
     context: dict[str, Any] = Field(default_factory=dict)
+
+
+class MetricDeclarationRequest(BaseModel):
+    metric_name: str = Field(min_length=1, max_length=120)
+    baseline: float
+    target: float
+    unit: str = Field(min_length=1, max_length=40)
+    source: str = Field(min_length=1, max_length=500)
+    owner: str = Field(min_length=1, max_length=120)
+    measurement_window_days: int = Field(gt=0)
+
+
+class ObservationRequest(BaseModel):
+    metric_name: str = Field(min_length=1, max_length=120)
+    value: float
+    observed_at: datetime
+    source: str = Field(min_length=1, max_length=500)
+    mode: Literal["synthetic", "live"]
 
 
 def configured_tool_policy() -> AllowlistPolicy:
@@ -160,6 +192,27 @@ def edge_payload(edge: DecisionEdgeRow) -> dict[str, Any]:
         "relation": edge.relation,
         "confidence": edge.confidence,
     }
+
+
+def declaration_payload(declaration: MetricDeclaration) -> dict[str, Any]:
+    return {
+        "objective_id": declaration.objective_id,
+        "metric_name": declaration.metric_name,
+        "baseline": declaration.baseline,
+        "target": declaration.target,
+        "unit": declaration.unit,
+        "source": declaration.source,
+        "owner": declaration.owner,
+        "measurement_window_days": declaration.measurement_window_days,
+        "declared_at": declaration.declared_at.isoformat(),
+    }
+
+
+def get_objective_node(db: Session, objective_id: str) -> GraphNodeRow:
+    node = db.get(GraphNodeRow, objective_id)
+    if node is None or node.kind != "objective":
+        raise HTTPException(status_code=404, detail="objective not found")
+    return node
 
 
 def add_node(db: Session, *, node_id: str, kind: str, title: str, owner: str, source: str) -> GraphNodeRow:
@@ -471,3 +524,78 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
         "output_tokens": attempt.output_tokens,
         "escalation_reason": attempt.escalation_reason,
     }
+
+
+@app.post("/objectives/{objective_id}/metric", status_code=status.HTTP_201_CREATED)
+def declare_objective_metric(objective_id: str, payload: MetricDeclarationRequest, db: Session = Depends(get_db)):
+    get_objective_node(db, objective_id)
+    if db.get(ObjectiveMetricRow, objective_id):
+        raise HTTPException(status_code=409, detail=f"metric already declared for objective: {objective_id}")
+    try:
+        declaration = MetricDeclaration(
+            objective_id=objective_id,
+            metric_name=payload.metric_name,
+            baseline=payload.baseline,
+            target=payload.target,
+            unit=payload.unit,
+            source=payload.source,
+            owner=payload.owner,
+            measurement_window_days=payload.measurement_window_days,
+            declared_at=datetime.now(timezone.utc),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.add(ObjectiveMetricRow(
+        objective_id=declaration.objective_id,
+        metric_name=declaration.metric_name,
+        baseline=declaration.baseline,
+        target=declaration.target,
+        unit=declaration.unit,
+        source=declaration.source,
+        owner=declaration.owner,
+        measurement_window_days=declaration.measurement_window_days,
+        declared_at=declaration.declared_at,
+    ))
+    db.commit()
+    return declaration_payload(declaration)
+
+
+@app.post("/objectives/{objective_id}/observations", status_code=status.HTTP_201_CREATED)
+def record_outcome_observation(objective_id: str, payload: ObservationRequest, db: Session = Depends(get_db)):
+    get_objective_node(db, objective_id)
+    observation_id = f"OBSERVATION-{uuid4().hex[:12]}"
+    db.add(OutcomeObservationRow(
+        id=observation_id,
+        objective_id=objective_id,
+        metric_name=payload.metric_name,
+        value=payload.value,
+        observed_at=payload.observed_at,
+        source=payload.source,
+        mode=payload.mode,
+        created_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+    return {
+        "id": observation_id,
+        "objective_id": objective_id,
+        "metric_name": payload.metric_name,
+        "value": payload.value,
+        "observed_at": payload.observed_at.isoformat(),
+        "source": payload.source,
+        "mode": payload.mode,
+    }
+
+
+@app.get("/objectives/{objective_id}/impact")
+def get_objective_impact(objective_id: str, db: Session = Depends(get_db)):
+    get_objective_node(db, objective_id)
+    declaration = load_metric_declaration(db, objective_id)
+    observations = load_observations(db, objective_id)
+    impact = measure_objective(objective_id, declaration=declaration, observations=observations)
+    return impact.as_dict()
+
+
+@app.get("/impact-scorecard")
+def get_impact_scorecard(db: Session = Depends(get_db)):
+    facts = load_scorecard_facts(db)
+    return build_scorecard(facts).as_dict()
