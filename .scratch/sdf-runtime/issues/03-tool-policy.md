@@ -102,3 +102,9 @@ allowlist that included `network:request`, the structured Tool Proxy action
 still returned `DENIED` before any request was sent. `e2b-box status --json`
 reported `tracked:false` and `e2b-box list --json` was empty after cleanup.
 Active-work cancellation and detached-descendant cleanup remain unverified.
+
+Policy tradeoff: the structured `network.request` capability remains denied
+because it is not routed through E2B, while agent-owned egress remains enabled
+for full agent functionality. Full suite and regression tests pass. The
+remaining security hardening is destination-aware E2B egress proxy/allowlist
+control to reduce exfiltration and unintended endpoint calls.

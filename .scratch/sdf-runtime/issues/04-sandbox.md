@@ -83,3 +83,9 @@ while a separate in-box process retained HTTPS egress; the box was confirmed
 untracked and the fleet list was empty after cleanup. This closes the
 structured-policy/agent-egress distinction, but not active-work cancellation
 or detached descendant cleanup.
+
+Tradeoff decision: retain agent egress so the coding agent remains fully
+functional, while keeping the un-routed structured `network.request` tool
+denied. Full suite and regression tests pass. This leaves exfiltration and
+unintended external endpoint calls possible; future hardening is an auditable
+E2B egress proxy/allowlist, not a blanket network block.

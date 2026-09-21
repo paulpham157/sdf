@@ -147,10 +147,24 @@ For the current SDFA implementation, the live evidence proves:
 - SDF structured `network.request` is denied before execution in E2B mode;
 - the box is killed and no tracked box remains after the smoke.
 
+The structured `network.request` lock is intentionally independent from agent
+networking: it is a structured SDF tool that has not yet been routed through
+the E2B capability boundary, so denying it does not restrict the agent's own
+network path. The full local test suite and relevant regression tests pass with
+this separation.
+
 It does **not** prove arbitrary outbound destination filtering. If the desired
 policy is “agent egress allowed, structured SDF network denied,” the current
 separation is correct. If the desired policy is “agent egress allowlisted,” an
 E2B/provider network policy and a destination matrix are still required.
+
+### Current tradeoff and hardening path
+
+The current choice gives the agent a complete working environment, including
+outbound network access, at the cost of leaving exfiltration and unintended
+external endpoint calls possible. The next hardening step is an E2B egress
+proxy/allowlist with auditable destination rules; blocking all network would
+also break legitimate agent work and is not the selected policy.
 
 ## Decision for SDFA
 
