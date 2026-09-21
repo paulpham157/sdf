@@ -94,3 +94,11 @@ delivery the action identity; concurrent redelivery loses the claim and does
 not invoke the executor. The PostgreSQL Compose multi-session gate now passes
 with exactly one winner; live OS/provider containment remains the outstanding
 reason for this ticket's `needs-info` status.
+
+Live E2B network-policy smoke (2026-09-21): an agent process inside the
+disposable `base` box fetched `https://e2b.dev` and returned HTTP 200. With
+`SDF_CONTAINMENT_BACKEND=e2b`, `SDF_CONTAINMENT_SMOKE=passed`, and an operator
+allowlist that included `network:request`, the structured Tool Proxy action
+still returned `DENIED` before any request was sent. `e2b-box status --json`
+reported `tracked:false` and `e2b-box list --json` was empty after cleanup.
+Active-work cancellation and detached-descendant cleanup remain unverified.

@@ -75,3 +75,11 @@ Live network-egress evidence (2026-09-21): an Attempt-bound process executed
 inside E2B fetched `https://e2b.dev` and returned `E2B_NET_OK:200`; the box was
 cleaned up by the same containment lifecycle. This confirms agent egress is
 available, not that arbitrary outbound destinations are allowlisted.
+
+Independent policy smoke (2026-09-21): the same E2B-backed configuration
+denied structured `network.request` even when an operator supplied
+`network:request` in the allowlist. The deny happened before a network call,
+while a separate in-box process retained HTTPS egress; the box was confirmed
+untracked and the fleet list was empty after cleanup. This closes the
+structured-policy/agent-egress distinction, but not active-work cancellation
+or detached descendant cleanup.

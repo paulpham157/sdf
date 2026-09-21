@@ -86,3 +86,10 @@ process artifact was `ATTEMPT-LIVE-E2B-20260921-PROCESS` with SHA-256
 Durable audit events (`policy_decided`, `action_claimed`, `action_executed`)
 all carried the same Attempt ID. Post-cleanup `e2b-box status --json` returned
 `tracked:false`.
+
+Network-policy follow-up (2026-09-21): the E2B process boundary returned HTTP
+200 for an agent-owned HTTPS fetch while the structured SDF `network.request`
+action was denied before execution under the E2B configuration. Cleanup left
+no tracked box. Full Herdr adapter correlation across persistent prompt,
+reconnect, cancellation and termination, plus detached-descendant cleanup,
+remains open.
