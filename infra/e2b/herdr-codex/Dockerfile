@@ -26,4 +26,4 @@ RUN useradd --create-home --shell /bin/bash runner \
 
 USER runner
 WORKDIR /workspace
-CMD ["sleep", "infinity"]
+CMD ["herdr", "server"]

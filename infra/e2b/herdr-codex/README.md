@@ -14,7 +14,7 @@ Build from this directory:
 e2b template create sdf-herdr-codex \
   --path infra/e2b/herdr-codex \
   --dockerfile Dockerfile \
-  --ready-cmd 'herdr --version && codex --version'
+  --ready-cmd 'herdr status server --json'
 ```
 
 The image does not contain provider credentials. Inject the Codex connection
