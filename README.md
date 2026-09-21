@@ -28,6 +28,18 @@ uv run alembic upgrade head
 uv run uvicorn sdf_core.api:app
 ```
 
+For the live E2B/Herdr path, copy `.env.example` to `.env` and provide the
+matching E2B key. The wrapper loads that file before running the plugin:
+
+```bash
+cp .env.example .env
+scripts/e2b-env.sh e2b-box doctor
+scripts/e2b-env.sh e2b-box open -t sdf-herdr-codex --template-any
+```
+
+Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
+prefix itself.
+
 ## Core principle
 
 An agent reporting completion is not success. A Task has an **Accepted Outcome** only when independent Evidence satisfies its explicit acceptance criteria.
@@ -39,6 +51,7 @@ An agent reporting completion is not success. A Task has an **Accepted Outcome**
 - `alembic/` — database migrations.
 - `CONTEXT.md` — canonical domain vocabulary.
 - `docs/adr/` — architecture decisions.
+- `docs/architecture.md` — current architectural overview.
 
 ## License
 
