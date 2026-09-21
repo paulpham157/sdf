@@ -135,6 +135,10 @@ class ExecutionService:
         for artifact in (diff, process):
             self.db.add(ArtifactRow(id=artifact.artifact_id, attempt_id=attempt_id, kind=artifact.kind, uri=str(artifact.path), sha256=artifact.sha256, size_bytes=artifact.size_bytes, created_at=utcnow()))
             self.db.add(GraphNodeRow(id=artifact.artifact_id, kind="artifact", title=artifact.kind, source=str(artifact.path), owner="execution", confidence=1.0, created_at=utcnow()))
+        # PostgreSQL's endpoint-integrity trigger runs per edge row. Flush the
+        # artifact graph nodes first so the trigger can observe them.
+        self.db.flush()
+        for artifact in (diff, process):
             self.db.add(DecisionEdgeRow(source_kind="artifact", source_id=artifact.artifact_id, target_kind="attempt", target_id=attempt_id, relation="measures", source="execution", owner="sdf", confidence=1.0, created_at=utcnow(), evidence_ref=artifact.artifact_id))
 
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
@@ -185,6 +189,7 @@ class ExecutionService:
                     metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion},
                 )
             )
+            self.db.flush()
             self.db.add(
                 DecisionEdgeRow(
                     source_kind="artifact",
@@ -226,6 +231,7 @@ class ExecutionService:
                     metadata_json={"criterion": evidence.criterion, "artifact_ref": evaluator_artifact.artifact_id},
                 )
             )
+            self.db.flush()
             self.db.add(
                 DecisionEdgeRow(
                     source_kind="evidence",
