@@ -20,9 +20,13 @@ RUN apt-get update \
     && test "$(herdr --version | awk '{print $2}')" = "${HERDR_VERSION}" \
     && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}"
 
-RUN mkdir -p /workspace /home/user/project \
+COPY herdr-endpoint.mjs /usr/local/lib/herdr-endpoint.mjs
+COPY entrypoint.sh /usr/local/bin/herdr-e2b-entrypoint
+RUN chmod 0755 /usr/local/bin/herdr-e2b-entrypoint \
+    && mkdir -p /workspace /home/user/project \
     && chown -R user:user /workspace /home/user
 
 USER user
 WORKDIR /home/user/project
-CMD ["herdr", "server"]
+EXPOSE 8787
+CMD ["herdr-e2b-entrypoint"]

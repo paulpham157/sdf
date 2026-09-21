@@ -19,3 +19,9 @@ e2b template create sdf-herdr-codex \
 
 The image does not contain provider credentials. Inject the Codex connection
 through the E2B/Herdr control plane at sandbox creation time.
+
+The image also contains a deployment-owned Herdr bridge at
+`POST /v1/command` on port `8787`. Set `HERDR_ENDPOINT_TOKEN` when creating the
+sandbox; the bridge rejects unauthenticated requests, shell commands, oversized
+bodies, and timeouts over two minutes. The SDF client uses
+`HerdrEndpointTransport` against the HTTPS-forwarded endpoint.
