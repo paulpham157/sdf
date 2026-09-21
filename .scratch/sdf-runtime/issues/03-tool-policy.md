@@ -91,5 +91,6 @@ migration `0011_tool_audit_append_only` adding the direct-SQL trigger fence.
 
 Before executor invocation, durable `action_claimed` insertion now gives one
 delivery the action identity; concurrent redelivery loses the claim and does
-not invoke the executor. The PostgreSQL race behavior still needs a live
-multi-session integration gate, while SQLite covers the deterministic contract.
+not invoke the executor. The PostgreSQL Compose multi-session gate now passes
+with exactly one winner; live OS/provider containment remains the outstanding
+reason for this ticket's `needs-info` status.

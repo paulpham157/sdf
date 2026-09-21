@@ -44,5 +44,8 @@ concurrent PostgreSQL execution still needs the integration test gate.
 
 Tool Proxy action delivery now has a separate durable `action_claimed` fence;
 only the delivery that acquires the unique claim may invoke the executor.
-SQLite contract tests pass, while concurrent PostgreSQL claim behavior remains
-an integration-database gate.
+PostgreSQL Compose verification now passes Alembic head migration, direct-SQL
+append-only triggers, runtime/tool-audit replay idempotency, and an 8-session
+claim race with exactly one winner. The promotion gate is therefore resolved
+for PostgreSQL persistence hardening; provider/OS containment remains outside
+this ticket.

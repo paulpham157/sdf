@@ -11,8 +11,8 @@ Coordinator owns tracker status, integration review and commits. Workers own the
 | 01 | acceptance_wave + coordinator | resolved | Reviewed; 26 local tests pass, PostgreSQL skipped |
 | 05 | herdr_verify | needs-info | Herdr 0.9.1 disposable session/workspace/agent start and pane output pass; prompt/reconnect/termination proof outstanding |
 | 10 | architecture_sync | needs-info | Content synchronized; full-page render outstanding |
-| 02 | integrity_recovery + coordinator | resolved | Dispatch/recovery and relational criterion provenance; concurrency/append-only hardening remains follow-up |
-| 03 | tool_policy | needs-info | Structured API boundary, Attempt guard, append-only durable audit/events and replay fence pass locally; OS-level containment and cross-process claim proof outstanding |
+| 02 | integrity_recovery + coordinator | resolved | Dispatch/recovery, relational criterion provenance, PostgreSQL migration/append-only/idempotency/claim-race gate passed |
+| 03 | tool_policy | needs-info | Structured API boundary, append-only audit/events, replay fence and PostgreSQL cross-process claim gate pass; OS/provider containment remains outstanding |
 | 04 | sandbox | needs-info | Fixture boundary and fail-closed process gate pass locally; macOS host smoke fails; explicit E2B containment backend is implemented but live/network proof remains |
 | 06 | runtime_seam | needs-info | Internal AgentRuntime + FakeRuntime seam; Herdr integration remains gated |
 | 06b | herdr_e2b | needs-info | e2b-box 0.5.0 disposable sync/exec/pull/kill smoke passes; Attempt-bound adapter and network policy proof outstanding |
