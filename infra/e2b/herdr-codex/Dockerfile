@@ -9,7 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_FUND=false
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git procps bash \
+    && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL --retry 3 \
        -o /usr/local/bin/herdr \
@@ -20,10 +20,9 @@ RUN apt-get update \
     && test "$(herdr --version | awk '{print $2}')" = "${HERDR_VERSION}" \
     && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}"
 
-RUN useradd --create-home --shell /bin/bash runner \
-    && mkdir -p /workspace \
-    && chown -R runner:runner /workspace /home/runner
+RUN mkdir -p /workspace /home/user/project \
+    && chown -R user:user /workspace /home/user
 
-USER runner
-WORKDIR /workspace
+USER user
+WORKDIR /home/user/project
 CMD ["herdr", "server"]
