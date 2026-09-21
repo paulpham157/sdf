@@ -1,6 +1,6 @@
 # Active SDF roadmap
 
-This roadmap follows accepted ADR-0004 and supersedes earlier ACP/A2A activation phases in the architecture DOCX, converted graph documents and protocol research. Those artifacts describe earlier architecture decisions until synchronized; they must not create active protocol implementation tasks.
+This roadmap follows accepted ADR-0004. Historical ACP/A2A research is retained only for traceability and must not create active protocol implementation tasks.
 
 ## P0 Core correctness
 
@@ -36,6 +36,11 @@ ACP adapters and A2A gateways have no planned phase or automatic activation gate
 4. Verify the Herdr contract and run one agent session through cancellation and reconnect. Blocked by containment and provider verification.
 5. Complete a real agent change through independent evaluation and trace. Blocked by slices 1 and 4.
 6. Normalize and replay lifecycle events; then qualify additional agents for routing.
+
+The remote endpoint bridge and its HTTPS client transport are now implemented.
+The authenticated deployment proof is still open: a real orchestrator must
+inject the endpoint secret, expose port `8787` through HTTPS, and demonstrate a
+full SDF → bridge → Herdr request before this becomes a completed P2 gate.
 
 These slices are a proposed implementation breakdown, not completed work. Historical resolved Core tickets do not establish production readiness.
 

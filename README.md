@@ -52,6 +52,7 @@ An agent reporting completion is not success. A Task has an **Accepted Outcome**
 - `CONTEXT.md` — canonical domain vocabulary.
 - `docs/adr/` — architecture decisions.
 - `docs/architecture.md` — current architectural overview.
+- `docs/CONTRIBUTING.md` — contributor workflow, verification boundaries, and E2B/Herdr setup.
 
 ## License
 

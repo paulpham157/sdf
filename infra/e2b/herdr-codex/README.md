@@ -26,3 +26,9 @@ at `HERDR_ENDPOINT_TOKEN_FILE` (default `/run/secrets/herdr_endpoint_token`)
 when creating the sandbox; the bridge rejects unauthenticated requests, shell
 commands, oversized bodies, and timeouts over two minutes. The SDF client uses
 `HerdrEndpointTransport` against the HTTPS-forwarded endpoint.
+
+For contributor verification, an E2B CLI `--env` value only applies to the
+terminal session used by that CLI command; it does not configure the already
+started image entrypoint. Use the E2B deployment/orchestrator secret mechanism
+to provide `HERDR_ENDPOINT_TOKEN` or mount
+`/run/secrets/herdr_endpoint_token` before exposing the endpoint.

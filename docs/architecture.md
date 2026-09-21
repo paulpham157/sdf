@@ -44,6 +44,14 @@ inside the sandbox. The bridge owns the local Herdr socket/CLI; SDF never starts
 Herdr or Codex locally. The endpoint must be HTTPS-only, token-authenticated,
 and implement the command-response contract tested in
 `tests/test_herdr_endpoint_transport.py`.
+
+`HERDR_ENDPOINT_TOKEN` is an endpoint credential created by the deployment
+operator. It is unrelated to `E2B_API_KEY`, Codex authentication, or any model
+provider key. The bridge can read it from the `HERDR_ENDPOINT_TOKEN` environment
+variable or from the mounted secret file named by `HERDR_ENDPOINT_TOKEN_FILE`
+(default `/run/secrets/herdr_endpoint_token`). The token must never be committed
+to the repository, baked into the image, or printed in logs.
+
 Transport is not containment: the E2B/process boundary must still enforce
 filesystem, process and network limits.
 
