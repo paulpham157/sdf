@@ -1,6 +1,8 @@
 .venv/
+.env
 __pycache__/
 .pytest_cache/
+.firecrawl/
 .sdf-artifacts/
 .sdf-workspaces/
 *.py[cod]
