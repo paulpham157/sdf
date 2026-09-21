@@ -40,3 +40,10 @@ restored the Attempt binding and `reconnect` returned `running`, followed by
 agents, panes, layouts, and workspaces; the named session was stopped. This
 proves the provider lifecycle path for an idle agent, not E2B containment or
 active-work cancellation.
+
+Active-work cancellation remains blocked: in a disposable Codex run, Herdr's
+`ctrl+c` changed the agent to `idle` but left the foreground `codex` process
+visible to `pane process-info`; the adapter correctly rejected promotion to
+`CANCELLED`. A subsequent pane termination cleaned the session. The provider
+must support a stronger cancellation/child-cleanup contract before this ticket
+can resolve.

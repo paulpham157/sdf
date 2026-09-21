@@ -73,3 +73,12 @@ redispatch, then completed `reconnect -> cancel -> terminate`; the final
 snapshot had no agents or workspaces and the session was stopped. Active-work
 cancellation, E2B network policy, and descendant cleanup remain separate live
 gates, so this ticket stays `needs-info`.
+
+Active-work cancellation follow-up (2026-09-21): a disposable Herdr 0.9.1
+session ran a Codex `sleep 60` task. `HerdrRuntime.cancel()` sent `ctrl+c`,
+and Herdr reported the agent `idle`, but `pane process-info` still reported
+the foreground `codex` PID; the adapter therefore failed closed with
+`Herdr pane still has a foreground child process after cleanup`. Explicit
+`terminate()` closed the pane, the snapshot became empty, and the named
+session stopped. Cancellation needs a provider-supported process cleanup path,
+not only an interrupt request.
