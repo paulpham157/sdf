@@ -37,7 +37,13 @@ The control plane must not require the coding agent to run on the SDF host.
 runner is only a test/development fallback. The preferred deployment transport
 is a persistent E2B sandbox (`create --detach`, repeated `sandbox exec`, then
 `kill`), so prompt/reconnect/cancel can address the same Herdr process and
-workspace. SSH/API is an alternate transport when Herdr is hosted elsewhere.
+workspace. SSH remains a compatibility transport for a controlled host. The
+long-term remote shape is `HerdrEndpointTransport`: SDF sends authenticated
+HTTPS JSON commands to a small deployment-owned bridge running beside Herdr
+inside the sandbox. The bridge owns the local Herdr socket/CLI; SDF never starts
+Herdr or Codex locally. The endpoint must be HTTPS-only, token-authenticated,
+and implement the command-response contract tested in
+`tests/test_herdr_endpoint_transport.py`.
 Transport is not containment: the E2B/process boundary must still enforce
 filesystem, process and network limits.
 
