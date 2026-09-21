@@ -1,8 +1,10 @@
 import crypto from "node:crypto"
 import http from "node:http"
 import { spawn } from "node:child_process"
+import { readFileSync } from "node:fs"
 
-const token = process.env.HERDR_ENDPOINT_TOKEN || ""
+const configuredToken = process.env.HERDR_ENDPOINT_TOKEN || ""
+const tokenFile = process.env.HERDR_ENDPOINT_TOKEN_FILE || "/run/secrets/herdr_endpoint_token"
 const port = Number(process.env.HERDR_ENDPOINT_PORT || "8787")
 const maxBodyBytes = 64 * 1024
 const maxOutputBytes = 1024 * 1024
@@ -13,11 +15,21 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 function authorized(request) {
+  const token = readToken()
   if (!token) return false
   const value = request.headers.authorization || ""
   const received = Buffer.from(value.startsWith("Bearer ") ? value.slice(7) : "")
   const expected = Buffer.from(token)
   return received.length === expected.length && crypto.timingSafeEqual(received, expected)
+}
+
+function readToken() {
+  if (configuredToken) return configuredToken
+  try {
+    return readFileSync(tokenFile, "utf8").trim()
+  } catch {
+    return ""
+  }
 }
 
 function reply(response, status, payload) {
@@ -68,8 +80,10 @@ function runHerdr(command, timeoutMs) {
       timedOut = true
       child.kill("SIGTERM")
     }, timeoutMs)
+    const forceTimer = setTimeout(() => child.kill("SIGKILL"), timeoutMs + 1000)
     child.on("close", (code, signal) => {
       clearTimeout(timer)
+      clearTimeout(forceTimer)
       resolve({
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
@@ -80,6 +94,7 @@ function runHerdr(command, timeoutMs) {
     })
     child.on("error", (error) => {
       clearTimeout(timer)
+      clearTimeout(forceTimer)
       resolve({ stdout: "", stderr: String(error), exitCode: 127, signal: null, timedOut })
     })
   })
@@ -91,6 +106,7 @@ const server = http.createServer(async (request, response) => {
     return
   }
   if (!authorized(request)) {
+    const token = readToken()
     reply(response, token ? 401 : 503, { error: token ? "unauthorized" : "endpoint_not_configured" })
     return
   }

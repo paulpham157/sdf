@@ -21,7 +21,8 @@ The image does not contain provider credentials. Inject the Codex connection
 through the E2B/Herdr control plane at sandbox creation time.
 
 The image also contains a deployment-owned Herdr bridge at
-`POST /v1/command` on port `8787`. Set `HERDR_ENDPOINT_TOKEN` when creating the
-sandbox; the bridge rejects unauthenticated requests, shell commands, oversized
-bodies, and timeouts over two minutes. The SDF client uses
+`POST /v1/command` on port `8787`. Set `HERDR_ENDPOINT_TOKEN` or mount a secret
+at `HERDR_ENDPOINT_TOKEN_FILE` (default `/run/secrets/herdr_endpoint_token`)
+when creating the sandbox; the bridge rejects unauthenticated requests, shell
+commands, oversized bodies, and timeouts over two minutes. The SDF client uses
 `HerdrEndpointTransport` against the HTTPS-forwarded endpoint.
