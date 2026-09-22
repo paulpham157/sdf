@@ -1,6 +1,6 @@
 # 05 Verify Herdr identity and contract
 
-Status: needs-info
+Status: resolved
 Blocked by: None
 
 ## What to build and acceptance
@@ -47,3 +47,9 @@ visible to `pane process-info`; the adapter correctly rejected promotion to
 `CANCELLED`. A subsequent pane termination cleaned the session. The provider
 must support a stronger cancellation/child-cleanup contract before this ticket
 can resolve.
+
+Resolved by live lifecycle smoke (2026-09-22): `HerdrRuntime` escalates an
+uncancelled foreground agent to the Attempt-owned pane close, then tears down
+the E2B execution environment. Active Codex and fresh-binding reconnect runs
+both reached `cancelled -> terminated`; final Herdr state and E2B running list
+were empty. This is lifecycle evidence, not a claim that Herdr is policy.

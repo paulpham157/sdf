@@ -4,9 +4,12 @@ Status: needs-info
 Baseline: 88fbfa6
 
 Persistence promotion gate: resolved (PostgreSQL Compose migration, append-only
-triggers, replay idempotency, and concurrent claim verification passed). The
-overall runtime spec remains `needs-info` until the separate Herdr and
-OS/provider containment gates are complete.
+triggers, replay idempotency, and concurrent claim verification passed).
+Herdr/E2B containment promotion gate: resolved (live reconnect, active
+cancellation, descendant teardown, and empty sandbox verification passed on
+2026-09-22). `SDF_CONTAINMENT_SMOKE=passed` remains valid. The overall runtime
+spec remains `needs-info` only for real fixture-evaluation/coordinator work;
+E2B proxy/allowlist is future hardening, not a blocker for agent network access.
 
 ## Problem and solution
 The current fake-adapter demo lacks criterion coverage, dependable evidence provenance and containment. Deliver a verified one-agent fixture loop through an internal Agent Runtime and intended HerdrRuntime, with SDF domain ownership preserved under ADR-0004. Local deterministic and provider-neutral slices are implemented; live provider and containment gates remain open.

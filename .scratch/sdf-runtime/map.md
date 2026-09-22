@@ -9,15 +9,15 @@ Coordinator owns tracker status, integration review and commits. Workers own the
 | Ticket | Owner | State | Scope |
 | --- | --- | --- | --- |
 | 01 | acceptance_wave + coordinator | resolved | Reviewed; 26 local tests pass, PostgreSQL skipped |
-| 05 | herdr_verify | needs-info | Herdr 0.9.1 disposable session/workspace/agent start and pane output pass; prompt/reconnect/termination proof outstanding |
+| 05 | herdr_verify | resolved | Live reconnect, active cancellation, pane cleanup, and empty E2B-list proof pass |
 | 10 | architecture_sync | needs-info | Content synchronized; full-page render outstanding |
 | 02 | integrity_recovery + coordinator | resolved | Dispatch/recovery, relational criterion provenance, PostgreSQL migration/append-only/idempotency/claim-race gate passed |
-| 03 | tool_policy | needs-info | Structured API boundary, append-only audit/events, replay fence and PostgreSQL cross-process claim gate pass; OS/provider containment remains outstanding |
-| 04 | sandbox | needs-info | Fixture boundary and fail-closed process gate pass locally; macOS host smoke fails; explicit E2B containment backend is implemented but live/network proof remains |
-| 06 | runtime_seam | needs-info | Internal AgentRuntime + FakeRuntime seam; Herdr integration remains gated |
-| 06b | herdr_e2b | needs-info | e2b-box 0.5.0 disposable sync/exec/pull/kill smoke passes; Attempt-bound adapter and network policy proof outstanding |
+| 03 | tool_policy | resolved | Structured policy boundary and live E2B containment/lifecycle promotion pass |
+| 04 | sandbox | resolved | E2B containment, active cancellation, descendant teardown, and cleanup proof pass |
+| 06 | runtime_seam | resolved | HerdrRuntime live reconnect/cancel/terminate and E2B cleanup pass |
+| 06b | herdr_e2b | resolved | Persistent E2B Herdr transport lifecycle and sandbox teardown pass |
 | 07a | model_escalation | resolved-local | Evaluator-driven basic → medium → high policy with bounded Attempt lineage; live provider qualification remains open |
 | 07b | impact_measurement | resolved-local | Objective metrics, attribution fields and deterministic v0 scorecard; production impact remains unclaimed |
-| 07–09 | coordinator | needs-info | Fixture loop, normalized events and measured routing implemented locally; live Herdr/containment gates remain open |
+| 07–09 | coordinator | needs-info | Fixture loop, normalized events and measured routing implemented locally; real fixture evaluation remains open |
 
 Existing Core tickets 01, 04, 05 and 06 were reopened to record incomplete acceptance criteria. Their historical test results remain partial evidence, not milestone completion.

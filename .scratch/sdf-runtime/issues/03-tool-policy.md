@@ -1,6 +1,6 @@
 # 03 Tool Proxy and Policy
 
-Status: needs-info
+Status: resolved
 Blocked by: 02
 
 ## What to build and acceptance
@@ -108,3 +108,9 @@ because it is not routed through E2B, while agent-owned egress remains enabled
 for full agent functionality. Full suite and regression tests pass. The
 remaining security hardening is destination-aware E2B egress proxy/allowlist
 control to reduce exfiltration and unintended endpoint calls.
+
+Herdr/E2B lifecycle promotion (2026-09-22): disposable live active Codex and
+fresh binding-reconnect runs both completed `cancel -> terminate`; each ended
+with the provider sandbox closed and `e2b sandbox list --format json` equal to
+`[]`. `SDF_CONTAINMENT_SMOKE=passed` remains valid. Proxy/allowlist work is
+future hardening, not a blocker for agent egress.

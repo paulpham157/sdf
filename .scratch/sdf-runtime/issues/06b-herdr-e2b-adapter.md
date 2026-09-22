@@ -1,7 +1,7 @@
 # 06b Herdr-E2B sandbox adapter
 
-Status: needs-info
-Blocked by: 04, 05
+Status: resolved
+Blocked by: None
 
 ## What to build and acceptance
 
@@ -93,3 +93,9 @@ action was denied before execution under the E2B configuration. Cleanup left
 no tracked box. Full Herdr adapter correlation across persistent prompt,
 reconnect, cancellation and termination, plus detached-descendant cleanup,
 remains open.
+
+Resolved by persistent transport smoke (2026-09-22): pinned
+`sdf-herdr-codex` completed active Codex cancellation and restored-binding
+reconnect/cancel/terminate through `E2BHerdrTransport`. Both runs ended with
+`transport.close()` and an empty E2B running list. Agent egress remains
+enabled; E2B proxy/allowlist is deferred hardening, not a promotion blocker.

@@ -1,7 +1,7 @@
 # 06 One agent through HerdrRuntime
 
-Status: needs-info
-Blocked by: 04, 05
+Status: resolved
+Blocked by: None
 
 ## What to build and acceptance
 
@@ -82,3 +82,9 @@ the foreground `codex` PID; the adapter therefore failed closed with
 `terminate()` closed the pane, the snapshot became empty, and the named
 session stopped. Cancellation needs a provider-supported process cleanup path,
 not only an interrupt request.
+
+Resolved by 2026-09-22 live smoke and commit `6acaa35`: cancellation inspects
+the foreground process after `ctrl+c`, closes the dedicated pane when it
+remains, and only then records `CANCELLED`. With `E2BHerdrTransport`, each
+cancellation tears down the Attempt-owned sandbox, removing detached
+descendants. The active and idle-reconnect runs left no Herdr or E2B resource.

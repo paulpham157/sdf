@@ -1,6 +1,6 @@
 # 04 Enforced fixture sandbox
 
-Status: needs-info
+Status: resolved
 Blocked by: 03
 
 ## What to build and acceptance
@@ -89,3 +89,8 @@ functional, while keeping the un-routed structured `network.request` tool
 denied. Full suite and regression tests pass. This leaves exfiltration and
 unintended external endpoint calls possible; future hardening is an auditable
 E2B egress proxy/allowlist, not a blanket network block.
+
+Promotion completed (2026-09-22): live Herdr/E2B lifecycle smoke verified idle
+reconnect, active Codex cancellation, pane cleanup, and provider teardown.
+Each disposable run ended with no session/pane and an empty E2B running list.
+`SDF_CONTAINMENT_SMOKE=passed` remains the explicit promotion setting.
