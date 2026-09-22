@@ -196,6 +196,11 @@ class HerdrRuntime(AgentRuntime):
         self._bindings: dict[str, _Binding] = {}
         self._sessions: dict[str, RuntimeSession] = {}
         self._attempt_workspaces: dict[str, Path | str] = {}
+        # An E2B transport owns a stronger final cleanup boundary than Herdr's
+        # pane API.  Keep it optional so the deterministic local adapter does
+        # not claim provider process control it does not have.
+        self._environment_close = getattr(transport, "close", None) if transport is not None else None
+        self._environment_closed_sessions: set[str] = set()
 
     def restore_binding(self, snapshot: HerdrBindingSnapshot) -> RuntimeSession:
         """Restore an Attempt/session binding without dispatching the agent."""
@@ -354,7 +359,16 @@ class HerdrRuntime(AgentRuntime):
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
         binding, current = self._known(session_id)
         args = self._command("agent", "prompt", session_id, input_text, "--wait", "--until", "idle")
-        raw = self._raw(args)
+        try:
+            raw = self._raw(args)
+        except HerdrRuntimeError as exc:
+            # Herdr can time out its semantic idle observation after accepting
+            # a prompt.  A foreground process is stronger evidence that work
+            # was dispatched, so preserve the live binding as RUNNING and let
+            # cancellation own the cleanup path instead of stranding it.
+            if "agent_prompt_stalled" not in str(exc) or not self._has_foreground_child(binding):
+                raise
+            raw = ""
         payload: Mapping[str, Any] = {}
         if raw.strip():
             try:
@@ -411,7 +425,21 @@ class HerdrRuntime(AgentRuntime):
         # it to CANCELLED after process inspection proves the agent executable
         # is no longer foreground in the pane.
         self._raw(self._command("agent", "send-keys", session_id, "ctrl+c"))
-        self._wait_agent_not_foreground(binding)
+        try:
+            self._wait_agent_not_foreground(binding)
+        except HerdrRuntimeError:
+            # ``ctrl+c`` is cooperative input, not process control.  If the
+            # foreground process ignores it (or Herdr reports idle while the
+            # process remains), closing the dedicated Attempt pane is the
+            # documented hard-stop fallback.  Do not report CANCELLED until
+            # the subsequent inspection proves the pane is gone/quiescent.
+            self._close_pane(binding)
+            self._wait_agent_not_foreground(binding)
+        # A pane close cannot prove that a process intentionally detached from
+        # the terminal has exited.  For an E2B-backed execution, tear down the
+        # Attempt-owned sandbox after every cancellation: provider sandbox
+        # destruction is the final descendant-cleanup boundary.
+        self._close_execution_environment(session_id)
         updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.CANCELLED, current.output)
         self._sessions[session_id] = updated
         return updated
@@ -421,19 +449,35 @@ class HerdrRuntime(AgentRuntime):
         # Closing the dedicated pane is the documented hard cleanup surface.
         # A successful close, or an already-closed pane, is the only evidence
         # accepted here; no terminal text is treated as proof of termination.
+        if session_id not in self._environment_closed_sessions:
+            self._close_pane(binding)
+            try:
+                self._wait_agent_not_foreground(binding)
+            except HerdrRuntimeError as exc:
+                if "not found" not in str(exc).lower() and "closed" not in str(exc).lower():
+                    raise
+            self._close_execution_environment(session_id)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.TERMINATED, current.output)
+        self._sessions[session_id] = updated
+        return updated
+
+    def _close_pane(self, binding: _Binding) -> None:
+        """Close the Attempt-owned pane, accepting an idempotent close."""
+
         try:
             self._raw(self._command("pane", "close", binding.pane_id))
         except HerdrRuntimeError as exc:
             if "not found" not in str(exc).lower() and "closed" not in str(exc).lower():
                 raise
-        try:
-            self._wait_agent_not_foreground(binding)
-        except HerdrRuntimeError as exc:
-            if "not found" not in str(exc).lower() and "closed" not in str(exc).lower():
-                raise
-        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.TERMINATED, current.output)
-        self._sessions[session_id] = updated
-        return updated
+
+    def _close_execution_environment(self, session_id: str) -> None:
+        """Destroy an optional Attempt-owned provider environment once."""
+
+        if session_id in self._environment_closed_sessions:
+            return
+        if callable(self._environment_close):
+            self._environment_close(self._timeout_ms)
+        self._environment_closed_sessions.add(session_id)
 
     def reconnect(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)
@@ -498,6 +542,16 @@ class HerdrRuntime(AgentRuntime):
             ).lower()
             if agent_name and agent_name in haystack:
                 raise HerdrRuntimeError("Herdr agent process is still foreground after cancellation")
+
+    def _has_foreground_child(self, binding: _Binding) -> bool:
+        try:
+            self._assert_agent_not_foreground(binding)
+        except HerdrRuntimeError as exc:
+            message = str(exc).lower()
+            if "foreground child" in message or "agent process is still foreground" in message:
+                return True
+            raise
+        return False
 
     def _object(self, command: Sequence[str]) -> dict[str, Any]:
         payload = self._decode(self._raw(command))

@@ -246,6 +246,8 @@ def test_herdr_runtime_does_not_accept_a_remaining_foreground_child():
                     {"pid": 11, "name": "sleep", "argv0": "sleep"},
                 ],
             }})
+        if operation == ("pane", "close"):
+            return json.dumps({"type": "ok"})
         raise AssertionError(command)
 
     runtime = HerdrRuntime(runner=runner, timeout_ms=20)
@@ -253,6 +255,89 @@ def test_herdr_runtime_does_not_accept_a_remaining_foreground_child():
     with pytest.raises(HerdrRuntimeError, match="foreground child"):
         runtime.cancel(session.session_id)
     assert calls >= 1
+
+
+def test_herdr_runtime_escalates_cancel_to_the_attempt_pane_when_ctrl_c_leaves_codex_foreground():
+    calls = []
+    pane_closed = False
+
+    def runner(command, timeout_ms):
+        nonlocal pane_closed
+        calls.append(tuple(command))
+        operation = tuple(command[1:3])
+        if operation == ("workspace", "create"):
+            return json.dumps({"workspaceId": "ws-active", "paneId": "pane-active"})
+        if operation == ("agent", "start"):
+            return json.dumps({"agentSessionId": "agent-active", "status": "working"})
+        if operation == ("agent", "send-keys"):
+            return ""
+        if operation == ("pane", "process-info"):
+            if pane_closed:
+                raise RuntimeError("pane not found")
+            return json.dumps({"process_info": {
+                "shell_pid": 10,
+                "foreground_processes": [
+                    {"pid": 10, "name": "zsh"},
+                    {"pid": 11, "name": "codex", "cmdline": "codex exec sleep 60"},
+                ],
+            }})
+        if operation == ("pane", "close"):
+            pane_closed = True
+            return json.dumps({"type": "ok"})
+        raise AssertionError(command)
+
+    runtime = HerdrRuntime(runner=runner, timeout_ms=20)
+    session = runtime.start(attempt_id="ATTEMPT-ACTIVE", agent="codex")
+
+    assert runtime.cancel(session.session_id).status is RuntimeStatus.CANCELLED
+    assert ("herdr", "pane", "close", "pane-active") in calls
+
+
+def test_herdr_runtime_cancellation_closes_a_provider_execution_environment_once():
+    class Transport:
+        def __init__(self):
+            self.runner = FakeHerdr()
+            self.close_calls = []
+
+        def run(self, command, timeout_ms):
+            return self.runner(command, timeout_ms)
+
+        def close(self, timeout_ms):
+            self.close_calls.append(timeout_ms)
+
+    transport = Transport()
+    runtime = HerdrRuntime(transport=transport)
+    session = runtime.start(attempt_id="ATTEMPT-E2B-CLEANUP", agent="codex")
+
+    assert runtime.cancel(session.session_id).status is RuntimeStatus.CANCELLED
+    assert runtime.terminate(session.session_id).status is RuntimeStatus.TERMINATED
+    assert transport.close_calls == [30_000]
+
+
+def test_herdr_runtime_keeps_a_stalled_prompt_running_when_process_info_confirms_codex_foreground():
+    def runner(command, timeout_ms):
+        operation = tuple(command[1:3])
+        if operation == ("workspace", "create"):
+            return json.dumps({"workspaceId": "ws-stalled", "paneId": "pane-stalled"})
+        if operation == ("agent", "start"):
+            return json.dumps({"agentSessionId": "agent-stalled", "status": "working"})
+        if operation == ("agent", "prompt"):
+            raise RuntimeError('{"error":{"code":"agent_prompt_stalled"}}')
+        if operation == ("pane", "process-info"):
+            return json.dumps({"process_info": {
+                "shell_pid": 10,
+                "foreground_processes": [
+                    {"pid": 10, "name": "zsh"},
+                    {"pid": 11, "name": "codex", "cmdline": "codex exec"},
+                ],
+            }})
+        if operation == ("agent", "read"):
+            return ""
+        raise AssertionError(command)
+
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-STALLED", agent="codex")
+    assert runtime.send(session.session_id, "work").status is RuntimeStatus.RUNNING
 
 
 def test_herdr_runtime_rejects_malformed_provider_payload():
