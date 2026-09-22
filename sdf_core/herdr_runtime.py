@@ -189,6 +189,7 @@ class HerdrRuntime(AgentRuntime):
         else:
             self._runner = runner or self._run
         self._timeout_ms = timeout_ms
+        self._transport = transport
         self._binary = herdr_binary
         self._session = session
         self._workspace_dir = workspace_dir
@@ -256,7 +257,18 @@ class HerdrRuntime(AgentRuntime):
         existing = self._attempt_workspaces.get(attempt_id)
         if existing is not None and existing != path:
             raise HerdrRuntimeError("attempt is already bound to a different workspace")
+        stage_workspace = getattr(self._transport, "stage_workspace", None)
+        if callable(stage_workspace):
+            self._attempt_workspaces[attempt_id] = stage_workspace(attempt_id, path)
+            return
         self._attempt_workspaces[attempt_id] = path
+
+    def collect_workspace(self, attempt_id: str, workspace: Path) -> None:
+        """Copy a transport-owned Attempt workspace back for evaluation."""
+
+        collect_workspace = getattr(self._transport, "collect_workspace", None)
+        if callable(collect_workspace):
+            collect_workspace(attempt_id, Path(workspace).expanduser().resolve())
 
     def bind_remote_workspace(self, attempt_id: str, workspace: str) -> None:
         """Bind a workspace path that exists in the execution environment.

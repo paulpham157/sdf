@@ -9,10 +9,15 @@ is intentionally one-shot and cannot support prompt/reconnect semantics.
 
 from __future__ import annotations
 
+import base64
+import io
 import os
 import re
+import shutil
 import signal
 import subprocess
+import tarfile
+import tempfile
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -78,6 +83,74 @@ class E2BHerdrTransport:
         finally:
             self._sandbox_id = None
 
+    def stage_workspace(self, attempt_id: str, workspace: Path) -> str:
+        """Copy a bounded local fixture into this Attempt's sandbox path."""
+
+        source = Path(workspace).expanduser().resolve()
+        if not source.is_dir():
+            raise ValueError("workspace must be an existing directory")
+        remote = self._workspace_path(attempt_id)
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+            for path in sorted(source.rglob("*")):
+                if path.is_symlink():
+                    raise ValueError("workspace must not contain symlinks")
+                if path.is_file():
+                    tar.add(path, arcname=str(path.relative_to(source)), recursive=False)
+        encoded = base64.b64encode(archive.getvalue()).decode("ascii")
+        if len(encoded) > 8 * 1024 * 1024:
+            raise ValueError("workspace archive exceeds the 8 MiB transport limit")
+        sandbox_id = self._ensure_sandbox(self.timeout_seconds * 1000)
+        self._runner(
+            (
+                self.e2b_binary, "sandbox", "exec", sandbox_id, "--",
+                "sh", "-lc", 'mkdir -p "$1" && printf %s "$2" | base64 -d | tar -xzf - -C "$1"',
+                "sh", remote, encoded,
+            ),
+            self.timeout_seconds * 1000,
+            self._cli_env(),
+        )
+        return remote
+
+    def collect_workspace(self, attempt_id: str, workspace: Path) -> None:
+        """Replace a disposable local workspace with the sandbox result."""
+
+        destination = Path(workspace).expanduser().resolve()
+        if not destination.is_dir():
+            raise ValueError("workspace must be an existing directory")
+        remote = self._workspace_path(attempt_id)
+        sandbox_id = self._ensure_sandbox(self.timeout_seconds * 1000)
+        encoded = self._runner(
+            (
+                self.e2b_binary, "sandbox", "exec", sandbox_id, "--",
+                "sh", "-lc", 'tar -C "$1" -czf - . | base64 -w 0', "sh", remote,
+            ),
+            self.timeout_seconds * 1000,
+            self._cli_env(),
+        )
+        try:
+            payload = base64.b64decode(encoded.strip(), validate=True)
+        except ValueError as exc:
+            raise HerdrRuntimeError("E2B workspace collection returned invalid base64") from exc
+        staging = Path(tempfile.mkdtemp(prefix="sdf-e2b-collect-", dir=destination.parent))
+        try:
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+                members = tar.getmembers()
+                for member in members:
+                    relative = Path(member.name)
+                    if relative.is_absolute() or ".." in relative.parts or not (member.isdir() or member.isfile()):
+                        raise HerdrRuntimeError("E2B workspace archive contains an unsafe member")
+                tar.extractall(staging, members=members, filter="data")
+            for child in destination.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            for child in staging.iterdir():
+                shutil.move(str(child), destination / child.name)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
     def _ensure_sandbox(self, timeout_ms: int) -> str:
         if self._sandbox_id is not None:
             return self._sandbox_id
@@ -99,6 +172,12 @@ class E2BHerdrTransport:
             raise HerdrRuntimeError("E2B sandbox create did not return a sandbox ID")
         self._sandbox_id = match.group(1)
         return self._sandbox_id
+
+    @staticmethod
+    def _workspace_path(attempt_id: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", attempt_id):
+            raise ValueError("attempt_id must contain only letters, digits, underscores, or hyphens")
+        return f"/tmp/sdf/{attempt_id}"
 
     def _cli_env(self) -> dict[str, str]:
         api_key = self._environ.get("E2B_API_KEY")

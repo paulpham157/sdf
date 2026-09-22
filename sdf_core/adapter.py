@@ -43,28 +43,39 @@ class FakeNativeAdapter:
 class RuntimeAgentAdapter:
     """Adapt the internal AgentRuntime into the existing artifact pipeline."""
 
-    def __init__(self, runtime: AgentRuntime | RuntimeController):
+    def __init__(self, runtime: AgentRuntime | RuntimeController, *, agent: str = "native-runtime"):
+        if not agent.strip():
+            raise ValueError("agent must be non-empty")
         self.runtime = runtime
+        self.agent = agent
 
     def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
         before = self._snapshot(workspace)
         bind_workspace = getattr(self.runtime, "bind_workspace", None)
         if callable(bind_workspace):
             bind_workspace(attempt_id, workspace)
-        session = self.runtime.start(attempt_id=attempt_id, agent="native-runtime")
-        self.runtime.send(session.session_id, instructions)
-        output = self.runtime.stream(session.session_id)
-        final = self.runtime.status(session.session_id)
-        changed = self._changed(before, self._snapshot(workspace))
-        completed = final.status is RuntimeStatus.COMPLETED
-        return AdapterResult(
-            attempt_id=attempt_id,
-            status="completed" if completed else final.status.value,
-            changed_files=changed,
-            stdout="\n".join(output),
-            stderr="" if completed else f"runtime ended in {final.status.value}",
-            exit_code=0 if completed else 1,
-        )
+        session = None
+        try:
+            session = self.runtime.start(attempt_id=attempt_id, agent=self.agent)
+            self.runtime.send(session.session_id, instructions)
+            output = self.runtime.stream(session.session_id)
+            final = self.runtime.status(session.session_id)
+            collect_workspace = getattr(self.runtime, "collect_workspace", None)
+            if callable(collect_workspace):
+                collect_workspace(attempt_id, workspace)
+            changed = self._changed(before, self._snapshot(workspace))
+            completed = final.status is RuntimeStatus.COMPLETED
+            return AdapterResult(
+                attempt_id=attempt_id,
+                status="completed" if completed else final.status.value,
+                changed_files=changed,
+                stdout="\n".join(output),
+                stderr="" if completed else f"runtime ended in {final.status.value}",
+                exit_code=0 if completed else 1,
+            )
+        finally:
+            if session is not None:
+                self.runtime.terminate(session.session_id)
 
     @staticmethod
     def _snapshot(workspace: Path) -> dict[str, bytes]:
