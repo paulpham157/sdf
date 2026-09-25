@@ -3,14 +3,11 @@
 The live counterpart is tests/test_e2b_herdr_transport_live.py.
 """
 
-import base64
-import io
-import tarfile
 import time
 from types import SimpleNamespace
 
 import pytest
-from e2b import CommandExitException, TimeoutException
+from e2b import CommandExitException, FileType, NotFoundException, TimeoutException
 
 from sdf_core.e2b_herdr_transport import E2BHerdrTransport
 from sdf_core.herdr_runtime import HerdrRuntime, HerdrRuntimeError
@@ -26,7 +23,8 @@ class FakeSandbox:
         self._outputs = outputs or (lambda cmd: '{"result":{}}')
         self._error = error
         self.commands = SimpleNamespace(run=self._run)
-        self.files = SimpleNamespace(write=self._write)
+        self.fs = FakeFilesystem()
+        self.files = self.fs
 
     def _run(self, cmd, **kwargs):
         self.runs.append((cmd, kwargs))
@@ -34,12 +32,64 @@ class FakeSandbox:
             raise self._error
         return SimpleNamespace(stdout=self._outputs(cmd), stderr="", exit_code=0)
 
-    def _write(self, path, data, **kwargs):
-        self.writes[path] = (data, kwargs)
-
     def kill(self, **kwargs):
         self.kills.append(kwargs)
         return True
+
+class FakeFilesystem:
+    """In-memory envd filesystem: absolute path -> bytes, plus explicit dirs."""
+
+    def __init__(self):
+        self.files = {}
+        self.dirs = set()
+        self.symlinks = set()
+        self.calls = []
+
+    def _parents(self, path):
+        parts = path.strip("/").split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            self.dirs.add("/" + "/".join(parts[:i]))
+
+    def write_files(self, files, **kwargs):
+        self.calls.append(("write_files", [f["path"] for f in files], kwargs))
+        for entry in files:
+            data = entry["data"]
+            self.files[entry["path"]] = data.encode() if isinstance(data, str) else bytes(data)
+            self._parents(entry["path"])
+
+    def make_dir(self, path, **kwargs):
+        self.calls.append(("make_dir", path, kwargs))
+        self._parents(path + "/x")
+        return True
+
+    def remove(self, path, **kwargs):
+        self.calls.append(("remove", path, kwargs))
+        prefix = path.rstrip("/") + "/"
+        if path not in self.dirs and path not in self.files:
+            raise NotFoundException(f"path '{path}' does not exist")
+        self.files = {k: v for k, v in self.files.items() if k != path and not k.startswith(prefix)}
+        self.dirs = {d for d in self.dirs if d != path and not d.startswith(prefix)}
+
+    def list(self, path, depth=1, **kwargs):
+        self.calls.append(("list", path, depth, kwargs))
+        if path not in self.dirs:
+            raise NotFoundException(f"path '{path}' does not exist")
+        prefix = path.rstrip("/") + "/"
+        entries = []
+        for d in sorted(self.dirs):
+            if d.startswith(prefix):
+                entries.append(SimpleNamespace(path=d, name=d.rsplit("/", 1)[1], type=FileType.DIR))
+        for f in sorted(self.files):
+            if f.startswith(prefix):
+                kind = FileType.SYMLINK if f in self.symlinks else FileType.FILE
+                entries.append(SimpleNamespace(path=f, name=f.rsplit("/", 1)[1], type=kind))
+        return entries
+
+    def read(self, path, format="text", **kwargs):
+        self.calls.append(("read", path, format, kwargs))
+        data = self.files[path]
+        return data if format == "bytes" else data.decode()
+
 
 class FakeFactory:
     def __init__(self, sandbox=None):
@@ -181,29 +231,175 @@ def test_an_existing_sandbox_id_is_reattached_not_recreated():
     assert connects[0][1]["api_key"] == "<REDACTED>"
     assert len(factory.sandbox.kills) == 1
 
-def test_stages_and_collects_a_bounded_attempt_workspace(tmp_path):
+def _fixture(tmp_path):
     fixture = tmp_path / "fixture"
-    fixture.mkdir()
+    fixture.joinpath("pkg").mkdir(parents=True)
     fixture.joinpath("app.py").write_text("print('local')\n", encoding="utf-8")
-    archive = io.BytesIO()
-    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
-        payload = b"print('remote')\n"
-        member = tarfile.TarInfo("app.py")
-        member.size = len(payload)
-        tar.addfile(member, io.BytesIO(payload))
-    collected = base64.b64encode(archive.getvalue()).decode("ascii")
-    factory = FakeFactory(FakeSandbox(outputs=lambda cmd: collected if "tar -C" in cmd and "-czf" in cmd else ""))
-    transport = _transport(factory)
+    fixture.joinpath("pkg", "mod.py").write_bytes(b"\x00binary\xff")
+    return fixture
 
-    remote = transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+
+def test_staging_writes_the_workspace_into_the_attempt_directory_via_the_sdk_filesystem(tmp_path):
+    factory = FakeFactory()
+    transport = _transport(factory, request_timeout_seconds=7.0)
+
+    remote = transport.stage_workspace("ATTEMPT-WORKSPACE", _fixture(tmp_path))
+
+    fs = factory.sandbox.fs
+    assert remote == "/tmp/sdf/ATTEMPT-WORKSPACE"
+    assert fs.files == {
+        "/tmp/sdf/ATTEMPT-WORKSPACE/app.py": b"print('local')\n",
+        "/tmp/sdf/ATTEMPT-WORKSPACE/pkg/mod.py": b"\x00binary\xff",
+    }
+    assert "/tmp/sdf/ATTEMPT-WORKSPACE" in fs.dirs
+    assert factory.sandbox.runs == []  # no shell round-trip for staging
+    assert all(call[-1]["request_timeout"] == 7.0 for call in fs.calls)
+    assert len(factory.creates) == 1
+
+
+def test_staging_replaces_stale_remote_state_from_a_previous_stage(tmp_path):
+    factory = FakeFactory()
+    transport = _transport(factory)
+    factory.sandbox.fs.write_files([{"path": "/tmp/sdf/ATTEMPT-WORKSPACE/stale.txt", "data": b"old"}])
+
+    transport.stage_workspace("ATTEMPT-WORKSPACE", _fixture(tmp_path))
+
+    assert "/tmp/sdf/ATTEMPT-WORKSPACE/stale.txt" not in factory.sandbox.fs.files
+
+
+def test_staging_keeps_empty_directories(tmp_path):
+    fixture = _fixture(tmp_path)
+    fixture.joinpath("empty").mkdir()
+    factory = FakeFactory()
+
+    _transport(factory).stage_workspace("ATTEMPT-WORKSPACE", fixture)
+
+    assert "/tmp/sdf/ATTEMPT-WORKSPACE/empty" in factory.sandbox.fs.dirs
+
+
+def test_staging_rejects_symlinks_before_provisioning(tmp_path):
+    fixture = _fixture(tmp_path)
+    fixture.joinpath("link").symlink_to(fixture / "app.py")
+    factory = FakeFactory()
+
+    with pytest.raises(ValueError, match="symlink"):
+        _transport(factory).stage_workspace("ATTEMPT-WORKSPACE", fixture)
+    assert factory.creates == []
+
+
+def test_staging_rejects_a_workspace_over_the_transfer_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr("sdf_core.e2b_herdr_transport._TRANSFER_LIMIT", 8)
+    factory = FakeFactory()
+
+    with pytest.raises(ValueError, match="limit"):
+        _transport(factory).stage_workspace("ATTEMPT-WORKSPACE", _fixture(tmp_path))
+    assert factory.creates == []
+
+
+def test_staging_rejects_unsafe_attempt_ids(tmp_path):
+    with pytest.raises(ValueError, match="attempt_id"):
+        _transport(FakeFactory()).stage_workspace("../escape", _fixture(tmp_path))
+
+
+def test_collection_replaces_the_local_workspace_with_remote_state(tmp_path):
+    fixture = _fixture(tmp_path)
+    factory = FakeFactory()
+    transport = _transport(factory)
+    transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+    fs = factory.sandbox.fs
+    fs.write_files([
+        {"path": "/tmp/sdf/ATTEMPT-WORKSPACE/app.py", "data": b"print('remote')\n"},
+        {"path": "/tmp/sdf/ATTEMPT-WORKSPACE/new/created.txt", "data": b"agent output"},
+    ])
+    fs.remove("/tmp/sdf/ATTEMPT-WORKSPACE/pkg/mod.py")
     fixture.joinpath("local-only.txt").write_text("discard", encoding="utf-8")
+
     transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
 
-    assert remote == "/tmp/sdf/ATTEMPT-WORKSPACE"
     assert fixture.joinpath("app.py").read_text(encoding="utf-8") == "print('remote')\n"
+    assert fixture.joinpath("new", "created.txt").read_bytes() == b"agent output"
     assert not fixture.joinpath("local-only.txt").exists()
-    (staged_path, (staged, _)), = factory.sandbox.writes.items()
-    with tarfile.open(fileobj=io.BytesIO(staged), mode="r:gz") as tar:
-        assert tar.getnames() == ["app.py"]
-    assert any(staged_path in cmd and "tar -xzf" in cmd for cmd, _ in factory.sandbox.runs)
-    assert len(factory.creates) == 1
+    assert not fixture.joinpath("pkg", "mod.py").exists()
+    assert fixture.joinpath("pkg").is_dir()
+    assert factory.sandbox.runs == []  # no shell/base64 round-trip for collection
+    assert any(call[0] == "read" and call[2] == "bytes" for call in fs.calls)
+    assert list(tmp_path.glob("sdf-e2b-collect-*")) == []
+
+
+def test_collection_failure_leaves_the_local_workspace_untouched(tmp_path):
+    fixture = _fixture(tmp_path)
+    factory = FakeFactory()
+    transport = _transport(factory)
+    transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+
+    def failing_read(path, **kwargs):
+        raise NotFoundException("gone")
+
+    factory.sandbox.fs.read = failing_read
+
+    with pytest.raises(HerdrRuntimeError, match="collection failed"):
+        transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
+    assert fixture.joinpath("app.py").read_text(encoding="utf-8") == "print('local')\n"
+    assert list(tmp_path.glob("sdf-e2b-collect-*")) == []
+
+
+def test_collection_of_a_missing_remote_workspace_raises(tmp_path):
+    fixture = _fixture(tmp_path)
+
+    with pytest.raises(HerdrRuntimeError, match="collection failed"):
+        _transport(FakeFactory()).collect_workspace("ATTEMPT-WORKSPACE", fixture)
+    assert fixture.joinpath("app.py").exists()
+
+
+def test_collection_rejects_remote_symlinks(tmp_path):
+    fixture = _fixture(tmp_path)
+    factory = FakeFactory()
+    transport = _transport(factory)
+    transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+    fs = factory.sandbox.fs
+    fs.write_files([{"path": "/tmp/sdf/ATTEMPT-WORKSPACE/link", "data": b""}])
+    fs.symlinks.add("/tmp/sdf/ATTEMPT-WORKSPACE/link")
+
+    with pytest.raises(HerdrRuntimeError, match="unsafe"):
+        transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
+    assert fixture.joinpath("app.py").read_text(encoding="utf-8") == "print('local')\n"
+
+
+def test_collection_rejects_entries_outside_the_attempt_directory(tmp_path):
+    fixture = _fixture(tmp_path)
+    factory = FakeFactory()
+    transport = _transport(factory)
+    transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+    original = factory.sandbox.fs.list
+
+    def escaping_list(path, depth=1, **kwargs):
+        entries = original(path, depth, **kwargs)
+        return [*entries, SimpleNamespace(path="/etc/passwd", name="passwd", type=FileType.FILE)]
+
+    factory.sandbox.fs.list = escaping_list
+
+    with pytest.raises(HerdrRuntimeError, match="unsafe"):
+        transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
+
+
+def test_collection_rejects_remote_state_over_the_transfer_limit(tmp_path, monkeypatch):
+    fixture = _fixture(tmp_path)
+    factory = FakeFactory()
+    transport = _transport(factory)
+    transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+    monkeypatch.setattr("sdf_core.e2b_herdr_transport._TRANSFER_LIMIT", 8)
+
+    with pytest.raises(HerdrRuntimeError, match="limit"):
+        transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
+    assert fixture.joinpath("app.py").read_text(encoding="utf-8") == "print('local')\n"
+
+
+def test_the_persistent_transport_has_no_cli_runner_seam():
+    import inspect
+
+    import sdf_core.e2b_herdr_transport as module
+
+    source = inspect.getsource(module)
+    assert "subprocess" not in source
+    assert "runner" not in inspect.signature(E2BHerdrTransport).parameters
+    assert "tarfile" not in source and "base64" not in source
