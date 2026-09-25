@@ -305,3 +305,111 @@ def test_env_example_lists_every_variable_name_without_values():
     assert required <= set(entries)
     for name in required:
         assert entries[name] == "", f"{name} must have no value in .env.example"
+
+
+# --- subscription mode: expiry margin and base URL (#14) -----------------------
+
+from datetime import datetime, timedelta, timezone
+
+NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+CODEX_SUBSCRIPTION = {"SDF_CREDENTIAL_MODE_CODEX": "subscription", "SDF_CONNECTION_CODEX": "codex-personal"}
+DUMMY_SESSION = '{"auth_mode":"chatgpt","tokens":{"access_token":"dummy-bearer-expiry"}}'
+
+
+def _expiring_reader(expires_at):
+    def reader(agent, connection_id):
+        return ConnectionMaterial({"CODEX_AUTH_JSON": DUMMY_SESSION}, expires_at=expires_at)
+
+    return reader
+
+
+@pytest.mark.parametrize("seconds_past_margin", [0, -1])
+def test_connection_expiring_within_the_margin_is_refused_with_connect_command(seconds_past_margin):
+    timeout = 900
+    expires_at = NOW + timedelta(seconds=timeout) + timedelta(minutes=10) + timedelta(seconds=seconds_past_margin)
+    with pytest.raises(CredentialConfigError) as error:
+        resolve_credential_plan(
+            "codex",
+            CODEX_SUBSCRIPTION,
+            read_connection=_expiring_reader(expires_at),
+            sandbox_timeout_seconds=timeout,
+            now=NOW,
+        )
+    message = str(error.value)
+    assert "e2b-box auth connect codex" in message
+    assert "codex-personal" in message
+    assert DUMMY_SESSION not in message and "dummy-bearer-expiry" not in message
+
+
+def test_connection_expiring_just_after_the_margin_is_accepted():
+    timeout = 900
+    expires_at = NOW + timedelta(seconds=timeout, minutes=10, microseconds=1)
+    plan = resolve_credential_plan(
+        "codex",
+        CODEX_SUBSCRIPTION,
+        read_connection=_expiring_reader(expires_at),
+        sandbox_timeout_seconds=timeout,
+        now=NOW,
+    )
+    assert plan.mode is CredentialMode.SUBSCRIPTION
+    assert plan.connection_id == "codex-personal"
+
+
+def test_margin_scales_with_the_sandbox_timeout():
+    expires_at = NOW + timedelta(minutes=30)
+    reader = _expiring_reader(expires_at)
+    resolve_credential_plan("codex", CODEX_SUBSCRIPTION, read_connection=reader, sandbox_timeout_seconds=600, now=NOW)
+    with pytest.raises(CredentialConfigError, match="e2b-box auth connect codex"):
+        resolve_credential_plan("codex", CODEX_SUBSCRIPTION, read_connection=reader, sandbox_timeout_seconds=1200, now=NOW)
+
+
+def test_connection_without_expiry_is_accepted():
+    plan = resolve_credential_plan(
+        "codex", CODEX_SUBSCRIPTION, read_connection=_expiring_reader(None), sandbox_timeout_seconds=900, now=NOW
+    )
+    assert plan.connection_id == "codex-personal"
+
+
+def test_naive_expiry_is_rejected_rather_than_guessed():
+    with pytest.raises(CredentialConfigError, match="codex-personal"):
+        resolve_credential_plan(
+            "codex",
+            CODEX_SUBSCRIPTION,
+            read_connection=_expiring_reader(datetime(2026, 10, 3)),
+            sandbox_timeout_seconds=900,
+            now=NOW,
+        )
+
+
+def test_expiry_check_refuses_claude_with_its_own_connect_command():
+    def reader(agent, connection_id):
+        return ConnectionMaterial({"CLAUDE_CODE_OAUTH_TOKEN": "oauth-dummy"}, expires_at=NOW)
+
+    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "subscription", "SDF_CONNECTION_CLAUDE": "claude-work"}
+    with pytest.raises(CredentialConfigError, match="e2b-box auth connect claude"):
+        resolve_credential_plan("claude", env, read_connection=reader, sandbox_timeout_seconds=60, now=NOW)
+
+
+@pytest.mark.parametrize(
+    ("agent", "variable", "connection_variable"),
+    [
+        ("claude", "SDF_ANTHROPIC_BASE_URL", "SDF_CONNECTION_CLAUDE"),
+        ("codex", "SDF_OPENAI_BASE_URL", "SDF_CONNECTION_CODEX"),
+    ],
+)
+def test_base_url_is_rejected_in_subscription_mode(agent, variable, connection_variable):
+    env = {
+        f"SDF_CREDENTIAL_MODE_{agent.upper()}": "subscription",
+        connection_variable: "some-connection",
+        variable: "https://api.example.com/v1",
+    }
+    with pytest.raises(CredentialConfigError, match=variable) as error:
+        resolve_credential_plan(agent, env, read_connection=lambda a, c: pytest.fail("reader must not be called"))
+    assert "subscription" in str(error.value)
+    assert "https://api.example.com" not in str(error.value)
+
+
+def test_connection_material_repr_hides_values_but_shows_expiry():
+    material = ConnectionMaterial({"CODEX_AUTH_JSON": DUMMY_SESSION}, expires_at=NOW)
+    assert DUMMY_SESSION not in repr(material)
+    assert "2026-09-25" in repr(material)

@@ -420,3 +420,87 @@ def test_runtime_pre_trusts_the_bound_workspace_before_starting_claude_only():
     runtime.bind_remote_workspace("ATTEMPT-X", "/tmp/sdf/ATTEMPT-X")
     runtime.start(attempt_id="ATTEMPT-X", agent="codex")
     assert ("prepare", "codex", "/tmp/sdf/ATTEMPT-X") in calls  # the transport decides per agent kind
+
+# --- subscription expiry and default connection reader (#14) --------------------
+
+
+def _expiring(expires_at):
+    def reader(agent, connection_id):
+        return ConnectionMaterial({"CODEX_AUTH_JSON": CODEX_SESSION}, expires_at=expires_at)
+
+    return reader
+
+
+def test_expiring_connection_is_refused_before_any_sandbox_is_created():
+    from datetime import datetime, timedelta, timezone
+
+    factory = FakeFactory()
+    # Valid for 20 minutes: enough for a 5-minute box, not for a 15-minute one.
+    reader = _expiring(datetime.now(timezone.utc) + timedelta(minutes=20))
+
+    with pytest.raises(CredentialConfigError, match="e2b-box auth connect codex") as caught:
+        create_credentialed_transport(
+            template="herdr", agents=("codex",), environ=SUBSCRIPTION_ENV, read_connection=reader,
+            sandbox_factory=factory, timeout_seconds=900,
+        )
+    assert factory.creates == []
+    _assert_no_secret(str(caught.value))
+
+    transport, injection = create_credentialed_transport(
+        template="herdr", agents=("codex",), environ=SUBSCRIPTION_ENV, read_connection=reader,
+        sandbox_factory=factory, timeout_seconds=300,
+    )
+    assert injection.metadata["codex"] == CredentialMetadata("subscription", "codex-personal")
+
+
+def test_plugin_bridge_is_the_default_connection_reader(monkeypatch):
+    built = []
+
+    class FakeBridge:
+        def __init__(self, *, environ):
+            built.append(environ)
+
+        def __call__(self, agent, connection_id):
+            return _reader(agent, connection_id)
+
+    monkeypatch.setattr("sdf_core.credential_injection.PluginConnectionBridge", FakeBridge)
+    injection = prepare_credential_injection(("codex",), SUBSCRIPTION_ENV)
+
+    assert built == [SUBSCRIPTION_ENV]
+    assert injection.envs == {"CODEX_AUTH_JSON": CODEX_SESSION}
+    assert injection.metadata["codex"] == CredentialMetadata("subscription", "codex-personal")
+
+
+def test_api_key_mode_never_builds_the_plugin_bridge(monkeypatch):
+    def refuse(**_):
+        raise AssertionError("bridge must not be built for api-key agents")
+
+    monkeypatch.setattr("sdf_core.credential_injection.PluginConnectionBridge", refuse)
+    prepare_credential_injection(("claude", "codex"), API_KEY_ENV)
+
+
+def test_codex_subscription_seed_writes_the_session_to_codex_auth_json_by_name():
+    injection = prepare_credential_injection(("codex",), SUBSCRIPTION_ENV, read_connection=_reader)
+
+    # The auth.json seed, then the agent pane environment seed (#11), both by name.
+    command, pane_seed = injection.seed_commands
+    assert "agent-env.sh" in pane_seed and pane_seed.split()[-1] == "CODEX_AUTH_JSON"
+    _assert_no_secret(pane_seed)
+    assert '"$CODEX_AUTH_JSON"' in command
+    assert "/.codex" in command and "auth.json" in command
+    _assert_no_secret(command)
+
+
+def test_claude_subscription_sets_oauth_token_without_a_seed():
+    environ = {**ENV, "SDF_CREDENTIAL_MODE_CLAUDE": "subscription", "SDF_CONNECTION_CLAUDE": "claude-work"}
+    injection = prepare_credential_injection(
+        ("claude",), environ,
+        read_connection=lambda agent, cid: ConnectionMaterial({"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dummy"}),
+    )
+    assert injection.envs == {"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-dummy"}
+    assert "ANTHROPIC_API_KEY" in injection.strip_variables
+    # Only the agent pane environment seed (#11), which exposes the token to Herdr panes by name.
+    (pane_seed,) = injection.seed_commands
+    assert "agent-env.sh" in pane_seed and pane_seed.split()[-1] == "CLAUDE_CODE_OAUTH_TOKEN"
+    assert "sk-ant-oat01-dummy" not in pane_seed
+    assert injection.metadata["claude"] == CredentialMetadata("subscription", "claude-work")

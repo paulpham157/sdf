@@ -37,6 +37,20 @@ _AGENT_START_ARGS: Mapping[str, tuple[str, ...]] = {
 }
 
 
+def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str, ...]:
+    """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
+
+    Codex does not inherit trust from a parent directory, so without this its
+    folder-trust dialog blocks every prompt in a freshly staged Attempt.
+    """
+
+    args = _AGENT_START_ARGS.get(agent, ())
+    if agent == "codex" and workspace_dir is not None:
+        # A JSON string is a valid TOML basic string for any path.
+        args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")
+    return args
+
+
 class HerdrTransport(Protocol):
     """Control-plane transport for a Herdr endpoint.
 
@@ -383,7 +397,7 @@ class HerdrRuntime(AgentRuntime):
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
-        agent_args = _AGENT_START_ARGS.get(agent, ())
+        agent_args = _agent_start_args(agent, workspace_dir)
         if agent_args:
             start_args.extend(("--", *agent_args))
         started = self._object(start_args)

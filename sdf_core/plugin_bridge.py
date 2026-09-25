@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import subprocess
+from datetime import datetime
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -112,7 +113,22 @@ class PluginConnectionBridge:
             isinstance(name, str) and isinstance(value, str) for name, value in variables.items()
         ):
             raise CredentialConfigError(f"connection {connection_id!r} returned malformed material")
-        return ConnectionMaterial(variables)
+        return ConnectionMaterial(variables, expires_at=_expiry(reply.get("expiresAt"), connection_id))
+
+
+def _expiry(raw: object, connection_id: str) -> datetime | None:
+    """The plugin's ISO-8601 ``expiresAt``, or None when the connection never expires."""
+    if raw is None:
+        return None
+    try:
+        if not isinstance(raw, str):
+            raise ValueError
+        expires_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise CredentialConfigError(f"connection {connection_id!r} returned an unreadable expiry") from None
+    if expires_at.tzinfo is None:
+        raise CredentialConfigError(f"connection {connection_id!r} returned an expiry without a timezone")
+    return expires_at
 
 
 def _parse_reply(stdout: bytes, connection_id: str) -> dict:
