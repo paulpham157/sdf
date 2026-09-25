@@ -201,8 +201,8 @@ def load_dotenv(
     if not dotenv.is_file():
         return ()
     loaded: list[str] = []
-    for line in dotenv.read_text(encoding="utf-8").splitlines():
-        entry = _parse_line(line)
+    for number, line in enumerate(dotenv.read_text(encoding="utf-8").splitlines(), start=1):
+        entry = _parse_line(line, dotenv, number)
         if entry is None:
             continue
         name, value = entry
@@ -216,7 +216,7 @@ def load_dotenv(
 _LINE = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 
 
-def _parse_line(line: str) -> tuple[str, str] | None:
+def _parse_line(line: str, dotenv: Path, number: int) -> tuple[str, str] | None:
     stripped = line.strip()
     if not stripped or stripped.startswith("#"):
         return None
@@ -224,8 +224,13 @@ def _parse_line(line: str) -> tuple[str, str] | None:
     if match is None:
         return None
     name, raw = match.groups()
-    if raw[:1] in {'"', "'"} and raw.find(raw[0], 1) > 0:
-        return name, raw[1 : raw.find(raw[0], 1)]
+    if raw[:1] in {'"', "'"}:
+        end = raw.find(raw[0], 1)
+        rest = raw[end + 1 :].strip() if end > 0 else ""
+        if end < 0 or (rest and not rest.startswith("#")):
+            # Never echo the value: it is likely a secret.
+            raise CredentialConfigError(f"{dotenv}:{number}: malformed quoted value for {name}")
+        return name, raw[1:end]
     return name, re.split(r"\s+#", raw, maxsplit=1)[0].strip()
 
 

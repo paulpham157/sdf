@@ -238,6 +238,25 @@ def test_dotenv_loads_without_overriding_real_environment(tmp_path: Path):
     assert set(loaded) == {"SDF_CREDENTIAL_MODE_CLAUDE", "SDF_OPENAI_API_KEY", "SDF_CONNECTION_CODEX"}
 
 
+@pytest.mark.parametrize("line", ['SDF_ANTHROPIC_API_KEY="sk-dummy-value"garbage', "SDF_ANTHROPIC_API_KEY='sk-dummy-value"])
+def test_dotenv_malformed_quoted_value_names_variable_not_value(tmp_path: Path, line):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(f"# header\n{line}\n")
+    with pytest.raises(CredentialConfigError) as error:
+        load_dotenv(dotenv, {})
+    message = str(error.value)
+    assert "SDF_ANTHROPIC_API_KEY" in message and ":2:" in message
+    assert "sk-dummy-value" not in message
+
+
+def test_dotenv_quoted_value_with_trailing_comment(tmp_path: Path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text('SDF_OPENAI_API_KEY="dummy # not a comment"  # comment\n')
+    environ: dict[str, str] = {}
+    load_dotenv(dotenv, environ)
+    assert environ == {"SDF_OPENAI_API_KEY": "dummy # not a comment"}
+
+
 def test_dotenv_missing_file_is_a_noop(tmp_path: Path):
     environ: dict[str, str] = {}
     assert load_dotenv(tmp_path / ".env", environ) == ()
