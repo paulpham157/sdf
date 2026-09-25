@@ -169,3 +169,20 @@ def test_runtime_agent_adapter_stages_and_collects_attempt_workspace_through_her
     assert transport.staged == [("ATTEMPT-STAGED", workspace)]
     assert transport.collected == [("ATTEMPT-STAGED", workspace)]
     assert transport.closed == [30_000]
+
+
+def test_diff_capture_records_a_binary_file_the_agent_left_without_decoding_it(tmp_path: Path):
+    # An agent that runs the code leaves ``__pycache__/*.pyc`` behind (#16).
+    before, after = tmp_path / "before", tmp_path / "after"
+    before.mkdir()
+    (after / "__pycache__").mkdir(parents=True)
+    (before / "calc.py").write_text("return a - b\n", encoding="utf-8")
+    (after / "calc.py").write_text("return a + b\n", encoding="utf-8")
+    (after / "__pycache__" / "calc.cpython-312.pyc").write_bytes(b"\xa7\r\r\n\x00\xff")
+
+    artifact = ArtifactStore(tmp_path / "artifacts").capture_diff(
+        artifact_id="DIFF-BIN", before=before, after=after, files=("__pycache__/calc.cpython-312.pyc", "calc.py")
+    )
+    diff = artifact.path.read_text(encoding="utf-8")
+    assert "Binary files a/__pycache__/calc.cpython-312.pyc and b/__pycache__/calc.cpython-312.pyc differ" in diff
+    assert "+return a + b" in diff

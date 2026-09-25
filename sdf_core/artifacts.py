@@ -39,6 +39,17 @@ class WorkspaceManager:
         return destination
 
 
+def _text_lines(path: Path) -> list[str] | None:
+    """A file's UTF-8 lines, ``[]`` when absent, ``None`` when it is not text."""
+
+    if not path.exists():
+        return []
+    try:
+        return path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except UnicodeDecodeError:
+        return None
+
+
 class ArtifactStore:
     def __init__(self, root: Path):
         self.root = root
@@ -46,8 +57,11 @@ class ArtifactStore:
     def capture_diff(self, *, artifact_id: str, before: Path, after: Path, files: Iterable[str]) -> Artifact:
         chunks: list[str] = []
         for relative in files:
-            old = (before / relative).read_text(encoding="utf-8").splitlines(keepends=True) if (before / relative).exists() else []
-            new = (after / relative).read_text(encoding="utf-8").splitlines(keepends=True) if (after / relative).exists() else []
+            old, new = _text_lines(before / relative), _text_lines(after / relative)
+            if old is None or new is None:
+                # A binary file (e.g. an agent's ``__pycache__``) is named, not decoded.
+                chunks.append(f"Binary files a/{relative} and b/{relative} differ\n")
+                continue
             chunks.extend(difflib.unified_diff(old, new, fromfile=f"a/{relative}", tofile=f"b/{relative}"))
         return self._write(artifact_id, "diff", "".join(chunks).encode("utf-8"))
 
