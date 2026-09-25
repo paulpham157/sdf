@@ -84,6 +84,14 @@ _Avoid_: domain core, Task owner
 An execution resource linked to an Attempt whose connection and process lifecycle are distinct from the Task outcome.
 _Avoid_: Task, Evidence
 
+**Agent Credential**:
+The right to call a model provider that an Agent Runtime receives when its sandbox is created; it belongs to the runtime, not to the Attempt.
+_Avoid_: auth, token
+
+**Credential Mode**:
+How an Agent Credential is obtained for one agent kind: `subscription` (a login made once on the operator's host and forwarded) or `api-key` (an operator-supplied provider key).
+_Avoid_: auth method, fallback
+
 **Tool Proxy**:
 The SDF action boundary that obtains a Policy Decision before executing a requested tool action.
 _Avoid_: terminal output parser, sandbox
