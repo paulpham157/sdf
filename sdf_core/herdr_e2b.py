@@ -141,7 +141,8 @@ class HerdrE2BAdapter:
 
 
     def _run(self, command: Sequence[str], cwd: Path, timeout_ms: int, env: Mapping[str, str]) -> str:
-        process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # e2b exec streams piped stdin until EOF; an inherited pipe hangs it.
+        process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=(os.name == "posix"))
         try:
             stdout, stderr = process.communicate(timeout=timeout_ms / 1000)

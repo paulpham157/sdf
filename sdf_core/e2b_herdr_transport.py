@@ -198,6 +198,8 @@ class E2BHerdrTransport:
         process = subprocess.Popen(
             command,
             env=dict(env),
+            # e2b exec streams piped stdin until EOF; an inherited pipe hangs it.
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
