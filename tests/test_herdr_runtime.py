@@ -344,3 +344,22 @@ def test_herdr_runtime_rejects_malformed_provider_payload():
     runtime = HerdrRuntime(runner=lambda *_: "not-json")
     with pytest.raises(HerdrRuntimeError, match="JSON"):
         runtime.start(attempt_id="ATTEMPT-104", agent="codex")
+
+
+def test_herdr_runtime_starts_claude_with_bypass_permissions_for_the_disposable_sandbox():
+    runner = FakeHerdr()
+    HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CLAUDE", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert starts == [
+        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1",
+         "--", "--dangerously-skip-permissions"),
+    ]
+
+
+def test_herdr_runtime_passes_no_extra_agent_args_to_codex():
+    runner = FakeHerdr()
+    HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CODEX", agent="codex")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert starts == [("herdr", "agent", "start", "codex", "--kind", "codex", "--pane", "pane-1")]

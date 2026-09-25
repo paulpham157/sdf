@@ -1,4 +1,8 @@
-# E2B Herdr + Codex template
+# E2B Herdr + Codex template (deprecated)
+
+> **Deprecated:** use [`sdf-herdr-agents`](../herdr-agents/README.md), which
+> pins Herdr, Codex and Claude Code. This template is kept until the credential
+> injection work (#11) passes on the new template, then it will be removed.
 
 Pinned execution image for the SDF remote runtime:
 

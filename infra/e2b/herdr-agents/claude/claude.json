@@ -1,0 +1,20 @@
+{
+  "hasCompletedOnboarding": true,
+  "bypassPermissionsModeAccepted": true,
+  "theme": "dark",
+  "autoUpdates": false,
+  "projects": {
+    "/home/user": {
+      "hasTrustDialogAccepted": true
+    },
+    "/home/user/project": {
+      "hasTrustDialogAccepted": true
+    },
+    "/workspace": {
+      "hasTrustDialogAccepted": true
+    },
+    "/tmp/sdf": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}

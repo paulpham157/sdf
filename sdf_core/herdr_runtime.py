@@ -29,6 +29,13 @@ class HerdrUnsupportedOperation(HerdrRuntimeError):
 
 HerdrRunner = Callable[[Sequence[str], int], str]
 
+# Extra argv per agent kind. Claude runs only in a disposable sandbox from the
+# sdf-herdr-agents template, so its permission prompts are skipped there; the
+# template pre-accepts the matching dangerous-mode disclaimer.
+_AGENT_START_ARGS: Mapping[str, tuple[str, ...]] = {
+    "claude": ("--dangerously-skip-permissions",),
+}
+
 
 class HerdrTransport(Protocol):
     """Control-plane transport for a Herdr endpoint.
@@ -349,6 +356,9 @@ class HerdrRuntime(AgentRuntime):
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
+        agent_args = _AGENT_START_ARGS.get(agent, ())
+        if agent_args:
+            start_args.extend(("--", *agent_args))
         started = self._object(start_args)
         started_agent = started.get("agent", started)
         if not isinstance(started_agent, Mapping):
