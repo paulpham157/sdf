@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from .runtime import AgentRuntime, RuntimeSession, RuntimeStatus
+from .runtime import AgentRuntime, CredentialMetadata, RuntimeSession, RuntimeStatus
 
 
 class HerdrRuntimeError(RuntimeError):
@@ -137,15 +137,19 @@ class HerdrBindingSnapshot:
     agent: str
     workspace_id: str
     pane_id: str
+    credential: CredentialMetadata | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, str | None]:
+        payload: dict[str, str | None] = {
             "attempt_id": self.attempt_id,
             "session_id": self.session_id,
             "agent": self.agent,
             "workspace_id": self.workspace_id,
             "pane_id": self.pane_id,
         }
+        if self.credential is not None:
+            payload.update(self.credential.as_dict())
+        return payload
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> "HerdrBindingSnapshot":
@@ -157,7 +161,10 @@ class HerdrBindingSnapshot:
         }
         if not all(isinstance(value, str) and value.strip() for value in values.values()):
             raise ValueError("Herdr binding snapshot fields must be non-empty strings")
-        return cls(**values)
+        credential = None
+        if payload.get("credential_mode") is not None:
+            credential = CredentialMetadata(payload["credential_mode"], payload.get("connection_id"))
+        return cls(**values, credential=credential)
 
 
 class HerdrRuntime(AgentRuntime):
@@ -179,6 +186,7 @@ class HerdrRuntime(AgentRuntime):
         session: str | None = None,
         workspace_dir: Path | None = None,
         expected_version: str | None = None,
+        credentials: Mapping[str, CredentialMetadata] | None = None,
     ) -> None:
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be positive")
@@ -194,6 +202,14 @@ class HerdrRuntime(AgentRuntime):
         self._session = session
         self._workspace_dir = workspace_dir
         self.expected_version = expected_version
+        # Secret-free Credential Mode per agent kind (ADR-0007).  When set,
+        # only agent kinds with a resolved plan may start.  A credentialed
+        # transport carries the metadata of the plans it injected.
+        if credentials is None:
+            credentials = getattr(transport, "credential_metadata", None)
+        self.credentials: Mapping[str, CredentialMetadata] | None = (
+            dict(credentials) if credentials is not None else None
+        )
         self._bindings: dict[str, _Binding] = {}
         self._sessions: dict[str, RuntimeSession] = {}
         self._attempt_workspaces: dict[str, Path | str] = {}
@@ -236,6 +252,7 @@ class HerdrRuntime(AgentRuntime):
                 snapshot.attempt_id,
                 snapshot.agent,
                 RuntimeStatus.RUNNING,
+                credential=snapshot.credential,
             )
             self._sessions[snapshot.session_id] = session
         self._bindings[snapshot.session_id] = _Binding(
@@ -328,6 +345,11 @@ class HerdrRuntime(AgentRuntime):
     def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
         if not attempt_id.strip() or not agent.strip():
             raise ValueError("attempt_id and agent must be non-empty")
+        credential = None
+        if self.credentials is not None:
+            credential = self.credentials.get(agent)
+            if credential is None:
+                raise HerdrRuntimeError(f"no resolved Agent Credential for {agent}; it was not injected at sandbox creation")
         if self.expected_version is not None:
             self.require_compatible()
         existing_id = next((sid for sid, b in self._bindings.items() if b.attempt_id == attempt_id), None)
@@ -363,7 +385,7 @@ class HerdrRuntime(AgentRuntime):
             "agentName",
         )
         status = self._status(started_agent.get("status", started_agent.get("agent_status", started.get("status", "working"))))
-        session = RuntimeSession(session_id, attempt_id, agent, status)
+        session = RuntimeSession(session_id, attempt_id, agent, status, credential=credential)
         self._bindings[session_id] = _Binding(attempt_id, agent, workspace_id, pane_id)
         self._sessions[session_id] = session
         return session
@@ -393,7 +415,7 @@ class HerdrRuntime(AgentRuntime):
                 payload = {}
         status = self._status(payload.get("status", payload.get("agent_status", "working"))) if payload else RuntimeStatus.RUNNING
         output = self.stream(session_id)
-        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output or current.output)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output or current.output, credential=current.credential)
         self._sessions[session_id] = updated
         return updated
 
@@ -409,7 +431,7 @@ class HerdrRuntime(AgentRuntime):
             output = self._output(payload, current.output)
         else:
             output = tuple(line for line in raw.splitlines() if line.strip()) or current.output
-        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, current.status, output)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, current.status, output, credential=current.credential)
         self._sessions[session_id] = updated
         return output
 
@@ -426,6 +448,7 @@ class HerdrRuntime(AgentRuntime):
             binding.agent,
             self._status(agent_payload.get("status", agent_payload.get("agent_status", current.status.value))),
             self._output(payload, current.output),
+            credential=current.credential,
         )
         self._sessions[session_id] = updated
         return updated
@@ -452,7 +475,7 @@ class HerdrRuntime(AgentRuntime):
         # Attempt-owned sandbox after every cancellation: provider sandbox
         # destruction is the final descendant-cleanup boundary.
         self._close_execution_environment(session_id)
-        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.CANCELLED, current.output)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.CANCELLED, current.output, credential=current.credential)
         self._sessions[session_id] = updated
         return updated
 
@@ -469,7 +492,7 @@ class HerdrRuntime(AgentRuntime):
                 if "not found" not in str(exc).lower() and "closed" not in str(exc).lower():
                     raise
             self._close_execution_environment(session_id)
-        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.TERMINATED, current.output)
+        updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.TERMINATED, current.output, credential=current.credential)
         self._sessions[session_id] = updated
         return updated
 

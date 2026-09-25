@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
+from .credentials import CredentialMode
 from .db import RuntimeEventRow
 from .model import utcnow
 
@@ -79,12 +80,32 @@ class RuntimeEventSink(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class CredentialMetadata:
+    """Secret-free record of how a Runtime Session's agent was credentialed."""
+
+    credential_mode: str
+    connection_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.credential_mode not in {mode.value for mode in CredentialMode}:
+            # Not echoed: a misplaced secret must not reach an error message.
+            raise ValueError("credential_mode is not a known Credential Mode")
+        if self.connection_id is not None and (
+            not isinstance(self.connection_id, str) or not self.connection_id.strip()
+        ):
+            raise ValueError("connection_id must be a non-empty string or None")
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {"credential_mode": self.credential_mode, "connection_id": self.connection_id}
+
+@dataclass(frozen=True, slots=True)
 class RuntimeSession:
     session_id: str
     attempt_id: str
     agent: str
     status: RuntimeStatus
     output: tuple[str, ...] = ()
+    credential: CredentialMetadata | None = None
 
 
 class AgentRuntime(Protocol):
@@ -214,7 +235,8 @@ class RuntimeController:
         self._attempts[session.session_id] = attempt_id
         self._attempt_sessions[attempt_id] = session.session_id
         if previous_session_id is None:
-            self._record(RuntimeEventKind.STARTED, session)
+            payload = session.credential.as_dict() if session.credential is not None else None
+            self._record(RuntimeEventKind.STARTED, session, payload)
         return session
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
