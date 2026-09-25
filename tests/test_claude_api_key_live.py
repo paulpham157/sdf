@@ -20,17 +20,17 @@ from pathlib import Path
 
 import pytest
 from e2b import Sandbox
-from sqlalchemy.orm import sessionmaker
 
+from sdf_core.adapter import RuntimeAgentAdapter
 from sdf_core.credential_injection import create_credentialed_transport
 from sdf_core.credentials import load_dotenv
-from sdf_core.db import Base, EvidenceRow, RuntimeEventRow, make_engine
-from sdf_core.fixture_loop import AgentFixtureLoop
+from sdf_core.db import EvidenceRow, RuntimeEventRow, TaskRow
+from sdf_core.execution import ExecutionService
 from sdf_core.herdr_runtime import HerdrRuntime
-from sdf_core.model import utcnow
 from sdf_core.runtime import CredentialMetadata, RuntimeController, SqlAlchemyRuntimeEventSink
 from tests.test_e2b_agents_template_live import _DIALOGS
 from tests.test_e2b_herdr_transport_live import _assert_gone
+from tests.test_herdr_e2b_execution import _db
 
 TEMPLATE = os.environ.get("SDF_E2B_AGENTS_TEMPLATE", "sdf-herdr-agents")
 
@@ -196,68 +196,67 @@ CHECK = [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]]
 
 @pytest.mark.skipif(not ANTHROPIC_KEY, reason="live Claude Attempt: set SDF_ANTHROPIC_API_KEY (operator .env via SDF_DOTENV) to run")
 def test_live_claude_attempt_on_an_operator_key_answers_and_records_evidence(tmp_path: Path):
+    """ExecutionService evaluates the interactive Attempt with no test-side driver (#16)."""
+
     box = _Box(ANTHROPIC_KEY)
-    engine = make_engine()
-    Base.metadata.create_all(engine)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "calc.py").write_text(CALC_BUG, encoding="utf-8")
-    attempt = "ATTEMPT-LIVE-CLAUDE-API-KEY"
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "calc.py").write_text(CALC_BUG, encoding="utf-8")
+    scrollbacks: list[str] = []
+    runtime_status = box.runtime.status
+
+    def observed_status(session_id: str):
+        # Observe only: read every pane before terminate destroys the sandbox.
+        session = runtime_status(session_id)
+        scrollbacks.append(box.scrollback())
+        return session
+
+    box.runtime.status = observed_status  # type: ignore[method-assign]
     try:
-        with sessionmaker(engine, expire_on_commit=False)() as db:
-            controller = RuntimeController(box.runtime, event_sink=SqlAlchemyRuntimeEventSink(db), source="herdr-e2b")
-            original_start = box.runtime.start
-
-            def start_and_wait(*, attempt_id: str, agent: str):
-                session = original_start(attempt_id=attempt_id, agent=agent)
-                _wait_idle(box, session.session_id)  # Claude reaches idle with no dialog
-                return session
-
-            box.runtime.start = start_and_wait  # type: ignore[method-assign]
-            result = AgentFixtureLoop(controller).run(
-                attempt_id=attempt,
+        db = _db()
+        service = ExecutionService(
+            db, workspace_root=tmp_path / "workspaces", artifact_root=tmp_path / "artifacts",
+            adapter=RuntimeAgentAdapter(
+                RuntimeController(box.runtime, event_sink=SqlAlchemyRuntimeEventSink(db), source="herdr-e2b"),
                 agent="claude",
-                workspace=workspace,
-                instructions=PROMPT,
-                criteria=("add returns the sum",),
-                criterion_checks={"add returns the sum": CHECK},
-            )
-            answered = "\n".join(box.runtime.stream(result.session.session_id))
-            scrollback = box.scrollback()
-            for evidence in result.evaluation.evidence:
-                db.add(EvidenceRow(
-                    id=evidence.evidence_id, attempt_id=attempt, kind=evidence.kind, status=evidence.status,
-                    command=evidence.command, exit_code=evidence.exit_code, confidence=evidence.confidence,
-                    criterion=evidence.criterion, measured_at=utcnow(), evidence_mode="live", created_at=utcnow(),
-                ))
-            db.commit()
-            started = db.query(RuntimeEventRow).filter_by(attempt_id=attempt, kind="runtime_started").one()
-            events = db.query(RuntimeEventRow).filter_by(attempt_id=attempt).order_by(RuntimeEventRow.sequence).all()
-            evidence_rows = db.query(EvidenceRow).filter_by(attempt_id=attempt).all()
+            ),
+        )
+        attempt = service.run(
+            task_id="TASK-CALC", dispatch_key="dispatch-calc-claude-api-key", fixture=fixture,
+            instructions=PROMPT, commands=[], criterion_checks={"add returns the sum": CHECK},
+            validation_target=("assumption", "ASSUMPTION-CALC"),
+        )
+        if box.transport.sandbox_id and box.transport.sandbox_id not in box.created:
+            box.created.append(box.transport.sandbox_id)
+        events = db.query(RuntimeEventRow).filter_by(attempt_id=attempt.id).order_by(RuntimeEventRow.sequence).all()
+        evidence_rows = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
+        answered = "\n".join(
+            line for e in events if e.kind == "runtime_output_observed" for line in e.payload.get("output", ())
+        )
 
-            print(json.dumps({
-                "attempt": attempt, "sandbox": box.created[:1], "credential": started.payload,
-                "evaluation": result.evaluation.status,
-                # Kinds, sources and sequences only: payloads carry pane text.
-                "events": [(e.sequence, e.source, e.kind, e.status) for e in events], "evidence": [(row.criterion, row.status) for row in evidence_rows],
-            }))
-            assert result.session.credential == CredentialMetadata("api-key", None)
-            assert started.payload == {"credential_mode": "api-key", "connection_id": None}
-            assert [(e.sequence, e.source, e.kind) for e in events] == [
-                (1, "herdr-e2b", "runtime_started"),
-                (2, "herdr-e2b", "runtime_input_sent"),
-                (3, "herdr-e2b", "runtime_output_observed"),
-            ]
-            assert len({e.session_id for e in events}) == 1
-            assert "DONE" in answered, "Claude did not answer the prompt"
-            assert re.search(r"not logged in|/login|invalid api key", answered, re.IGNORECASE) is None
-            assert _DIALOGS.search(answered) is None
-            assert "return a + b" in (workspace / "calc.py").read_text(encoding="utf-8")
-            assert result.accepted is True
-            assert [(row.criterion, row.status, row.evidence_mode) for row in evidence_rows] == [
-                ("add returns the sum", "PASS", "live")
-            ]
-            _assert_no_secret(scrollback, ANTHROPIC_KEY)
-            _assert_no_secret(answered, ANTHROPIC_KEY)
+        print(json.dumps({
+            "attempt": attempt.id, "sandbox": box.created[:1], "credential": events[0].payload if events else None,
+            "task": db.get(TaskRow, "TASK-CALC").status,
+            # Kinds, sources and sequences only: payloads carry pane text.
+            "events": [(e.sequence, e.source, e.kind, e.status) for e in events],
+            "evidence": [(row.criterion, row.status) for row in evidence_rows],
+        }))
+        assert scrollbacks, "pane scrollback was never observed"
+        _assert_no_secret("\n".join(scrollbacks), ANTHROPIC_KEY)
+        _assert_no_secret(answered, ANTHROPIC_KEY)
+        _assert_no_secret("\n".join(json.dumps(e.payload) for e in events), ANTHROPIC_KEY)
+        assert events[0].payload == {"credential_mode": "api-key", "connection_id": None}
+        assert [(e.sequence, e.source, e.kind, e.status) for e in events] == [
+            (1, "herdr-e2b", "runtime_started", "running"),
+            (2, "herdr-e2b", "runtime_input_sent", "completed"),
+            (3, "herdr-e2b", "runtime_output_observed", "completed"),
+            (4, "herdr-e2b", "runtime_terminated", "terminated"),
+        ]
+        assert len({e.session_id for e in events}) == 1
+        assert "DONE" in answered, "Claude did not answer the prompt"
+        assert re.search(r"not logged in|/login|invalid api key", answered, re.IGNORECASE) is None
+        assert _DIALOGS.search(answered) is None
+        assert db.get(TaskRow, "TASK-CALC").status == "succeeded"
+        assert [(row.criterion, row.status) for row in evidence_rows] == [("add returns the sum", "PASS")]
     finally:
         box.close()

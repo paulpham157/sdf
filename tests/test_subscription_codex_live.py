@@ -12,8 +12,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import time
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -39,6 +37,8 @@ from tests.test_herdr_e2b_execution import CHECK, POSITIVE, _db, _fixture
 
 CONNECTION = os.environ.get("SDF_LIVE_CODEX_CONNECTION", "codex-personal")
 ENV = dict(os.environ)
+if os.environ.get("SDF_DOTENV"):
+    load_dotenv(os.environ["SDF_DOTENV"], ENV)
 load_dotenv(environ=ENV)
 LIVE = os.environ.get("SDF_LIVE_E2B") == "1" and bool(ENV.get("E2B_API_KEY"))
 
@@ -71,13 +71,16 @@ def _leaks(text: str, secrets: dict[str, str]) -> list[str]:
     )
 
 
-class _Recorder:
-    """Runtime wrapper that remembers sessions, the box and the final pane.
+# The user's pinned model for live Codex Attempts; passed as test-side start
+# argv only.  Production code carries no model selection (ADR 0005, 07a).
+MODEL = "gpt-6-luna"
 
-    Herdr's ``idle`` means "ready for input", not completion, so this test
-    driver supplies the Attempt lifecycle the fixture needs: wait until Codex
-    is interactive before prompting, then treat its return to idle after it
-    started working as the Runtime Session completing.
+
+class _Recorder:
+    """Pass-through runtime wrapper that only observes: sessions, box, panes.
+
+    It changes no status and drives no keys: turn completion and Codex
+    prompt resubmission are the runtime's own job (#16).
     """
 
     def __init__(self, runtime: HerdrRuntime, transport) -> None:
@@ -101,55 +104,14 @@ class _Recorder:
         if self.transport.sandbox_id:
             self.sandbox_ids.add(self.transport.sandbox_id)
 
-    def _state(self, session_id) -> dict:
-        payload = json.loads(self.runtime._raw(self.runtime._command("agent", "get", session_id)))
-        agent = payload.get("result", payload)
-        return agent.get("agent", agent) if isinstance(agent, dict) else {}
-
-    def _wait(self, session_id, ready, within_seconds: float, *, allow_blocked: bool = False) -> dict | None:
-        deadline = time.monotonic() + within_seconds
-        while True:
-            state = self._state(session_id)
-            if state.get("agent_status") == "blocked" and not allow_blocked:
-                # Only the status is reported: pane text could carry anything.
-                raise AssertionError("codex blocked by a dialog")
-            if ready(state):
-                return state
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(1)
-
     def start(self, **kwargs):
-        session = self._keep(self.runtime.start(**kwargs))
-        ready = lambda s: s.get("agent_status") == "idle" and s.get("interactive_ready")  # noqa: E731
-        assert self._wait(session.session_id, ready, 120), "codex never became interactive"
-        return session
+        return self._keep(self.runtime.start(**kwargs))
 
     def send(self, session_id, text):
-        # Codex 0.157 takes Herdr's typed prompt into its composer but can
-        # swallow the submitting Enter; press Enter again until the turn
-        # visibly starts (``working``).  No text is resent, so it never doubles.
-        working = lambda s: s.get("agent_status") == "working"  # noqa: E731
-        session = self._keep(self.runtime.send(session_id, text))
-        pane_id = self._state(session_id).get("pane_id")
-        for _ in range(3):
-            if self._wait(session_id, working, 8):
-                break
-            self.runtime._raw(self.runtime._command("pane", "send-keys", pane_id, "Enter"))
-        else:
-            raise AssertionError(f"codex never started working on the prompt: {self._state(session_id).get('agent_status')}")
-        # A post-turn dialog (e.g. a rate-limit model switch) blocks the pane
-        # after the answer; the evaluator, not the pane, judges the result.
-        done = lambda s: s.get("agent_status") in {"idle", "blocked"}  # noqa: E731
-        assert self._wait(session_id, done, 600, allow_blocked=True), "codex never finished its turn"
-        self.answered = True
-        return session
+        return self._keep(self.runtime.send(session_id, text))
 
     def status(self, session_id):
-        session = self.runtime.status(session_id)
-        if getattr(self, "answered", False) and self._state(session_id).get("agent_status") in {"idle", "blocked"}:
-            session = replace(session, status=RuntimeStatus.COMPLETED)
-        session = self._keep(session)
+        session = self._keep(self.runtime.status(session_id))
         for source in ("visible", "recent-unwrapped"):
             self.panes.append(self.runtime._raw(self.runtime._command("agent", "read", session_id, "--source", source)))
         return session
@@ -173,7 +135,9 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
     transport, injection = create_credentialed_transport(
         template=TEMPLATE, agents=("codex",), environ=environ, read_connection=bridge, timeout_seconds=900
     )
-    runtime = _Recorder(HerdrRuntime(transport=transport, timeout_ms=240_000), transport)
+    runtime = _Recorder(
+        HerdrRuntime(transport=transport, timeout_ms=240_000, agent_args={"codex": ("-m", MODEL)}), transport
+    )
     try:
         db = _db()
         service = ExecutionService(
@@ -195,7 +159,7 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         leaked = _leaks(pane, secrets) + _leaks("\n".join((repr(injection), *injection.seed_commands)), secrets)
         print(json.dumps({
             "attempt": attempt.id, "task": db.get(TaskRow, "TASK-CALC").status,
-            "statuses": [s.status.value for s in runtime.sessions],
+            "statuses": [s.status.value for s in runtime.sessions], "model": MODEL,
             "credential": runtime.sessions[0].credential.as_dict() if runtime.sessions else None,
             "evidence": [(e.criterion, e.status) for e in evidence], "leaked": leaked,
             # Kinds, sources and sequences only: payloads carry pane text.
@@ -211,13 +175,17 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         # Booleans only: assertion rewriting would otherwise echo the pane.
         answered = "calc.py" in pane
         assert answered, "codex did not answer the prompt in its pane"
+        pinned = MODEL in pane
+        assert pinned, "the Codex pane does not show the pinned model"
+        final = [s.status for s in runtime.sessions]
+        assert RuntimeStatus.COMPLETED in final, "the Codex turn never completed"
         assert db.get(TaskRow, "TASK-CALC").status == "succeeded"
         assert [(e.criterion, e.status) for e in evidence] == [("add returns the sum", "PASS")]
-        assert [(e.sequence, e.source, e.kind) for e in events] == [
-            (1, "herdr-e2b", "runtime_started"),
-            (2, "herdr-e2b", "runtime_input_sent"),
-            (3, "herdr-e2b", "runtime_output_observed"),
-            (4, "herdr-e2b", "runtime_terminated"),
+        assert [(e.sequence, e.source, e.kind, e.status) for e in events] == [
+            (1, "herdr-e2b", "runtime_started", "running"),
+            (2, "herdr-e2b", "runtime_input_sent", "completed"),
+            (3, "herdr-e2b", "runtime_output_observed", "completed"),
+            (4, "herdr-e2b", "runtime_terminated", "terminated"),
         ]
         assert events[0].payload == {"credential_mode": "subscription", "connection_id": CONNECTION}
         assert len({e.session_id for e in events}) == 1
