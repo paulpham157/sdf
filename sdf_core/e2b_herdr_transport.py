@@ -160,8 +160,12 @@ class E2BHerdrTransport:
                 entries = fs.list(remote, depth=_COLLECT_DEPTH, request_timeout=timeout)
                 total = 0
                 for entry in sorted(entries, key=lambda item: item.path):
-                    local = staging / self._relative_member(remote, entry.path)
+                    relative = self._relative_member(remote, entry.path)
+                    local = staging / relative
                     if entry.type == FileType.DIR:
+                        # A directory at the listing depth may hide children.
+                        if len(relative.parts) >= _COLLECT_DEPTH:
+                            raise HerdrRuntimeError("E2B workspace is too deep to collect")
                         local.mkdir(parents=True, exist_ok=True)
                     elif entry.type == FileType.FILE:
                         data = fs.read(entry.path, format="bytes", request_timeout=timeout)

@@ -464,3 +464,16 @@ def test_a_runtime_attempt_round_trips_through_the_sandbox_and_artifacts_are_pul
     assert diff.path.is_relative_to(tmp_path / "artifacts")
     assert len(factory.creates) == 1
     assert sandbox.kills  # the Attempt owner closed the sandbox
+
+
+def test_collection_refuses_a_tree_deeper_than_the_listing_depth(tmp_path, monkeypatch):
+    fixture = _fixture(tmp_path)
+    factory = FakeFactory()
+    transport = _transport(factory)
+    transport.stage_workspace("ATTEMPT-WORKSPACE", fixture)
+    factory.sandbox.fs.write_files([{"path": "/tmp/sdf/ATTEMPT-WORKSPACE/a/b/c.txt", "data": b"deep"}])
+    monkeypatch.setattr("sdf_core.e2b_herdr_transport._COLLECT_DEPTH", 2)
+
+    with pytest.raises(HerdrRuntimeError, match="too deep"):
+        transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
+    assert fixture.joinpath("app.py").read_text(encoding="utf-8") == "print('local')\n"
