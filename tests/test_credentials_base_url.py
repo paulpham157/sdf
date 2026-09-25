@@ -163,12 +163,17 @@ def test_other_agents_base_url_does_not_apply():
 
 
 def test_base_url_never_reaches_a_subscription_plan():
+    # A base URL set for a subscription agent is rejected, not silently dropped (#14).
     env = {
         "SDF_CREDENTIAL_MODE_CLAUDE": "subscription",
         "SDF_CONNECTION_CLAUDE": "work",
         "SDF_ANTHROPIC_BASE_URL": "https://api.example.com",
     }
     material = ConnectionMaterial({"CLAUDE_CODE_OAUTH_TOKEN": "oauth-dummy"})
+    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_BASE_URL"):
+        resolve_credential_plan("claude", env, read_connection=lambda agent, cid: material)
+    # Without a base URL the plan still strips the provider's base URL name.
+    del env["SDF_ANTHROPIC_BASE_URL"]
     plan = resolve_credential_plan("claude", env, read_connection=lambda agent, cid: material)
     assert "ANTHROPIC_BASE_URL" not in plan.set_variables
     assert "ANTHROPIC_BASE_URL" in plan.strip_variables

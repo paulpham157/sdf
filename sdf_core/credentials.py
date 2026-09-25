@@ -17,12 +17,16 @@ import re
 import socket
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# A subscription credential must outlive the sandbox by at least this much.
+EXPIRY_MARGIN = timedelta(minutes=10)
 
 
 class CredentialMode(StrEnum):
@@ -109,12 +113,14 @@ class SeedStep:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionMaterial:
-    """Sandbox variables a subscription connection provides."""
+    """Sandbox variables a subscription connection provides, and when they expire."""
 
     variables: Mapping[str, str]
+    expires_at: datetime | None = None
 
     def __repr__(self) -> str:
-        return f"ConnectionMaterial(variables={_redacted(self.variables)})"
+        expires = self.expires_at.isoformat() if self.expires_at is not None else None
+        return f"ConnectionMaterial(variables={_redacted(self.variables)}, expires_at={expires!r})"
 
 
 ConnectionReader = Callable[[str, str], ConnectionMaterial]
@@ -149,12 +155,16 @@ def resolve_credential_plan(
     environ: Mapping[str, str],
     *,
     read_connection: ConnectionReader | None = None,
+    sandbox_timeout_seconds: float = 0,
+    now: datetime | None = None,
 ) -> CredentialPlan:
     """Resolve the Agent Credential plan for ``agent`` from ``environ``.
 
     Only ``SDF_*`` variables are read; the shell's provider variables
     (``ANTHROPIC_API_KEY``, ``OPENAI_BASE_URL``, ...) are ignored.  There is
-    no default mode and no fallback from one mode to the other.
+    no default mode and no fallback from one mode to the other.  A
+    subscription connection must expire later than ``now`` plus
+    ``sandbox_timeout_seconds`` plus :data:`EXPIRY_MARGIN`.
     """
     spec = _AGENTS.get(agent)
     if spec is None:
@@ -174,6 +184,11 @@ def resolve_credential_plan(
         seeds = (SeedStep(spec.api_key_seed, spec.api_key_target),)
         return _plan(agent, mode, None, variables, seeds)
 
+    if environ.get(spec.base_url_source, "").strip():
+        # Not echoed: operators sometimes paste credentials into URLs.
+        raise CredentialConfigError(
+            f"{spec.base_url_source} is only allowed with {spec.mode_variable}=api-key, not subscription"
+        )
     connection_id = environ.get(spec.connection_variable, "").strip()
     if not connection_id:
         raise CredentialConfigError(
@@ -192,6 +207,7 @@ def resolve_credential_plan(
         )
     if not any(value.strip() for value in material.variables.values()):
         raise CredentialConfigError(f"connection {connection_id!r} provides no credential for {agent}")
+    _check_expiry(agent, connection_id, material.expires_at, sandbox_timeout_seconds, now)
     seeds = tuple(
         SeedStep(action, variable)
         for variable, action in spec.subscription_seeds.items()
@@ -289,6 +305,26 @@ def _check_base_url(variable: str, url: str) -> None:
         address = address.ipv4_mapped
     if not address.is_global or address.is_multicast:
         raise CredentialConfigError(unreachable)
+
+
+def _check_expiry(
+    agent: str,
+    connection_id: str,
+    expires_at: datetime | None,
+    sandbox_timeout_seconds: float,
+    now: datetime | None,
+) -> None:
+    if expires_at is None:
+        return
+    reconnect = f"run: e2b-box auth connect {agent}"
+    if expires_at.tzinfo is None:
+        raise CredentialConfigError(f"connection {connection_id!r} reports an expiry without a timezone; {reconnect}")
+    deadline = (now or datetime.now(timezone.utc)) + timedelta(seconds=sandbox_timeout_seconds) + EXPIRY_MARGIN
+    if expires_at <= deadline:
+        raise CredentialConfigError(
+            f"connection {connection_id!r} for {agent} expires at {expires_at.isoformat()}, not later than "
+            f"now + sandbox timeout ({sandbox_timeout_seconds:g}s) + {EXPIRY_MARGIN}; {reconnect}"
+        )
 
 
 def _mode(spec: _AgentSpec, environ: Mapping[str, str]) -> CredentialMode:

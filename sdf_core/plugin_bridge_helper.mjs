@@ -25,7 +25,7 @@ if (!modulePath || !id) {
       reply({ ok: false, error: "unknown-connection", message: `unknown connection '${id}'` }, 3)
     } else {
       const material = plugin.connectionMaterial(record)
-      reply({ ok: true, harness: record.harness, variables: material?.env ?? {} }, 0)
+      reply({ ok: true, harness: record.harness, variables: material?.env ?? {}, expiresAt: material?.expiresAt ?? null }, 0)
     }
   } catch {
     reply({ ok: false, error: "plugin-error", message: `the plugin could not provide connection '${id}'` }, 4)

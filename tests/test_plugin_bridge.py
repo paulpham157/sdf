@@ -577,3 +577,49 @@ def test_live_plugin_codex_personal():
     except ValueError:
         parsed_is_object = False
     assert parsed_is_object, "CODEX_AUTH_JSON is not a JSON object"
+
+
+# --- expiry (#14) ----------------------------------------------------------------
+
+
+def _plugin_with_expiry(tmp_path: Path, expires_at: str) -> Path:
+    plugins = tmp_path / "plugins"
+    src = plugins / "github" / "e2b-dev.herdr-e2b-exp" / "src"
+    src.mkdir(parents=True)
+    (src.parent / "package.json").write_text('{"type":"module"}\n')
+    (src / "connections.js").write_text(
+        'export function readConnections() { return [{ id: "codex-personal", harness: "codex" }] }\n'
+        "export function connectionMaterial() {\n"
+        f'  return {{ env: {{ CODEX_AUTH_JSON: "{DUMMY_CODEX_AUTH}" }}, expiresAt: {expires_at} }}\n'
+        "}\n"
+    )
+    return plugins
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for the plugin bridge")
+def test_plugin_bridge_reports_connection_expiry(tmp_path: Path):
+    from datetime import datetime, timezone
+
+    from sdf_core.plugin_bridge import PluginConnectionBridge
+
+    material = PluginConnectionBridge(_plugin_with_expiry(tmp_path, '"2026-10-03T08:00:00.000Z"'))(
+        "codex", "codex-personal"
+    )
+    assert material.expires_at == datetime(2026, 10, 3, 8, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for the plugin bridge")
+def test_plugin_bridge_null_expiry_means_no_expiry(plugins_root: Path):
+    from sdf_core.plugin_bridge import PluginConnectionBridge
+
+    assert PluginConnectionBridge(plugins_root)("codex", "codex-personal").expires_at is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required for the plugin bridge")
+@pytest.mark.parametrize("expires_at", ['"not-a-date"', "12345", '"2026-10-03T08:00:00"'])
+def test_plugin_bridge_rejects_unreadable_expiry(tmp_path: Path, expires_at: str):
+    from sdf_core.plugin_bridge import PluginConnectionBridge
+
+    with pytest.raises(CredentialConfigError, match="codex-personal") as error:
+        PluginConnectionBridge(_plugin_with_expiry(tmp_path, expires_at))("codex", "codex-personal")
+    _assert_no_secret(str(error.value))
