@@ -1,7 +1,8 @@
 # E2B Herdr agents template (`sdf-herdr-agents`)
 
-Pinned execution image for the SDF persistent Herdr runtime. It supersedes
-`sdf-herdr-codex` and carries both supported agent kinds:
+Pinned execution image for the SDF persistent Herdr runtime. It replaced the
+retired `sdf-herdr-codex` template ([ADR 0009](../../../docs/adr/0009-retire-sdf-herdr-codex-template.md))
+and carries both supported agent kinds:
 
 | Component | Pinned version |
 | --- | --- |
@@ -60,6 +61,14 @@ tests with `SDF_E2B_HERDR_TEMPLATE=sdf-herdr-agents`.
 
 ## Herdr bridge
 
-The image contains the same deployment-owned Herdr bridge as `sdf-herdr-codex`
-(`POST /v1/command` on port `8787`, bearer token from `HERDR_ENDPOINT_TOKEN`
-or `HERDR_ENDPOINT_TOKEN_FILE`); see that template's README for its limits.
+The image contains a deployment-owned Herdr bridge at `POST /v1/command` on
+port `8787`. Set `HERDR_ENDPOINT_TOKEN` or mount a secret at
+`HERDR_ENDPOINT_TOKEN_FILE` (default `/run/secrets/herdr_endpoint_token`) when
+creating the sandbox; the bridge rejects unauthenticated requests, shell
+commands, oversized bodies, and timeouts over two minutes. The SDF client uses
+`HerdrEndpointTransport` against the HTTPS-forwarded endpoint.
+
+An E2B CLI `--env` value only applies to the terminal session used by that CLI
+command; it does not configure the already started image entrypoint. Use the
+E2B SDK or the deployment/orchestrator secret mechanism to provide
+`HERDR_ENDPOINT_TOKEN` before exposing the endpoint.

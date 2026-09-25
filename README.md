@@ -34,8 +34,15 @@ matching E2B key. The wrapper loads that file before running the plugin:
 ```bash
 cp .env.example .env
 scripts/e2b-env.sh e2b-box doctor
-scripts/e2b-env.sh e2b-box open -t sdf-herdr-codex --template-any
+scripts/e2b-env.sh e2b-box open -t sdf-herdr-agents --template-any
 ```
+
+The persistent Herdr runtime uses the `sdf-herdr-agents` template
+([infra/e2b/herdr-agents](infra/e2b/herdr-agents/README.md)) for both Codex and
+Claude Code; the Codex-only `sdf-herdr-codex` template is retired
+([ADR 0009](docs/adr/0009-retire-sdf-herdr-codex-template.md)). Each agent kind
+needs an explicit Credential Mode, `subscription` or `api-key`
+(ADR 0007).
 
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.

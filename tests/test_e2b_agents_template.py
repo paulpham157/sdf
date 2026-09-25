@@ -56,8 +56,8 @@ def test_template_carries_no_credential():
             assert not forbidden.search(path.read_text()), path
 
 
-def test_codex_template_is_marked_deprecated_but_kept():
-    readme = (ROOT / "herdr-codex" / "README.md").read_text()
-    assert (ROOT / "herdr-codex" / "Dockerfile").is_file()
-    assert "deprecated" in readme.lower()
-    assert "sdf-herdr-agents" in readme
+def test_codex_only_template_is_retired_by_adr():
+    assert not (ROOT / "herdr-codex").exists()
+    adr = (ROOT.parents[1] / "docs" / "adr" / "0009-retire-sdf-herdr-codex-template.md").read_text()
+    assert "Status: accepted" in adr
+    assert "sdf-herdr-agents" in (AGENTS / "README.md").read_text()
