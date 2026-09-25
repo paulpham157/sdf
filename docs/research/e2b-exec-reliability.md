@@ -118,6 +118,8 @@ persistent transport, each in its own sandbox, killed afterwards
 
 - Claude, `api-key`: `tests/test_claude_api_key_live.py` — 2 passed.
 - Codex, `subscription` (`codex-personal`):
-  `tests/test_subscription_codex_live.py` — passed 2 of 10 runs; every failure
-  was Codex staying `idle` at prompt submission. The recorded events are in
-  `.scratch/sdf-runtime/issues/08-events.md`.
+  `tests/test_subscription_codex_live.py`, model `gpt-6-luna` — passed 5 of 5
+  consecutive runs after #16 (turn completion on `idle` and Codex prompt
+  resubmission in `HerdrRuntime`). Before #16 it passed 2 of 10, with every
+  failure being Codex staying `idle` at prompt submission. The recorded
+  events are in `.scratch/sdf-runtime/issues/08-events.md`.

@@ -70,7 +70,7 @@ session id for all events.
 
 **Codex, `subscription` mode (`codex-personal`)** —
 `tests/test_subscription_codex_live.py` through `ExecutionService` +
-`RuntimeAgentAdapter`, 1 passed (flaky, see below):
+`RuntimeAgentAdapter`, 1 passed (the first recorded passing run; after #16 it passed 5 of 5, see below):
 
 | seq | source | kind | status |
 | --- | --- | --- | --- |
@@ -86,16 +86,19 @@ pane (`leaked: []`); one session id for all events.
 
 **Remaining boundaries (not blockers for 08):**
 
-- `completed` on the Codex session comes from the test driver, not from Herdr:
-  Herdr reports `idle`, never `done`, after a turn
-  (`docs/research/herdr-idle-not-done.md`). Follow-up:
-  `.scratch/agent-credentials/issues/01-herdr-turn-completion.md`.
-- The Codex live run is flaky at prompt submission. On 2026-09-25, 2 of 10
-  runs passed (unchanged #14 test: 1 of 2; with the event sink: 1 of 8; the
-  table above is from the passing run). Every failure was the same: Codex
-  stayed `idle` after `agent prompt` and 3 extra Enter presses ("codex never
-  started working on the prompt: idle"), before any lifecycle assertion.
-  Every sandbox was killed. The follow-up ticket covers it.
+- Resolved by #16 (2026-09-25): `HerdrRuntime.send` now returns `completed`
+  when `agent prompt --wait` returns normally, and `status()` keeps it while
+  Herdr reads `idle` (Herdr reports `idle`, never `done`:
+  `docs/research/herdr-idle-not-done.md`). Codex Enter resubmission moved
+  into the runtime. Both live tests run through `ExecutionService` with no
+  test-side status override.
+- Repeatable live evidence after #16: the Codex `subscription` Attempt on
+  model `gpt-6-luna` (pinned in the test only) passed 5 of 5 consecutive runs,
+  and the Claude `api-key` Attempt passed. Both read
+  `runtime_started(running)`, `runtime_input_sent(completed)`,
+  `runtime_output_observed(completed)`, `runtime_terminated(terminated)`,
+  `leaked: []`, and every sandbox was killed. Before #16 the Codex run passed
+  2 of 10 (Codex swallowed the prompt Enter and stayed `idle`).
 - `runtime_cancelled` / `runtime_reconnected` were proven live on the
   Codex-only transport in tickets 05/06/06b, not in these credentialed runs.
 - The headless `e2b-box run` path still emits no per-step events; it keeps
