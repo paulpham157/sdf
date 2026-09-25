@@ -570,3 +570,35 @@ def test_stream_falls_back_to_the_visible_screen_while_the_agent_is_working():
     runtime = HerdrRuntime(runner=runner)
     session = runtime.start(attempt_id="ATTEMPT-VISIBLE", agent="codex")
     assert runtime.stream(session.session_id) == ("visible screen",)
+
+def _herdr_timeout(command):
+    return int(command[command.index("--timeout") + 1])
+
+@pytest.mark.parametrize("timeout_ms", [30_000, 3210])
+def test_every_herdr_wait_times_out_before_the_command_that_carries_it(timeout_ms):
+    # A transport timeout kills the whole E2B sandbox, so Herdr's own wait
+    # bound must expire first and come back as a clean ``timeout``.
+    runner = TurnHerdr("codex", prompt="stalled", states=("idle", "idle", "working", "idle"))
+    runtime = HerdrRuntime(runner=runner, timeout_ms=timeout_ms, poll_interval_s=0, turn_settle_s=0)
+    seen = []
+    session = runtime.start(attempt_id="ATTEMPT-BOUND", agent="codex")
+    runtime._runner = lambda command, limit: (seen.append((tuple(command), limit)), runner(command, limit))[1]
+    runtime.send(session.session_id, "fix it")
+
+    waits = [(c, limit) for c, limit in seen if c[1:3] in {("agent", "prompt"), ("agent", "wait")}]
+    assert {c[1:3] for c, _ in waits} == {("agent", "prompt"), ("agent", "wait")}
+    assert all(0 < _herdr_timeout(c) < limit for c, limit in waits)
+
+def test_a_herdr_timeout_on_a_long_prompt_leaves_the_turn_running():
+    runner = TurnHerdr("claude", states=("working",))
+    original = runner.__call__
+
+    def call(command, timeout_ms):
+        if tuple(command[1:3]) == ("agent", "prompt"):
+            runner.calls.append(tuple(command))
+            raise HerdrRuntimeError('{"error":{"code":"timeout"}}')
+        return original(command, timeout_ms)
+
+    runtime = HerdrRuntime(runner=call)
+    session = runtime.start(attempt_id="ATTEMPT-LONG-TURN", agent="claude")
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.RUNNING

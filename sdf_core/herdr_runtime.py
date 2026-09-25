@@ -46,7 +46,15 @@ _RESUBMIT_ATTEMPTS = 3
 _SUBMIT_WINDOW_MS = 8_000
 # Herdr states that prove a turn is in progress after a submission.
 _TURN_STATES = ("working", "blocked")
+# Herdr's own ``--timeout`` on a wait must expire before the runner's command
+# timeout: an E2B transport kills the whole sandbox when a command times out,
+# while a Herdr ``timeout`` leaves the turn running.  Headroom is a tenth of
+# the command timeout, capped here.
+_HERDR_WAIT_HEADROOM_MS = 5_000
 
+
+def _is_herdr_timeout(exc: Exception) -> bool:
+    return "timeout" in str(exc).lower()
 
 def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
@@ -454,15 +462,22 @@ class HerdrRuntime(AgentRuntime):
         binding, current = self._known(session_id)
         self._completed_turns.discard(session_id)
         self._wait_interactive(session_id)
-        args = self._command("agent", "prompt", session_id, input_text, "--wait", "--until", "idle")
+        args = self._command(
+            "agent", "prompt", session_id, input_text, "--wait", "--until", "idle",
+            "--timeout", str(self._herdr_wait_ms(self._timeout_ms)),
+        )
         status = RuntimeStatus.COMPLETED
         try:
             raw = self._raw(args)
         except HerdrRuntimeError as exc:
-            if "agent_prompt_stalled" not in str(exc):
-                raise
             raw = ""
-            if binding.agent in _RESUBMIT_ENTER_AGENTS and self._resubmit(binding, session_id):
+            if _is_herdr_timeout(exc):
+                # The prompt was accepted and the turn outlived Herdr's wait:
+                # it is still running, and the sandbox is still alive.
+                status = RuntimeStatus.RUNNING
+            elif "agent_prompt_stalled" not in str(exc):
+                raise
+            elif binding.agent in _RESUBMIT_ENTER_AGENTS and self._resubmit(binding, session_id):
                 status = self._await_turn_end(session_id)
             # Herdr can time out its semantic idle observation after accepting
             # a prompt.  A foreground process is stronger evidence that work
@@ -562,14 +577,21 @@ class HerdrRuntime(AgentRuntime):
         args = self._command("agent", "wait", session_id)
         for state in states:
             args.extend(("--until", state))
-        args.extend(("--timeout", str(timeout_ms)))
+        args.extend(("--timeout", str(min(timeout_ms, self._herdr_wait_ms(self._timeout_ms)))))
         try:
             self._raw(args)
         except HerdrRuntimeError as exc:
-            if "timeout" not in str(exc).lower():
+            if not _is_herdr_timeout(exc):
                 raise
             return False
         return True
+
+    @staticmethod
+    def _herdr_wait_ms(command_timeout_ms: int) -> int:
+        """Herdr-side wait bound that expires before ``command_timeout_ms``."""
+
+        headroom = max(1, min(_HERDR_WAIT_HEADROOM_MS, command_timeout_ms // 10))
+        return max(1, command_timeout_ms - headroom)
 
     def stream(self, session_id: str) -> tuple[str, ...]:
         binding, current = self._known(session_id)
