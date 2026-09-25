@@ -357,9 +357,19 @@ def test_herdr_runtime_starts_claude_with_bypass_permissions_for_the_disposable_
     ]
 
 
-def test_herdr_runtime_passes_no_extra_agent_args_to_codex():
+def test_herdr_runtime_passes_no_extra_agent_args_to_codex_without_a_workspace():
     runner = FakeHerdr()
     HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CODEX", agent="codex")
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert starts == [("herdr", "agent", "start", "codex", "--kind", "codex", "--pane", "pane-1")]
+
+
+def test_herdr_runtime_starts_codex_trusting_exactly_its_attempt_directory():
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner)
+    runtime.bind_remote_workspace("ATTEMPT-CODEX", "/tmp/sdf/ATTEMPT-CODEX")
+    runtime.start(attempt_id="ATTEMPT-CODEX", agent="codex")
+
+    (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert start[-3:] == ("--", "-c", 'projects."/tmp/sdf/ATTEMPT-CODEX".trust_level="trusted"')
