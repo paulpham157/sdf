@@ -1,9 +1,8 @@
-# 01 Herdr turn completion: `idle` is not `done` (draft)
+# 12 Herdr turn completion: `idle` is not `done`
 
-Status: needs-triage
-Follow-up of: agent-credentials #11, #14, #15 (sdf-runtime ticket 08)
-Draft only; not filed on GitHub.
+GitHub: https://github.com/paulpham157/sdf/issues/16 (source of truth; this file is a history mirror)
 
+Follow-up of: agent-credentials #11, #14, #15 (sdf-runtime ticket 08). Blocks #15.
 ## Problem
 
 After an interactive agent turn, Herdr 0.9.1 reports `agent_status: "idle"`
