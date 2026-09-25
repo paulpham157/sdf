@@ -80,6 +80,18 @@ agreement with hand labels. Details and ranking follow.
   jaggedness page is the closest thing to release notes).
   Jev is also offered through Cloudflare Workers AI and, per community
   READMEs, OpenRouter, Vercel AI Gateway and LiteLLM.
+- **Access (as of 2026-09-26).** TypeSafe has limited new signups, and the
+  SDF operator has no TypeSafe API key. Cloudflare Workers AI lists
+  `typesafe/jev` as a third-party catalog model. Its examples authenticate
+  with Cloudflare credentials only (`POST
+  https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/run`,
+  `Authorization: Bearer <cloudflare_api_token>`, body `{"model":
+  "typesafe/jev", "input": {"state": ..., "questions": ...}}`). The page
+  lists the same price ($0.042 per million input tokens, output $0.00), a
+  32,000-token context window and "Zero data retention: Yes" ([cf]). The
+  page does not say outright that no TypeSafe key is needed, points its
+  license at TypeSafe's terms, and mentions no free tier. One real call on a
+  Cloudflare account settles it.
 - **Independent checks (*secondary*).** A community test finds Jev
   well calibrated on three public benchmarks. On an unseen synthetic rule
   task, though, its calibration error was 4.4× the noise floor (0.107 vs
@@ -245,10 +257,19 @@ recorded baseline. No production path calls Jev.
    credential failures with any secret-shaped text replaced by `<REDACTED>`.
 3. **Run.** A script under `scripts/` (not `sdf_core/`) sends each case
    through the judge. It is opt-in behind
-   `SDF_JUDGE_BACKEND=typesafe|local|fake`, defaults to `fake`, and is marked
-   live like the existing `*_live` tests so CI never calls out. It pins
-   `jev-1.13.0`. A local AgentJev/Laya run on the same set shows whether the
-   hosted model is even needed.
+   `SDF_JUDGE_BACKEND=cloudflare|local|fake`, defaults to `fake`, and is
+   marked live like the existing `*_live` tests so CI never calls out.
+   - `cloudflare` is the hosted backend, because no TypeSafe key is
+     available (see Access in §1). It reads `SDF_CLOUDFLARE_ACCOUNT_ID` and
+     `SDF_CLOUDFLARE_API_TOKEN` and never prints them. It records the
+     resolved model version from each response, because the Cloudflare
+     catalog name `typesafe/jev` does not pin a version.
+   - `local` runs AgentJev-0.6B as a local process. Its 2,048-token context
+     means the state is cut to the failing criterion and a short log tail.
+     It shows whether a hosted model is even needed.
+   - `typesafe` (direct API, pinned `jev-1.13.0`) is added only if a
+     TypeSafe key becomes available. The wire shape is the same, so it is
+     one more small client behind the same seam.
 4. **Measure.** Report accuracy and calibration for `failure_cause` against
    the labels. The number that matters is: "how many escalations would a
    confident non-agent label have withheld, and how many of those were
@@ -271,14 +292,18 @@ about 600k input tokens, or about $0.03 at list price.
   a sandbox that holds an **Agent Credential** as environment variables
   (ADR-0007). An agent can print it. Any real state must be filtered and
   redacted in code before leaving the host. Customer code sent to a US-hosted
-  third party with unspecified retention ([priv]) needs operator consent. ZDR
-  exists only via specific gateways (e.g. [Cloudflare][cf]). A local
+  third party with unspecified retention ([priv]) needs operator consent. The
+  Cloudflare route is tagged zero data retention ([cf]), which is one more
+  reason it is the first hosted backend. A local
   open-weight backend avoids the question.
 - **Public repo.** The Jev key must be a dedicated `SDF_*` variable, never
   committed or printed, following the ADR-0007 conventions. Experiment
   datasets must stay synthetic.
 - **Calibration drift and version drift.** `jev-latest` moves upstream, so pin
-  the version. Thresholds are per question type and per domain ([jag]).
+  the version. Through Cloudflare the version cannot be pinned by name, so
+  the experiment records the version each response reports and treats a
+  change as a new run. Thresholds are per question type and per domain
+  ([jag]).
   Community tests show calibration can break on unseen task types ([ood])
   and use small samples ([devto]), and none cover test logs or diffs. Recalibrate on SDF data before
   trusting any threshold.
@@ -286,7 +311,7 @@ about 600k input tokens, or about $0.03 at list price.
   (prompt injection through fixture content). Jev does not treat it as hostile
   ([jag]).
 - **Vendor and maturity.** The product is about ten days old, in early access
-  with a waitlist, with no public SLA, status page or changelog. Pricing may
+  with new signups limited, with no public SLA, status page or changelog. Pricing may
   be subsidized ([blog]). Mitigations: fail open, keep a fake plus a local
   backend, and never block a Task on Jev availability.
 - **Cost.** This is negligible at list price and not a real risk.

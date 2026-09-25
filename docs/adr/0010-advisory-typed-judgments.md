@@ -22,7 +22,13 @@ Judgment output is advisory:
 
 Any state sent to a hosted judge is filtered and redacted in code first,
 because Attempt output can contain an Agent Credential or proprietary code.
-The model version is pinned. Thresholds are calibrated on SDF's own labelled
+The hosted route is Cloudflare Workers AI (`typesafe/jev`, tagged zero data
+retention), because TypeSafe has limited new signups. A direct TypeSafe client
+is added behind the same seam only if a key becomes available. SDF does not
+run its own inference server for this: the local backend is an open-weight
+model run as a process during the experiment. The model version is pinned
+where the backend allows it and recorded from every response where it does
+not. Thresholds are calibrated on SDF's own labelled
 Attempts before any policy reads them.
 
 This ADR becomes accepted only after the offline experiment in
