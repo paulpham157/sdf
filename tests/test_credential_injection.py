@@ -124,6 +124,30 @@ def test_a_seed_command_carrying_a_value_is_refused():
         )
     _assert_no_secret(str(caught.value))
 
+def test_a_seed_carrying_any_plan_variable_value_is_refused():
+    # A plan variable outside the provider conflict list is still credential material.
+    with pytest.raises(CredentialConfigError, match="SDF_FUTURE_TOKEN"):
+        CredentialInjection(
+            envs={"SDF_FUTURE_TOKEN": "future-secret-value"},
+            strip_variables=(),
+            seed_commands=("echo future-secret-value",),
+            credential_variables=frozenset({"SDF_FUTURE_TOKEN"}),
+        )
+
+def test_a_non_credential_env_value_in_a_seed_is_allowed():
+    injection = CredentialInjection(
+        envs={"SDF_LOG_LEVEL": "debug"},
+        strip_variables=(),
+        seed_commands=("echo debug",),
+    )
+
+    assert injection.seed_commands == ("echo debug",)
+
+def test_prepared_injection_guards_every_plan_variable():
+    injection = prepare_credential_injection(("codex",), SUBSCRIPTION_ENV, read_connection=_reader)
+
+    assert "CODEX_AUTH_JSON" in injection.credential_variables
+
 # --- creation ordering -----------------------------------------------------------
 
 def test_configuration_error_is_raised_before_any_sandbox_is_created():

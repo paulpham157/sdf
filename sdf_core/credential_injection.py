@@ -134,12 +134,16 @@ class CredentialInjection:
     strip_variables: tuple[str, ...]
     seed_commands: tuple[str, ...]
     metadata: Mapping[str, CredentialMetadata] = field(default_factory=dict)
+    # Every variable a plan set is credential material, whatever its name;
+    # provider names are always guarded too.
+    credential_variables: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "envs", MappingProxyType(dict(self.envs)))
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(self, "credential_variables", frozenset(self.credential_variables) | _CREDENTIAL_NAMES)
         for name, value in self.envs.items():
-            if name in _CREDENTIAL_NAMES and value and any(value in command for command in self.seed_commands):
+            if name in self.credential_variables and value and any(value in command for command in self.seed_commands):
                 raise CredentialConfigError(f"a credential seed command carries the value of {name}; seeds may name it only")
 
     def __repr__(self) -> str:
@@ -191,7 +195,7 @@ def prepare_credential_injection(
     metadata = {
         agent: CredentialMetadata(plan.mode.value, plan.connection_id) for agent, plan in plans.items()
     }
-    return CredentialInjection(envs, strip, seeds, metadata)
+    return CredentialInjection(envs, strip, seeds, metadata, frozenset(credential_envs))
 
 def _lazy_plugin_bridge(environ: Mapping[str, str]) -> ConnectionReader:
     bridge: list[ConnectionReader] = []
