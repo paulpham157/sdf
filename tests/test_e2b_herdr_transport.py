@@ -403,3 +403,64 @@ def test_the_persistent_transport_has_no_cli_runner_seam():
     assert "subprocess" not in source
     assert "runner" not in inspect.signature(E2BHerdrTransport).parameters
     assert "tarfile" not in source and "base64" not in source
+
+
+def test_a_runtime_attempt_round_trips_through_the_sandbox_and_artifacts_are_pulled_home(tmp_path):
+    from sdf_core.adapter import RuntimeAgentAdapter
+    from sdf_core.artifacts import ArtifactStore
+
+    fixture = _fixture(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    workspace.joinpath("app.py").write_text("print('local')\n", encoding="utf-8")
+    workspace.joinpath("local-only.txt").write_text("discard", encoding="utf-8")
+    fixture.joinpath("pkg", "mod.py").unlink()
+    fixture.joinpath("local-only.txt").write_text("discard", encoding="utf-8")
+    sandbox = FakeSandbox()
+    remote = "/tmp/sdf/ATTEMPT-E2E"
+
+    def herdr(cmd):
+        args = cmd.split()
+        operation = tuple(args[1:3])
+        if args[1] == "--version":
+            return "herdr 0.0.0"
+        if operation == ("workspace", "create"):
+            assert args[-2:] == ["--cwd", remote]
+            return '{"workspaceId":"ws-1","paneId":"pane-1"}'
+        if operation == ("agent", "start"):
+            return '{"agentSessionId":"agent-1","status":"working"}'
+        if operation == ("agent", "prompt"):
+            # The agent edits the staged remote Attempt directory.
+            sandbox.fs.write_files([{"path": f"{remote}/app.py", "data": b"print('remote')\n"}])
+            sandbox.fs.remove(f"{remote}/local-only.txt")
+            return '{"status":"working"}'
+        if operation == ("agent", "read"):
+            return '{"output":"edited"}'
+        if operation == ("agent", "get"):
+            return '{"status":"done"}'
+        if operation == ("pane", "close"):
+            return '{"type":"ok"}'
+        if operation == ("pane", "process-info"):
+            return '{"process_info":{"shell_pid":10,"foreground_processes":[{"pid":10,"name":"sh"}]}}'
+        raise AssertionError(cmd)
+
+    sandbox._outputs = herdr
+    factory = FakeFactory(sandbox)
+    transport = _transport(factory)
+
+    result = RuntimeAgentAdapter(HerdrRuntime(transport=transport), agent="codex").run(
+        attempt_id="ATTEMPT-E2E", workspace=workspace, instructions="update app"
+    )
+    diff = ArtifactStore(tmp_path / "artifacts").capture_diff(
+        artifact_id="ATTEMPT-E2E-DIFF", before=fixture, after=workspace, files=result.changed_files
+    )
+
+    assert result.status == "completed"
+    assert result.changed_files == ("app.py", "local-only.txt")
+    assert workspace.joinpath("app.py").read_text(encoding="utf-8") == "print('remote')\n"
+    assert not workspace.joinpath("local-only.txt").exists()
+    text = diff.path.read_text(encoding="utf-8")
+    assert "+print('remote')" in text and "-discard" in text
+    assert diff.path.is_relative_to(tmp_path / "artifacts")
+    assert len(factory.creates) == 1
+    assert sandbox.kills  # the Attempt owner closed the sandbox
