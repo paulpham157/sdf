@@ -299,6 +299,8 @@ def test_env_example_lists_every_variable_name_without_values():
         "SDF_CONNECTION_CODEX",
         "SDF_ANTHROPIC_API_KEY",
         "SDF_OPENAI_API_KEY",
+        "SDF_ANTHROPIC_BASE_URL",
+        "SDF_OPENAI_BASE_URL",
     }
     assert required <= set(entries)
     for name in required:
