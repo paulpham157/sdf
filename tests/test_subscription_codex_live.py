@@ -181,7 +181,7 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         )
         evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
         pane = "\n".join(runtime.panes + [line for s in runtime.sessions for line in s.output])
-        leaked = _leaks(pane, secrets) + _leaks(repr(injection) + "\n".join(injection.seed_commands), secrets)
+        leaked = _leaks(pane, secrets) + _leaks("\n".join((repr(injection), *injection.seed_commands)), secrets)
         print(json.dumps({
             "attempt": attempt.id, "task": db.get(TaskRow, "TASK-CALC").status,
             "statuses": [s.status.value for s in runtime.sessions],
@@ -193,8 +193,11 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         assert leaked == [], f"secrets visible in pane scrollback: {leaked}"
         assert runtime.sessions, "no Runtime Session was started"
         expected = CredentialMetadata("subscription", CONNECTION)
-        assert all(s.credential == expected for s in runtime.sessions)
-        assert "calc.py" in pane, "codex did not answer the prompt in its pane"
+        credentials_ok = all(s.credential == expected for s in runtime.sessions)
+        assert credentials_ok, "a Runtime Session lacks the subscription metadata"
+        # Booleans only: assertion rewriting would otherwise echo the pane.
+        answered = "calc.py" in pane
+        assert answered, "codex did not answer the prompt in its pane"
         assert db.get(TaskRow, "TASK-CALC").status == "succeeded"
         assert [(e.criterion, e.status) for e in evidence] == [("add returns the sum", "PASS")]
     finally:
