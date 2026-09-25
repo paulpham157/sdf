@@ -51,8 +51,9 @@ _TURN_STATES = ("working", "blocked")
 def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
 
-    Codex does not inherit trust from a parent directory, so without this its
-    folder-trust dialog blocks every prompt in a freshly staged Attempt.
+    Codex does not inherit trust from a parent directory.  Codex 0.157 still
+    shows its folder-trust dialog with only this override, so a transport also
+    pre-trusts the directory in config.toml (``prepare_agent_workspace``).
     """
 
     args = _AGENT_START_ARGS.get(agent, ())

@@ -504,3 +504,40 @@ def test_claude_subscription_sets_oauth_token_without_a_seed():
     assert "agent-env.sh" in pane_seed and pane_seed.split()[-1] == "CLAUDE_CODE_OAUTH_TOKEN"
     assert "sk-ant-oat01-dummy" not in pane_seed
     assert injection.metadata["claude"] == CredentialMetadata("subscription", "claude-work")
+
+@needs_node
+def test_codex_workspace_trust_is_written_to_config_toml_and_keeps_existing_keys(tmp_path):
+    # Codex 0.157 ignores the ``-c projects.<dir>.trust_level`` override for its
+    # folder-trust dialog; only a config.toml table suppresses it (#16).
+    factory = FakeFactory()
+    transport, _ = create_credentialed_transport(
+        template="sdf-herdr-agents", agents=("claude",), environ=API_KEY_ENV, sandbox_factory=factory
+    )
+    transport.prepare_agent_workspace("codex", "/tmp/sdf/ATTEMPT-CODEX")
+    (trust,) = [cmd for cmd, _ in factory.sandbox.runs if "config.toml" in cmd]
+    _assert_no_secret(trust)
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    home.joinpath(".codex", "config.toml").write_text('openai_base_url = "https://gw.example.com"\n')
+
+    _run_in_box(trust, home)
+    _run_in_box(trust, home)
+
+    config = home.joinpath(".codex", "config.toml").read_text()
+    assert config.startswith('openai_base_url = "https://gw.example.com"\n')
+    assert config.count('[projects."/tmp/sdf/ATTEMPT-CODEX"]\ntrust_level = "trusted"\n') == 1
+
+@needs_node
+def test_codex_workspace_trust_creates_config_toml(tmp_path):
+    factory = FakeFactory()
+    transport, _ = create_credentialed_transport(
+        template="sdf-herdr-agents", agents=("claude",), environ=API_KEY_ENV, sandbox_factory=factory
+    )
+    transport.prepare_agent_workspace("codex", '/tmp/sdf/a "quoted" dir')
+    (trust,) = [cmd for cmd, _ in factory.sandbox.runs if "config.toml" in cmd]
+    home = tmp_path / "home"
+    home.mkdir()
+    _run_in_box(trust, home)
+    assert home.joinpath(".codex", "config.toml").read_text() == (
+        '\n[projects."/tmp/sdf/a \\"quoted\\" dir"]\ntrust_level = "trusted"\n'
+    )

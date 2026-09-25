@@ -83,6 +83,19 @@ _CLAUDE_TRUST_WORKSPACE = (
     'c.projects=c.projects||{};c.projects[p]=Object.assign({},c.projects[p],{hasTrustDialogAccepted:true});'
     'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600)'
 )
+# Codex 0.157 shows its folder-trust dialog for a fresh Attempt directory even
+# with a ``-c projects.<dir>.trust_level`` override (observed live, #16); only a
+# ``[projects."<dir>"]`` table in ~/.codex/config.toml suppresses it.  Appended
+# once, so earlier top-level keys (``openai_base_url``) stay first.
+_CODEX_TRUST_WORKSPACE = (
+    'const fs=require("fs"),d=process.env.HOME+"/.codex",f=d+"/config.toml",p=process.argv[1];'
+    'fs.mkdirSync(d,{recursive:true});let t="";try{t=fs.readFileSync(f,"utf8")}catch{}'
+    'const h="[projects."+JSON.stringify(p)+"]";if(t.split("\\n").includes(h))process.exit(0);'
+    'fs.writeFileSync(f,t+(t&&!t.endsWith("\\n")?"\\n":"")+"\\n"+h+"\\ntrust_level = \\"trusted\\"\\n")'
+)
+_WORKSPACE_TRUST: Mapping[str, str] = MappingProxyType(
+    {"claude": _CLAUDE_TRUST_WORKSPACE, "codex": _CODEX_TRUST_WORKSPACE}
+)
 _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
     {
         "claude-approve-api-key": _CLAUDE_APPROVE_KEY,
@@ -219,9 +232,10 @@ class CredentialedE2BHerdrTransport(E2BHerdrTransport):
     def prepare_agent_workspace(self, agent: str, workspace: str) -> None:
         """Pre-trust an Attempt workspace for an agent kind that asks about it."""
 
-        if agent != "claude":
+        script = _WORKSPACE_TRUST.get(agent)
+        if script is None:
             return
-        command = f"node -e {shlex.quote(_CLAUDE_TRUST_WORKSPACE)} {shlex.quote(workspace)}"
+        command = f"node -e {shlex.quote(script)} {shlex.quote(workspace)}"
         self._exec(command, self.timeout_seconds * 1000)
 
 def create_credentialed_transport(
