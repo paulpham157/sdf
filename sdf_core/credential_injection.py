@@ -11,6 +11,7 @@ command line, a Herdr pane or Evidence.
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -32,7 +33,8 @@ _CLAUDE_APPROVE_KEY = (
     'c.hasCompletedOnboarding=true;c.customApiKeyResponses=c.customApiKeyResponses||{};'
     'const a=c.customApiKeyResponses.approved||[];if(!a.includes(k))a.push(k);'
     'c.customApiKeyResponses.approved=a;c.customApiKeyResponses.rejected=c.customApiKeyResponses.rejected||[];'
-    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600})'
+    # The template ships the file at 0644; ``mode`` applies only on creation.
+    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600)'
 )
 _CODEX_API_KEY_AUTH = (
     'const fs=require("fs"),d=process.env.HOME+"/.codex",f=d+"/auth.json",v=process.argv[1];'
@@ -45,6 +47,29 @@ _CODEX_SESSION_AUTH = (
     'const s=process.env[v]||"";if(!s){process.exit(0)}fs.mkdirSync(d,{recursive:true});'
     'try{if(fs.statSync(f).size>0)process.exit(0)}catch{}'
     'fs.writeFileSync(f,s,{mode:0o600})'
+)
+# Herdr's server starts from the template entrypoint before ``Sandbox.create``
+# envs apply to later commands, so an agent pane does not inherit them.  This
+# seed writes the plan's variables (named on argv, read from ``process.env``)
+# to a private file that every interactive bash sources.  The source line goes
+# first in ``.bashrc``, before Debian's non-interactive early return.
+_AGENT_ENV_FILE = ".config/sdf/agent-env.sh"
+_PANE_ENV = (
+    'const fs=require("fs"),h=process.env.HOME,d=h+"/.config/sdf",f=h+"/' + _AGENT_ENV_FILE + '",r=h+"/.bashrc";'
+    "const q=v=>\"'\"+v.replace(/'/g,\"'\\\\''\")+\"'\";"
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});'
+    'fs.writeFileSync(f,process.argv.slice(1).filter(n=>process.env[n]).map(n=>"export "+n+"="+q(process.env[n])+"\\n").join(""),{mode:0o600});'
+    'fs.chmodSync(f,0o600);'
+    'const l="[ -r \\"$HOME/' + _AGENT_ENV_FILE + '\\" ] && . \\"$HOME/' + _AGENT_ENV_FILE + '\\"\\n";'
+    'let b="";try{b=fs.readFileSync(r,"utf8")}catch{}if(!b.includes(l))fs.writeFileSync(r,l+b)'
+)
+# Claude asks whether to trust a folder the first time it opens there; the
+# Attempt workspace is created per Attempt, so trust it right before start.
+_CLAUDE_TRUST_WORKSPACE = (
+    'const fs=require("fs"),f=process.env.HOME+"/.claude.json",p=process.argv[1];'
+    'let c={};try{c=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}'
+    'c.projects=c.projects||{};c.projects[p]=Object.assign({},c.projects[p],{hasTrustDialogAccepted:true});'
+    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600)'
 )
 _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
     {
@@ -65,6 +90,15 @@ def seed_command(step: SeedStep) -> str:
     # Reference the variable once as ``$NAME`` too, so a reader of the command
     # line can see which sandbox variable feeds it; node receives the name.
     return f"if [ -n \"${step.variable}\" ]; then node -e {shlex.quote(script)} {shlex.quote(step.variable)}; fi"
+
+def pane_env_command(variables: Iterable[str]) -> str:
+    """Render the seed that exposes ``variables`` to Herdr agent panes, by name."""
+
+    names = tuple(dict.fromkeys(variables))
+    for name in names:
+        if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", name):
+            raise CredentialConfigError(f"invalid sandbox variable name {name!r}")
+    return f"node -e {shlex.quote(_PANE_ENV)} {' '.join(names)}"
 
 @dataclass(frozen=True, slots=True)
 class CredentialInjection:
@@ -118,6 +152,7 @@ def prepare_credential_injection(
     envs = {name: value for name, value in (base_envs or {}).items() if name not in strip}
     envs.update(credential_envs)
     seeds = tuple(seed_command(step) for plan in plans.values() for step in plan.seed_steps)
+    seeds += (pane_env_command(sorted(credential_envs)),)
     metadata = {
         agent: CredentialMetadata(plan.mode.value, plan.connection_id) for agent, plan in plans.items()
     }
@@ -147,6 +182,14 @@ class CredentialedE2BHerdrTransport(E2BHerdrTransport):
                 # Command output is not echoed: a seed handles credential state.
                 self._kill_after_timeout()
                 raise HerdrRuntimeError("credential seed step failed; sandbox killed") from None
+
+    def prepare_agent_workspace(self, agent: str, workspace: str) -> None:
+        """Pre-trust an Attempt workspace for an agent kind that asks about it."""
+
+        if agent != "claude":
+            return
+        command = f"node -e {shlex.quote(_CLAUDE_TRUST_WORKSPACE)} {shlex.quote(workspace)}"
+        self._exec(command, self.timeout_seconds * 1000)
 
 def create_credentialed_transport(
     *,

@@ -274,6 +274,20 @@ class RuntimeController:
         self._record(RuntimeEventKind.RECONNECTED, updated)
         return updated
 
+    def bind_workspace(self, attempt_id: str, workspace: Any) -> None:
+        """Forward workspace binding to runtimes that own a remote copy."""
+
+        bind_workspace = getattr(self.runtime, "bind_workspace", None)
+        if callable(bind_workspace):
+            bind_workspace(attempt_id, workspace)
+
+    def collect_workspace(self, attempt_id: str, workspace: Any) -> None:
+        """Forward workspace collection to runtimes that own a remote copy."""
+
+        collect_workspace = getattr(self.runtime, "collect_workspace", None)
+        if callable(collect_workspace):
+            collect_workspace(attempt_id, workspace)
+
     def replay(self, events: Iterable[RuntimeEvent]) -> tuple[RuntimeEvent, ...]:
         """Restore controller observations without dispatching the runtime.
 
