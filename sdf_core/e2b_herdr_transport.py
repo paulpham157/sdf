@@ -7,6 +7,9 @@ It is deliberately separate from ``E2BContainmentBackend.run()``, whose
 sync/exec/pull/kill loop is intentionally one-shot and cannot support
 prompt/reconnect semantics.
 
+Attempt workspaces move over the SDK filesystem API (write/list/read), never
+through shell pipelines, so file bytes do not travel through command stdout.
+
 Every command carries an explicit command timeout and request timeout. envd
 runs a command on a context decoupled from its stream, so cancelling the
 stream does not stop the remote process (upstream e2b #1877); a timed-out
@@ -15,26 +18,33 @@ command therefore kills the whole sandbox.
 
 from __future__ import annotations
 
-import base64
-import io
 import os
 import re
 import shlex
 import shutil
-import tarfile
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
-from e2b import CommandExitException, Sandbox, SandboxException, TimeoutException
+from e2b import (
+    CommandExitException,
+    FileType,
+    NotFoundException,
+    Sandbox,
+    SandboxException,
+    TimeoutException,
+)
 
 from .herdr_runtime import HerdrRuntimeError
 
 SandboxFactory = Callable[..., Any]
 SandboxConnector = Callable[..., Any]
-_ARCHIVE_LIMIT = 8 * 1024 * 1024
+_TRANSFER_LIMIT = 8 * 1024 * 1024
+# envd lists recursively only to a fixed depth; bounded fixtures stay well inside it.
+_COLLECT_DEPTH = 64
+
 
 class E2BHerdrTransport:
     """Run Herdr control commands in one persistent E2B sandbox."""
@@ -91,62 +101,85 @@ class E2BHerdrTransport:
             self._sandbox_id = None
 
     def stage_workspace(self, attempt_id: str, workspace: Path) -> str:
-        """Copy a bounded local fixture into this Attempt's sandbox path."""
+        """Copy a bounded local workspace into this Attempt's sandbox directory.
+
+        Any remote state left by an earlier stage is removed first, so the
+        remote Attempt directory mirrors the local workspace exactly.
+        """
 
         source = Path(workspace).expanduser().resolve()
         if not source.is_dir():
             raise ValueError("workspace must be an existing directory")
         remote = self._workspace_path(attempt_id)
-        archive = io.BytesIO()
-        with tarfile.open(fileobj=archive, mode="w:gz") as tar:
-            for path in sorted(source.rglob("*")):
-                if path.is_symlink():
-                    raise ValueError("workspace must not contain symlinks")
-                if path.is_file():
-                    tar.add(path, arcname=str(path.relative_to(source)), recursive=False)
-        payload = archive.getvalue()
-        if len(payload) > _ARCHIVE_LIMIT:
-            raise ValueError("workspace archive exceeds the 8 MiB transport limit")
-        timeout_ms = self.timeout_seconds * 1000
-        remote_archive = f"{remote}.stage.tar.gz"
-        sandbox = self._ensure_sandbox()
+        files: list[dict[str, Any]] = []
+        dirs: list[str] = []
+        total = 0
+        for path in sorted(source.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("workspace must not contain symlinks")
+            target = f"{remote}/{path.relative_to(source).as_posix()}"
+            if path.is_dir():
+                dirs.append(target)
+            elif path.is_file():
+                data = path.read_bytes()
+                total += len(data)
+                if total > _TRANSFER_LIMIT:
+                    raise ValueError("workspace exceeds the 8 MiB transfer limit")
+                files.append({"path": target, "data": data})
+        timeout = self.request_timeout_seconds
+        fs = self._ensure_sandbox().files
         try:
-            sandbox.files.write(remote_archive, payload, request_timeout=self.request_timeout_seconds)
+            try:
+                fs.remove(remote, request_timeout=timeout)
+            except NotFoundException:
+                pass
+            fs.make_dir(remote, request_timeout=timeout)
+            for directory in dirs:
+                fs.make_dir(directory, request_timeout=timeout)
+            fs.write_files(files, request_timeout=timeout)
         except SandboxException as exc:
             raise HerdrRuntimeError(f"E2B workspace staging failed: {exc}") from exc
-        self._exec(
-            'mkdir -p {0} && tar -xzf {1} -C {0} && rm -f {1}'.format(
-                shlex.quote(remote), shlex.quote(remote_archive)
-            ),
-            timeout_ms,
-        )
         return remote
 
     def collect_workspace(self, attempt_id: str, workspace: Path) -> None:
-        """Replace a disposable local workspace with the sandbox result."""
+        """Replace a disposable local workspace with the sandbox's Attempt state.
+
+        The remote tree is downloaded into a sibling staging directory first,
+        so a failed collection leaves the local workspace untouched.
+        """
 
         destination = Path(workspace).expanduser().resolve()
         if not destination.is_dir():
             raise ValueError("workspace must be an existing directory")
         remote = self._workspace_path(attempt_id)
-        encoded = self._exec(
-            f"tar -C {shlex.quote(remote)} -czf - . | base64 -w 0", self.timeout_seconds * 1000
-        )
-        try:
-            payload = base64.b64decode(encoded.strip(), validate=True)
-        except ValueError as exc:
-            raise HerdrRuntimeError("E2B workspace collection returned invalid base64") from exc
+        timeout = self.request_timeout_seconds
+        fs = self._ensure_sandbox().files
         staging = Path(tempfile.mkdtemp(prefix="sdf-e2b-collect-", dir=destination.parent))
         try:
-            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
-                members = tar.getmembers()
-                for member in members:
-                    relative = Path(member.name)
-                    if relative.is_absolute() or ".." in relative.parts or not (member.isdir() or member.isfile()):
-                        raise HerdrRuntimeError("E2B workspace archive contains an unsafe member")
-                tar.extractall(staging, members=members, filter="data")
+            try:
+                entries = fs.list(remote, depth=_COLLECT_DEPTH, request_timeout=timeout)
+                total = 0
+                for entry in sorted(entries, key=lambda item: item.path):
+                    relative = self._relative_member(remote, entry.path)
+                    local = staging / relative
+                    if entry.type == FileType.DIR:
+                        # A directory at the listing depth may hide children.
+                        if len(relative.parts) >= _COLLECT_DEPTH:
+                            raise HerdrRuntimeError("E2B workspace is too deep to collect")
+                        local.mkdir(parents=True, exist_ok=True)
+                    elif entry.type == FileType.FILE:
+                        data = fs.read(entry.path, format="bytes", request_timeout=timeout)
+                        total += len(data)
+                        if total > _TRANSFER_LIMIT:
+                            raise HerdrRuntimeError("E2B workspace exceeds the 8 MiB transfer limit")
+                        local.parent.mkdir(parents=True, exist_ok=True)
+                        local.write_bytes(bytes(data))
+                    else:
+                        raise HerdrRuntimeError("E2B workspace contains an unsafe entry")
+            except SandboxException as exc:
+                raise HerdrRuntimeError(f"E2B workspace collection failed: {exc}") from exc
             for child in destination.iterdir():
-                if child.is_dir():
+                if child.is_dir() and not child.is_symlink():
                     shutil.rmtree(child)
                 else:
                     child.unlink()
@@ -154,6 +187,13 @@ class E2BHerdrTransport:
                 shutil.move(str(child), destination / child.name)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _relative_member(remote: str, path: str) -> PurePosixPath:
+        relative = PurePosixPath(path).relative_to(remote) if path.startswith(f"{remote}/") else None
+        if relative is None or not relative.parts or ".." in relative.parts:
+            raise HerdrRuntimeError("E2B workspace contains an unsafe entry")
+        return relative
 
     def _ensure_sandbox(self) -> Any:
         if self._sandbox is not None:

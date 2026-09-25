@@ -74,3 +74,31 @@ def test_host_timeout_kills_the_sandbox(owned):
 
     assert transport.sandbox_id is None
     _assert_gone(created[0])
+
+
+def test_workspace_stages_and_collects_round_trip(owned, tmp_path):
+    transport, created = owned
+    workspace = tmp_path / "workspace"
+    workspace.joinpath("pkg").mkdir(parents=True)
+    workspace.joinpath("app.py").write_text("print('local')\n", encoding="utf-8")
+    workspace.joinpath("pkg", "data.bin").write_bytes(bytes(range(256)))
+
+    remote = transport.stage_workspace("ATTEMPT-LIVE-ROUNDTRIP", workspace)
+    created.append(transport.sandbox_id)
+    transport.herdr_binary = "sh"
+    staged = transport.run(("sh", "-c", f"cd {remote} && find . -type f | sort && cat app.py"), 30_000)
+    assert staged.split() == ["./app.py", "./pkg/data.bin", "print('local')"]
+
+    transport.run(
+        ("sh", "-c", f"cd {remote} && echo \"print('remote')\" > app.py && mkdir -p new && echo made > new/out.txt"),
+        30_000,
+    )
+    workspace.joinpath("local-only.txt").write_text("discard", encoding="utf-8")
+    transport.collect_workspace("ATTEMPT-LIVE-ROUNDTRIP", workspace)
+
+    assert workspace.joinpath("app.py").read_text(encoding="utf-8") == "print('remote')\n"
+    assert workspace.joinpath("new", "out.txt").read_text(encoding="utf-8") == "made\n"
+    assert workspace.joinpath("pkg", "data.bin").read_bytes() == bytes(range(256))
+    assert not workspace.joinpath("local-only.txt").exists()
+    transport.close()
+    _assert_gone(created[0])
