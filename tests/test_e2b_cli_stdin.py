@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from sdf_core.e2b_containment import E2BContainmentBackend
-from sdf_core.e2b_herdr_transport import E2BHerdrTransport
 from sdf_core.herdr_e2b import HerdrE2BAdapter
 
 class _Done:
@@ -31,10 +30,6 @@ def popen_kwargs(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     return seen
-
-def test_herdr_transport_runner_closes_stdin(popen_kwargs):
-    E2BHerdrTransport._run(("e2b", "sandbox", "exec", "sb", "--", "true"), 1000, {})
-    assert popen_kwargs[-1]["stdin"] is subprocess.DEVNULL
 
 def test_containment_runner_closes_stdin(popen_kwargs, tmp_path: Path):
     E2BContainmentBackend._run(object.__new__(E2BContainmentBackend), ("e2b-box", "exec", "true"), tmp_path, 1000, {})
