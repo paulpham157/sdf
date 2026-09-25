@@ -23,8 +23,7 @@ import re
 import shlex
 import shutil
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -215,23 +214,34 @@ class E2BHerdrTransport:
         sandbox = self._ensure_sandbox()
         timeout = timeout_ms / 1000
         # The SDK enforces ``timeout`` on the stream; the host watchdog also
-        # bounds a stalled request so neither can hang an Attempt.
-        pool = ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(
-            sandbox.commands.run, cmd, timeout=timeout, request_timeout=self.request_timeout_seconds
-        )
-        try:
-            result = future.result(timeout=timeout + self.request_timeout_seconds)
-        except (TimeoutException, FutureTimeout) as exc:
+        # bounds a stalled request so neither can hang an Attempt.  The worker
+        # is a daemon so a request the kill cannot release never pins the
+        # process; once the sandbox is killed it is given a bounded join.
+        outcome: dict[str, Any] = {}
+
+        def call() -> None:
+            try:
+                outcome["result"] = sandbox.commands.run(
+                    cmd, timeout=timeout, request_timeout=self.request_timeout_seconds
+                )
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=call, name="e2b-herdr-command", daemon=True)
+        worker.start()
+        worker.join(timeout + self.request_timeout_seconds)
+        if worker.is_alive() or isinstance(outcome.get("error"), TimeoutException):
             self._kill_after_timeout()
-            raise HerdrRuntimeError("E2B Herdr command timed out; sandbox killed") from exc
+            worker.join(self.request_timeout_seconds)
+            raise HerdrRuntimeError("E2B Herdr command timed out; sandbox killed") from outcome.get("error")
+        try:
+            if "error" in outcome:
+                raise outcome["error"]
         except CommandExitException as exc:
             raise HerdrRuntimeError(f"E2B Herdr command failed: {(exc.stderr or '')[-1000:]}") from exc
         except SandboxException as exc:
             raise HerdrRuntimeError(f"E2B Herdr command failed: {exc}") from exc
-        finally:
-            pool.shutdown(wait=False)
-        return result.stdout
+        return outcome["result"].stdout
 
     def _kill_after_timeout(self) -> None:
         try:

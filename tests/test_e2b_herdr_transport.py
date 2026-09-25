@@ -477,3 +477,37 @@ def test_collection_refuses_a_tree_deeper_than_the_listing_depth(tmp_path, monke
     with pytest.raises(HerdrRuntimeError, match="too deep"):
         transport.collect_workspace("ATTEMPT-WORKSPACE", fixture)
     assert fixture.joinpath("app.py").read_text(encoding="utf-8") == "print('local')\n"
+
+def test_a_timed_out_worker_ends_once_the_kill_releases_it():
+    import threading
+
+    released = threading.Event()
+    sandbox = FakeSandbox()
+    sandbox.commands = SimpleNamespace(run=lambda *_, **__: released.wait(5))
+    kill = sandbox.kill
+    sandbox.kill = lambda **kwargs: (released.set(), kill(**kwargs))[1]
+    transport = _transport(FakeFactory(sandbox), request_timeout_seconds=0.05)
+    before = set(threading.enumerate())
+
+    with pytest.raises(HerdrRuntimeError, match="timed out; sandbox killed"):
+        transport.run(("herdr", "wait"), 50)
+
+    assert [t for t in threading.enumerate() if t not in before and t.is_alive()] == []
+
+def test_a_worker_the_kill_cannot_release_does_not_block_interpreter_exit():
+    import threading
+
+    stuck = threading.Event()
+    sandbox = FakeSandbox()
+    sandbox.commands = SimpleNamespace(run=lambda *_, **__: stuck.wait(5))
+    transport = _transport(FakeFactory(sandbox), request_timeout_seconds=0.05)
+    before = set(threading.enumerate())
+
+    started = time.monotonic()
+    with pytest.raises(HerdrRuntimeError, match="timed out; sandbox killed"):
+        transport.run(("herdr", "wait"), 50)
+
+    assert time.monotonic() - started < 1
+    leftover = [t for t in threading.enumerate() if t not in before and t.is_alive()]
+    assert leftover and all(t.daemon for t in leftover)
+    stuck.set()
