@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs live as local Markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs live in GitHub Issues for `paulpham157/sdf` (via `gh`); older local trackers under `.scratch/` are historical. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
