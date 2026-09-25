@@ -37,6 +37,17 @@ _AGENT_START_ARGS: Mapping[str, tuple[str, ...]] = {
 }
 
 
+# Codex 0.157 can take Herdr's typed prompt into its composer but swallow the
+# submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
+# stays idle.  For these kinds the runtime presses Enter again (never retyping
+# the prompt) until the turn is observed working.
+_RESUBMIT_ENTER_AGENTS = frozenset({"codex"})
+_RESUBMIT_ATTEMPTS = 3
+_SUBMIT_WINDOW_MS = 8_000
+# Herdr states that prove a turn is in progress after a submission.
+_TURN_STATES = ("working", "blocked")
+
+
 def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
 
@@ -208,6 +219,8 @@ class HerdrRuntime(AgentRuntime):
         workspace_dir: Path | None = None,
         expected_version: str | None = None,
         credentials: Mapping[str, CredentialMetadata] | None = None,
+        agent_args: Mapping[str, Sequence[str]] | None = None,
+        poll_interval_s: float = 1.0,
     ) -> None:
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be positive")
@@ -231,8 +244,15 @@ class HerdrRuntime(AgentRuntime):
         self.credentials: Mapping[str, CredentialMetadata] | None = (
             dict(credentials) if credentials is not None else None
         )
+        # Operator-supplied argv appended after the runtime's own per-agent
+        # arguments; the runtime does not interpret it.
+        self._agent_args = {agent: tuple(args) for agent, args in (agent_args or {}).items()}
+        self._poll_interval_s = poll_interval_s
         self._bindings: dict[str, _Binding] = {}
         self._sessions: dict[str, RuntimeSession] = {}
+        # Sessions whose latest prompt ended its turn.  Herdr 0.9.x reports a
+        # finished turn as ``idle`` (ready for input), never ``done``.
+        self._completed_turns: set[str] = set()
         self._attempt_workspaces: dict[str, Path | str] = {}
         # An E2B transport owns a stronger final cleanup boundary than Herdr's
         # pane API.  Keep it optional so the deterministic local adapter does
@@ -397,7 +417,7 @@ class HerdrRuntime(AgentRuntime):
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
-        agent_args = _agent_start_args(agent, workspace_dir)
+        agent_args = (*_agent_start_args(agent, workspace_dir), *self._agent_args.get(agent, ()))
         if agent_args:
             start_args.extend(("--", *agent_args))
         started = self._object(start_args)
@@ -420,33 +440,109 @@ class HerdrRuntime(AgentRuntime):
         return session
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
+        """Submit one prompt and wait for the agent's turn to end.
+
+        A normal return of ``agent prompt --wait --until idle`` means Herdr saw
+        the turn run (``working``/``blocked``) and come back to ``idle``: the
+        agent finished its turn, so the session is ``COMPLETED``.  That is not
+        Evaluator acceptance.  A stalled prompt stays ``RUNNING``.
+        """
+
         binding, current = self._known(session_id)
+        self._completed_turns.discard(session_id)
+        self._wait_interactive(session_id)
         args = self._command("agent", "prompt", session_id, input_text, "--wait", "--until", "idle")
+        status = RuntimeStatus.COMPLETED
         try:
             raw = self._raw(args)
         except HerdrRuntimeError as exc:
+            if "agent_prompt_stalled" not in str(exc):
+                raise
+            raw = ""
+            if binding.agent in _RESUBMIT_ENTER_AGENTS and self._resubmit(binding, session_id):
+                status = self._await_turn_end(session_id)
             # Herdr can time out its semantic idle observation after accepting
             # a prompt.  A foreground process is stronger evidence that work
             # was dispatched, so preserve the live binding as RUNNING and let
             # cancellation own the cleanup path instead of stranding it.
-            if "agent_prompt_stalled" not in str(exc) or not self._has_foreground_child(binding):
+            elif self._has_foreground_child(binding):
+                status = RuntimeStatus.RUNNING
+            else:
                 raise
-            raw = ""
-        payload: Mapping[str, Any] = {}
         if raw.strip():
             try:
                 parsed = self._decode(raw)
-                if isinstance(parsed, Mapping):
-                    payload = parsed
             except HerdrRuntimeError:
                 # The 0.9.x CLI returns an empty body for a successful prompt;
                 # terminal output is read through ``agent read`` below.
-                payload = {}
-        status = self._status(payload.get("status", payload.get("agent_status", "working"))) if payload else RuntimeStatus.RUNNING
+                parsed = None
+            if isinstance(parsed, Mapping):
+                reported = self._status(parsed.get("status", parsed.get("agent_status", "idle")))
+                if reported in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
+                    status = reported
+        if status is RuntimeStatus.COMPLETED:
+            self._completed_turns.add(session_id)
         output = self.stream(session_id)
         updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output or current.output, credential=current.credential)
         self._sessions[session_id] = updated
         return updated
+
+    def _agent_state(self, session_id: str) -> Mapping[str, Any]:
+        payload = self._object(self._command("agent", "get", session_id))
+        agent_payload = payload.get("agent", payload)
+        return agent_payload if isinstance(agent_payload, Mapping) else payload
+
+    @staticmethod
+    def _state_name(state: Mapping[str, Any]) -> str:
+        return str(state.get("agent_status", state.get("status", ""))).lower()
+
+    def _wait_interactive(self, session_id: str) -> None:
+        """Wait until the agent accepts input; a prompt typed earlier is lost."""
+
+        deadline = time.monotonic() + self._timeout_ms / 1000
+        while True:
+            state = self._agent_state(session_id)
+            name = self._state_name(state)
+            if name == "blocked":
+                # Only the status is reported: pane text could carry anything.
+                raise HerdrRuntimeError("Herdr agent is blocked by a dialog before the prompt")
+            ready = state.get("interactive_ready")
+            if ready is True or (ready is None and name in {"idle", "done", "completed", "complete"}):
+                return
+            if time.monotonic() >= deadline:
+                raise HerdrRuntimeError(f"Herdr agent never became interactive: {name or 'unknown'}")
+            time.sleep(self._poll_interval_s)
+
+    def _resubmit(self, binding: _Binding, session_id: str) -> bool:
+        """Press Enter until the stalled turn is seen running; True if it ran."""
+
+        for _ in range(_RESUBMIT_ATTEMPTS):
+            if self._state_name(self._agent_state(session_id)) in _TURN_STATES:
+                return True
+            self._raw(self._command("pane", "send-keys", binding.pane_id, "Enter"))
+            if self._agent_wait(session_id, _TURN_STATES, _SUBMIT_WINDOW_MS):
+                return True
+        return False
+
+    def _await_turn_end(self, session_id: str) -> RuntimeStatus:
+        if self._agent_wait(session_id, ("idle",), self._timeout_ms):
+            return RuntimeStatus.COMPLETED
+        return RuntimeStatus.RUNNING
+
+    def _agent_wait(self, session_id: str, states: Sequence[str], timeout_ms: int) -> bool:
+        """``agent wait`` for one of ``states``; False when Herdr times out."""
+
+        args = self._command("agent", "wait", session_id)
+        for state in states:
+            args.extend(("--until", state))
+        args.extend(("--timeout", str(timeout_ms)))
+        try:
+            self._raw(args)
+        except HerdrRuntimeError as exc:
+            if "timeout" not in str(exc).lower():
+                raise
+            return False
+        return True
 
     def stream(self, session_id: str) -> tuple[str, ...]:
         binding, current = self._known(session_id)
@@ -471,11 +567,16 @@ class HerdrRuntime(AgentRuntime):
         agent_payload = payload.get("agent", payload)
         if not isinstance(agent_payload, Mapping):
             agent_payload = payload
+        reported = agent_payload.get("status", agent_payload.get("agent_status", current.status.value))
+        status = self._status(reported)
+        # ``idle`` after a completed turn is that turn's end, not a new one.
+        if session_id in self._completed_turns and str(reported).lower() == "idle":
+            status = RuntimeStatus.COMPLETED
         updated = RuntimeSession(
             current.session_id,
             binding.attempt_id,
             binding.agent,
-            self._status(agent_payload.get("status", agent_payload.get("agent_status", current.status.value))),
+            status,
             self._output(payload, current.output),
             credential=current.credential,
         )

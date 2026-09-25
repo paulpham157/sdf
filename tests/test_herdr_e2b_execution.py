@@ -93,3 +93,57 @@ def test_live_codex_e2b_loop(tmp_path: Path, instructions: str, task_status: str
     assert result.cleanup_succeeded
     assert db.get(TaskRow, "TASK-CALC").status == task_status
     assert relations == {relation}
+
+
+class _InteractiveHerdr:
+    """Herdr 0.9.1 driving an interactive agent: a finished turn reads ``idle``.
+
+    The prompt edits the Attempt workspace, as the agent would, and Herdr
+    never reports ``done``; no test-side status override is involved.
+    """
+
+    def __init__(self, agent: str, new_source: str):
+        self.agent, self.new_source, self.workspace = agent, new_source, None
+
+    def __call__(self, command, _timeout_ms):
+        operation = tuple(command[1:3])
+        if operation == ("workspace", "create"):
+            self.workspace = Path(command[command.index("--cwd") + 1])
+            return json.dumps({"result": {"workspace": {"workspace_id": "ws-i"}, "root_pane": {"pane_id": "pane-i"}}})
+        if operation == ("agent", "start"):
+            return json.dumps({"result": {"agent": {"name": f"{self.agent}-i", "agent_status": "unknown", "pane_id": "pane-i"}}})
+        if operation == ("agent", "get"):
+            return json.dumps({"result": {"agent": {"agent_status": "idle", "interactive_ready": True}}})
+        if operation == ("agent", "prompt"):
+            (self.workspace / "calc.py").write_text(self.new_source, encoding="utf-8")
+            return ""
+        if operation == ("agent", "read"):
+            return "edited calc.py\n"
+        if operation == ("pane", "close"):
+            return json.dumps({"type": "ok"})
+        if operation == ("pane", "process-info"):
+            return json.dumps({"process_info": {"shell_pid": 1, "foreground_processes": [{"pid": 1, "name": "bash"}]}})
+        raise AssertionError(command)
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_execution_service_evaluates_an_interactive_herdr_attempt_whose_turn_ends_idle(tmp_path: Path, agent: str):
+    from sdf_core.adapter import RuntimeAgentAdapter
+    from sdf_core.herdr_runtime import HerdrRuntime
+    from sdf_core.runtime import RuntimeController
+
+    runtime = HerdrRuntime(runner=_InteractiveHerdr(agent, "def add(a, b):\n    return a + b\n"))
+    controller = RuntimeController(runtime, source="herdr")
+    db, attempt, relations = _run(tmp_path, RuntimeAgentAdapter(controller, agent=agent), POSITIVE)
+
+    assert db.get(TaskRow, "TASK-CALC").status == "succeeded"
+    assert relations == {"validates"}
+    assert [(e.criterion, e.status) for e in db.query(EvidenceRow).filter_by(attempt_id=attempt.id)] == [
+        ("add returns the sum", "PASS")
+    ]
+    assert [(e.kind.value, e.status.value) for e in controller.events] == [
+        ("runtime_started", "running"),
+        ("runtime_input_sent", "completed"),
+        ("runtime_output_observed", "completed"),
+        ("runtime_terminated", "terminated"),
+    ]
