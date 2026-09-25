@@ -76,14 +76,18 @@ agreement with hand labels. Details and ranking follow.
 - **Maturity.** It launched "in early access" with a 2026-09-15 byline
   ([blog]), so it is about ten days old. The version is `jev-1.13.0` behind
   the moving alias `jev-latest`. There are official Python and JS SDKs. There
-  is no public changelog, status page or SLA (searched; *secondary* summary).
+  is no public changelog, status page or SLA (none found by the author; the
+  jaggedness page is the closest thing to release notes).
   Jev is also offered through Cloudflare Workers AI and, per community
   READMEs, OpenRouter, Vercel AI Gateway and LiteLLM.
-- **Independent checks (*secondary*).** A community out-of-distribution test
-  reports calibration error well above its noise floor, with choice/score
-  overconfident and yes/no underconfident ([jev-ood-calibration][ood]). A
-  tool-call risk benchmark reports calibration holding ([dev.to][devto]).
-  Neither covers SDF-like state such as test logs and diffs.
+- **Independent checks (*secondary*).** A community test finds Jev
+  well calibrated on three public benchmarks. On an unseen synthetic rule
+  task, though, its calibration error was 4.4× the noise floor (0.107 vs
+  0.024), overconfident on choice/score and underconfident on yes/no
+  ([jev-ood-calibration][ood]). A 60-case tool-call risk benchmark reports
+  91.7% accuracy with calibration holding, but one wrong answer came at 0.97
+  confidence ([dev.to][devto]). Neither covers SDF-like state such as test
+  logs and diffs.
 
 ## 2. Ecosystem patterns (community, all unofficial)
 
@@ -95,7 +99,7 @@ the awesome list says it is not affiliated with TypeSafe.
 | [nandansrikrishna/jev-agent-tool][t1] (MIT, 0★, beta 0.1.0b1) | Python CLI/API/MCP over the official SDK | Batch JSONL evaluation. A resume fingerprint covers record, questions and model name. It warns that `jev-latest` can move without changing the fingerprint. Errors omit upstream bodies and private input. |
 | [walidboulanouar/jev-agent-kit][t2] (MIT, 2★) | Node CLI + MCP: `check`, `judge`, `route`, `triage`, `guard`, `rank`, `compact` | **Abstain**: `route` "abstains when nothing fits". `guard` maps to allow/**ask**/deny. Exit code 3 separates API error from "no". It recommends pinning `jev-1.13.0`. |
 | [openlayer-ai/jevals][t3] (MIT, 86★) | Evals and guardrails as Jev questions | An eval is `state()` / `questions()` / `reduce()`, and **plain code does what code is good at** before any question is asked. Backends are pluggable: TypeSafe, Vercel, local Kev/Laya, an emulated chat LLM, and `backend="mock"` in tests. |
-| [malevrigns/agent-jev][t4] (Apache-2.0, 303★) | AgentJev-0.6B, open weights on a Qwen3-0.6B backbone, speaking the same three primitives | Runs locally with a 2,048-token context. It reports 79.25% top-1 on the Typed Decisions test split (self-reported). Choice `margin` "is not an independent probability that the action will succeed". |
+| [malevrigns/agent-jev][t4] (Apache-2.0, 303★) | AgentJev-0.6B, open weights on a Qwen3-0.6B backbone, speaking the same three primitives | Runs locally with a 2,048-token context. It reports 79.25% top-1 on the Typed Decisions test split (self-reported, measured as agreement with a teacher model, not ground truth). Choice `margin` "is not an independent probability that the action will succeed". |
 | [vinilana/jev-gateway][t5] (MIT, 223★) | Local LLM gateway that asks Jev which tool the coding agent should call | **Fail open**: "If Jev is down, slow, or your key is wrong, every request simply goes straight to the LLM". It steers only when Jev is confident and has a `--routing off` baseline mode for comparison. |
 | [hellogumbo/awesome-jev][t6] (CC0, 191★) | Directory of about 1,094 entries | Links the official SDKs, docs, the [workflow evals][evals] and the official `system-one-adapter-python` (a TypeSafe client backed by ordinary LLMs, useful for comparison). |
 
@@ -214,8 +218,8 @@ default", which is the wrong property for a guard.
 
 A `noul` over the visible Herdr pane could answer "Is the agent waiting for
 new user input, having finished its turn?". Since #16 the deterministic
-settle window handles this. The pane is terminal output, which ADR-0004 says
-is not trusted. It can also show secrets or proprietary code, and the call
+settle window handles this. The pane is terminal output, which per ADR-0004
+"is not a trusted tool request or evidence of policy enforcement". It can also show secrets or proprietary code, and the call
 would add a network hop inside the runtime loop. **Skip.**
 
 ### 6. Model Tier or agent routing (value: low, risk: medium)
@@ -275,8 +279,8 @@ about 600k input tokens, or about $0.03 at list price.
   datasets must stay synthetic.
 - **Calibration drift and version drift.** `jev-latest` moves upstream, so pin
   the version. Thresholds are per question type and per domain ([jag]).
-  Independent tests disagree on out-of-distribution calibration ([ood],
-  [devto]), and none cover test logs or diffs. Recalibrate on SDF data before
+  Community tests show calibration can break on unseen task types ([ood])
+  and use small samples ([devto]), and none cover test logs or diffs. Recalibrate on SDF data before
   trusting any threshold.
 - **Adversarial state.** Agent output is attacker-influenced by definition
   (prompt injection through fixture content). Jev does not treat it as hostile
