@@ -19,7 +19,13 @@ Coordinator owns tracker status, integration review and commits. Workers own the
 | 07a | model_escalation | resolved-local | Evaluator-driven basic → medium → high policy with bounded Attempt lineage; live provider qualification remains open |
 | 07b | impact_measurement | resolved-local | Objective metrics, attribution fields and deterministic v0 scorecard; production impact remains unclaimed |
 | 07 | coordinator | resolved | Live Codex in E2B through ExecutionService: positive → validates, negative → contradicts, boxes killed (2026-09-25) |
-| 08 | coordinator | resolved-local | Event contract local; live runtime lifecycle events need the persistent HerdrRuntime path with Codex credentials |
+| 08 | coordinator | resolved | Live Runtime Session lifecycle persisted from two credentialed Attempts on `sdf-herdr-agents`: Claude `api-key` and Codex `subscription` (agent-credentials #15, 2026-09-25); Herdr `idle`≠`done` follow-up open |
 | 09 | coordinator | resolved-local | Routing local; second-agent live qualification open |
 
 Core v0 tickets 01, 04, 05 and 06 were re-audited and resolved on 2026-09-25; the PostgreSQL gate (`scripts/postgres-test.sh`: migrations 0001→0013, 5 integration tests) passed on a clean PostgreSQL 16 container.
+
+Agent-credentials (#5–#15, 2026-09-25) closed ticket 08's live boundary: the
+persistent HerdrRuntime path now takes create-time Agent Credentials per
+Credential Mode (ADR 0007), `sdf-herdr-agents` replaced the retired
+`sdf-herdr-codex` template (ADR 0009), and Claude runs without permission
+dialogs inside the disposable sandbox (ADR 0008).

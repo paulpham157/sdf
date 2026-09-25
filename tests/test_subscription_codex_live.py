@@ -22,11 +22,17 @@ from e2b import Sandbox
 from sdf_core.adapter import RuntimeAgentAdapter
 from sdf_core.credential_injection import create_credentialed_transport
 from sdf_core.credentials import load_dotenv
-from sdf_core.db import EvidenceRow, TaskRow
+from sdf_core.db import EvidenceRow, RuntimeEventRow, TaskRow
 from sdf_core.execution import ExecutionService
 from sdf_core.herdr_runtime import HerdrRuntime
 from sdf_core.plugin_bridge import PluginConnectionBridge
-from sdf_core.runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
+from sdf_core.runtime import (
+    CredentialMetadata,
+    RuntimeController,
+    RuntimeSession,
+    RuntimeStatus,
+    SqlAlchemyRuntimeEventSink,
+)
 from tests.test_e2b_agents_template_live import TEMPLATE
 from tests.test_e2b_herdr_transport_live import _assert_gone
 from tests.test_herdr_e2b_execution import CHECK, POSITIVE, _db, _fixture
@@ -131,7 +137,7 @@ class _Recorder:
                 break
             self.runtime._raw(self.runtime._command("pane", "send-keys", pane_id, "Enter"))
         else:
-            raise AssertionError("codex never started working on the prompt")
+            raise AssertionError(f"codex never started working on the prompt: {self._state(session_id).get('agent_status')}")
         # A post-turn dialog (e.g. a rate-limit model switch) blocks the pane
         # after the answer; the evaluator, not the pane, judges the result.
         done = lambda s: s.get("agent_status") in {"idle", "blocked"}  # noqa: E731
@@ -172,7 +178,11 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         db = _db()
         service = ExecutionService(
             db, workspace_root=tmp_path / "workspaces", artifact_root=tmp_path / "artifacts",
-            adapter=RuntimeAgentAdapter(runtime, agent="codex"),
+            # The controller records the live Runtime Session lifecycle (ticket 08).
+            adapter=RuntimeAgentAdapter(
+                RuntimeController(runtime, event_sink=SqlAlchemyRuntimeEventSink(db), source="herdr-e2b"),
+                agent="codex",
+            ),
         )
         attempt = service.run(
             task_id="TASK-CALC", dispatch_key="dispatch-calc-subscription", fixture=_fixture(tmp_path),
@@ -180,6 +190,7 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
             validation_target=("assumption", "ASSUMPTION-CALC"),
         )
         evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
+        events = db.query(RuntimeEventRow).filter_by(attempt_id=attempt.id).order_by(RuntimeEventRow.sequence).all()
         pane = "\n".join(runtime.panes + [line for s in runtime.sessions for line in s.output])
         leaked = _leaks(pane, secrets) + _leaks("\n".join((repr(injection), *injection.seed_commands)), secrets)
         print(json.dumps({
@@ -187,6 +198,8 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
             "statuses": [s.status.value for s in runtime.sessions],
             "credential": runtime.sessions[0].credential.as_dict() if runtime.sessions else None,
             "evidence": [(e.criterion, e.status) for e in evidence], "leaked": leaked,
+            # Kinds, sources and sequences only: payloads carry pane text.
+            "events": [(e.sequence, e.source, e.kind, e.status) for e in events],
             "pane_sha256": hashlib.sha256(pane.encode()).hexdigest(), "sandboxes": sorted(runtime.sandbox_ids),
         }))
 
@@ -200,6 +213,14 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         assert answered, "codex did not answer the prompt in its pane"
         assert db.get(TaskRow, "TASK-CALC").status == "succeeded"
         assert [(e.criterion, e.status) for e in evidence] == [("add returns the sum", "PASS")]
+        assert [(e.sequence, e.source, e.kind) for e in events] == [
+            (1, "herdr-e2b", "runtime_started"),
+            (2, "herdr-e2b", "runtime_input_sent"),
+            (3, "herdr-e2b", "runtime_output_observed"),
+            (4, "herdr-e2b", "runtime_terminated"),
+        ]
+        assert events[0].payload == {"credential_mode": "subscription", "connection_id": CONNECTION}
+        assert len({e.session_id for e in events}) == 1
     finally:
         try:
             transport.close()

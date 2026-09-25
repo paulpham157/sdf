@@ -43,8 +43,8 @@ adds the `api.` prefix. Do not set it to `api.e2b.app`.
 Build the pinned image with:
 
 ```bash
-e2b template create sdf-herdr-codex \
-  --path infra/e2b/herdr-codex \
+e2b template create sdf-herdr-agents \
+  --path infra/e2b/herdr-agents \
   --dockerfile Dockerfile \
   --ready-cmd 'herdr status server --json'
 ```

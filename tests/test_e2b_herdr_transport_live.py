@@ -13,7 +13,7 @@ from sdf_core.e2b_herdr_transport import E2BHerdrTransport
 from sdf_core.herdr_runtime import HerdrRuntime, HerdrRuntimeError
 
 LIVE = os.environ.get("SDF_LIVE_E2B") == "1" and bool(os.environ.get("E2B_API_KEY"))
-TEMPLATE = os.environ.get("SDF_E2B_HERDR_TEMPLATE", "sdf-herdr-codex")
+TEMPLATE = os.environ.get("SDF_E2B_HERDR_TEMPLATE", "sdf-herdr-agents")
 
 pytestmark = pytest.mark.skipif(not LIVE, reason="live E2B check: set SDF_LIVE_E2B=1 and E2B_API_KEY to run")
 
