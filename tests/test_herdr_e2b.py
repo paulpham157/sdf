@@ -14,8 +14,8 @@ def test_plan_is_deterministic_and_dry_run_has_no_provider_call(tmp_path: Path):
     assert result.status == "dry-run"
     assert result.attempt_id == "ATTEMPT-001"
     assert calls == []
-    assert plan.commands[1][4:6] == ("--task", "GOAL.md")
-    assert plan.commands[1][-1] == "--json"
+    assert plan.commands[0][4:6] == ("--task", "GOAL.md")
+    assert plan.commands[0][-1] == "--json"
 
 
 def test_live_mode_fails_closed_without_key_or_plugin(tmp_path: Path):
@@ -30,7 +30,7 @@ def test_live_result_correlates_provider_ids_without_network(tmp_path: Path, mon
 
     def runner(command, *_args):
         environments.append(dict(_args[-1]))
-        return '{"ok":true,"status":"done","sandboxId":"sb-1","herdrSessionId":"hs-1","workspaceId":"w-1"}' if command[1] == "run" else "{}"
+        return '{"ok":true,"status":"done","sandboxId":"sb-1","pull":{"ok":true},"herdrSessionId":"hs-1","workspaceId":"w-1"}' if command[1] == "run" else "{}"
 
     adapter = HerdrE2BAdapter(
         runner=runner,
@@ -64,4 +64,4 @@ def test_live_failure_still_attempts_cleanup(tmp_path: Path, monkeypatch: pytest
     with pytest.raises(E2BAdapterError, match="invalid JSON"):
         adapter.execute(plan, live=True)
 
-    assert [command[1] for command in calls] == ["sync", "run", "kill"]
+    assert [command[1] for command in calls] == ["run", "kill"]

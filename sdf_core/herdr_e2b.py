@@ -74,9 +74,11 @@ class HerdrE2BAdapter:
             agent=agent,
             timeout_ms=timeout_ms,
             commands=(
-                ("e2b-box", "sync"),
-                ("e2b-box", "run", "-t", template, "--task", task, "--timeout-ms", str(timeout_ms), "--json"),
-                ("e2b-box", "pull"),
+                # `run` boots or re-syncs the box with the requested template,
+                # pulls the result home and, with --kill, destroys the box. A
+                # bare `sync`/`pull` would target the plugin's default or an
+                # already-paused box. The trailing `kill` is idempotent cleanup.
+                ("e2b-box", "run", "-t", template, "--task", task, "--timeout-ms", str(timeout_ms), "--kill", "--json"),
                 ("e2b-box", "kill"),
             ),
         )
@@ -100,23 +102,22 @@ class HerdrE2BAdapter:
         cleanup_attempted = False
         cleanup_succeeded = False
         try:
-            self._runner(plan.commands[0], plan.checkout, plan.timeout_ms, env)
             try:
-                decoded = json.loads(self._runner(plan.commands[1], plan.checkout, plan.timeout_ms, env))
+                decoded = json.loads(self._runner(plan.commands[0], plan.checkout, plan.timeout_ms, env))
             except (TypeError, json.JSONDecodeError) as exc:
                 raise E2BAdapterError("e2b-box returned invalid JSON") from exc
             if not isinstance(decoded, dict):
                 raise E2BAdapterError("e2b-box returned a non-object result")
             payload = decoded
-            if pull:
-                self._runner(plan.commands[2], plan.checkout, plan.timeout_ms, env)
+            if pull and not (decoded.get("pull") or {}).get("ok"):
+                raise E2BAdapterError("e2b-box did not pull the Attempt workspace back")
         except Exception as exc:
             primary_error = exc
         finally:
             if cleanup:
                 cleanup_attempted = True
                 try:
-                    self._runner(plan.commands[3], plan.checkout, plan.timeout_ms, env)
+                    self._runner(plan.commands[1], plan.checkout, plan.timeout_ms, env)
                     cleanup_succeeded = True
                 except Exception as cleanup_error:
                     if primary_error is None:
@@ -154,3 +155,53 @@ class HerdrE2BAdapter:
         if process.returncode != 0:
             raise E2BAdapterError(f"e2b-box command failed: {stderr[-1000:]}")
         return stdout
+
+
+class HerdrE2BNativeAdapter:
+    """Run one live E2B coding-agent Attempt through the ExecutionService artifact pipeline.
+
+    The Attempt workspace is the e2b-box checkout: it is synced into a disposable
+    box, the agent runs headless, results are pulled back, and the box is killed.
+    Changed files are derived from local snapshots, never from agent claims.
+    """
+
+    def __init__(self, adapter: HerdrE2BAdapter | None = None, *, template: str = "codex", agent: str = "codex",
+                 timeout_ms: int = 300_000, live: bool = False):
+        self.adapter = adapter or HerdrE2BAdapter()
+        self.template = template
+        self.agent = agent
+        self.timeout_ms = timeout_ms
+        self.live = live
+        self.last_result: HerdrE2BResult | None = None
+
+    def run(self, *, attempt_id: str, workspace: Path, instructions: str):
+        from .adapter import AdapterResult, RuntimeAgentAdapter
+
+        before = RuntimeAgentAdapter._snapshot(workspace)
+        _ensure_git_baseline(workspace)
+        plan = self.adapter.plan(attempt_id=attempt_id, checkout=workspace, template=self.template,
+                                 agent=self.agent, task=instructions, timeout_ms=self.timeout_ms)
+        result = self.adapter.execute(plan, live=self.live)
+        self.last_result = result
+        after = RuntimeAgentAdapter._snapshot(workspace)
+        changed = tuple(path for path in RuntimeAgentAdapter._changed(before, after) if not path.startswith(".git/"))
+        agent = result.raw.get("agent") if isinstance(result.raw.get("agent"), Mapping) else {}
+        completed = result.status == "done" and bool(result.raw.get("ok")) and result.cleanup_succeeded
+        return AdapterResult(
+            attempt_id=attempt_id,
+            status="completed" if completed else result.status,
+            changed_files=changed,
+            stdout=str(agent.get("stdout", "")),
+            stderr=str(agent.get("stderr", "")) + ("" if completed else f"\ne2b-box status: {result.status}"),
+            exit_code=int(agent.get("exitCode") or 0) if completed else 1,
+        )
+
+
+def _ensure_git_baseline(workspace: Path) -> None:
+    # e2b-box keys a box by git worktree and pulls relative to a baseline commit.
+    if (workspace / ".git").exists():
+        return
+    env = {"PATH": os.environ.get("PATH", ""), "GIT_AUTHOR_NAME": "sdf", "GIT_AUTHOR_EMAIL": "sdf@localhost",
+           "GIT_COMMITTER_NAME": "sdf", "GIT_COMMITTER_EMAIL": "sdf@localhost", "HOME": os.environ.get("HOME", "")}
+    for command in (("git", "init", "-q"), ("git", "add", "-A"), ("git", "commit", "-q", "--allow-empty", "-m", "sdf attempt baseline")):
+        subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True)
