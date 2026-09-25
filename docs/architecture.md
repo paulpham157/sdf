@@ -25,9 +25,10 @@ Tool actions are Attempt-bound and pass through the Tool Proxy. The proxy obtain
 ```text
 SDF Control Plane (this host)
   → Internal Agent Runtime
+  → Agent Credential per agent kind, resolved on the host (Credential Mode)
   → HerdrRuntime + persistent E2B Herdr transport (SSH/API is an alternate deployment)
-  → Herdr workspace inside the execution sandbox
-  → one coding agent
+  → Herdr workspace inside the sdf-herdr-agents sandbox (credential as create-time envs)
+  → one coding agent (Codex or Claude Code)
   → Tool Proxy + Policy Decision
   → evaluator artifacts and Evidence pulled back to SDF
 ```
@@ -35,9 +36,9 @@ SDF Control Plane (this host)
 The control plane must not require the coding agent to run on the SDF host.
 `HerdrRuntime` therefore accepts an injected transport; the local subprocess
 runner is only a test/development fallback. The preferred deployment transport
-is a persistent E2B sandbox (`create --detach`, repeated `sandbox exec`, then
-`kill`), so prompt/reconnect/cancel can address the same Herdr process and
-workspace. SSH remains a compatibility transport for a controlled host. The
+is a persistent E2B sandbox created with the E2B Python SDK
+(`Sandbox.create(envs=)`, repeated `commands.run`, then `kill`), so
+prompt/reconnect/cancel can address the same Herdr process and workspace. SSH remains a compatibility transport for a controlled host. The
 long-term remote shape is `HerdrEndpointTransport`: SDF sends authenticated
 HTTPS JSON commands to a small deployment-owned bridge running beside Herdr
 inside the sandbox. The bridge owns the local Herdr socket/CLI; SDF never starts
@@ -51,6 +52,21 @@ provider key. The bridge can read it from the `HERDR_ENDPOINT_TOKEN` environment
 variable or from the mounted secret file named by `HERDR_ENDPOINT_TOKEN_FILE`
 (default `/run/secrets/herdr_endpoint_token`). The token must never be committed
 to the repository, baked into the image, or printed in logs.
+
+The agent's Agent Credential enters the sandbox only at creation (ADR 0007).
+`create_credentialed_transport` resolves one Credential Mode per agent kind
+before the sandbox exists: `subscription` reads a herdr-e2b plugin connection
+through the plugin's own code (`PluginConnectionBridge`), and `api-key` reads
+dedicated `SDF_*` host variables. The values become sandbox-wide envs; seed
+steps write agent config by variable name, including
+`~/.config/sdf/agent-env.sh` because the image's Herdr server starts before
+the seeds and panes would otherwise miss the envs. The Runtime Session and its
+`runtime_started` event record the mode and connection id, never the secret.
+Claude Code starts with `--dangerously-skip-permissions` only in this
+disposable sandbox (ADR 0008); Codex gets its workspace marked trusted. The
+single template is `sdf-herdr-agents` (ADR 0009). The headless `e2b-box run`
+path is separate: the plugin selects the credential itself and SDF records only
+the terminal result.
 
 Transport is not containment: the E2B/process boundary must still enforce
 filesystem, process and network limits.

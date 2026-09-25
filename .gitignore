@@ -6,3 +6,5 @@ __pycache__/
 .sdf-artifacts/
 .sdf-workspaces/
 *.py[cod]
+graphify-out/
+.cecli*

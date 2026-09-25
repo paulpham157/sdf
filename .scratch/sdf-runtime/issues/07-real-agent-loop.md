@@ -1,6 +1,6 @@
 # 07 Real agent fixture evidence loop
 
-Status: needs-info
+Status: resolved
 Blocked by: 05, 06
 
 ## What to build and acceptance
@@ -32,3 +32,102 @@ The HTTP acceptance surface now exposes normalized lifecycle events in
 `POST /attempts/{attempt_id}/actions` boundary persists Tool Proxy events in the
 same attempt trace. This closes the local trace-assembly gap; provider-backed
 artifact capture and real Herdr evidence remain unverified.
+
+## 2026-09-25 Live verification attempt (superseded — see Live resolution below)
+
+**Status (superseded)**: Blocked on Codex authentication. The auth prompt came from running the custom `sdf-herdr-codex` template, which has no borrowed Codex connection; the shipped `codex` template with the configured `codex-personal` borrowed session authenticates non-interactively.
+
+**Locally verified** (178 passed tests):
+- `AgentFixtureLoop` positive case: FakeRuntime edits workspace, evaluator accepts
+- `AgentFixtureLoop` negative case: evaluator rejects even when runtime completes
+- `ExecutionService.run()` creates complete Objective→Task→Attempt→Artifact→Evidence chain
+- `RuntimeController` with `SqlAlchemyRuntimeEventSink` persists lifecycle events idempotently
+- `GET /tasks/{id}/trace` returns nodes, edges, and runtime_events as designed
+
+**Live infrastructure verification (all pass):**
+```
+✓ e2b-box doctor: [ok] all checks
+✓ E2B_API_KEY: available in process environment
+✓ E2B sandbox provisioned: im41p6h0cq8rr3joitci6
+✓ Herdr server started in sandbox
+✓ Codex CLI 0.155.1 installed  
+✓ Workspace staged into sandbox
+✓ Sandbox cleanup: no dangling processes
+```
+
+**Exact blocker with captured error:**
+
+Command:
+```bash
+scripts/e2b-env.sh e2b-box run -t dluzqbi870es47svmsjq \
+  --task "Update app.py to print 'updated'" --timeout-ms 60000 --json
+```
+
+Agent output (captured from stderr):
+```
+  Welcome to Codex, OpenAI's command-line coding agent
+  Sign in with ChatGPT to use Codex as part of your paid plan
+  or connect an API key for usage-based billing
+
+  1. Sign in with ChatGPT
+     Usage included with Plus, Pro, Business, and Enterprise plans
+  2. Sign in with Device Code
+     Sign in from another device with a one-time code
+  3. Provide your own API key
+     Pay for what you use
+
+  Press enter to continue
+```
+
+Error: Codex CLI halts at interactive auth prompt. No non-interactive credential injection mechanism available in E2BHerdrTransport/E2B sandbox environment.
+
+Per docs/CONTRIBUTING.md: "The image does not contain provider credentials. Inject the Codex connection through the E2B/Herdr control plane at sandbox creation time." Current implementation does not wire Codex credentials into the sandbox.
+
+**Why acceptance not met:**
+- Codex agent never executed task commands (halted at auth)
+- Artifact diff not captured (no code changes made)
+- No Evidence records created (agent incomplete)
+- Sandbox closed cleanly but without task result
+
+## 2026-09-25 Live resolution (coordinator)
+
+A real Codex agent completed the fixture loop through `ExecutionService`, with
+positive and negative cases, in disposable E2B boxes.
+
+Implementation:
+- `sdf_core/herdr_e2b.py`: `HerdrE2BNativeAdapter` plugs the headless
+  `e2b-box run -t codex --task ... --kill --json` path into the ExecutionService
+  artifact pipeline. The Attempt workspace gets a git baseline, is synced into a
+  box, the agent runs, the result is pulled back, and the box is killed. Changed
+  files come from local before/after snapshots, not from agent claims. An
+  adapter result counts as completed only when `status=done`, `ok`, the pull
+  succeeded and cleanup succeeded.
+- `HerdrE2BAdapter` plan fixed: the separate bare `sync` booted the plugin's
+  default template (Muse), and the separate `pull` targeted an already-paused
+  box. `run` now syncs, pulls and kills in one step; a trailing idempotent
+  `kill` is kept as cleanup.
+- `tests/test_herdr_e2b_execution.py`: two deterministic fake-runner tests
+  (pulled edit → DIFF artifact + `validates`; completion without meeting the
+  criterion → FAIL Evidence + `contradicts`) plus a live test gated on
+  `SDF_LIVE_E2B=1`.
+
+Live command (key from the operator environment, redacted):
+`E2B_API_KEY=<REDACTED> SDF_LIVE_E2B=1 uv run pytest -s -q tests/test_herdr_e2b_execution.py -k live`
+→ 2 passed. Connection: `codex-personal` (borrowed-session); agent Codex v0.153.4.
+
+| Case | Attempt | Sandbox | Box | Task | Edge to ASSUMPTION-CALC |
+| --- | --- | --- | --- | --- | --- |
+| Positive: fix `add` | ATTEMPT-4d1c2ceafac3 | iba42paezsp7j6n3qq9ma | killed | succeeded | validates |
+| Negative: docstring only | ATTEMPT-6da6bc7c74dd | iv0bt559idr11wkhgl5hn | killed | failed | contradicts |
+
+The independent criterion check (`python3 -c "from calc import add; assert add(2, 3) == 5"`)
+ran locally on the pulled workspace. The negative case shows the runtime
+reporting success (agent exit 0) while the evaluator contradicts the
+Assumption. Afterwards `e2b-box list --json` returned `[]` and `e2b sandbox list`
+reported no sandboxes. Full suite: all tests pass, 7 skipped (5 PostgreSQL-gated, 2 live-gated).
+
+Boundary: this path is the Herdr-E2B plugin's headless `codex` template. The
+persistent `HerdrRuntime` + custom `sdf-herdr-codex` template still cannot
+authenticate Codex, because the image has no connection injection. Multi-turn
+prompt/reconnect against a live agent on that path is follow-up work, not part
+of this acceptance.

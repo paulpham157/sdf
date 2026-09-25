@@ -70,9 +70,9 @@ Live lifecycle verification (2026-09-21): Herdr 0.9.1 named session
 returned the marker `HERDR_LIFECYCLE_OK`, and exposed a persistent Herdr agent
 snapshot. A fresh adapter instance restored the durable binding without
 redispatch, then completed `reconnect -> cancel -> terminate`; the final
-snapshot had no agents or workspaces and the session was stopped. Active-work
+snapshot had no agents or workspaces and the session was stopped. **[Resolved by later evidence]** Earlier: "Active-work
 cancellation, E2B network policy, and descendant cleanup remain separate live
-gates, so this ticket stays `needs-info`.
+gates, so this ticket stays `needs-info`." Later sections completed these gates.
 
 Active-work cancellation follow-up (2026-09-21): a disposable Herdr 0.9.1
 session ran a Codex `sleep 60` task. `HerdrRuntime.cancel()` sent `ctrl+c`,

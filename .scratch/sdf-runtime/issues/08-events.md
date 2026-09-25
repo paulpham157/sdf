@@ -1,7 +1,7 @@
 # 08 Normalized lifecycle events
 
 Status: resolved
-Blocked by: none for local event contract; live runtime verification remains open
+Blocked by: none (live boundary closed 2026-09-25 by agent-credentials #15)
 
 ## What to build and acceptance
 
@@ -27,3 +27,79 @@ structured action; terminal text still cannot create these events.
 Runtime replay now rejects session rebinding across Attempts and Attempt
 rebinding to a different session, preventing durable recovery from silently
 crossing execution identities.
+
+## 2026-09-25 Live verification attempt
+
+**Status (corrected by coordinator)**: the Codex auth blocker is resolved for the headless `codex` template (see ticket 07 live resolution). Live *runtime lifecycle events* are still unverified: the headless E2B adapter returns one terminal result and emits no per-step runtime events, and the persistent `sdf-herdr-codex` HerdrRuntime path still lacks Codex credential injection.
+
+**Locally verified** (all 178 tests pass):
+- `SqlAlchemyRuntimeEventSink` persists runtime_started, runtime_input_sent, runtime_output_observed with unique identity and correlation
+- `RuntimeEventRow` rejects redelivery with identical source/attempt_id/session_id/sequence
+- Tool Proxy events created with source=tool-proxy, kind=tool_policy_decided and tool_action_executed
+- Event replay forbids session rebinding across attempts
+
+**Live event verification blocked:**
+- Codex halts at authentication prompt before sending any task input
+- No runtime_input_sent events emitted (input never reached agent)
+- No runtime_output_observed events created (agent did not run)
+- Herdr event stream never activated (session did not proceed)
+- Sandbox ID: im41p6h0cq8rr3joitci6 (captured and killed)
+
+## 2026-09-25 Live boundary resolved (agent-credentials #15)
+
+The persistent `HerdrRuntime` path now has create-time Agent Credentials
+(ADR 0007) on the `sdf-herdr-agents` template, so the two live Attempts from
+#11 and #14 were re-run with a `RuntimeController` +
+`SqlAlchemyRuntimeEventSink` (`source="herdr-e2b"`) around the live runtime.
+Both tests now assert the persisted lifecycle, not just the outcome. Printed
+evidence is kinds, sources, statuses and sequences only (payloads carry pane
+text); every sandbox was killed and `e2b sandbox list` ended empty.
+
+**Claude, `api-key` mode** — `tests/test_claude_api_key_live.py`, 2 passed
+(`AgentFixtureLoop`, which terminates nothing by itself):
+
+| seq | source | kind | status |
+| --- | --- | --- | --- |
+| 1 | herdr-e2b | runtime_started | running |
+| 2 | herdr-e2b | runtime_input_sent | running |
+| 3 | herdr-e2b | runtime_output_observed | running |
+
+`runtime_started` payload `{"credential_mode": "api-key", "connection_id": null}`;
+evaluation PASS, Evidence `("add returns the sum", PASS, live)`; one
+session id for all events.
+
+**Codex, `subscription` mode (`codex-personal`)** —
+`tests/test_subscription_codex_live.py` through `ExecutionService` +
+`RuntimeAgentAdapter`, 1 passed (the first recorded passing run; after #16 it passed 5 of 5, see below):
+
+| seq | source | kind | status |
+| --- | --- | --- | --- |
+| 1 | herdr-e2b | runtime_started | running |
+| 2 | herdr-e2b | runtime_input_sent | running |
+| 3 | herdr-e2b | runtime_output_observed | completed |
+| 4 | herdr-e2b | runtime_terminated | terminated |
+
+`runtime_started` payload
+`{"credential_mode": "subscription", "connection_id": "codex-personal"}`;
+Task `succeeded`, Evidence `("add returns the sum", PASS)`, no secret in any
+pane (`leaked: []`); one session id for all events.
+
+**Remaining boundaries (not blockers for 08):**
+
+- Resolved by #16 (2026-09-25): `HerdrRuntime.send` now returns `completed`
+  when `agent prompt --wait` returns normally, and `status()` keeps it while
+  Herdr reads `idle` (Herdr reports `idle`, never `done`:
+  `docs/research/herdr-idle-not-done.md`). Codex Enter resubmission moved
+  into the runtime. Both live tests run through `ExecutionService` with no
+  test-side status override.
+- Repeatable live evidence after #16: the Codex `subscription` Attempt on
+  model `gpt-6-luna` (pinned in the test only) passed 5 of 5 consecutive runs,
+  and the Claude `api-key` Attempt passed. Both read
+  `runtime_started(running)`, `runtime_input_sent(completed)`,
+  `runtime_output_observed(completed)`, `runtime_terminated(terminated)`,
+  `leaked: []`, and every sandbox was killed. Before #16 the Codex run passed
+  2 of 10 (Codex swallowed the prompt Enter and stayed `idle`).
+- `runtime_cancelled` / `runtime_reconnected` were proven live on the
+  Codex-only transport in tickets 05/06/06b, not in these credentialed runs.
+- The headless `e2b-box run` path still emits no per-step events; it keeps
+  the plugin's own credential selection (`docs/research/e2b-exec-reliability.md`).

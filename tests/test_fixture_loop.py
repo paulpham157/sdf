@@ -90,3 +90,44 @@ def test_fixture_loop_accepts_runtime_controller_and_persists_lifecycle_events(t
         assert [row.kind for row in db.query(RuntimeEventRow).all()] == [
             "runtime_started", "runtime_input_sent", "runtime_output_observed"
         ]
+
+class StagingRuntime(FakeRuntime):
+    """A runtime that owns a remote copy of the workspace, like the E2B transport."""
+
+    def __init__(self, remote: Path):
+        super().__init__()
+        self.remote = remote
+        self.calls = []
+
+    def bind_workspace(self, attempt_id: str, workspace: Path) -> None:
+        self.calls.append("bind")
+        self.remote.joinpath("app.py").write_text(workspace.joinpath("app.py").read_text())
+
+    def send(self, session_id: str, input_text: str) -> RuntimeSession:
+        self.calls.append("send")
+        self.remote.joinpath("app.py").write_text("print('updated')\n", encoding="utf-8")
+        return super().send(session_id, input_text)
+
+    def collect_workspace(self, attempt_id: str, workspace: Path) -> None:
+        self.calls.append("collect")
+        workspace.joinpath("app.py").write_text(self.remote.joinpath("app.py").read_text())
+
+def test_fixture_loop_stages_and_collects_a_transport_owned_workspace_before_evaluation(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    remote = tmp_path / "remote"
+    workspace.mkdir()
+    remote.mkdir()
+    workspace.joinpath("app.py").write_text("print('old')\n", encoding="utf-8")
+    runtime = StagingRuntime(remote)
+
+    result = AgentFixtureLoop(RuntimeController(runtime)).run(
+        attempt_id="ATTEMPT-FIXTURE-STAGED",
+        agent="fake-claude",
+        workspace=workspace,
+        instructions="update app",
+        criteria=("updated",),
+        criterion_checks={"updated": [["python", "-c", "assert 'updated' in open('app.py').read()"]]},
+    )
+
+    assert runtime.calls == ["bind", "send", "collect"]
+    assert result.accepted is True
