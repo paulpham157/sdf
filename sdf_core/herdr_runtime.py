@@ -222,6 +222,7 @@ class HerdrRuntime(AgentRuntime):
         credentials: Mapping[str, CredentialMetadata] | None = None,
         agent_args: Mapping[str, Sequence[str]] | None = None,
         poll_interval_s: float = 1.0,
+        turn_settle_s: float = 5.0,
     ) -> None:
         if timeout_ms <= 0:
             raise ValueError("timeout_ms must be positive")
@@ -249,6 +250,7 @@ class HerdrRuntime(AgentRuntime):
         # arguments; the runtime does not interpret it.
         self._agent_args = {agent: tuple(args) for agent, args in (agent_args or {}).items()}
         self._poll_interval_s = poll_interval_s
+        self._turn_settle_s = turn_settle_s
         self._bindings: dict[str, _Binding] = {}
         self._sessions: dict[str, RuntimeSession] = {}
         # Sessions whose latest prompt ended its turn.  Herdr 0.9.x reports a
@@ -482,6 +484,8 @@ class HerdrRuntime(AgentRuntime):
                 if reported in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
                     status = reported
         if status is RuntimeStatus.COMPLETED:
+            status = self._settle_turn(session_id)
+        if status is RuntimeStatus.COMPLETED:
             self._completed_turns.add(session_id)
         output = self.stream(session_id)
         updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output or current.output, credential=current.credential)
@@ -513,6 +517,28 @@ class HerdrRuntime(AgentRuntime):
             if time.monotonic() >= deadline:
                 raise HerdrRuntimeError(f"Herdr agent never became interactive: {name or 'unknown'}")
             time.sleep(self._poll_interval_s)
+
+    def _settle_turn(self, session_id: str) -> RuntimeStatus:
+        """Accept the turn's end only once ``idle`` holds for the settle window.
+
+        Codex can read ``idle`` for a moment between steps of one turn, which
+        is enough for ``agent prompt --wait --until idle`` to return early.
+        """
+
+        deadline = time.monotonic() + self._timeout_ms / 1000
+        settle_ms = max(int(self._turn_settle_s * 1000), 1)
+        while True:
+            name = self._state_name(self._agent_state(session_id))
+            if name in {"done", "completed", "complete"}:
+                return RuntimeStatus.COMPLETED
+            if name != "idle" and name not in _TURN_STATES:
+                return RuntimeStatus.RUNNING
+            if name == "idle" and not self._agent_wait(session_id, _TURN_STATES, settle_ms):
+                return RuntimeStatus.COMPLETED
+            # The turn is still running: wait for its next idle, then settle again.
+            remaining = int((deadline - time.monotonic()) * 1000)
+            if remaining <= 0 or not self._agent_wait(session_id, ("idle",), remaining):
+                return RuntimeStatus.RUNNING
 
     def _resubmit(self, binding: _Binding, session_id: str) -> bool:
         """Press Enter until the stalled turn is seen running; True if it ran."""
@@ -548,7 +574,14 @@ class HerdrRuntime(AgentRuntime):
     def stream(self, session_id: str) -> tuple[str, ...]:
         binding, current = self._known(session_id)
         args = self._command("agent", "read", session_id, "--source", "recent-unwrapped", "--lines", "200")
-        raw = self._raw(args)
+        try:
+            raw = self._raw(args)
+        except HerdrRuntimeError as exc:
+            # Herdr can only scroll an alternate-screen agent's history while
+            # it is idle; the visible screen is readable at any time.
+            if "agent_not_idle" not in str(exc):
+                raise
+            raw = self._raw(self._command("agent", "read", session_id, "--source", "visible"))
         try:
             payload = self._decode(raw)
         except HerdrRuntimeError:

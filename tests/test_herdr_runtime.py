@@ -541,3 +541,32 @@ def test_extra_agent_args_are_appended_after_the_runtime_defaults():
     runtime.start(attempt_id="ATTEMPT-ARGS", agent="codex")
     (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert start[-4:] == ("-c", 'projects."/tmp/sdf/ATTEMPT-ARGS".trust_level="trusted"', "-c", 'model="small-model"')
+
+
+def test_a_mid_turn_idle_flicker_is_not_the_end_of_the_turn():
+    # Codex can read ``idle`` for a moment between steps of one turn; the turn
+    # ends only once ``idle`` holds for the settle window.
+    runner = TurnHerdr("codex", states=("idle", "working", "idle"))
+    runtime = HerdrRuntime(runner=runner, poll_interval_s=0, turn_settle_s=0)
+    session = runtime.start(attempt_id="ATTEMPT-FLICKER", agent="codex")
+
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
+    prompt_at = next(i for i, c in enumerate(runner.calls) if c[1:3] == ("agent", "prompt"))
+    after = [c[1:3] for c in runner.calls[prompt_at + 1 :]]
+    assert ("agent", "wait") in after
+    assert after.index(("agent", "wait")) < after.index(("agent", "read"))
+
+
+def test_stream_falls_back_to_the_visible_screen_while_the_agent_is_working():
+    def runner(command, timeout_ms):
+        command = tuple(command)
+        if command[1:3] == ("agent", "read"):
+            if "recent-unwrapped" in command:
+                raise HerdrRuntimeError('{"error":{"code":"agent_not_idle"}}')
+            assert command[command.index("--source") + 1] == "visible"
+            return "visible screen\n"
+        return TurnHerdr("codex")(command, timeout_ms)
+
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-VISIBLE", agent="codex")
+    assert runtime.stream(session.session_id) == ("visible screen",)
