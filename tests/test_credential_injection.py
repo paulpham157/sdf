@@ -3,6 +3,12 @@
 The live counterpart is tests/test_credential_injection_live.py.
 """
 
+import json
+import os
+import shutil
+import stat
+import subprocess
+
 import pytest
 
 from sdf_core.credential_injection import (
@@ -79,7 +85,9 @@ def test_duplicate_agent_kinds_resolve_once():
     injection = prepare_credential_injection(("codex", "codex"), SUBSCRIPTION_ENV, read_connection=_reader)
 
     assert list(injection.metadata) == ["codex"]
-    assert len(injection.seed_commands) == 1
+    # One plan seed plus the shared agent-pane environment seed.
+    assert len(injection.seed_commands) == 2
+    assert injection.seed_commands[-1].split().count("CODEX_AUTH_JSON") == 1
 
 def test_injection_repr_never_shows_values():
     injection = prepare_credential_injection(("claude", "codex"), API_KEY_ENV)
@@ -287,3 +295,128 @@ def test_started_event_payload_is_unchanged_without_credentials():
     controller = RuntimeController(HerdrRuntime(runner=FakeHerdr()))
     controller.start(attempt_id="ATTEMPT-PLAIN", agent="codex")
     assert controller.events[0].payload == {}
+
+# --- agent pane environment and Claude seeds (ticket 07) --------------------------------
+
+needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute seed scripts locally")
+
+def _run_in_box(command, home, **variables):
+    """Run a rendered seed command the way the sandbox would: values in env only."""
+
+    env = {"HOME": str(home), "PATH": os.environ["PATH"], **variables}
+    subprocess.run(["sh", "-c", command], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True)
+
+def test_injection_seeds_an_agent_pane_environment_by_variable_name_only():
+    injection = prepare_credential_injection(("claude",), {**API_KEY_ENV, "SDF_ANTHROPIC_BASE_URL": "https://gw.example.com"})
+
+    pane_seed = injection.seed_commands[-1]
+    assert "agent-env.sh" in pane_seed
+    assert pane_seed.split()[-2:] == ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
+    _assert_no_secret("\n".join(injection.seed_commands))
+    assert "gw.example.com" not in pane_seed
+
+@needs_node
+def test_pane_environment_file_is_private_sourced_by_bashrc_and_idempotent(tmp_path):
+    injection = prepare_credential_injection(("claude",), API_KEY_ENV)
+    home = tmp_path / "home"
+    home.mkdir()
+    home.joinpath(".bashrc").write_text("case $- in *i*) ;; *) return;; esac\n", encoding="utf-8")
+    tricky = CLAUDE_KEY + "'$(touch pwned)"
+
+    for _ in range(2):
+        _run_in_box(injection.seed_commands[-1], home, ANTHROPIC_API_KEY=tricky)
+
+    env_file = home / ".config" / "sdf" / "agent-env.sh"
+    assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+    bashrc = home.joinpath(".bashrc").read_text(encoding="utf-8")
+    # Sourced before Debian's non-interactive early return, exactly once.
+    assert bashrc.startswith("[ -r \"$HOME/.config/sdf/agent-env.sh\" ]")
+    assert bashrc.count("agent-env.sh\" ]") == 1
+    probe = subprocess.run(
+        ["sh", "-c", f'. "{env_file}"; printf %s "$ANTHROPIC_API_KEY"'],
+        env={"HOME": str(home), "PATH": os.environ["PATH"]}, cwd=tmp_path,
+        check=True, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    )
+    assert probe.stdout == tricky
+    assert not (tmp_path / "pwned").exists()
+
+@needs_node
+def test_claude_seed_pre_approves_the_key_tail_computed_inside_the_box(tmp_path):
+    injection = prepare_credential_injection(("claude",), API_KEY_ENV)
+    claude_seed = next(command for command in injection.seed_commands if "customApiKeyResponses" in command)
+    home = tmp_path / "home"
+    home.mkdir()
+    home.joinpath(".claude.json").write_text(json.dumps({"theme": "dark", "projects": {"/tmp/sdf": {"hasTrustDialogAccepted": True}}}))
+
+    home.joinpath(".claude.json").chmod(0o644)
+    _run_in_box(claude_seed, home, ANTHROPIC_API_KEY=CLAUDE_KEY)
+    _run_in_box(claude_seed, home, ANTHROPIC_API_KEY=CLAUDE_KEY)
+
+    state = json.loads(home.joinpath(".claude.json").read_text())
+    assert state["customApiKeyResponses"] == {"approved": [CLAUDE_KEY[-20:]], "rejected": []}
+    assert state["hasCompletedOnboarding"] is True
+    assert state["theme"] == "dark" and state["projects"]["/tmp/sdf"]["hasTrustDialogAccepted"] is True
+    assert CLAUDE_KEY[-20:] not in claude_seed
+    # The template ships ~/.claude.json world-readable; the seed tightens it.
+    assert stat.S_IMODE(home.joinpath(".claude.json").stat().st_mode) == 0o600
+
+# --- runtime pre-trust of the Attempt workspace (Claude) ---------------------------------
+
+def test_transport_pre_trusts_a_claude_attempt_workspace_by_path_only():
+    factory = FakeFactory()
+    transport, _ = create_credentialed_transport(
+        template="sdf-herdr-agents", agents=("claude",), environ=API_KEY_ENV, sandbox_factory=factory
+    )
+
+    transport.prepare_agent_workspace("claude", "/tmp/sdf/ATTEMPT-TRUST")
+    transport.prepare_agent_workspace("codex", "/tmp/sdf/ATTEMPT-TRUST")
+
+    commands = [cmd for cmd, _ in factory.sandbox.runs]
+    trust = [cmd for cmd in commands if "hasTrustDialogAccepted" in cmd]
+    assert len(trust) == 1 and trust[0].endswith("/tmp/sdf/ATTEMPT-TRUST")
+    for cmd in commands:
+        _assert_no_secret(cmd)
+
+@needs_node
+def test_claude_workspace_trust_script_merges_into_existing_state(tmp_path):
+    factory = FakeFactory()
+    transport, _ = create_credentialed_transport(
+        template="sdf-herdr-agents", agents=("claude",), environ=API_KEY_ENV, sandbox_factory=factory
+    )
+    transport.prepare_agent_workspace("claude", "/tmp/sdf/ATTEMPT-TRUST")
+    trust = next(cmd for cmd, _ in factory.sandbox.runs if "hasTrustDialogAccepted" in cmd)
+    home = tmp_path / "home"
+    home.mkdir()
+    home.joinpath(".claude.json").write_text(json.dumps({"customApiKeyResponses": {"approved": ["x"], "rejected": []}}))
+
+    _run_in_box(trust, home)
+
+    state = json.loads(home.joinpath(".claude.json").read_text())
+    assert state["projects"]["/tmp/sdf/ATTEMPT-TRUST"] == {"hasTrustDialogAccepted": True}
+    assert state["customApiKeyResponses"]["approved"] == ["x"]
+
+def test_runtime_pre_trusts_the_bound_workspace_before_starting_claude_only():
+    calls = []
+
+    class Transport:
+        credential_metadata = {"claude": CredentialMetadata("api-key"), "codex": CredentialMetadata("api-key")}
+
+        def __init__(self):
+            self.herdr = FakeHerdr()
+
+        def run(self, command, timeout_ms):
+            calls.append(("herdr", tuple(command[1:3])))
+            return self.herdr(command, timeout_ms)
+
+        def prepare_agent_workspace(self, agent, workspace):
+            calls.append(("prepare", agent, workspace))
+
+    runtime = HerdrRuntime(transport=Transport())
+    runtime.bind_remote_workspace("ATTEMPT-C", "/tmp/sdf/ATTEMPT-C")
+    runtime.start(attempt_id="ATTEMPT-C", agent="claude")
+
+    assert calls.index(("prepare", "claude", "/tmp/sdf/ATTEMPT-C")) < calls.index(("herdr", ("agent", "start")))
+    calls.clear()
+    runtime.bind_remote_workspace("ATTEMPT-X", "/tmp/sdf/ATTEMPT-X")
+    runtime.start(attempt_id="ATTEMPT-X", agent="codex")
+    assert ("prepare", "codex", "/tmp/sdf/ATTEMPT-X") in calls  # the transport decides per agent kind

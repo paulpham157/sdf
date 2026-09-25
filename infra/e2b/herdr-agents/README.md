@@ -34,6 +34,13 @@ and killed at the end of its Attempt; do not reuse the flag elsewhere.
 The image contains no Agent Credential: no API key, OAuth token, `auth.json`
 or `.credentials.json`. Credentials are injected as sandbox-wide envs at
 sandbox creation according to the agent kind's Credential Mode (ADR 0007).
+The Herdr server starts from the image entrypoint, before those envs reach
+later commands, so a pane does not inherit them. A create-time seed therefore
+writes the plan's variables, by name, from the sandbox's own environment to
+`~/.config/sdf/agent-env.sh` (mode `0600`), and the first line of `~/.bashrc`
+sources it. In `api-key` mode Claude's `~/.claude.json` also gets the key's last
+20 characters in `customApiKeyResponses.approved` (computed inside the box), and
+each Attempt workspace is marked trusted just before Claude starts there.
 Without one, both agents still start and reach their interactive prompt;
 they just cannot call a model.
 

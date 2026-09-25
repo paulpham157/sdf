@@ -367,6 +367,11 @@ class HerdrRuntime(AgentRuntime):
         workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
         if workspace_dir is not None:
             workspace_args.extend(("--cwd", str(workspace_dir)))
+            # A transport may need to prepare agent state for this directory
+            # (Claude's folder-trust dialog) before the agent opens there.
+            prepare = getattr(self._transport, "prepare_agent_workspace", None)
+            if callable(prepare):
+                prepare(agent, str(workspace_dir))
         workspace = self._object(workspace_args)
         root_pane = workspace.get("root_pane", workspace.get("rootPane", workspace))
         if not isinstance(root_pane, Mapping):

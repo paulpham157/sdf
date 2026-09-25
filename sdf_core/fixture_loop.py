@@ -54,12 +54,20 @@ class AgentFixtureLoop:
         workspace = Path(workspace).expanduser().resolve()
         if not workspace.is_dir():
             raise ValueError("workspace must be an existing directory")
+        # A transport-owned workspace (E2B) is staged in before the agent starts
+        # and collected back before evaluation, so the evaluator sees its edits.
+        bind_workspace = getattr(self.runtime, "bind_workspace", None)
+        if callable(bind_workspace):
+            bind_workspace(attempt_id, workspace)
         session = self.runtime.start(attempt_id=attempt_id, agent=agent)
         if session.status in {RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED}:
             raise RuntimeError(f"runtime session cannot receive input: {session.status.value}")
         session = self.runtime.send(session.session_id, instructions)
         output = self.runtime.stream(session.session_id)
         session = self.runtime.status(session.session_id)
+        collect_workspace = getattr(self.runtime, "collect_workspace", None)
+        if callable(collect_workspace):
+            collect_workspace(attempt_id, workspace)
         evaluation = self.evaluator.evaluate(
             attempt_id=attempt_id,
             workspace=workspace,
