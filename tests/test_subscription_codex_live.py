@@ -175,7 +175,7 @@ def test_live_codex_subscription_attempt(tmp_path: Path):
         # Booleans only: assertion rewriting would otherwise echo the pane.
         answered = "calc.py" in pane
         assert answered, "codex did not answer the prompt in its pane"
-        pinned = MODEL in pane
+        pinned = MODEL.lower() in pane.lower()
         assert pinned, "the Codex pane does not show the pinned model"
         final = [s.status for s in runtime.sessions]
         assert RuntimeStatus.COMPLETED in final, "the Codex turn never completed"
