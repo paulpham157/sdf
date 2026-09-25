@@ -71,6 +71,9 @@ class _AgentSpec:
     base_url_source: str
     base_url_target: str
     subscription_seeds: Mapping[str, str]
+    # Seed that applies the base URL inside the box, for agents that do not
+    # read ``base_url_target`` from the environment.
+    base_url_seed: str | None = None
 
 
 _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
@@ -94,6 +97,9 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             base_url_source="SDF_OPENAI_BASE_URL",
             base_url_target="OPENAI_BASE_URL",
             subscription_seeds=MappingProxyType({"CODEX_AUTH_JSON": "codex-auth-json"}),
+            # Codex 0.157.0 ignores OPENAI_BASE_URL and reads ``openai_base_url``
+            # from ~/.codex/config.toml (docs/research/codex-base-url.md).
+            base_url_seed="codex-config-base-url",
         ),
     }
 )
@@ -167,12 +173,14 @@ def resolve_credential_plan(
                 f"{spec.mode_variable}=api-key requires {spec.api_key_source} to be set"
             )
         variables = {spec.api_key_target: key}
+        seeds = [SeedStep(spec.api_key_seed, spec.api_key_target)]
         base_url = environ.get(spec.base_url_source, "").strip()
         if base_url:
             _check_base_url(spec.base_url_source, base_url)
             variables[spec.base_url_target] = base_url
-        seeds = (SeedStep(spec.api_key_seed, spec.api_key_target),)
-        return _plan(agent, mode, None, variables, seeds)
+            if spec.base_url_seed is not None:
+                seeds.append(SeedStep(spec.base_url_seed, spec.base_url_target))
+        return _plan(agent, mode, None, variables, tuple(seeds))
 
     connection_id = environ.get(spec.connection_variable, "").strip()
     if not connection_id:

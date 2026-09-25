@@ -40,6 +40,16 @@ _CODEX_API_KEY_AUTH = (
     'try{if(fs.statSync(f).size>0)process.exit(0)}catch{}'
     'fs.writeFileSync(f,JSON.stringify({auth_mode:"apikey",OPENAI_API_KEY:k}),{mode:0o600})'
 )
+# Sets the top-level ``openai_base_url`` key in ~/.codex/config.toml: any
+# earlier top-level assignment is dropped and the new one prepended, so tables
+# and other keys survive.  A JSON string literal is a valid TOML basic string.
+_CODEX_CONFIG_BASE_URL = (
+    'const fs=require("fs"),d=process.env.HOME+"/.codex",f=d+"/config.toml",v=process.argv[1];'
+    'const u=process.env[v]||"";if(!u){process.exit(0)}fs.mkdirSync(d,{recursive:true});'
+    'let t="";try{t=fs.readFileSync(f,"utf8")}catch{}let top=true;'
+    'const kept=t.split("\\n").filter(l=>{if(/^\\s*\\[/.test(l))top=false;return !(top&&/^\\s*openai_base_url\\s*=/.test(l))});'
+    'fs.writeFileSync(f,"openai_base_url = "+JSON.stringify(u)+"\\n"+kept.join("\\n"))'
+)
 _CODEX_SESSION_AUTH = (
     'const fs=require("fs"),d=process.env.HOME+"/.codex",f=d+"/auth.json",v=process.argv[1];'
     'const s=process.env[v]||"";if(!s){process.exit(0)}fs.mkdirSync(d,{recursive:true});'
@@ -50,6 +60,7 @@ _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
     {
         "claude-approve-api-key": _CLAUDE_APPROVE_KEY,
         "codex-auth-json-api-key": _CODEX_API_KEY_AUTH,
+        "codex-config-base-url": _CODEX_CONFIG_BASE_URL,
         "codex-auth-json": _CODEX_SESSION_AUTH,
     }
 )
