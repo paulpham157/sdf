@@ -49,9 +49,10 @@ def validate_questions(questions: Mapping[str, Mapping[str, Any]]) -> None:
                 raise ValueError(f"score {key!r} levels must be non-empty strings")
 
 
-def _unit(key: str, field: str, value: Any) -> None:
+def probability(key: str, field: str, value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
         raise ValueError(f"{field} for {key!r} must be a number in [0, 1]")
+    return float(value)
 
 
 def _probabilities(key: str, probabilities: Any, allowed: Iterable[str]) -> None:
@@ -61,7 +62,7 @@ def _probabilities(key: str, probabilities: Any, allowed: Iterable[str]) -> None
     for label, p in probabilities.items():
         if label not in allowed:
             raise ValueError(f"probability label {label!r} for {key!r} is not among criteria")
-        _unit(key, "probability", p)
+        probability(key, "probability", p)
 
 
 def validate_answers(questions: Mapping[str, Mapping[str, Any]], answers: Mapping[str, Mapping[str, Any]]) -> None:
@@ -74,9 +75,9 @@ def validate_answers(questions: Mapping[str, Mapping[str, Any]], answers: Mappin
             raise ValueError(f"answer {key!r} must be a mapping")
         kind = question["type"]
         if kind == "noul":
-            _unit(key, "noul", answer.get("noul"))
+            probability(key, "noul", answer.get("noul"))
             continue
-        _unit(key, "confidence", answer.get("confidence"))
+        probability(key, "confidence", answer.get("confidence"))
         if kind == "choice":
             if answer.get("choice") not in question["criteria"]:
                 raise ValueError(f"choice for {key!r} is not among criteria")

@@ -69,6 +69,7 @@ def test_redact_preserves_ordinary_pytest_output():
         "FAILED tests/test_math.py::test_add - assert 4 == 5\n"
         "========= 1 failed, 12 passed, 3 skipped in 0.42s =========\n"
         "key_count = 3; token_count=7\n"
+        "monkey=3 turkey: 4 hotkey=F5\n"
     )
     assert redact(text) == text
 

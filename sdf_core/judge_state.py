@@ -11,7 +11,7 @@ MIN_SECRET_VALUE_CHARS = 6
 TASK_INSTRUCTIONS_CHARS = 1200
 FIELD_CHARS = 160
 
-_NAME = r"[A-Za-z0-9_.-]*(?:key|token|secret|password|passwd|pwd)"
+_NAME = r"(?:[A-Za-z0-9_.-]*[_.-]|api|auth|access|private|client)?(?:key|token|secret|password|passwd|pwd)"
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)(\bauthorization\s*[:=]\s*)[^\r\n'\"]+"), rf"\1{REDACTED}"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"), REDACTED),

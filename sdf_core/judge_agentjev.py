@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sdf_core.judge import validate_questions
+from sdf_core.judge import probability, validate_questions
 
 API_VERSION = "agentjev.decision.v1"
 TOKEN_LIMIT = 2048
@@ -46,11 +45,6 @@ def to_agentjev_request(state: Mapping[str, Any], questions: Mapping[str, Mappin
         wire.append(item)
     return {"state": _plain(state), "questions": wire}
 
-def _unit(qid: str, name: str, value: Any) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0.0 <= value <= 1.0:
-        raise ValueError(f"{name} for {qid!r} must be a probability in [0, 1]")
-    return float(value)
-
 def _keys(question: Mapping[str, Any]) -> list[str]:
     kind = question["type"]
     if kind == "noul":
@@ -67,16 +61,16 @@ def _translate(qid: str, question: Mapping[str, Any], answer: Mapping[str, Any])
     distribution = answer.get("distribution")
     if not isinstance(distribution, Mapping) or set(distribution) != set(keys):
         raise ValueError(f"distribution keys for {qid!r} must be {keys}")
-    probabilities = {key: _unit(qid, "probability", distribution[key]) for key in keys}
+    probabilities = {key: probability(qid, "probability", distribution[key]) for key in keys}
     if kind == "noul":
-        return {"noul": _unit(qid, "probability", answer.get("probability"))}
+        return {"noul": probability(qid, "probability", answer.get("probability"))}
     if kind == "choice":
         if answer.get("value") not in probabilities:
             raise ValueError(f"choice value for {qid!r} is not among the options")
         return {
             "choice": answer["value"],
             "probabilities": probabilities,
-            "confidence": _unit(qid, "top_probability", answer.get("top_probability")),
+            "confidence": probability(qid, "top_probability", answer.get("top_probability")),
         }
     levels = list(question["levels"])
     score = answer.get("score")
