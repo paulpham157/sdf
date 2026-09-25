@@ -75,9 +75,9 @@ def test_herdr_runtime_maps_documented_cli_lifecycle_and_correlates_attempt():
     assert session.status is RuntimeStatus.RUNNING
 
     updated = runtime.send(session.session_id, "hello")
-    # Herdr's ``idle`` means the agent is ready/observed, not evaluator
-    # acceptance or terminal task completion.
-    assert updated.status is RuntimeStatus.RUNNING
+    # A normal prompt return ends the agent's turn; that is still not
+    # evaluator acceptance or terminal task completion.
+    assert updated.status is RuntimeStatus.COMPLETED
     assert runtime.stream(session.session_id) == ("accepted",)
     assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
     assert runtime.reconnect(session.session_id).session_id == "agent-1"
@@ -323,6 +323,12 @@ def test_herdr_runtime_keeps_a_stalled_prompt_running_when_process_info_confirms
             return json.dumps({"agentSessionId": "agent-stalled", "status": "working"})
         if operation == ("agent", "prompt"):
             raise RuntimeError('{"error":{"code":"agent_prompt_stalled"}}')
+        if operation == ("agent", "get"):
+            return json.dumps({"agent": {"agent_status": "idle", "interactive_ready": True}})
+        if operation == ("pane", "send-keys"):
+            return ""
+        if operation == ("agent", "wait"):
+            raise RuntimeError('{"error":{"code":"timeout"}}')
         if operation == ("pane", "process-info"):
             return json.dumps({"process_info": {
                 "shell_pid": 10,
@@ -373,3 +379,194 @@ def test_herdr_runtime_starts_codex_trusting_exactly_its_attempt_directory():
 
     (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert start[-3:] == ("--", "-c", 'projects."/tmp/sdf/ATTEMPT-CODEX".trust_level="trusted"')
+
+class TurnHerdr:
+    """Herdr 0.9.1 as observed live: a finished turn reads ``idle``, never ``done``.
+
+    ``prompt`` is a list of outcomes for successive ``agent prompt`` calls;
+    ``states`` is the sequence of ``agent_status`` values ``agent get``/``agent
+    wait`` observe (the last one repeats).
+    """
+
+    def __init__(self, agent, *, prompt="ok", states=("idle",), foreground=True):
+        self.agent = agent
+        self.prompt = prompt
+        self.states = list(states)
+        self.foreground = foreground
+        self.calls = []
+
+    def _state(self):
+        return self.states.pop(0) if len(self.states) > 1 else self.states[0]
+
+    def __call__(self, command, timeout_ms):
+        command = tuple(command)
+        self.calls.append(command)
+        operation = command[1:3]
+        if operation == ("workspace", "create"):
+            return json.dumps({"result": {"workspace": {"workspace_id": "ws-t"}, "root_pane": {"pane_id": "pane-t"}}})
+        if operation == ("agent", "start"):
+            return json.dumps({"result": {"agent": {"name": f"{self.agent}-t", "agent_status": "unknown", "pane_id": "pane-t"}}})
+        if operation == ("agent", "get"):
+            return json.dumps({"result": {"agent": {
+                "name": f"{self.agent}-t", "pane_id": "pane-t", "agent_status": self._state(), "interactive_ready": True,
+            }}})
+        if operation == ("agent", "wait"):
+            wanted = set(command[command.index("--until") + 1 :: 2])
+            state = self._state()
+            if state not in wanted:
+                raise HerdrRuntimeError('{"error":{"code":"timeout"}}')
+            return json.dumps({"result": {"agent": {"agent_status": state}}})
+        if operation == ("agent", "prompt"):
+            if self.prompt == "stalled":
+                raise HerdrRuntimeError('{"error":{"code":"agent_prompt_stalled"}}')
+            return ""
+        if operation == ("agent", "read"):
+            return "turn output\n"
+        if operation == ("pane", "send-keys"):
+            return ""
+        if operation == ("pane", "process-info"):
+            children = [{"pid": 11, "name": self.agent}] if self.foreground else []
+            return json.dumps({"process_info": {"shell_pid": 10, "foreground_processes": [{"pid": 10, "name": "bash"}, *children]}})
+        raise AssertionError(command)
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_a_normal_prompt_return_completes_the_turn_and_a_later_idle_read_keeps_it(agent):
+    runner = TurnHerdr(agent, states=("idle",))
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id=f"ATTEMPT-TURN-{agent}", agent=agent)
+
+    sent = runtime.send(session.session_id, "fix it")
+    assert sent.status is RuntimeStatus.COMPLETED
+    assert sent.output == ("turn output",)
+    # Herdr keeps reporting ``idle`` (never ``done``) for the finished turn.
+    assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
+    assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
+    assert not any(c[1:3] == ("pane", "send-keys") for c in runner.calls)
+
+
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_a_stalled_prompt_with_a_foreground_child_stays_running(agent):
+    # The pane never reports ``working`` after the prompt, so no turn is proven.
+    runner = TurnHerdr(agent, prompt="stalled", states=("idle",))
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id=f"ATTEMPT-STALL-{agent}", agent=agent)
+
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.RUNNING
+    assert runtime.status(session.session_id).status is RuntimeStatus.RUNNING
+
+
+def test_a_stalled_prompt_without_a_foreground_child_still_fails():
+    runtime = HerdrRuntime(runner=TurnHerdr("claude", prompt="stalled", foreground=False))
+    session = runtime.start(attempt_id="ATTEMPT-STALL-GONE", agent="claude")
+    with pytest.raises(HerdrRuntimeError, match="agent_prompt_stalled"):
+        runtime.send(session.session_id, "fix it")
+
+
+def test_a_working_read_after_a_completed_turn_reports_running_until_idle_again():
+    runner = TurnHerdr("claude", states=("idle",))
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-TURN-AGAIN", agent="claude")
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
+    runner.states = ["working"]
+    assert runtime.status(session.session_id).status is RuntimeStatus.RUNNING
+    # SDF sent no new prompt, so a return to idle is still the same finished turn.
+    runner.states = ["idle"]
+    assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
+
+
+def test_codex_swallowed_enter_is_resubmitted_until_the_turn_runs_and_then_completes():
+    # Codex 0.157 can swallow the submitting Enter: Herdr reports a stall while
+    # the pane stays idle.  The runtime presses Enter (never retyping the text)
+    # until the turn is seen working, then waits for it to return to idle.
+    runner = TurnHerdr("codex", prompt="stalled", states=("idle", "idle", "idle", "working", "idle"))
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-ENTER", agent="codex")
+
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
+    assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
+    presses = [c for c in runner.calls if c[1:3] == ("pane", "send-keys")]
+    assert presses and all(c[-2:] == ("pane-t", "Enter") for c in presses)
+    assert sum(c[1:3] == ("agent", "prompt") for c in runner.calls) == 1
+
+
+def test_codex_resubmit_gives_up_as_running_when_the_turn_never_starts():
+    runner = TurnHerdr("codex", prompt="stalled", states=("idle",))
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-ENTER-NEVER", agent="codex")
+
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.RUNNING
+    assert sum(c[1:3] == ("pane", "send-keys") for c in runner.calls) == 3
+
+
+def test_claude_stall_is_never_resubmitted():
+    runner = TurnHerdr("claude", prompt="stalled", states=("idle", "working", "idle"))
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-CLAUDE-STALL", agent="claude")
+    runtime.send(session.session_id, "fix it")
+    assert not any(c[1:3] == ("pane", "send-keys") for c in runner.calls)
+
+
+def test_send_waits_until_the_agent_is_interactive_before_prompting():
+    runner = TurnHerdr("codex")
+    readiness = iter([False, False, True])
+    original = runner.__call__
+
+    def call(command, timeout_ms):
+        if tuple(command[1:3]) == ("agent", "get") and not any(c[1:3] == ("agent", "prompt") for c in runner.calls):
+            runner.calls.append(tuple(command))
+            return json.dumps({"result": {"agent": {"agent_status": "idle", "interactive_ready": next(readiness, True)}}})
+        return original(command, timeout_ms)
+
+    runtime = HerdrRuntime(runner=call, poll_interval_s=0)
+    session = runtime.start(attempt_id="ATTEMPT-READY", agent="codex")
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
+    gets_before_prompt = runner.calls[: next(i for i, c in enumerate(runner.calls) if c[1:3] == ("agent", "prompt"))]
+    assert sum(c[1:3] == ("agent", "get") for c in gets_before_prompt) == 3
+
+
+def test_send_refuses_a_blocked_agent_before_prompting():
+    runner = TurnHerdr("codex", states=("blocked",))
+    runtime = HerdrRuntime(runner=runner, poll_interval_s=0)
+    session = runtime.start(attempt_id="ATTEMPT-BLOCKED", agent="codex")
+    with pytest.raises(HerdrRuntimeError, match="blocked"):
+        runtime.send(session.session_id, "fix it")
+    assert not any(c[1:3] == ("agent", "prompt") for c in runner.calls)
+
+
+def test_extra_agent_args_are_appended_after_the_runtime_defaults():
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner, agent_args={"codex": ("-c", 'model="small-model"')})
+    runtime.bind_remote_workspace("ATTEMPT-ARGS", "/tmp/sdf/ATTEMPT-ARGS")
+    runtime.start(attempt_id="ATTEMPT-ARGS", agent="codex")
+    (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert start[-4:] == ("-c", 'projects."/tmp/sdf/ATTEMPT-ARGS".trust_level="trusted"', "-c", 'model="small-model"')
+
+
+def test_a_mid_turn_idle_flicker_is_not_the_end_of_the_turn():
+    # Codex can read ``idle`` for a moment between steps of one turn; the turn
+    # ends only once ``idle`` holds for the settle window.
+    runner = TurnHerdr("codex", states=("idle", "working", "idle"))
+    runtime = HerdrRuntime(runner=runner, poll_interval_s=0, turn_settle_s=0)
+    session = runtime.start(attempt_id="ATTEMPT-FLICKER", agent="codex")
+
+    assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
+    prompt_at = next(i for i, c in enumerate(runner.calls) if c[1:3] == ("agent", "prompt"))
+    after = [c[1:3] for c in runner.calls[prompt_at + 1 :]]
+    assert ("agent", "wait") in after
+    assert after.index(("agent", "wait")) < after.index(("agent", "read"))
+
+
+def test_stream_falls_back_to_the_visible_screen_while_the_agent_is_working():
+    def runner(command, timeout_ms):
+        command = tuple(command)
+        if command[1:3] == ("agent", "read"):
+            if "recent-unwrapped" in command:
+                raise HerdrRuntimeError('{"error":{"code":"agent_not_idle"}}')
+            assert command[command.index("--source") + 1] == "visible"
+            return "visible screen\n"
+        return TurnHerdr("codex")(command, timeout_ms)
+
+    runtime = HerdrRuntime(runner=runner)
+    session = runtime.start(attempt_id="ATTEMPT-VISIBLE", agent="codex")
+    assert runtime.stream(session.session_id) == ("visible screen",)
