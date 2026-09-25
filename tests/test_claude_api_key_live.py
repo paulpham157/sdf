@@ -232,14 +232,23 @@ def test_live_claude_attempt_on_an_operator_key_answers_and_records_evidence(tmp
                 ))
             db.commit()
             started = db.query(RuntimeEventRow).filter_by(attempt_id=attempt, kind="runtime_started").one()
+            events = db.query(RuntimeEventRow).filter_by(attempt_id=attempt).order_by(RuntimeEventRow.sequence).all()
             evidence_rows = db.query(EvidenceRow).filter_by(attempt_id=attempt).all()
 
             print(json.dumps({
                 "attempt": attempt, "sandbox": box.created[:1], "credential": started.payload,
-                "evaluation": result.evaluation.status, "evidence": [(row.criterion, row.status) for row in evidence_rows],
+                "evaluation": result.evaluation.status,
+                # Kinds, sources and sequences only: payloads carry pane text.
+                "events": [(e.sequence, e.source, e.kind, e.status) for e in events], "evidence": [(row.criterion, row.status) for row in evidence_rows],
             }))
             assert result.session.credential == CredentialMetadata("api-key", None)
             assert started.payload == {"credential_mode": "api-key", "connection_id": None}
+            assert [(e.sequence, e.source, e.kind) for e in events] == [
+                (1, "herdr-e2b", "runtime_started"),
+                (2, "herdr-e2b", "runtime_input_sent"),
+                (3, "herdr-e2b", "runtime_output_observed"),
+            ]
+            assert len({e.session_id for e in events}) == 1
             assert "DONE" in answered, "Claude did not answer the prompt"
             assert re.search(r"not logged in|/login|invalid api key", answered, re.IGNORECASE) is None
             assert _DIALOGS.search(answered) is None
