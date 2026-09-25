@@ -8,3 +8,5 @@ __pycache__/
 *.py[cod]
 graphify-out/
 .cecli*
+.pi/
+*.ses
