@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Iterable, Protocol
@@ -198,6 +199,9 @@ class RuntimeController:
         self._sequences: dict[str, int] = {}
         self._events: list[RuntimeEvent] = []
         self._event_keys: set[tuple[str, str, str, int]] = set()
+        # ``send`` blocks for a whole provider turn, so ``cancel`` can arrive
+        # from another thread meanwhile; sequence allocation must not race.
+        self._lock = threading.RLock()
 
     @property
     def events(self) -> tuple[RuntimeEvent, ...]:
@@ -209,21 +213,22 @@ class RuntimeController:
         return self.runtime.status(session_id)
 
     def _record(self, kind: RuntimeEventKind, session: RuntimeSession, payload: dict[str, Any] | None = None) -> None:
-        sequence = self._sequences.get(session.attempt_id, 0) + 1
-        event = RuntimeEvent(
-            kind,
-            session.session_id,
-            session.attempt_id,
-            sequence,
-            session.status,
-            payload or {},
-            source=self.source,
-        )
-        if self.event_sink is not None:
-            self.event_sink.append(event)
-        self._sequences[session.attempt_id] = sequence
-        self._event_keys.add(event.identity)
-        self._events.append(event)
+        with self._lock:
+            sequence = self._sequences.get(session.attempt_id, 0) + 1
+            event = RuntimeEvent(
+                kind,
+                session.session_id,
+                session.attempt_id,
+                sequence,
+                session.status,
+                payload or {},
+                source=self.source,
+            )
+            if self.event_sink is not None:
+                self.event_sink.append(event)
+            self._sequences[session.attempt_id] = sequence
+            self._event_keys.add(event.identity)
+            self._events.append(event)
 
     def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
         session = self.runtime.start(attempt_id=attempt_id, agent=agent)

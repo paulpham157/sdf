@@ -602,3 +602,31 @@ def test_a_herdr_timeout_on_a_long_prompt_leaves_the_turn_running():
     runtime = HerdrRuntime(runner=call)
     session = runtime.start(attempt_id="ATTEMPT-LONG-TURN", agent="claude")
     assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.RUNNING
+
+
+def test_controller_terminates_a_session_whose_environment_cancel_destroyed():
+    # Live: after cancel kills the E2B sandbox, `agent get` fails with
+    # agent_not_found; the controller's status read before terminate must not
+    # reach the provider again.
+    from sdf_core.runtime import RuntimeController
+
+    class Transport:
+        def __init__(self):
+            self.runner, self.closed = FakeHerdr(), False
+
+        def run(self, command, timeout_ms):
+            if self.closed:
+                raise HerdrRuntimeError('{"error":{"code":"agent_not_found"}}')
+            return self.runner(command, timeout_ms)
+
+        def close(self, timeout_ms):
+            self.closed = True
+
+    transport = Transport()
+    controller = RuntimeController(HerdrRuntime(transport=transport))
+    session = controller.start(attempt_id="ATTEMPT-CANCEL-TERMINATE", agent="codex")
+
+    assert controller.cancel(session.session_id).status is RuntimeStatus.CANCELLED
+    assert controller.terminate(session.session_id).status is RuntimeStatus.TERMINATED
+    assert controller.status(session.session_id).status is RuntimeStatus.TERMINATED
+    assert [e.kind.value for e in controller.events] == ["runtime_started", "runtime_cancelled", "runtime_terminated"]
