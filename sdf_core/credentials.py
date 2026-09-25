@@ -11,13 +11,16 @@ Error messages name variables and connection ids, never values.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
+import socket
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,6 +68,8 @@ class _AgentSpec:
     api_key_source: str
     api_key_target: str
     api_key_seed: str
+    base_url_source: str
+    base_url_target: str
     subscription_seeds: Mapping[str, str]
 
 
@@ -76,6 +81,8 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             api_key_source="SDF_ANTHROPIC_API_KEY",
             api_key_target="ANTHROPIC_API_KEY",
             api_key_seed="claude-approve-api-key",
+            base_url_source="SDF_ANTHROPIC_BASE_URL",
+            base_url_target="ANTHROPIC_BASE_URL",
             subscription_seeds=MappingProxyType({}),
         ),
         "codex": _AgentSpec(
@@ -84,6 +91,8 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             api_key_source="SDF_OPENAI_API_KEY",
             api_key_target="OPENAI_API_KEY",
             api_key_seed="codex-auth-json-api-key",
+            base_url_source="SDF_OPENAI_BASE_URL",
+            base_url_target="OPENAI_BASE_URL",
             subscription_seeds=MappingProxyType({"CODEX_AUTH_JSON": "codex-auth-json"}),
         ),
     }
@@ -158,6 +167,10 @@ def resolve_credential_plan(
                 f"{spec.mode_variable}=api-key requires {spec.api_key_source} to be set"
             )
         variables = {spec.api_key_target: key}
+        base_url = environ.get(spec.base_url_source, "").strip()
+        if base_url:
+            _check_base_url(spec.base_url_source, base_url)
+            variables[spec.base_url_target] = base_url
         seeds = (SeedStep(spec.api_key_seed, spec.api_key_target),)
         return _plan(agent, mode, None, variables, seeds)
 
@@ -232,6 +245,50 @@ def _parse_line(line: str, dotenv: Path, number: int) -> tuple[str, str] | None:
             raise CredentialConfigError(f"{dotenv}:{number}: malformed quoted value for {name}")
         return name, raw[1:end]
     return name, re.split(r"\s+#", raw, maxsplit=1)[0].strip()
+
+
+# Dotted numeric hosts (``127.1``, ``2130706433``, ``0x7f000001``) that the
+# sandbox's resolver would read as legacy IPv4 forms.
+_NUMERIC_HOST = re.compile(r"^(?:0x[0-9a-f]*|[0-9]+)(?:\.(?:0x[0-9a-f]*|[0-9]+)){0,3}$")
+
+
+def _check_base_url(variable: str, url: str) -> None:
+    """Reject base URLs a cloud sandbox cannot (safely) reach.
+
+    Purely syntactic: hostnames are never resolved.  The URL is not echoed,
+    since operators sometimes paste credentials into it.
+    """
+    unreachable = f"{variable} points at a loopback, link-local, private or unspecified address, which a cloud sandbox cannot reach"
+    try:
+        parts = urlsplit(url)
+        parts.port  # noqa: B018 - raises ValueError for an out-of-range port
+    except ValueError:
+        raise CredentialConfigError(f"{variable} is not a valid URL") from None
+    if parts.scheme.lower() != "https":
+        raise CredentialConfigError(f"{variable} must use https")
+    if parts.username is not None or parts.password is not None:
+        raise CredentialConfigError(f"{variable} must not embed credentials")
+    host = (parts.hostname or "").rstrip(".")
+    if not host:
+        raise CredentialConfigError(f"{variable} has no host")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise CredentialConfigError(unreachable)
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address | None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+        if _NUMERIC_HOST.match(host):
+            try:
+                address = ipaddress.IPv4Address(socket.inet_aton(host))
+            except OSError:
+                raise CredentialConfigError(f"{variable} has an invalid numeric host") from None
+    if address is None:
+        return
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    if not address.is_global or address.is_multicast:
+        raise CredentialConfigError(unreachable)
 
 
 def _mode(spec: _AgentSpec, environ: Mapping[str, str]) -> CredentialMode:
