@@ -349,7 +349,7 @@ class HerdrRuntime(AgentRuntime):
         if self.credentials is not None:
             credential = self.credentials.get(agent)
             if credential is None:
-                raise HerdrRuntimeError(f"no resolved Agent Credential for {agent}; it was not injected at sandbox creation")
+                raise HerdrRuntimeError(f"no resolved Agent Credential for {agent}; it was not injected at sandbox creation; set SDF_CREDENTIAL_MODE_{agent.upper()}")
         if self.expected_version is not None:
             self.require_compatible()
         existing_id = next((sid for sid, b in self._bindings.items() if b.attempt_id == attempt_id), None)
