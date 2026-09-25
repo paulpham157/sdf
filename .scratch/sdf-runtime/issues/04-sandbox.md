@@ -21,8 +21,7 @@ Verification: focused `7 passed`; full `.venv/bin/pytest -q` `41 passed, 1
 skipped`; compile and `git diff --check` passed. This proves the Python
 boundary locally, not OS-level containment for arbitrary child code. A child
 process can still access host resources unless a deployment-specific sandbox
-(for example a container or OS sandbox backend) is supplied. Ticket remains
-`needs-info` until that live containment proof exists.
+(for example a container or OS sandbox backend) is supplied. **[Resolved by E2B backend]** Earlier: "Ticket remains `needs-info` until that live containment proof exists." Later sections provide E2B disposable sandbox proof.
 
 Added optional `MacOSSandboxBackend` and
 `FixtureSandbox(containment_backend=...)` integration. The backend probes

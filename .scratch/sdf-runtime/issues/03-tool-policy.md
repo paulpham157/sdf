@@ -28,14 +28,14 @@ scope for this ticket and are tracked by later persistence/sandbox work.
 
 Follow-up implementation added `SandboxToolExecutor` plus a durable
 `SqlAlchemyAuditSink` (migration `0006_tool_audits`) and regression coverage for
-Attempt-bound persisted decisions. The ticket remains `needs-info` because
-the live OS-level containment and full `POST /tasks/{id}/run` integration are
-not yet proven.
+Attempt-bound persisted decisions. **[Superseded by later resolution]** Earlier: "The ticket remains `needs-info`"
+because the live OS-level containment and full `POST /tasks/{id}/run` integration are
+not yet proven. Later sections completed this work.
 
-Review boundary: the seam is not yet wired into `POST /tasks/{id}/run`, does
+**[Superseded by later resolution]** Earlier: Review boundary: the seam is not yet wired into `POST /tasks/{id}/run`, does
 not verify Attempt existence/active state, and has no durable replay/idempotency
-guard. Keep this ticket `needs-info` until runtime integration and durable
-action/audit semantics are implemented.
+guard. Later sections completed runtime integration and durable
+action/audit semantics.
 
 Additional hardening is now in place: `SqlAlchemyAttemptGuard` rejects missing
 or terminal Attempts before the executor runs, and `SqlAlchemyAuditSink` uses
@@ -92,8 +92,7 @@ migration `0011_tool_audit_append_only` adding the direct-SQL trigger fence.
 Before executor invocation, durable `action_claimed` insertion now gives one
 delivery the action identity; concurrent redelivery loses the claim and does
 not invoke the executor. The PostgreSQL Compose multi-session gate now passes
-with exactly one winner; live OS/provider containment remains the outstanding
-reason for this ticket's `needs-info` status.
+with exactly one winner. **[Resolved by later E2B evidence]** Live OS/provider containment is now verified through E2B disposable sandbox execution and lifecycle management.
 
 Live E2B network-policy smoke (2026-09-21): an agent process inside the
 disposable `base` box fetched `https://e2b.dev` and returned HTTP 200. With
