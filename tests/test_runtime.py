@@ -172,3 +172,51 @@ def test_runtime_replay_rejects_cross_attempt_session_rebinding():
             RuntimeEventKind.OUTPUT_OBSERVED, "SESSION-OTHER", "ATTEMPT-009", 2,
             RuntimeStatus.RUNNING, {"output": ()},
         ),))
+
+
+def test_cancel_during_a_blocking_send_keeps_one_contiguous_sequence():
+    """Cancelling a turn from another thread must not race the send's sequence.
+
+    ``send`` blocks until the provider turn ends and records its input
+    observation only then, so a concurrent ``cancel`` is recorded first.  Both
+    observations must get distinct, contiguous sequence numbers.
+    """
+    import threading
+
+    dispatched, released = threading.Event(), threading.Event()
+
+    class BlockingRuntime(FakeRuntime):
+        def send(self, session_id, text):
+            dispatched.set()
+            released.wait(5)
+            return super().send(session_id, text)
+
+        def cancel(self, session_id):
+            released.set()
+            return super().cancel(session_id)
+
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        controller = RuntimeController(BlockingRuntime(), event_sink=SqlAlchemyRuntimeEventSink(db), source="herdr-e2b")
+        session = controller.start(attempt_id="ATTEMPT-RACE", agent="codex")
+        errors = []
+        worker = threading.Thread(
+            target=lambda: _capture(errors, controller.send, session.session_id, "sleep 240")
+        )
+        worker.start()
+        assert dispatched.wait(5)
+        controller.cancel(session.session_id)
+        worker.join(5)
+
+        assert errors == []
+        rows = db.query(RuntimeEventRow).filter_by(attempt_id="ATTEMPT-RACE").order_by(RuntimeEventRow.sequence).all()
+        assert [row.sequence for row in rows] == [1, 2, 3]
+        assert [row.kind for row in rows] == ["runtime_started", "runtime_cancelled", "runtime_input_sent"]
+
+
+def _capture(errors, call, *args):
+    try:
+        call(*args)
+    except Exception as exc:  # noqa: BLE001 - the test asserts nothing was raised
+        errors.append(exc)
