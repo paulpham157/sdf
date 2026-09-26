@@ -1,0 +1,22 @@
+{
+  "id": "environment_or_runtime-003",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "The check invokes /opt/venv/bin/pytest, a runner path that does not exist on the host, so the evaluator gets FileNotFoundError before any test runs."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "ERROR",
+    "failed_evidence": [
+      {
+        "command": "/opt/venv/bin/pytest -q tests/test_ratios.py",
+        "criterion": "percentage is rounded",
+        "exit_code": null,
+        "stderr_tail": "[Errno 2] No such file or directory: '/opt/venv/bin/pytest'"
+      }
+    ],
+    "task_instructions": "Make percent(part, whole) in ratios.py return the rounded integer percentage."
+  }
+}

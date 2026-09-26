@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-002",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit computes the start index as page * size (off by one page), so every page is shifted."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +2 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_pager.py",
+        "criterion": "pages are 1-based",
+        "exit_code": 1,
+        "stderr_tail": "E   assert [3, 4, 5] == [0, 1, 2]\nE\nE     At index 0 diff: 3 != 0\nE     Use -v to get more diff\n________________________________ test_last_page ________________________________\ntests/test_pager.py:11: in test_last_page\n    assert paginate(ITEMS, 4, 3) == [9]\nE   assert [] == [9]\nE\nE     Right contains one more item: 9\nE     Use -v to get more diff\n=========================== short test summary info ============================\nFAILED tests/test_pager.py::test_first_page - assert [3, 4, 5] == [0, 1, 2]\nFAILED tests/test_pager.py::test_last_page - assert [] == [9]\n2 failed"
+      }
+    ],
+    "task_instructions": "Implement paginate(items, page, size) in pager.py; pages are 1-based."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-004",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The test imports make_cart from a tests/helpers module that the fixture never ships, so collection fails with an import error."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --no-header -p no:cacheprovider tests/test_cart.py",
+        "criterion": "cart_total sums price times quantity",
+        "exit_code": 2,
+        "stderr_tail": "==================================== ERRORS ====================================\n_____________________ ERROR collecting tests/test_cart.py ______________________\nImportError while importing test module '/workspace/tests/test_cart.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/lib/python3/importlib/__init__.py:90: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/test_cart.py:2: in <module>\n    from tests.helpers import make_cart\nE   ModuleNotFoundError: No module named 'tests.helpers'\n=========================== short test summary info ============================\nERROR tests/test_cart.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error"
+      }
+    ],
+    "task_instructions": "Make cart_total(cart) in cart.py return the sum of price * qty over the cart's (price, qty) pairs."
+  }
+}

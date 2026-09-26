@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-007",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The test asserts average([0.1, 0.2]) == 0.15 with exact float equality, so rounding makes it fail on every correct solution."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --no-header -p no:cacheprovider tests/test_stats.py",
+        "criterion": "average returns the mean",
+        "exit_code": 1,
+        "stderr_tail": ".F                                                                       [100%]\n=================================== FAILURES ===================================\n_________________________________ test_floats __________________________________\n\n    def test_floats():\n>       assert average([0.1, 0.2]) == 0.15\nE       assert 0.15000000000000002 == 0.15\nE        +  where 0.15000000000000002 = average([0.1, 0.2])\n\ntests/test_stats.py:9: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_stats.py::test_floats - assert 0.15000000000000002 == 0.15\n1 failed, 1 passed"
+      }
+    ],
+    "task_instructions": "Make average(values) in stats.py return the arithmetic mean of a non-empty list."
+  }
+}

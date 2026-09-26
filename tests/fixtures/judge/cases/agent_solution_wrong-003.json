@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-003",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit only applies the divisible-by-4 rule and misses the century exception, so 1900 fails."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_leap.py",
+        "criterion": "Gregorian leap-year rules",
+        "exit_code": 1,
+        "stderr_tail": "...F                                                                     [100%]\n=================================== FAILURES ===================================\n____________________________ test_leap[1900-False] _____________________________\ntests/test_leap.py:8: in test_leap\n    assert is_leap_year(year) is expected\nE   assert True is False\nE    +  where True = is_leap_year(1900)\n=========================== short test summary info ============================\nFAILED tests/test_leap.py::test_leap[1900-False] - assert True is False\n1 failed, 3 passed"
+      }
+    ],
+    "task_instructions": "Implement is_leap_year(year) in calendar_utils.py using the Gregorian rules."
+  }
+}

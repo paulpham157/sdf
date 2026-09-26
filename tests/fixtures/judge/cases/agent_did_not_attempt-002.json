@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-002",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent only added a usage section to README.md and left the stub untouched."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +4 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_temperature.py",
+        "criterion": "conversion is correct",
+        "exit_code": 1,
+        "stderr_tail": "           ^^^^^^^^^^^^^^^^^^^^^^^^\ntemperature.py:2: in celsius_to_fahrenheit\n    raise NotImplementedError\nE   NotImplementedError\n_________________________________ test_boiling _________________________________\ntests/test_temperature.py:9: in test_boiling\n    assert celsius_to_fahrenheit(100) == 212\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\ntemperature.py:2: in celsius_to_fahrenheit\n    raise NotImplementedError\nE   NotImplementedError\n=========================== short test summary info ============================\nFAILED tests/test_temperature.py::test_freezing - NotImplementedError\nFAILED tests/test_temperature.py::test_boiling - NotImplementedError\n2 failed"
+      }
+    ],
+    "task_instructions": "Implement celsius_to_fahrenheit(c) in temperature.py."
+  }
+}

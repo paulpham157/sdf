@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-005",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent only created a NOTES.md plan file and never edited validators.py."
+  },
+  "state": {
+    "adapter_stderr_tail": "agent: reached max turns before editing target files",
+    "diff_stat": "1 file, +5 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_validators.py",
+        "criterion": "email validation",
+        "exit_code": 1,
+        "stderr_tail": "           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nvalidators.py:2: in validate_email\n    raise NotImplementedError\nE   NotImplementedError\n_________________________________ test_invalid _________________________________\ntests/test_validators.py:9: in test_invalid\n    assert validate_email(\"user.example.com\") is False\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nvalidators.py:2: in validate_email\n    raise NotImplementedError\nE   NotImplementedError\n=========================== short test summary info ============================\nFAILED tests/test_validators.py::test_valid - NotImplementedError\nFAILED tests/test_validators.py::test_invalid - NotImplementedError\n2 failed"
+      }
+    ],
+    "task_instructions": "Implement validate_email(address) in validators.py returning True for addresses with one '@' and a dotted domain."
+  }
+}

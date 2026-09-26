@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-004",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent only added a docstring to the target function; the body is still pass and returns None."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_batching.py",
+        "criterion": "chunks are split correctly",
+        "exit_code": 1,
+        "stderr_tail": "=================================== FAILURES ===================================\n_______________________________ test_even_split ________________________________\ntests/test_batching.py:5: in test_even_split\n    assert chunk([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]\nE   assert None == [[1, 2], [3, 4]]\nE    +  where None = chunk([1, 2, 3, 4], 2)\n________________________________ test_remainder ________________________________\ntests/test_batching.py:9: in test_remainder\n    assert chunk([1, 2, 3], 2) == [[1, 2], [3]]\nE   assert None == [[1, 2], [3]]\nE    +  where None = chunk([1, 2, 3], 2)\n=========================== short test summary info ============================\nFAILED tests/test_batching.py::test_even_split - assert None == [[1, 2], [3, 4]]\nFAILED tests/test_batching.py::test_remainder - assert None == [[1, 2], [3]]\n2 failed"
+      }
+    ],
+    "task_instructions": "Implement chunk(items, size) in batching.py to split a list into consecutive chunks of at most size items."
+  }
+}
