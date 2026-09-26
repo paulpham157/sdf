@@ -59,6 +59,8 @@ def _probabilities(key: str, probabilities: Any, allowed: Iterable[str]) -> None
     if not isinstance(probabilities, Mapping):
         raise ValueError(f"probabilities for {key!r} must be a mapping")
     allowed = set(allowed)
+    if set(probabilities) != allowed:
+        raise ValueError(f"probability labels for {key!r} must match criteria")
     for label, p in probabilities.items():
         if label not in allowed:
             raise ValueError(f"probability label {label!r} for {key!r} is not among criteria")

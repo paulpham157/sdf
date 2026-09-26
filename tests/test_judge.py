@@ -128,12 +128,23 @@ def test_validate_answers_accepts_score_shape():
         (
             TRIAGE_QUESTIONS,
             {**triage_answer(), "failure_cause": {**triage_answer()["failure_cause"],
-                                                  "probabilities": {"not_stated": 2.0}}},
+                                                  "probabilities": {**{label: 0.0 for label in FAILURE_CAUSES}, "not_stated": 2.0}}},
             r"\[0, 1\]",
         ),
         (
+            TRIAGE_QUESTIONS,
+            {**triage_answer(), "failure_cause": {**triage_answer()["failure_cause"],
+                                                  "probabilities": {"not_stated": 1.0}}},
+            "probability labels",
+        ),
+        (
             SCORE_QUESTION,
-            {"q": {"score": 1.0, "probabilities": {"0": -0.2}, "confidence": 0.5, "legend": ["bad", "ok", "good"]}},
+            {"q": {"score": 1.0, "probabilities": {"0": 0.2}, "confidence": 0.5, "legend": ["bad", "ok", "good"]}},
+            "probability labels",
+        ),
+        (
+            SCORE_QUESTION,
+            {"q": {"score": 1.0, "probabilities": {"0": -0.2, "1": 0.7, "2": 0.5}, "confidence": 0.5, "legend": ["bad", "ok", "good"]}},
             r"\[0, 1\]",
         ),
     ],

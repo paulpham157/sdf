@@ -244,6 +244,7 @@ def answer_of(response, qid):
         (lambda r: r["results"][0].update(answers="nope"), "answers"),
         (lambda r: r["results"][0]["answers"].pop(), "answer ids"),
         (lambda r: answer_of(r, "pick").update(id="other"), "answer ids"),
+        (lambda r: answer_of(r, "pick").update(id=1), "answer ids"),
         (lambda r: r["results"][0]["answers"].append(copy.deepcopy(CHOICE_ANSWER)), "answer ids"),
         (lambda r: answer_of(r, "pick").update(type="score"), "type"),
         (lambda r: answer_of(r, "completion").update(type="noul"), "type"),

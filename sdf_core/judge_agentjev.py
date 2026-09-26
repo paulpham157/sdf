@@ -107,7 +107,7 @@ def parse_agentjev_reply(response: Any, questions: Mapping[str, Mapping[str, Any
     if not isinstance(answers, list) or not all(isinstance(answer, Mapping) for answer in answers):
         raise ValueError("result answers must be a list of objects")
     ids = [answer.get("id") for answer in answers]
-    if sorted(map(str, ids)) != sorted(questions) or len(set(ids)) != len(ids):
+    if not all(isinstance(qid, str) for qid in ids) or set(ids) != set(questions) or len(set(ids)) != len(ids):
         raise ValueError(f"answer ids {ids} must match question ids {list(questions)}")
     by_id = {answer["id"]: answer for answer in answers}
     translated = {qid: _translate(qid, question, by_id[qid]) for qid, question in questions.items()}

@@ -26,7 +26,7 @@ def evaluation(*items, status="FAIL"):
     [
         ("key sk-ant-api03-abcDEF0123456789xyz end", "abcDEF0123456789xyz"),
         ("OPENAI sk-proj-abcdefghijklmnop0123 end", "abcdefghijklmnop0123"),
-        ("curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig'", "eyJhbGciOiJIUzI1NiJ9"),
+        ("curl -H 'Authorization: Bearer HEADER.payload.signature'", "HEADER.payload.signature"),
         ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
         ("x-api-key: live_abcdef0123456789", "live_abcdef0123456789"),
         ("X-Api-Key=live_abcdef0123456789", "live_abcdef0123456789"),
