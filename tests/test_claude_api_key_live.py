@@ -49,6 +49,10 @@ ANTHROPIC_KEY = _setting("SDF_ANTHROPIC_API_KEY")
 
 pytestmark = pytest.mark.skipif(not LIVE, reason="live E2B check: set SDF_LIVE_E2B=1 and E2B_API_KEY to run")
 
+# The user's pinned model for live Claude Attempts; passed as test-side start
+# argv only.  Production code carries no model selection (ADR 0005, 07a).
+MODEL = "claude-haiku-4-5-20251001"
+
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -67,7 +71,9 @@ class _Box:
         self.transport, self.injection = create_credentialed_transport(
             template=TEMPLATE, agents=("claude",), environ=_environ(key), timeout_seconds=900
         )
-        self.runtime = HerdrRuntime(transport=self.transport, timeout_ms=180_000)
+        self.runtime = HerdrRuntime(
+            transport=self.transport, timeout_ms=180_000, agent_args={"claude": ("--model", MODEL)}
+        )
         self.created: list[str] = []
 
     def shell(self, script: str, timeout_ms: int = 60_000) -> str:

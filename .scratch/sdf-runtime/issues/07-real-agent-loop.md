@@ -131,3 +131,52 @@ persistent `HerdrRuntime` + custom `sdf-herdr-codex` template still cannot
 authenticate Codex, because the image has no connection injection. Multi-turn
 prompt/reconnect against a live agent on that path is follow-up work, not part
 of this acceptance.
+
+## 2026-09-26 GitHub #2: both cases on the persistent HerdrRuntime path
+
+`tests/test_real_agent_loop_live.py` runs a real Codex Attempt (`subscription`
+mode, `codex-personal`, model `gpt-6-luna` pinned test-side) through
+`ExecutionService` + `RuntimeAgentAdapter` + `RuntimeController` on the
+`sdf-herdr-agents` template, for a positive and a negative case. The fixture
+has `add` (buggy) and `sub` (correct); the Task has two criteria checked by the
+independent evaluator in the Attempt workspace:
+
+- `add returns the sum`: `add(2, 3) == 5`;
+- `sub unchanged` (guard): `sub(5, 3) == 2` and `calc.py` is the only file
+  added, removed or changed relative to the fixture.
+
+Live command (key from the operator environment, redacted):
+`E2B_API_KEY=<REDACTED> SDF_LIVE_E2B=1 uv run pytest -s -q tests/test_real_agent_loop_live.py`
+→ 2 passed.
+
+| Case | Attempt | Sandbox | Task | add | guard | Edge |
+| --- | --- | --- | --- | --- | --- | --- |
+| Positive: fix `add` | ATTEMPT-801d8ed55765 | i3msakazz5ek8la1c910f | succeeded | PASS | PASS | validates |
+| Negative: docstring only | ATTEMPT-bcfd66ab6aca | ix928f9y5x9cc6ovhgrx3 | failed | FAIL | PASS | contradicts |
+
+Both cases also assert:
+- runtime events `runtime_started(running)`, `runtime_input_sent(completed)`,
+  `runtime_output_observed(completed)`, `runtime_terminated(terminated)`,
+  source `herdr-e2b`, one session id; in the negative case the runtime reports
+  completion while the evaluator contradicts the Assumption;
+- the pane output is kept only as the `-LOG` Artifact; no Evidence row
+  references it;
+- `GET /tasks/{id}/trace`, `GET /evidence/{id}` and
+  `GET /attempts/{id}/runtime-events` return the Attempt, the DIFF, LOG and
+  evaluator Artifacts, the Evidence and the runtime events;
+- network: agent egress is allowed (the Codex turn reached its API from the
+  sandbox), while a structured `network.request` sent through the real Tool
+  Proxy (`ExecutionService.execute_tool`, mid-Attempt, E2B containment backend)
+  fails with "network.request is disabled" even when the allowlist names it,
+  and is denied by the server-configured policy in E2B mode. Both leave
+  `source="tool-proxy"` events; no `herdr-e2b` event has a `tool_*` kind;
+- cleanup: every session ends `terminated`, each sandbox is gone, and
+  afterwards `e2b sandbox list` and `e2b-box list --json` were empty;
+  `leaked: []`.
+
+Bug found on the way: a `network.request` carries a `bytes` body, which made
+`SqlAlchemyAuditSink` / `SqlAlchemyToolEventSink` raise `TypeError: Object of
+type bytes is not JSON serializable`, so the Tool Proxy (and
+`POST /attempts/{id}/actions`) crashed on it. Durable audit/event context now
+stores such values as `<bytes len=N sha256=...>`; covered by
+`test_sqlalchemy_audit_persists_a_network_request_with_a_bytes_body`.

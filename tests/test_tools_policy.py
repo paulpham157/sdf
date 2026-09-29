@@ -432,3 +432,34 @@ def test_tool_audit_rows_are_append_only_at_orm_boundary(tmp_path: Path):
         db.delete(row)
         with pytest.raises(ValueError, match="append-only"):
             db.flush()
+
+
+def test_sqlalchemy_audit_persists_a_network_request_with_a_bytes_body(tmp_path: Path):
+    # network.request requires a bytes body; the durable audit and event
+    # records must store it as JSON instead of crashing the Tool Proxy.
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(AttemptRow(id="ATTEMPT-NET-BYTES", task_id="TASK-NET-BYTES", status="running",
+                          dispatch_key="dispatch-net-bytes", agent="test", created_at=utcnow()))
+        db.commit()
+        proxy = ToolProxy(
+            policy=AllowlistPolicy({("network", "request")}),
+            executor=SandboxToolExecutor(FixtureSandbox(tmp_path / "fixture"), network_actions_allowed=False),
+            audit=SqlAlchemyAuditSink(db),
+            attempt_guard=SqlAlchemyAttemptGuard(db),
+            event_sink=SqlAlchemyToolEventSink(db),
+        )
+        result = proxy.execute(ActionRequest(
+            attempt_id="ATTEMPT-NET-BYTES", actor="agent:test", tool="network", action="request",
+            resource="https://example.invalid", context={"method": "POST", "body": b"secret-ish payload"},
+        ))
+        db.commit()
+        assert result.status is ToolExecutionStatus.FAILED
+        assert "network.request is disabled" in (result.error or "")
+        rows = db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-NET-BYTES").all()
+        assert {row.event for row in rows} >= {"policy_decided", "action_failed"}
+        body = rows[0].context["body"]
+        assert body.startswith("<bytes len=18 sha256=") and "secret-ish" not in body
+        kinds = {e.kind for e in db.query(RuntimeEventRow).filter_by(attempt_id="ATTEMPT-NET-BYTES", source="tool-proxy")}
+        assert {"tool_policy_decided", "tool_action_failed"} <= kinds

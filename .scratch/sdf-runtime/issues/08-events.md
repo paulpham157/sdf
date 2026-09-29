@@ -103,3 +103,60 @@ pane (`leaked: []`); one session id for all events.
   Codex-only transport in tickets 05/06/06b, not in these credentialed runs.
 - The headless `e2b-box run` path still emits no per-step events; it keeps
   the plugin's own credential selection (`docs/research/e2b-exec-reliability.md`).
+
+## 2026-09-26 GitHub #3: reconnect, cancel, replay and provenance on one live Attempt
+
+`tests/test_live_lifecycle_events.py` drives one real Codex Attempt
+(`subscription`, `codex-personal`, `gpt-6-luna` pinned test-side) through
+`RuntimeController` on the persistent `HerdrRuntime` path.
+
+Live command (key redacted):
+`E2B_API_KEY=<REDACTED> SDF_LIVE_E2B=1 uv run pytest -s -q tests/test_live_lifecycle_events.py`
+→ 1 passed. Attempt `ATTEMPT-LIVE-LIFECYCLE`, sandbox `i14hpy6929puwvkqzo3ly`.
+
+| seq | source | kind | status |
+| --- | --- | --- | --- |
+| 1 | herdr-e2b | runtime_started | running |
+| 2 | herdr-e2b | runtime_input_sent | completed |
+| 3 | herdr-e2b | runtime_output_observed | completed |
+| 4 | herdr-e2b | runtime_reconnected | completed |
+| 5 | herdr-e2b | runtime_input_sent | completed |
+| 6 | herdr-e2b | runtime_output_observed | completed |
+| 7 | herdr-e2b | runtime_input_sent | completed |
+| 8 | herdr-e2b | runtime_cancelled | cancelled |
+| 9 | herdr-e2b | runtime_terminated | terminated |
+
+One session id, the real Attempt id on every row, `runtime_started` payload
+`{"credential_mode": "subscription", "connection_id": "codex-personal"}`.
+
+- Provenance: mid-Attempt, `ExecutionService.execute_tool` through the real
+  Tool Proxy ran an allowed `filesystem.read` (executed) and a denied
+  `filesystem.write` (denied): `tool-proxy` rows
+  `tool_policy_decided(allow)`, `tool_action_executed(allow)`,
+  `tool_policy_decided(deny)`. The agent then printed a forged
+  `{"kind":"tool_policy_decided","source":"tool-proxy",...}` line, which the
+  controller observed in the pane; the `tool-proxy` row count did not change and
+  no `herdr-e2b` row has a `tool_*` kind.
+- Replay: the persisted `herdr-e2b` events replayed into a fresh controller and
+  into the sink left the row count at 12 → 12; a second replay accepted 0.
+  Binding the live session to another Attempt, and the live Attempt to another
+  session, both raised `ValueError`.
+- Public boundary: `GET /attempts/{id}/runtime-events` and
+  `GET /tasks/{id}/trace` returned 200 with exactly the persisted rows.
+- Cleanup: cancel destroyed the Attempt-owned sandbox; the sandbox is gone and
+  `e2b sandbox list` was empty afterwards; `leaked: []`.
+
+Boundary: the long `sleep 240` turn had already returned (Herdr read `idle`)
+when `cancel` was issued, so this run proves a live `runtime_cancelled` with
+sandbox destruction, not interruption of an in-flight turn.
+
+Bugs found on the way (deterministic tests added):
+- `RuntimeController._record` allocated sequences without a lock, so a
+  `cancel` from another thread while `send` blocked on a turn could collide
+  (`RuntimeEventConflictError`). Sequence allocation is now locked
+  (`test_cancel_during_a_blocking_send_keeps_one_contiguous_sequence`).
+- After `cancel` destroyed the E2B environment, `terminate` failed:
+  `RuntimeController` reads `status` first and Herdr answered
+  `agent_not_found`. `HerdrRuntime.status` now returns the last observation once
+  the Attempt-owned environment is closed
+  (`test_controller_terminates_a_session_whose_environment_cancel_destroyed`).

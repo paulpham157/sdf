@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -16,6 +17,20 @@ from .policy import ActionRequest, AuditEvent, AuditRecord, Policy, PolicyDecisi
 from uuid import uuid4
 from .containment import ContainmentUnavailable
 from .sandbox import FixtureSandbox
+
+
+def _durable_context(context) -> dict[str, Any]:
+    """Return an action context that the JSON audit/event columns can store.
+
+    ``network.request`` carries a ``bytes`` body. Durable records keep only its
+    length and digest: the body is request data, not audit evidence.
+    """
+
+    return {
+        key: f"<bytes len={len(value)} sha256={hashlib.sha256(value).hexdigest()}>"
+        if isinstance(value, (bytes, bytearray)) else value
+        for key, value in dict(context).items()
+    }
 
 
 class ToolExecutor(Protocol):
@@ -124,7 +139,7 @@ class SqlAlchemyAuditSink:
             "tool": request.tool,
             "action": request.action,
             "resource": request.resource,
-            "context": dict(request.context),
+            "context": _durable_context(request.context),
             "event": "action_claimed",
             "decision": decision.effect.value,
             "executed": False,
@@ -168,7 +183,7 @@ class SqlAlchemyAuditSink:
             "tool": record.tool,
             "action": record.action,
             "resource": record.resource,
-            "context": dict(record.context),
+            "context": _durable_context(record.context),
             "event": record.event.value,
             "decision": record.decision.value,
             "executed": record.executed,
@@ -247,7 +262,7 @@ class SqlAlchemyToolEventSink:
                 "tool": record.tool,
                 "action": record.action,
                 "resource": record.resource,
-                "context": dict(record.context),
+                "context": _durable_context(record.context),
                 "decision": record.decision.value,
                 "executed": record.executed,
                 "outcome": record.outcome,

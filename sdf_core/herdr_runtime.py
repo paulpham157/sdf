@@ -618,6 +618,10 @@ class HerdrRuntime(AgentRuntime):
 
     def status(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)
+        # Once the Attempt-owned environment is destroyed (cancel/terminate)
+        # there is no Herdr left to ask; the last observed status is final.
+        if session_id in self._environment_closed_sessions:
+            return current
         args = self._command("agent", "get", session_id)
         payload = self._object(args)
         agent_payload = payload.get("agent", payload)
