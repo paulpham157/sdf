@@ -113,6 +113,9 @@ unknown on the SDF set until an explicitly authorized live comparison.
    cases and question wording; record the exact checkpoint/provider and raw
    version metadata. The broader open-model benchmarks are candidate-screening
    evidence only.
+   Judge's offline Kev work has no dependency on Cursor-in-E2B authentication
+   (personal Cursor API key or Path B); the Judge and Cursor-E2B efforts are
+   independent tracks.
 3. Report macro and per-class accuracy, confusion matrix, Brier/ECE for
    probabilities, coverage and wrong-withhold count at predeclared thresholds,
    and unavailable/malformed rates. Use uncertainty intervals because 41 cases
