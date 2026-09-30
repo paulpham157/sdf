@@ -33,11 +33,12 @@ withholds at the intended confidence threshold of 0.8 (maximum confidence
 about 0.575). Its 61% binary higher-tier answer accuracy is still not
 decision-grade. The 2,048-token fit trimmed no cases. This model often
 confused provider/agent-caused failures and never detected
-`agent_did_not_attempt`. See [the #24 report](judge-experiment-24.md) for
+`agent_did_not_attempt`. See [the #24 report](https://github.com/paulpham157/sdf/issues/24) for
 per-cause results and reproduction. The fake backend's perfect score is an
 oracle/schema smoke test, not a model baseline.
 
-The invariant remains the one in [ADR-0010](../adr/0010-advisory-typed-judgments.md):
+The invariant remains the one in [ADR-0010](https://github.com/paulpham157/sdf/blob/paulpham157/research-jev/docs/adr/0010-advisory-typed-judgments.md)
+(not on `main` yet; parked on `paulpham157/research-jev`):
 a Judge may add an advisory annotation, but it cannot produce `PASS`, an
 Accepted Outcome, or an escalation. Unavailable, malformed, or low-confidence
 output must leave today's deterministic behavior unchanged. Only the small,
@@ -149,10 +150,13 @@ acquire credentials now.
 
 ## Primary sources
 
-* SDF local findings and contract: [#24 experiment](judge-experiment-24.md),
-  [local AgentJev setup](agentjev-local.md), [Judge seam](../../sdf_core/judge.py),
-  [state filtering/redaction](../../sdf_core/judge_state.py),
-  [ADR-0010](../adr/0010-advisory-typed-judgments.md).
+* SDF Judge findings and contract (not on `main` yet; parked on
+  [`paulpham157/research-jev`](https://github.com/paulpham157/sdf/tree/paulpham157/research-jev)):
+  [#24 experiment issue](https://github.com/paulpham157/sdf/issues/24),
+  [local AgentJev setup](https://github.com/paulpham157/sdf/blob/paulpham157/research-jev/docs/research/agentjev-local.md),
+  [Judge seam](https://github.com/paulpham157/sdf/blob/paulpham157/research-jev/sdf_core/judge.py),
+  [state filtering/redaction](https://github.com/paulpham157/sdf/blob/paulpham157/research-jev/sdf_core/judge_state.py),
+  [ADR-0010](https://github.com/paulpham157/sdf/blob/paulpham157/research-jev/docs/adr/0010-advisory-typed-judgments.md).
 * Current issue records: [#19](https://github.com/paulpham157/sdf/issues/19),
   [#22](https://github.com/paulpham157/sdf/issues/22),
   [#24](https://github.com/paulpham157/sdf/issues/24),
