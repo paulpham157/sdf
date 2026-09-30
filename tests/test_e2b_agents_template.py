@@ -13,15 +13,30 @@ def _pins() -> dict[str, str]:
     return dict(re.findall(r"^ARG (\w+_VERSION)=(\S+)$", dockerfile, re.MULTILINE))
 
 
-def test_dockerfile_pins_herdr_codex_and_claude_code_to_exact_versions():
+def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
     pins = _pins()
-    assert set(pins) >= {"HERDR_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION"}
-    for version in pins.values():
-        assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
+    assert set(pins) >= {
+        "HERDR_VERSION",
+        "CODEX_VERSION",
+        "CLAUDE_CODE_VERSION",
+        "CURSOR_AGENT_VERSION",
+    }
+    for name, version in pins.items():
+        if name == "CURSOR_AGENT_VERSION":
+            # Cursor lab builds use YYYY.MM.DD-<git-sha>, not npm-style semver.
+            assert re.fullmatch(r"\d{4}\.\d{2}\.\d{2}-[0-9a-f]+", version), version
+        else:
+            assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
     dockerfile = (AGENTS / "Dockerfile").read_text()
     assert re.search(r"^ARG HERDR_SHA256=[0-9a-f]{64}$", dockerfile, re.MULTILINE)
+    assert re.search(r"^ARG CURSOR_AGENT_SHA256=[0-9a-f]{64}$", dockerfile, re.MULTILINE)
     assert '"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"' in dockerfile
     assert '"@openai/codex@${CODEX_VERSION}"' in dockerfile
+    assert "downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" in dockerfile
+    assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent' in dockerfile
+    assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent' in dockerfile
+    assert 'test "$(agent --version)" = "${CURSOR_AGENT_VERSION}"' in dockerfile
+    assert "CURSOR_API_KEY" not in dockerfile
 
 
 def test_readme_records_every_pinned_version():
@@ -49,7 +64,7 @@ def test_claude_first_run_state_is_baked_without_credentials():
 
 def test_template_carries_no_credential():
     forbidden = re.compile(
-        r"ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|CODEX_AUTH_JSON|auth\.json|\.credentials\.json"
+        r"ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|CLAUDE_CODE_OAUTH_TOKEN|OPENAI_API_KEY|CODEX_AUTH_JSON|CURSOR_API_KEY|auth\.json|\.credentials\.json"
     )
     for path in AGENTS.rglob("*"):
         if path.is_file() and path.name != "README.md":
