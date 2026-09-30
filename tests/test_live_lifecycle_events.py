@@ -133,6 +133,8 @@ def test_live_session_lifecycle_replay_and_provenance(tmp_path: Path):
 
         # 4. Cancel only after both the provider process list and the blocked
         # send worker prove this turn is active; elapsed time alone is not proof.
+        # Codex shell tools keep ``node``/``codex`` in the pane FG group while
+        # ``sleep`` runs as a sandbox descendant — pane FG alone is insufficient.
         long_turn: dict = {}
         worker = threading.Thread(target=lambda: long_turn.update(result=_try(controller.send, sid, LONG)), daemon=True)
         worker.start()
@@ -140,6 +142,7 @@ def test_live_session_lifecycle_replay_and_provenance(tmp_path: Path):
         # name/argv0 only — never pane text or full cmdlines (may carry secrets).
         process_name_samples: list[tuple[str, ...]] = []
         agent_state_samples: list[str] = []
+        sandbox_sleep_samples: list[bool] = []
         while time.monotonic() < deadline:
             names, sleep_fg = _foreground_probe(runtime.runtime, sid)
             if names and (not process_name_samples or process_name_samples[-1] != names):
@@ -147,15 +150,21 @@ def test_live_session_lifecycle_replay_and_provenance(tmp_path: Path):
             state = _agent_state_name(runtime.runtime, sid)
             if state and (not agent_state_samples or agent_state_samples[-1] != state):
                 agent_state_samples.append(state)
-            if sleep_fg and worker.is_alive():
+            sandbox_sleep = _sandbox_has_sleep(runtime.transport)
+            if not sandbox_sleep_samples or sandbox_sleep_samples[-1] != sandbox_sleep:
+                sandbox_sleep_samples.append(sandbox_sleep)
+            if _active_sleep_evidence(names, sleep_fg, sandbox_sleep) and worker.is_alive():
                 break
             time.sleep(0.5)
         # Re-check immediately before cancel: a prior loop observation is not proof.
-        _, active_process_before_cancel = _foreground_probe(runtime.runtime, sid)
+        names, sleep_fg = _foreground_probe(runtime.runtime, sid)
+        sandbox_sleep_before_cancel = _sandbox_has_sleep(runtime.transport)
+        active_process_before_cancel = _active_sleep_evidence(names, sleep_fg, sandbox_sleep_before_cancel)
         worker_blocked_before_cancel = worker.is_alive()
         cancelled = controller.cancel(sid)
         worker.join(timeout=120)
         worker_unblocked_after_cancel = not worker.is_alive()
+        long_turn_status = _describe(long_turn.get("result"))
         # 5. Terminate after cancel: the sandbox is already gone, so this must be idempotent.
         terminated = controller.terminate(sid)
 
@@ -201,12 +210,14 @@ def test_live_session_lifecycle_replay_and_provenance(tmp_path: Path):
             "statuses": {"turn": turn.status.value, "reconnected": reconnected.status.value,
                          "imitated": imitated.status.value,
                          "active_process_before_cancel": active_process_before_cancel,
+                         "sandbox_sleep_before_cancel": sandbox_sleep_before_cancel,
                          "worker_blocked_before_cancel": worker_blocked_before_cancel,
                          "worker_unblocked_after_cancel": worker_unblocked_after_cancel,
-                         "long_turn": _describe(long_turn.get("result")), "cancelled": cancelled.status.value,
+                         "long_turn": long_turn_status, "cancelled": cancelled.status.value,
                          "terminated": terminated.status.value,
                          "process_name_samples": process_name_samples[-8:],
-                         "agent_state_samples": agent_state_samples[-8:]},
+                         "agent_state_samples": agent_state_samples[-8:],
+                         "sandbox_sleep_samples": sandbox_sleep_samples[-8:]},
             "lifecycle": [(e.sequence, e.source, e.kind, e.status) for e in lifecycle],
             "tool_proxy": [(e.sequence, e.kind, (e.payload or {}).get("decision")) for e in proxy],
             "tool_results": {"allowed": allowed.status.value, "denied": denied.status.value},
@@ -235,7 +246,11 @@ def test_live_session_lifecycle_replay_and_provenance(tmp_path: Path):
         assert active_process_before_cancel, "no running sleep process was observed before cancellation"
         assert worker_blocked_before_cancel, "the prompt worker had already returned before cancellation"
         assert worker_unblocked_after_cancel, "the prompt worker did not return after cancellation"
-        assert _describe(long_turn.get("result")) != "completed", "the long turn completed instead of being interrupted"
+        # Active sleep evidence above already rejects completed-before-cancel.
+        # After interrupt, send must not stay blocked; CANCELLED is preferred once
+        # cancel closes the environment (ctrl+c alone can look like a normal idle).
+        assert long_turn_status != "still-blocked", "the long turn was still blocked after cancellation"
+        assert long_turn_status != "completed", "the long turn completed instead of being interrupted"
         assert cancelled.status is RuntimeStatus.CANCELLED and terminated.status is RuntimeStatus.TERMINATED
         # Provenance: only the Tool Proxy emits tool events; the forged line did not.
         assert allowed.status.value == "executed" and denied.status.value == "denied"
@@ -278,11 +293,58 @@ def _agent_state_name(runtime: HerdrRuntime, session_id: str) -> str:
         return ""
 
 
+def _sandbox_has_sleep(transport) -> bool:
+    """Return whether the Attempt-owned sandbox currently has a ``sleep`` process.
+
+    Codex tool shells do not enter the pane foreground group, so pane
+    process-info alone cannot prove the long child is running.
+    """
+
+    try:
+        out = transport._exec("ps -eo comm=", 15_000)
+    except Exception:  # noqa: BLE001 - observation failure is not active-process evidence
+        return False
+    return any(line.strip() == "sleep" for line in out.splitlines())
+
+
+def _active_sleep_evidence(names: tuple[str, ...], sleep_fg: bool, sandbox_sleep: bool) -> bool:
+    """True when provider inspection shows the long child is actually executing.
+
+    Prefer sleep in the pane FG group when present. Otherwise require the
+    Attempt pane to still be agent-owned and a sleep descendant in the sandbox.
+    Ambiguous or missing evidence is False (a test failure, not a pass).
+    """
+
+    if sleep_fg:
+        return True
+    agent_owns_pane = any(any(token in name.lower() for token in ("codex", "node", "claude")) for name in names)
+    return bool(agent_owns_pane and sandbox_sleep)
+
+
+def _is_sleep_process(process: dict) -> bool:
+    """True when name/argv0 basename or any cmdline argv token equals ``sleep``.
+
+    Token equality only — never substring match over a concatenated haystack.
+    """
+
+    for key in ("name", "argv0"):
+        raw = str(process.get(key, "") or "").strip()
+        if raw and Path(raw).name == "sleep":
+            return True
+    cmdline = str(process.get("cmdline", "") or "").strip()
+    if cmdline:
+        # Split on whitespace for argv tokens; equality only (not substring).
+        if any(token == "sleep" for token in cmdline.split()):
+            return True
+    return False
+
+
 def _foreground_probe(runtime: HerdrRuntime, session_id: str) -> tuple[tuple[str, ...], bool]:
     """Return safe FG process names and whether a sleep child is among them.
 
     Only ``name`` / ``argv0`` are retained for evidence. Full ``cmdline`` is
-    consulted for the sleep match but never returned (may carry secrets).
+    consulted for structured argv-token sleep match but never returned
+    (may carry secrets).
     """
 
     binding = runtime._bindings[session_id]
@@ -302,16 +364,9 @@ def _foreground_probe(runtime: HerdrRuntime, session_id: str) -> tuple[tuple[str
         label = str(process.get("name") or process.get("argv0") or "").strip()
         if label:
             names.append(label)
-        haystack = " ".join(str(process.get(key, "")) for key in ("name", "argv0", "cmdline")).lower()
-        if "sleep" in haystack:
+        if _is_sleep_process(process):
             sleep_fg = True
     return tuple(names), sleep_fg
-
-
-def _has_sleep_foreground(runtime: HerdrRuntime, session_id: str) -> bool:
-    """Return whether Herdr reports the long-running sleep child in the pane."""
-
-    return _foreground_probe(runtime, session_id)[1]
 
 
 def _try(call, *args):
