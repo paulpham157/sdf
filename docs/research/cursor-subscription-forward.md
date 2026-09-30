@@ -10,17 +10,20 @@ Supervisor must re-authorize before any api-key path; template publish allowed
 later (not this spike).
 
 Path comparison is **out of scope here** — Slice 1 accepted Path B. Cite
-`cursor-e2b-path-spike` worktree → [`docs/research/cursor-e2b-path-spike.md`](../../../cursor-e2b-path-spike/docs/research/cursor-e2b-path-spike.md)
-(peer `f92cbdea`). Parked Peer `a77648bf` and Judge track remain out of scope.
+[`docs/research/cursor-e2b-path-spike.md`](https://github.com/paulpham157/sdf/pull/32)
+(PR #32 / peer `f92cbdea`; lands in-repo as that path when #32 merges). Parked Peer
+`a77648bf` and Judge track remain out of scope.
 
 ## Verdict
 
 **blocked (human/plugin)** — subscription material on this host is **macOS
 Keychain–only**, with **no** portable file and **no** Cursor equivalent of
 Claude’s `setup-token` / Codex’s borrowable `auth.json`. The installed
-herdr-e2b plugin has **no Cursor harness** (not disabled — absent), and its
-ADR 0009 forbids Keychain reads. Current plugin cannot discover or inject a
-Cursor subscription connection.
+herdr-e2b plugin has **no Cursor harness** (not disabled — absent), and
+**herdr-e2b plugin ADR 0009** (*The plugin asks a harness, it never reads its
+credential store* — not SDF ADR 0009 / retire-`sdf-herdr-codex`) forbids
+Keychain reads. Current plugin cannot discover or inject a Cursor subscription
+connection.
 
 **Api-key is deferred**, not recommended. If Lead wants a proof before any
 plugin/human export path exists, that is a **separate explicit decision**, not
@@ -34,10 +37,10 @@ remains blocked until an approved export or plugin exception exists.
 
 1. Treat Cursor subscription forward as a **human/plugin blocker**: either
    (H1) Cursor documents/ships a subscription export usable like
-   `claude setup-token` / a file session, or (H2) herdr-e2b amends ADR 0009 for
-   a Cursor-specific, operator-approved Keychain→connection path, or (H3)
-   Supervisor explicitly re-authorizes **api-key** as a separate Credential Mode
-   experiment (out of this spike).
+   `claude setup-token` / a file session, or (H2) herdr-e2b amends **plugin**
+   ADR 0009 for a Cursor-specific, operator-approved Keychain→connection path,
+   or (H3) Supervisor explicitly re-authorizes **api-key** as a separate
+   Credential Mode experiment (out of this spike).
 2. Do **not** unblock Path B subscription proof on SDF-only wiring of
    `CURSOR_API_KEY`.
 3. Template-pin Peer may proceed on binary/`--kind cursor` install; wire
@@ -55,7 +58,7 @@ Installed tree: `~/.config/herdr/plugins/github/e2b-dev.herdr-e2b-*`
 | Stage | Mechanism | Sources |
 | --- | --- | --- |
 | Catalog | `src/harnesses.js` `HARNESSES` keys: `claude`, `codex`, `grok`, `opencode`, `amp`, `droid`, `prime`, `muse`. **No `cursor`.** | Live `Object.keys(HARNESSES)` |
-| Discovery | `e2b-box auth discover` / `src/harness-auth.js` `buildPlan`: spawn probe; keep **file sessions** or **env names**; never open Keychain (plugin ADR 0009). | `harness-auth.js`, ADR 0009 |
+| Discovery | `e2b-box auth discover` / `src/harness-auth.js` `buildPlan`: spawn probe; keep **file sessions** or **env names**; never open Keychain (**herdr-e2b** ADR 0009). | `harness-auth.js`; plugin `docs/adr/0009-the-plugin-asks-a-harness-it-never-reads-its-credential-store.md` |
 | Managed connect | `e2b-box auth connect` supports **claude** (`setup-token`), **codex** (`borrowed-session` / `--oauth`), **muse**/**amp** (plugin OAuth). Explicit error: managed connections are those four only. | `auth-cli.js` |
 | Material | `connectionMaterial` → Claude: env `CLAUDE_CODE_OAUTH_TOKEN`; Codex: env `CODEX_AUTH_JSON` (session with refresh placeholder). | `connections.js` |
 | Box create | Selected connection injected as create-time envs; seeds write by **variable name** (e.g. Codex `~/.codex/auth.json`). | Plugin fleet-seed; SDF research `e2b-exec-reliability.md` |
@@ -131,7 +134,7 @@ SDF gap (product, not edited): `_AGENTS` has no `cursor`; no
 
 | Sub-path | Feasibility | ToS / risk | Evidence redaction |
 | --- | --- | --- | --- |
-| Borrow Keychain tokens into a connection | **Blocked by plugin ADR 0009** (Keychain never opened). Same class as Claude Keychain refusal. | Reading/exporting refresh tokens into cloud sandboxes may conflict with Cursor account terms (vendor docs silent in path spike; treat as human review). Refresh dual-use risk like Codex (would need placeholder policy). | Never put Keychain **values** in Evidence; only service names + error strings. |
+| Borrow Keychain tokens into a connection | **Blocked by herdr-e2b plugin ADR 0009** (Keychain never opened). Same class as Claude Keychain refusal. | Reading/exporting refresh tokens into cloud sandboxes may conflict with Cursor account terms (vendor docs silent in path spike; treat as human review). Refresh dual-use risk like Codex (would need placeholder policy). | Never put Keychain **values** in Evidence; only service names + error strings. |
 | First-party long-lived subscription export (Claude `setup-token` analogue) | **Not found** for Free `agent login`. No documented Cursor CLI command that mints a pasteable subscription token for sandboxes. | If Cursor later documents one, ToS follows their doc (like Anthropic setup-token). | Store only in plugin secret files; SDF records connection id. |
 | Force `AGENT_CLI_CREDENTIAL_STORE=file`, re-login, borrow `auth.json` | Speculative: file store exists but was empty after normal login. Would need proven writable auth.json shape + multi-use/refresh rules (ADR 0010-style). Still a **plugin change** + operator re-auth. | Same account-portability questions as Codex file copy; OpenAI documents headless copy, Cursor does not (as of this spike). | Point at path in auth.toml; never commit file body. |
 
@@ -145,7 +148,7 @@ and seeds files by name (like extending `_AGENTS`).
 | Issue | Detail |
 | --- | --- |
 | No subscription variable on host | Login does not export `CURSOR_AUTH_TOKEN` / similar into the shell. |
-| Getting a value implies Keychain or api-key | Scraping Keychain from SDF would bypass plugin ownership (ADR-0007 wants plugin as format owner) and violates herdr-e2b ADR 0009 spirit. |
+| Getting a value implies Keychain or api-key | Scraping Keychain from SDF would bypass plugin ownership (SDF ADR-0007 wants plugin as format owner) and violates **herdr-e2b plugin** ADR 0009. |
 | `CURSOR_API_KEY` | Documented non-interactive path — **api-key mode**, deferred; not a subscription forward. |
 
 **Rank:** Useful **after** a connection/export exists; **not** a standalone
@@ -202,7 +205,7 @@ for binary presence. Subscription Credential Mode live proof **is** gated.
 
 - SDF ADR-0007; `sdf_core/credentials.py`, `plugin_bridge.py`, `credential_injection.py`
 - `docs/research/e2b-exec-reliability.md`
-- Slice 1: `cursor-e2b-path-spike` → `docs/research/cursor-e2b-path-spike.md` (sandbox `intuuexsd4p4tqasbmerq`)
-- herdr-e2b: `src/harnesses.js`, `connections.js`, `auth-cli.js`, `harness-auth.js`; ADRs 0009, 0010, 0013, 0015; research 0001/0002
+- Slice 1: [PR #32](https://github.com/paulpham157/sdf/pull/32) → `docs/research/cursor-e2b-path-spike.md` (sandbox `intuuexsd4p4tqasbmerq`)
+- herdr-e2b plugin (installed `~/.config/herdr/plugins/github/e2b-dev.herdr-e2b-*`): `src/harnesses.js`, `connections.js`, `auth-cli.js`, `harness-auth.js`; **plugin** ADRs 0009 / 0010 / 0013 / 0015 (not SDF `docs/adr/0009-…`); research 0001/0002
 - Host: `agent about` / `agent status` / `agent --help` / `agent login --help`; Keychain **service names** only; `e2b-box auth --help` / `auth list`
 - Cursor CLI install/auth docs cited in path spike (GitHub Actions / `CURSOR_API_KEY` as contrast only)
