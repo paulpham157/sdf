@@ -11,6 +11,7 @@ from sdf_core.judge import FAILURE_CAUSES, TRIAGE_QUESTIONS, validate_answers
 from sdf_core.judge_agentjev import API_VERSION, TOKEN_LIMIT, to_agentjev_request
 from sdf_core.judge_local import (
     DEFAULT_AGENTJEV_URL,
+    DEFAULT_MODEL_NAME,
     LocalAgentJevJudge,
     LocalJudgeResult,
     estimate_tokens,
@@ -209,6 +210,36 @@ def test_make_agentjev_post_posts_json_to_evaluate_and_returns_object():
     assert json.loads(data) == body
     assert headers["Content-type"] == "application/json"
     assert timeout == 12.5
+
+
+def test_make_agentjev_post_fills_empty_model_from_info_then_default():
+    bodies = {
+        "http://127.0.0.1:8149/api/evaluate": json.dumps({**envelope(), "model": ""}).encode(),
+        "http://127.0.0.1:8149/api/info": json.dumps({"model": "AgentJev-0.6B-phase4"}).encode(),
+    }
+
+    class FakeResponse:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return self._raw
+
+    def opener(request, timeout=None):
+        return FakeResponse(bodies[request.full_url])
+
+    post = make_agentjev_post(urlopen=opener)
+    assert post({"state": {}, "questions": []})["model"] == "AgentJev-0.6B-phase4"
+
+    bodies["http://127.0.0.1:8149/api/info"] = b"{"
+    post2 = make_agentjev_post(urlopen=opener, default_model=DEFAULT_MODEL_NAME)
+    assert post2({"state": {}, "questions": []})["model"] == DEFAULT_MODEL_NAME
 
 
 def test_make_agentjev_post_default_url_is_loopback():

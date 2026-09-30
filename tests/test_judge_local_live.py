@@ -22,26 +22,12 @@ URL = os.environ.get("SDF_AGENTJEV_URL", DEFAULT_AGENTJEV_URL).rstrip("/")
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/judge/cases/environment_or_runtime-001.json"
 
-# Inline fallback when the #21 dataset is not on this branch yet.
-_FALLBACK_CASE = {
-    "id": "live-synthetic-environment",
-    "label": {"failure_cause": "environment_or_runtime"},
-    "state": {
-        "task_instructions": "Make add(a, b) in calc.py return the sum.",
-        "evaluator_status": "TIMEOUT",
-        "failed_evidence": [],
-        "adapter_stderr_tail": "e2b: sandbox i8x2 was killed: connection reset by peer\nherdr: pane closed before idle",
-        "diff_stat": "unknown",
-    },
-}
-
 pytestmark = pytest.mark.skipif(not LIVE, reason="set SDF_LIVE_AGENTJEV=1 with a local AgentJev process on SDF_AGENTJEV_URL")
 
 
 def _load_case() -> dict:
-    if FIXTURE.is_file():
-        return json.loads(FIXTURE.read_text(encoding="utf-8"))
-    return _FALLBACK_CASE
+    assert FIXTURE.is_file(), f"missing #21 fixture at {FIXTURE}"
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 def _server_up() -> bool:
@@ -52,9 +38,11 @@ def _server_up() -> bool:
         return False
 
 
-@pytest.mark.skipif(LIVE and not _server_up(), reason=f"no AgentJev process at {URL}/health")
 def test_live_local_agentjev_answers_one_synthetic_triage_case():
+    if not _server_up():
+        pytest.skip(f"no AgentJev process at {URL}/health")
     case = _load_case()
+    assert case["label"]["failure_cause"] == "environment_or_runtime"
     state = case["state"]
     judge = LocalAgentJevJudge(make_agentjev_post(URL, timeout_s=120.0))
 

@@ -88,6 +88,10 @@ SDF_AGENTJEV_URL=http://127.0.0.1:8149
   Estimates use a conservative character heuristic so the default suite needs
   no tokenizer.
 
+Some AgentJev builds return an empty `model` field on `/api/evaluate`. The HTTP
+client fills it from `/api/info` (or `AgentJev-0.6B`) so the shared wire parser
+can still record a version.
+
 ## Opt-in live test
 
 With the server running:

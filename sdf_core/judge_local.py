@@ -18,7 +18,9 @@ from typing import Any
 from sdf_core.judge_agentjev import TOKEN_LIMIT, AgentJevError, AgentJevJudge
 
 DEFAULT_AGENTJEV_URL = "http://127.0.0.1:8149"
+DEFAULT_MODEL_NAME = "AgentJev-0.6B"
 EVALUATE_PATH = "/api/evaluate"
+INFO_PATH = "/api/info"
 
 # Qwen-style English/code is often ~3–4 characters per token. Use 3 so the
 # estimate stays at or above a real tokenizer count for ASCII-heavy triage state.
@@ -158,13 +160,36 @@ def make_agentjev_post(
     base_url: str = DEFAULT_AGENTJEV_URL,
     *,
     timeout_s: float = 60.0,
+    default_model: str = DEFAULT_MODEL_NAME,
     urlopen: UrlOpen | None = None,
 ) -> PostFn:
-    """Build a ``post(request) -> response`` that talks to a local AgentJev process."""
+    """Build a ``post(request) -> response`` that talks to a local AgentJev process.
+
+    Some AgentJev builds return an empty ``model`` on ``/api/evaluate`` while
+    advertising ``AgentJev-0.6B`` on ``/health`` / ``/api/info``. Fill that so
+    the shared wire parser can record a version without rewriting the seam.
+    """
 
     root = base_url.rstrip("/")
     evaluate_url = f"{root}{EVALUATE_PATH}"
     open_url = urlopen or urllib.request.urlopen
+    cached_model: list[str] = []
+
+    def _info_model() -> str:
+        if cached_model:
+            return cached_model[0]
+        try:
+            info_req = urllib.request.Request(f"{root}{INFO_PATH}", method="GET")
+            with open_url(info_req, timeout=min(timeout_s, 5.0)) as response:
+                info = json.loads(response.read().decode("utf-8"))
+            name = info.get("model") if isinstance(info, dict) else None
+            if isinstance(name, str) and name.strip():
+                cached_model.append(name)
+                return name
+        except Exception:  # noqa: BLE001 — fall back to the configured default
+            pass
+        cached_model.append(default_model)
+        return default_model
 
     def post(request: dict[str, Any]) -> Mapping[str, Any]:
         body = json.dumps(request, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -179,7 +204,11 @@ def make_agentjev_post(
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("AgentJev response must be an object")
-        return payload
+        filled = dict(payload)
+        model = filled.get("model")
+        if not isinstance(model, str) or not model.strip():
+            filled["model"] = _info_model()
+        return filled
 
     return post
 
