@@ -65,8 +65,8 @@ Error: Authentication required. Please run 'agent login' first, or set CURSOR_AP
 
 ### Herdr / SDF gaps (product; not edited this slice)
 
-- Host + in-box Herdr `0.9.1`: `--kind cursor` is a possible value.
-- `infra/e2b/herdr-agents/Dockerfile`: Herdr + Codex + Claude only — **no** Cursor binary pinned.
+- Host + in-box Herdr `0.9.1`: `--kind cursor` is a possible **help** value; full start/turn not exercised in Slice 1.
+- Slice 1 baseline `infra/e2b/herdr-agents/Dockerfile`: Herdr + Codex + Claude only — Cursor pin/publish is [#31](https://github.com/paulpham157/sdf/pull/31).
 - `sdf_core/credentials.py` `_AGENTS`: `claude`, `codex` only (ADR-0007).
 
 ## Live probe result (redacted Evidence)
