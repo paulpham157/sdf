@@ -27,8 +27,9 @@ from .db import (
 )
 from .escalation import ModelTier
 from .execution import ExecutionService
-from .adapter import FakeNativeAdapter
+from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
+from .run_adapter import RunAdapterConfigError, configured_run_adapter
 from .policy import ActionRequest, AllowlistPolicy
 from .containment import MacOSSandboxBackend
 from .e2b_containment import E2BContainmentBackend
@@ -483,11 +484,15 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
         target_node = db.get(GraphNodeRow, payload.validation_target_id)
         if target_node is None or target_node.kind != payload.validation_target_kind:
             raise HTTPException(status_code=404, detail="validation target not found")
+    try:
+        adapter = configured_run_adapter(db)
+    except (RunAdapterConfigError, CredentialConfigError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     service = ExecutionService(
         db,
         workspace_root=Path(".sdf-workspaces"),
         artifact_root=Path(".sdf-artifacts"),
-        adapter=FakeNativeAdapter("app.py", "print('updated')\n"),
+        adapter=adapter,
     )
     try:
         attempt = service.run(
@@ -507,6 +512,8 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
             output_tokens=payload.output_tokens,
             escalation_reason=payload.escalation_reason,
         )
+    except (RunAdapterConfigError, CredentialConfigError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ValueError, FileExistsError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     task = db.get(TaskRow, task_id)
