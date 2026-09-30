@@ -270,6 +270,9 @@ class HerdrRuntime(AgentRuntime):
         # not claim provider process control it does not have.
         self._environment_close = getattr(transport, "close", None) if transport is not None else None
         self._environment_closed_sessions: set[str] = set()
+        # Cancel claims the session before ctrl+c so a concurrent send that
+        # observes idle from the interrupt cannot overwrite CANCELLED.
+        self._cancel_requested: set[str] = set()
 
     def restore_binding(self, snapshot: HerdrBindingSnapshot) -> RuntimeSession:
         """Restore an Attempt/session binding without dispatching the agent."""
@@ -470,6 +473,9 @@ class HerdrRuntime(AgentRuntime):
         try:
             raw = self._raw(args)
         except HerdrRuntimeError as exc:
+            cancelled = self._cancelled_send_result(session_id, binding, current)
+            if cancelled is not None:
+                return cancelled
             raw = ""
             if _is_herdr_timeout(exc):
                 # The prompt was accepted and the turn outlived Herdr's wait:
@@ -498,12 +504,38 @@ class HerdrRuntime(AgentRuntime):
                 reported = self._status(parsed.get("status", parsed.get("agent_status", "idle")))
                 if reported in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
                     status = reported
+        # Cancel/terminate may win the race with ``--until idle``: ctrl+c makes
+        # Herdr report idle while cancel has already claimed the session.
+        # Do not promote that idle into COMPLETED over the cancel result.
+        cancelled = self._cancelled_send_result(session_id, binding, current)
+        if cancelled is not None:
+            return cancelled
         if status is RuntimeStatus.COMPLETED:
             status = self._settle_turn(session_id)
+        cancelled = self._cancelled_send_result(session_id, binding, current)
+        if cancelled is not None:
+            return cancelled
         if status is RuntimeStatus.COMPLETED:
             self._completed_turns.add(session_id)
         output = self.stream(session_id)
         updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, status, output or current.output, credential=current.credential)
+        self._sessions[session_id] = updated
+        return updated
+
+    def _cancelled_send_result(
+        self, session_id: str, binding: _Binding, current: RuntimeSession
+    ) -> RuntimeSession | None:
+        """Return the cancel/terminate session if this send lost the race."""
+
+        if session_id not in self._environment_closed_sessions and session_id not in self._cancel_requested:
+            return None
+        closed = self._sessions[session_id]
+        if closed.status in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
+            return closed
+        updated = RuntimeSession(
+            current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.CANCELLED,
+            current.output, credential=current.credential,
+        )
         self._sessions[session_id] = updated
         return updated
 
@@ -645,26 +677,33 @@ class HerdrRuntime(AgentRuntime):
 
     def cancel(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)
+        # Claim cancellation before ctrl+c so a concurrent send cannot treat the
+        # interrupt's idle observation as a normal COMPLETED turn.
+        self._cancel_requested.add(session_id)
         # Herdr exposes validated key injection rather than a named cancel
         # method.  ctrl+c is therefore a cancellation request; only promote
         # it to CANCELLED after process inspection proves the agent executable
         # is no longer foreground in the pane.
-        self._raw(self._command("agent", "send-keys", session_id, "ctrl+c"))
         try:
-            self._wait_agent_not_foreground(binding)
-        except HerdrRuntimeError:
-            # ``ctrl+c`` is cooperative input, not process control.  If the
-            # foreground process ignores it (or Herdr reports idle while the
-            # process remains), closing the dedicated Attempt pane is the
-            # documented hard-stop fallback.  Do not report CANCELLED until
-            # the subsequent inspection proves the pane is gone/quiescent.
-            self._close_pane(binding)
-            self._wait_agent_not_foreground(binding)
-        # A pane close cannot prove that a process intentionally detached from
-        # the terminal has exited.  For an E2B-backed execution, tear down the
-        # Attempt-owned sandbox after every cancellation: provider sandbox
-        # destruction is the final descendant-cleanup boundary.
-        self._close_execution_environment(session_id)
+            self._raw(self._command("agent", "send-keys", session_id, "ctrl+c"))
+            try:
+                self._wait_agent_not_foreground(binding)
+            except HerdrRuntimeError:
+                # ``ctrl+c`` is cooperative input, not process control.  If the
+                # foreground process ignores it (or Herdr reports idle while the
+                # process remains), closing the dedicated Attempt pane is the
+                # documented hard-stop fallback.  Do not report CANCELLED until
+                # the subsequent inspection proves the pane is gone/quiescent.
+                self._close_pane(binding)
+                self._wait_agent_not_foreground(binding)
+            # A pane close cannot prove that a process intentionally detached from
+            # the terminal has exited.  For an E2B-backed execution, tear down the
+            # Attempt-owned sandbox after every cancellation: provider sandbox
+            # destruction is the final descendant-cleanup boundary.
+            self._close_execution_environment(session_id)
+        except Exception:
+            self._cancel_requested.discard(session_id)
+            raise
         updated = RuntimeSession(current.session_id, binding.attempt_id, binding.agent, RuntimeStatus.CANCELLED, current.output, credential=current.credential)
         self._sessions[session_id] = updated
         return updated
