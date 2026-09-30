@@ -154,9 +154,12 @@ acquire credentials now.
   [#22](https://github.com/paulpham157/sdf/issues/22),
   [#24](https://github.com/paulpham157/sdf/issues/24),
   [#35](https://github.com/paulpham157/sdf/issues/35).
-* Open typed models and reducer pattern: [Kev repository and benchmark README](https://github.com/jaredpalmer/kev),
+* Open typed models and reducer pattern:
+  [Ferr0 Open Jev collection](https://huggingface.co/collections/Ferr0/open-jev-typed-decision-models),
+  [Kev repository and benchmark README](https://github.com/jaredpalmer/kev),
   [Kev-0.8B model card and held-out results](https://github.com/jaredpalmer/kev/blob/main/docs/model-cards/kev-0.8b.md),
-  [Laya model card](https://huggingface.co/convaiinnovations/laya-typed-decisions),
+  [Laya base model card](https://huggingface.co/convaiinnovations/laya),
+  [Laya typed-decisions FT](https://huggingface.co/convaiinnovations/laya-typed-decisions),
   [jevals repository](https://github.com/openlayer-ai/jevals).
 * Hosted Jev: [Cloudflare model page](https://developers.cloudflare.com/ai/models/typesafe/jev/),
   [Vercel Jev model page](https://vercel.com/ai-gateway/models/jev),
