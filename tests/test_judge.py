@@ -155,7 +155,7 @@ def test_validate_answers_rejects_shape_violations(questions, answers, message):
 
 @pytest.mark.parametrize("module", ["execution.py", "escalation.py"])
 def test_execution_and_escalation_do_not_import_judge_modules(module):
-    forbidden = {"judge", "judge_state", "judge_agentjev"}
+    forbidden = {"judge", "judge_state", "judge_agentjev", "judge_local"}
     tree = ast.parse((ROOT / "sdf_core" / module).read_text())
     imported: set[str] = set()
     for node in ast.walk(tree):
