@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-008",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The test reads expected values from tests/data/versions.txt, a fixture file the task never ships, so it errors on a correct solution."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +2 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --no-header -p no:cacheprovider tests/test_versions.py",
+        "criterion": "parse_version returns an int tuple",
+        "exit_code": 1,
+        "stderr_tail": "             errors=None, newline=None):\n        \"\"\"\n        Open the file pointed to by this path and return a file object, as\n        the built-in open() function does.\n        \"\"\"\n        if \"b\" not in mode:\n            encoding = io.text_encoding(encoding)\n>       return io.open(self, mode, buffering, encoding, errors, newline)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       FileNotFoundError: [Errno 2] No such file or directory: '/workspace/tests/data/versions.txt'\n\n/usr/lib/python3/pathlib.py:1013: FileNotFoundError\n=========================== short test summary info ============================\nFAILED tests/test_versions.py::test_table - FileNotFoundError: [Errno 2] No s...\n1 failed"
+      }
+    ],
+    "task_instructions": "Add parse_version(s) to versions.py returning a tuple of ints, e.g. '1.2.3' -> (1, 2, 3)."
+  }
+}

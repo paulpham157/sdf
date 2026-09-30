@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-001",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The acceptance check runs tests/test_slug_utils.py, but the task ships tests/test_slugs.py, so pytest finds no file (exit 4)."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --no-header -p no:cacheprovider tests/test_slug_utils.py",
+        "criterion": "slugify joins lowercase words with dashes",
+        "exit_code": 4,
+        "stderr_tail": "no tests ran\nERROR: file or directory not found: tests/test_slug_utils.py"
+      }
+    ],
+    "task_instructions": "Add slugify(text) to slugs.py: lowercase the text and join words with '-'."
+  }
+}

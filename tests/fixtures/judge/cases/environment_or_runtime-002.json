@@ -1,0 +1,15 @@
+{
+  "id": "environment_or_runtime-002",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "The runtime raised the E2B transport's real 'command timed out; sandbox killed' error after the agent had edited roman.py, so nothing was collected or evaluated."
+  },
+  "state": {
+    "adapter_stderr_tail": "HerdrRuntimeError: E2B Herdr command timed out; sandbox killed",
+    "diff_stat": "unknown",
+    "evaluator_status": "TIMEOUT",
+    "failed_evidence": [],
+    "task_instructions": "Implement to_roman(n) in roman.py for 1 <= n <= 3999."
+  }
+}

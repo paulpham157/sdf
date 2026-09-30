@@ -1,0 +1,15 @@
+{
+  "id": "environment_or_runtime-007",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "The runtime raised the Herdr endpoint transport's connection-failed error with connection refused while dispatching the prompt."
+  },
+  "state": {
+    "adapter_stderr_tail": "HerdrRuntimeError: Herdr endpoint connection failed: [Errno 111] Connection refused",
+    "diff_stat": "unknown",
+    "evaluator_status": "ERROR",
+    "failed_evidence": [],
+    "task_instructions": "Implement next_weekday(day) in weekdays.py returning the following weekday name."
+  }
+}

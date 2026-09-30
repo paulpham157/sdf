@@ -1,0 +1,22 @@
+{
+  "id": "environment_or_runtime-004",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "A conftest.py SIGKILLs the pytest process at session start, as an OOM killer would, so the check exits -9 with no output."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short -p no:cacheprovider tests/test_flat.py",
+        "criterion": "one level is flattened",
+        "exit_code": -9,
+        "stderr_tail": ""
+      }
+    ],
+    "task_instructions": "Implement flatten(nested) in flat.py to flatten one level of nested lists."
+  }
+}

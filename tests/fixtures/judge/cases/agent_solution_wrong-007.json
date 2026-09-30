@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-007",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit fixes the logic but renames word_count to count_words, so the test module fails to import (looks like a broken test)."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +2 -2",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_counting.py",
+        "criterion": "word_count ignores repeated spaces",
+        "exit_code": 2,
+        "stderr_tail": "==================================== ERRORS ====================================\n___________________ ERROR collecting tests/test_counting.py ____________________\nImportError while importing test module '/workspace/tests/test_counting.py'.\nHint: make sure your test modules/packages have valid Python names.\nTraceback:\n/usr/lib/python3/importlib/__init__.py:90: in import_module\n    return _bootstrap._gcd_import(name[level:], package, level)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/test_counting.py:1: in <module>\n    from counting import word_count\nE   ImportError: cannot import name 'word_count' from 'counting' (/workspace/counting.py)\n=========================== short test summary info ============================\nERROR tests/test_counting.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error"
+      }
+    ],
+    "task_instructions": "Fix word_count(text) in counting.py so it ignores repeated spaces."
+  }
+}

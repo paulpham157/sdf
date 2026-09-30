@@ -1,0 +1,15 @@
+{
+  "id": "environment_or_runtime-008",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "The runtime raised Herdr's real 'agent never became interactive' error at start, so the agent never received the prompt."
+  },
+  "state": {
+    "adapter_stderr_tail": "HerdrRuntimeError: Herdr agent never became interactive: unknown",
+    "diff_stat": "0 files changed",
+    "evaluator_status": "ERROR",
+    "failed_evidence": [],
+    "task_instructions": "Implement parse_semver(version) in semver.py returning a (major, minor, patch) tuple of ints."
+  }
+}

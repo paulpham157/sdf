@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-006",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent renamed a parameter in the unrelated helpers.py and left the rotation stub untouched."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +2 -2",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_rotation.py",
+        "criterion": "rotation is correct",
+        "exit_code": 1,
+        "stderr_tail": "           ^^^^^^^^^^^^^^^^^^^^\nrotation.py:2: in rotate\n    raise NotImplementedError\nE   NotImplementedError\n_______________________________ test_rotate_full _______________________________\ntests/test_rotation.py:9: in test_rotate_full\n    assert rotate([1, 2, 3], 3) == [1, 2, 3]\n           ^^^^^^^^^^^^^^^^^^^^\nrotation.py:2: in rotate\n    raise NotImplementedError\nE   NotImplementedError\n=========================== short test summary info ============================\nFAILED tests/test_rotation.py::test_rotate_one - NotImplementedError\nFAILED tests/test_rotation.py::test_rotate_full - NotImplementedError\n2 failed"
+      }
+    ],
+    "task_instructions": "Implement rotate(items, k) in rotation.py to rotate a list right by k positions."
+  }
+}
