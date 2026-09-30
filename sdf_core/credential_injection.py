@@ -20,10 +20,14 @@ from types import MappingProxyType
 from typing import Any
 
 from .credentials import CONFLICTING_VARIABLES, ConnectionReader, CredentialConfigError, CredentialPlan, SeedStep, resolve_credential_plan
+from .daytona_herdr_transport import DaytonaHerdrTransport
 from .e2b_herdr_transport import E2BHerdrTransport
 from .herdr_runtime import HerdrRuntimeError
 from .plugin_bridge import PluginConnectionBridge
 from .runtime import CredentialMetadata
+
+SANDBOX_PROVIDERS = frozenset({"e2b", "daytona"})
+DEFAULT_SANDBOX_PROVIDER = "e2b"
 
 # Seed scripts read their credential from ``process.env`` inside the box; the
 # host only ever sends the variable NAME.  Existing state is merged, never
@@ -208,29 +212,43 @@ def _lazy_plugin_bridge(environ: Mapping[str, str]) -> ConnectionReader:
     return read
 
 
-class CredentialedE2BHerdrTransport(E2BHerdrTransport):
-    """E2B Herdr transport that seeds agent credentials once after creation."""
+def resolve_sandbox_provider(environ: Mapping[str, str], provider: str | None = None) -> str:
+    """Return ``e2b`` (default) or ``daytona`` from an explicit arg or env knob."""
 
-    def __init__(self, *, injection: CredentialInjection, **kwargs: Any) -> None:
-        super().__init__(envs=injection.envs, **kwargs)
+    raw = provider if provider is not None else environ.get("SDF_SANDBOX_PROVIDER", DEFAULT_SANDBOX_PROVIDER)
+    selected = (raw or DEFAULT_SANDBOX_PROVIDER).strip().lower() or DEFAULT_SANDBOX_PROVIDER
+    if selected not in SANDBOX_PROVIDERS:
+        raise CredentialConfigError(
+            f"SDF_SANDBOX_PROVIDER must be one of {', '.join(sorted(SANDBOX_PROVIDERS))}; got {raw!r}"
+        )
+    return selected
+
+
+class CredentialSeedingMixin:
+    """Provider-agnostic create-time credential seeding (ADR-0007)."""
+
+    credential_metadata: Mapping[str, CredentialMetadata]
+    _seed_commands: tuple[str, ...]
+
+    def _init_credential_seeding(self, injection: CredentialInjection) -> None:
         self.credential_metadata = injection.metadata
         self._seed_commands = injection.seed_commands
 
     def _ensure_sandbox(self) -> Any:
-        fresh = self._sandbox is None and self._sandbox_id is None
-        sandbox = super()._ensure_sandbox()
+        fresh = self._sandbox is None and self._sandbox_id is None  # type: ignore[attr-defined]
+        sandbox = super()._ensure_sandbox()  # type: ignore[misc]
         if fresh and self._seed_commands:
             self._seed()
         return sandbox
 
     def _seed(self) -> None:
-        timeout_ms = self.timeout_seconds * 1000
+        timeout_ms = self.timeout_seconds * 1000  # type: ignore[attr-defined]
         for command in self._seed_commands:
             try:
-                self._exec(command, timeout_ms)
+                self._exec(command, timeout_ms)  # type: ignore[attr-defined]
             except HerdrRuntimeError:
                 # Command output is not echoed: a seed handles credential state.
-                self._kill_after_timeout()
+                self._kill_after_timeout()  # type: ignore[attr-defined]
                 raise HerdrRuntimeError("credential seed step failed; sandbox killed") from None
 
     def prepare_agent_workspace(self, agent: str, workspace: str) -> None:
@@ -240,31 +258,72 @@ class CredentialedE2BHerdrTransport(E2BHerdrTransport):
         if script is None:
             return
         command = f"node -e {shlex.quote(script)} {shlex.quote(workspace)}"
-        self._exec(command, self.timeout_seconds * 1000)
+        self._exec(command, self.timeout_seconds * 1000)  # type: ignore[attr-defined]
+
+
+class CredentialedE2BHerdrTransport(CredentialSeedingMixin, E2BHerdrTransport):
+    """E2B Herdr transport that seeds agent credentials once after creation."""
+
+    def __init__(self, *, injection: CredentialInjection, **kwargs: Any) -> None:
+        super().__init__(envs=injection.envs, **kwargs)
+        self._init_credential_seeding(injection)
+
+
+class CredentialedDaytonaHerdrTransport(CredentialSeedingMixin, DaytonaHerdrTransport):
+    """Daytona Herdr transport that seeds agent credentials once after creation."""
+
+    def __init__(self, *, injection: CredentialInjection, **kwargs: Any) -> None:
+        super().__init__(envs=injection.envs, **kwargs)
+        self._init_credential_seeding(injection)
+
 
 def create_credentialed_transport(
     *,
-    template: str,
     agents: Iterable[str],
     environ: Mapping[str, str],
+    template: str | None = None,
+    snapshot: str | None = None,
+    provider: str | None = None,
     read_connection: ConnectionReader | None = None,
     envs: Mapping[str, str] | None = None,
     **transport_kwargs: Any,
-) -> tuple[CredentialedE2BHerdrTransport, CredentialInjection]:
+) -> tuple[CredentialedE2BHerdrTransport | CredentialedDaytonaHerdrTransport, CredentialInjection]:
     """Resolve credentials for ``agents``, then build the persistent transport.
 
-    The sandbox itself is created lazily on the first command; a credential
-    configuration error surfaces here, so no sandbox is ever created for it.
+    Provider selection: ``provider=`` or ``SDF_SANDBOX_PROVIDER`` (default
+    ``e2b``). E2B uses ``template=``; Daytona uses ``snapshot=`` (``template=``
+    is accepted as an alias). The sandbox itself is created lazily on the first
+    command; a credential configuration error surfaces here, so no sandbox is
+    ever created for it.
     """
 
+    selected = resolve_sandbox_provider(environ, provider)
     # The connection must outlive the box, so check against its real lifetime.
-    timeout_seconds = transport_kwargs.get(
-        "timeout_seconds", inspect.signature(E2BHerdrTransport).parameters["timeout_seconds"].default
-    )
+    if selected == "daytona":
+        timeout_default = inspect.signature(DaytonaHerdrTransport).parameters["timeout_seconds"].default
+        image = (snapshot or template or environ.get("SDF_DAYTONA_SNAPSHOT", "")).strip()
+        if not image:
+            raise CredentialConfigError(
+                "Daytona credentialed transport requires snapshot= (or template= / SDF_DAYTONA_SNAPSHOT)"
+            )
+        timeout_seconds = transport_kwargs.get("timeout_seconds", timeout_default)
+        injection = prepare_credential_injection(
+            agents, environ, read_connection=read_connection, base_envs=envs, sandbox_timeout_seconds=timeout_seconds
+        )
+        transport = CredentialedDaytonaHerdrTransport(
+            injection=injection, snapshot=image, environ=environ, **transport_kwargs
+        )
+        return transport, injection
+
+    timeout_default = inspect.signature(E2BHerdrTransport).parameters["timeout_seconds"].default
+    image = (template or "").strip()
+    if not image:
+        raise CredentialConfigError("E2B credentialed transport requires template=")
+    timeout_seconds = transport_kwargs.get("timeout_seconds", timeout_default)
     injection = prepare_credential_injection(
         agents, environ, read_connection=read_connection, base_envs=envs, sandbox_timeout_seconds=timeout_seconds
     )
     transport = CredentialedE2BHerdrTransport(
-        injection=injection, template=template, environ=environ, **transport_kwargs
+        injection=injection, template=image, environ=environ, **transport_kwargs
     )
     return transport, injection

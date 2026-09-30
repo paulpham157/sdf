@@ -13,13 +13,17 @@ import pytest
 
 from sdf_core.credential_injection import (
     CredentialInjection,
+    CredentialedDaytonaHerdrTransport,
+    CredentialedE2BHerdrTransport,
     create_credentialed_transport,
     prepare_credential_injection,
+    resolve_sandbox_provider,
 )
 from sdf_core.credentials import ConnectionMaterial, CredentialConfigError, CredentialMode
 from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError
 from sdf_core.runtime import CredentialMetadata, RuntimeController, RuntimeEventKind, RuntimeSession
 from tests.test_e2b_herdr_transport import ENV, FakeFactory
+from tests.test_daytona_herdr_transport import ENV as DAYTONA_ENV, FakeFactory as DaytonaFakeFactory
 from tests.test_herdr_runtime import FakeHerdr
 
 CLAUDE_KEY = "sk-ant-dummy-0000000000000000000000000000"
@@ -565,3 +569,84 @@ def test_codex_workspace_trust_creates_config_toml(tmp_path):
     assert home.joinpath(".codex", "config.toml").read_text() == (
         '\n[projects."/tmp/sdf/a \\"quoted\\" dir"]\ntrust_level = "trusted"\n'
     )
+
+
+# --- sandbox provider selection -------------------------------------------------
+
+def test_sandbox_provider_defaults_to_e2b():
+    assert resolve_sandbox_provider({}) == "e2b"
+    assert resolve_sandbox_provider({"SDF_SANDBOX_PROVIDER": ""}) == "e2b"
+    assert resolve_sandbox_provider({"SDF_SANDBOX_PROVIDER": "E2B"}) == "e2b"
+
+
+def test_sandbox_provider_accepts_daytona_and_rejects_unknown():
+    assert resolve_sandbox_provider({"SDF_SANDBOX_PROVIDER": "daytona"}) == "daytona"
+    with pytest.raises(CredentialConfigError, match="SDF_SANDBOX_PROVIDER"):
+        resolve_sandbox_provider({"SDF_SANDBOX_PROVIDER": "fly"})
+
+
+def test_create_credentialed_transport_defaults_to_e2b_transport():
+    factory = FakeFactory()
+    transport, _ = create_credentialed_transport(
+        template="herdr-claude", agents=("claude",), environ=API_KEY_ENV, sandbox_factory=factory
+    )
+    assert isinstance(transport, CredentialedE2BHerdrTransport)
+    transport.run(("herdr", "--version"), 1_000)
+    assert factory.creates[0]["template"] == "herdr-claude"
+
+
+def test_create_credentialed_transport_selects_daytona_via_env():
+    from tests.test_daytona_herdr_transport import FakeSandbox
+
+    factory = DaytonaFakeFactory()
+    environ = {
+        **DAYTONA_ENV,
+        "SDF_SANDBOX_PROVIDER": "daytona",
+        "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
+        "SDF_ANTHROPIC_API_KEY": CLAUDE_KEY,
+    }
+    transport, injection = create_credentialed_transport(
+        snapshot="sdf-herdr-agents",
+        agents=("claude",),
+        environ=environ,
+        sandbox_factory=factory,
+    )
+    assert isinstance(transport, CredentialedDaytonaHerdrTransport)
+    transport.run(("herdr", "--version"), 1_000)
+    assert factory.creates[0]["snapshot"] == "sdf-herdr-agents"
+    assert factory.creates[0]["env_vars"]["ANTHROPIC_API_KEY"] == CLAUDE_KEY
+    assert injection.envs["ANTHROPIC_API_KEY"] == CLAUDE_KEY
+    _assert_no_secret("\n".join(cmd for cmd, _ in factory.sandbox.runs))
+    assert isinstance(factory.sandbox, FakeSandbox)
+
+
+def test_daytona_credential_failure_is_raised_before_any_sandbox_is_created():
+    factory = DaytonaFakeFactory()
+    environ = {**DAYTONA_ENV, "SDF_SANDBOX_PROVIDER": "daytona", "SDF_CREDENTIAL_MODE_CLAUDE": "api-key"}
+    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_API_KEY"):
+        create_credentialed_transport(
+            snapshot="sdf-herdr-agents", agents=("claude",), environ=environ, sandbox_factory=factory
+        )
+    assert factory.creates == []
+
+
+def test_daytona_seed_failure_kills_the_sandbox_and_reports_no_value():
+    from tests.test_daytona_herdr_transport import FakeSandbox
+
+    factory = DaytonaFakeFactory(FakeSandbox(exit_code=1, outputs=lambda _: "boom"))
+    environ = {
+        **DAYTONA_ENV,
+        "SDF_SANDBOX_PROVIDER": "daytona",
+        "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
+        "SDF_ANTHROPIC_API_KEY": CLAUDE_KEY,
+    }
+    transport, _ = create_credentialed_transport(
+        snapshot="sdf-herdr-agents", agents=("claude",), environ=environ, sandbox_factory=factory
+    )
+
+    with pytest.raises(HerdrRuntimeError, match="seed") as caught:
+        transport.run(("herdr", "--version"), 1_000)
+
+    assert factory.sandbox.deletes
+    assert transport.sandbox_id is None
+    _assert_no_secret(str(caught.value))
