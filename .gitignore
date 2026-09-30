@@ -8,3 +8,7 @@ __pycache__/
 *.py[cod]
 graphify-out/
 .cecli*
+# Offline judge experiment (#24): keep summaries, ignore bulky prediction dumps
+artifacts/judge_experiment/*.json
+artifacts/judge_experiment/*.run.log
+!artifacts/judge_experiment/.gitkeep
