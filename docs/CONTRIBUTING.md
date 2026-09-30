@@ -27,6 +27,23 @@ Keep changes small and commit one coherent slice at a time. Do not commit
 `.env`, API keys, endpoint tokens, provider credentials, generated graph output,
 or live sandbox identifiers.
 
+## Paseo workspace scripts
+
+Root `paseo.json` only wraps the same long-lived / supervised commands documented
+above and under `scripts/`. It is not a second runbook.
+
+```bash
+paseo script ls --workspace <workspace-id>
+# or: paseo script ls --cwd /path/to/this/worktree
+paseo script start api --workspace <workspace-id>
+paseo script stop api --workspace <workspace-id>
+```
+
+Configured names: `api` (uvicorn on `$PASEO_PORT`), `postgres` (compose up only;
+not `scripts/postgres-test.sh`, which also migrates, runs pytest, and tears down
+on EXIT), and `e2b-doctor`. Prefer `scripts/e2b-env.sh e2b-box up …` in an
+interactive terminal when you need a box attach — it is not wrapped here.
+
 ## E2B and Herdr
 
 Copy `.env.example` to `.env`, set the E2B credentials in your environment, and
