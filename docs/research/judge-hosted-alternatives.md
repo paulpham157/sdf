@@ -77,6 +77,31 @@ calibration result.
   this taxonomy. No reward model surfaced with a better SDF-specific fit than
   the classifier/typed-decision candidates above.
 
+### Screened open typed-decision models (not next experiments)
+
+A 2026 open-weight wave now speaks the same state-plus-typed-questions shape
+([Ferr0 “Open Jev” collection](https://huggingface.co/collections/Ferr0/open-jev-typed-decision-models)).
+They were screened as candidate-screening evidence only; none have SDF
+#21/#24 numbers:
+
+* **AgentJev-0.6B** — already measured on SDF fixtures; negative for the
+  withhold policy. Keep as regression baseline, not the next bet.
+* **Laya** ([base](https://huggingface.co/convaiinnovations/laya) /
+  [domain FT](https://huggingface.co/convaiinnovations/laya-typed-decisions)) —
+  pip-installable, Apache-2.0, Jev-compatible serve path; English base context
+  is short (1,024; multilingual up to 8,192). Published “beats Jev” numbers
+  often come from domain-finetuned checkpoints on public typed-decision
+  splits—treat as non-transferable until rerun on SDF labels.
+* **Kev family** — preferred open comparator above because it keeps the
+  `/v1/systemone` wire and publishes a size ladder with held-out cards.
+* **Decider-2B, openjev/openjev, Lumma-fev, Bosun, Tev1, XOR** — active Hub
+  models in the same class. Useful if Kev ops prove awkward, but they do not
+  outrank code reduction or justify a hosted Jev adapter first.
+
+Human skepticism of Cloudflare/Vercel hosted Jev is treated as an ops and
+opportunity-cost judgment, not as measured quality: those routes remain
+unknown on the SDF set until an explicitly authorized live comparison.
+
 ## Recommended next step
 
 1. Keep the current Judge, fake, redaction, and local AgentJev experiment code
