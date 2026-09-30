@@ -60,6 +60,14 @@ does not inject an environment variable into the entrypoint that started with
 the image. For a real endpoint, use the E2B SDK or deployment/orchestrator
 secret mechanism to inject the token before exposing the HTTPS-forwarded port.
 
+## Local AgentJev Judge (optional)
+
+The advisory local Judge backend talks to an AgentJev-0.6B process on loopback.
+Model weights are downloaded outside the repo. Setup, weight paths, and the
+opt-in live test are documented in
+[docs/research/agentjev-local.md](research/agentjev-local.md). The default
+`uv run pytest` suite does not need torch or a checkpoint.
+
 ## Verification boundaries
 
 - `tests/` and fake transports prove local contracts only.
