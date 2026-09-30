@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-005",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The test calls text_tools.palindrome_check, a name the instructions never mention, so the correctly named function is never found."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +3 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --no-header -p no:cacheprovider tests/test_text_tools.py",
+        "criterion": "is_palindrome ignores case and spaces",
+        "exit_code": 1,
+        "stderr_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_______________________________ test_palindrome ________________________________\n\n    def test_palindrome():\n>       assert text_tools.palindrome_check('Never odd or even')\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       AttributeError: module 'text_tools' has no attribute 'palindrome_check'\n\ntests/test_text_tools.py:5: AttributeError\n=========================== short test summary info ============================\nFAILED tests/test_text_tools.py::test_palindrome - AttributeError: module 'te...\n1 failed"
+      }
+    ],
+    "task_instructions": "Add is_palindrome(s) to text_tools.py, ignoring case and spaces."
+  }
+}

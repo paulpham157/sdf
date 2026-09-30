@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-005",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit is a partial fix that only handles the hours part, so inputs with minutes fail."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +2 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_durations.py",
+        "criterion": "durations parse to minutes",
+        "exit_code": 1,
+        "stderr_tail": "    assert parse_duration(\"1h30m\") == 90\nE   AssertionError: assert 60 == 90\nE    +  where 60 = parse_duration('1h30m')\n_________________________________ test_minutes _________________________________\ntests/test_durations.py:13: in test_minutes\n    assert parse_duration(\"45m\") == 45\n           ^^^^^^^^^^^^^^^^^^^^^\ndurations.py:3: in parse_duration\n    return int(hours) * 60\n           ^^^^^^^^^^\nE   ValueError: invalid literal for int() with base 10: '45m'\n=========================== short test summary info ============================\nFAILED tests/test_durations.py::test_hours_and_minutes - AssertionError: asse...\nFAILED tests/test_durations.py::test_minutes - ValueError: invalid literal fo...\n2 failed, 1 passed"
+      }
+    ],
+    "task_instructions": "Make parse_duration(text) in durations.py accept strings like '1h30m' or '45m' and return minutes."
+  }
+}

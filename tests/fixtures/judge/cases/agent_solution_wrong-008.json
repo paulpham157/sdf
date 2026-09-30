@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-008",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit returns a generator instead of a list, so len() raises TypeError inside the test body (looks like a broken test)."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_sequences.py",
+        "criterion": "evens returns the even numbers",
+        "exit_code": 1,
+        "stderr_tail": ".F                                                                       [100%]\n=================================== FAILURES ===================================\n________________________________ test_is_sized _________________________________\ntests/test_sequences.py:9: in test_is_sized\n    assert len(evens([2, 4, 6])) == 3\n           ^^^^^^^^^^^^^^^^^^^^^\nE   TypeError: object of type 'generator' has no len()\n=========================== short test summary info ============================\nFAILED tests/test_sequences.py::test_is_sized - TypeError: object of type 'ge...\n1 failed, 1 passed"
+      }
+    ],
+    "task_instructions": "Make evens(numbers) in sequences.py return only the even numbers, in order."
+  }
+}

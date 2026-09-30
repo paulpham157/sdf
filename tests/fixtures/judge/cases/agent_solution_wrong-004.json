@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-004",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit returns lo in the x > hi branch (wrong branch value), so the above-range test fails."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +4 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_bounds.py",
+        "criterion": "clamp stays within bounds",
+        "exit_code": 1,
+        "stderr_tail": "..F                                                                      [100%]\n=================================== FAILURES ===================================\n__________________________________ test_above __________________________________\ntests/test_bounds.py:13: in test_above\n    assert clamp(42, 0, 10) == 10\nE   assert 0 == 10\nE    +  where 0 = clamp(42, 0, 10)\n=========================== short test summary info ============================\nFAILED tests/test_bounds.py::test_above - assert 0 == 10\n1 failed, 2 passed"
+      }
+    ],
+    "task_instructions": "Implement clamp(x, lo, hi) in bounds.py so the result stays within [lo, hi]."
+  }
+}

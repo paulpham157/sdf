@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-008",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent only extended .gitignore and never touched names.py."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +2 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_names.py",
+        "criterion": "initials are uppercase",
+        "exit_code": 1,
+        "stderr_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n________________________________ test_two_words ________________________________\ntests/test_names.py:5: in test_two_words\n    assert initials(\"ada lovelace\") == \"AL\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^\nnames.py:2: in initials\n    raise NotImplementedError\nE   NotImplementedError\n=========================== short test summary info ============================\nFAILED tests/test_names.py::test_two_words - NotImplementedError\n1 failed"
+      }
+    ],
+    "task_instructions": "Implement initials(full_name) in names.py returning the uppercase first letter of each word."
+  }
+}

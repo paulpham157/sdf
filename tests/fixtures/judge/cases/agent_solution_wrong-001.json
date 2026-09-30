@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-001",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit joins words with '-' but never lowercases, so the mixed-case test fails."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_slugify.py",
+        "criterion": "slugify lowercases and hyphenates",
+        "exit_code": 1,
+        "stderr_tail": "F.                                                                       [100%]\n=================================== FAILURES ===================================\n_________________________________ test_simple __________________________________\ntests/test_slugify.py:5: in test_simple\n    assert slugify(\"Hello World\") == \"hello-world\"\nE   AssertionError: assert 'Hello-World' == 'hello-world'\nE\nE     - hello-world\nE     ? ^     ^\nE     + Hello-World\nE     ? ^     ^\n=========================== short test summary info ============================\nFAILED tests/test_slugify.py::test_simple - AssertionError: assert 'Hello-Wor...\n1 failed, 1 passed"
+      }
+    ],
+    "task_instructions": "Make slugify(title) in text_utils.py lowercase the title and join words with '-'."
+  }
+}

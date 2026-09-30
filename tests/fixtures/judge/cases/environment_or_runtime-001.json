@@ -1,0 +1,22 @@
+{
+  "id": "environment_or_runtime-001",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "A conftest.py standing in for a stalled sandbox sleeps 5s at pytest startup while the evaluator timeout is 0.5s, so the check times out."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +4 -1",
+    "evaluator_status": "TIMEOUT",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short -p no:cacheprovider tests/test_wordfreq.py",
+        "criterion": "counts are case-insensitive",
+        "exit_code": null,
+        "stderr_tail": "timeout"
+      }
+    ],
+    "task_instructions": "Implement word_frequencies(text) in wordfreq.py returning a dict of lowercase word counts."
+  }
+}

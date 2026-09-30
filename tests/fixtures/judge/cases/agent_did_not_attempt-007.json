@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-007",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent made no edit, leaving the placeholder that always returns 0."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "0 files changed",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_shipping.py",
+        "criterion": "weights are summed",
+        "exit_code": 1,
+        "stderr_tail": "F.                                                                       [100%]\n=================================== FAILURES ===================================\n___________________________________ test_sum ___________________________________\ntests/test_shipping.py:5: in test_sum\n    assert total_weight([{\"kg\": 2}, {\"kg\": 3.5}]) == 5.5\nE   AssertionError: assert 0 == 5.5\nE    +  where 0 = total_weight([{'kg': 2}, {'kg': 3.5}])\n=========================== short test summary info ============================\nFAILED tests/test_shipping.py::test_sum - AssertionError: assert 0 == 5.5\n1 failed, 1 passed"
+      }
+    ],
+    "task_instructions": "Implement total_weight(parcels) in shipping.py, summing the 'kg' field of each parcel dict."
+  }
+}

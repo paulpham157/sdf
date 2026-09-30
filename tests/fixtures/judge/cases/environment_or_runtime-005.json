@@ -1,0 +1,22 @@
+{
+  "id": "environment_or_runtime-005",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "A conftest.py raises ENOSPC (no space left on device) at pytest configure time, simulating a full sandbox disk."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short -p no:cacheprovider tests/test_titles.py",
+        "criterion": "every word is capitalised",
+        "exit_code": 3,
+        "stderr_tail": "INTERNALERROR>     self.hook.pytest_configure.call_historic(kwargs=dict(config=self))\nINTERNALERROR>   File \"/venv/lib/python3.12/site-packages/pluggy/_hooks.py\", line 534, in call_historic\nINTERNALERROR>     res = self._hookexec(self.name, self._hookimpls.copy(), kwargs, False)\nINTERNALERROR>           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nINTERNALERROR>   File \"/venv/lib/python3.12/site-packages/pluggy/_manager.py\", line 120, in _hookexec\nINTERNALERROR>     return self._inner_hookexec(hook_name, methods, kwargs, firstresult)\nINTERNALERROR>            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nINTERNALERROR>   File \"/venv/lib/python3.12/site-packages/pluggy/_callers.py\", line 167, in _multicall\nINTERNALERROR>     raise exception\nINTERNALERROR>   File \"/venv/lib/python3.12/site-packages/pluggy/_callers.py\", line 121, in _multicall\nINTERNALERROR>     res = hook_impl.function(*args)\nINTERNALERROR>           ^^^^^^^^^^^^^^^^^^^^^^^^^\nINTERNALERROR>   File \"/workspace/conftest.py\", line 6, in pytest_configure\nINTERNALERROR>     raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), \"/workspace/.pytest-tmp\")\nINTERNALERROR> OSError: [Errno 28] No space left on device: '/workspace/.pytest-tmp'"
+      }
+    ],
+    "task_instructions": "Implement titlecase(text) in titles.py capitalising every word."
+  }
+}

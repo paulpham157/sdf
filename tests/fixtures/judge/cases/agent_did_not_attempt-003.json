@@ -1,0 +1,22 @@
+{
+  "id": "agent_did_not_attempt-003",
+  "label": {
+    "failure_cause": "agent_did_not_attempt",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent touched the target module with whitespace-only changes (blank lines) and left the TODO stub."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +3 -0",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_dedupe.py",
+        "criterion": "dedupe keeps first occurrences",
+        "exit_code": 1,
+        "stderr_tail": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_______________________________ test_keeps_order _______________________________\ntests/test_dedupe.py:5: in test_keeps_order\n    assert dedupe([3, 1, 3, 2, 1]) == [3, 1, 2]\n           ^^^^^^^^^^^^^^^^^^^^^^^\ncollections_utils.py:4: in dedupe\n    raise NotImplementedError(\"TODO\")\nE   NotImplementedError: TODO\n=========================== short test summary info ============================\nFAILED tests/test_dedupe.py::test_keeps_order - NotImplementedError: TODO\n1 failed"
+      }
+    ],
+    "task_instructions": "Implement dedupe(items) in collections_utils.py, keeping the first occurrence order."
+  }
+}

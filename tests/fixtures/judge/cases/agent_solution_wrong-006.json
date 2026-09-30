@@ -1,0 +1,22 @@
+{
+  "id": "agent_solution_wrong-006",
+  "label": {
+    "failure_cause": "agent_solution_wrong",
+    "higher_tier_would_help": true,
+    "induced_by": "The agent edit adds the '$' prefix but switches to integer division, breaking the existing two-decimal check."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --tb=short tests/test_decimals.py",
+        "criterion": "price keeps two decimals",
+        "exit_code": 1,
+        "stderr_tail": "E   AssertionError: assert '$19' == '$19.99'\nE\nE     - $19.99\nE     + $19\n______________________________ test_whole_dollars ______________________________\ntests/test_decimals.py:9: in test_whole_dollars\n    assert format_price(700) == \"$7.00\"\nE   AssertionError: assert '$7' == '$7.00'\nE\nE     - $7.00\nE     + $7\n=========================== short test summary info ============================\nFAILED tests/test_decimals.py::test_two_decimals - AssertionError: assert '$1...\nFAILED tests/test_decimals.py::test_whole_dollars - AssertionError: assert '$...\n2 failed"
+      }
+    ],
+    "task_instructions": "Change format_price(cents) in money.py to prefix the result with '$'; keep two decimal places."
+  }
+}

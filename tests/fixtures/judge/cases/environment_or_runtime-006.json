@@ -1,0 +1,15 @@
+{
+  "id": "environment_or_runtime-006",
+  "label": {
+    "failure_cause": "environment_or_runtime",
+    "higher_tier_would_help": false,
+    "induced_by": "The FakeRuntime session is terminated before any input, so AgentFixtureLoop refuses to dispatch the Attempt."
+  },
+  "state": {
+    "adapter_stderr_tail": "RuntimeError: runtime session cannot receive input: terminated",
+    "diff_stat": "0 files changed",
+    "evaluator_status": "ERROR",
+    "failed_evidence": [],
+    "task_instructions": "Implement mask_card(number) in cards.py keeping only the last four digits visible."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-006",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The acceptance command misspells the test runner module as pytset, so it exits 1 without running any test."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytset -q tests/test_words.py",
+        "criterion": "word_count counts words",
+        "exit_code": 1,
+        "stderr_tail": "python: No module named pytset"
+      }
+    ],
+    "task_instructions": "Make word_count(text) in words.py return the number of whitespace-separated words."
+  }
+}

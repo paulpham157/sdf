@@ -1,0 +1,22 @@
+{
+  "id": "task_or_fixture_defect-002",
+  "label": {
+    "failure_cause": "task_or_fixture_defect",
+    "higher_tier_would_help": false,
+    "induced_by": "The test asserts clamp(15, 0, 10) == 15, the opposite of the instructions, so the correct solution fails."
+  },
+  "state": {
+    "adapter_stderr_tail": "",
+    "diff_stat": "1 file, +1 -1",
+    "evaluator_status": "FAIL",
+    "failed_evidence": [
+      {
+        "command": "python -m pytest -q --no-header -p no:cacheprovider tests/test_bounds.py",
+        "criterion": "clamp limits x to the range",
+        "exit_code": 1,
+        "stderr_tail": ".F                                                                       [100%]\n=================================== FAILURES ===================================\n_______________________________ test_above_range _______________________________\n\n    def test_above_range():\n>       assert clamp(15, 0, 10) == 15\nE       assert 10 == 15\nE        +  where 10 = clamp(15, 0, 10)\n\ntests/test_bounds.py:9: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_bounds.py::test_above_range - assert 10 == 15\n1 failed, 1 passed"
+      }
+    ],
+    "task_instructions": "Make clamp(x, lo, hi) in bounds.py return x limited to the range [lo, hi]."
+  }
+}
