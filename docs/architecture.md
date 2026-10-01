@@ -69,8 +69,9 @@ steps write agent config by variable name, including
 `~/.config/sdf/agent-env.sh` because the image's Herdr server starts before
 the seeds and panes would otherwise miss the envs. The Runtime Session and its
 `runtime_started` event record the mode and connection id, never the secret.
-Claude Code starts with `--dangerously-skip-permissions` only in this
-disposable sandbox (ADR 0008); Codex gets its workspace marked trusted. The
+Claude Code receives `--dangerously-skip-permissions` only from the E2B
+transport (ADR 0008); Daytona does not inherit that capability merely by using
+Herdr. Codex gets its workspace marked trusted. The
 E2B template remains `sdf-herdr-agents` (ADR 0009); Daytona uses
 `SDF_DAYTONA_SNAPSHOT` (operator-chosen snapshot). The headless `e2b-box run`
 path is separate: the plugin selects the credential itself and SDF records only

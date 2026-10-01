@@ -352,15 +352,34 @@ def test_herdr_runtime_rejects_malformed_provider_payload():
         runtime.start(attempt_id="ATTEMPT-104", agent="codex")
 
 
-def test_herdr_runtime_starts_claude_with_bypass_permissions_for_the_disposable_sandbox():
+def test_herdr_runtime_does_not_grant_bypass_permissions_without_sandbox_capability():
     runner = FakeHerdr()
     HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CLAUDE", agent="claude")
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert starts == [
-        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1",
-         "--", "--dangerously-skip-permissions"),
+        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1"),
     ]
+
+
+def test_herdr_runtime_rejects_caller_supplied_permission_bypass_argument():
+    with pytest.raises(ValueError, match="managed by the selected sandbox transport"):
+        HerdrRuntime(runner=FakeHerdr(), agent_args={"claude": ("--dangerously-skip-permissions",)})
+
+
+def test_custom_transport_cannot_claim_the_e2b_permission_bypass():
+    class CustomTransport:
+        allows_dangerous_permissions = True
+
+        def run(self, command, timeout_ms):
+            return runner(command, timeout_ms)
+
+    runner = FakeHerdr()
+    HerdrRuntime(transport=CustomTransport()).start(attempt_id="ATTEMPT-CUSTOM-CLAUDE", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert "--dangerously-skip-permissions" not in starts[0]
 
 
 def test_herdr_runtime_passes_no_extra_agent_args_to_codex_without_a_workspace():

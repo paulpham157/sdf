@@ -11,6 +11,7 @@ from e2b import CommandExitException, FileType, NotFoundException, TimeoutExcept
 
 from sdf_core.e2b_herdr_transport import E2BHerdrTransport
 from sdf_core.herdr_runtime import HerdrRuntime, HerdrRuntimeError
+from tests.test_herdr_runtime import FakeHerdr
 
 ENV = {"E2B_API_KEY": "<REDACTED>", "E2B_DOMAIN": "e2b.dev", "PATH": "/bin"}
 
@@ -121,6 +122,60 @@ def test_one_sandbox_is_created_and_reused_for_every_command():
     assert create["domain"] == "e2b.dev"
     assert len(factory.sandbox.runs) == 2
     assert factory.sandbox.runs[0][0].startswith("herdr agent read agent-1")
+
+
+def test_e2b_runtime_starts_claude_with_the_permission_bypass():
+    runner = FakeHerdr()
+    # The production E2B factory is selected; replacing only the command runner
+    # keeps this capability test offline without asserting trust in a sandbox factory.
+    transport = E2BHerdrTransport(template="herdr-codex", environ=ENV)
+    transport.run = runner
+
+    HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-E2B-CLAUDE", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert starts[0][-2:] == ("--", "--dangerously-skip-permissions")
+
+
+def test_e2b_runtime_omits_permission_bypass_when_attached_to_existing_sandbox():
+    runner = FakeHerdr()
+    transport = E2BHerdrTransport(
+        template="herdr-codex", environ=ENV, sandbox_id="existing-e2b-sandbox"
+    )
+    transport.run = runner
+
+    HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-E2B-RECONNECTED", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert "--dangerously-skip-permissions" not in starts[0]
+
+
+def test_e2b_runtime_omits_permission_bypass_with_an_injected_factory():
+    runner = FakeHerdr()
+    transport = _transport(FakeFactory())
+    transport.run = runner
+
+    HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-E2B-INJECTED-FACTORY", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert "--dangerously-skip-permissions" not in starts[0]
+
+
+def test_e2b_runtime_does_not_grant_bypass_to_a_custom_subclass():
+    class CustomE2BTransport(E2BHerdrTransport):
+        pass
+
+    runner = FakeHerdr()
+    transport = CustomE2BTransport(template="herdr-codex", environ=ENV)
+    transport.run = runner
+
+    HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-E2B-SUBCLASS", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert "--dangerously-skip-permissions" not in starts[0]
 
 def test_every_command_carries_explicit_command_and_request_timeouts():
     factory = FakeFactory()

@@ -40,6 +40,8 @@ from .herdr_runtime import HerdrRuntimeError
 
 SandboxFactory = Callable[..., Any]
 SandboxConnector = Callable[..., Any]
+_PRODUCTION_SANDBOX_FACTORY = Sandbox.create
+_PRODUCTION_SANDBOX_CAPABILITY = object()
 _TRANSFER_LIMIT = 8 * 1024 * 1024
 # envd lists recursively only to a fixed depth; bounded fixtures stay well inside it.
 _COLLECT_DEPTH = 64
@@ -73,7 +75,10 @@ class E2BHerdrTransport:
         self.request_timeout_seconds = request_timeout_seconds
         self._environ = dict(os.environ if environ is None else environ)
         self._envs = dict(envs or {})
-        self._factory = sandbox_factory or Sandbox.create
+        self._factory = _PRODUCTION_SANDBOX_FACTORY if sandbox_factory is None else sandbox_factory
+        self._creation_capability = (
+            _PRODUCTION_SANDBOX_CAPABILITY if sandbox_factory is None else None
+        )
         self._connector = sandbox_connector or Sandbox.connect
         self._sandbox_id = sandbox_id
         self._sandbox: Any = None

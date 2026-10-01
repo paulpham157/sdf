@@ -101,6 +101,10 @@ Daytona uses `snapshot=` (or `template=` as an alias) / `SDF_DAYTONA_SNAPSHOT`
 (ADR-0007) for either provider; missing mode/credential fails closed before
 provisioning.
 
+The Claude `--dangerously-skip-permissions` flag is enabled only by the E2B
+transport under ADR-0008. Daytona shares Herdr, not that permission-bypass
+boundary; its agent start command omits the flag.
+
 **Not claimed:** Daytona containment for public process actions
 (`SDF_CONTAINMENT_BACKEND=daytona`) is deferred. Unit tests with fakes do not
 prove Daytona production readiness. Live Daytona smoke requires

@@ -12,6 +12,7 @@ import pytest
 
 from sdf_core.daytona_herdr_transport import DaytonaHerdrTransport, DaytonaNotFoundError
 from sdf_core.herdr_runtime import HerdrRuntime, HerdrRuntimeError
+from tests.test_herdr_runtime import FakeHerdr
 
 ENV = {"DAYTONA_API_KEY": "<REDACTED>", "DAYTONA_TARGET": "us", "PATH": "/bin"}
 
@@ -136,6 +137,18 @@ def test_one_sandbox_is_created_and_reused_for_every_command():
     assert create["env_vars"] == {"SOME_NAME": "value"}
     assert len(factory.sandbox.runs) == 2
     assert factory.sandbox.runs[0][0].startswith("herdr agent read agent-1")
+
+
+def test_daytona_runtime_starts_claude_without_the_permission_bypass():
+    runner = FakeHerdr()
+    transport = _transport(FakeFactory())
+    transport.run = runner
+
+    HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-DAYTONA-CLAUDE", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert "--dangerously-skip-permissions" not in starts[0]
 
 
 def test_every_command_carries_an_explicit_timeout():

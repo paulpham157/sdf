@@ -282,6 +282,20 @@ def test_runtime_takes_credential_metadata_from_a_credentialed_transport():
 
     assert runtime.credentials == injection.metadata
 
+
+def test_production_credentialed_e2b_wrapper_keeps_the_fresh_sandbox_capability():
+    transport, _ = create_credentialed_transport(
+        template="herdr-claude", agents=("claude",), environ=API_KEY_ENV
+    )
+    runner = FakeHerdr()
+    transport.run = runner
+
+    HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-CREDENTIALED-E2B", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert starts[0][-2:] == ("--", "--dangerously-skip-permissions")
+
 def test_binding_snapshot_persists_credential_metadata_and_round_trips():
     metadata = CredentialMetadata("subscription", "codex-personal")
     snapshot = HerdrBindingSnapshot("a", "s", "codex", "w", "p", credential=metadata)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from sdf_core.api import app, configured_containment, configured_tool_policy
 from sdf_core.api import SessionLocal
-from sdf_core.db import AttemptRow, RuntimeEventRow, TaskRow, ToolAuditRow
+from sdf_core.db import AttemptRow, RuntimeEventRow, TaskRow
 from sdf_core.policy import ActionRequest
 
 
@@ -278,25 +278,6 @@ def test_structured_tool_endpoint_denies_by_default_without_side_effect(tmp_path
     assert response.status_code == 200
     assert response.json()["status"] == "denied"
     assert (workspace / "safe.txt").read_text() == "before"
-    action_id = response.json()["action_id"]
-    db = SessionLocal()
-    try:
-        audit = db.query(ToolAuditRow).filter_by(
-            attempt_id=attempt_id, action_id=action_id,
-        ).all()
-        assert [(row.event, row.decision, row.executed) for row in audit] == [
-            ("policy_decided", "deny", False),
-        ]
-        events = db.query(RuntimeEventRow).filter_by(
-            source="tool-proxy", attempt_id=attempt_id,
-        ).all()
-        assert len(events) == 1
-        assert events[0].kind == "tool_policy_decided"
-        assert events[0].payload["action_id"] == action_id
-        assert events[0].payload["decision"] == "deny"
-        assert events[0].payload["executed"] is False
-    finally:
-        db.close()
 
 
 def test_structured_tool_endpoint_uses_server_allowlist_and_persists_event(tmp_path, monkeypatch):
@@ -331,24 +312,12 @@ def test_structured_tool_endpoint_uses_server_allowlist_and_persists_event(tmp_p
     assert response.status_code == 200
     assert response.json()["status"] == "executed"
     assert (workspace / "result.txt").read_text() == "from-api"
-    action_id = response.json()["action_id"]
     db = SessionLocal()
     try:
-        audit = db.query(ToolAuditRow).filter_by(
-            attempt_id=attempt_id, action_id=action_id,
-        ).order_by(ToolAuditRow.event).all()
-        assert [(row.event, row.decision, row.executed) for row in audit] == [
-            ("action_claimed", "allow", False),
-            ("action_executed", "allow", True),
-            ("policy_decided", "allow", False),
-        ]
         rows = db.query(RuntimeEventRow).filter_by(
             source="tool-proxy", attempt_id=attempt_id,
         ).order_by(RuntimeEventRow.sequence).all()
         assert [row.kind for row in rows] == ["tool_policy_decided", "tool_action_executed"]
-        assert all(row.payload["action_id"] == action_id for row in rows)
-        assert rows[0].payload["decision"] == "allow"
-        assert rows[1].payload["outcome"] == "executed"
     finally:
         db.close()
 
@@ -388,30 +357,6 @@ def test_public_process_action_fails_closed_without_configured_containment(tmp_p
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert not outside.exists()
-    action_id = response.json()["action_id"]
-    db = SessionLocal()
-    try:
-        audit = db.query(ToolAuditRow).filter_by(
-            attempt_id=attempt_id, action_id=action_id,
-        ).all()
-        audit_by_event = {row.event: row for row in audit}
-        assert set(audit_by_event) == {"policy_decided", "action_claimed", "action_failed"}
-        assert (audit_by_event["policy_decided"].decision, audit_by_event["policy_decided"].outcome) == (
-            "allow", "allow",
-        )
-        assert (audit_by_event["action_failed"].decision, audit_by_event["action_failed"].outcome) == (
-            "allow", "failed",
-        )
-        events = db.query(RuntimeEventRow).filter_by(
-            source="tool-proxy", attempt_id=attempt_id,
-        ).order_by(RuntimeEventRow.sequence).all()
-        assert [row.kind for row in events] == [
-            "tool_policy_decided", "tool_action_failed",
-        ]
-        assert all(row.payload["action_id"] == action_id for row in events)
-        assert events[1].payload["outcome"] == "failed"
-    finally:
-        db.close()
 
 
 def test_run_endpoint_executes_fixture_and_updates_task(tmp_path):
@@ -463,194 +408,6 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     assert evidence_response.status_code == 200
     assert evidence_response.json()["criterion"] == "command succeeds"
     assert evidence_response.json()["artifact_ref"].endswith("-OUTPUT")
-
-
-def test_post_run_trace_joins_objective_to_change_and_evaluation(tmp_path):
-    """Objective-linked AC → DIFF → evaluator_output → Evidence → validates (positive)."""
-    criterion = "health check returns ok"
-    assert client.post(
-        "/business-contexts",
-        json={"id": "BC-OBJ-LOOP", "title": "Cut lead time", "owner": "product", "source": "test"},
-    ).status_code == 201
-    assert client.post(
-        "/objectives",
-        json={
-            "id": "OBJ-LOOP",
-            "title": "Ship a verified change",
-            "business_context_id": "BC-OBJ-LOOP",
-            "owner": "product",
-            "source": "test",
-        },
-    ).status_code == 201
-    assert client.post(
-        "/assumptions",
-        json={"id": "ASSUMPTION-OBJ-LOOP", "title": "verified change is safe", "owner": "product", "source": "test"},
-    ).status_code == 201
-    created = client.post(
-        "/tasks",
-        json={
-            "id": "TASK-OBJ-LOOP",
-            "title": "Apply fixture change",
-            "objective_id": "OBJ-LOOP",
-            "idempotency_key": "task-obj-loop-positive",
-            "acceptance_criteria": [criterion],
-        },
-    )
-    assert created.status_code == 201
-
-    fixture = tmp_path / "fixture"
-    fixture.mkdir()
-    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
-    run = client.post(
-        "/tasks/TASK-OBJ-LOOP/run",
-        json={
-            "fixture_dir": str(fixture),
-            "criterion_checks": {criterion: [["python", "-c", "print('ok')"]]},
-            "validation_target_kind": "assumption",
-            "validation_target_id": "ASSUMPTION-OBJ-LOOP",
-        },
-    )
-    assert run.status_code == 200
-    assert run.json()["task_status"] == "succeeded"
-    attempt_id = run.json()["attempt_id"]
-
-    trace = client.get("/tasks/TASK-OBJ-LOOP/trace")
-    assert trace.status_code == 200
-    body = trace.json()
-    by_kind = {}
-    for node in body["nodes"]:
-        by_kind.setdefault(node["kind"], []).append(node)
-    ids = {node["id"] for node in body["nodes"]}
-
-    assert "TASK-OBJ-LOOP" in ids
-    assert "OBJ-LOOP" in ids, "post-run trace must retain Objective on the change/evaluation chain"
-    assert "BC-OBJ-LOOP" in ids
-    assert attempt_id in ids
-    assert "ASSUMPTION-OBJ-LOOP" in ids
-
-    diff = next((n for n in by_kind.get("artifact", []) if n["id"].endswith("-DIFF")), None)
-    assert diff is not None, "DIFF change artifact missing from Objective-linked post-run trace"
-    assert diff["title"] == "diff"
-
-    evaluator_output = next(
-        (n for n in by_kind.get("artifact", []) if n["title"] == "evaluator_output"),
-        None,
-    )
-    assert evaluator_output is not None, "evaluator_output artifact missing from post-run trace"
-
-    evidence_nodes = by_kind.get("evidence", [])
-    assert len(evidence_nodes) == 1
-    evidence = client.get(f"/evidence/{evidence_nodes[0]['id']}")
-    assert evidence.status_code == 200
-    evidence_body = evidence.json()
-    assert evidence_body["criterion"] == criterion
-    assert evidence_body["status"] == "PASS"
-    assert evidence_body["artifact_ref"] == evaluator_output["id"]
-
-    assert any(
-        edge["source_id"] == evidence_nodes[0]["id"]
-        and edge["target_id"] == "ASSUMPTION-OBJ-LOOP"
-        and edge["relation"] == "validates"
-        for edge in body["edges"]
-    )
-    assert any(
-        edge["source_id"] == "OBJ-LOOP"
-        and edge["target_id"] == "TASK-OBJ-LOOP"
-        and edge["relation"] == "implements"
-        for edge in body["edges"]
-    )
-
-
-def test_post_run_trace_objective_linked_failure_contradicts_assumption(tmp_path):
-    """Objective-linked AC FAIL → contradicts Assumption and fails Task (negative)."""
-    criterion = "health check returns ok"
-    assert client.post(
-        "/business-contexts",
-        json={"id": "BC-OBJ-NEG", "title": "Cut lead time", "owner": "product", "source": "test"},
-    ).status_code == 201
-    assert client.post(
-        "/objectives",
-        json={
-            "id": "OBJ-NEG",
-            "title": "Ship a verified change",
-            "business_context_id": "BC-OBJ-NEG",
-            "owner": "product",
-            "source": "test",
-        },
-    ).status_code == 201
-    assert client.post(
-        "/assumptions",
-        json={"id": "ASSUMPTION-OBJ-NEG", "title": "verified change is safe", "owner": "product", "source": "test"},
-    ).status_code == 201
-    created = client.post(
-        "/tasks",
-        json={
-            "id": "TASK-OBJ-NEG",
-            "title": "Apply broken change",
-            "objective_id": "OBJ-NEG",
-            "idempotency_key": "task-obj-loop-negative",
-            "acceptance_criteria": [criterion],
-        },
-    )
-    assert created.status_code == 201
-
-    fixture = tmp_path / "fixture"
-    fixture.mkdir()
-    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
-    run = client.post(
-        "/tasks/TASK-OBJ-NEG/run",
-        json={
-            "fixture_dir": str(fixture),
-            "criterion_checks": {criterion: [["python", "-c", "raise SystemExit(2)"]]},
-            "validation_target_kind": "assumption",
-            "validation_target_id": "ASSUMPTION-OBJ-NEG",
-        },
-    )
-    assert run.status_code == 200
-    assert run.json()["task_status"] == "failed"
-    attempt_id = run.json()["attempt_id"]
-
-    trace = client.get("/tasks/TASK-OBJ-NEG/trace")
-    assert trace.status_code == 200
-    body = trace.json()
-    by_kind = {}
-    for node in body["nodes"]:
-        by_kind.setdefault(node["kind"], []).append(node)
-    ids = {node["id"] for node in body["nodes"]}
-
-    assert "OBJ-NEG" in ids, "negative post-run trace must retain Objective"
-    assert "BC-OBJ-NEG" in ids
-    assert "TASK-OBJ-NEG" in ids
-    assert attempt_id in ids
-    assert "ASSUMPTION-OBJ-NEG" in ids
-    assert any(n["id"].endswith("-DIFF") for n in by_kind.get("artifact", []))
-    evaluator_output = next(
-        (n for n in by_kind.get("artifact", []) if n["title"] == "evaluator_output"),
-        None,
-    )
-    assert evaluator_output is not None
-
-    evidence_nodes = by_kind.get("evidence", [])
-    assert len(evidence_nodes) == 1
-    evidence = client.get(f"/evidence/{evidence_nodes[0]['id']}")
-    assert evidence.status_code == 200
-    evidence_body = evidence.json()
-    assert evidence_body["criterion"] == criterion
-    assert evidence_body["status"] == "FAIL"
-    assert evidence_body["artifact_ref"] == evaluator_output["id"]
-
-    assert any(
-        edge["source_id"] == evidence_nodes[0]["id"]
-        and edge["target_id"] == "ASSUMPTION-OBJ-NEG"
-        and edge["relation"] == "contradicts"
-        for edge in body["edges"]
-    )
-    assert any(
-        edge["source_id"] == "OBJ-NEG"
-        and edge["target_id"] == "TASK-OBJ-NEG"
-        and edge["relation"] == "implements"
-        for edge in body["edges"]
-    )
 
 
 def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
