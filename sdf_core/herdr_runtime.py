@@ -29,13 +29,30 @@ class HerdrUnsupportedOperation(HerdrRuntimeError):
 
 HerdrRunner = Callable[[Sequence[str], int], str]
 
-# Extra argv per agent kind. Claude runs only in a disposable sandbox from the
-# sdf-herdr-agents template, so its permission prompts are skipped there; the
-# template pre-accepts the matching dangerous-mode disclaimer.
-_AGENT_START_ARGS: Mapping[str, tuple[str, ...]] = {
-    "claude": ("--dangerously-skip-permissions",),
-}
 
+def _claim_fresh_e2b_permission_bypass(transport: object | None) -> bool:
+    """Atomically claim the one bypass authorization owned by a production E2B transport."""
+
+    if transport is None:
+        return False
+    # Import lazily because the E2B adapter imports HerdrRuntimeError from here.
+    # A generic/local runtime remains usable when the optional provider SDK is
+    # absent; without that adapter, no E2B capability can be granted.
+    try:
+        from .credential_injection import CredentialedE2BHerdrTransport
+        from .e2b_herdr_transport import E2BHerdrTransport
+    except ModuleNotFoundError as exc:
+        if exc.name == "e2b":
+            return False
+        raise
+
+    # Exact types exclude subclasses that can replace creation semantics. The
+    # wrapper is an explicit production path. The private constructor token
+    # proves no factory was injected (even if it equals Sandbox.create), and
+    # the callable identity confirms that production factory remains selected.
+    if type(transport) not in (E2BHerdrTransport, CredentialedE2BHerdrTransport):
+        return False
+    return transport.claim_fresh_permission_bypass()
 
 # Codex 0.157 can take Herdr's typed prompt into its composer but swallow the
 # submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
@@ -56,7 +73,12 @@ _HERDR_WAIT_HEADROOM_MS = 5_000
 def _is_herdr_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
-def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str, ...]:
+def _agent_start_args(
+    agent: str,
+    workspace_dir: Path | str | None,
+    *,
+    allow_dangerous_permissions: bool = False,
+) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
 
     Codex does not inherit trust from a parent directory.  Codex 0.157 still
@@ -64,7 +86,7 @@ def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str
     pre-trusts the directory in config.toml (``prepare_agent_workspace``).
     """
 
-    args = _AGENT_START_ARGS.get(agent, ())
+    args = ("--dangerously-skip-permissions",) if agent == "claude" and allow_dangerous_permissions else ()
     if agent == "codex" and workspace_dir is not None:
         # A JSON string is a valid TOML basic string for any path.
         args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")
@@ -257,6 +279,13 @@ class HerdrRuntime(AgentRuntime):
         # Operator-supplied argv appended after the runtime's own per-agent
         # arguments; the runtime does not interpret it.
         self._agent_args = {agent: tuple(args) for agent, args in (agent_args or {}).items()}
+        if any(
+            "--dangerously-skip-permissions" in args
+            for args in self._agent_args.values()
+        ):
+            raise ValueError(
+                "--dangerously-skip-permissions is managed by the selected sandbox transport"
+            )
         self._poll_interval_s = poll_interval_s
         self._turn_settle_s = turn_settle_s
         self._bindings: dict[str, _Binding] = {}
@@ -405,11 +434,11 @@ class HerdrRuntime(AgentRuntime):
             credential = self.credentials.get(agent)
             if credential is None:
                 raise HerdrRuntimeError(f"no resolved Agent Credential for {agent}; it was not injected at sandbox creation; set SDF_CREDENTIAL_MODE_{agent.upper()}")
-        if self.expected_version is not None:
-            self.require_compatible()
         existing_id = next((sid for sid, b in self._bindings.items() if b.attempt_id == attempt_id), None)
         if existing_id is not None:
             return self._sessions[existing_id]
+        if self.expected_version is not None:
+            self.require_compatible()
 
         workspace_args = self._command("workspace", "create")
         workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
@@ -431,7 +460,17 @@ class HerdrRuntime(AgentRuntime):
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
-        agent_args = (*_agent_start_args(agent, workspace_dir), *self._agent_args.get(agent, ()))
+        # ADR-0008 is Claude-only. Claim at the start boundary, after setup has
+        # succeeded, so unrelated agents and failed setup do not consume it.
+        allow_dangerous_permissions = (
+            agent == "claude" and _claim_fresh_e2b_permission_bypass(self._transport)
+        )
+        agent_args = (
+            *_agent_start_args(
+                agent, workspace_dir, allow_dangerous_permissions=allow_dangerous_permissions
+            ),
+            *self._agent_args.get(agent, ()),
+        )
         if agent_args:
             start_args.extend(("--", *agent_args))
         started = self._object(start_args)

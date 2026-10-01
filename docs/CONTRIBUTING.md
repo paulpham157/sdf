@@ -77,12 +77,49 @@ does not inject an environment variable into the entrypoint that started with
 the image. For a real endpoint, use the E2B SDK or deployment/orchestrator
 secret mechanism to inject the token before exposing the HTTPS-forwarded port.
 
+## Sandbox provider choice (E2B default, Daytona alternative)
+
+The persistent Herdr transport defaults to E2B. Operators may select Daytona
+beside it without removing the E2B path:
+
+```bash
+# default
+SDF_SANDBOX_PROVIDER=e2b
+
+# alternative
+SDF_SANDBOX_PROVIDER=daytona
+DAYTONA_API_KEY=…          # required for Daytona
+# DAYTONA_API_URL=…        # optional
+# DAYTONA_TARGET=us        # optional
+SDF_DAYTONA_SNAPSHOT=daytona-small   # snapshot/image name
+```
+
+`create_credentialed_transport` reads `SDF_SANDBOX_PROVIDER` (or an explicit
+`provider=` argument). E2B still uses `template=` / `SDF_E2B_*` / `E2B_*`.
+Daytona uses `snapshot=` (or `template=` as an alias) / `SDF_DAYTONA_SNAPSHOT`
+/ `DAYTONA_*`. Agent Credentials are still injected at sandbox create
+(ADR-0007) for either provider; missing mode/credential fails closed before
+provisioning.
+
+The Claude `--dangerously-skip-permissions` flag is enabled only by the E2B
+transport under ADR-0008. Daytona shares Herdr, not that permission-bypass
+boundary; its agent start command omits the flag.
+
+**Not claimed:** Daytona containment for public process actions
+(`SDF_CONTAINMENT_BACKEND=daytona`) is deferred. Unit tests with fakes do not
+prove Daytona production readiness. Live Daytona smoke requires
+`SDF_LIVE_DAYTONA=1` and `DAYTONA_API_KEY` (env or `.env` via `load_dotenv` into
+a private mapping). A green unit suite without that gate is not live evidence.
+
 ## Verification boundaries
 
 - `tests/` and fake transports prove local contracts only.
 - A template build proves that the image can start and pass its readiness command.
 - A live E2B smoke test must record sandbox creation, command correlation,
   artifact handling, and cleanup; always kill the sandbox in a `finally` path.
+- A live Daytona smoke (`SDF_LIVE_DAYTONA=1` + `DAYTONA_API_KEY`) must record
+  the same create/exec/workspace/delete cycle against a real Daytona sandbox;
+  always delete the sandbox in a `finally` path. Skipped without the gate.
 - A remote Herdr milestone requires authenticated SDF → HTTPS bridge → Herdr
   evidence, including start, input, output, cancellation, termination,
   reconnect, and no duplicate execution.
