@@ -66,6 +66,8 @@ class DaytonaHerdrTransport:
         self._connector = sandbox_connector
         self._sandbox_id = sandbox_id
         self._sandbox: Any = None
+        self._unidentified_sandbox: Any = None
+        self._sandbox_lock = threading.RLock()
 
     @property
     def sandbox_id(self) -> str | None:
@@ -79,14 +81,18 @@ class DaytonaHerdrTransport:
     def close(self, timeout_ms: int = 30_000) -> None:
         """Delete the persistent sandbox and forget its provider identity."""
 
-        if self._sandbox_id is None:
-            return
-        try:
-            sandbox = self._ensure_sandbox()
-            sandbox.delete(timeout=timeout_ms / 1000)
-        finally:
-            self._sandbox = None
-            self._sandbox_id = None
+        with self._sandbox_lock:
+            if self._sandbox_id is None:
+                if self._unidentified_sandbox is not None:
+                    self._unidentified_sandbox.delete(timeout=timeout_ms / 1000)
+                    self._unidentified_sandbox = None
+                return
+            try:
+                sandbox = self._ensure_sandbox()
+                sandbox.delete(timeout=timeout_ms / 1000)
+            finally:
+                self._sandbox = None
+                self._sandbox_id = None
 
     def stage_workspace(self, attempt_id: str, workspace: Path) -> str:
         """Copy a bounded local workspace into this Attempt's sandbox directory."""
@@ -206,24 +212,49 @@ class DaytonaHerdrTransport:
         return ordered
 
     def _ensure_sandbox(self) -> Any:
-        if self._sandbox is not None:
-            return self._sandbox
-        factory, connector = self._providers()
-        try:
-            if self._sandbox_id is not None:
-                self._sandbox = connector(self._sandbox_id)
-            else:
-                self._sandbox = factory(
-                    snapshot=self.snapshot,
-                    env_vars=dict(self._envs),
-                    timeout=self.timeout_seconds,
+        with self._sandbox_lock:
+            if self._unidentified_sandbox is not None:
+                raise HerdrRuntimeError(
+                    "Daytona sandbox cleanup is pending; close the transport before provisioning again"
                 )
-        except HerdrRuntimeError:
-            raise
-        except Exception as exc:
-            raise HerdrRuntimeError(f"Daytona sandbox provisioning failed: {exc}") from exc
-        self._sandbox_id = _sandbox_id(self._sandbox)
-        return self._sandbox
+            if self._sandbox is not None:
+                return self._sandbox
+            factory, connector = self._providers()
+            try:
+                if self._sandbox_id is not None:
+                    sandbox = connector(self._sandbox_id)
+                else:
+                    sandbox = factory(
+                        snapshot=self.snapshot,
+                        env_vars=dict(self._envs),
+                        timeout=self.timeout_seconds,
+                    )
+            except HerdrRuntimeError:
+                raise
+            except Exception as exc:
+                raise HerdrRuntimeError(f"Daytona sandbox provisioning failed: {exc}") from exc
+            try:
+                sandbox_id = _sandbox_id(sandbox)
+            except HerdrRuntimeError as identity_error:
+                self._unidentified_sandbox = sandbox
+                try:
+                    sandbox.delete(timeout=self.request_timeout_seconds)
+                except Exception as cleanup_error:
+                    raise HerdrRuntimeError(
+                        "Daytona sandbox provisioning failed: returned sandbox has no valid id; "
+                        "cleanup also failed"
+                    ) from cleanup_error
+                self._unidentified_sandbox = None
+                self._sandbox_id = None
+                raise HerdrRuntimeError(
+                    "Daytona sandbox provisioning failed: returned sandbox has no valid id; "
+                    "the unidentifiable sandbox was deleted"
+                ) from identity_error
+            # Publish the provider object and identity together only after both
+            # are valid. Concurrent callers then share this exact sandbox.
+            self._sandbox = sandbox
+            self._sandbox_id = sandbox_id
+            return sandbox
 
     def _providers(self) -> tuple[SandboxFactory, SandboxConnector]:
         if self._factory is not None and self._connector is not None:
@@ -276,9 +307,13 @@ class DaytonaHerdrTransport:
 
 def _sandbox_id(sandbox: Any) -> str:
     identity = getattr(sandbox, "id", None) or getattr(sandbox, "sandbox_id", None)
-    if not identity:
-        raise HerdrRuntimeError("Daytona sandbox provisioning failed: missing sandbox id")
-    return str(identity)
+    if (
+        not isinstance(identity, str)
+        or not identity.strip()
+        or identity != identity.strip()
+    ):
+        raise HerdrRuntimeError("Daytona sandbox provisioning failed: missing or invalid sandbox id")
+    return identity
 
 
 def _missing_connector(sandbox_id: str, **_: Any) -> Any:

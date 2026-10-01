@@ -30,8 +30,8 @@ class HerdrUnsupportedOperation(HerdrRuntimeError):
 HerdrRunner = Callable[[Sequence[str], int], str]
 
 
-def _is_fresh_e2b_transport(transport: object | None) -> bool:
-    """Whether the runtime was given the approved fresh production E2B path."""
+def _claim_fresh_e2b_permission_bypass(transport: object | None) -> bool:
+    """Atomically claim the one bypass authorization owned by a production E2B transport."""
 
     if transport is None:
         return False
@@ -40,11 +40,7 @@ def _is_fresh_e2b_transport(transport: object | None) -> bool:
     # absent; without that adapter, no E2B capability can be granted.
     try:
         from .credential_injection import CredentialedE2BHerdrTransport
-        from .e2b_herdr_transport import (
-            E2BHerdrTransport,
-            _PRODUCTION_SANDBOX_CAPABILITY,
-            _PRODUCTION_SANDBOX_FACTORY,
-        )
+        from .e2b_herdr_transport import E2BHerdrTransport
     except ModuleNotFoundError as exc:
         if exc.name == "e2b":
             return False
@@ -56,11 +52,7 @@ def _is_fresh_e2b_transport(transport: object | None) -> bool:
     # the callable identity confirms that production factory remains selected.
     if type(transport) not in (E2BHerdrTransport, CredentialedE2BHerdrTransport):
         return False
-    return (
-        transport.sandbox_id is None
-        and transport._creation_capability is _PRODUCTION_SANDBOX_CAPABILITY
-        and transport._factory is _PRODUCTION_SANDBOX_FACTORY
-    )
+    return transport.claim_fresh_permission_bypass()
 
 # Codex 0.157 can take Herdr's typed prompt into its composer but swallow the
 # submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
@@ -272,10 +264,6 @@ class HerdrRuntime(AgentRuntime):
             self._runner = runner or self._run
         self._timeout_ms = timeout_ms
         self._transport = transport
-        # ADR-0008 applies only to a fresh E2B sandbox. Herdr itself says
-        # nothing about containment; a generic transport's assertion cannot
-        # grant the bypass, and an E2B reconnect identity is not disposable.
-        self._allow_dangerous_permissions = _is_fresh_e2b_transport(transport)
         self._binary = herdr_binary
         self._session = session
         self._workspace_dir = workspace_dir
@@ -446,11 +434,11 @@ class HerdrRuntime(AgentRuntime):
             credential = self.credentials.get(agent)
             if credential is None:
                 raise HerdrRuntimeError(f"no resolved Agent Credential for {agent}; it was not injected at sandbox creation; set SDF_CREDENTIAL_MODE_{agent.upper()}")
-        if self.expected_version is not None:
-            self.require_compatible()
         existing_id = next((sid for sid, b in self._bindings.items() if b.attempt_id == attempt_id), None)
         if existing_id is not None:
             return self._sessions[existing_id]
+        if self.expected_version is not None:
+            self.require_compatible()
 
         workspace_args = self._command("workspace", "create")
         workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
@@ -472,9 +460,14 @@ class HerdrRuntime(AgentRuntime):
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
+        # ADR-0008 is Claude-only. Claim at the start boundary, after setup has
+        # succeeded, so unrelated agents and failed setup do not consume it.
+        allow_dangerous_permissions = (
+            agent == "claude" and _claim_fresh_e2b_permission_bypass(self._transport)
+        )
         agent_args = (
             *_agent_start_args(
-                agent, workspace_dir, allow_dangerous_permissions=self._allow_dangerous_permissions
+                agent, workspace_dir, allow_dangerous_permissions=allow_dangerous_permissions
             ),
             *self._agent_args.get(agent, ()),
         )

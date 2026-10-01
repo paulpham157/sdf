@@ -8,9 +8,13 @@ import os
 import shutil
 import stat
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event, Lock, RLock, get_ident
 
 import pytest
 
+import sdf_core.daytona_herdr_transport as daytona_transport_module
+import sdf_core.e2b_herdr_transport as e2b_transport_module
 from sdf_core.credential_injection import (
     CredentialInjection,
     CredentialedDaytonaHerdrTransport,
@@ -283,7 +287,9 @@ def test_runtime_takes_credential_metadata_from_a_credentialed_transport():
     assert runtime.credentials == injection.metadata
 
 
-def test_production_credentialed_e2b_wrapper_keeps_the_fresh_sandbox_capability():
+def test_production_credentialed_e2b_wrapper_keeps_the_fresh_sandbox_capability(monkeypatch):
+    factory = FakeFactory()
+    monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
     transport, _ = create_credentialed_transport(
         template="herdr-claude", agents=("claude",), environ=API_KEY_ENV
     )
@@ -295,6 +301,200 @@ def test_production_credentialed_e2b_wrapper_keeps_the_fresh_sandbox_capability(
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert len(starts) == 1
     assert starts[0][-2:] == ("--", "--dangerously-skip-permissions")
+
+
+@pytest.mark.parametrize("provider", ["e2b", "daytona"])
+def test_concurrent_credentialed_first_use_seeds_once(provider, monkeypatch):
+    injection = prepare_credential_injection(("claude",), API_KEY_ENV)
+    if provider == "e2b":
+        factory = FakeFactory()
+        transport = CredentialedE2BHerdrTransport(
+            injection=injection,
+            template="herdr-claude",
+            sandbox_factory=factory,
+            environ=ENV,
+        )
+    else:
+        factory = DaytonaFakeFactory()
+        transport = CredentialedDaytonaHerdrTransport(
+            injection=injection,
+            snapshot="herdr-claude",
+            sandbox_factory=factory,
+            environ=DAYTONA_ENV,
+        )
+
+    original_factory = factory.__call__
+    factory_entered = Event()
+    release_factory = Event()
+    parent_ensure_calls = 0
+    parent_ensure_lock = Lock()
+    second_parent_ensure_entered = Event()
+    seed_entered = Event()
+    second_seed_entered = Event()
+    release_seed = Event()
+    seed_calls = 0
+    seed_lock = Lock()
+
+    def slow_factory(**kwargs):
+        factory_entered.set()
+        assert release_factory.wait(timeout=5)
+        return original_factory(**kwargs)
+
+    def tracked_parent_ensure(parent_ensure):
+        def wrapped(self):
+            nonlocal parent_ensure_calls
+            with parent_ensure_lock:
+                parent_ensure_calls += 1
+                if parent_ensure_calls == 2:
+                    second_parent_ensure_entered.set()
+            return parent_ensure(self)
+
+        return wrapped
+
+    def slow_seed():
+        nonlocal seed_calls
+        with seed_lock:
+            seed_calls += 1
+            if seed_calls == 1:
+                seed_entered.set()
+            else:
+                second_seed_entered.set()
+        assert release_seed.wait(timeout=5)
+
+    # Route provider creation through a gate so the second freshness decision
+    # is observed while the first sandbox is still unpublished.
+    if provider == "e2b":
+        transport._factory = slow_factory
+        monkeypatch.setattr(
+            e2b_transport_module.E2BHerdrTransport,
+            "_ensure_sandbox",
+            tracked_parent_ensure(e2b_transport_module.E2BHerdrTransport._ensure_sandbox),
+        )
+    else:
+        transport._factory = slow_factory
+        monkeypatch.setattr(
+            daytona_transport_module.DaytonaHerdrTransport,
+            "_ensure_sandbox",
+            tracked_parent_ensure(daytona_transport_module.DaytonaHerdrTransport._ensure_sandbox),
+        )
+    monkeypatch.setattr(transport, "_seed", slow_seed)
+    start = Barrier(2)
+
+    def run(command):
+        start.wait(timeout=5)
+        return transport.run(("herdr", command), 5000)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        calls = (pool.submit(run, "first"), pool.submit(run, "second"))
+        assert factory_entered.wait(timeout=5)
+        second_parent_ensure_entered.wait(timeout=0.25)
+        release_factory.set()
+        assert seed_entered.wait(timeout=5)
+        second_seed_entered.wait(timeout=0.25)
+        release_seed.set()
+        assert [call.result(timeout=10) for call in calls] == ['{"result":{}}'] * 2
+
+    assert seed_calls == 1
+
+
+@pytest.mark.parametrize("provider", ["e2b", "daytona"])
+def test_close_waits_for_credentialed_first_use_seeding(provider, monkeypatch):
+    injection = prepare_credential_injection(("claude",), API_KEY_ENV)
+    if provider == "e2b":
+        factory = FakeFactory()
+        transport = CredentialedE2BHerdrTransport(
+            injection=injection,
+            template="herdr-claude",
+            sandbox_factory=factory,
+            environ=ENV,
+        )
+        sandbox = factory.sandbox
+        original_close = sandbox.kill
+        delete_entered = Event()
+
+        def record_close(**kwargs):
+            delete_entered.set()
+            return original_close(**kwargs)
+
+        monkeypatch.setattr(sandbox, "kill", record_close)
+    else:
+        factory = DaytonaFakeFactory()
+        transport = CredentialedDaytonaHerdrTransport(
+            injection=injection,
+            snapshot="herdr-claude",
+            sandbox_factory=factory,
+            environ=DAYTONA_ENV,
+        )
+        sandbox = factory.sandbox
+        original_close = sandbox.delete
+        delete_entered = Event()
+
+        def record_close(**kwargs):
+            delete_entered.set()
+            return original_close(**kwargs)
+
+        monkeypatch.setattr(sandbox, "delete", record_close)
+
+    # Seeding and provider lifecycle operations share one reentrant lock, so
+    # close cannot hold the provider lock while waiting for a seed to finish.
+    assert transport._credential_seed_lock is transport._sandbox_lock
+
+    seed_entered = Event()
+    release_seed = Event()
+    seed_completed = Event()
+    close_entered = Event()
+    close_thread_id = None
+    close_acquired_provider_lock = Event()
+
+    class CloseObservedRLock:
+        def __init__(self):
+            self._lock = RLock()
+
+        def __enter__(self):
+            if get_ident() == close_thread_id:
+                close_acquired_provider_lock.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *_):
+            self._lock.release()
+
+    transport._sandbox_lock = CloseObservedRLock()
+    close_completed = Event()
+
+    def blocked_seed():
+        seed_entered.set()
+        assert release_seed.wait(timeout=5)
+        seed_completed.set()
+
+    monkeypatch.setattr(transport, "_seed", blocked_seed)
+
+    def close_transport():
+        nonlocal close_thread_id
+        close_thread_id = get_ident()
+        close_entered.set()
+        transport.close()
+        close_completed.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run = pool.submit(transport.run, ("herdr", "--version"), 5000)
+        assert seed_entered.wait(timeout=5)
+        assert transport.sandbox_id is not None
+        close = pool.submit(close_transport)
+        try:
+            assert close_entered.wait(timeout=5)
+            assert not close_acquired_provider_lock.wait(timeout=0.25), (
+                "close must wait for the seed lock before taking the provider lock"
+            )
+            assert not delete_entered.wait(timeout=0.25)
+            assert not close_completed.is_set()
+        finally:
+            release_seed.set()
+        run.result(timeout=5)
+        close.result(timeout=5)
+
+    assert seed_completed.is_set()
+    assert delete_entered.is_set()
 
 def test_binding_snapshot_persists_credential_metadata_and_round_trips():
     metadata = CredentialMetadata("subscription", "codex-personal")

@@ -4,11 +4,14 @@ The live counterpart is tests/test_e2b_herdr_transport_live.py.
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 
 import pytest
-from e2b import CommandExitException, FileType, NotFoundException, TimeoutException
+from e2b import CommandExitException, FileType, NotFoundException, SandboxException, TimeoutException
 
+import sdf_core.e2b_herdr_transport as e2b_transport_module
 from sdf_core.e2b_herdr_transport import E2BHerdrTransport
 from sdf_core.herdr_runtime import HerdrRuntime, HerdrRuntimeError
 from tests.test_herdr_runtime import FakeHerdr
@@ -124,10 +127,10 @@ def test_one_sandbox_is_created_and_reused_for_every_command():
     assert factory.sandbox.runs[0][0].startswith("herdr agent read agent-1")
 
 
-def test_e2b_runtime_starts_claude_with_the_permission_bypass():
+def test_e2b_runtime_starts_claude_with_the_permission_bypass(monkeypatch):
     runner = FakeHerdr()
-    # The production E2B factory is selected; replacing only the command runner
-    # keeps this capability test offline without asserting trust in a sandbox factory.
+    factory = FakeFactory()
+    monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
     transport = E2BHerdrTransport(template="herdr-codex", environ=ENV)
     transport.run = runner
 
@@ -135,6 +138,92 @@ def test_e2b_runtime_starts_claude_with_the_permission_bypass():
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert starts[0][-2:] == ("--", "--dangerously-skip-permissions")
+
+
+def test_non_claude_start_does_not_consume_fresh_claude_permission_bypass(monkeypatch):
+    runner = FakeHerdr()
+    factory = FakeFactory()
+    monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
+    transport = E2BHerdrTransport(template="herdr-codex", environ=ENV)
+    transport.run = runner
+    runtime = HerdrRuntime(transport=transport)
+
+    runtime.start(attempt_id="ATTEMPT-E2B-CODEX-FIRST", agent="codex")
+    runtime.start(attempt_id="ATTEMPT-E2B-CLAUDE-SECOND", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert [command[3] for command in starts] == ["codex", "claude"]
+    assert ["--dangerously-skip-permissions" in command for command in starts] == [False, True]
+    assert len(factory.creates) == 1
+
+
+def test_failed_fresh_sandbox_provisioning_does_not_consume_permission_bypass(monkeypatch):
+    sandbox = FakeSandbox()
+    attempts = []
+
+    def flaky_factory(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise SandboxException("temporary provider failure")
+        return sandbox
+
+    monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", flaky_factory)
+    transport = E2BHerdrTransport(template="herdr-codex", environ=ENV)
+
+    with pytest.raises(HerdrRuntimeError, match="sandbox provisioning failed"):
+        transport.claim_fresh_permission_bypass()
+
+    assert transport.sandbox_id is None
+    assert transport.claim_fresh_permission_bypass() is True
+    assert transport.sandbox_id == sandbox.sandbox_id
+    assert len(attempts) == 2
+
+
+def test_concurrent_e2b_commands_create_and_share_one_sandbox(monkeypatch):
+    factory_entered = Event()
+    both_ensure_calls_entered = Event()
+    allow_factory_to_return = Event()
+    factory_calls = []
+    factory_calls_lock = Lock()
+    ensure_calls = 0
+    ensure_calls_lock = Lock()
+    sandbox = FakeSandbox()
+
+    def slow_factory(**kwargs):
+        with factory_calls_lock:
+            factory_calls.append(kwargs)
+        factory_entered.set()
+        assert allow_factory_to_return.wait(timeout=5)
+        return sandbox
+
+    transport = _transport(slow_factory)
+    ensure_sandbox = transport._ensure_sandbox
+
+    def tracked_ensure_sandbox():
+        nonlocal ensure_calls
+        with ensure_calls_lock:
+            ensure_calls += 1
+            if ensure_calls == 2:
+                both_ensure_calls_entered.set()
+        return ensure_sandbox()
+
+    monkeypatch.setattr(transport, "_ensure_sandbox", tracked_ensure_sandbox)
+    both_commands_started = Barrier(2)
+
+    def run(command):
+        both_commands_started.wait(timeout=5)
+        return transport.run(("herdr", command), 5000)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        commands = (pool.submit(run, "first"), pool.submit(run, "second"))
+        assert factory_entered.wait(timeout=5)
+        assert both_ensure_calls_entered.wait(timeout=5)
+        allow_factory_to_return.set()
+        results = [command.result(timeout=10) for command in commands]
+
+    assert results == ['{"result":{}}', '{"result":{}}']
+    assert len(factory_calls) == 1
+    assert len(sandbox.runs) == 2
 
 
 def test_e2b_runtime_omits_permission_bypass_when_attached_to_existing_sandbox():

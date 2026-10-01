@@ -6,6 +6,8 @@ The live counterpart is tests/test_daytona_herdr_transport_live.py.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -137,6 +139,116 @@ def test_one_sandbox_is_created_and_reused_for_every_command():
     assert create["env_vars"] == {"SOME_NAME": "value"}
     assert len(factory.sandbox.runs) == 2
     assert factory.sandbox.runs[0][0].startswith("herdr agent read agent-1")
+
+
+def test_concurrent_first_commands_share_exactly_one_sandbox(monkeypatch):
+    factory_entered = Event()
+    allow_factory_to_return = Event()
+    factory_calls = []
+    factory_calls_lock = Lock()
+    ensure_calls = 0
+    ensure_calls_lock = Lock()
+    both_ensure_calls_entered = Event()
+    ensure_start = Barrier(2)
+    factory = FakeFactory()
+
+    def slow_factory(**kwargs):
+        with factory_calls_lock:
+            factory_calls.append(kwargs)
+        factory_entered.set()
+        assert allow_factory_to_return.wait(timeout=5)
+        return factory.sandbox
+
+    transport = _transport(slow_factory)
+    ensure = transport._ensure_sandbox
+
+    def tracked_ensure():
+        nonlocal ensure_calls
+        with ensure_calls_lock:
+            ensure_calls += 1
+            if ensure_calls == 2:
+                both_ensure_calls_entered.set()
+        ensure_start.wait(timeout=5)
+        return ensure()
+
+    monkeypatch.setattr(transport, "_ensure_sandbox", tracked_ensure)
+    start = Barrier(2)
+
+    def run(command):
+        start.wait(timeout=5)
+        return transport.run(("herdr", command), 5000)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        calls = (pool.submit(run, "first"), pool.submit(run, "second"))
+        assert factory_entered.wait(timeout=5)
+        assert both_ensure_calls_entered.wait(timeout=5)
+        allow_factory_to_return.set()
+        assert [call.result(timeout=10) for call in calls] == ['{"result":{}}'] * 2
+
+    assert len(factory_calls) == 1
+    assert len(factory.sandbox.runs) == 2
+
+
+@pytest.mark.parametrize("identity", [None, "", "  ", 42])
+def test_malformed_provisioned_sandbox_is_deleted_and_never_cached(identity):
+    sandbox = FakeSandbox()
+    sandbox.id = identity
+    factory = FakeFactory(sandbox)
+    transport = _transport(factory)
+
+    with pytest.raises(HerdrRuntimeError, match="valid id"):
+        transport.run(("herdr", "--version"), 1000)
+
+    assert sandbox.deletes == [{"timeout": 30.0}]
+    assert transport.sandbox_id is None
+    assert transport._sandbox is None
+    transport.close()
+    assert sandbox.deletes == [{"timeout": 30.0}]
+
+
+def test_malformed_reconnect_result_is_deleted_and_identity_is_forgotten():
+    sandbox = FakeSandbox()
+    sandbox.id = None
+    reconnects = []
+
+    def connector(sandbox_id):
+        reconnects.append(sandbox_id)
+        return sandbox
+
+    transport = _transport(FakeFactory(), sandbox_id="known-id", sandbox_connector=connector)
+
+    with pytest.raises(HerdrRuntimeError, match="valid id"):
+        transport.run(("herdr", "--version"), 1000)
+
+    assert reconnects == ["known-id"]
+    assert sandbox.deletes == [{"timeout": 30.0}]
+    assert transport.sandbox_id is None
+    assert transport._sandbox is None
+    transport.close()
+    assert reconnects == ["known-id"]
+
+
+def test_failed_cleanup_of_unidentified_sandbox_remains_retryable_on_close():
+    sandbox = FakeSandbox()
+    sandbox.id = None
+    delete_calls = []
+
+    def flaky_delete(**kwargs):
+        delete_calls.append(kwargs)
+        if len(delete_calls) == 1:
+            raise RuntimeError("temporary delete failure")
+
+    sandbox.delete = flaky_delete
+    transport = _transport(FakeFactory(sandbox))
+
+    with pytest.raises(HerdrRuntimeError, match="cleanup also failed"):
+        transport.run(("herdr", "--version"), 1000)
+
+    assert transport.sandbox_id is None
+    assert transport._sandbox is None
+    transport.close()
+    assert delete_calls == [{"timeout": 30.0}, {"timeout": 30.0}]
+    assert transport._unidentified_sandbox is None
 
 
 def test_daytona_runtime_starts_claude_without_the_permission_bypass():

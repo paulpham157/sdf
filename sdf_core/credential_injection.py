@@ -233,13 +233,29 @@ class CredentialSeedingMixin:
     def _init_credential_seeding(self, injection: CredentialInjection) -> None:
         self.credential_metadata = injection.metadata
         self._seed_commands = injection.seed_commands
+        # Use the provider lifecycle lock for both sandbox operations and
+        # seeding. Besides making close wait for the complete seed sequence,
+        # one reentrant lock preserves lock order for E2B's permission claim
+        # and for seed-failure cleanup (which closes from inside _ensure_sandbox).
+        self._credential_seed_lock = self._sandbox_lock  # type: ignore[attr-defined]
 
     def _ensure_sandbox(self) -> Any:
-        fresh = self._sandbox is None and self._sandbox_id is None  # type: ignore[attr-defined]
-        sandbox = super()._ensure_sandbox()  # type: ignore[misc]
-        if fresh and self._seed_commands:
-            self._seed()
-        return sandbox
+        # The lock spans both the freshness check and seed sequence. It is
+        # reentrant because each seed command calls _exec -> _ensure_sandbox.
+        with self._credential_seed_lock:
+            fresh = self._sandbox is None and self._sandbox_id is None  # type: ignore[attr-defined]
+            sandbox = super()._ensure_sandbox()  # type: ignore[misc]
+            if fresh and self._seed_commands:
+                self._seed()
+            return sandbox
+
+    def close(self, timeout_ms: int = 30_000) -> None:
+        # Match _ensure_sandbox's lock order (credential seed, then provider
+        # sandbox). Acquiring the provider lock first would deadlock if a seed
+        # command needed _ensure_sandbox while close waited for this lock.
+        # RLock also lets seed-failure cleanup close the sandbox reentrantly.
+        with self._credential_seed_lock:
+            super().close(timeout_ms)  # type: ignore[misc]
 
     def _seed(self) -> None:
         timeout_ms = self.timeout_seconds * 1000  # type: ignore[attr-defined]
