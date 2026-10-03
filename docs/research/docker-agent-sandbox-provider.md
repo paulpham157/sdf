@@ -1,23 +1,30 @@
 # Docker Agentic Platform / Cloud Sandboxes as an SDF provider candidate
 
-Researched 2026-10-01 from official Docker docs and product pages, mapped against
+Public sources rechecked 2026-10-03; this is a docs-only survey for
+[#45](https://github.com/paulpham157/sdf/issues/45), mapped against
 SDF’s existing E2B seams (`E2BHerdrTransport`, `E2BContainmentBackend`) and
 [ADR-0007](../adr/0007-agent-credentials-injected-into-disposable-sandboxes.md).
-No Docker Agentic Platform subscription or PAT was available; **no live API,
-CLI cloud, or SDK calls** were made. Daytona (#44/#46) is compared from public
-docs only; that implementation worktree was not touched.
+No Docker access was supplied for this assignment; **no provider API, CLI
+cloud, SDK, account, or credential checks** were made. Public documentation
+reads are not runtime verification.
 
 **Recommendation: `defer`.** On paper the cloud sandbox lifecycle can cover
-create / exec / filesystem / delete, but the Human’s current product priority
-is the live agent loop on Daytona, this account has no Agentic Platform access,
-the official programmatic SDK is TypeScript-only (SDF is Python), and the
-product is explicitly experimental. Do not implement a Docker provider or
-change `SDF_SANDBOX_PROVIDER` until that priority shifts and credentials exist
-for a bounded POC.
+create / exec / filesystem / delete, but the SDK is JavaScript/TypeScript-first
+(SDF is Python), the API is experimental, and credential/lifecycle integration
+is unproven. No Docker provider or selection change is authorized here.
+
+[#46](https://github.com/paulpham157/sdf/issues/46) explicitly prioritizes E2B
+for the live full loop and must not block on Docker research. Accepted main
+`d232b7d1da70f63cd8a312a7e94cbc7e61626cb1` already contains a selectable
+persistent `DaytonaHerdrTransport` (`SDF_SANDBOX_PROVIDER=daytona`; default
+`e2b`). That code presence is not live/full-loop acceptance. The
+[2026-09-30 owner disposition](https://github.com/paulpham157/sdf/pull/48#issuecomment-5918847947)
+accepted a docs-only **defer** survey, not provider readiness or a Daytona-first
+Human priority.
 
 ## 1. Product identity
 
-Docker markets two related but distinct surfaces:
+Docker documents three related but distinct surfaces:
 
 | Surface | What it is | Official URLs |
 | --- | --- | --- |
@@ -31,9 +38,6 @@ sandbox ([product page](https://www.docker.com/products/docker-sandboxes/);
 [architecture](https://docs.docker.com/ai/sandboxes/architecture/)). Cloud mode
 uses Docker-managed compute and rejects host workspace mounts
 ([local vs cloud](https://docs.docker.com/ai/sandboxes/cloud/local-vs-cloud/)).
-
-Press material (e.g. Cloud Sandboxes launch, 2026-09-24) is secondary; prefer
-the docs URLs above for API claims.
 
 ## 2. Auth model (public; no live calls)
 
@@ -49,28 +53,61 @@ Cloud API/CLI/SDK access requires:
      short-lived Bearer token used against
      `https://connect.docker.com/sandboxes`
      ([authentication](https://docs.docker.com/ai/sandboxes-api/authentication/)).
-   - CLI CI path: `sbx login` with PAT
-     ([CI/headless](https://docs.docker.com/ai/sandboxes/workflows/automation/)).
 
 Agent model-provider keys are **separate** from Docker sign-in: store as cloud
 secrets and attach at sandbox creation
 ([authentication — Authenticate agents](https://docs.docker.com/ai/sandboxes-api/authentication/);
 [get a stored secret into a sandbox](https://docs.docker.com/ai/sandboxes-api/cookbook/get-a-stored-secret-into-a-sandbox/)).
 
-**SDF implication:** without a subscription + PAT (or OAuth), there is nothing
-to probe. This research makes **no readiness claim**.
+**SDF implication:** provider access would be a prerequisite for a separately
+authorized POC, not permission to probe from this research lane. This survey
+makes **no readiness claim**.
 
 ## 3. Sandbox lifecycle ↔ SDF seams
 
 ### Persistent Herdr — `E2BHerdrTransport`
 
-| SDF operation | E2B today | Docker cloud (docs) |
+| SDF operation | E2B code seam (not a live guarantee) | Docker cloud (docs) |
 | --- | --- | --- |
 | Create | `Sandbox.create(template=, timeout=, envs=)` | `client.kits.launch` / `client.create` + `waitUntilRunning`; optional `lifecycle.timeoutMs` / `onTimeout` ([create](https://docs.docker.com/ai/sandboxes-api/cookbook/create-your-first-sandbox/), [keep running](https://docs.docker.com/ai/sandboxes-api/cookbook/keep-a-cloud-sandbox-running/)); CLI default TTL **1h**, renewals capped **24h from creation** ([cloud usage](https://docs.docker.com/ai/sandboxes/cloud/usage/)) |
-| `run` / `_exec` | `sandbox.commands.run(cmd, timeout=, request_timeout=)`; host timeout kills sandbox | `sandbox.processes.run({ args }, { timeoutMs })` or exec endpoint; exit code is separate from SDK success ([run command](https://docs.docker.com/ai/sandboxes-api/cookbook/run-your-first-command/)). Docs do **not** state that a process timeout automatically deletes the sandbox (E2B Herdr’s fail-closed kill-on-timeout would need explicit adapter policy). |
+| `run` / `_exec` | `sandbox.commands.run(cmd, timeout=, request_timeout=)`; timeout path attempts sandbox kill | `sandbox.processes.run({ args }, { timeoutMs })` or exec endpoint; exit code is separate from SDK success ([run command](https://docs.docker.com/ai/sandboxes-api/cookbook/run-your-first-command/)). A process/client timeout is not deletion confirmation; an SDF kill-on-timeout policy would need explicit implementation. |
 | `stage_workspace` | FS API `make_dir` / `write_files` (≤8 MiB) | `sandbox.files.mkdir` / `write` / `upload` ([copy file in](https://docs.docker.com/ai/sandboxes-api/cookbook/copy-a-file-into-a-cloud-sandbox/)); CLI `sbx --cloud cp`. No host bind-mount in cloud. |
 | `collect_workspace` | `files.list` + `files.read` | `sandbox.files.all` / `read` / `download` ([read files out](https://docs.docker.com/ai/sandboxes-api/cookbook/read-files-out-of-a-sandbox/)) |
 | `close` | `sandbox.kill` | `sandbox.delete` (+ `waitUntilDeleted`); optional stop/resume ([delete](https://docs.docker.com/ai/sandboxes-api/cookbook/delete-a-cloud-sandbox/), [cloud usage](https://docs.docker.com/ai/sandboxes/cloud/usage/)). Closing the SDK client does **not** delete the sandbox. |
+
+`waitUntilRunning` does not prove kit setup has finished; a future Herdr image
+would need its own readiness check ([concepts](https://docs.docker.com/ai/sandboxes-api/concepts/#wait-for-kit-setup)).
+
+### Provider identity and Attempt lifecycle
+
+**Documented Docker behavior, not live-tested:** the server-assigned resource
+name `sandboxes/<uid>` remains stable for its lifetime; `displayName` is a
+mutable label, not identity
+([resource names](https://docs.docker.com/ai/sandboxes-api/concepts/#resource-names)).
+Refresh the same resource to obtain its current endpoint after a connection
+change ([endpoint recovery](https://docs.docker.com/ai/sandboxes-api/cookbook/recover-when-the-endpoint-moves/)).
+Processes can be found by an application-assigned `session` tag and selected
+by saved process name; reconnect output from the last downstream-handled
+sequence rather than start a duplicate command. Multiple matches require
+disambiguation; no running match does not prove the command never started
+([process reconnect](https://docs.docker.com/ai/sandboxes-api/cookbook/find-a-process-you-lost-track-of/)).
+Deletion removes processes and sandbox-local files but is asynchronous and can
+be refused. Keep the resource name, use a current handle, and confirm deletion;
+client closure or wait timeout is not cleanup. Volumes, snapshots, and stored
+secrets have separate lifetimes ([delete](https://docs.docker.com/ai/sandboxes-api/cookbook/delete-a-cloud-sandbox/)).
+
+**Proposed SDF mapping — not implemented or verified:** preserve the Attempt
+ID as domain execution identity and link its Runtime Session separately.
+Persist the Docker resource name as provider binding data before dispatch;
+never substitute it for SDF IDs or bind by `displayName`. For long-running work,
+also persist the process name, session tag, and downstream output cursor.
+After SDF restart, load that binding, refresh the same sandbox, and reconnect
+only to the identified process. An ambiguous/missing process requires outcome
+reconciliation, not automatic redispatch. Collect Artifacts before deletion;
+confirm deletion before closing the Runtime Session and retiring its binding.
+Retain identity and expose cleanup uncertainty if deletion fails or times out.
+This is a process/output reconnect design, not proof of resumable coding-agent
+conversation state, crash recovery, or exactly-once execution.
 
 ### One-shot containment — `E2BContainmentBackend`
 
@@ -84,7 +121,7 @@ Python-facing client (REST or wrapped CLI), not the E2B plugin binary.
 
 ## 4. SDK / API surface vs seams — gaps
 
-- **Language:** Official SDK is **`@docker/sandboxes` (TypeScript / Node ≥20)**
+- **Language:** Documented SDK is **`@docker/sandboxes` (JavaScript/TypeScript / Node ≥20)**
   ([install](https://docs.docker.com/ai/sandboxes-api/install/)). REST + OpenAPI
   are documented as the any-language path. SDF’s transports are Python; a
   Docker-backed `HerdrTransport` would wrap HTTP (or `sbx`) itself—more glue
@@ -120,11 +157,8 @@ Docker’s documented cloud path:
   [secret attach cookbook](https://docs.docker.com/ai/sandboxes-api/cookbook/get-a-stored-secret-into-a-sandbox/)).
 - Fail-closed before create still fits.
 - Secret metadata responses omit token values (aligned with Evidence hygiene).
-- CLI `--env` / cloud environment files exist
-  ([cloud usage](https://docs.docker.com/ai/sandboxes/cloud/usage/);
-  [environment files](https://docs.docker.com/ai/sandboxes/configuration/environment-files/)),
-  but the first-party agent-auth guidance is secrets-first, not E2B-style
-  `envs=`.
+- CLI `--env` exists ([cloud usage](https://docs.docker.com/ai/sandboxes/cloud/usage/)),
+  but the agent-auth guidance is secrets-first, not E2B-style `envs=`.
 
 **Paper verdict:** intent (create-time injection, no secrets in panes) aligns;
 the **mechanism** differs from ADR-0007’s E2B `Sandbox.create(envs=)` and from
@@ -152,48 +186,49 @@ ADR-0007 compliance.
 
   Source: [docker.com/products/docker-sandboxes](https://www.docker.com/products/docker-sandboxes/).
 - Default account quotas (API docs): 10 concurrent sandboxes, 50 stored, 100
-  volumes, 100 secrets; rate limits also apply
+  volumes, 100 secrets; account-specific quotas may differ and rate limits apply
   ([limits](https://docs.docker.com/ai/sandboxes-api/limits/)).
 
-### E2B (public; SDF’s current provider)
+### E2B (SDF default; public pricing)
 
-- Python SDK already wired; Hobby $0 + usage credits; published per-second
-  vCPU/RAM rates ([e2b.dev/pricing](https://e2b.dev/pricing)).
+- Python SDK already wired; Hobby is free plus usage, with $100 one-time usage
+  credit; the public guide lists $0.000014/s for 1 vCPU
+  ([pricing](https://e2b.dev/pricing)). This is not an all-in cost comparison.
 - `envs=` at create matches ADR-0007 as implemented.
 
-### Daytona (public docs only; #44/#46 elsewhere)
+### Daytona (selectable in accepted main; no live claim)
 
-- Python (and other) SDKs; API key Bearer auth
-  ([daytona docs](https://www.daytona.io/docs/en/),
-  [sandboxes](https://www.daytona.io/docs/en/sandboxes/)).
-- Pay-as-you-go reserved resources; public marketing lists e.g. ~$0.0858/vCPU/h
-  and free credits ([pricing](https://www.daytona.io/pricing),
-  [billing](https://www.daytona.io/docs/en/billing/)).
-- Human priority is the live agent loop on this track; do not collide with that
-  worktree.
+- Python and other SDKs with API-key configuration
+  ([docs](https://www.daytona.io/docs/en/)). Public pricing lists $0.0504/vCPU/h
+  and $0.0162/GiB/h memory, calculated per second; $0.0858/vCPU/h is the
+  **Windows** rate, not the general compute rate
+  ([pricing](https://www.daytona.io/pricing)). Storage and plan terms differ;
+  recheck before spend. No Daytona code or worktree is changed by this survey.
 
 | Dimension | Docker cloud | E2B | Daytona |
 | --- | --- | --- | --- |
 | SDF language fit | REST/CLI glue (TS SDK official) | Python SDK in-tree | Python SDK |
-| Credential inject | Secrets attach (envs discouraged for keys) | `envs=` | Env/config via SDK (verify in #44) |
-| Auth gate here | No Agentic Platform PAT | Key already used in SDF | Separate track |
-| Maturity label | Experimental | Production-used by SDF | In-flight for SDF |
+| Credential inject | Secrets attach (envs discouraged for keys) | `envs=` per ADR-0007 | Create-time env injection in accepted-main transport |
+| SDF status | Research only; no access checks | Default persistent transport | Selectable persistent transport |
+| Evidence here | Experimental public docs | Static repo seam only | Static accepted-main seam only |
 | Local option | Free local microVMs | Cloud-centric | Cloud-centric |
 
 ## 7. Recommendation and residuals
 
 **`defer`**
 
-Rationale: lifecycle coverage is plausible on paper, but (1) Human priority is
-the Daytona live agent loop, (2) no Agentic Platform credentials → no POC,
-(3) TypeScript-first SDK + experimental API raise integration cost versus
-providers with Python SDKs, (4) ADR-0007 would need a secrets-vs-envs decision
-before implementation.
+Rationale: lifecycle coverage is plausible on paper, but JavaScript/TypeScript-
+first SDK and experimental API increase Python integration work; ADR-0007
+requires a secrets-vs-envs decision; durable binding, reconnect, and confirmed
+cleanup remain proposals. Docker stays research-only and non-blocking for
+E2B-first #46 or the existing Daytona option.
 
 ### Residual risks (if reopened)
 
 - Experimental API churn.
 - Process-timeout → sandbox-kill semantics unproven without a live call.
+- Durable Attempt/Runtime Session binding, reconnect ambiguity, and cleanup
+  failure handling unimplemented for Docker.
 - Secret service types / seed-script compatibility with Herdr agents.
 - Dollar rates on the marketing page may diverge from Console billing; recheck
   before any paid POC.
@@ -201,9 +236,11 @@ before implementation.
 
 ### Reopen when
 
-Human supplies Agentic Platform access **and** asks for a key-gated POC (then
-treat as `needs-key-for-POC` / implementation issue), or explicitly reprioritizes
-Docker ahead of Daytona.
+Only on a separate, explicitly scoped and authorized POC with supplied access,
+bounded cost, credential-policy decision, identity/reconnect/cleanup acceptance
+criteria, and a named owner. Access alone or this docs acceptance does not
+authorize implementation, live calls, or a provider-selection change. No
+follow-up issue or new triage label is created here.
 
 ## Sources (primary)
 
@@ -213,6 +250,7 @@ Docker ahead of Daytona.
 - [Cloud sandboxes](https://docs.docker.com/ai/sandboxes/cloud/) / [usage](https://docs.docker.com/ai/sandboxes/cloud/usage/) / [local vs cloud](https://docs.docker.com/ai/sandboxes/cloud/local-vs-cloud/)
 - [Sandboxes API & SDK](https://docs.docker.com/ai/sandboxes-api/) / [auth](https://docs.docker.com/ai/sandboxes-api/authentication/) / [limits](https://docs.docker.com/ai/sandboxes-api/limits/) / [concepts](https://docs.docker.com/ai/sandboxes-api/concepts/)
 - Cookbook: [create](https://docs.docker.com/ai/sandboxes-api/cookbook/create-your-first-sandbox/), [run](https://docs.docker.com/ai/sandboxes-api/cookbook/run-your-first-command/), [upload](https://docs.docker.com/ai/sandboxes-api/cookbook/copy-a-file-into-a-cloud-sandbox/), [download](https://docs.docker.com/ai/sandboxes-api/cookbook/read-files-out-of-a-sandbox/), [delete](https://docs.docker.com/ai/sandboxes-api/cookbook/delete-a-cloud-sandbox/), [secrets](https://docs.docker.com/ai/sandboxes-api/cookbook/get-a-stored-secret-into-a-sandbox/), [TTL](https://docs.docker.com/ai/sandboxes-api/cookbook/keep-a-cloud-sandbox-running/)
+- Identity/reconnect: [resource names](https://docs.docker.com/ai/sandboxes-api/concepts/#resource-names), [endpoint recovery](https://docs.docker.com/ai/sandboxes-api/cookbook/recover-when-the-endpoint-moves/), [process reconnect](https://docs.docker.com/ai/sandboxes-api/cookbook/find-a-process-you-lost-track-of/)
 - [Product pricing table](https://www.docker.com/products/docker-sandboxes/)
 - [E2B pricing](https://e2b.dev/pricing); [Daytona docs](https://www.daytona.io/docs/en/) / [pricing](https://www.daytona.io/pricing)
-- In-repo: `sdf_core/e2b_herdr_transport.py`, `sdf_core/e2b_containment.py`, `docs/adr/0007-agent-credentials-injected-into-disposable-sandboxes.md`
+- In-repo: `CONTEXT.md`, `sdf_core/e2b_herdr_transport.py`, `sdf_core/e2b_containment.py`, ADR-0007; accepted-main `sdf_core/credential_injection.py` and `sdf_core/daytona_herdr_transport.py` at the SHA above. Code presence is not live verification.
