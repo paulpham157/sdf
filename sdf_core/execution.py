@@ -162,10 +162,14 @@ class ExecutionService:
             self._fail_attempt(task, attempt)
             raise
         for evidence in evaluation.evidence:
-            evaluator_artifact = self.artifacts.capture_evaluator_output(
-                artifact_id=f"{evidence.evidence_id}-OUTPUT",
-                evidence=evidence,
-            )
+            try:
+                evaluator_artifact = self.artifacts.capture_evaluator_output(
+                    artifact_id=f"{evidence.evidence_id}-OUTPUT",
+                    evidence=evidence,
+                )
+            except Exception:
+                self._fail_attempt(task, attempt)
+                raise
             self.db.add(
                 ArtifactRow(
                     id=evaluator_artifact.artifact_id,
