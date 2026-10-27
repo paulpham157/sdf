@@ -64,6 +64,25 @@ _CODEX_SESSION_AUTH = (
     'try{if(fs.statSync(f).size>0)process.exit(0)}catch{}'
     'fs.writeFileSync(f,s,{mode:0o600})'
 )
+# Writes the OpenCode user config (ADR-0011): one OpenAI-compatible custom
+# provider whose ``apiKey`` is the literal reference ``{env:NAME}`` (NAME is
+# argv[1]), so OpenCode reads the key from its own environment and the value is
+# never written to disk.  Base URL and models come from the plan's
+# ``SDF_OPENCODE_*`` sandbox variables.  The provider id is the model prefix.
+# OpenCode 1.19.4 allows ``bash`` and ``edit`` by default, which would be
+# permission skipping everywhere.  The seed makes both ``ask`` (headless runs
+# auto-reject them) and denies ``webfetch``; ``opencode run --auto`` approves
+# the asks only after a fresh production E2B sandbox claim (ADR-0008/0011).
+_OPENCODE_CONFIG = (
+    'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/opencode",f=d+"/opencode.json",v=process.argv[1];'
+    'if(!e[v]){process.exit(0)}const u=e.SDF_OPENCODE_BASE_URL||"",m=e.SDF_OPENCODE_MODEL||"",s=e.SDF_OPENCODE_SMALL_MODEL||m;'
+    'const i=m.indexOf("/");if(!u||i<1){console.error("opencode-config: base URL or model missing");process.exit(1)}'
+    'const p=m.slice(0,i),models={};for(const x of [m,s]){if(!x.startsWith(p+"/")){console.error("opencode-config: small model provider differs");process.exit(1)}models[x.slice(i+1)]={tool_call:true}}'
+    'const c={$schema:"https://opencode.ai/config.json",model:m,small_model:s,autoupdate:false,share:"disabled",'
+    'permission:{edit:"ask",bash:"ask",webfetch:"deny"},provider:{[p]:{npm:"@ai-sdk/openai-compatible",name:p,'
+    'options:{baseURL:u,apiKey:"{env:"+v+"}"},models}}};'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+)
 # Herdr's server starts from the template entrypoint before ``Sandbox.create``
 # envs apply to later commands, so an agent pane does not inherit them.  This
 # seed writes the plan's variables (named on argv, read from ``process.env``)
@@ -106,6 +125,7 @@ _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
         "codex-auth-json-api-key": _CODEX_API_KEY_AUTH,
         "codex-config-base-url": _CODEX_CONFIG_BASE_URL,
         "codex-auth-json": _CODEX_SESSION_AUTH,
+        "opencode-config": _OPENCODE_CONFIG,
     }
 )
 
