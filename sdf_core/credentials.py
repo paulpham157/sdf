@@ -61,9 +61,10 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "ANTHROPIC_ORGANIZATION_ID",
         ),
         "codex": ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_AUTH_JSON", "OPENAI_BASE_URL"),
-        # OpenCode reads its provider, key reference and models from the seeded
-        # config file; these would replace or redirect that config (ADR-0011).
-        "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"),
+        # OpenCode reads its provider, key reference, models and permissions
+        # from the seeded config file; these would replace, redirect or widen
+        # that config (ADR-0011).
+        "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION"),
     }
 )
 

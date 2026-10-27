@@ -36,11 +36,21 @@ _KILL_AFTER_S = 10
 _ATTEMPT_ID = re.compile(r"[A-Za-z0-9_-]+")
 _VERSION = re.compile(r"(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)")
 
-# ``sh -c`` wrapper: cd into the Attempt workspace, bound the turn with
-# coreutils ``timeout`` (so it ends before the transport's watchdog would kill
-# the whole sandbox), and always exit 0 with an explicit exit marker so a
-# failed turn is reported by this runtime, not swallowed by the transport.
+# Variables that would replace or widen the seeded config at run time.  The
+# credential plan strips them at creation too; the wrapper unsets them again so
+# no later sandbox state can reintroduce them (ADR-0011).
+_CONFIG_OVERRIDES = ("OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION")
+
+# ``sh -c`` wrapper: drop config overrides and disable project config (the
+# Attempt workspace is untrusted content: on 1.19.4 its ``opencode.json`` or
+# ``.opencode/`` can set ``permission`` to allow, redirect the provider
+# ``baseURL`` that receives the key, and load plugins that run code at
+# startup), cd into the Attempt workspace, bound the turn with coreutils
+# ``timeout`` (so it ends before the transport's watchdog would kill the whole
+# sandbox), and always exit 0 with an explicit exit marker so a failed turn is
+# reported by this runtime, not swallowed by the transport.
 _WRAPPER = (
+    'unset ' + ' '.join(_CONFIG_OVERRIDES) + '; export OPENCODE_DISABLE_PROJECT_CONFIG=1; '
     'dir=$1; secs=$2; err=$3; shift 3; cd "$dir" || { echo ' + _EXIT_MARKER + '97; exit 0; }; '
     'timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" 2>"$err"; rc=$?; '
     'echo ' + _EXIT_MARKER + '$rc; if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'

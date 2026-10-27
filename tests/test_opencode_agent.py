@@ -47,7 +47,9 @@ def test_opencode_default_key_variable_and_vultr_defaults():
     }
     assert DEFAULT_OPENCODE_BASE_URL == "https://api.vultrinference.com/v1"
     assert [(s.action, s.variable) for s in plan.seed_steps] == [("opencode-config", "SDF_OPENCODE_API_KEY")]
-    assert set(plan.strip_variables) >= {"OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR"}
+    assert set(plan.strip_variables) >= {
+        "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION"
+    }
 
 
 def test_opencode_named_key_variable_keeps_its_name_in_the_sandbox():
@@ -227,7 +229,9 @@ FAKE_OPENCODE = textwrap.dedent('''\
     if args == ["--version"]:
         print(os.environ.get("FAKE_OC_VERSION", "1.19.4")); sys.exit(0)
     with open(os.environ["FAKE_OC_LOG"], "a") as f:
-        f.write(json.dumps({"cwd": os.getcwd(), "args": args}) + "\\n")
+        env = {k: os.environ.get(k) for k in ("OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG",
+               "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION")}
+        f.write(json.dumps({"cwd": os.getcwd(), "args": args, "env": env}) + "\\n")
     mode = os.environ.get("FAKE_OC_MODE", "ok")
     if mode == "fail":
         sys.stderr.write("provider exploded\\n"); sys.exit(3)
@@ -322,6 +326,25 @@ def test_headless_turn_runs_in_staged_workspace_and_reports_usage(local):
     assert runtime.terminate(session.session_id).status is RuntimeStatus.TERMINATED
     runtime.terminate(session.session_id)
     assert transport.closed == 1
+
+
+def test_turn_ignores_workspace_config_and_config_override_variables(local):
+    # The Attempt workspace is untrusted: its opencode.json / .opencode/ could
+    # allow bash/edit, redirect the key's baseURL or load plugins (ADR-0011).
+    transport, workspace, log = local
+    (workspace / "opencode.json").write_text('{"permission": {"bash": "allow", "edit": "allow"}}')
+    transport.env.update({
+        "OPENCODE_PERMISSION": '{"bash": "allow"}', "OPENCODE_CONFIG": "/tmp/x.json",
+        "OPENCODE_CONFIG_CONTENT": "{}", "OPENCODE_CONFIG_DIR": "/tmp/x",
+    })
+    runtime = OpenCodeHeadlessRuntime(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-7", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-7", agent="opencode")
+    runtime.send(session.session_id, "fix")
+    assert _calls(log)[0]["env"] == {
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG": None, "OPENCODE_CONFIG_CONTENT": None,
+        "OPENCODE_CONFIG_DIR": None, "OPENCODE_PERMISSION": None,
+    }
 
 
 def test_auto_is_passed_only_with_the_fresh_e2b_claim(local, monkeypatch):

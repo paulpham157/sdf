@@ -38,7 +38,14 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
 - The OpenCode config is seeded at sandbox creation with one custom
   `@ai-sdk/openai-compatible` provider whose `apiKey` is the literal
   `{env:NAME}`; the key value is never written to a file or command line.
-  `OPENCODE_CONFIG*` variables are stripped so they cannot replace it.
+  `OPENCODE_CONFIG*` and `OPENCODE_PERMISSION` are stripped at creation and
+  unset again by the turn wrapper so they cannot replace or widen it.
+- The Attempt workspace is untrusted content. Every turn runs with
+  `OPENCODE_DISABLE_PROJECT_CONFIG=1`: on 1.19.4 a workspace `opencode.json` or
+  `.opencode/` could otherwise set `permission` to `allow` (permission skipping
+  outside ADR 0008), point the provider `baseURL` that receives the key at
+  another host, or load plugins that run code at startup (all verified locally
+  with `opencode debug config` / `debug agent`, no model call).
 - OpenCode 1.19.4 allows `bash` and `edit` by default. The seed sets both to
   `ask` (headless runs auto-reject them) and denies `webfetch`. `--auto` is
   passed only after the one fresh production E2B claim of ADR 0008; elsewhere
@@ -56,7 +63,8 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
 - Deterministic: `tests/test_opencode_agent.py` (credential plans, no-fallback
   key naming, seed output, model args, transport `network`/`exec_argv`, the
   headless runtime against a fake `opencode`, and a full ExecutionService
-  Attempt). Full suite: 531 passed, 28 skipped.
+  Attempt). Full suite: 531 passed, 28 skipped (532 after the
+  project-config guard and its test were added on review).
 - Live (`tests/test_opencode_vultr_live.py`, `SDF_LIVE_E2B=1 SDF_LIVE_OPENCODE=1`):
   one fresh sandbox from E2B's public `opencode` template (OpenCode 1.19.4
   matched the pin), egress `allow_out=[api.vultrinference.com]`,
@@ -66,7 +74,8 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
   20,864 tokens, $0.016062. Wall time was 72.5 s. Egress probes before teardown:
   example.com and registry.npmjs.org unreachable (000), the inference host
   returned 200. No secret appeared in the output, artifacts, or seed commands,
-  and zero sandboxes were left running.
+  and zero sandboxes were left running. This live run predates the
+  project-config guard; it has not been re-run live since.
 - Herdr was not involved. The `opencode` kind through `HerdrRuntime` panes is
   not verified live.
 - `cancel` uses `pkill -f '[o]pencode run'` so pkill cannot match its own
