@@ -9,6 +9,7 @@ and carries the supported agent kinds:
 | Herdr (Linux x86_64, SHA-256 verified) | `0.9.1` |
 | Codex CLI (`@openai/codex`) | `0.157.0` |
 | Claude Code (`@anthropic-ai/claude-code`) | `2.1.282` |
+| OpenCode (`opencode-ai`, headless `opencode run`, [ADR 0011](../../../docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)) | `1.19.4` |
 | Cursor Agent CLI (`agent` / `cursor-agent`, linux/x64 tarball, SHA-256 verified) | `2026.09.28-64d2043` |
 | Node.js runtime | `22` (`node:22-bookworm-slim`) |
 

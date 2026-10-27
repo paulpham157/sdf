@@ -19,6 +19,7 @@ def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
         "HERDR_VERSION",
         "CODEX_VERSION",
         "CLAUDE_CODE_VERSION",
+        "OPENCODE_VERSION",
         "CURSOR_AGENT_VERSION",
     }
     for name, version in pins.items():
@@ -32,6 +33,8 @@ def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
     assert re.search(r"^ARG CURSOR_AGENT_SHA256=[0-9a-f]{64}$", dockerfile, re.MULTILINE)
     assert '"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"' in dockerfile
     assert '"@openai/codex@${CODEX_VERSION}"' in dockerfile
+    assert '"opencode-ai@${OPENCODE_VERSION}"' in dockerfile
+    assert 'test "$(opencode --version)" = "${OPENCODE_VERSION}"' in dockerfile
     assert "downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" in dockerfile
     assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent' in dockerfile
     assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent' in dockerfile
@@ -76,3 +79,9 @@ def test_codex_only_template_is_retired_by_adr():
     adr = (ROOT.parents[1] / "docs" / "adr" / "0009-retire-sdf-herdr-codex-template.md").read_text()
     assert "Status: accepted" in adr
     assert "sdf-herdr-agents" in (AGENTS / "README.md").read_text()
+
+
+def test_opencode_template_pin_matches_runtime_pin():
+    from sdf_core.opencode_runtime import OPENCODE_VERSION
+
+    assert _pins()["OPENCODE_VERSION"] == OPENCODE_VERSION

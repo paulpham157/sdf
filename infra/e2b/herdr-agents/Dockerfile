@@ -4,6 +4,8 @@ ARG HERDR_VERSION=0.9.1
 ARG HERDR_SHA256=2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7
 ARG CODEX_VERSION=0.157.0
 ARG CLAUDE_CODE_VERSION=2.1.282
+# OpenCode (npm `opencode-ai`): headless `opencode run` agent kind, ADR 0011.
+ARG OPENCODE_VERSION=1.19.4
 # Cursor Agent CLI linux/x64 tarball from downloads.cursor.com/lab/<version>/...
 # Version observed in Slice 1 path spike; build fails on SHA or --version mismatch.
 ARG CURSOR_AGENT_VERSION=2026.09.28-64d2043
@@ -12,7 +14,8 @@ ARG CURSOR_AGENT_SHA256=6e4cd936a4866b8a77c50ff51a564460d715772fabc477a01aa0f045
 ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     NPM_CONFIG_FUND=false \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    OPENCODE_DISABLE_AUTOUPDATE=1
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar \
@@ -22,10 +25,11 @@ RUN apt-get update \
        "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64" \
     && echo "${HERDR_SHA256}  /usr/local/bin/herdr" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/herdr \
-    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "opencode-ai@${OPENCODE_VERSION}" \
     && test "$(herdr --version | awk '{print $2}')" = "${HERDR_VERSION}" \
     && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}" \
     && test "$(claude --version | awk '{print $1}')" = "${CLAUDE_CODE_VERSION}" \
+    && test "$(opencode --version)" = "${OPENCODE_VERSION}" \
     && curl -fsSL --retry 3 \
        -o /tmp/cursor-agent.tar.gz \
        "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \
