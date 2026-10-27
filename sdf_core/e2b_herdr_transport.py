@@ -62,6 +62,7 @@ class E2BHerdrTransport:
         sandbox_factory: SandboxFactory | None = None,
         sandbox_connector: SandboxConnector | None = None,
         sandbox_id: str | None = None,
+        network: Mapping[str, Any] | None = None,
     ) -> None:
         if not template.strip():
             raise ValueError("E2B Herdr template must be non-empty")
@@ -75,6 +76,9 @@ class E2BHerdrTransport:
         self.request_timeout_seconds = request_timeout_seconds
         self._environ = dict(os.environ if environ is None else environ)
         self._envs = dict(envs or {})
+        # E2B ``SandboxNetworkOpts`` (``allow_out`` / ``deny_out``), applied at
+        # creation only; ``None`` keeps the template's default egress.
+        self._network = dict(network) if network is not None else None
         self._factory = _PRODUCTION_SANDBOX_FACTORY if sandbox_factory is None else sandbox_factory
         self._creation_capability = (
             _PRODUCTION_SANDBOX_CAPABILITY if sandbox_factory is None else None
@@ -117,6 +121,13 @@ class E2BHerdrTransport:
         if not command:
             raise ValueError("Herdr command must not be empty")
         return self._exec(shlex.join([self.herdr_binary, *command[1:]]), timeout_ms)
+
+    def exec_argv(self, argv: Sequence[str], timeout_ms: int) -> str:
+        """Run one non-Herdr argv in the sandbox (headless agent runtimes)."""
+
+        if not argv:
+            raise ValueError("sandbox command must not be empty")
+        return self._exec(shlex.join(argv), timeout_ms)
 
     def close(self, timeout_ms: int = 30_000) -> None:
         """Kill the persistent sandbox and forget its provider identity."""
@@ -237,6 +248,8 @@ class E2BHerdrTransport:
                 if not is_fresh:
                     sandbox = self._connector(self._sandbox_id, **opts)
                 else:
+                    if self._network is not None:
+                        opts["network"] = dict(self._network)
                     sandbox = self._factory(
                         template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
                     )

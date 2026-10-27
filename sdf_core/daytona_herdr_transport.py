@@ -78,6 +78,13 @@ class DaytonaHerdrTransport:
             raise ValueError("Herdr command must not be empty")
         return self._exec(shlex.join([self.herdr_binary, *command[1:]]), timeout_ms)
 
+    def exec_argv(self, argv: Sequence[str], timeout_ms: int) -> str:
+        """Run one non-Herdr argv in the sandbox (headless agent runtimes)."""
+
+        if not argv:
+            raise ValueError("sandbox command must not be empty")
+        return self._exec(shlex.join(argv), timeout_ms)
+
     def close(self, timeout_ms: int = 30_000) -> None:
         """Delete the persistent sandbox and forget its provider identity."""
 
