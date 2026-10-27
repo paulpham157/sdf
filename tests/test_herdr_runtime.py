@@ -6,6 +6,12 @@ import pytest
 from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError, SshHerdrTransport
 from sdf_core.runtime import RuntimeStatus
 
+CODEX_POLICY = (
+    "-c", 'approval_policy="on-request"',
+    "-c", 'sandbox_mode="workspace-write"',
+    "-c", "sandbox_workspace_write.network_access=false",
+)
+
 
 class FakeHerdr:
     def __init__(self):
@@ -396,12 +402,30 @@ def test_claude_ignores_workspace_settings_so_a_task_cannot_redirect_its_key():
     assert start[start.index("--") + 1 :] == ("--setting-sources", "user", "--model", "glm-5.3")
 
 
-def test_herdr_runtime_passes_no_extra_agent_args_to_codex_without_a_workspace():
+def test_herdr_runtime_pins_codex_policy_without_a_workspace():
     runner = FakeHerdr()
     HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CODEX", agent="codex")
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
-    assert starts == [("herdr", "agent", "start", "codex", "--kind", "codex", "--pane", "pane-1")]
+    assert starts == [
+        ("herdr", "agent", "start", "codex", "--kind", "codex", "--pane", "pane-1", "--", *CODEX_POLICY),
+    ]
+
+
+def test_codex_pins_approval_and_sandbox_against_a_workspace_config():
+    """A trusted project's .codex/config.toml can set approval_policy="never",
+    sandbox_mode="danger-full-access" and sandbox network access; Codex lets
+    invocation -c overrides win, so the runtime pins its defaults."""
+
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner, agent_args={"codex": ("-m", "glm-5.3")})
+    runtime.bind_remote_workspace("ATTEMPT-CODEX", "/tmp/sdf/ATTEMPT-CODEX")
+    runtime.start(attempt_id="ATTEMPT-CODEX", agent="codex")
+
+    (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    argv = start[start.index("--") + 1 :]
+    assert argv[: len(CODEX_POLICY)] == CODEX_POLICY
+    assert argv[-2:] == ("-m", "glm-5.3")
 
 
 def test_herdr_runtime_starts_codex_trusting_exactly_its_attempt_directory():
@@ -411,7 +435,9 @@ def test_herdr_runtime_starts_codex_trusting_exactly_its_attempt_directory():
     runtime.start(attempt_id="ATTEMPT-CODEX", agent="codex")
 
     (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
-    assert start[-3:] == ("--", "-c", 'projects."/tmp/sdf/ATTEMPT-CODEX".trust_level="trusted"')
+    assert start[start.index("--") + 1 :] == (
+        *CODEX_POLICY, "-c", 'projects."/tmp/sdf/ATTEMPT-CODEX".trust_level="trusted"'
+    )
 
 class TurnHerdr:
     """Herdr 0.9.1 as observed live: a finished turn reads ``idle``, never ``done``.

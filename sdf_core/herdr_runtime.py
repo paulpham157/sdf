@@ -73,6 +73,14 @@ _HERDR_WAIT_HEADROOM_MS = 5_000
 def _is_herdr_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
+# Codex settings a Task workspace must not change (see ``_agent_start_args``).
+_CODEX_PINNED_POLICY = (
+    "-c", 'approval_policy="on-request"',
+    "-c", 'sandbox_mode="workspace-write"',
+    "-c", "sandbox_workspace_write.network_access=false",
+)
+
+
 def _agent_start_args(
     agent: str,
     workspace_dir: Path | str | None,
@@ -98,9 +106,14 @@ def _agent_start_args(
         args = ("--setting-sources", "user")
         if allow_dangerous_permissions:
             args = (*args, "--dangerously-skip-permissions")
-    if agent == "codex" and workspace_dir is not None:
-        # A JSON string is a valid TOML basic string for any path.
-        args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")
+    if agent == "codex":
+        # A trusted project's .codex/config.toml may widen approval and the
+        # sandbox (Codex 0.157 ignores project base URL / provider keys).
+        # Invocation overrides outrank it; these are Codex's own defaults.
+        args = (*args, *_CODEX_PINNED_POLICY)
+        if workspace_dir is not None:
+            # A JSON string is a valid TOML basic string for any path.
+            args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")
     return args
 
 
