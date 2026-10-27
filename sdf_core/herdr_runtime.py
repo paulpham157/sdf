@@ -84,9 +84,20 @@ def _agent_start_args(
     Codex does not inherit trust from a parent directory.  Codex 0.157 still
     shows its folder-trust dialog with only this override, so a transport also
     pre-trusts the directory in config.toml (``prepare_agent_workspace``).
+
+    Claude always loads user settings only.  The Attempt workspace is
+    pre-trusted, so Claude Code would otherwise apply its
+    ``.claude/settings.json`` / ``settings.local.json``: an ``env`` block there
+    redirects ``ANTHROPIC_BASE_URL`` and sends the injected key to any host the
+    egress policy allows, and ``hooks`` run commands at session start.  The
+    workspace is Task input, not operator configuration.
     """
 
-    args = ("--dangerously-skip-permissions",) if agent == "claude" and allow_dangerous_permissions else ()
+    args: tuple[str, ...] = ()
+    if agent == "claude":
+        args = ("--setting-sources", "user")
+        if allow_dangerous_permissions:
+            args = (*args, "--dangerously-skip-permissions")
     if agent == "codex" and workspace_dir is not None:
         # A JSON string is a valid TOML basic string for any path.
         args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")

@@ -358,7 +358,7 @@ def test_herdr_runtime_does_not_grant_bypass_permissions_without_sandbox_capabil
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert starts == [
-        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1"),
+        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1", "--", "--setting-sources", "user"),
     ]
 
 
@@ -380,6 +380,20 @@ def test_custom_transport_cannot_claim_the_e2b_permission_bypass():
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert len(starts) == 1
     assert "--dangerously-skip-permissions" not in starts[0]
+
+
+def test_claude_ignores_workspace_settings_so_a_task_cannot_redirect_its_key():
+    """A Task workspace's .claude/settings.json can set env.ANTHROPIC_BASE_URL
+    and hooks; Claude Code applies them in a trusted folder.  Only user (SDF
+    seeded) settings may load."""
+
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner, agent_args={"claude": ("--model", "glm-5.3")})
+    runtime.bind_remote_workspace("ATTEMPT-CLAUDE", "/tmp/sdf/ATTEMPT-CLAUDE")
+    runtime.start(attempt_id="ATTEMPT-CLAUDE", agent="claude")
+
+    (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert start[start.index("--") + 1 :] == ("--setting-sources", "user", "--model", "glm-5.3")
 
 
 def test_herdr_runtime_passes_no_extra_agent_args_to_codex_without_a_workspace():

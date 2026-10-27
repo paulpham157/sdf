@@ -300,7 +300,7 @@ def test_production_credentialed_e2b_wrapper_keeps_the_fresh_sandbox_capability(
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert len(starts) == 1
-    assert starts[0][-2:] == ("--", "--dangerously-skip-permissions")
+    assert starts[0][-4:] == ("--", "--setting-sources", "user", "--dangerously-skip-permissions")
 
 
 @pytest.mark.parametrize("provider", ["e2b", "daytona"])
