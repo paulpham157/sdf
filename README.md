@@ -44,6 +44,12 @@ Claude Code; the Codex-only `sdf-herdr-codex` template is retired
 needs an explicit Credential Mode, `subscription` or `api-key`
 (ADR 0007).
 
+OpenCode (`opencode`, pinned `1.19.4`) is a headless agent kind
+(`sdf_core.opencode_runtime.OpenCodeHeadlessRuntime`) that uses any
+OpenAI-compatible endpoint; Vultr Serverless Inference with `vultr/glm-5.3` is
+only the default. Base URL, key variable name and model are configurable per
+agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)).
+
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 

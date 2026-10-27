@@ -92,6 +92,14 @@ _Avoid_: auth, token
 How an Agent Credential is obtained for one agent kind: `subscription` (a login made once on the operator's host and forwarded) or `api-key` (an operator-supplied provider key).
 _Avoid_: auth method, fallback
 
+**Agent Provider Config**:
+The per-agent-kind base URL, key variable name and model(s) an `api-key` Agent Credential uses; the key itself only ever comes from the environment.
+_Avoid_: hard-coded provider, plaintext key
+
+**Headless Agent Runtime**:
+An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`), instead of driving an agent in a Herdr pane.
+_Avoid_: Herdr pane, interactive session
+
 **Tool Proxy**:
 The SDF action boundary that obtains a Policy Decision before executing a requested tool action.
 _Avoid_: terminal output parser, sandbox

@@ -120,6 +120,10 @@ a private mapping). A green unit suite without that gate is not live evidence.
 - A live Daytona smoke (`SDF_LIVE_DAYTONA=1` + `DAYTONA_API_KEY`) must record
   the same create/exec/workspace/delete cycle against a real Daytona sandbox;
   always delete the sandbox in a `finally` path. Skipped without the gate.
+- A live OpenCode loop (`SDF_LIVE_E2B=1` + `SDF_LIVE_OPENCODE=1` +
+  `E2B_API_KEY` + the configured OpenCode key) must record Task → Attempt →
+  Evidence, token/cost totals, the egress allowlist and sandbox cleanup.
+  Skipped without the gates.
 - A remote Herdr milestone requires authenticated SDF → HTTPS bridge → Herdr
   evidence, including start, input, output, cancellation, termination,
   reconnect, and no duplicate execution.
