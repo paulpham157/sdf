@@ -536,7 +536,7 @@ def test_a_working_read_after_a_completed_turn_reports_running_until_idle_again(
 
 @pytest.mark.parametrize("agent", ["codex", "claude"])
 def test_swallowed_enter_is_resubmitted_until_the_turn_runs_and_then_completes(agent):
-    # Codex 0.157 and a fast-starting Claude Code 2.1.282 can swallow the
+    # Codex (0.157, 0.165) and a fast-starting Claude Code 2.1.282 can swallow the
     # submitting Enter: Herdr reports a stall while the pane stays idle.  The
     # runtime presses Enter (never retyping the text) until the turn is seen
     # working, then waits for it to return to idle.

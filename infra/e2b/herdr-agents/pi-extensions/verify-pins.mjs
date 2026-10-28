@@ -1,6 +1,6 @@
 // ADR 0017: fail the image build unless every dependency is installed at the
 // exact version pinned in package.json and package-lock.json, with an entry
-// point present, and the @earendil-works names are links to the host Pi.
+// point present, and no Pi package of its own (the host Pi provides it).
 // Usage: node verify-pins.mjs <ext dir>
 import fs from "node:fs";
 import path from "node:path";
@@ -21,8 +21,8 @@ for (const [name, pin] of Object.entries(manifest.dependencies)) {
   }
   console.log(`${name}@${pin} ${locked.integrity}`);
 }
-for (const name of ["pi-coding-agent", "pi-tui", "pi-ai", "pi-agent-core"]) {
-  const link = path.join(dir, "node_modules", "@earendil-works", name);
-  if (!fs.lstatSync(link).isSymbolicLink()) throw new Error(`${link} is not a link to the host Pi`);
-  if (!fs.existsSync(path.join(link, "package.json"))) throw new Error(`${link} is dangling`);
+// No second Pi: the host Pi supplies these modules to the extensions.
+for (const scope of ["@earendil-works", "@mariozechner"]) {
+  const own = path.join(dir, "node_modules", scope);
+  if (fs.existsSync(own)) throw new Error(`${own} exists: the extensions must not ship their own Pi`);
 }

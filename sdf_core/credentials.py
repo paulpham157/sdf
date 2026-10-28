@@ -65,7 +65,7 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # from the seeded config file; these would replace, redirect or widen
         # that config (ADR-0011).
         "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION"),
-        # Pi 0.73.1 reads its provider and key reference from the seeded
+        # Pi reads its provider and key reference from the seeded
         # ~/.pi/agent/models.json; these would move that directory (and with it
         # models.json, settings and extensions) or redirect Pi's own fetches
         # (ADR-0012).  The turn wrapper also unsets every other PI_* variable.
@@ -157,7 +157,7 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             base_url_source="SDF_OPENAI_BASE_URL",
             base_url_target="OPENAI_BASE_URL",
             subscription_seeds=MappingProxyType({"CODEX_AUTH_JSON": "codex-auth-json"}),
-            # Codex 0.157.0 ignores OPENAI_BASE_URL and reads ``openai_base_url``
+            # Codex (since 0.157, still 0.165) ignores OPENAI_BASE_URL and reads ``openai_base_url``
             # from ~/.codex/config.toml (docs/research/codex-base-url.md).
             base_url_seed="codex-config-base-url",
             api_key_env_variable="SDF_CODEX_API_KEY_ENV",

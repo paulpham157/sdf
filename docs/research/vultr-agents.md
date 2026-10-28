@@ -81,3 +81,8 @@ below are historical.
   with the OpenCode test failed at the lead's credential seed step and passed
   when rerun alone. Smoke on the public build: Pi ($0.0034, 23.5 s) and Qwen
   ($0.021, 29.9 s) pass.
+
+Update 2026-10-28: pins moved to codex 0.165.0, claude 2.1.308, opencode
+(`@opencode/cli`) 2.2.0 and pi (`@earendil-works`) 1.4.0; see
+[ADR 0018](../adr/0018-opencode-2-and-pi-1-upgrade.md). The versions above are
+those verified at the time.

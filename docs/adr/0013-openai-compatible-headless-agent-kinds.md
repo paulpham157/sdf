@@ -158,3 +158,9 @@ Same criteria, all PASS:
 - Aider is a pair programmer, not an autonomous agent: one turn is one model
   exchange plus its edits. *Superseded:* this, plus having no shell for
   `sdf-msg`, is why ADR 0016 removed it; the image no longer installs it.
+
+## Update (2026-10-28, ADR 0018)
+
+Qwen Code 0.26.2 and Goose 1.56.0 are still the latest stable releases; their
+pins are unchanged and were re-verified with the rest of the agent upgrade
+([ADR 0018](0018-opencode-2-and-pi-1-upgrade.md)).

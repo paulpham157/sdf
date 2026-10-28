@@ -126,3 +126,11 @@ or run commands.
   Pi; 37.4 s Attempt (27.2 s bootstrap). Egress probes: only the inference
   host reachable. No secret in output, artifacts or seed commands; zero
   sandboxes left running.
+
+## Update (2026-10-28, ADR 0018)
+
+Pi is now `@earendil-works/pi-coding-agent` 1.4.0. The seed's `apiKey` is
+`"$NAME"` (Pi 1.x sends a bare name literally), every turn adds `--no-approve`
+(project-local settings and resources ignored) and `--no-mcp`, and the
+version probe purges `PI_*`. The `.pi/` refusal stays. The 0.73.1 statements
+above are historical; see [ADR 0018](0018-opencode-2-and-pi-1-upgrade.md).

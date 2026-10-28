@@ -1,6 +1,6 @@
 """Headless Pi runtime over a persistent sandbox transport (ADR-0012).
 
-Pi (``@mariozechner/pi-coding-agent``) needs no terminal multiplexer:
+Pi (``@earendil-works/pi-coding-agent``) needs no terminal multiplexer:
 ``pi -p --mode json`` runs one non-interactive turn and prints JSON events.
 Like the OpenCode runtime (ADR-0011) this drives Pi through the transport's
 ``exec_argv``; the transport (E2B or Daytona) still owns sandbox creation,
@@ -12,12 +12,14 @@ variable's NAME, so the value only exists in the sandbox environment.
 
 Hardening, because the Attempt workspace is untrusted content:
 
-* Pi 0.73.1 always merges ``<cwd>/.pi/settings.json`` and loads
-  ``<cwd>/.pi/{extensions,skills,prompts,themes,SYSTEM.md,APPEND_SYSTEM.md}``;
-  it has no switch to ignore project settings.  A workspace with ``.pi`` is
-  therefore refused, on the host before staging and again in the sandbox
-  before every turn (the agent itself could create one).
-* Extension, skill, prompt-template and theme discovery are disabled by flag.
+* Pi merges ``<cwd>/.pi/settings.json`` and loads
+  ``<cwd>/.pi/{extensions,skills,prompts,themes,mcp,SYSTEM.md,APPEND_SYSTEM.md}``.
+  Pi 1.x adds ``--no-approve`` (ignore project-local files), which every turn
+  passes, but a workspace with ``.pi`` is still refused, on the host before
+  staging and again in the sandbox before every turn (the agent itself could
+  create one), so no Pi release's project-trust rules are relied on alone.
+* Extension, skill, prompt-template and theme discovery and built-in MCP
+  (``--no-mcp``) are disabled by flag.
 * Every ``PI_*`` variable is unset per turn (``PI_CODING_AGENT_DIR`` would move
   models.json/settings/extensions); ``PI_OFFLINE``, ``PI_SKIP_VERSION_CHECK``
   and ``PI_TELEMETRY=0`` are then set so Pi makes no calls besides inference.
@@ -46,10 +48,11 @@ from typing import Any, Mapping, Protocol, Sequence
 from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
-# Pinned to the npm ``latest`` release verified for SDF (2026-10-27).  The
-# runtime depends on ``pi -p --mode json`` flags and event shapes, the
-# models.json schema and the project-config layout of that release.
-PI_VERSION = "0.73.1"
+# Pinned to the npm ``latest`` release of ``@earendil-works/pi-coding-agent``
+# verified for SDF (2026-10-28).  The runtime depends on ``pi -p --mode json``
+# flags and event shapes, the models.json schema (1.x: ``apiKey`` ``$NAME``
+# reads an environment variable) and the project-config layout of that release.
+PI_VERSION = "1.4.0"
 AGENT_KIND = "pi"
 # Provider id in the seeded models.json.
 PI_PROVIDER = "sdf"
@@ -92,7 +95,10 @@ PI_EXTENSIONS: dict[str, PiExtension] = {
 DEFAULT_PI_EXTENSIONS: tuple[str, ...] = tuple(PI_EXTENSIONS)
 # Vetted and rejected (ADR-0017); named so the error says why.
 UNAVAILABLE_PI_EXTENSIONS = {
-    "pi-fabric": "pi-fabric needs Pi >= 1.0 and Node >= 24 (SDF pins Pi 0.73.1 on Node 22)",
+    "pi-fabric": (
+        "pi-fabric routes prompts and code to its own third-party model services and embeds a second Pi; "
+        "it also needs Node >= 24 (the template runs Node 22)"
+    ),
     "pi-lens": (
         "pi-lens 4.4.6 intermittently never finishes its turn_end/agent_end hooks under Pi 0.73.1 "
         "print mode, so the headless turn hangs until the timeout"
@@ -149,9 +155,10 @@ PROJECT_CONFIG_DIR = ".pi"
 # reported by this runtime, not swallowed by the transport.  Only the
 # ``message_end`` / ``tool_execution_end`` events are printed: ``--mode json``
 # also streams one ``message_update`` per token.
+_PURGE_PI_ENV = 'for v in $(env | sed -n "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; '
 _WRAPPER = (
     'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
-    'for v in $(env | sed -n "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; '
+    + _PURGE_PI_ENV +
     'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0; '
     'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
     'if [ -e ' + PROJECT_CONFIG_DIR + ' ] || [ -L ' + PROJECT_CONFIG_DIR + ' ]; then echo '
@@ -344,8 +351,8 @@ class PiHeadlessRuntime:
             raise ValueError("workspace must be an existing directory")
         if workspace_has_project_config(path):
             raise PiRuntimeError(
-                "the Attempt workspace contains .pi/; Pi 0.73.1 cannot ignore project settings or "
-                "extensions, so SDF refuses to run it there (ADR-0012)"
+                "the Attempt workspace contains .pi/; Pi project settings and extensions are untrusted, "
+                "so SDF refuses to run it there (ADR-0012)"
             )
         stage = getattr(self._transport, "stage_workspace", None)
         if not callable(stage):
@@ -395,8 +402,10 @@ class PiHeadlessRuntime:
         return session
 
     def installed_version(self) -> str:
-        # Pi 0.73.1 prints its version on stderr.
-        raw = self._transport.exec_argv(["sh", "-c", '"$0" --version 2>&1', self._binary], self._control_timeout_ms)
+        # Pi 0.73 printed its version on stderr, 1.x on stdout: read both.
+        # ``PI_PACKAGE_DIR`` would change the reported version: purge ``PI_*`` as turns do.
+        raw = self._transport.exec_argv(["sh", "-c", _PURGE_PI_ENV + '"$0" --version 2>&1', self._binary],
+                                        self._control_timeout_ms)
         match = _VERSION.search(raw.strip())
         if match is None:
             raise PiRuntimeError("Pi version response was not recognized")
@@ -454,6 +463,7 @@ class PiHeadlessRuntime:
         argv = [
             self._binary, "-p", "--mode", "json",
             "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+            "--no-mcp", "--no-approve",
         ]
         # ADR-0017: discovery stays off; explicit paths to the baked allowlist only.
         for name in binding.extensions:

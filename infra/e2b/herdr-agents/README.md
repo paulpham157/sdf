@@ -6,14 +6,14 @@ and carries the supported agent kinds:
 
 | Component | Pinned version |
 | --- | --- |
-| Herdr (Linux x86_64, SHA-256 verified) | `0.9.1` |
-| Codex CLI (`@openai/codex`) | `0.157.0` |
-| Claude Code (`@anthropic-ai/claude-code`) | `2.1.282` |
-| OpenCode (`opencode-ai`, headless `opencode run`, [ADR 0011](../../../docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)) | `1.19.4` |
-| Pi (`@mariozechner/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)), with baked extensions ([ADR 0017](../../../docs/adr/0017-image-baked-pi-extensions.md)) | `0.73.1` |
+| Herdr (Linux x86_64, SHA-256 verified) | `0.9.5` |
+| Codex CLI (`@openai/codex`) | `0.165.0` |
+| Claude Code (`@anthropic-ai/claude-code`, npm `stable`) | `2.1.308` |
+| OpenCode 2 (`@opencode/cli`, headless `opencode run --server` against a private `opencode serve`, [ADR 0011](../../../docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md), [ADR 0018](../../../docs/adr/0018-opencode-2-and-pi-1-upgrade.md)) | `2.2.0` |
+| Pi (`@earendil-works/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)), with baked extensions ([ADR 0017](../../../docs/adr/0017-image-baked-pi-extensions.md)) | `1.4.0` |
 | Qwen Code (`@qwen-code/qwen-code`, headless `qwen -o json`, [ADR 0013](../../../docs/adr/0013-openai-compatible-headless-agent-kinds.md)) | `0.26.2` |
 | Goose (`goose`, musl release tarball, SHA-256 verified, ADR 0013) | `1.56.0` |
-| Node.js runtime | `22` (`node:22-bookworm-slim`) |
+| Node.js runtime | `22` (`node:22-bookworm-slim`; Pi 1.x needs >= 22.19) |
 
 The build fails if any installed binary reports a different version, or if the
 Herdr or Goose SHA-256 does not match. Debian `python3` is installed for the
@@ -36,9 +36,10 @@ scripts.
 | `@cad0p/pi-steering` | `0.2.0` | write and read-only turns |
 | `@paulpham157/apply-patch` | `0.3.1` | write turns only |
 
-`link-pi-host.mjs` points their `@earendil-works/pi-*` peer imports at the
-global `@mariozechner` Pi 0.73.1, so no second Pi is installed.
-`verify-pins.mjs` fails the build on any drift. Pi loads them only by explicit
+Pi 1.x resolves an extension's `@earendil-works/pi-*` imports to its own
+modules, so no peer is installed or linked; `verify-pins.mjs` fails the build
+on any version drift and if a second Pi (`@earendil-works` or
+`@mariozechner`) appears under the extensions' `node_modules`. Pi loads them only by explicit
 `-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. Two
 requested packages were vetted and rejected: `pi-fabric` needs Pi >= 1.0 and
 Node >= 24, and `pi-lens` 4.4.6 intermittently hung live Pi turns after the

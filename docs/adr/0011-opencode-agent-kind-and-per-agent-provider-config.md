@@ -88,3 +88,12 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
   not verified live.
 - `cancel` uses `pkill -f '[o]pencode run'` so pkill cannot match its own
   `sh -c` and fail the cancel.
+
+## Update (2026-10-28, ADR 0018)
+
+OpenCode is now `@opencode/cli` 2.2.0. The config seed uses the V2 schema
+(`providers`, `permissions` rule list, `agents.title.model`), each turn runs
+`opencode run --server` against a private loopback `opencode serve` with the
+prompt on stdin, usage comes from the server's message list, and cancel uses
+`pkill -f '[o]pencode (run|serve) '`. The 1.19.4 statements above are
+historical; see [ADR 0018](0018-opencode-2-and-pi-1-upgrade.md).

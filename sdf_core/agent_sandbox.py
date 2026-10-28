@@ -82,7 +82,8 @@ def _install_script(agent_id: str, mcp: bool) -> str:
         merge = (
             "import json,os;p=os.path.expanduser('~/.config/opencode/opencode.json');"
             "c=json.load(open(p)) if os.path.exists(p) else {};"
-            f"c.setdefault('mcp',{{}})['sdf']={{'type':'local','command':['python3','{SHIM_PATH}','mcp'],'enabled':True}};"
+            f"c.setdefault('mcp',{{}}).setdefault('servers',{{}})['sdf']={{'type':'local','command':['python3','{SHIM_PATH}','mcp'],'codemode':False}};"
+            "c.setdefault('permissions',[]).append({'action':'sdf_*','resource':'*','effect':'allow'});"
             "os.makedirs(os.path.dirname(p),exist_ok=True);json.dump(c,open(p,'w'))"
         )
         lines.append(f"python3 -c {shlex.quote(merge)}")

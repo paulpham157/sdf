@@ -146,3 +146,13 @@ apply-patch, a write tool, never loads in read-only mode.
 - Public `sdf-herdr-agents` (`xj8glxnh091op795c7me`) rebuilt as
   `dfc0c53e-e0b6-4c02-a14e-d7904a5cb2c6`, still public, and the pi smoke test
   passed. Details are in the template README.
+
+## Update (2026-10-28, ADR 0018)
+
+With Pi 1.4.0 (`@earendil-works`) the extensions' peer imports resolve to
+Pi's own modules, so `link-pi-host.mjs` is gone and `verify-pins.mjs` instead
+fails if any `@earendil-works`/`@mariozechner` package appears under the
+extensions' `node_modules`. Extension pins and lockfile hashes are unchanged.
+pi-fabric was re-vetted and stays rejected (it sends prompts and code to its
+own third-party model services, embeds a second Pi, and needs Node >= 24).
+pi-lens: see the template README for the re-test under Pi 1.4.0.

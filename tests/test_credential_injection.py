@@ -749,7 +749,7 @@ def test_claude_subscription_sets_oauth_token_without_a_seed():
 
 @needs_node
 def test_codex_workspace_trust_is_written_to_config_toml_and_keeps_existing_keys(tmp_path):
-    # Codex 0.157 ignores the ``-c projects.<dir>.trust_level`` override for its
+    # Codex (since 0.157, still 0.165) ignores the ``-c projects.<dir>.trust_level`` override for its
     # folder-trust dialog; only a config.toml table suppresses it (#16).
     factory = FakeFactory()
     transport, _ = create_credentialed_transport(

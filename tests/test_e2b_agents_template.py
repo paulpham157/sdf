@@ -30,11 +30,12 @@ def test_dockerfile_pins_every_agent_cli_to_exact_versions():
     assert re.search(r"^ARG HERDR_SHA256=[0-9a-f]{64}$", dockerfile, re.MULTILINE)
     assert '"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"' in dockerfile
     assert '"@openai/codex@${CODEX_VERSION}"' in dockerfile
-    assert '"opencode-ai@${OPENCODE_VERSION}"' in dockerfile
-    assert 'test "$(opencode --version)" = "${OPENCODE_VERSION}"' in dockerfile
-    assert '"@mariozechner/pi-coding-agent@${PI_VERSION}"' in dockerfile
-    # Pi prints its version on stderr.
-    assert 'test "$(pi --version 2>&1)" = "${PI_VERSION}"' in dockerfile
+    # OpenCode 2 is published as @opencode/cli and prints ``opencode vX``.
+    assert '"@opencode/cli@${OPENCODE_VERSION}"' in dockerfile
+    assert 'test "$(opencode --version)" = "opencode v${OPENCODE_VERSION}"' in dockerfile
+    assert '"@earendil-works/pi-coding-agent@${PI_VERSION}"' in dockerfile
+    assert 'test "$(pi --version)" = "${PI_VERSION}"' in dockerfile
+    assert "opencode-ai@" not in dockerfile and "@mariozechner/" not in dockerfile
     assert '"@qwen-code/qwen-code@${QWEN_CODE_VERSION}"' in dockerfile
     assert 'test "$(qwen --version)" = "${QWEN_CODE_VERSION}"' in dockerfile
     assert re.search(r"^ARG GOOSE_SHA256=[0-9a-f]{64}$", dockerfile, re.MULTILINE)
@@ -139,7 +140,8 @@ def test_pi_extension_lockfile_verifies_everything_and_ships_no_second_pi():
             continue
         assert entry["integrity"].startswith("sha512-"), key
         assert entry["resolved"].startswith("https://registry.npmjs.org/"), key
-        # Pi comes only from the pinned global install (linked at build time).
+        # Pi comes only from the pinned global install (Pi 1.x serves its own
+        # modules to extensions; verify-pins.mjs refuses a second copy).
         assert "@earendil-works/" not in key and "@mariozechner/" not in key, key
 
 
@@ -147,11 +149,11 @@ def test_dockerfile_installs_pi_extensions_from_the_lockfile_without_scripts():
     from sdf_core.pi_runtime import PI_EXTENSIONS_DIR
 
     dockerfile = (AGENTS / "Dockerfile").read_text()
-    assert f"pi-extensions/package-lock.json pi-extensions/link-pi-host.mjs pi-extensions/verify-pins.mjs {PI_EXTENSIONS_DIR}/" in dockerfile
+    assert f"pi-extensions/package-lock.json pi-extensions/verify-pins.mjs {PI_EXTENSIONS_DIR}/" in dockerfile
     assert "npm ci --ignore-scripts --legacy-peer-deps" in dockerfile
     assert f"node verify-pins.mjs {PI_EXTENSIONS_DIR}" in dockerfile
-    assert "pi-fabric" not in dockerfile
+    assert "pi-fabric" not in dockerfile and "link-pi-host" not in dockerfile
     allowed = (AGENTS / ".dockerignore").read_text().splitlines()
-    for name in ("package.json", "package-lock.json", "link-pi-host.mjs", "verify-pins.mjs"):
+    for name in ("package.json", "package-lock.json", "verify-pins.mjs"):
         assert f"!pi-extensions/{name}" in allowed
-    assert {p.name for p in EXT.iterdir()} == {"package.json", "package-lock.json", "link-pi-host.mjs", "verify-pins.mjs"}
+    assert {p.name for p in EXT.iterdir()} == {"package.json", "package-lock.json", "verify-pins.mjs"}

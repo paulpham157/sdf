@@ -64,29 +64,35 @@ _CODEX_SESSION_AUTH = (
     'try{if(fs.statSync(f).size>0)process.exit(0)}catch{}'
     'fs.writeFileSync(f,s,{mode:0o600})'
 )
-# Writes the OpenCode user config (ADR-0011): one OpenAI-compatible custom
-# provider whose ``apiKey`` is the literal reference ``{env:NAME}`` (NAME is
-# argv[1]), so OpenCode reads the key from its own environment and the value is
-# never written to disk.  Base URL and models come from the plan's
-# ``SDF_OPENCODE_*`` sandbox variables.  The provider id is the model prefix.
-# OpenCode 1.19.4 allows ``bash`` and ``edit`` by default, which would be
-# permission skipping everywhere.  The seed makes both ``ask`` (headless runs
-# auto-reject them) and denies ``webfetch``; ``opencode run --auto`` approves
-# the asks only after a fresh production E2B sandbox claim (ADR-0008/0011).
+# Writes the OpenCode 2 user config (ADR-0011/0018): one OpenAI-compatible
+# custom provider whose ``apiKey`` is the literal reference ``{env:NAME}`` (NAME
+# is argv[1]), so OpenCode reads the key from its own environment and the value
+# is never written to disk.  Base URL and models come from the plan's
+# ``SDF_OPENCODE_*`` sandbox variables.  The provider id is the model prefix;
+# the small model titles sessions (``agents.title``).  OpenCode 2 permissions
+# are ordered ``{action, resource, effect}`` rules (last match wins): every
+# action defaults to ``ask`` (headless runs auto-reject asks; ``opencode run
+# --auto`` approves them only after a fresh production E2B sandbox claim,
+# ADR-0008); read/glob/grep are allowed except ``.env`` files; network tools,
+# Code Mode ``execute`` (its ``fetch`` bypasses ``webfetch``) and the
+# ungated worktree/session-move tools are denied even under ``--auto``.
 _OPENCODE_CONFIG = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/opencode",f=d+"/opencode.json",v=process.argv[1];'
     'if(!e[v]){process.exit(0)}const u=e.SDF_OPENCODE_BASE_URL||"",m=e.SDF_OPENCODE_MODEL||"",s=e.SDF_OPENCODE_SMALL_MODEL||m;'
     'const i=m.indexOf("/");if(!u||i<1){console.error("opencode-config: base URL or model missing");process.exit(1)}'
-    'const p=m.slice(0,i),models={};for(const x of [m,s]){if(!x.startsWith(p+"/")){console.error("opencode-config: small model provider differs");process.exit(1)}models[x.slice(i+1)]={tool_call:true}}'
-    'const c={$schema:"https://opencode.ai/config.json",model:m,small_model:s,autoupdate:false,share:"disabled",'
-    'permission:{edit:"ask",bash:"ask",webfetch:"deny"},provider:{[p]:{npm:"@ai-sdk/openai-compatible",name:p,'
-    'options:{baseURL:u,apiKey:"{env:"+v+"}"},models}}};'
+    'const p=m.slice(0,i),models={};for(const x of [m,s]){if(!x.startsWith(p+"/")){console.error("opencode-config: small model provider differs");process.exit(1)}models[x.slice(i+1)]={capabilities:{tools:true}}}'
+    'const r=(a,x,y)=>({action:a,resource:x,effect:y}),permissions=[r("*","*","ask"),r("read","*","allow"),r("glob","*","allow"),'
+    'r("grep","*","allow"),r("read","*.env","ask"),r("read","*.env.*","ask"),r("read","*.env.example","allow")];'
+    'for(const a of ["webfetch","websearch","execute","opencode_worktree_create","opencode_worktree_remove","opencode_session_move"])permissions.push(r(a,"*","deny"));'
+    'const c={$schema:"https://opencode.ai/config.json",model:m,update:"disable",share:"disabled",permissions,agents:{title:{model:s}},'
+    'providers:{[p]:{package:"aisdk:@ai-sdk/openai-compatible",name:p,settings:{baseURL:u,apiKey:"{env:"+v+"}"},models}}};'
     'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
 )
 # Writes Pi's user model registry ~/.pi/agent/models.json (ADR-0012): one
 # OpenAI-compatible provider ``sdf`` whose ``apiKey`` is the key variable's
-# NAME (argv[1]).  Pi 0.73.1 resolves a non-``!`` apiKey as an environment
-# variable name first, so the key value is never written to disk.  Base URL and
+# reference ``$NAME`` (NAME is argv[1]).  Pi 1.x resolves ``$NAME`` from its
+# environment (a bare name would be sent as the literal key), so the key
+# value is never written to disk.  Base URL and
 # model come from the plan's ``SDF_PI_*`` sandbox variables.  Token prices are
 # filled in only for the default Vultr glm-5.3 (USD per 1M tokens); any other
 # model reports tokens with a zero cost.  URL and model are matched by escaped
@@ -97,7 +103,7 @@ _PI_MODELS = (
     'if(!e[v]){process.exit(0)}const u=e.SDF_PI_BASE_URL||"",m=e.SDF_PI_MODEL||"";'
     'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("pi-models: base URL, model or key name missing");process.exit(1)}'
     'const price=/^https:\\/\\/api\\.vultrinference\\.com\\/v1\\/*$/.test(u)&&/^glm-5\\.3$/.test(m)?[0.75,3]:[0,0];'
-    'const c={providers:{sdf:{baseUrl:u,api:"openai-completions",apiKey:v,models:[{id:m,name:m,reasoning:true,'
+    'const c={providers:{sdf:{baseUrl:u,api:"openai-completions",apiKey:"$"+v,models:[{id:m,name:m,reasoning:true,'
     'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:price[0],output:price[1],cacheRead:0,cacheWrite:0}}]}}};'
     'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
 )
@@ -152,7 +158,7 @@ _CLAUDE_TRUST_WORKSPACE = (
     'c.projects=c.projects||{};c.projects[p]=Object.assign({},c.projects[p],{hasTrustDialogAccepted:true});'
     'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600)'
 )
-# Codex 0.157 shows its folder-trust dialog for a fresh Attempt directory even
+# Codex (0.157 and 0.165) shows its folder-trust dialog for a fresh Attempt directory even
 # with a ``-c projects.<dir>.trust_level`` override (observed live, #16); only a
 # ``[projects."<dir>"]`` table in ~/.codex/config.toml suppresses it.  Appended
 # once, so earlier top-level keys (``openai_base_url``) stay first.

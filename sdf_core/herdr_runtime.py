@@ -54,7 +54,7 @@ def _claim_fresh_e2b_permission_bypass(transport: object | None) -> bool:
         return False
     return transport.claim_fresh_permission_bypass()
 
-# Codex 0.157 can take Herdr's typed prompt into its composer but swallow the
+# Codex (0.157, 0.165) can take Herdr's typed prompt into its composer but swallow the
 # submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
 # stays idle.  Claude Code 2.1.282 does the same when it starts fast (the
 # prebuilt ``sdf-herdr-agents`` template): Herdr reports it interactive a few
@@ -91,7 +91,7 @@ def _agent_start_args(
 ) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
 
-    Codex does not inherit trust from a parent directory.  Codex 0.157 still
+    Codex does not inherit trust from a parent directory.  Codex (0.157 and 0.165) still
     shows its folder-trust dialog with only this override, so a transport also
     pre-trusts the directory in config.toml (``prepare_agent_workspace``).
 
@@ -110,7 +110,7 @@ def _agent_start_args(
             args = (*args, "--dangerously-skip-permissions")
     if agent == "codex":
         # A trusted project's .codex/config.toml may widen approval and the
-        # sandbox (Codex 0.157 ignores project base URL / provider keys).
+        # sandbox; Codex (since 0.157, still 0.165) ignores project base URL / provider keys.
         # Invocation overrides outrank it; these are Codex's own defaults.
         args = (*args, *_CODEX_PINNED_POLICY)
         if workspace_dir is not None:

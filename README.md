@@ -44,13 +44,15 @@ Claude Code; the Codex-only `sdf-herdr-codex` template is retired
 needs an explicit Credential Mode, `subscription` or `api-key`
 (ADR 0007).
 
-OpenCode (`opencode`, pinned `1.19.4`) is a headless agent kind
+OpenCode 2 (`opencode`, `@opencode/cli` pinned `2.2.0`) is a headless agent kind
 (`sdf_core.opencode_runtime.OpenCodeHeadlessRuntime`) that uses any
 OpenAI-compatible endpoint; Vultr Serverless Inference with `vultr/glm-5.3` is
 only the default. Base URL, key variable name and model are configurable per
-agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)).
+agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md));
+each turn runs `opencode run --server` against a private, password-protected
+loopback `opencode serve` ([ADR 0018](docs/adr/0018-opencode-2-and-pi-1-upgrade.md)).
 
-Pi (`pi`, pinned `0.73.1`) is a second headless agent kind
+Pi (`pi`, `@earendil-works/pi-coding-agent` pinned `1.4.0`) is a second headless agent kind
 (`sdf_core.pi_runtime.PiHeadlessRuntime`, `pi -p --mode json`) with the same
 Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox

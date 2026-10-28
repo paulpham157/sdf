@@ -143,7 +143,8 @@ def test_pi_models_seed_references_the_key_by_name_only(tmp_path):
     assert provider["baseUrl"] == DEFAULT_PI_BASE_URL
     assert provider["api"] == "openai-completions"
     # A NAME, not a `!command` and not the value.
-    assert provider["apiKey"] == "SDF_PI_API_KEY"
+    # Pi 1.x: ``$NAME`` reads the variable (a bare name would be the key itself).
+    assert provider["apiKey"] == "$SDF_PI_API_KEY"
     [model] = provider["models"]
     assert model["id"] == "glm-5.3"
     assert model["cost"] == {"input": 0.75, "output": 3, "cacheRead": 0, "cacheWrite": 0}
@@ -169,7 +170,9 @@ FAKE_PI = textwrap.dedent('''\
     import json, os, sys
     args = sys.argv[1:]
     if args == ["--version"]:
-        sys.stderr.write(os.environ.get("FAKE_PI_VERSION", "0.73.1") + "\\n"); sys.exit(0)
+        # Pi 1.x prints its version on stdout; PI_PACKAGE_DIR would change it.
+        v = "0.0.0" if "PI_PACKAGE_DIR" in os.environ else os.environ.get("FAKE_PI_VERSION", "1.4.0")
+        print(v); sys.exit(0)
     prompt = sys.stdin.read()
     with open(os.environ["FAKE_PI_LOG"], "a") as f:
         env = {k: v for k, v in os.environ.items() if k.startswith("PI_")}
@@ -294,6 +297,7 @@ def test_read_only_turn_uses_stdin_prompt_and_reports_usage(local, tmp_path):
     assert "-x @calc.py starts with a dash" not in call["args"]
     assert call["args"] == [
         "-p", "--mode", "json", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+        "--no-mcp", "--no-approve",
         # Read-only: only the guardrail extension (ADR-0017).
         "-e", f"{tmp_path}/ext/node_modules/@cad0p/pi-steering/src/index.ts",
         "--session-dir", f"{tmp_path}/sdf-pi-ATTEMPT-1/sessions", "--tools", "read,grep,find,ls",
@@ -401,8 +405,15 @@ def test_version_pin_is_enforced(local):
     transport.env["FAKE_PI_VERSION"] = "0.80.0"
     runtime = PiHeadlessRuntime(transport=transport)
     runtime.bind_workspace("ATTEMPT-8", workspace)
-    with pytest.raises(PiRuntimeError, match="Pi 0.80.0 is installed but SDF is pinned to 0.73.1"):
+    with pytest.raises(PiRuntimeError, match="Pi 0.80.0 is installed but SDF is pinned to 1.4.0"):
         runtime.start(attempt_id="ATTEMPT-8", agent="pi")
+
+
+def test_version_probe_ignores_pi_variables(local):
+    transport, workspace, _ = local
+    transport.env["PI_PACKAGE_DIR"] = "/tmp/elsewhere"
+    runtime = PiHeadlessRuntime(transport=transport)
+    assert runtime.installed_version() == pir.PI_VERSION == "1.4.0"
 
 
 def test_start_requires_pi_kind_credentials_and_staged_workspace(local):
@@ -550,8 +561,8 @@ def test_extension_selection_defaults_to_all_and_empty_means_none():
 
 
 @pytest.mark.parametrize("value, reason", [
-    ("pi-fabric", "Pi >= 1.0"),
-    ("@cad0p/pi-steering,pi-fabric", "Pi >= 1.0"),
+    ("pi-fabric", "third-party model services"),
+    ("@cad0p/pi-steering,pi-fabric", "third-party model services"),
     ("pi-lens", "turn_end/agent_end hooks"),
     ("@paulpham157/apply-patch,pi-lens", "hangs until the timeout"),
 ])
@@ -610,7 +621,7 @@ def test_discovery_flags_stay_with_extensions_and_paths_stay_in_the_baked_dir(lo
     session = runtime.start(attempt_id="ATTEMPT-E1", agent="pi")
     runtime.send(session.session_id, "fix")
     args = _calls(log)[0]["args"]
-    for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"):
+    for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-approve"):
         assert flag in args
     paths = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
     assert len(paths) == 2 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
