@@ -18,6 +18,7 @@ sandbox is closed in ``finally``.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import threading
@@ -33,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from .adapter import AdapterResult
 from .agent_messaging import ENVELOPE_NAME, MAX_ENVELOPE_BYTES, EnvelopeError, Member, MessageHub, delivery_payload
+from .core_mcp import AGENT_HINT, MAX_REQUEST_BYTES, REQUEST_NAME, CoreQueryService, response_payload, scope_for
 from .agent_sandbox import SUPPORTED_KINDS, AgentSandbox, AgentSandboxFactory, AgentSpec
 from .db import (
     AgentRunMemberRow,
@@ -253,6 +255,7 @@ class Coordinator:
         stall_verified: set[str] = set()  # attempts the host verified because agents went quiet
         pool = ThreadPoolExecutor(max_workers=config.max_concurrent_turns, thread_name_prefix=f"{run_id}-turn")
         hub: MessageHub | None = None
+        core_log: list[dict[str, Any]] = []
         timings: dict[str, float] = {}
         try:
             members_rows = self.db.scalars(select(AgentRunMemberRow).where(AgentRunMemberRow.run_id == run_id)).all()
@@ -293,6 +296,8 @@ class Coordinator:
                 aid: Member(aid, ag.spec.role, ag.subtask_key, ag.sandbox.sandbox_id) for aid, ag in agents.items()})
             for sub in subtasks.values():
                 hub.attempt_for[sub.worker] = sub.attempt_id
+            # ADR 0022: one run-scoped, read-only viewer capability per agent, held on the host.
+            core = {aid: CoreQueryService(self.db, scope_for(self.db, run_id, aid)) for aid in agents}
             assignments = {s.worker: s.key for s in subtasks.values()}
             pending: list[tuple[str, Any]] = []  # (recipient, message row)
             msg = hub.post_from_host(lead_id, _plan_brief(plan, assignments), meta={"plan_id": plan.id})
@@ -354,6 +359,10 @@ class Coordinator:
                         if res.decision_request_id:
                             self._apply_policy(res.decision_request_id)
                         self.db.commit()
+
+                # 2b. read-only SDF Core queries (ADR 0022), answered between polls even mid-turn
+                for aid, ag in agents.items():
+                    self._serve_core(aid, ag, core[aid], core_log, violations)
 
                 # 3. resolved agent decision requests -> "decision" messages
                 for req in self.db.scalars(select(DecisionRequestRow).where(
@@ -466,7 +475,7 @@ class Coordinator:
                     violations.append({"agent": "host", "error": f"cleanup check failed: {exc}"[:300]})
             _CANCEL_EVENTS.pop(run_id, None)
         return self._finalize(run_id, agents, subtasks, config, outcome, error, violations, timings,
-                              time.monotonic() - started, closed, still_running)
+                              time.monotonic() - started, closed, still_running, core_log)
 
     # -- helpers --------------------------------------------------------------
     def _member_row(self, run_id: str, agent_id: str) -> AgentRunMemberRow:
@@ -485,8 +494,8 @@ class Coordinator:
 
     def _prompt(self, ag: _Agent) -> str:
         if ag.spec.role == "lead":
-            return (LEAD_CONTEXT.format(agent_id=ag.spec.agent_id) + "\n" + LEAD_FIRST) if ag.turns == 0 else LEAD_WAKE
-        return (WORKER_CONTEXT.format(agent_id=ag.spec.agent_id) + "\n" + WORKER_WAKE) if ag.turns == 0 else WORKER_WAKE
+            return (LEAD_CONTEXT.format(agent_id=ag.spec.agent_id) + AGENT_HINT + "\n\n" + LEAD_FIRST) if ag.turns == 0 else LEAD_WAKE
+        return (WORKER_CONTEXT.format(agent_id=ag.spec.agent_id) + AGENT_HINT + "\n\n" + WORKER_WAKE) if ag.turns == 0 else WORKER_WAKE
 
     @staticmethod
     def _safe_list(ag: _Agent, violations: list[dict[str, Any]]) -> list[tuple[str, int]]:
@@ -514,6 +523,42 @@ class Coordinator:
         except Exception as exc:  # noqa: BLE001
             violations.append({"agent": aid, "error": f"outbox read failed: {exc}"[:300]})
             return None
+
+    def _serve_core(self, aid: str, ag: _Agent, service: CoreQueryService, core_log: list[dict[str, Any]],
+                    violations: list[dict[str, Any]]) -> None:
+        lister = getattr(ag.sandbox, "list_core_requests", None)
+        if lister is None:
+            return
+        try:
+            names = sorted(lister())
+        except Exception as exc:  # noqa: BLE001
+            violations.append({"agent": aid, "error": f"core request list failed: {exc}"[:300]})
+            return
+        for name, size in names:
+            if name.startswith("."):
+                continue
+            try:
+                raw = b"" if not REQUEST_NAME.fullmatch(name) or size > MAX_REQUEST_BYTES \
+                    else ag.sandbox.read_core_request(name)
+                ag.sandbox.remove_core_request(name)
+            except Exception as exc:  # noqa: BLE001
+                violations.append({"agent": aid, "error": f"core request read failed: {exc}"[:300]})
+                continue
+            if not raw:
+                violations.append({"agent": aid, "error": f"core request {name[:40]!r} refused (name or size)"})
+                continue
+            response = service.handle(raw, sandbox_id=ag.sandbox.sandbox_id)
+            try:
+                tool = str(json.loads(raw).get("tool"))[:40]
+            except Exception:  # noqa: BLE001
+                tool = "?"
+            core_log.append({"agent": aid, "tool": tool, "ok": response["ok"], "denied": response.get("denied", False),
+                             "error": response.get("error")})
+            if response.get("id"):
+                try:
+                    ag.sandbox.write_core_response(f"{response['id']}.json", response_payload(response))
+                except Exception as exc:  # noqa: BLE001
+                    violations.append({"agent": aid, "error": f"core response write failed: {exc}"[:300]})
 
     def _deliver(self, ag: _Agent, message: Any, violations: list[dict[str, Any]]) -> bool:
         name = f"{message.seq:08d}-{message.id.lower().replace('msg-', '')}.json"
@@ -611,7 +656,8 @@ class Coordinator:
 
     def _finalize(self, run_id: str, agents: dict[str, _Agent], subtasks: dict[str, _Subtask], config: RunConfig,
                   outcome: str, error: str | None, violations: list[dict[str, Any]], timings: dict[str, float],
-                  wall_s: float, closed: list[str], still_running: set[str]) -> AgentRunRow:
+                  wall_s: float, closed: list[str], still_running: set[str],
+                  core_log: list[dict[str, Any]] | None = None) -> AgentRunRow:
         run = self.db.get(AgentRunRow, run_id)
         # Evidence is the only success criterion.
         if outcome == "succeeded" and not all(s.verdict == "PASS" for s in subtasks.values()):
@@ -643,6 +689,7 @@ class Coordinator:
             "subtasks": {k: {"task_id": s.task_id, "worker": s.worker, "verdict": s.verdict, "rounds": s.rounds,
                              "attempts": s.attempts} for k, s in subtasks.items()},
             "cost": cost_breakdown, "violations": violations[:100], "timings": {**timings, "wall_s": round(wall_s, 1)},
+            "core_queries": (core_log or [])[:200],
             "sandboxes_closed": closed, "sandboxes_still_running": sorted(still_running),
             # Left pending on purpose: only a human (or an explicit policy) resolves a request.
             "pending_decision_requests": list(self.db.scalars(select(DecisionRequestRow.id).where(

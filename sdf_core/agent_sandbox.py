@@ -23,7 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
+from .core_mcp import CORE_DIR, CORE_SHIM_PATH, REQ_DIR, RESP_DIR, registration_script
+
 SHIM_SOURCE = Path(__file__).with_name("sdf_msg_shim.py")
+CORE_SHIM_SOURCE = Path(__file__).with_name("sdf_core_shim.py")
 MAILBOX = "/home/user/.sdf-msg"
 OUTBOX, INBOX = f"{MAILBOX}/outbox", f"{MAILBOX}/inbox"
 SHIM_PATH = "/usr/local/bin/sdf-msg"
@@ -60,6 +63,11 @@ class AgentSandbox(Protocol):
     def read_outbox(self, name: str) -> bytes: ...
     def remove_outbox(self, name: str) -> None: ...
     def deliver(self, name: str, data: bytes) -> None: ...
+    # ADR 0022 (optional): read-only SDF Core query relay
+    # def list_core_requests(self) -> list[tuple[str, int]]: ...
+    # def read_core_request(self, name: str) -> bytes: ...
+    # def remove_core_request(self, name: str) -> None: ...
+    # def write_core_response(self, name: str, data: bytes) -> None: ...
     def inbox_count(self) -> int: ...
     def collect(self, destination: Path) -> None: ...
     def usage(self) -> dict[str, Any]: ...
@@ -70,7 +78,7 @@ class AgentSandbox(Protocol):
 AgentSandboxFactory = Callable[[AgentSpec], AgentSandbox]
 
 
-def _install_script(agent_id: str, mcp: bool) -> str:
+def _install_script(agent_id: str, mcp: bool, kind: str | None = None, core: bool = False) -> str:
     lines = [
         "set -e",
         f"sudo install -m 0755 /tmp/sdf-msg.py {SHIM_PATH}",
@@ -78,6 +86,14 @@ def _install_script(agent_id: str, mcp: bool) -> str:
         f"mkdir -p {OUTBOX} {INBOX} {MAILBOX}/read && chmod 700 {MAILBOX}",
         f"printf %s {shlex.quote(agent_id)} > {MAILBOX}/me",
     ]
+    if core:
+        # ADR 0022: read-only SDF Core queries, registered in user-level config only.
+        lines += [
+            f"sudo install -m 0755 /tmp/sdf-core.py {CORE_SHIM_PATH}",
+            "rm -f /tmp/sdf-core.py",
+            f"mkdir -p {REQ_DIR} {RESP_DIR} && chmod 700 {CORE_DIR}",
+            f"python3 -c {shlex.quote(registration_script(kind or 'pi'))}",
+        ]
     if mcp:
         merge = (
             "import json,os;p=os.path.expanduser('~/.config/opencode/opencode.json');"
@@ -97,7 +113,7 @@ class E2BAgentSandbox:
     def __init__(
         self, spec: AgentSpec, *, environ: Mapping[str, str], template: str = DEFAULT_TEMPLATE,
         sandbox_timeout_s: int = 1800, turn_timeout_s: int = 420, network: Mapping[str, Any] | None = None,
-        mcp_for_opencode: bool = True,
+        mcp_for_opencode: bool = True, core_access: bool = True,
     ) -> None:
         if spec.kind not in SUPPORTED_KINDS:
             raise ValueError(f"agent kind {spec.kind!r} is not supported by the coordinator (use {SUPPORTED_KINDS})")
@@ -108,6 +124,7 @@ class E2BAgentSandbox:
         self._turn_timeout_s = turn_timeout_s
         self._network = dict(network or DEFAULT_NETWORK)
         self._mcp = mcp_for_opencode and spec.kind == "opencode"
+        self._core = core_access
         self._transport: Any = None
         self._runtime: Any = None
         self._session: str | None = None
@@ -153,7 +170,10 @@ class E2BAgentSandbox:
         self._runtime.bind_workspace(self._binding, workspace)
         self._sandbox_id = self._transport.sandbox_id
         self._fs().write("/tmp/sdf-msg.py", SHIM_SOURCE.read_text())
-        out = self._transport.exec_argv(["sh", "-c", _install_script(self.spec.agent_id, self._mcp)], 60_000)
+        if self._core:
+            self._fs().write("/tmp/sdf-core.py", CORE_SHIM_SOURCE.read_text())
+        script = _install_script(self.spec.agent_id, self._mcp, self.spec.kind, self._core)
+        out = self._transport.exec_argv(["sh", "-c", script], 60_000)
         if out.strip().splitlines()[-1:] != [self.spec.agent_id]:
             raise RuntimeError("sdf-msg shim install could not be verified")
         self._session = self._runtime.start(attempt_id=self._binding, agent=self.spec.kind).session_id
@@ -186,6 +206,25 @@ class E2BAgentSandbox:
         tmp = f"{INBOX}/.{name}.part"
         fs.write(tmp, data)
         fs.rename(tmp, f"{INBOX}/{name}")  # the shim ignores dot-files: no partial reads
+
+    # -- ADR 0022: SDF Core query relay ---------------------------------------
+    def list_core_requests(self) -> list[tuple[str, int]]:
+        if not self._core:
+            return []
+        return [(e.name, int(e.size or 0)) for e in self._fs().list(REQ_DIR)
+                if e.type is not None and str(e.type).lower().endswith("file")]
+
+    def read_core_request(self, name: str) -> bytes:
+        return bytes(self._fs().read(f"{REQ_DIR}/{name}", format="bytes"))
+
+    def remove_core_request(self, name: str) -> None:
+        self._fs().remove(f"{REQ_DIR}/{name}")
+
+    def write_core_response(self, name: str, data: bytes) -> None:
+        fs = self._fs()
+        tmp = f"{RESP_DIR}/.{name}.part"
+        fs.write(tmp, data)
+        fs.rename(tmp, f"{RESP_DIR}/{name}")
 
     def inbox_count(self) -> int:
         return sum(1 for e in self._fs().list(INBOX) if e.name.endswith(".json") and not e.name.startswith("."))

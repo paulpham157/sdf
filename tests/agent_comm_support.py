@@ -14,6 +14,7 @@ from typing import Any, Callable
 from sdf_core.agent_sandbox import AgentSpec, TurnResult
 
 SHIM = Path(__file__).resolve().parents[1] / "sdf_core" / "sdf_msg_shim.py"
+CORE_SHIM = Path(__file__).resolve().parents[1] / "sdf_core" / "sdf_core_shim.py"
 
 CALC = "def add(a, b):\n    return a - b\n\n\ndef sub(a, b):\n    return a - b\n"
 CALC2 = "def double(x):\n    return 2 * x\n"
@@ -97,6 +98,33 @@ class FakeAgentSandbox:
         out = subprocess.run([sys.executable, str(SHIM), *args], cwd=self.ws, env=env, input=stdin,
                              capture_output=True, text=True, timeout=30)
         return out.stdout + out.stderr
+
+    def core(self, *args: str) -> str:
+        """Run the real ``sdf-core`` shim; it blocks until the coordinator answers."""
+        env = {"HOME": str(self.home), "PATH": os.environ.get("PATH", ""), "SDF_CORE_WAIT_S": "20"}
+        out = subprocess.run([sys.executable, str(CORE_SHIM), *args], cwd=self.ws, env=env,
+                             capture_output=True, text=True, timeout=40)
+        return out.stdout + out.stderr
+
+    @property
+    def core_dir(self) -> Path:
+        return self.home / ".sdf-core"
+
+    def list_core_requests(self) -> list[tuple[str, int]]:
+        req = self.core_dir / "req"
+        return [(p.name, p.stat().st_size) for p in req.iterdir() if p.is_file()] if req.exists() else []
+
+    def read_core_request(self, name: str) -> bytes:
+        return (self.core_dir / "req" / name).read_bytes()
+
+    def remove_core_request(self, name: str) -> None:
+        (self.core_dir / "req" / name).unlink()
+
+    def write_core_response(self, name: str, data: bytes) -> None:
+        resp = self.core_dir / "resp"
+        resp.mkdir(parents=True, exist_ok=True)
+        (resp / f".{name}.part").write_bytes(data)
+        (resp / f".{name}.part").rename(resp / name)
 
     def read_json(self) -> list[dict[str, Any]]:
         msgs = []
