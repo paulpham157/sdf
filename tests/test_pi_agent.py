@@ -254,7 +254,19 @@ def local(tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(PiHeadlessRuntime, "command", command)
+    # The image-baked extensions (ADR-0017), at their pins.
+    monkeypatch.delenv("SDF_PI_EXTENSIONS", raising=False)
+    monkeypatch.setattr(pir, "PI_EXTENSIONS_DIR", str(_bake_extensions(tmp_path / "ext")))
     return LocalTransport(tmp_path, env), workspace, tmp_path / "calls.jsonl"
+
+
+def _bake_extensions(root: Path, **versions: str) -> Path:
+    for name, ext in pir.PI_EXTENSIONS.items():
+        package = root / "node_modules" / name
+        package.mkdir(parents=True)
+        version = versions.get(name, ext.version)
+        (package / "package.json").write_text(json.dumps({"name": name, "version": version}, indent=2))
+    return root
 
 
 def _calls(log: Path) -> list[dict]:
@@ -282,6 +294,8 @@ def test_read_only_turn_uses_stdin_prompt_and_reports_usage(local, tmp_path):
     assert "-x @calc.py starts with a dash" not in call["args"]
     assert call["args"] == [
         "-p", "--mode", "json", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
+        # Read-only: only the guardrail extension (ADR-0017).
+        "-e", f"{tmp_path}/ext/node_modules/@cad0p/pi-steering/src/index.ts",
         "--session-dir", f"{tmp_path}/sdf-pi-ATTEMPT-1/sessions", "--tools", "read,grep,find,ls",
         "--provider", "sdf", "--model", "glm-5.3",
     ]
@@ -310,6 +324,13 @@ def test_write_tools_only_with_the_fresh_e2b_claim(local, monkeypatch):
     runtime.send(session.session_id, "fix")
     args = _calls(log)[0]["args"]
     assert "--tools" not in args and args[-2:] == ["--model", "other-1"]
+    ext = str(local[2].parent / "ext" / "node_modules")
+    assert [args[i + 1] for i, a in enumerate(args) if a == "-e"] == [
+        f"{ext}/@cad0p/pi-steering/src/index.ts",
+        f"{ext}/@paulpham157/apply-patch/src/index.ts",
+        f"{ext}/pi-lens/dist/index.js",
+    ]
+    assert runtime.loaded_extensions(session.session_id) == tuple(pir.PI_EXTENSIONS)
     runtime.collect_workspace("ATTEMPT-2", workspace)
     assert "a + b" in (workspace / "calc.py").read_text()
 
@@ -327,12 +348,18 @@ def test_real_claim_is_refused_for_non_production_transports(local):
 
 def test_turn_strips_every_pi_variable_and_forces_offline(local):
     transport, workspace, log = local
-    transport.env.update({"PI_CODING_AGENT_DIR": "/tmp/evil", "PI_PACKAGE_DIR": "/tmp/evil", "PI_ANYTHING": "1"})
+    transport.env.update({"PI_CODING_AGENT_DIR": "/tmp/evil", "PI_PACKAGE_DIR": "/tmp/evil", "PI_ANYTHING": "1",
+                          "PI_LENS_HOME": "/tmp/evil", "PI_LENS_DISABLE_TOOL_INSTALL": "0"})
     runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-3", workspace)
     session = runtime.start(attempt_id="ATTEMPT-3", agent="pi")
     runtime.send(session.session_id, "fix")
-    assert _calls(log)[0]["env"] == {"PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
+    assert _calls(log)[0]["env"] == {
+        "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
+        # pi-lens: no runtime installs, state under HOME (ADR-0017).
+        "PI_LENS_DISABLE_TOOL_INSTALL": "1", "PI_LENS_DISABLE_LSP_INSTALL": "1",
+        "PI_LENS_DISABLE_TOOL_REFRESH": "1", "PI_LENS_HOME": f"{transport.env['HOME']}/.pi-lens",
+    }
 
 
 def test_workspace_with_project_config_is_refused_before_staging(local, tmp_path):
@@ -512,3 +539,105 @@ def test_pi_runs_read_only_through_a_credentialed_daytona_transport():
     assert any("pi-models" in c or ".pi/agent" in c for c in injection.seed_commands)
     assert all(KEY not in c for c in injection.seed_commands)
     assert runtime.credentials == {"pi": CredentialMetadata("api-key")}
+
+
+# --- extensions (ADR-0017) ---------------------------------------------------------
+
+
+def test_extension_selection_defaults_to_all_and_empty_means_none():
+    assert pir.resolve_pi_extensions(None) == pir.DEFAULT_PI_EXTENSIONS == tuple(pir.PI_EXTENSIONS)
+    assert pir.resolve_pi_extensions("") == ()
+    assert pir.resolve_pi_extensions(" , ") == ()
+    # Canonical load order and de-duplication, whatever the operator wrote.
+    assert pir.resolve_pi_extensions(" pi-lens,@cad0p/pi-steering,pi-lens ") == ("@cad0p/pi-steering", "pi-lens")
+
+
+@pytest.mark.parametrize("value", ["pi-fabric", "pi-lens,pi-fabric"])
+def test_rejected_extension_is_refused_with_the_reason(value):
+    with pytest.raises(ValueError, match="Pi >= 1.0"):
+        pir.resolve_pi_extensions(value)
+
+
+@pytest.mark.parametrize("value", ["left-pad", "npm:pi-lens", "pi-lens@4.4.6", "./x.ts", "/opt/sdf-pi-extensions/x"])
+def test_only_allowlisted_names_are_accepted(value):
+    with pytest.raises(ValueError, match="not an image-baked Pi extension"):
+        pir.resolve_pi_extensions(value)
+
+
+def test_constructor_reads_the_environment_and_explicit_values_win(local, monkeypatch):
+    transport, *_ = local
+    monkeypatch.setenv("SDF_PI_EXTENSIONS", "pi-lens")
+    assert PiHeadlessRuntime(transport=transport).extensions == ("pi-lens",)
+    assert PiHeadlessRuntime(transport=transport, extensions=()).extensions == ()
+    monkeypatch.setenv("SDF_PI_EXTENSIONS", "evil")
+    with pytest.raises(ValueError):
+        PiHeadlessRuntime(transport=transport)
+
+
+def test_read_only_turns_load_only_read_only_safe_extensions():
+    assert [n for n, e in pir.PI_EXTENSIONS.items() if e.read_only] == ["@cad0p/pi-steering"]
+    every = tuple(pir.PI_EXTENSIONS)
+    assert pir.extensions_for_turn(every, auto=False) == ("@cad0p/pi-steering",)
+    assert pir.extensions_for_turn(every, auto=True) == every
+    assert pir.extensions_for_turn(("pi-lens",), auto=False) == ()
+
+
+def test_no_extensions_means_no_dash_e_and_no_probe(local, monkeypatch):
+    transport, workspace, log = local
+    monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: True)
+    monkeypatch.setenv("SDF_PI_EXTENSIONS", "")
+    runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-E0", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-E0", agent="pi")
+    runtime.send(session.session_id, "fix")
+    args = _calls(log)[0]["args"]
+    assert "-e" not in args and "--no-extensions" in args
+    assert not any("sdf-pi-ext" in call for call in transport.calls)
+
+
+def test_discovery_flags_stay_with_extensions_and_paths_stay_in_the_baked_dir(local, monkeypatch):
+    transport, workspace, log = local
+    monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: True)
+    runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-E1", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-E1", agent="pi")
+    runtime.send(session.session_id, "fix")
+    args = _calls(log)[0]["args"]
+    for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"):
+        assert flag in args
+    paths = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+    assert len(paths) == 3 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
+
+
+@pytest.mark.parametrize("versions, message", [
+    ({"pi-lens": "4.4.7"}, "pi-lens 4.4.7 is installed but SDF is pinned to 4.4.6"),
+    ({"@cad0p/pi-steering": None}, "@cad0p/pi-steering is not installed"),
+])
+def test_extension_pins_are_checked_in_the_sandbox_before_the_claim(tmp_path, local, monkeypatch, versions, message):
+    transport, workspace, _ = local
+    root = tmp_path / "ext2"
+    _bake_extensions(root, **{k: v for k, v in versions.items() if v})
+    for name, version in versions.items():
+        if version is None:
+            (root / "node_modules" / name / "package.json").unlink()
+    claims = []
+    monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: claims.append(t) or True)
+    runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20, extensions_dir=str(root))
+    runtime.bind_workspace("ATTEMPT-E2", workspace)
+    with pytest.raises(pir.PiRuntimeError, match=message):
+        runtime.start(attempt_id="ATTEMPT-E2", agent="pi")
+    assert claims == []
+
+
+def test_extension_probe_reports_installed_versions(local):
+    transport, *_ = local
+    runtime = PiHeadlessRuntime(transport=transport)
+    assert runtime.require_extensions() == {n: e.version for n, e in pir.PI_EXTENSIONS.items()}
+
+
+def test_agent_environ_passes_the_extension_choice_through_even_when_empty():
+    from sdf_core.agent_sandbox import agent_environ
+
+    assert agent_environ({"SDF_PI_EXTENSIONS": ""}, {"pi"})["SDF_PI_EXTENSIONS"] == ""
+    assert "SDF_PI_EXTENSIONS" not in agent_environ({}, {"pi"})
+    assert "SDF_PI_EXTENSIONS" not in agent_environ({"SDF_PI_EXTENSIONS": "pi-lens"}, {"opencode"})

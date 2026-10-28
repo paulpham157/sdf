@@ -10,7 +10,7 @@ and carries the supported agent kinds:
 | Codex CLI (`@openai/codex`) | `0.157.0` |
 | Claude Code (`@anthropic-ai/claude-code`) | `2.1.282` |
 | OpenCode (`opencode-ai`, headless `opencode run`, [ADR 0011](../../../docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)) | `1.19.4` |
-| Pi (`@mariozechner/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)) | `0.73.1` |
+| Pi (`@mariozechner/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)), with baked extensions ([ADR 0017](../../../docs/adr/0017-image-baked-pi-extensions.md)) | `0.73.1` |
 | Qwen Code (`@qwen-code/qwen-code`, headless `qwen -o json`, [ADR 0013](../../../docs/adr/0013-openai-compatible-headless-agent-kinds.md)) | `0.26.2` |
 | Goose (`goose`, musl release tarball, SHA-256 verified, ADR 0013) | `1.56.0` |
 | Node.js runtime | `22` (`node:22-bookworm-slim`) |
@@ -23,6 +23,25 @@ checks; it is not tied to an agent kind.
 Aider and the Cursor Agent CLI were removed from the image by
 [ADR 0016](../../../docs/adr/0016-remove-aider-and-cursor-agent-kinds.md)
 (2026-10-28).
+
+## Pi extensions (ADR 0017)
+
+`pi-extensions/` is installed to `/opt/sdf-pi-extensions` with
+`npm ci --ignore-scripts --legacy-peer-deps`: exact versions, every tarball
+checked against the committed lockfile's sha512 integrity, and no install
+scripts.
+
+| Package | Pinned version | Loaded in |
+| --- | --- | --- |
+| `@cad0p/pi-steering` | `0.2.0` | write and read-only turns |
+| `@paulpham157/apply-patch` | `0.3.1` | write turns only |
+| `pi-lens` | `4.4.6` | write turns only |
+
+`link-pi-host.mjs` points their `@earendil-works/pi-*` peer imports at the
+global `@mariozechner` Pi 0.73.1, so no second Pi is installed.
+`verify-pins.mjs` fails the build on any drift. Pi loads them only by explicit
+`-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. `pi-fabric`
+was vetted and rejected because it needs Pi >= 1.0 and Node >= 24.
 
 ## Claude first-run state
 

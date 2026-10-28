@@ -109,3 +109,49 @@ def test_headless_runtime_pins_match_the_dockerfile():
     pins = _pins()
     assert pins["QWEN_CODE_VERSION"] == QWEN_VERSION
     assert pins["GOOSE_VERSION"] == GOOSE_VERSION
+
+
+# --- Pi extensions (ADR 0017) -------------------------------------------------------
+
+EXT = AGENTS / "pi-extensions"
+
+
+def test_pi_extension_pins_match_the_runtime_allowlist():
+    from sdf_core.pi_runtime import PI_EXTENSIONS
+
+    manifest = json.loads((EXT / "package.json").read_text())
+    lock = json.loads((EXT / "package-lock.json").read_text())
+    assert manifest["private"] is True
+    # Exactly the allowlist, at exact versions, nothing else at the top level.
+    assert manifest["dependencies"] == {name: ext.version for name, ext in PI_EXTENSIONS.items()}
+    assert set(manifest) <= {"name", "private", "description", "dependencies"}  # no scripts
+    assert lock["packages"][""]["dependencies"] == manifest["dependencies"]
+    for name, ext in PI_EXTENSIONS.items():
+        locked = lock["packages"][f"node_modules/{name}"]
+        assert (locked["version"], locked["integrity"]) == (ext.version, ext.integrity)
+        assert locked["resolved"] == f"https://registry.npmjs.org/{name}/-/{name.split('/')[-1]}-{ext.version}.tgz"
+
+
+def test_pi_extension_lockfile_verifies_everything_and_ships_no_second_pi():
+    lock = json.loads((EXT / "package-lock.json").read_text())
+    for key, entry in lock["packages"].items():
+        if not key:
+            continue
+        assert entry["integrity"].startswith("sha512-"), key
+        assert entry["resolved"].startswith("https://registry.npmjs.org/"), key
+        # Pi comes only from the pinned global install (linked at build time).
+        assert "@earendil-works/" not in key and "@mariozechner/" not in key, key
+
+
+def test_dockerfile_installs_pi_extensions_from_the_lockfile_without_scripts():
+    from sdf_core.pi_runtime import PI_EXTENSIONS_DIR
+
+    dockerfile = (AGENTS / "Dockerfile").read_text()
+    assert f"pi-extensions/package-lock.json pi-extensions/link-pi-host.mjs pi-extensions/verify-pins.mjs {PI_EXTENSIONS_DIR}/" in dockerfile
+    assert "npm ci --ignore-scripts --legacy-peer-deps" in dockerfile
+    assert f"node verify-pins.mjs {PI_EXTENSIONS_DIR}" in dockerfile
+    assert "pi-fabric" not in dockerfile
+    allowed = (AGENTS / ".dockerignore").read_text().splitlines()
+    for name in ("package.json", "package-lock.json", "link-pi-host.mjs", "verify-pins.mjs"):
+        assert f"!pi-extensions/{name}" in allowed
+    assert {p.name for p in EXT.iterdir()} == {"package.json", "package-lock.json", "link-pi-host.mjs", "verify-pins.mjs"}

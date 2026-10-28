@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import time
 from pathlib import Path
@@ -383,6 +384,12 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     if headless:
         records = runtime.usage(next(iter(runtime._bindings))) if runtime._bindings else {}
         records["fresh_e2b_claim"] = bool(runtime._bindings) and runtime.permission_skipping(next(iter(runtime._bindings)))
+        if agent == "pi" and runtime._bindings:
+            # ADR-0017: what this write-mode session loaded, and which tools it used.
+            sid = next(iter(runtime._bindings))
+            records["extensions"] = list(runtime.loaded_extensions(sid))
+            records["tools_used"] = sorted({m.group(1) for line in runtime.stream(sid)
+                                            for m in [re.match(r"\[tool (\S+): ", line)] if m})
         tokens_in = records.get("input_tokens", 0) + records.get("cache_read_tokens", 0)
         tokens_out = records.get("output_tokens", 0)
     elif agent == "claude":
@@ -422,6 +429,10 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     if headless:
         assert records["requested_models"] == [MODEL]
         assert records["fresh_e2b_claim"] is True
+    if agent == "pi":
+        from sdf_core.pi_runtime import PI_EXTENSIONS_ENV, resolve_pi_extensions
+
+        assert records["extensions"] == list(resolve_pi_extensions(os.environ.get(PI_EXTENSIONS_ENV)))
     if agent in ("pi", "qwen"):
         # What the endpoint reported serving, not just what was requested.
         assert records["served_models"] == [MODEL]

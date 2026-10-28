@@ -26,11 +26,17 @@ Hardening, because the Attempt workspace is untrusted content:
 * Pi has no permission system.  Its write tools (``bash``, ``edit``,
   ``write``) are enabled only after the one fresh production E2B claim
   (ADR-0008); elsewhere Pi gets ``--tools read,grep,find,ls``.
+* Extensions (ADR-0017): discovery stays off; only the image-baked, pinned
+  packages in ``PI_EXTENSIONS`` load, each by explicit ``-e`` path, chosen by
+  ``SDF_PI_EXTENSIONS``.  Read-only turns load only the ones marked
+  ``read_only`` (``--tools`` stays a hard allowlist either way).  Their
+  versions are checked in the sandbox before the session starts.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -48,11 +54,90 @@ AGENT_KIND = "pi"
 # Provider id in the seeded models.json.
 PI_PROVIDER = "sdf"
 READ_ONLY_TOOLS = "read,grep,find,ls"
+
+
+@dataclass(frozen=True)
+class PiExtension:
+    """One image-baked Pi extension (ADR-0017)."""
+
+    version: str
+    # npm ``dist.integrity`` of the package tarball; the template's
+    # package-lock.json must carry the same value (``npm ci`` verifies it).
+    integrity: str
+    # Extension entry point, relative to the package directory.
+    entry: str
+    # True when the extension may load in a read-only turn: it registers no
+    # write tool and has no side effects beyond refusing tool calls.
+    read_only: bool
+
+
+# Where the template installs them (infra/e2b/herdr-agents/pi-extensions).
+PI_EXTENSIONS_DIR = "/opt/sdf-pi-extensions"
+# The allowlist, in load order.  Nothing else can be loaded: ``-e`` paths are
+# built from this map only.
+PI_EXTENSIONS: dict[str, PiExtension] = {
+    # Guardrail hooks (blocks force-push, hard reset, rm -rf /, dev servers).
+    "@cad0p/pi-steering": PiExtension(
+        "0.2.0",
+        "sha512-LPpxSzl2wTjOgC/MtSAtVC4Qwp9xs29x/8oJ1gPY6r/99O5EOY7FBmdLPoRrZnKP7SaoPuVwI+eLZTzy9H0SHQ==",
+        "src/index.ts", read_only=True,
+    ),
+    # ``apply_patch`` tool (replaces ``edit``/``write``): a write tool.
+    "@paulpham157/apply-patch": PiExtension(
+        "0.3.1",
+        "sha512-qqO0zcG0hW7lTdst0GXw+85ex3cJ+T94iLic4R3mpPakwrp1B/jOAU1cov72fiQBSyf9NJO2eRj9BeJdNz41Rw==",
+        "src/index.ts", read_only=False,
+    ),
+    # Post-write lint/LSP feedback; spawns analysers and writes ~/.pi-lens.
+    "pi-lens": PiExtension(
+        "4.4.6",
+        "sha512-Hlf4YJuLNpzOnIUj0MMobtsG2mH4n3fkgjdywQhVvwmetUpkgr0J4n9NJKMhRaDszyTshQ4itJtkyd3nUKfktw==",
+        "dist/index.js", read_only=False,
+    ),
+}
+DEFAULT_PI_EXTENSIONS: tuple[str, ...] = tuple(PI_EXTENSIONS)
+# Vetted and rejected (ADR-0017); named so the error says why.
+UNAVAILABLE_PI_EXTENSIONS = {
+    "pi-fabric": "pi-fabric needs Pi >= 1.0 and Node >= 24 (SDF pins Pi 0.73.1 on Node 22)",
+}
+PI_EXTENSIONS_ENV = "SDF_PI_EXTENSIONS"
+
+
+def resolve_pi_extensions(value: str | None) -> tuple[str, ...]:
+    """``SDF_PI_EXTENSIONS``: unset means the default set, empty means none.
+
+    A comma-separated list of allowlisted package names; the result is in the
+    allowlist's load order.  Anything else is refused.
+    """
+
+    if value is None:
+        return DEFAULT_PI_EXTENSIONS
+    names = {item.strip() for item in value.split(",") if item.strip()}
+    for name in sorted(names):
+        if name in UNAVAILABLE_PI_EXTENSIONS:
+            raise ValueError(f"{PI_EXTENSIONS_ENV}: {UNAVAILABLE_PI_EXTENSIONS[name]} (ADR-0017)")
+        if name not in PI_EXTENSIONS:
+            raise ValueError(
+                f"{PI_EXTENSIONS_ENV}: {name!r} is not an image-baked Pi extension; "
+                f"allowed: {', '.join(PI_EXTENSIONS)} (ADR-0017)"
+            )
+    return tuple(name for name in PI_EXTENSIONS if name in names)
+
+
+def extensions_for_turn(extensions: Sequence[str], *, auto: bool) -> tuple[str, ...]:
+    """The extensions a turn loads: all configured ones only in write mode."""
+
+    return tuple(name for name in extensions if auto or PI_EXTENSIONS[name].read_only)
 _EXIT_MARKER = "SDF_PI_EXIT="
 _TIMEOUT_EXITS = frozenset({124, 137})
 _PROJECT_CONFIG_EXIT = 96
 _NO_WORKSPACE_EXIT = 97
 _NO_MODEL_EXIT = 95
+# Prints one line per package: its package.json on one line, or nothing.
+_EXTENSION_PROBE = (
+    'd=$1; shift; for p; do f="$d/node_modules/$p/package.json"; '
+    '[ -f "$f" ] && tr -d "\\n\\r" < "$f"; echo; done'
+)
 _KILL_AFTER_S = 10
 _ATTEMPT_ID = re.compile(r"[A-Za-z0-9_-]+")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@/+-]{0,199}")
@@ -70,6 +155,11 @@ _WRAPPER = (
     'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
     'for v in $(env | sed -n "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; '
     'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0; '
+    # pi-lens (ADR-0017): no runtime tool/LSP installs or refreshes, and its
+    # state outside the workspace (it would use <cwd>/.pi-lens-probe-home
+    # under /tmp).  Set after the PI_* purge, so callers cannot override them.
+    'export PI_LENS_DISABLE_TOOL_INSTALL=1 PI_LENS_DISABLE_LSP_INSTALL=1 PI_LENS_DISABLE_TOOL_REFRESH=1 '
+    'PI_LENS_HOME="$HOME/.pi-lens"; '
     'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
     'if [ -e ' + PROJECT_CONFIG_DIR + ' ] || [ -L ' + PROJECT_CONFIG_DIR + ' ]; then echo '
     + _EXIT_MARKER + str(_PROJECT_CONFIG_EXIT) + '; exit 0; fi; '
@@ -153,6 +243,7 @@ class _Binding:
     attempt_id: str
     workspace: str
     auto: bool
+    extensions: tuple[str, ...] = ()
     turns: int = 0
     usage: PiUsage = field(default_factory=PiUsage)
 
@@ -220,11 +311,19 @@ class PiHeadlessRuntime:
         binary: str = "pi",
         model: str | None = None,
         credentials: Mapping[str, CredentialMetadata] | None = None,
+        extensions: Sequence[str] | None = None,
+        extensions_dir: str | None = None,
     ) -> None:
         if turn_timeout_s <= 0 or control_timeout_ms <= 0:
             raise ValueError("timeouts must be positive")
         if not callable(getattr(transport, "exec_argv", None)):
             raise ValueError("Pi runtime needs a transport with exec_argv")
+        # ADR-0017: None reads SDF_PI_EXTENSIONS (unset: the default set).
+        if extensions is None:
+            self.extensions = resolve_pi_extensions(os.environ.get(PI_EXTENSIONS_ENV))
+        else:
+            self.extensions = resolve_pi_extensions(",".join(extensions))
+        self._extensions_dir = extensions_dir or PI_EXTENSIONS_DIR
         if model is not None and not _MODEL.fullmatch(model):
             raise ValueError("model must be a bare model id without ':'")
         self._transport = transport
@@ -289,12 +388,15 @@ class PiHeadlessRuntime:
             raise PiRuntimeError("bind_workspace must stage the Attempt workspace before start")
         if self.expected_version is not None:
             self.require_compatible()
+        if self.extensions:
+            self.require_extensions()
         # ADR-0008/0012: claim at the start boundary, after setup succeeded.
         auto = _claim_fresh_e2b_permission_bypass(self._transport)
         with self._lock:
             self._counter += 1
             session_id = f"pi-{attempt_id}-{self._counter}"
-        self._bindings[session_id] = _Binding(attempt_id, workspace, auto)
+        self._bindings[session_id] = _Binding(
+            attempt_id, workspace, auto, extensions_for_turn(self.extensions, auto=auto))
         session = RuntimeSession(session_id, attempt_id, agent, RuntimeStatus.CREATED, credential=credential)
         self._sessions[session_id] = session
         return session
@@ -313,6 +415,36 @@ class PiHeadlessRuntime:
             raise PiRuntimeError(f"Pi {version} is installed but SDF is pinned to {self.expected_version}")
         return version
 
+    def require_extensions(self) -> dict[str, str]:
+        """Check the configured extensions are baked into the sandbox at their pins."""
+
+        names = list(self.extensions)
+        raw = self._transport.exec_argv(
+            ["sh", "-c", _EXTENSION_PROBE, "sdf-pi-ext", self._extensions_dir, *names], self._control_timeout_ms)
+        lines = raw.split("\n")
+        found: dict[str, str] = {}
+        for index, name in enumerate(names):
+            line = lines[index].strip() if index < len(lines) else ""
+            try:
+                meta = json.loads(line) if line else {}
+            except ValueError:
+                meta = {}
+            if not isinstance(meta, dict) or meta.get("name") != name:
+                raise PiRuntimeError(f"Pi extension {name} is not installed in the sandbox image (ADR-0017); use the "
+                    f"sdf-herdr-agents template or set {PI_EXTENSIONS_ENV}= to run without extensions")
+            version = str(meta.get("version"))
+            if version != PI_EXTENSIONS[name].version:
+                raise PiRuntimeError(
+                    f"Pi extension {name} {version} is installed but SDF is pinned to {PI_EXTENSIONS[name].version}"
+                )
+            found[name] = version
+        return found
+
+    def loaded_extensions(self, session_id: str) -> tuple[str, ...]:
+        """The extensions this session's turns load (ADR-0017)."""
+
+        return self._known(session_id)[0].extensions
+
     def permission_skipping(self, session_id: str) -> bool:
         return self._known(session_id)[0].auto
 
@@ -329,8 +461,11 @@ class PiHeadlessRuntime:
         argv = [
             self._binary, "-p", "--mode", "json",
             "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
-            "--session-dir", f"{base}/sessions",
         ]
+        # ADR-0017: discovery stays off; explicit paths to the baked allowlist only.
+        for name in binding.extensions:
+            argv += ["-e", f"{self._extensions_dir}/node_modules/{name}/{PI_EXTENSIONS[name].entry}"]
+        argv += ["--session-dir", f"{base}/sessions"]
         if binding.turns:
             argv.append("--continue")
         if not binding.auto:
@@ -435,11 +570,18 @@ def _int(value: Any) -> int:
 
 
 __all__ = [
+    "DEFAULT_PI_EXTENSIONS",
+    "PI_EXTENSIONS",
+    "PI_EXTENSIONS_DIR",
+    "PI_EXTENSIONS_ENV",
     "PI_PROVIDER",
     "PI_VERSION",
+    "PiExtension",
     "PiHeadlessRuntime",
     "PiRuntimeError",
     "PiUsage",
+    "extensions_for_turn",
     "parse_events",
+    "resolve_pi_extensions",
     "workspace_has_project_config",
 ]

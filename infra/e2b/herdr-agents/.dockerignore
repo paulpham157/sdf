@@ -7,3 +7,8 @@
 !claude/
 !claude/claude.json
 !claude/settings.json
+!pi-extensions/
+!pi-extensions/package.json
+!pi-extensions/package-lock.json
+!pi-extensions/link-pi-host.mjs
+!pi-extensions/verify-pins.mjs

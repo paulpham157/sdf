@@ -126,6 +126,12 @@ class E2BAgentSandbox:
     def start(self, workspace: Path) -> None:
         from .credential_injection import create_credentialed_transport
 
+        pi_extensions: tuple[str, ...] = ()
+        if self.spec.kind != "opencode":
+            from .pi_runtime import PI_EXTENSIONS_ENV, resolve_pi_extensions
+
+            # ADR-0017: validated before any sandbox exists.
+            pi_extensions = resolve_pi_extensions(self._environ.get(PI_EXTENSIONS_ENV))
         self._transport, _ = create_credentialed_transport(
             agents=(self.spec.kind,), environ=self._environ, template=self._template,
             timeout_seconds=self._sandbox_timeout_s, network=self._network,
@@ -139,7 +145,8 @@ class E2BAgentSandbox:
             from .pi_runtime import PiHeadlessRuntime
 
             self._runtime = PiHeadlessRuntime(
-                transport=self._transport, turn_timeout_s=self._turn_timeout_s, model=self.spec.model)
+                transport=self._transport, turn_timeout_s=self._turn_timeout_s, model=self.spec.model,
+                extensions=pi_extensions)
         self._born = time.monotonic()
         # Creates the sandbox (egress locked at creation), seeds credentials.
         self._runtime.bind_workspace(self._binding, workspace)
@@ -248,6 +255,9 @@ def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]
             name = f"SDF_{upper}_{suffix}"
             if environ.get(name):
                 out[name] = environ[name]
+    # ADR-0017: passed through as set; an empty value means "no extensions".
+    if "pi" in kinds and "SDF_PI_EXTENSIONS" in environ:
+        out["SDF_PI_EXTENSIONS"] = environ["SDF_PI_EXTENSIONS"]
     return out
 
 

@@ -59,7 +59,10 @@ project-config layout.
   anything is staged, and again inside the sandbox before every turn, because
   the agent itself may create one (exit marker 96).
 - Extension, skill, prompt-template and theme discovery are disabled by flag
-  (`--no-extensions --no-skills --no-prompt-templates --no-themes`).
+  (`--no-extensions --no-skills --no-prompt-templates --no-themes`). Since
+  [ADR 0017](0017-image-baked-pi-extensions.md) the only extensions Pi loads
+  are image-baked, version-pinned packages named by explicit `-e` paths;
+  discovery stays off and `.pi/` stays refused.
 - `PI_CODING_AGENT_DIR`, `PI_CODING_AGENT_SESSION_DIR`, `PI_PACKAGE_DIR`,
   `PI_SHARE_VIEWER_URL` and `PI_OAUTH_CALLBACK_HOST` are stripped at sandbox
   creation; the turn wrapper then unsets every `PI_*` variable and sets
@@ -98,7 +101,8 @@ or run commands.
   sandbox and its egress allowlist.
 - The `sdf-herdr-agents` Dockerfile installs the pinned package. The live test
   bootstraps E2B's public `codex` template by default, or uses the prebuilt
-  (public) `sdf-herdr-agents` template via `SDF_E2B_VULTR_TEMPLATE`.
+  (public) `sdf-herdr-agents` template via `SDF_E2B_VULTR_TEMPLATE`. Templates
+  without the ADR 0017 extensions need `SDF_PI_EXTENSIONS=` (empty).
 
 ## Verification (2026-10-28)
 

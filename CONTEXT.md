@@ -154,6 +154,10 @@ _Avoid_: repo settings, trusted config
 An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`, Pi `-p`, Qwen Code `-o json`, Goose `run`), instead of driving an agent in a Herdr pane.
 _Avoid_: Herdr pane, interactive session
 
+**Baked Pi Extension**:
+A Pi extension package installed into the `sdf-herdr-agents` image at an exact, integrity-checked version and loaded only by explicit `-e` path from SDF's allowlist (`SDF_PI_EXTENSIONS`, ADR 0017); never discovered, never installed at runtime, and in read-only turns limited to the ones that add no write capability.
+_Avoid_: Pi package, plugin, project extension (`.pi/extensions` is refused)
+
 **Tool Proxy**:
 The SDF action boundary that obtains a Policy Decision before executing a requested tool action.
 _Avoid_: terminal output parser, sandbox

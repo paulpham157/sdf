@@ -55,6 +55,20 @@ RUN apt-get update \
     && chmod 0755 /usr/local/bin/goose \
     && test "$(goose --version | tr -d ' ')" = "${GOOSE_VERSION}"
 
+# Pi extensions (ADR 0017): exact versions from the committed lockfile, whose
+# sha512 integrity npm ci checks for every tarball; no install scripts; no
+# second Pi (peers are links to the global @mariozechner Pi above). Pi loads
+# only the ones sdf_core.pi_runtime names with -e; discovery stays off.
+COPY pi-extensions/package.json pi-extensions/package-lock.json pi-extensions/link-pi-host.mjs pi-extensions/verify-pins.mjs /opt/sdf-pi-extensions/
+RUN cd /opt/sdf-pi-extensions \
+    && npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund \
+    && node link-pi-host.mjs "$(npm root -g)/@mariozechner/pi-coding-agent" /opt/sdf-pi-extensions \
+    && node verify-pins.mjs /opt/sdf-pi-extensions \
+    && test -x node_modules/@ast-grep/cli-linux-x64-gnu/ast-grep \
+    && npm cache clean --force \
+    && chown -R root:root /opt/sdf-pi-extensions \
+    && chmod -R a+rX,go-w /opt/sdf-pi-extensions
+
 COPY herdr-endpoint.mjs /usr/local/lib/herdr-endpoint.mjs
 COPY entrypoint.sh /usr/local/bin/herdr-e2b-entrypoint
 # Claude shared first-run state only: onboarding done, theme chosen, dangerous
