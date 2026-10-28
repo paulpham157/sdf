@@ -101,6 +101,34 @@ _PI_MODELS = (
     'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:price[0],output:price[1],cacheRead:0,cacheWrite:0}}]}}};'
     'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
 )
+# Qwen Code and Aider (ADR-0013) take the endpoint and model on their argv and
+# the key only from OPENAI_API_KEY, which the turn wrapper exports per turn
+# (never in the sandbox env, so it cannot clash with codex).  The seed records
+# the key variable's NAME (argv[1]) in a private file the wrapper reads; the
+# value is never written to disk.  Base URL and model must be in the plan.
+def _key_ref(agent: str) -> str:
+    upper = agent.upper()
+    return (
+        f'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/sdf",f=d+"/{agent}-api-key-name",v=process.argv[1];'
+        f'if(!e[v]){{process.exit(0)}}if(!e.SDF_{upper}_BASE_URL||!e.SDF_{upper}_MODEL||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v))'
+        f'{{console.error("{agent}-key-ref: base URL, model or key name missing");process.exit(1)}}'
+        'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,v+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+    )
+
+
+# Writes Goose's declarative custom provider (ADR-0013)
+# ~/.config/goose/custom_providers/sdf_openai.json: engine ``openai`` with
+# ``api_key_env`` = the key variable's NAME (argv[1]); Goose 1.56 reads the key
+# from that variable at run time, so the value is never written to disk.  Base
+# URL and model come from the plan's ``SDF_GOOSE_*`` sandbox variables.
+_GOOSE_PROVIDER = (
+    'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/goose/custom_providers",f=d+"/sdf_openai.json",v=process.argv[1];'
+    'if(!e[v]){process.exit(0)}const u=e.SDF_GOOSE_BASE_URL||"",m=e.SDF_GOOSE_MODEL||"";'
+    'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("goose-provider: base URL, model or key name missing");process.exit(1)}'
+    'const c={name:"sdf_openai",engine:"openai",display_name:"SDF OpenAI-compatible",description:"SDF seeded provider",'
+    'api_key_env:v,base_url:u,models:[{name:m,context_limit:200000}],supports_streaming:true,requires_auth:true};'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+)
 # Herdr's server starts from the template entrypoint before ``Sandbox.create``
 # envs apply to later commands, so an agent pane does not inherit them.  This
 # seed writes the plan's variables (named on argv, read from ``process.env``)
@@ -145,6 +173,9 @@ _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
         "codex-auth-json": _CODEX_SESSION_AUTH,
         "opencode-config": _OPENCODE_CONFIG,
         "pi-models": _PI_MODELS,
+        "qwen-key-ref": _key_ref("qwen"),
+        "aider-key-ref": _key_ref("aider"),
+        "goose-provider": _GOOSE_PROVIDER,
     }
 )
 
