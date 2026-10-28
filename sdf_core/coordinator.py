@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from .adapter import AdapterResult
 from .agent_messaging import ENVELOPE_NAME, MAX_ENVELOPE_BYTES, EnvelopeError, Member, MessageHub, delivery_payload
-from .agent_sandbox import AgentSandbox, AgentSandboxFactory, AgentSpec
+from .agent_sandbox import SUPPORTED_KINDS, AgentSandbox, AgentSandboxFactory, AgentSpec
 from .db import (
     AgentRunMemberRow,
     AgentRunRow,
@@ -97,6 +97,10 @@ class RunConfig:
         if unknown:
             raise ValueError(f"unknown run config keys: {sorted(unknown)}")
         config = cls(**data)
+        for role, role_cfg in (("lead", config.lead), ("worker", config.worker)):
+            if not isinstance(role_cfg, RoleConfig) or role_cfg.kind not in SUPPORTED_KINDS:
+                kind = getattr(role_cfg, "kind", role_cfg)
+                raise ValueError(f"{role} kind {kind!r} is not supported by the coordinator (use {list(SUPPORTED_KINDS)})")
         if not 1 <= config.max_concurrent_turns <= 8:
             raise ValueError("max_concurrent_turns must be 1..8")
         if not 0 < config.max_cost_usd <= 5:

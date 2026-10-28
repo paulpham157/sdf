@@ -443,6 +443,13 @@ def test_run_config_validation():
         RunConfig.from_dict({"bogus": 1})
     config = RunConfig.from_dict({"worker": {"kind": "opencode", "model": "glm-5.3"}})
     assert config.worker.kind == "opencode"
+    # An unsupported kind is a 422 at the API, not a run that fails later.
+    with pytest.raises(ValueError, match="not supported by the coordinator"):
+        RunConfig.from_dict({"lead": {"kind": "claude"}})
+    with pytest.raises(ValueError, match="worker kind"):
+        RunConfig.from_dict({"worker": {"kind": "aider"}})
+    with pytest.raises(ValueError):
+        RunConfig.from_dict({"worker": "pi"})
 
 
 def test_pending_human_decision_suspends_stall_and_is_never_auto_resolved(db, fixture, tmp_path):

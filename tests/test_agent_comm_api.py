@@ -87,6 +87,7 @@ def test_run_endpoint_without_factory_is_503_and_bad_config_422(tmp_path, monkey
     body = client.post("/plans", json=plan_dict(make_fixture(tmp_path), plan_id)).json()
     approver.post(f"/plans/{plan_id}/approve", json={"expected_sha256": body["content_sha256"]})
     assert client.post(f"/plans/{plan_id}/runs", json={"config": {"max_cost_usd": 99}}).status_code == 422
+    assert client.post(f"/plans/{plan_id}/runs", json={"config": {"lead": {"kind": "nope"}}}).status_code == 422
     assert client.post(f"/plans/{plan_id}/runs", json={}).status_code == 503
 
 

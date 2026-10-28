@@ -66,7 +66,9 @@ no listening port: the host is the only party that moves messages.
    `lead-1` and `worker-i`, each worker bound to one subtask.
 2. Begins one Attempt per subtask (`require_plan_approval=True`) **before**
    any sandbox exists, then starts the sandboxes in parallel (default lead
-   `opencode`, workers `pi`, Vultr `glm-5.3`; configurable per role).
+   `opencode`, workers `pi`, Vultr `glm-5.3`; configurable per role among
+   the coordinator's supported kinds, `opencode` and `pi`; any other kind is
+   refused when the run is requested).
 3. Posts the plan brief to the lead; the lead assigns work by message.
 4. Relays outboxes to inboxes, wakes idle agents with mail (one turn each,
    bounded by `max_concurrent_turns` and `max_turns_per_agent`).
