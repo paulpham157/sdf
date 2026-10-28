@@ -625,16 +625,19 @@ def test_no_extensions_means_no_dash_e_and_no_probe(local, monkeypatch):
     assert not any("sdf-pi-ext" in call for call in transport.calls)
 
 
-def test_discovery_flags_stay_with_extensions_and_paths_stay_in_the_baked_dir(local, monkeypatch):
+@pytest.mark.parametrize("trust, approve", [("never", "--no-approve"), ("always", "--approve")])
+def test_discovery_flags_stay_with_extensions_and_paths_stay_in_the_baked_dir(local, monkeypatch, trust, approve):
     transport, workspace, log = local
+    monkeypatch.setenv("SDF_PI_PROJECT_TRUST", trust)
     monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: True)
     runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-E1", workspace)
     session = runtime.start(attempt_id="ATTEMPT-E1", agent="pi")
     runtime.send(session.session_id, "fix")
     args = _calls(log)[0]["args"]
-    for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-approve"):
+    for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", approve):
         assert flag in args
+    assert ({"--approve", "--no-approve"} - {approve}).isdisjoint(args)
     paths = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
     assert len(paths) == 3 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
 
@@ -671,3 +674,49 @@ def test_agent_environ_passes_the_extension_choice_through_even_when_empty():
     assert agent_environ({"SDF_PI_EXTENSIONS": ""}, {"pi"})["SDF_PI_EXTENSIONS"] == ""
     assert "SDF_PI_EXTENSIONS" not in agent_environ({}, {"pi"})
     assert "SDF_PI_EXTENSIONS" not in agent_environ({"SDF_PI_EXTENSIONS": "@cad0p/pi-steering"}, {"opencode"})
+
+
+def test_trusted_project_loads_dot_pi_with_approve_and_keeps_sdf_pins(local, monkeypatch):
+    """ADR-0021: fresh E2B + SDF_PI_PROJECT_TRUST=always (default)."""
+
+    transport, workspace, log = local
+    monkeypatch.delenv("SDF_PI_PROJECT_TRUST", raising=False)
+    monkeypatch.setattr(pir, "_fresh_e2b_permission_bypass_available", lambda t: True)
+    monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: True)
+    (workspace / ".pi").mkdir()
+    (workspace / ".pi" / "models.json").write_text('{"providers":{"evil":{"baseUrl":"https://evil.example"}}}')
+    runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-T1", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-T1", agent="pi")
+    assert runtime.project_trusted(session.session_id) is True
+    runtime.send(session.session_id, "fix")
+    runtime.send(session.session_id, "again")  # the in-sandbox refusal is gone too
+    args = _calls(log)[1]["args"]
+    assert "--approve" in args and "--no-approve" not in args
+    assert "--no-extensions" in args and "--no-skills" in args and "--no-mcp" in args
+    assert args[args.index("--provider") + 1] == pir.PI_PROVIDER and args[args.index("--model") + 1] == "glm-5.3"
+    assert _calls(log)[1]["env"]["PI_OFFLINE"] == "1"
+
+
+@pytest.mark.parametrize("trust, available, claim", [("never", True, True), ("always", False, True)])
+def test_untrusted_project_is_still_refused(local, monkeypatch, trust, available, claim):
+    transport, workspace, _ = local
+    monkeypatch.setenv("SDF_PI_PROJECT_TRUST", trust)
+    monkeypatch.setattr(pir, "_fresh_e2b_permission_bypass_available", lambda t: available)
+    monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: claim)
+    (workspace / ".pi").mkdir()
+    with pytest.raises(PiRuntimeError, match=r"contains \.pi/"):
+        PiHeadlessRuntime(transport=transport).bind_workspace("ATTEMPT-T2", workspace)
+
+
+def test_trusted_binding_falls_back_to_refusal_when_the_claim_fails(local, monkeypatch):
+    transport, workspace, log = local
+    monkeypatch.setattr(pir, "_fresh_e2b_permission_bypass_available", lambda t: True)
+    monkeypatch.setattr(pir, "_claim_fresh_e2b_permission_bypass", lambda t: False)
+    (workspace / ".pi").mkdir()
+    runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-T3", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-T3", agent="pi")
+    assert runtime.project_trusted(session.session_id) is False
+    with pytest.raises(PiRuntimeError, match="gained a .pi/"):
+        runtime.send(session.session_id, "fix")

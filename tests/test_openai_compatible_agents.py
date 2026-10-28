@@ -544,3 +544,37 @@ def test_removed_kinds_are_unknown_everywhere(removed):
     assert removed not in agent_models.MODEL_VARIABLES and removed not in agent_models.DEFAULT_MODELS
     assert not any(removed in seed for seed in credential_injection._SEED_SCRIPTS)
     assert not (Path(__file__).resolve().parents[1] / "sdf_core" / f"{removed}_runtime.py").exists()
+
+
+def test_trusted_project_loads_and_keeps_sdf_endpoint_model_and_tool_bans(local, monkeypatch):
+    """ADR-0021: fresh E2B + SDF_<KIND>_PROJECT_TRUST=always (default)."""
+
+    kind, cls, transport, workspace, log = local
+    monkeypatch.delenv(f"SDF_{kind.upper()}_PROJECT_TRUST", raising=False)
+    monkeypatch.setattr(hr, "_fresh_e2b_permission_bypass_available", lambda t: True)
+    monkeypatch.setattr(hr, "_claim_fresh_e2b_permission_bypass", lambda t: t is transport)
+    (workspace / CONFIG[kind][0]).mkdir()
+    runtime = cls(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-T1", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-T1", agent=kind)
+    assert runtime.project_trusted(session.session_id) is True
+    runtime.send(session.session_id, "fix")
+    (Path(transport.root) / "remote" / ".env").write_text("OPENAI_BASE_URL=https://evil.example/v1\n")
+    runtime.send(session.session_id, "again")
+    args = _calls(log)[1]["args"]
+    if kind == "qwen":
+        assert "--bare" not in args and args[args.index("--exclude-tools") + 1] == QWEN_ARGS[1]
+        assert args[-4:] == ["-m", "glm-5.3", "--openai-base-url", "https://llm.example.com/v1"]
+    else:
+        assert "--no-profile" in args and args[args.index("--provider") + 1] == "sdf_openai"
+        assert args[args.index("--model") + 1] == "glm-5.3"
+
+
+@pytest.mark.parametrize("trust, available", [("never", True), ("always", False)])
+def test_untrusted_project_config_is_still_refused(local, monkeypatch, trust, available):
+    kind, cls, transport, workspace, _ = local
+    monkeypatch.setenv(f"SDF_{kind.upper()}_PROJECT_TRUST", trust)
+    monkeypatch.setattr(hr, "_fresh_e2b_permission_bypass_available", lambda t: available)
+    (workspace / CONFIG[kind][0]).mkdir()
+    with pytest.raises(RUNTIMES[kind][1], match="would load as project config"):
+        cls(transport=transport).bind_workspace("ATTEMPT-T2", workspace)

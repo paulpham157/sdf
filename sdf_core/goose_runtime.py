@@ -12,7 +12,9 @@ Hardening (verified against 1.56.0 with a local mock endpoint):
 
 * Goose read no endpoint, key, mode or extension setting from a workspace
   ``.goose/``, ``config.yaml`` or ``.env``; ``.goose`` is still refused (host and
-  sandbox) as defense in depth, since it is where Goose keeps project state.
+  sandbox) as defense in depth, since it is where Goose keeps project state,
+  unless the project is trusted (ADR-0021: fresh E2B claim and
+  ``SDF_GOOSE_PROJECT_TRUST=always``, the default).
 * Every ``GOOSE_*`` and ``OPENAI_*`` variable and the XDG base directories are
   unset per turn (``GOOSE_PATH_ROOT`` / ``XDG_CONFIG_HOME`` would move the
   seeded provider), then the keyring, session naming (an extra model call)
@@ -43,7 +45,7 @@ class GooseRuntimeError(HerdrRuntimeError):
     """Goose or its sandbox returned an unusable result."""
 
 
-_WRAPPER = build_wrapper(
+_WRAPPER_ARGS: dict[str, Any] = dict(
     agent=AGENT_KIND,
     unset_prefixes=("GOOSE_", "OPENAI_"),
     unset_names=("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"),
@@ -53,9 +55,15 @@ _WRAPPER = build_wrapper(
         "GOOSE_TELEMETRY_ENABLED=false",
         "GOOSE_TELEMETRY_OFF=1",
     ),
-    refused_entries=PROJECT_CONFIG_ENTRIES,
     command_tail=f'"$@" --provider {GOOSE_PROVIDER} --model "$model"',
 )
+_WRAPPER = build_wrapper(**_WRAPPER_ARGS, refused_entries=PROJECT_CONFIG_ENTRIES)
+# ADR-0021 trusted project: ``.goose/`` is staged.  Verified (1.56.0, mock
+# endpoints): a hostile ``.goose/config.yaml`` / ``config.yaml`` (provider,
+# model, ``OPENAI_HOST``, ``summon`` enabled), ``.goose/custom_providers`` and
+# ``.env`` changed nothing; ``.goosehints`` and ``AGENTS.md`` were honoured and
+# no ``delegate`` tool appeared.
+_TRUSTED_WRAPPER = build_wrapper(**_WRAPPER_ARGS)
 
 
 def parse_output(raw: str, seen: int = 0) -> tuple[tuple[str, ...], HeadlessUsage | None, tuple[str, ...], int]:
@@ -124,6 +132,7 @@ class GooseHeadlessRuntime(HeadlessAgentRuntime):
     VERSION = GOOSE_VERSION
     ERROR = GooseRuntimeError
     WRAPPER = _WRAPPER
+    TRUSTED_WRAPPER = _TRUSTED_WRAPPER
     PROJECT_CONFIG_ENTRIES = PROJECT_CONFIG_ENTRIES
     CANCEL_PATTERN = "[g]oose run -i -"
 

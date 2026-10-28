@@ -10,6 +10,9 @@ Provider, base URL, key reference and models live in the seeded OpenCode
 config (``opencode-config`` seed); the key value only ever exists in the
 sandbox environment.  ``--auto`` (OpenCode's permission skip) is passed only
 when the transport grants the one fresh production E2B claim (ADR-0008).
+With that claim and ``SDF_OPENCODE_PROJECT_TRUST=always`` (the default) the
+workspace's own ``opencode.json`` / ``.opencode/`` / ``AGENTS.md`` load, under
+SDF's user config re-applied as ``OPENCODE_CONFIG_CONTENT`` (ADR-0021).
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from . import project_trust
 from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
@@ -43,17 +47,31 @@ _VERSION = re.compile(r"(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)")
 
 # Environment the turn driver forces after dropping every inherited
 # ``OPENCODE_*`` variable (config/permission overrides, server URLs and
-# passwords, plugin and feature flags).  Project config is disabled under both
-# spellings OpenCode 2 reads: the Attempt workspace is untrusted content whose
-# ``opencode.json`` / ``.opencode/`` could allow every permission, redirect the
-# provider ``baseURL`` that receives the key, or load plugins (ADR-0011/0018).
-_FORCED_ENV = {
-    "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-    "OPENCODE_CONFIG_PROJECT_DISABLE": "1",
+# passwords, plugin and feature flags).
+_BASE_FORCED_ENV = {
     "OPENCODE_DISABLE_AUTOUPDATE": "1",
     "OPENCODE_DISABLE_MODELS_FETCH": "1",
     "OPENCODE_DISABLE_CLAUDE_CODE": "1",
 }
+# Untrusted project (``SDF_OPENCODE_PROJECT_TRUST=never`` or no fresh E2B
+# claim): project config is disabled under both spellings OpenCode 2 reads, as
+# before ADR-0021 (the workspace's ``opencode.json`` / ``.opencode/`` could
+# allow every permission, redirect the provider ``baseURL`` or load plugins).
+_FORCED_ENV = {
+    "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+    "OPENCODE_CONFIG_PROJECT_DISABLE": "1",
+    **_BASE_FORCED_ENV,
+}
+# Trusted project (ADR-0021): project config loads, and the driver replaces
+# this sentinel with the text of SDF's seeded user config.  OpenCode 2.2.0
+# merges ``OPENCODE_CONFIG_CONTENT`` after global, ``OPENCODE_CONFIG`` and
+# project files (only managed ``/etc/opencode`` comes later), so SDF's
+# provider ``baseURL``/key reference, model, permissions (sub-agent denies,
+# ADR-0020) and MCP servers win over a hostile project config (verified with
+# a mock endpoint; the background service must not be reused, which the
+# private ``opencode serve`` per turn guarantees).
+USER_CONFIG_SENTINEL = "@sdf-user-config"
+_TRUSTED_FORCED_ENV = {"OPENCODE_CONFIG_CONTENT": USER_CONFIG_SENTINEL, **_BASE_FORCED_ENV}
 
 # ``python3 -c`` turn driver (ADR-0018).  OpenCode 2 connects MCP servers when
 # a server first boots a directory, so a one-shot ``run --standalone`` never
@@ -84,6 +102,14 @@ for k in [k for k in os.environ if k.startswith("OPENCODE_")]:
 os.environ.update(forced)
 def done(rc, tail=""):
     print(M + str(rc)); tail and print(tail[-2000:]); sys.stdout.flush()
+def user_config():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "opencode", "opencode.json")
+if os.environ.get("OPENCODE_CONFIG_CONTENT") == "@sdf-user-config":
+    try:
+        os.environ["OPENCODE_CONFIG_CONTENT"] = open(user_config()).read()
+    except OSError:
+        done(96, "SDF OpenCode user config is missing"); sys.exit(0)
 try:
     os.chdir(wd)
 except OSError:
@@ -100,9 +126,8 @@ def get(path):
     with urllib.request.urlopen(rq, timeout=10) as r:
         return json.load(r)
 def expected():
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     try:
-        c = json.load(open(os.path.join(base, "opencode", "opencode.json")))
+        c = json.load(open(user_config()))
         return {n for n, v in c["mcp"]["servers"].items() if not (isinstance(v, dict) and v.get("enabled") is False)}
     except Exception:
         return set()
@@ -259,6 +284,7 @@ class _Binding:
     auto: bool
     opencode_session: str | None = None
     usage: OpenCodeUsage = field(default_factory=OpenCodeUsage)
+    project_trusted: bool = False
 
 
 def parse_events(raw: str) -> tuple[tuple[str, ...], str | None, OpenCodeUsage, tuple[str, ...]]:
@@ -387,10 +413,11 @@ class OpenCodeHeadlessRuntime:
             self.require_compatible()
         # ADR-0008/0011: claim at the start boundary, after setup succeeded.
         auto = _claim_fresh_e2b_permission_bypass(self._transport)
+        trusted = project_trust.effective(AGENT_KIND, fresh_e2b=auto)  # ADR-0021
         with self._lock:
             self._counter += 1
             session_id = f"opencode-{attempt_id}-{self._counter}"
-        self._bindings[session_id] = _Binding(attempt_id, workspace, auto)
+        self._bindings[session_id] = _Binding(attempt_id, workspace, auto, project_trusted=trusted)
         session = RuntimeSession(session_id, attempt_id, agent, RuntimeStatus.CREATED, credential=credential)
         self._sessions[session_id] = session
         return session
@@ -412,6 +439,11 @@ class OpenCodeHeadlessRuntime:
 
     def permission_skipping(self, session_id: str) -> bool:
         return self._known(session_id)[0].auto
+
+    def project_trusted(self, session_id: str) -> bool:
+        """True when this session's turns load the workspace's project config (ADR-0021)."""
+
+        return self._known(session_id)[0].project_trusted
 
     def usage(self, session_id: str) -> dict[str, Any]:
         return self._known(session_id)[0].usage.as_dict()
@@ -435,7 +467,8 @@ class OpenCodeHeadlessRuntime:
         return [
             "python3", "-c", _DRIVER, _EXIT_MARKER, binding.workspace, str(self._turn_timeout_s),
             str(_KILL_AFTER_S), err, str(_SERVER_READY_S), str(_MCP_READY_S),
-            json.dumps(_FORCED_ENV, sort_keys=True), input_text, *argv,
+            json.dumps(_TRUSTED_FORCED_ENV if binding.project_trusted else _FORCED_ENV, sort_keys=True),
+            input_text, *argv,
         ]
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:

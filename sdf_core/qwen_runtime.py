@@ -21,6 +21,10 @@ Hardening (verified against 0.26.2 with a local mock endpoint):
   sandbox/relaunch disabled.
 * ``--approval-mode plan`` (reads only: edits and shell are denied) unless the
   fresh production E2B claim (ADR-0008) succeeded, then ``yolo``.
+* ADR-0021: with that claim and ``SDF_QWEN_PROJECT_TRUST=always`` (default)
+  the refusal and ``--bare`` are dropped, so ``.qwen/`` settings, hooks, MCP
+  servers, ``QWEN.md`` and ``.env`` load; endpoint, key, model and
+  ``--exclude-tools`` stay on argv/env and win.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ class QwenRuntimeError(HerdrRuntimeError):
     """Qwen Code or its sandbox returned an unusable result."""
 
 
-_WRAPPER = build_wrapper(
+_WRAPPER_ARGS: dict[str, Any] = dict(
     agent=AGENT_KIND,
     unset_prefixes=("QWEN_", "OPENAI_", "GEMINI_"),
     exports=(
@@ -51,11 +55,22 @@ _WRAPPER = build_wrapper(
         "QWEN_SANDBOX=false",
         "QWEN_CODE_NO_RELAUNCH=true",
     ),
-    refused_entries=PROJECT_CONFIG_ENTRIES,
-    ancestor_entries=(".env", ".qwen/.env", ".qwen/settings.json"),
     key_ref_file="qwen-api-key-name",
     command_tail='"$@" -m "$model" --openai-base-url "$url"',
 )
+_WRAPPER = build_wrapper(
+    **_WRAPPER_ARGS,
+    refused_entries=PROJECT_CONFIG_ENTRIES,
+    ancestor_entries=(".env", ".qwen/.env", ".qwen/settings.json"),
+)
+# ADR-0021 trusted project: no refusal, no ``--bare``.  Verified (0.26.2, mock
+# endpoints): a hostile ``.qwen/settings.json`` (``security.auth`` key/baseUrl,
+# ``model.name``, ``modelProviders``, ``env``, ``tools.core`` naming ``agent``)
+# plus ``.qwen/.env`` and ``.env`` did not move the endpoint, key or model away
+# from the argv/``OPENAI_API_KEY`` the wrapper sets (exported variables beat
+# ``.env``), ``--exclude-tools`` still removed ``agent``, and ``QWEN.md`` was
+# honoured.
+_TRUSTED_WRAPPER = build_wrapper(**_WRAPPER_ARGS)
 
 
 def parse_events(raw: str) -> tuple[tuple[str, ...], HeadlessUsage | None, tuple[str, ...]]:
@@ -133,12 +148,16 @@ class QwenHeadlessRuntime(HeadlessAgentRuntime):
     VERSION = QWEN_VERSION
     ERROR = QwenRuntimeError
     WRAPPER = _WRAPPER
+    TRUSTED_WRAPPER = _TRUSTED_WRAPPER
     PROJECT_CONFIG_ENTRIES = PROJECT_CONFIG_ENTRIES
-    CANCEL_PATTERN = "[q]wen -o json --bare"
+    CANCEL_PATTERN = "[q]wen -o json"
 
     def agent_argv(self, binding: HeadlessBinding, prompt_file: str) -> list[str]:
         session = binding.state.setdefault("session_id", str(uuid.uuid4()))
-        argv = [self._binary, "-o", "json", "--bare", "--auth-type", "openai"]
+        argv = [self._binary, "-o", "json"]
+        if not binding.project_trusted:
+            argv.append("--bare")
+        argv += ["--auth-type", "openai"]
         argv += list(subagents.QWEN_ARGS)  # ADR-0020
         argv += ["--approval-mode", "yolo" if binding.auto else "plan"]
         argv += ["--resume", session] if binding.turns else ["--session-id", session]

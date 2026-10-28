@@ -69,6 +69,12 @@ The supported agent kinds are `codex`, `claude`, `opencode`, `pi`, `qwen` and
 ([ADR 0016](docs/adr/0016-remove-aider-and-cursor-agent-kinds.md)).
 CLI-internal sub-agents are disabled for every kind by host-controlled flags
 and user config ([ADR 0020](docs/adr/0020-no-subagents.md)).
+In a fresh E2B sandbox every kind trusts the Attempt workspace's own project
+config (`AGENTS.md`, `CLAUDE.md`, `.pi/`, `.qwen/`, `.goose/`, `opencode.json`,
+skills, hooks …) because nobody can answer a trust prompt there; set
+`SDF_<AGENT>_PROJECT_TRUST=never` to restore the refusal / ignore behaviour.
+SDF's endpoint, key, model and sub-agent bans still outrank project config
+([ADR 0021](docs/adr/0021-project-trust.md)).
 
 Multi-agent runs ([ADR 0014](docs/adr/0014-plan-gate-and-agent-messaging.md)):
 `POST /plans` proposes a plan, a human approves it with `POST /plans/{id}/approve`
