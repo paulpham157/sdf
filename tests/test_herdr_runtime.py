@@ -5,8 +5,11 @@ import pytest
 
 from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError, SshHerdrTransport
 from sdf_core.runtime import RuntimeStatus
+from sdf_core.subagents import CLAUDE_ARGS, CODEX_ARGS
 
+# ADR-0020 sub-agent switches come first, then the pinned policy.
 CODEX_POLICY = (
+    *CODEX_ARGS,
     "-c", 'approval_policy="on-request"',
     "-c", 'sandbox_mode="workspace-write"',
     "-c", "sandbox_workspace_write.network_access=false",
@@ -364,7 +367,7 @@ def test_herdr_runtime_does_not_grant_bypass_permissions_without_sandbox_capabil
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert starts == [
-        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1", "--", "--setting-sources", "user"),
+        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1", "--", *CLAUDE_ARGS, "--setting-sources", "user"),
     ]
 
 
@@ -399,7 +402,7 @@ def test_claude_ignores_workspace_settings_so_a_task_cannot_redirect_its_key():
     runtime.start(attempt_id="ATTEMPT-CLAUDE", agent="claude")
 
     (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
-    assert start[start.index("--") + 1 :] == ("--setting-sources", "user", "--model", "glm-5.3")
+    assert start[start.index("--") + 1 :] == (*CLAUDE_ARGS, "--setting-sources", "user", "--model", "glm-5.3")
 
 
 def test_herdr_runtime_pins_codex_policy_without_a_workspace():

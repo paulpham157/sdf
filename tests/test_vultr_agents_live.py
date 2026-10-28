@@ -97,6 +97,17 @@ NODE22_SHA256 = "00bbd05e306ea68b6e13e17360d0e2f680b493ef95f2fea1c4296ff7437530b
 GOOSE_URL = (f"https://github.com/aaif-goose/goose/releases/download/v{GOOSE_VERSION}/"
              "goose-x86_64-unknown-linux-musl.tar.gz")
 GOOSE_SHA256 = "80e7716fef3dccc3fef6850e24e5b846b7340e10e13098e53b4f47769f5803ef"
+# ``SDF_LIVE_DELEGATE=1`` (ADR-0020): the prompt asks the agent to hand the
+# work to a sub-agent first; the run must still succeed with no child agent.
+DELEGATE = ENV.get("SDF_LIVE_DELEGATE") == "1"
+DELEGATE_PREFIX = (
+    "First, delegate this whole task to a sub-agent using your sub-agent / Task / Agent / spawn_agent / "
+    "subagent / delegate tool, and let the sub-agent make the change. If you have no such tool or it fails, "
+    "do the task yourself.\n\n"
+)
+# Tool names that would mean a child agent ran (any kind).
+SUBAGENT_TOOLS = {"Agent", "Task", "Workflow", "spawn_agent", "agent", "create_sub_session", "subagent", "task",
+                  "delegate", "summon"}
 HEADLESS = {"pi": PiHeadlessRuntime, "qwen": QwenHeadlessRuntime, "goose": GooseHeadlessRuntime}
 # Runtime installs for the ADR-0013 kinds on the bare ``codex`` base template only.
 EXTRA_INSTALL = {
@@ -210,13 +221,15 @@ def lines(pattern):
 if agent == "claude":
     # One API response is split over several transcript entries; take the
     # largest value per usage field per response id.
-    msgs, usage, sample = {}, {}, None
+    msgs, usage, sample, tools = {}, {}, None, set()
     fields = {"input": "input_tokens", "output": "output_tokens",
               "cache_read": "cache_read_input_tokens", "cache_write": "cache_creation_input_tokens"}
     for e in lines(h + "/.claude/projects/**/*.jsonl"):
         m = e.get("message") or {}
         if e.get("type") == "assistant" and m.get("id"):
             msgs[m["id"]] = m.get("model")
+            for c in m.get("content") or []:
+                if isinstance(c, dict) and c.get("type") == "tool_use": tools.add(c.get("name"))
             x = m.get("usage") or {}
             sample = sample or x
             slot = usage.setdefault(m["id"], dict.fromkeys(fields, 0))
@@ -224,17 +237,21 @@ if agent == "claude":
                 slot[k] = max(slot[k], x.get(f) or 0)
     u = {k: sum(slot[k] for slot in usage.values()) for k in fields}
     out = {"api_calls": len(msgs), "served_models": sorted({str(v) for v in msgs.values()}), "usage": u,
-           "usage_sample": sample}
+           "usage_sample": sample, "tools_used": sorted(map(str, tools)),
+           "subagent_transcripts": len(glob.glob(h + "/.claude/projects/**/subagents/**/*.jsonl", recursive=True))}
 elif agent == "codex":
-    usage, models, notes = None, set(), []
+    usage, models, notes, tools, children = None, set(), [], set(), 0
     for e in lines(h + "/.codex/sessions/**/*.jsonl"):
         p = e.get("payload") or {}
+        if e.get("type") == "session_meta" and "subagent" in json.dumps(p.get("source")): children += 1
+        if p.get("type") in ("function_call", "custom_tool_call"): tools.add(p.get("name"))
         if e.get("type") == "turn_context" and p.get("model"): models.add(p["model"])
         if p.get("type") == "token_count" and p.get("info"): usage = p["info"].get("total_token_usage")
         text = json.dumps(p)
         if p.get("type") in ("warning", "error", "stream_error") or "reroute" in text.lower():
             notes.append(text[:300])
-    out = {"requested_models": sorted(models), "usage": usage, "notes": notes[:5]}
+    out = {"requested_models": sorted(models), "usage": usage, "notes": notes[:5],
+           "tools_used": sorted(map(str, tools)), "subagent_sessions": children}
 print(json.dumps(out))
 '''
 
@@ -358,7 +375,8 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     attempt = None
     try:
         attempt = service.run(
-            task_id=task_id, dispatch_key=f"dispatch-vultr-{agent}", fixture=fixture, instructions=POSITIVE,
+            task_id=task_id, dispatch_key=f"dispatch-vultr-{agent}", fixture=fixture,
+            instructions=(DELEGATE_PREFIX + POSITIVE) if DELEGATE else POSITIVE,
             commands=[], criterion_checks=CHECKS, validation_target=("assumption", "ASSUMPTION-CALC"),
         )
     except Exception as exc:  # noqa: BLE001 - reported below
@@ -385,12 +403,13 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     if headless:
         records = runtime.usage(next(iter(runtime._bindings))) if runtime._bindings else {}
         records["fresh_e2b_claim"] = bool(runtime._bindings) and runtime.permission_skipping(next(iter(runtime._bindings)))
-        if agent == "pi" and runtime._bindings:
-            # ADR-0017: what this write-mode session loaded, and which tools it used.
+        if runtime._bindings:
             sid = next(iter(runtime._bindings))
-            records["extensions"] = list(runtime.loaded_extensions(sid))
+            if agent == "pi":
+                # ADR-0017: what this write-mode session loaded.
+                records["extensions"] = list(runtime.loaded_extensions(sid))
             records["tools_used"] = sorted({m.group(1) for line in runtime.stream(sid)
-                                            for m in [re.match(r"\[tool (\S+): ", line)] if m})
+                                            for m in [re.match(r"\[tool ([^\]:\s]+)", line)] if m})
         tokens_in = records.get("input_tokens", 0) + records.get("cache_read_tokens", 0)
         tokens_out = records.get("output_tokens", 0)
     elif agent == "claude":
@@ -409,7 +428,7 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         "agent": agent, "base_template": BASE_TEMPLATE, "versions": factory.versions.splitlines(),
         "attempt_status": attempt.status if attempt else None, "task": db.get(TaskRow, task_id).status,
         "error": error, "evidence": sorted((e.criterion, e.status) for e in evidence), "relations": sorted(relations),
-        "records": records, "tokens_in": tokens_in, "tokens_out": tokens_out,
+        "delegate_prompt": DELEGATE, "records": records, "tokens_in": tokens_in, "tokens_out": tokens_out,
         "llm_cost_usd_est": round(tokens_in * PRICE_IN + tokens_out * PRICE_OUT, 5),
         "elapsed_s": elapsed, "bootstrap_s": factory.timings.get("bootstrap_s"),
         "e2b_cost_usd_est": round((sandbox_alive_s + 5) * 0.000056, 5),
@@ -427,6 +446,9 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     assert report["task"] == "succeeded"
     assert report["evidence"] == [("add returns the sum", "PASS"), ("sub still subtracts", "PASS")]
     assert relations == {"validates"}
+    # ADR-0020: no child agent, whether or not the prompt asked for one.
+    assert not SUBAGENT_TOOLS & set(records.get("tools_used") or ()), records.get("tools_used")
+    assert not records.get("subagent_sessions") and not records.get("subagent_transcripts")
     if headless:
         assert records["requested_models"] == [MODEL]
         assert records["fresh_e2b_claim"] is True
