@@ -27,7 +27,8 @@ project-config layout.
   never adds a fallback; an unset named variable fails closed. The ADR 0007 /
   0011 name rules apply (`[A-Z][A-Z0-9_]*_API_KEY`, not a provider variable,
   not an `E2B_`/`DAYTONA_`/`HERDR_`/`SDF_CREDENTIAL_MODE_`/`SDF_CONNECTION_`
-  name).
+  name); for Pi a `PI_*` name is also refused, because the turn wrapper unsets
+  every `PI_*` variable and Pi would never see the key.
 - `SDF_PI_MODEL` must be a bare model id without `:`; Pi parses `id:level` as a
   thinking level.
 - The `pi-models` seed writes `~/.pi/agent/models.json` (dir `0700`, file

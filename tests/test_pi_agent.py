@@ -70,7 +70,7 @@ def test_pi_default_key_unset_fails_closed():
 
 
 @pytest.mark.parametrize("name", ["PATH", "lower_api_key", "OPENAI_API_KEY", "E2B_API_KEY", "DAYTONA_API_KEY",
-                                  "SDF_CONNECTION_PI_API_KEY", KEY])
+                                  "SDF_CONNECTION_PI_API_KEY", "PI_API_KEY", KEY])
 def test_pi_named_key_variable_must_be_a_dedicated_key_name(name):
     env = {**PI, "SDF_PI_API_KEY_ENV": name, name: "value-of-the-named-var"}
     with pytest.raises(CredentialConfigError) as err:

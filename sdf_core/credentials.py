@@ -111,6 +111,10 @@ class _AgentSpec:
     # Default base URL when the source is unset (None: provider default).
     default_base_url: str | None = None
     subscription_supported: bool = True
+    # Key-variable name prefixes this agent's runtime clears before it runs
+    # (Pi's turn wrapper unsets every PI_*), so a renamed key there would
+    # never reach the agent.
+    reserved_key_prefixes: tuple[str, ...] = ()
 
 
 _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
@@ -173,6 +177,7 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             api_key_target_follows_source=True,
             default_base_url=DEFAULT_PI_BASE_URL,
             subscription_supported=False,
+            reserved_key_prefixes=("PI_",),
         ),
     }
 )
@@ -345,7 +350,7 @@ def _api_key_source(spec: _AgentSpec, environ: Mapping[str, str]) -> str:
             f"{spec.api_key_env_variable} names a shell provider variable, which SDF always ignores (ADR-0007); "
             "use a dedicated variable"
         )
-    if name.startswith(_RESERVED_KEY_PREFIXES):
+    if name.startswith(_RESERVED_KEY_PREFIXES + spec.reserved_key_prefixes):
         raise CredentialConfigError(
             f"{spec.api_key_env_variable} names a sandbox-provider or SDF control variable, not an Agent Credential"
         )

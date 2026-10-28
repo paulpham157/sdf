@@ -89,9 +89,9 @@ _OPENCODE_CONFIG = (
 # variable name first, so the key value is never written to disk.  Base URL and
 # model come from the plan's ``SDF_PI_*`` sandbox variables.  Token prices are
 # filled in only for the default Vultr glm-5.3 (USD per 1M tokens); any other
-# model reports tokens with a zero cost.  The URL is matched by an escaped
-# URL and model are matched by escaped regexes because a seed command may not
-# contain a plan variable's value (``SDF_PI_BASE_URL`` / ``SDF_PI_MODEL``).
+# model reports tokens with a zero cost.  URL and model are matched by escaped
+# regexes because a seed command may not contain a plan variable's value
+# (``SDF_PI_BASE_URL`` / ``SDF_PI_MODEL``).
 _PI_MODELS = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.pi/agent",f=d+"/models.json",v=process.argv[1];'
     'if(!e[v]){process.exit(0)}const u=e.SDF_PI_BASE_URL||"",m=e.SDF_PI_MODEL||"";'
