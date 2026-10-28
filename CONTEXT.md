@@ -58,6 +58,30 @@ _Avoid_: knowledge graph, task graph
 A graph relationship in which Evidence supports or contradicts an Assumption or Decision.
 _Avoid_: inference, annotation
 
+**Plan**:
+An immutable, hashed proposal that splits work into subtasks, each an SDF Task with host-run criterion checks and the files it may change. No Attempt of a plan task starts until a human approves the plan (ADR 0014).
+_Avoid_: todo list, agent plan
+
+**Decision Request**:
+A pending question recorded in the Decision Graph, raised for a plan approval or by an agent. Only a human approves; a policy may reject or answer; nothing is auto-approved. A resolved request is final.
+_Avoid_: prompt, confirmation
+
+**Agent Run**:
+One execution of an approved Plan by a lead agent and worker agents, one sandbox each. It succeeds only when every subtask has PASS Evidence.
+_Avoid_: swarm, crew
+
+**Lead / Worker**:
+The coordinating agent of an Agent Run (assigns work by message, writes no code) and the agents bound by the host to exactly one subtask each.
+_Avoid_: orchestrator agent, sub-agent
+
+**Agent Message**:
+An append-only, sanitized message between agents, relayed by the SDF host, whose sender is the sandbox it came from. Agent text is untrusted data.
+_Avoid_: chat, instruction
+
+**Claim**:
+What an agent reports about its own work. A Claim triggers host verification and is never Evidence.
+_Avoid_: result, evidence
+
 ## Ownership language
 
 **SDF Task**:

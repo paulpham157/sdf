@@ -373,7 +373,6 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
     evidence = db.get(EvidenceRow, evidence_id)
     if evidence is None:
         raise HTTPException(status_code=404, detail="evidence not found")
-    node = db.get(GraphNodeRow, evidence_id)
     criterion = evidence.criterion
     return {
         "id": evidence.id,
@@ -506,6 +505,10 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
             input_tokens=payload.input_tokens,
             output_tokens=payload.output_tokens,
             escalation_reason=payload.escalation_reason,
+            # ADR 0014: a Task that belongs to a Plan never starts before a
+            # human approved the Plan; SDF_REQUIRE_PLAN_APPROVAL=1 also
+            # refuses Tasks that have no Plan at all.
+            require_plan_approval=require_plan_approval(),
         )
     except (ValueError, FileExistsError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -599,3 +602,252 @@ def get_objective_impact(objective_id: str, db: Session = Depends(get_db)):
 def get_impact_scorecard(db: Session = Depends(get_db)):
     facts = load_scorecard_facts(db)
     return build_scorecard(facts).as_dict()
+
+
+# --- ADR 0014: plans, plan-approval gate, agent runs, messages, decisions ---------
+#
+# The lead/worker coordinator is exposed on its own endpoints rather than on
+# ``POST /tasks/{id}/run``: that endpoint runs one Task synchronously through a
+# single NativeAdapter (the fake adapter here), while an agent run spans every
+# Task of a Plan, several sandboxes and minutes of wall time.  The gate itself
+# is shared: ``/tasks/{id}/run`` refuses a Task whose Plan is not approved.
+
+import threading as _threading  # noqa: E402
+
+from .agent_sandbox import agent_environ, e2b_factory, running_sandbox_ids  # noqa: E402
+from .credentials import load_dotenv  # noqa: E402
+from .coordinator import Coordinator, RunConfig, request_cancel  # noqa: E402
+from .db import (  # noqa: E402
+    AgentClaimRow,
+    AgentMessageRow,
+    AgentRunMemberRow,
+    AgentRunRow,
+    DecisionRequestRow,
+    PlanRow,
+)
+from .plans import (  # noqa: E402
+    PlanSpec,
+    decide_plan,
+    decision_request_payload,
+    plan_payload,
+    propose_plan,
+    resolve_request,
+)
+
+
+def require_plan_approval() -> bool:
+    return os.getenv("SDF_REQUIRE_PLAN_APPROVAL", "").strip().lower() in {"1", "true", "yes"}
+
+
+class PlanDecisionRequest(BaseModel):
+    decided_by: str = Field(min_length=1, max_length=120, description="The human making the decision.")
+    rationale: str = Field(default="", max_length=4000)
+    expected_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+class StartRunRequest(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+    wait: bool = False
+
+
+class ResolveDecisionRequest(BaseModel):
+    outcome: Literal["approved", "rejected", "answered"]
+    resolved_by: str = Field(min_length=1, max_length=120)
+    resolution: str = Field(default="", max_length=4000)
+
+
+def _gate(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/plans", status_code=status.HTTP_201_CREATED)
+def create_plan(payload: PlanSpec, db: Session = Depends(get_db)):
+    if not Path(payload.fixture_dir).is_dir():
+        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory")
+    try:
+        plan = propose_plan(db, payload)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return plan_payload(plan, db)
+
+
+@app.get("/plans/{plan_id}")
+def get_plan(plan_id: str, db: Session = Depends(get_db)):
+    plan = db.get(PlanRow, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return plan_payload(plan, db)
+
+
+def _decide(plan_id: str, payload: PlanDecisionRequest, approve: bool, db: Session) -> dict[str, Any]:
+    try:
+        plan = decide_plan(db, plan_id, approve=approve, decided_by=payload.decided_by,
+                           rationale=payload.rationale, expected_sha256=payload.expected_sha256)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:  # PlanGateError included
+        db.rollback()
+        raise _gate(exc) from exc
+    return plan_payload(plan, db)
+
+
+@app.post("/plans/{plan_id}/approve")
+def approve_plan(plan_id: str, payload: PlanDecisionRequest, db: Session = Depends(get_db)):
+    return _decide(plan_id, payload, True, db)
+
+
+@app.post("/plans/{plan_id}/reject")
+def reject_plan(plan_id: str, payload: PlanDecisionRequest, db: Session = Depends(get_db)):
+    return _decide(plan_id, payload, False, db)
+
+
+def _agent_factory():
+    factory = getattr(app.state, "agent_sandbox_factory", None)
+    if factory is not None:
+        return factory
+    if os.getenv("SDF_AGENT_SANDBOX", "").strip().lower() == "e2b":
+        return e2b_factory(agent_environ(_operator_env(), {"opencode", "pi"}))
+    return None
+
+
+def _operator_env() -> dict[str, str]:
+    """os.environ plus the repo-root .env, in a private mapping (values never logged)."""
+    env = dict(os.environ)
+    load_dotenv(environ=env)
+    return env
+
+
+def _cleanup_check():
+    check = getattr(app.state, "agent_cleanup_check", None)
+    if check is not None:
+        return check
+    key = _operator_env().get("E2B_API_KEY")
+    if os.getenv("SDF_AGENT_SANDBOX", "").strip().lower() == "e2b" and key:
+        return lambda ids: ids & running_sandbox_ids(key)
+    return None
+
+
+def _coordinator(db: Session) -> Coordinator:
+    factory = _agent_factory()
+    if factory is None:
+        raise HTTPException(status_code=503, detail="no agent sandbox factory configured (set SDF_AGENT_SANDBOX=e2b)")
+    return Coordinator(
+        db, factory=factory,
+        workspace_root=Path(os.getenv("SDF_WORKSPACE_ROOT", ".sdf-workspaces")),
+        artifact_root=Path(os.getenv("SDF_ARTIFACT_ROOT", ".sdf-artifacts")),
+        cleanup_check=_cleanup_check(),
+    )
+
+
+def run_payload(run: AgentRunRow, db: Session) -> dict[str, Any]:
+    members = db.scalars(select(AgentRunMemberRow).where(AgentRunMemberRow.run_id == run.id)).all()
+    return {
+        "id": run.id, "plan_id": run.plan_id, "status": run.status, "error": run.error, "cost_usd": run.cost_usd,
+        "config": run.config, "summary": run.summary,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "members": [{"agent_id": m.agent_id, "role": m.role, "agent_kind": m.agent_kind, "subtask_key": m.subtask_key,
+                     "sandbox_id": m.sandbox_id, "status": m.status, "turns": m.turns} for m in members],
+    }
+
+
+@app.post("/plans/{plan_id}/runs", status_code=status.HTTP_202_ACCEPTED)
+def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depends(get_db)):
+    plan = db.get(PlanRow, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+    if plan.status != "approved":
+        raise HTTPException(status_code=409, detail=f"plan {plan_id} is {plan.status}; a human must approve it first")
+    try:
+        config = RunConfig.from_dict(payload.config)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    coordinator = _coordinator(db)
+    try:
+        run = coordinator.create_run(plan_id, config)
+    except ValueError as exc:
+        db.rollback()
+        raise _gate(exc) from exc
+    if payload.wait:
+        run = coordinator.execute(run.id)
+        return run_payload(run, db)
+    run_id = run.id
+    factory, check = coordinator.factory, coordinator.cleanup_check
+
+    def background() -> None:
+        session = SessionLocal()
+        try:
+            Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
+                        artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
+        finally:
+            session.close()
+
+    _threading.Thread(target=background, name=f"sdf-{run_id}", daemon=True).start()
+    return run_payload(run, db)
+
+
+@app.get("/runs/{run_id}")
+def get_agent_run(run_id: str, db: Session = Depends(get_db)):
+    run = db.get(AgentRunRow, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return run_payload(run, db)
+
+
+@app.post("/runs/{run_id}/cancel")
+def cancel_agent_run(run_id: str, db: Session = Depends(get_db)):
+    run = db.get(AgentRunRow, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.status == "running" and run.cancel_requested_at is None:
+        run.cancel_requested_at = datetime.now(timezone.utc)
+        db.commit()
+    request_cancel(run_id)
+    return run_payload(run, db)
+
+
+@app.get("/runs/{run_id}/messages")
+def get_agent_messages(run_id: str, db: Session = Depends(get_db)):
+    if db.get(AgentRunRow, run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = db.scalars(select(AgentMessageRow).where(AgentMessageRow.run_id == run_id).order_by(AgentMessageRow.seq)).all()
+    claims = {c.message_id: c.id for c in db.scalars(select(AgentClaimRow).where(AgentClaimRow.run_id == run_id)).all()}
+    return [{"id": m.id, "seq": m.seq, "from": m.from_agent, "from_role": m.from_role, "to": m.to_agent,
+             "to_role": m.to_role, "kind": m.kind, "body": m.body, "truncated": m.truncated,
+             "attempt_id": m.attempt_id, "source_sandbox_id": m.source_sandbox_id, "meta": m.meta,
+             "claim_id": claims.get(m.id), "evidence": False,
+             "created_at": m.created_at.isoformat()} for m in rows]
+
+
+@app.get("/decision-requests")
+def list_decision_requests(status_filter: str | None = None, run_id: str | None = None,
+                           db: Session = Depends(get_db)):
+    query = select(DecisionRequestRow).order_by(DecisionRequestRow.created_at)
+    if status_filter:
+        query = query.where(DecisionRequestRow.status == status_filter)
+    if run_id:
+        query = query.where(DecisionRequestRow.run_id == run_id)
+    return [decision_request_payload(r) for r in db.scalars(query).all()]
+
+
+@app.post("/decision-requests/{request_id}/resolve")
+def resolve_decision_request(request_id: str, payload: ResolveDecisionRequest, db: Session = Depends(get_db)):
+    # The HTTP caller is always treated as a human; policies run in-process only.
+    try:
+        request = resolve_request(db, request_id, outcome=payload.outcome, resolved_by=payload.resolved_by,
+                                  resolver_kind="human", resolution=payload.resolution)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise _gate(exc) from exc
+    return decision_request_payload(request)

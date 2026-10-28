@@ -180,6 +180,156 @@ class ToolAuditRow(Base):
     evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
 
 
+# --- P4: plan-approval gate, decision requests and agent messaging (ADR 0014) ---
+
+PLAN_STATUSES = ("proposed", "approved", "rejected")
+DECISION_REQUEST_STATUSES = ("pending", "approved", "rejected", "answered")
+AGENT_MESSAGE_KINDS = ("message", "report", "question", "decision_request", "decision", "system")
+AGENT_ROLES = ("lead", "worker", "manager", "sdf")
+RUN_STATUSES = ("running", "succeeded", "failed", "cancelled")
+
+
+class PlanRow(Base):
+    """An implementation plan; its Tasks cannot start until a human approves it."""
+
+    __tablename__ = "plans"
+    __table_args__ = (CheckConstraint("status IN ('proposed','approved','rejected')", name="ck_plans_status"),)
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    title: Mapped[str] = mapped_column(String(500))
+    objective_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    # Immutable once proposed; approval binds to this exact content hash.
+    content: Mapped[dict[str, Any]] = mapped_column(JSON)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    proposed_by: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    decision_request_id: Mapped[str] = mapped_column(String(120))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PlanTaskRow(Base):
+    """Membership of a Task in a Plan; a gated Task belongs to exactly one Plan."""
+
+    __tablename__ = "plan_tasks"
+    task_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(120), index=True)
+    subtask_key: Mapped[str] = mapped_column(String(64))
+
+
+class DecisionRequestRow(Base):
+    """A Decision awaiting resolution (plan approval or an agent's request).
+
+    Only a human resolves a plan approval; an agent request may be resolved by
+    a human or a configured policy.  Nothing is auto-approved.
+    """
+
+    __tablename__ = "decision_requests"
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','approved','rejected','answered')", name="ck_decision_requests_status"),
+        CheckConstraint("subject_kind IN ('plan','agent_request')", name="ck_decision_requests_subject"),
+        CheckConstraint("resolver_kind IS NULL OR resolver_kind IN ('human','policy')", name="ck_decision_requests_resolver"),
+    )
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    subject_kind: Mapped[str] = mapped_column(String(32))
+    subject_id: Mapped[str] = mapped_column(String(120), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    question: Mapped[str] = mapped_column(Text)
+    options: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    requested_by: Mapped[str] = mapped_column(String(120))
+    message_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    resolver_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_node_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentRunRow(Base):
+    """One lead/worker coordination run over an approved Plan."""
+
+    __tablename__ = "agent_runs"
+    __table_args__ = (CheckConstraint("status IN ('running','succeeded','failed','cancelled')", name="ck_agent_runs_status"),)
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(120), index=True)
+    status: Mapped[str] = mapped_column(String(16), index=True)
+    config: Mapped[dict[str, Any]] = mapped_column(JSON)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentRunMemberRow(Base):
+    """A lead or worker in a run, bound by the host to exactly one sandbox."""
+
+    __tablename__ = "agent_run_members"
+    __table_args__ = (UniqueConstraint("run_id", "agent_id", name="uq_agent_run_members_run_agent"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(120), index=True)
+    agent_id: Mapped[str] = mapped_column(String(64))
+    role: Mapped[str] = mapped_column(String(16))
+    agent_kind: Mapped[str] = mapped_column(String(32))
+    subtask_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sandbox_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(32))
+    turns: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class AgentMessageRow(Base):
+    """Append-only agent message.  ``from_agent`` is assigned by the host from
+    the sandbox the message was collected from, never from the envelope."""
+
+    __tablename__ = "agent_messages"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_agent_messages_run_seq"),
+        UniqueConstraint("run_id", "from_agent", "envelope_id", name="uq_agent_messages_envelope"),
+        CheckConstraint(
+            "kind IN ('message','report','question','decision_request','decision','system')", name="ck_agent_messages_kind"
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(120), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    envelope_id: Mapped[str] = mapped_column(String(64))
+    from_agent: Mapped[str] = mapped_column(String(64))
+    from_role: Mapped[str] = mapped_column(String(16))
+    to_agent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    body: Mapped[str] = mapped_column(Text)
+    body_sha256: Mapped[str] = mapped_column(String(64))
+    truncated: Mapped[bool] = mapped_column(default=False)
+    attempt_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_sandbox_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    meta: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AgentClaimRow(Base):
+    """What an agent *says* it did (a ``report``).  Never Evidence."""
+
+    __tablename__ = "agent_claims"
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(120), index=True)
+    message_id: Mapped[str] = mapped_column(String(120), unique=True)
+    agent_id: Mapped[str] = mapped_column(String(64))
+    attempt_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    subtask_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claimed_status: Mapped[str] = mapped_column(String(16))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PlanGateError(ValueError):
+    """An implementation Task/Attempt/run was started without an approved Plan."""
+
+
 def make_engine(url: str = "sqlite+pysqlite:///:memory:"):
     kwargs = {"future": True}
     if url.startswith("sqlite") and ":memory:" in url:
@@ -254,3 +404,87 @@ def _reject_dangling_decision_edges(session: Session, flush_context: Any, instan
         missing.update(attempt_ids - set(session.scalars(select(AttemptRow.id).where(AttemptRow.id.in_(attempt_ids)))))
     if missing:
         raise ValueError(f"decision edge references missing graph node(s): {sorted(missing)}")
+
+
+@event.listens_for(Session, "before_flush")
+def _reject_agent_message_mutation(session: Session, flush_context: Any, instances: Any) -> None:
+    """Agent messages and claims are append-only, like Evidence."""
+
+    for item in session.deleted:
+        if isinstance(item, (AgentMessageRow, AgentClaimRow)):
+            raise ValueError(f"{type(item).__name__} rows are append-only and cannot be deleted")
+    for item in session.dirty:
+        if isinstance(item, (AgentMessageRow, AgentClaimRow)) and session.is_modified(item, include_collections=False):
+            raise ValueError(f"{type(item).__name__} rows are append-only and cannot be updated")
+
+
+_PLAN_MUTABLE = {"status", "decided_at"}
+
+
+@event.listens_for(Session, "before_flush")
+def _guard_plans_and_decisions(session: Session, flush_context: Any, instances: Any) -> None:
+    """Plan content is immutable; status moves once, proposed -> approved|rejected,
+    and approval needs a human-resolved, approved decision request.  A resolved
+    decision request is final.  Plans and decision requests are never deleted."""
+
+    from sqlalchemy import inspect as sa_inspect
+
+    for item in session.deleted:
+        if isinstance(item, (PlanRow, DecisionRequestRow, PlanTaskRow)):
+            raise ValueError(f"{type(item).__name__} rows cannot be deleted")
+    with session.no_autoflush:
+        for item in list(session.dirty):
+            if isinstance(item, PlanTaskRow) and session.is_modified(item, include_collections=False):
+                raise ValueError("plan task membership is immutable")
+            if isinstance(item, DecisionRequestRow) and session.is_modified(item, include_collections=False):
+                history = sa_inspect(item).attrs.status.history
+                before = (history.deleted or history.unchanged or [None])[0]
+                if before is not None and before != "pending":
+                    raise ValueError("a resolved decision request is final")
+            if not isinstance(item, PlanRow) or not session.is_modified(item, include_collections=False):
+                continue
+            state = sa_inspect(item)
+            changed = {attr.key for attr in state.attrs if attr.history.has_changes()}
+            if changed - _PLAN_MUTABLE:
+                raise ValueError("plan content is immutable once proposed; propose a new plan")
+            if "status" in changed:
+                before = state.attrs.status.history.deleted
+                if not before or before[0] != "proposed" or item.status not in ("approved", "rejected"):
+                    raise ValueError("plan status may only move once from proposed to approved or rejected")
+                if item.status == "approved":
+                    request = session.get(DecisionRequestRow, item.decision_request_id)
+                    if (
+                        request is None or request.subject_id != item.id or request.status != "approved"
+                        or request.resolver_kind != "human"
+                    ):
+                        raise PlanGateError("plan approval requires a human-approved decision request")
+
+
+def _unapproved_plan(session: Session, task_id: str) -> str | None:
+    link = session.get(PlanTaskRow, task_id)
+    if link is None:
+        for item in session.new:
+            if isinstance(item, PlanTaskRow) and item.task_id == task_id:
+                link = item
+    if link is None:
+        return None
+    plan = session.get(PlanRow, link.plan_id)
+    if plan is None or plan.status != "approved":
+        return link.plan_id
+    return None
+
+
+@event.listens_for(Session, "before_flush")
+def _enforce_plan_gate(session: Session, flush_context: Any, instances: Any) -> None:
+    """No Attempt on a planned Task, and no agent run, before human approval."""
+
+    with session.no_autoflush:
+        for item in list(session.new):
+            if isinstance(item, AttemptRow):
+                blocked = _unapproved_plan(session, item.task_id)
+                if blocked is not None:
+                    raise PlanGateError(f"plan {blocked} is not approved; task {item.task_id} cannot start")
+            elif isinstance(item, AgentRunRow):
+                plan = session.get(PlanRow, item.plan_id)
+                if plan is None or plan.status != "approved":
+                    raise PlanGateError(f"plan {item.plan_id} is not approved; no agent run may start")

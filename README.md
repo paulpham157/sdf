@@ -56,6 +56,17 @@ Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 
+Multi-agent runs ([ADR 0014](docs/adr/0014-plan-gate-and-agent-messaging.md)):
+`POST /plans` proposes a plan, a human approves it with `POST /plans/{id}/approve`
+(no Attempt or run starts before that; 409), then `POST /plans/{id}/runs` runs a
+lead (default OpenCode) and one worker per subtask (default Pi), one E2B sandbox
+each on Vultr `glm-5.3`, with `SDF_AGENT_SANDBOX=e2b`. Agents talk only through
+the host's append-only message hub with the in-sandbox `sdf-msg` CLI / MCP
+server; a worker's "done" is a claim, and the run succeeds only when the host's
+own checks give PASS Evidence for every subtask. Agent questions wait in
+`GET /decision-requests` for `POST /decision-requests/{id}/resolve`. The API has
+no auth: run it on `127.0.0.1` only.
+
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 
