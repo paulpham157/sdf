@@ -561,9 +561,9 @@ def test_codex_resubmit_gives_up_as_running_when_the_turn_never_starts():
 
 
 def test_a_stall_of_another_agent_kind_is_never_resubmitted():
-    runner = TurnHerdr("cursor", prompt="stalled", states=("idle", "working", "idle"))
+    runner = TurnHerdr("opencode", prompt="stalled", states=("idle", "working", "idle"))
     runtime = HerdrRuntime(runner=runner)
-    session = runtime.start(attempt_id="ATTEMPT-OTHER-STALL", agent="cursor")
+    session = runtime.start(attempt_id="ATTEMPT-OTHER-STALL", agent="opencode")
     runtime.send(session.session_id, "fix it")
     assert not any(c[1:3] == ("pane", "send-keys") for c in runner.calls)
 

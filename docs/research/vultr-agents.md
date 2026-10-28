@@ -1,8 +1,11 @@
-# Codex, Claude Code, Pi, Qwen Code, Goose and Aider on Vultr Serverless Inference (glm-5.3)
+# Codex, Claude Code, Pi, Qwen Code and Goose on Vultr Serverless Inference (glm-5.3)
 
 Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
-`SDF_LIVE_VULTR_AGENTS=1|codex,claude,pi,qwen,goose,aider`, `E2B_API_KEY`,
+`SDF_LIVE_VULTR_AGENTS=1|codex,claude,pi,qwen,goose`, `E2B_API_KEY`,
 `VULTR_INFERENCE_API_KEY`). Same endpoint and model as the OpenCode check.
+Aider was an agent kind until 2026-10-28 and was removed by
+[ADR 0016](../adr/0016-remove-aider-and-cursor-agent-kinds.md); its results
+below are historical.
 
 ## Wiring (no proxy needed)
 

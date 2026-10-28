@@ -13,14 +13,16 @@ and carries the supported agent kinds:
 | Pi (`@mariozechner/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)) | `0.73.1` |
 | Qwen Code (`@qwen-code/qwen-code`, headless `qwen -o json`, [ADR 0013](../../../docs/adr/0013-openai-compatible-headless-agent-kinds.md)) | `0.26.2` |
 | Goose (`goose`, musl release tarball, SHA-256 verified, ADR 0013) | `1.56.0` |
-| Aider (`aider-chat` in `/opt/aider` venv on Debian `python3`, ADR 0013) | `0.86.2` |
-| Cursor Agent CLI (`agent` / `cursor-agent`, linux/x64 tarball, SHA-256 verified) | `2026.09.28-64d2043` |
 | Node.js runtime | `22` (`node:22-bookworm-slim`) |
 
 The build fails if any installed binary reports a different version, or if the
-Cursor tarball SHA-256 does not match. `agent` and `cursor-agent` are on PATH
-for `USER user` via `/usr/local/bin` (same pattern as Herdr / Codex / Claude).
-No Cursor credential is baked into the image.
+Herdr or Goose SHA-256 does not match. Debian `python3` is installed for the
+`sdf-msg` shim (ADR 0014), the OpenCode MCP config merge and verification
+checks; it is not tied to an agent kind.
+
+Aider and the Cursor Agent CLI were removed from the image by
+[ADR 0016](../../../docs/adr/0016-remove-aider-and-cursor-agent-kinds.md)
+(2026-10-28).
 
 ## Claude first-run state
 
@@ -52,8 +54,7 @@ sources it. In `api-key` mode Claude's `~/.claude.json` also gets the key's last
 20 characters in `customApiKeyResponses.approved` (computed inside the box), and
 each Attempt workspace is marked trusted just before Claude starts there.
 Without one, Codex and Claude still start and reach their interactive prompt;
-they just cannot call a model. Cursor fails closed with a clear authentication
-error (`agent login` or `CURSOR_API_KEY`) until a Credential Mode injects auth.
+they just cannot call a model.
 
 ## Build
 
@@ -80,7 +81,8 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
-Built 2026-10-28 (rebuild with Qwen Code, Goose and Aider): template id
+Previous build, before ADR 0016 (it still contained Aider and the Cursor
+Agent CLI). Built 2026-10-28 (rebuild with Qwen Code, Goose and Aider): template id
 `xj8glxnh091op795c7me`, build `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`
 (2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at
 commit `535318b`. Contains every CLI in the table above: Herdr, Codex, Claude
@@ -104,12 +106,11 @@ Previous build: `172d9021-919b-4de1-8391-35aaed26cad2` (without Qwen Code,
 Goose and Aider).
 
 Licensing caveat: publishing redistributes Claude Code (proprietary,
-"SEE LICENSE IN README.md") and the Cursor Agent CLI tarball to every E2B team.
-Codex (Apache-2.0), OpenCode (MIT), Pi (MIT), Qwen Code, Goose and Aider
-(all Apache-2.0) carry no such restriction. The
-operator published it knowingly, accepting that risk; if Anthropic or Cursor
-terms require it, withdraw it with `e2b template unpublish sdf-herdr-agents -y`
-(or rebuild without those CLIs). Users of the public template remain bound by
+"SEE LICENSE IN README.md") to every E2B team. Codex (Apache-2.0), OpenCode
+(MIT), Pi (MIT), Qwen Code and Goose (both Apache-2.0) carry no such
+restriction. The operator published it knowingly, accepting that risk; if
+Anthropic's terms require it, withdraw it with
+`e2b template unpublish sdf-herdr-agents -y` (or rebuild without Claude Code). Users of the public template remain bound by
 each CLI's own license and need their own credentials; the image holds none.
 The published build is the secret-checked one above
 (`60e6172b-fe69-4c5e-b81a-b60b28a59c9b`); rebuilding replaces the public

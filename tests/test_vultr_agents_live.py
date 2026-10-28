@@ -4,7 +4,7 @@ same Vultr Serverless Inference endpoint and model as OpenCode (glm-5.3).
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_VULTR_AGENTS=1``
 plus ``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY`` (env or the repo-root
 ``.env``, loaded into a private mapping).  ``SDF_LIVE_VULTR_AGENTS`` may also
-name a comma-separated subset (``codex,claude,pi,qwen,goose,aider``); ``1``
+name a comma-separated subset (``codex,claude,pi,qwen,goose``); ``1``
 keeps the original three.
 
 Each case runs the full SDF loop (Task -> Attempt -> agent run -> host-side
@@ -21,13 +21,13 @@ Wiring (no proxy):
   / ``glm-5.3``; the ``pi-models``
   seed writes ``~/.pi/agent/models.json`` naming the key variable, and
   ``sdf_core.pi_runtime.PiHeadlessRuntime`` runs ``pi -p --mode json`` turns.
-* qwen / goose / aider - the ADR-0013 kinds: SDF api-key mode with
+* qwen / goose - the ADR-0013 kinds (Aider removed, ADR 0016): SDF api-key mode with
   ``SDF_<KIND>_API_KEY_ENV=VULTR_INFERENCE_API_KEY`` and the default Vultr base
   URL / ``glm-5.3``; their seeds record the key's NAME and the headless runtimes
-  in ``sdf_core.{qwen,goose,aider}_runtime`` run one CLI process per turn.
+  in ``sdf_core.{qwen,goose}_runtime`` run one CLI process per turn.
   Not in the published template yet: on the ``codex`` base the factory installs
-  Node 22 + Qwen Code (npm), the sha256-checked Goose musl tarball, or Aider
-  (pip, own venv) before egress is locked.
+  Node 22 + Qwen Code (npm) or the sha256-checked Goose musl tarball before
+  egress is locked.
 
 Sandbox source:
 
@@ -66,7 +66,6 @@ from sdf_core.db import ArtifactRow, Base, DecisionEdgeRow, EvidenceRow, GraphNo
 from sdf_core.execution import ExecutionService
 from sdf_core.herdr_runtime import HerdrRuntime
 from sdf_core.model import utcnow
-from sdf_core.aider_runtime import AIDER_VERSION, AiderHeadlessRuntime
 from sdf_core.goose_runtime import GOOSE_VERSION, GooseHeadlessRuntime
 from sdf_core.pi_runtime import PiHeadlessRuntime
 from sdf_core.qwen_runtime import QWEN_VERSION, QwenHeadlessRuntime
@@ -96,8 +95,7 @@ NODE22_SHA256 = "00bbd05e306ea68b6e13e17360d0e2f680b493ef95f2fea1c4296ff7437530b
 GOOSE_URL = (f"https://github.com/aaif-goose/goose/releases/download/v{GOOSE_VERSION}/"
              "goose-x86_64-unknown-linux-musl.tar.gz")
 GOOSE_SHA256 = "80e7716fef3dccc3fef6850e24e5b846b7340e10e13098e53b4f47769f5803ef"
-HEADLESS = {"pi": PiHeadlessRuntime, "qwen": QwenHeadlessRuntime, "goose": GooseHeadlessRuntime,
-            "aider": AiderHeadlessRuntime}
+HEADLESS = {"pi": PiHeadlessRuntime, "qwen": QwenHeadlessRuntime, "goose": GooseHeadlessRuntime}
 # Runtime installs for the ADR-0013 kinds on the bare ``codex`` base template only.
 EXTRA_INSTALL = {
     "qwen": (
@@ -115,13 +113,6 @@ EXTRA_INSTALL = {
         f"echo '{GOOSE_SHA256}  /tmp/goose.tar.gz' | sha256sum -c - >/dev/null",
         "sudo tar -xzf /tmp/goose.tar.gz -C /usr/local/bin ./goose && sudo chmod 0755 /usr/local/bin/goose",
         "goose --version",
-    ),
-    "aider": (
-        "sudo python3 -m venv /opt/aider",
-        f"sudo /opt/aider/bin/pip install -q --no-cache-dir --disable-pip-version-check aider-chat=={AIDER_VERSION}"
-        " >/tmp/pip-aider.log 2>&1",
-        "sudo ln -sf /opt/aider/bin/aider /usr/local/bin/aider",
-        "aider --version",
     ),
 }
 REPO = Path(__file__).resolve().parents[1]
@@ -145,7 +136,6 @@ CLAUDE_USER_SETTINGS = {
 IMAGE_VERSION_CHECK = {
     "qwen": (f'test "$(qwen --version)" = {QWEN_VERSION}', "qwen --version"),
     "goose": (f'test "$(goose --version | tr -d \' \')" = {GOOSE_VERSION}', "goose --version"),
-    "aider": (f'test "$(aider --version)" = "aider {AIDER_VERSION}"', "aider --version"),
 }
 
 
@@ -272,7 +262,7 @@ EGRESS_PROBE = (
 )
 
 
-@pytest.mark.parametrize("agent", ["codex", "claude", "pi", "qwen", "goose", "aider"])
+@pytest.mark.parametrize("agent", ["codex", "claude", "pi", "qwen", "goose"])
 def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if agent not in AGENTS:
         pytest.skip(f"{agent} not selected in SDF_LIVE_VULTR_AGENTS")
@@ -293,7 +283,7 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         # Default base URL and model (Vultr, glm-5.3); the key is named explicitly
         # because the default variable is SDF_PI_API_KEY.
         environ |= {"SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY_ENV": KEY_VAR}
-    elif agent in ("qwen", "goose", "aider"):
+    elif agent in ("qwen", "goose"):
         upper = agent.upper()
         environ |= {f"SDF_CREDENTIAL_MODE_{upper}": "api-key", f"SDF_{upper}_API_KEY_ENV": KEY_VAR}
     transport, injection = create_credentialed_transport(
@@ -436,5 +426,5 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         # What the endpoint reported serving, not just what was requested.
         assert records["served_models"] == [MODEL]
     elif headless:
-        # Goose and Aider do not surface the response's model id (caveat, ADR 0013).
+        # Goose does not surface the response's model id (caveat, ADR 0013).
         assert records["served_model_reported"] is False

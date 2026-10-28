@@ -76,7 +76,7 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "PI_SHARE_VIEWER_URL",
             "PI_OAUTH_CALLBACK_HOST",
         ),
-        # Qwen Code, Goose and Aider (ADR-0013) get their endpoint, model and
+        # Qwen Code and Goose (ADR-0013) get their endpoint, model and
         # key per turn from the headless wrapper, which unsets every variable
         # with the agent's own prefix (and OPENAI_*) first.  These are the ones
         # that would move the agent's config or widen its permissions; the
@@ -95,13 +95,6 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "GOOSE_PATH_ROOT",
             "GOOSE_ADDITIONAL_CONFIG_FILES",
         ),
-        "aider": (
-            "AIDER_OPENAI_API_BASE",
-            "AIDER_MODEL",
-            "AIDER_YES_ALWAYS",
-            "AIDER_CONFIG",
-            "AIDER_ENV_FILE",
-        ),
     }
 )
 
@@ -109,7 +102,7 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 DEFAULT_OPENCODE_BASE_URL = "https://api.vultrinference.com/v1"
 # Same default endpoint for Pi (ADR-0012); overridable with SDF_PI_BASE_URL.
 DEFAULT_PI_BASE_URL = DEFAULT_OPENCODE_BASE_URL
-# Same default endpoint for Qwen Code, Goose and Aider (ADR-0013).
+# Same default endpoint for Qwen Code and Goose (ADR-0013).
 DEFAULT_OPENAI_COMPATIBLE_BASE_URL = DEFAULT_OPENCODE_BASE_URL
 
 
@@ -238,29 +231,12 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             subscription_supported=False,
             reserved_key_prefixes=('GOOSE_', 'OPENAI_'),
         ),
-        # Aider (ADR-0013): ``--model openai/<id> --openai-api-base``; the seed records
-        # the key variable's NAME and the wrapper exports it as OPENAI_API_KEY per turn.
-        "aider": _AgentSpec(
-            mode_variable="SDF_CREDENTIAL_MODE_AIDER",
-            connection_variable="SDF_CONNECTION_AIDER",
-            api_key_source="SDF_AIDER_API_KEY",
-            api_key_target="SDF_AIDER_API_KEY",
-            api_key_seed="aider-key-ref",
-            base_url_source="SDF_AIDER_BASE_URL",
-            base_url_target="SDF_AIDER_BASE_URL",
-            subscription_seeds=MappingProxyType({}),
-            api_key_env_variable="SDF_AIDER_API_KEY_ENV",
-            api_key_target_follows_source=True,
-            default_base_url=DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
-            subscription_supported=False,
-            reserved_key_prefixes=('AIDER_', 'OPENAI_', 'LITELLM_'),
-        ),
     }
 )
 
 AGENT_KINDS: tuple[str, ...] = tuple(_AGENTS)
 # Kinds whose plan carries the resolved model as a sandbox variable.
-_MODEL_SEEDED_AGENTS = frozenset({"opencode", "pi", "qwen", "goose", "aider"})
+_MODEL_SEEDED_AGENTS = frozenset({"opencode", "pi", "qwen", "goose"})
 
 
 @dataclass(frozen=True, slots=True)

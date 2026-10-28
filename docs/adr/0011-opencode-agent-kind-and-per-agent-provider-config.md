@@ -60,6 +60,8 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
   OpenCode base URL and key.
 - Model overrides for Claude and Codex are argv for `HerdrRuntime(agent_args=)`
   (`model_agent_args`); unset keeps each CLI's default. Cursor gets none.
+  *(ADR 0016: the Cursor Agent CLI was removed from the image; unknown kinds
+  keep their CLI default.)*
 - The `sdf-herdr-agents` Dockerfile installs the pinned `opencode-ai`; the live
   test may instead use the public E2B `opencode` template, which carries the
   same release.

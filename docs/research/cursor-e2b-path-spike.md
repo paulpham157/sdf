@@ -1,5 +1,10 @@
 # Cursor in disposable E2B for SDF — path spike (Slice 1)
 
+> **Superseded by [ADR 0016](../adr/0016-remove-aider-and-cursor-agent-kinds.md)
+> (2026-10-28).** The Cursor Agent CLI was removed from `sdf-herdr-agents` and
+> SDF never wired a `cursor` agent kind. Kept as the historical record of the
+> original `cursor-e2b` track; it no longer describes the image or the code.
+
 Date: 2026-09-30. Track: `cursor-e2b`. Peer slice: path comparison + install/auth findings + one disposable live probe. No production `sdf_core/` edits; no template publish in this slice.
 
 Human decisions folded in: **Path B is the proof vehicle**; **subscription Credential Mode first**; **api-key deferred** until subscription is attempted or documented blocked; **template publish allowed in a later slice**. Template pin/publish work is tracked in [#31](https://github.com/paulpham157/sdf/pull/31) (out of scope for this docs PR).

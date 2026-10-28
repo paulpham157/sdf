@@ -1,5 +1,10 @@
 # Cursor CLI pin in `sdf-herdr-agents` (Slice 3)
 
+> **Superseded by [ADR 0016](../adr/0016-remove-aider-and-cursor-agent-kinds.md)
+> (2026-10-28).** The Cursor Agent CLI was removed from `sdf-herdr-agents` and
+> SDF never wired a `cursor` agent kind. Kept as the historical record of the
+> original `cursor-e2b` track; it no longer describes the image or the code.
+
 Date: 2026-09-30. Track: `cursor-e2b`. Peer: template pin + publish + no-cred smoke.
 Path B. No `sdf_core/` credential wiring. No credentials baked into the image.
 No `CURSOR_API_KEY` in Evidence.

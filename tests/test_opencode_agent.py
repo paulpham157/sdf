@@ -181,9 +181,9 @@ def test_model_overrides_per_agent_kind():
     assert agent_model_args("claude", env) == ("--model", "claude-sonnet-x")
     assert agent_model_args("codex", env) == ("-m", "gpt-x")
     assert agent_model_args("codex", {}) == ()
-    assert agent_model_args("cursor", env) == ()
+    assert agent_model_args("unknown-kind", env) == ()
     assert agent_model_args("opencode", {}) == ("--model", "vultr/glm-5.3")
-    assert model_agent_args(["claude", "codex", "cursor"], {"SDF_CODEX_MODEL": "gpt-x"}) == {"codex": ("-m", "gpt-x")}
+    assert model_agent_args(["claude", "codex", "unknown-kind"], {"SDF_CODEX_MODEL": "gpt-x"}) == {"codex": ("-m", "gpt-x")}
     assert resolve_agent_models("opencode", {}).provider_id == "vultr"
 
 

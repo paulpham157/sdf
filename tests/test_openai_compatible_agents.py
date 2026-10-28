@@ -1,4 +1,4 @@
-"""Qwen Code, Goose and Aider agent kinds (ADR-0013), no network."""
+"""Qwen Code and Goose agent kinds (ADR-0013), no network; Aider was removed (ADR-0016)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ import pytest
 
 from sdf_core import headless_runtime as hr
 from sdf_core.agent_models import agent_model_args
-from sdf_core.aider_runtime import AiderHeadlessRuntime, AiderRuntimeError
-from sdf_core.aider_runtime import parse_output as parse_aider
 from sdf_core.credential_injection import prepare_credential_injection
 from sdf_core.credentials import (
     AGENT_KINDS,
@@ -31,12 +29,11 @@ from sdf_core.qwen_runtime import parse_events as parse_qwen
 from sdf_core.runtime import CredentialMetadata, RuntimeStatus
 
 KEY = "vk-test-0123456789abcdef-secret"
-KINDS = ("qwen", "goose", "aider")
-SEEDS = {"qwen": "qwen-key-ref", "goose": "goose-provider", "aider": "aider-key-ref"}
-RUNTIMES = {"qwen": (QwenHeadlessRuntime, QwenRuntimeError), "goose": (GooseHeadlessRuntime, GooseRuntimeError),
-            "aider": (AiderHeadlessRuntime, AiderRuntimeError)}
-VERSIONS = {"qwen": "0.26.2", "goose": " 1.56.0", "aider": "aider 0.86.2"}
-CONFIG = {"qwen": (".qwen", ".env"), "goose": (".goose",), "aider": (".aider.conf.yml", ".env", ".git")}
+KINDS = ("qwen", "goose")
+SEEDS = {"qwen": "qwen-key-ref", "goose": "goose-provider"}
+RUNTIMES = {"qwen": (QwenHeadlessRuntime, QwenRuntimeError), "goose": (GooseHeadlessRuntime, GooseRuntimeError)}
+VERSIONS = {"qwen": "0.26.2", "goose": " 1.56.0"}
+CONFIG = {"qwen": (".qwen", ".env"), "goose": (".goose",)}
 
 
 def env_for(kind: str, **extra: str) -> dict[str, str]:
@@ -89,7 +86,6 @@ def test_named_key_must_be_a_dedicated_key_name(kind, name):
 
 
 @pytest.mark.parametrize(("kind", "name"), [("qwen", "QWEN_X_API_KEY"), ("goose", "GOOSE_X_API_KEY"),
-                                            ("aider", "AIDER_X_API_KEY"), ("aider", "LITELLM_X_API_KEY"),
                                             ("qwen", "GEMINI_X_API_KEY")])
 def test_named_key_cannot_use_a_prefix_the_wrapper_unsets(kind, name):
     env = env_for(kind, **{f"SDF_{kind.upper()}_API_KEY_ENV": name, name: "v"})
@@ -114,14 +110,14 @@ def test_custom_endpoint_and_model_rules(kind):
 
 
 def test_kinds_share_a_sandbox_with_codex_without_a_clash():
-    environ = {**env_for("qwen"), **env_for("goose"), **env_for("aider"),
+    environ = {**env_for("qwen"), **env_for("goose"),
                "SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_OPENAI_API_KEY": "codex-key-value"}
     injection = prepare_credential_injection(
-        ["codex", "qwen", "goose", "aider"], environ,
-        base_envs={"QWEN_HOME": "/tmp/evil", "GOOSE_PATH_ROOT": "/tmp/evil", "AIDER_CONFIG": "/tmp/evil", "KEEP": "1"},
+        ["codex", "qwen", "goose"], environ,
+        base_envs={"QWEN_HOME": "/tmp/evil", "GOOSE_PATH_ROOT": "/tmp/evil", "KEEP": "1"},
     )
     assert injection.envs["OPENAI_API_KEY"] == "codex-key-value"
-    assert not {"QWEN_HOME", "GOOSE_PATH_ROOT", "AIDER_CONFIG"} & set(injection.envs)
+    assert not {"QWEN_HOME", "GOOSE_PATH_ROOT"} & set(injection.envs)
     assert injection.envs["KEEP"] == "1"
     assert all(KEY not in c and "codex-key-value" not in c for c in injection.seed_commands)
     assert KEY not in repr(injection)
@@ -155,19 +151,13 @@ FAKE = textwrap.dedent('''\
     import json, os, sys, time
     kind = os.path.basename(sys.argv[0]); args = sys.argv[1:]
     if args == ["--version"]:
-        print(os.environ.get("FAKE_VERSION") or {"qwen": "0.26.2", "goose": " 1.56.0", "aider": "aider 0.86.2"}[kind])
+        print(os.environ.get("FAKE_VERSION") or {"qwen": "0.26.2", "goose": " 1.56.0"}[kind])
         sys.exit(0)
     prompt = sys.stdin.read()
-    if kind == "aider":
-        if "--chat-mode" in args and args[args.index("--chat-mode") + 1] not in ("ask", "architect", "whole", "diff"):
-            sys.stderr.write("aider: error: argument --edit-format/--chat-mode: invalid choice\\n"); sys.exit(2)
-        prompt_file = open(args[args.index("--message-file") + 1]).read()
-        assert prompt_file == prompt
     seen = {k: v for k, v in os.environ.items() if k.split("_")[0] in {"qwen": ("QWEN", "OPENAI", "GEMINI"),
-            "goose": ("GOOSE", "OPENAI", "XDG"), "aider": ("AIDER", "OPENAI", "LITELLM")}[kind]}
+            "goose": ("GOOSE", "OPENAI", "XDG")}[kind]}
     with open(os.environ["FAKE_LOG"], "a") as f:
-        f.write(json.dumps({"kind": kind, "cwd": os.getcwd(), "args": args, "prompt": prompt, "env": seen,
-                            "git": os.path.isdir(".git")}) + "\\n")
+        f.write(json.dumps({"kind": kind, "cwd": os.getcwd(), "args": args, "prompt": prompt, "env": seen}) + "\\n")
     mode = os.environ.get("FAKE_MODE", "ok")
     if mode == "fail":
         sys.stderr.write("provider exploded\\n"); sys.exit(3)
@@ -176,18 +166,9 @@ FAKE = textwrap.dedent('''\
     if mode == "mkcfg":
         os.mkdir(os.environ["FAKE_CFG"])
     write = ("--approval-mode" in args and args[args.index("--approval-mode") + 1] == "yolo") or \\
-            os.environ.get("GOOSE_MODE") == "auto" or (kind == "aider" and "--chat-mode" not in args)
+            os.environ.get("GOOSE_MODE") == "auto"
     if write:
         open("calc.py", "w").write("def add(a, b):\\n    return a + b\\n")
-    if kind == "aider":
-        os.makedirs(".aider.tags.cache.v4", exist_ok=True)
-        model = args[args.index("--model") + 1]
-        print("Aider v0.86.2\\nModel: " + model + " with whole edit format\\nDONE")
-        if mode == "error":
-            print("litellm.AuthenticationError: bad key")
-        else:
-            print("Tokens: 1.5k sent, 20 received. Cost: $0.0012 message, $0.0012 session.")
-        sys.exit(0)
     if kind == "qwen":
         model = args[args.index("-m") + 1]
         state = os.path.join(os.environ["HOME"], "qwen-turns"); n = int(open(state).read()) if os.path.exists(state) else 0
@@ -266,7 +247,7 @@ def local(request, tmp_path, monkeypatch):
            "SDF_TEST_API_KEY": KEY,
            # Ambient provider/agent variables a turn must never see.
            "OPENAI_API_KEY": "ambient-key", "OPENAI_BASE_URL": "https://evil.example/v1", f"{upper}_ANYTHING": "1",
-           "LITELLM_LOG": "DEBUG", "XDG_CONFIG_HOME": str(tmp_path / "evil-xdg"), "GEMINI_API_KEY": "g"}
+           "XDG_CONFIG_HOME": str(tmp_path / "evil-xdg"), "GEMINI_API_KEY": "g"}
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "calc.py").write_text("def add(a, b):\n    return a - b\n")
@@ -307,36 +288,23 @@ def test_read_only_turn_uses_stdin_prompt_named_key_and_reports_usage(local, tmp
         # Goose reads the key through the seeded provider's api_key_env, not OPENAI_API_KEY.
         assert env == {"GOOSE_MODE": "chat", "GOOSE_DISABLE_KEYRING": "1", "GOOSE_DISABLE_SESSION_NAMING": "true",
                        "GOOSE_TELEMETRY_ENABLED": "false", "GOOSE_TELEMETRY_OFF": "1"}
-    else:
-        assert args[:2] == ["--message-file", f"{tmp_path}/sdf-aider-ATTEMPT-1.prompt"]
-        assert {"--no-auto-commits", "--no-gitignore", "--analytics-disable", "--no-auto-lint", "--no-auto-test",
-                "--no-detect-urls", "--disable-playwright", "--no-restore-chat-history"} <= set(args)
-        assert args[args.index("--chat-mode") + 1] == "ask" and "--no-suggest-shell-commands" in args
-        assert args[-4:] == ["--model", "openai/glm-5.3", "--openai-api-base", "https://llm.example.com/v1"]
-        assert env == {"OPENAI_API_KEY": KEY}
-        assert call["git"] is True
     usage = runtime.usage(session.session_id)
-    assert usage["input_tokens"] in (80, 1500) and usage["requested_models"] == ["glm-5.3"]
+    assert usage["input_tokens"] == 80 and usage["requested_models"] == ["glm-5.3"]
     if kind == "qwen":
         assert usage["served_models"] == ["glm-5.3-served"]
     else:
         assert usage["served_models"] == [] and usage["served_model_reported"] is False
     runtime.collect_workspace("ATTEMPT-1", workspace)
     assert "a - b" in (workspace / "calc.py").read_text()
-    # The private repo and Aider's pickle cache never come back to the host.
-    assert not (workspace / ".git").exists() and not (workspace / ".aider.tags.cache.v4").exists()
     runtime.send(session.session_id, "again")
     second = _calls(log)[1]["args"]
     if kind == "qwen":
         assert second[7:9] == ["--resume", args[8]]
         assert runtime.usage(session.session_id)["input_tokens"] == 160
-    elif kind == "goose":
+    else:
         assert "-r" in second
         assert runtime.stream(session.session_id).count("DONE") == 2
         assert runtime.usage(session.session_id)["input_tokens"] == 160
-    else:
-        assert "--restore-chat-history" in second
-        assert runtime.usage(session.session_id)["input_tokens"] == 3000
     assert runtime.terminate(session.session_id).status is RuntimeStatus.TERMINATED
     runtime.terminate(session.session_id)
     assert transport.closed == 1
@@ -354,11 +322,9 @@ def test_write_mode_only_with_the_fresh_e2b_claim(local, monkeypatch):
     args = call["args"]
     if kind == "qwen":
         assert args[args.index("--approval-mode") + 1] == "yolo" and "other-1" in args
-    elif kind == "goose":
+    else:
         assert call["env"]["GOOSE_MODE"] == "auto"
         assert args[args.index("--with-builtin") + 1] == "developer" and "other-1" in args
-    else:
-        assert "--chat-mode" not in args and "--no-suggest-shell-commands" not in args and "openai/other-1" in args
     runtime.collect_workspace("ATTEMPT-2", workspace)
     assert "a + b" in (workspace / "calc.py").read_text()
 
@@ -370,7 +336,7 @@ def test_real_claim_is_refused_for_non_production_transports(local):
     assert _claim_fresh_e2b_permission_bypass(transport) is False
 
 
-@pytest.mark.parametrize("index", [0, 1, 2])
+@pytest.mark.parametrize("index", [0, 1])
 def test_workspace_with_project_config_is_refused_before_staging(local, tmp_path, index):
     kind, cls, transport, workspace, _ = local
     entries = CONFIG[kind]
@@ -393,7 +359,7 @@ def test_dangling_config_symlink_is_refused(local):
 
 def test_project_config_created_by_the_agent_blocks_the_next_turn(local):
     kind, cls, transport, workspace, log = local
-    transport.env.update({"FAKE_MODE": "mkcfg", "FAKE_CFG": {"qwen": ".qwen", "goose": ".goose", "aider": ".aider"}[kind]})
+    transport.env.update({"FAKE_MODE": "mkcfg", "FAKE_CFG": {"qwen": ".qwen", "goose": ".goose"}[kind]})
     runtime = cls(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-6", workspace)
     session = runtime.start(attempt_id="ATTEMPT-6", agent=kind)
@@ -563,8 +529,16 @@ def test_goose_parser_skips_earlier_turns_and_banner():
     assert parse_goose("no json")[2]
 
 
-def test_aider_parser_counts_k_suffixed_tokens():
-    lines, usage, errors = parse_aider("Model: openai/glm-5.3 with whole edit format\nok\nTokens: 2.4k sent, 1.1k received.\n")
-    assert usage.input_tokens == 2400 and usage.output_tokens == 1100 and errors == ()
-    assert usage.requested_models == ["glm-5.3"]
-    assert parse_aider("nothing here")[2] == ("Aider made no model call",)
+
+@pytest.mark.parametrize("removed", ["aider", "cursor"])
+def test_removed_kinds_are_unknown_everywhere(removed):
+    """ADR-0016: Aider and the Cursor Agent CLI are not agent kinds."""
+    from sdf_core import agent_models, credential_injection
+    from sdf_core.credentials import CredentialConfigError
+
+    assert AGENT_KINDS == ("claude", "codex", "opencode", "pi", "qwen", "goose")
+    with pytest.raises(CredentialConfigError, match="unknown agent kind"):
+        resolve_credential_plan(removed, {f"SDF_{removed.upper()}_API_KEY": KEY})
+    assert removed not in agent_models.MODEL_VARIABLES and removed not in agent_models.DEFAULT_MODELS
+    assert not any(removed in seed for seed in credential_injection._SEED_SCRIPTS)
+    assert not (Path(__file__).resolve().parents[1] / "sdf_core" / f"{removed}_runtime.py").exists()

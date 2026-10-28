@@ -447,7 +447,7 @@ def test_run_config_validation():
     with pytest.raises(ValueError, match="not supported by the coordinator"):
         RunConfig.from_dict({"lead": {"kind": "claude"}})
     with pytest.raises(ValueError, match="worker kind"):
-        RunConfig.from_dict({"worker": {"kind": "aider"}})
+        RunConfig.from_dict({"worker": {"kind": "goose"}})
     with pytest.raises(ValueError):
         RunConfig.from_dict({"worker": "pi"})
 

@@ -1,6 +1,6 @@
 """Shared headless runtime for OpenAI-compatible CLI agent kinds (ADR-0013).
 
-Qwen Code, Goose and Aider all run one non-interactive turn per process, like
+Qwen Code and Goose both run one non-interactive turn per process, like
 Pi (ADR-0012), so they share this base: the transport (E2B or Daytona) owns
 sandbox creation, credential seeding, workspace staging/collection and
 teardown; the runtime only runs ``sh -c <wrapper>`` turns over ``exec_argv``.
@@ -119,7 +119,6 @@ def build_wrapper(
     ancestor_entries: Sequence[str] = (),
     key_ref_file: str | None = None,
     command_tail: str = '"$@"',
-    cleanup_entries: Sequence[str] = (),
 ) -> str:
     """The ``sh -c`` turn wrapper.
 
@@ -141,7 +140,7 @@ def build_wrapper(
     for name in unset_names:
         if not _NAME.fullmatch(name):
             raise ValueError("bad variable name")
-    for entry in (*refused_entries, *ancestor_entries, *cleanup_entries):
+    for entry in (*refused_entries, *ancestor_entries):
         if not _ENTRY.fullmatch(entry) or ".." in entry.split("/"):
             raise ValueError("bad entry")
 
@@ -160,7 +159,7 @@ def build_wrapper(
         parts.append(f"export {' '.join(exports)}; ")
     parts.append(f'cd "$dir" || {leave(NO_WORKSPACE_EXIT)}; ')
     if refused_entries:
-        # Unquoted on purpose: ``.aider*`` globs; an unmatched glob stays literal.
+        # Unquoted on purpose so an entry may be a glob; an unmatched glob stays literal.
         parts.append(
             f'for p in {" ".join(refused_entries)}; do if [ -e "$p" ] || [ -L "$p" ]; then {leave(PROJECT_CONFIG_EXIT)}; fi; done; '
         )
@@ -187,8 +186,6 @@ def build_wrapper(
         '(umask 077; printf "%s" "$prompt" > "$pf"); '
         f'timeout --kill-after={KILL_AFTER_S} "$secs" {command_tail} <"$pf" >"$out" 2>"$err"; rc=$?; '
     )
-    if cleanup_entries:
-        parts.append(f"rm -rf -- {' '.join(cleanup_entries)}; ")
     parts.append(
         f'cat "$out"; printf "\\n%s%s\\n" {marker} "$rc"; '
         'if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'

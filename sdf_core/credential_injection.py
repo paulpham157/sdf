@@ -101,7 +101,7 @@ _PI_MODELS = (
     'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:price[0],output:price[1],cacheRead:0,cacheWrite:0}}]}}};'
     'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
 )
-# Qwen Code and Aider (ADR-0013) take the endpoint and model on their argv and
+# Qwen Code (ADR-0013) takes the endpoint and model on its argv and
 # the key only from OPENAI_API_KEY, which the turn wrapper exports per turn
 # (never in the sandbox env, so it cannot clash with codex).  The seed records
 # the key variable's NAME (argv[1]) in a private file the wrapper reads; the
@@ -174,7 +174,6 @@ _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
         "opencode-config": _OPENCODE_CONFIG,
         "pi-models": _PI_MODELS,
         "qwen-key-ref": _key_ref("qwen"),
-        "aider-key-ref": _key_ref("aider"),
         "goose-provider": _GOOSE_PROVIDER,
     }
 )

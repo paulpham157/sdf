@@ -18,10 +18,10 @@ Supported overrides, per agent kind:
 * ``pi`` - ``SDF_PI_MODEL`` (a bare model id, default ``glm-5.3``), written
   into the seeded ``~/.pi/agent/models.json`` and selected per turn with
   ``pi --provider sdf --model <id>`` (ADR-0012).
-* ``qwen`` / ``goose`` / ``aider`` - ``SDF_QWEN_MODEL`` / ``SDF_GOOSE_MODEL`` /
-  ``SDF_AIDER_MODEL`` (a bare model id, default ``glm-5.3``) served by the
-  agent's OpenAI-compatible endpoint; the headless runtimes pass it per turn
-  (``qwen -m``, ``goose --model``, ``aider --model openai/<id>``) (ADR-0013).
+* ``qwen`` / ``goose`` - ``SDF_QWEN_MODEL`` / ``SDF_GOOSE_MODEL`` (a bare
+  model id, default ``glm-5.3``) served by the agent's OpenAI-compatible
+  endpoint; the headless runtimes pass it per turn (``qwen -m``,
+  ``goose --model``) (ADR-0013).
 
 Error messages name variables, never values: an operator may paste a secret
 into the wrong variable.
@@ -38,21 +38,21 @@ from .credentials import CredentialConfigError
 
 MODEL_VARIABLES: Mapping[str, str] = MappingProxyType(
     {"claude": "SDF_CLAUDE_MODEL", "codex": "SDF_CODEX_MODEL", "opencode": "SDF_OPENCODE_MODEL", "pi": "SDF_PI_MODEL",
-     "qwen": "SDF_QWEN_MODEL", "goose": "SDF_GOOSE_MODEL", "aider": "SDF_AIDER_MODEL"}
+     "qwen": "SDF_QWEN_MODEL", "goose": "SDF_GOOSE_MODEL"}
 )
 SMALL_MODEL_VARIABLES: Mapping[str, str] = MappingProxyType({"opencode": "SDF_OPENCODE_SMALL_MODEL"})
 # Vultr Serverless Inference is the example/default OpenCode provider only;
 # every part of it is overridable (base URL in credentials.py).
 DEFAULT_MODELS: Mapping[str, str] = MappingProxyType(
-    {"opencode": "vultr/glm-5.3", "pi": "glm-5.3", "qwen": "glm-5.3", "goose": "glm-5.3", "aider": "glm-5.3"}
+    {"opencode": "vultr/glm-5.3", "pi": "glm-5.3", "qwen": "glm-5.3", "goose": "glm-5.3"}
 )
 # Kinds whose model id is a bare id on an OpenAI-compatible endpoint (ADR-0012/0013).
-BARE_MODEL_AGENTS = frozenset({"pi", "qwen", "goose", "aider"})
+BARE_MODEL_AGENTS = frozenset({"pi", "qwen", "goose"})
 DEFAULT_SMALL_MODELS: Mapping[str, str] = MappingProxyType({"opencode": "vultr/glm-5.3-flash"})
 # The flag each CLI documents for model selection.
 _MODEL_FLAGS: Mapping[str, str] = MappingProxyType(
     {"claude": "--model", "codex": "-m", "opencode": "--model", "pi": "--model",
-     "qwen": "-m", "goose": "--model", "aider": "--model"}
+     "qwen": "-m", "goose": "--model"}
 )
 
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,199}")
@@ -86,7 +86,7 @@ def resolve_agent_models(agent: str, environ: Mapping[str, str]) -> AgentModelSe
 
     variable = MODEL_VARIABLES.get(agent)
     if variable is None:
-        # Agent kinds without a model override (e.g. cursor) keep their CLI default.
+        # Unknown agent kinds have no model override and keep their CLI default.
         return AgentModelSelection(agent, None)
     model = _read(variable, environ) or DEFAULT_MODELS.get(agent)
     small_variable = SMALL_MODEL_VARIABLES.get(agent)

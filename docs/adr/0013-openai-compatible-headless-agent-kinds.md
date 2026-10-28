@@ -1,6 +1,13 @@
 # Qwen Code, Goose and Aider are headless OpenAI-compatible agent kinds
 
-Status: accepted
+Status: accepted; the Aider parts are superseded by
+[ADR 0016](0016-remove-aider-and-cursor-agent-kinds.md) (2026-10-28).
+
+> **Superseded in part (ADR 0016).** Aider was removed as an agent kind:
+> `sdf_core.aider_runtime`, its credential spec, seed, model defaults, tests
+> and its Dockerfile venv are gone. Everything below about Aider is kept as the
+> historical record and no longer describes the code. Qwen Code and Goose are
+> unchanged.
 
 SDF adds three popular open-source coding-agent CLIs as agent kinds on par
 with OpenCode (ADR 0011) and Pi (ADR 0012). None runs in a Herdr pane: each is
@@ -15,7 +22,7 @@ project-config layout.
 | --- | --- | --- | --- | --- | --- |
 | `qwen` | npm `@qwen-code/qwen-code` `0.26.2` (needs Node ≥ 22) | `sdf_core.qwen_runtime.QwenHeadlessRuntime` | `qwen -o json --bare --auth-type openai`, prompt on stdin | `SDF_QWEN_BASE_URL` → `--openai-base-url` | `SDF_QWEN_MODEL` → `-m` |
 | `goose` | GitHub release `1.56.0`, musl tarball, sha256-pinned | `sdf_core.goose_runtime.GooseHeadlessRuntime` | `goose run -i - --output-format json --no-profile` | `SDF_GOOSE_BASE_URL` → seeded custom provider | `SDF_GOOSE_MODEL` → `--model` |
-| `aider` | PyPI `aider-chat` `0.86.2` (own venv) | `sdf_core.aider_runtime.AiderHeadlessRuntime` | `aider --message-file F` | `SDF_AIDER_BASE_URL` → `--openai-api-base` | `SDF_AIDER_MODEL` → `--model openai/<id>` |
+| `aider` (removed, ADR 0016) | PyPI `aider-chat` `0.86.2` (own venv) | `sdf_core.aider_runtime.AiderHeadlessRuntime` | `aider --message-file F` | `SDF_AIDER_BASE_URL` → `--openai-api-base` | `SDF_AIDER_MODEL` → `--model openai/<id>` |
 
 Defaults: `https://api.vultrinference.com/v1` and `glm-5.3` (a bare id, no
 provider prefix). All three are Apache-2.0, so bundling them in the
@@ -27,12 +34,12 @@ provider prefix). All three are Apache-2.0, so bundling them in the
 | --- | --- | --- | --- | --- | --- |
 | Qwen Code | yes (`-p`/stdin, `-o json`) | yes (`--openai-base-url`, `OPENAI_API_KEY`) | Apache-2.0 | `--bare` skips settings/hooks/MCP/extensions, but still loads an upward `.env` / `.qwen/.env` | **implemented**; refuse `.env`/`.qwen` |
 | Goose | yes (`run -i -`, JSON output) | yes (declarative custom provider, `api_key_env` = name) | Apache-2.0 | no endpoint/key/mode read from the workspace | **implemented**; `.goose` refused as defense in depth |
-| Aider | yes (`--message-file`, exits) | yes (`--openai-api-base`, LiteLLM `openai/<id>`) | Apache-2.0 | merges `.aider*.yml`, `.env` from cwd, git root and `$HOME`; GitPython runs repo-configured programs | **implemented**; refuse `.aider*`/`.env`/`.git`, private per-turn repo |
+| Aider (removed, ADR 0016) | yes (`--message-file`, exits) | yes (`--openai-api-base`, LiteLLM `openai/<id>`) | Apache-2.0 | merges `.aider*.yml`, `.env` from cwd, git root and `$HOME`; GitPython runs repo-configured programs | **implemented**; refuse `.aider*`/`.env`/`.git`, private per-turn repo |
 | Gemini CLI | yes | no custom OpenAI-compatible endpoint (Gemini API only) | Apache-2.0 | — | deferred (Qwen Code is its OpenAI-compatible fork) |
 | GitHub Copilot CLI | yes | no; GitHub-hosted models, needs a GitHub token | proprietary | — | deferred |
 | Amp | yes | no; Amp account/backend | proprietary | — | deferred |
 | Crush | yes | yes | FSL-1.1 (not open source until conversion) | — | deferred (license) |
-| Cursor CLI | yes | no custom base URL | proprietary | — | already a kind (subscription); no change |
+| Cursor CLI | yes | no custom base URL | proprietary | — | already a kind (subscription); no change. *Correction (ADR 0016): it was only pinned in the image, never an SDF agent kind; removed from the image.* |
 | Kilo Code CLI | yes | yes | MIT | — | deferred (OpenCode fork; redundant with `opencode`) |
 
 ## Credentials
@@ -87,7 +94,7 @@ Per kind:
 - **Goose**: verified to read nothing from a workspace `.goose/`, `config.yaml`
   or `.env`; `.goose` is still refused. `XDG_*` are unset so the seeded
   provider cannot be moved; `--no-profile` loads no configured extensions.
-- **Aider**: refuses `.aider*`, `.env` and `.git` (GitPython would run
+- **Aider** (removed, ADR 0016): refuses `.aider*`, `.env` and `.git` (GitPython would run
   `core.fsmonitor`, filters, …). The wrapper creates a private repository per
   turn (`git init`, `git add -A`, no commit) for the repo map and removes it,
   together with `.aider.tags.cache.v*` (a pickle cache), afterwards. Every
@@ -104,7 +111,7 @@ reused sandbox, tests) each kind runs read-only:
 | --- | --- | --- |
 | qwen | `--approval-mode plan` | `--approval-mode yolo` |
 | goose | `GOOSE_MODE=chat` (no tools) | `GOOSE_MODE=auto` + builtin `developer` |
-| aider | `--chat-mode ask --no-suggest-shell-commands` | default edit format + `--yes-always` |
+| aider (removed) | `--chat-mode ask --no-suggest-shell-commands` | default edit format + `--yes-always` |
 
 ## Usage and served model
 
@@ -128,7 +135,7 @@ Node 22 there). Every run: Attempt completed, both acceptance criteria PASS,
 | --- | --- | --- | --- | --- |
 | qwen | 26,496 / 371 | $0.021 | 62.1 s (41 s) | `glm-5.3` |
 | goose | 7,515 / 221 | $0.0063 | 34.1 s (28.7 s) | not reported |
-| aider | 785 / 65 | $0.0008 | 78.2 s (70.9 s) | not reported |
+| aider (removed) | 785 / 65 | $0.0008 | 78.2 s (70.9 s) | not reported |
 
 Rebuilt image (2026-10-28, `sdf-herdr-agents` build
 `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`, verified first on an identical
@@ -140,7 +147,7 @@ Same criteria, all PASS:
 | --- | --- | --- | --- | --- |
 | qwen | 26,503 / 363 | $0.021 | 36.3 s (21.2 s) | 1.9x faster |
 | goose | 7,466 / 166 | $0.0061 | 24.1 s (18.3 s) | 1.6x faster |
-| aider | 785 / 65 | $0.0008 | 31.2 s (16.2 s) | 4.4x faster |
+| aider (removed) | 785 / 65 | $0.0008 | 31.2 s (16.2 s) | 4.4x faster |
 
 ## Consequences
 
@@ -149,4 +156,5 @@ Same criteria, all PASS:
   (build `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`), so no runtime install is
   needed. The runtime install path remains only for the bare `codex` template.
 - Aider is a pair programmer, not an autonomous agent: one turn is one model
-  exchange plus its edits.
+  exchange plus its edits. *Superseded:* this, plus having no shell for
+  `sdf-msg`, is why ADR 0016 removed it; the image no longer installs it.

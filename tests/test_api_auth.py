@@ -144,7 +144,7 @@ def test_single_user_mode_allows_self_approval_and_records_it(tmp_path, monkeypa
 def test_agent_and_service_identities_cannot_approve():
     with SessionLocal() as db:
         for name in ("worker-1", "lead", "agent:lead", "sandbox-abc", "e2b_box", "host", "sdf", "SYSTEM",
-                     "pi:worker-1", "opencode:lead-1", "qwen", "Goose:worker-2", "aider-x"):
+                     "pi:worker-1", "opencode:lead-1", "qwen", "Goose:worker-2", "codex-x"):
             with pytest.raises(ValueError):
                 auth.create_token(db, principal=name, roles=["viewer"], created_by="test")
         for role in ("approver", "admin"):

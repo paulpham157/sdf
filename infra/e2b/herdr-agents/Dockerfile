@@ -14,12 +14,7 @@ ARG QWEN_CODE_VERSION=0.26.2
 # Goose (Apache-2.0) static musl release tarball from github.com/aaif-goose/goose, ADR 0013.
 ARG GOOSE_VERSION=1.56.0
 ARG GOOSE_SHA256=80e7716fef3dccc3fef6850e24e5b846b7340e10e13098e53b4f47769f5803ef
-# Aider (PyPI `aider-chat`, Apache-2.0) in its own venv on Debian python3, ADR 0013.
-ARG AIDER_VERSION=0.86.2
-# Cursor Agent CLI linux/x64 tarball from downloads.cursor.com/lab/<version>/...
-# Version observed in Slice 1 path spike; build fails on SHA or --version mismatch.
-ARG CURSOR_AGENT_VERSION=2026.09.28-64d2043
-ARG CURSOR_AGENT_SHA256=6e4cd936a4866b8a77c50ff51a564460d715772fabc477a01aa0f0455d9559f0
+# Aider and the Cursor Agent CLI were removed from this image by ADR 0016.
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
@@ -32,12 +27,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QWEN_USAGE_STATISTICS_ENABLED=false \
     QWEN_TELEMETRY_ENABLED=false \
     GOOSE_DISABLE_KEYRING=1 \
-    GOOSE_TELEMETRY_ENABLED=false \
-    AIDER_CHECK_UPDATE=false \
-    AIDER_ANALYTICS_DISABLE=true
+    GOOSE_TELEMETRY_ENABLED=false
 
+# python3 runs the sdf-msg shim (agent-comm), the OpenCode MCP config merge and
+# verification checks inside the sandbox; it is not tied to any one agent kind.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar python3 python3-venv \
+    && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar python3 \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL --retry 3 \
        -o /usr/local/bin/herdr \
@@ -58,22 +53,7 @@ RUN apt-get update \
     && tar -xzf /tmp/goose.tar.gz -C /usr/local/bin ./goose \
     && rm -f /tmp/goose.tar.gz \
     && chmod 0755 /usr/local/bin/goose \
-    && test "$(goose --version | tr -d ' ')" = "${GOOSE_VERSION}" \
-    && python3 -m venv /opt/aider \
-    && /opt/aider/bin/pip install --no-cache-dir --disable-pip-version-check "aider-chat==${AIDER_VERSION}" \
-    && ln -sf /opt/aider/bin/aider /usr/local/bin/aider \
-    && test "$(aider --version)" = "aider ${AIDER_VERSION}" \
-    && curl -fsSL --retry 3 \
-       -o /tmp/cursor-agent.tar.gz \
-       "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \
-    && echo "${CURSOR_AGENT_SHA256}  /tmp/cursor-agent.tar.gz" | sha256sum -c - \
-    && mkdir -p /opt/cursor-agent \
-    && tar --strip-components=1 -xzf /tmp/cursor-agent.tar.gz -C /opt/cursor-agent \
-    && rm -f /tmp/cursor-agent.tar.gz \
-    && ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent \
-    && ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent \
-    && test "$(agent --version)" = "${CURSOR_AGENT_VERSION}" \
-    && test "$(cursor-agent --version)" = "${CURSOR_AGENT_VERSION}"
+    && test "$(goose --version | tr -d ' ')" = "${GOOSE_VERSION}"
 
 COPY herdr-endpoint.mjs /usr/local/lib/herdr-endpoint.mjs
 COPY entrypoint.sh /usr/local/bin/herdr-e2b-entrypoint
