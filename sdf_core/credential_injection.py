@@ -12,6 +12,7 @@ command line, a Herdr pane or Evidence.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import shlex
 from collections.abc import Iterable, Mapping
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+from . import subagents
 from .credentials import CONFLICTING_VARIABLES, ConnectionReader, CredentialConfigError, CredentialPlan, SeedStep, resolve_credential_plan
 from .daytona_herdr_transport import DaytonaHerdrTransport
 from .e2b_herdr_transport import E2BHerdrTransport
@@ -75,7 +77,8 @@ _CODEX_SESSION_AUTH = (
 # --auto`` approves them only after a fresh production E2B sandbox claim,
 # ADR-0008); read/glob/grep are allowed except ``.env`` files; network tools,
 # Code Mode ``execute`` (its ``fetch`` bypasses ``webfetch``) and the
-# ungated worktree/session-move tools are denied even under ``--auto``.
+# ungated worktree/session-move tools are denied even under ``--auto``, as are
+# the sub-agent tools (ADR-0020, ``subagents.OPENCODE_DENIED_ACTIONS``).
 _OPENCODE_CONFIG = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/opencode",f=d+"/opencode.json",v=process.argv[1];'
     'if(!e[v]){process.exit(0)}const u=e.SDF_OPENCODE_BASE_URL||"",m=e.SDF_OPENCODE_MODEL||"",s=e.SDF_OPENCODE_SMALL_MODEL||m;'
@@ -83,7 +86,9 @@ _OPENCODE_CONFIG = (
     'const p=m.slice(0,i),models={};for(const x of [m,s]){if(!x.startsWith(p+"/")){console.error("opencode-config: small model provider differs");process.exit(1)}models[x.slice(i+1)]={capabilities:{tools:true}}}'
     'const r=(a,x,y)=>({action:a,resource:x,effect:y}),permissions=[r("*","*","ask"),r("read","*","allow"),r("glob","*","allow"),'
     'r("grep","*","allow"),r("read","*.env","ask"),r("read","*.env.*","ask"),r("read","*.env.example","allow")];'
-    'for(const a of ["webfetch","websearch","execute","opencode_worktree_create","opencode_worktree_remove","opencode_session_move"])permissions.push(r(a,"*","deny"));'
+    'for(const a of ["webfetch","websearch","execute","opencode_worktree_create","opencode_worktree_remove","opencode_session_move",'
+    + ",".join(json.dumps(a) for a in subagents.OPENCODE_DENIED_ACTIONS)
+    + '])permissions.push(r(a,"*","deny"));'
     'const c={$schema:"https://opencode.ai/config.json",model:m,update:"disable",share:"disabled",permissions,agents:{title:{model:s}},'
     'providers:{[p]:{package:"aisdk:@ai-sdk/openai-compatible",name:p,settings:{baseURL:u,apiKey:"{env:"+v+"}"},models}}};'
     'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'

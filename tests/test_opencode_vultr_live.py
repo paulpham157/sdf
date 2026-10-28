@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -32,6 +33,7 @@ from sdf_core.model import utcnow
 from sdf_core.opencode_runtime import OpenCodeHeadlessRuntime
 from sdf_core.runtime import RuntimeController
 from tests.test_herdr_e2b_execution import POSITIVE
+from tests.test_vultr_agents_live import DELEGATE_PREFIX, SUBAGENT_TOOLS
 
 ENV = dict(os.environ)
 load_dotenv(environ=ENV)
@@ -45,6 +47,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 TEMPLATE = ENV.get("SDF_E2B_OPENCODE_TEMPLATE", "opencode")
+# ADR-0020: ``SDF_LIVE_DELEGATE=1`` asks for a sub-agent first (same prompt as
+# the other kinds); the run must succeed without one.
+DELEGATE = ENV.get("SDF_LIVE_DELEGATE") == "1"
 CHECKS = {
     "add returns the sum": [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]],
     "sub still subtracts": [["python3", "-c", "from calc import sub; assert sub(5, 3) == 2"]],
@@ -134,7 +139,8 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
     started = time.monotonic()
     try:
         attempt = service.run(
-            task_id="TASK-OC-LIVE", dispatch_key="dispatch-oc-live", fixture=fixture, instructions=POSITIVE,
+            task_id="TASK-OC-LIVE", dispatch_key="dispatch-oc-live", fixture=fixture,
+            instructions=(DELEGATE_PREFIX + POSITIVE) if DELEGATE else POSITIVE,
             commands=[], criterion_checks=CHECKS, validation_target=("assumption", "ASSUMPTION-CALC"),
         )
     finally:
@@ -165,9 +171,12 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
         "permission_skipping": runtime.permission_skipping(session_id), "usage": runtime.usage(session_id),
         "sandboxes_created": len(created), "elapsed_s": elapsed, "leftover_sandboxes": len(leftover),
         "egress": probes.get("egress", "").strip().splitlines(), "leaks": leaked,
-        "stream_tail": runtime.stream(session_id)[-8:],
+        "stream_tail": runtime.stream(session_id)[-8:], "delegate_prompt": DELEGATE,
+        "tools_used": sorted({m.group(1) for line in runtime.stream(session_id)
+                              for m in [re.match(r"\[tool ([^\]:\s]+)", line)] if m}),
     }
     print("SDF_LIVE_OPENCODE_REPORT " + json.dumps(report, default=str))
+    assert not SUBAGENT_TOOLS & set(report["tools_used"]), report["tools_used"]
     assert not leaked
     assert not leftover and len(created) == 1
     assert report["task"] == "succeeded"

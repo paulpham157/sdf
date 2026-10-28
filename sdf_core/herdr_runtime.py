@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from . import subagents
 from .turn_guard import enter_argv, kill_argv, sweep_argv
 from .runtime import AgentRuntime, CredentialMetadata, RuntimeSession, RuntimeStatus
 
@@ -104,9 +105,10 @@ def _agent_start_args(
     workspace is Task input, not operator configuration.
     """
 
-    args: tuple[str, ...] = ()
+    # ADR-0020: sub-agents off, on the command line so no settings file can undo it.
+    args: tuple[str, ...] = subagents.start_args(agent)
     if agent == "claude":
-        args = ("--setting-sources", "user")
+        args = (*args, "--setting-sources", "user")
         if allow_dangerous_permissions:
             args = (*args, "--dangerously-skip-permissions")
     if agent == "codex":

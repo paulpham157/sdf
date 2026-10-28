@@ -137,7 +137,8 @@ def test_e2b_runtime_starts_claude_with_the_permission_bypass(monkeypatch):
     HerdrRuntime(transport=transport).start(attempt_id="ATTEMPT-E2B-CLAUDE", agent="claude")
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
-    assert starts[0][-4:] == ("--", "--setting-sources", "user", "--dangerously-skip-permissions")
+    assert starts[0][-3:] == ("--setting-sources", "user", "--dangerously-skip-permissions")
+    assert "--disallowedTools" in starts[0]  # ADR-0020
 
 
 def test_non_claude_start_does_not_consume_fresh_claude_permission_bypass(monkeypatch):

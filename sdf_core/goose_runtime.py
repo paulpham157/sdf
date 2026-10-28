@@ -29,6 +29,7 @@ import json
 from typing import Any, Mapping
 
 from .herdr_runtime import HerdrRuntimeError
+from . import subagents
 from .headless_runtime import HeadlessAgentRuntime, HeadlessBinding, HeadlessUsage, TurnResult, as_int, build_wrapper
 from .qwen_runtime import _replace_session_usage
 
@@ -131,7 +132,8 @@ class GooseHeadlessRuntime(HeadlessAgentRuntime):
         if binding.turns:
             argv.append("-r")
         if binding.auto:
-            argv += ["--with-builtin", "developer"]
+            # ``--no-profile`` above keeps ``summon`` (``delegate``) unloaded (ADR-0020).
+            argv += ["--with-builtin", ",".join(subagents.GOOSE_ALLOWED_BUILTINS)]
         return argv
 
     def parse_turn(self, binding: HeadlessBinding, body: str) -> TurnResult:

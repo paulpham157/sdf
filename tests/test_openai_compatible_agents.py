@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 from sdf_core.turn_guard import kill_argv
 
+from sdf_core.subagents import QWEN_ARGS
+
 from sdf_core import headless_runtime as hr
 from sdf_core.agent_models import agent_model_args
 from sdf_core.credential_injection import prepare_credential_injection
@@ -278,8 +280,8 @@ def test_read_only_turn_uses_stdin_prompt_named_key_and_reports_usage(local, tmp
     args = call["args"]
     env = call["env"]
     if kind == "qwen":
-        assert args[:6] == ["-o", "json", "--bare", "--auth-type", "openai", "--approval-mode"]
-        assert args[6] == "plan" and args[7] == "--session-id"
+        assert args[:7] == ["-o", "json", "--bare", "--auth-type", "openai", *QWEN_ARGS]
+        assert args[7:9] == ["--approval-mode", "plan"] and args[9] == "--session-id"
         assert args[-4:] == ["-m", "glm-5.3", "--openai-base-url", "https://llm.example.com/v1"]
         assert env == {"OPENAI_API_KEY": KEY, "QWEN_USAGE_STATISTICS_ENABLED": "false", "QWEN_TELEMETRY_ENABLED": "false",
                        "QWEN_SANDBOX": "false", "QWEN_CODE_NO_RELAUNCH": "true"}
@@ -300,7 +302,7 @@ def test_read_only_turn_uses_stdin_prompt_named_key_and_reports_usage(local, tmp
     runtime.send(session.session_id, "again")
     second = _calls(log)[1]["args"]
     if kind == "qwen":
-        assert second[7:9] == ["--resume", args[8]]
+        assert second[9:11] == ["--resume", args[10]]
         assert runtime.usage(session.session_id)["input_tokens"] == 160
     else:
         assert "-r" in second

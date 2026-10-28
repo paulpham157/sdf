@@ -72,6 +72,8 @@ a fresh E2B sandbox ([ADR 0013](docs/adr/0013-openai-compatible-headless-agent-k
 The supported agent kinds are `codex`, `claude`, `opencode`, `pi`, `qwen` and
 `goose`. Aider and the Cursor Agent CLI were removed
 ([ADR 0016](docs/adr/0016-remove-aider-and-cursor-agent-kinds.md)).
+CLI-internal sub-agents are disabled for every kind by host-controlled flags
+and user config ([ADR 0020](docs/adr/0020-no-subagents.md)).
 
 Multi-agent runs ([ADR 0014](docs/adr/0014-plan-gate-and-agent-messaging.md)):
 `POST /plans` proposes a plan, a human approves it with `POST /plans/{id}/approve`

@@ -29,6 +29,7 @@ import json
 import uuid
 from typing import Any, Mapping
 
+from . import subagents
 from .herdr_runtime import HerdrRuntimeError
 from .headless_runtime import HeadlessAgentRuntime, HeadlessBinding, HeadlessUsage, TurnResult, as_int, build_wrapper
 
@@ -137,6 +138,7 @@ class QwenHeadlessRuntime(HeadlessAgentRuntime):
     def agent_argv(self, binding: HeadlessBinding, prompt_file: str) -> list[str]:
         session = binding.state.setdefault("session_id", str(uuid.uuid4()))
         argv = [self._binary, "-o", "json", "--bare", "--auth-type", "openai"]
+        argv += list(subagents.QWEN_ARGS)  # ADR-0020
         argv += ["--approval-mode", "yolo" if binding.auto else "plan"]
         argv += ["--resume", session] if binding.turns else ["--session-id", session]
         return argv
