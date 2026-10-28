@@ -133,7 +133,6 @@ class QwenHeadlessRuntime(HeadlessAgentRuntime):
     ERROR = QwenRuntimeError
     WRAPPER = _WRAPPER
     PROJECT_CONFIG_ENTRIES = PROJECT_CONFIG_ENTRIES
-    CANCEL_PATTERN = "[q]wen -o json --bare"
 
     def agent_argv(self, binding: HeadlessBinding, prompt_file: str) -> list[str]:
         session = binding.state.setdefault("session_id", str(uuid.uuid4()))

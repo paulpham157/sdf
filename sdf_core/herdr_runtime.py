@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from .turn_guard import enter_argv, kill_argv, sweep_argv
 from .runtime import AgentRuntime, CredentialMetadata, RuntimeSession, RuntimeStatus
 
 
@@ -325,6 +326,8 @@ class HerdrRuntime(AgentRuntime):
         # not claim provider process control it does not have.
         self._environment_close = getattr(transport, "close", None) if transport is not None else None
         self._environment_closed_sessions: set[str] = set()
+        # ADR-0019: session id -> (containment id, pane shell pid).
+        self._containment: dict[str, tuple[str, int]] = {}
         # Cancel claims the session before ctrl+c so a concurrent send that
         # observes idle from the interrupt cannot overwrite CANCELLED.
         self._cancel_requested: set[str] = set()
@@ -485,6 +488,9 @@ class HerdrRuntime(AgentRuntime):
         workspace_id = self._required_string(workspace_record, "workspaceId", "workspace_id")
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
+        # ADR-0019: enrol the pane shell (and so the agent it starts) in its
+        # own cgroup before the agent exists.
+        contain = self._enrol_pane(attempt_id, pane_id)
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
         # ADR-0008 is Claude-only. Claim at the start boundary, after setup has
         # succeeded, so unrelated agents and failed setup do not consume it.
@@ -515,10 +521,30 @@ class HerdrRuntime(AgentRuntime):
         status = self._status(started_agent.get("status", started_agent.get("agent_status", started.get("status", "working"))))
         session = RuntimeSession(session_id, attempt_id, agent, status, credential=credential)
         self._bindings[session_id] = _Binding(attempt_id, agent, workspace_id, pane_id)
+        if contain is not None:
+            self._containment[session_id] = contain
         self._sessions[session_id] = session
         return session
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
+        """One turn (``_send``), then the ADR-0019 sweep of its leftovers.
+
+        Once the turn is over (any status but ``RUNNING``, or an error), every
+        process of the session's containment that is no longer a descendant of
+        the pane shell - detached, double-forked, reparented to PID 1 - is
+        killed (TERM, grace, KILL).  The agent and its own children stay.
+        """
+
+        ended = True
+        try:
+            result = self._send(session_id, input_text)
+            ended = result.status is not RuntimeStatus.RUNNING
+            return result
+        finally:
+            if ended:
+                self._sweep_leftovers(session_id)
+
+    def _send(self, session_id: str, input_text: str) -> RuntimeSession:
         """Submit one prompt and wait for the agent's turn to end.
 
         A normal return of ``agent prompt --wait --until idle`` means Herdr saw
@@ -800,13 +826,63 @@ class HerdrRuntime(AgentRuntime):
                 raise
 
     def _close_execution_environment(self, session_id: str) -> None:
-        """Destroy an optional Attempt-owned provider environment once."""
+        """Destroy an optional Attempt-owned provider environment once.
+
+        ADR-0019: first kill the session's whole containment (TERM, grace,
+        KILL), so cleanup does not depend on the provider teardown alone.
+        """
 
         if session_id in self._environment_closed_sessions:
             return
+        self._kill_containment(session_id)
         if callable(self._environment_close):
             self._environment_close(self._timeout_ms)
         self._environment_closed_sessions.add(session_id)
+
+    # --- ADR-0019 containment ---------------------------------------------
+    def _exec_argv(self) -> Any:
+        if self._transport is None:
+            return None
+        run = getattr(self._transport, "exec_argv", None)
+        return run if callable(run) else None
+
+    def _enrol_pane(self, attempt_id: str, pane_id: str) -> tuple[str, int] | None:
+        """Put the pane shell in a per-session cgroup; None when unsupported."""
+
+        run = self._exec_argv()
+        if run is None:
+            return None
+        try:
+            payload = self._object(self._command("pane", "process-info", "--pane", pane_id))
+            info = payload.get("process_info", payload)
+            shell_pid = info.get("shell_pid") if isinstance(info, Mapping) else None
+            if not isinstance(shell_pid, int) or isinstance(shell_pid, bool) or shell_pid <= 1:
+                return None
+            cid = "herdr-" + re.sub(r"[^A-Za-z0-9_-]", "_", f"{attempt_id}-{pane_id}")[:100]
+            run(enter_argv(cid, shell_pid), self._timeout_ms)
+            return cid, shell_pid
+        except Exception:  # noqa: BLE001 - containment is defence in depth
+            return None
+
+    def _sweep_leftovers(self, session_id: str) -> None:
+        contain = self._containment.get(session_id)
+        run = self._exec_argv()
+        if contain is None or run is None or session_id in self._environment_closed_sessions:
+            return
+        try:
+            run(sweep_argv(contain[0], contain[1]), self._timeout_ms)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _kill_containment(self, session_id: str) -> None:
+        contain = self._containment.get(session_id)
+        run = self._exec_argv()
+        if contain is None or run is None:
+            return
+        try:
+            run(kill_argv(contain[0]), self._timeout_ms)
+        except Exception:  # noqa: BLE001 - the provider teardown still follows
+            pass
 
     def reconnect(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)

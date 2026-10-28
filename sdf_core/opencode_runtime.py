@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
+from .turn_guard import GRACE_S, guard_argv, kill_argv
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
 # Pinned to the npm ``latest`` release of ``@opencode/cli`` (OpenCode 2)
@@ -196,7 +197,6 @@ finally:
 """
 
 
-_CANCEL = "pkill -f '[o]pencode (run|serve) ' || true"
 
 
 class OpenCodeRuntimeError(HerdrRuntimeError):
@@ -438,6 +438,11 @@ class OpenCodeHeadlessRuntime:
             json.dumps(_FORCED_ENV, sort_keys=True), input_text, *argv,
         ]
 
+    def _next_turn_id(self, session_id: str) -> str:
+        with self._lock:
+            self._turn_seq = getattr(self, "_turn_seq", 0) + 1
+            return f"{session_id}-t{self._turn_seq}"
+
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
         binding, current = self._known(session_id)
         if current.status in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
@@ -447,7 +452,9 @@ class OpenCodeHeadlessRuntime:
         # The transport watchdog sits after server start, OpenCode's own
         # timeout + kill grace, and the usage fetch.
         budget_ms = (self._turn_timeout_s + _KILL_AFTER_S * 2 + _SERVER_READY_S + _MCP_READY_S + 30) * 1000
-        raw = self._transport.exec_argv(argv, budget_ms)
+        # ADR-0019: own session/cgroup per turn; the guard sweeps leftovers
+        # (MCP servers, tool children) even when the driver was SIGKILLed.
+        raw = self._transport.exec_argv(guard_argv(self._next_turn_id(session_id), argv), budget_ms + GRACE_S * 4000)
         body, rc = _split_exit(raw)
         lines, oc_session, usage, errors = parse_events(body)
         if oc_session is not None:
@@ -476,10 +483,11 @@ class OpenCodeHeadlessRuntime:
     def cancel(self, session_id: str) -> RuntimeSession:
         _, current = self._known(session_id)
         if not self._closed:
-            # ``[o]`` keeps pkill from matching (and killing) its own ``sh -c``.
-            # Matches the turn's ``opencode run`` and private ``opencode serve``.
+            # ADR-0019: kill the turns' whole session/cgroup/tagged set (the
+            # driver, ``opencode run``, the private ``opencode serve`` and
+            # everything they spawned), TERM then KILL.
             try:
-                self._transport.exec_argv(["sh", "-c", _CANCEL], self._control_timeout_ms)
+                self._transport.exec_argv(kill_argv(f"{session_id}-t"), self._control_timeout_ms)
             finally:
                 # Sandbox destruction is the descendant-cleanup boundary.
                 self._close_environment()

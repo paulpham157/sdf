@@ -134,3 +134,5 @@ Pi is now `@earendil-works/pi-coding-agent` 1.4.0. The seed's `apiKey` is
 (project-local settings and resources ignored) and `--no-mcp`, and the
 version probe purges `PI_*`. The `.pi/` refusal stays. The 0.73.1 statements
 above are historical; see [ADR 0018](0018-opencode-2-and-pi-1-upgrade.md).
+
+> Cancel/cleanup superseded by [ADR 0019](0019-per-turn-process-containment.md): `pkill` patterns were replaced by per-turn containment.

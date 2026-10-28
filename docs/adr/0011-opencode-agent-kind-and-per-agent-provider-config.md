@@ -97,3 +97,5 @@ OpenCode is now `@opencode/cli` 2.2.0. The config seed uses the V2 schema
 prompt on stdin, usage comes from the server's message list, and cancel uses
 `pkill -f '[o]pencode (run|serve) '`. The 1.19.4 statements above are
 historical; see [ADR 0018](0018-opencode-2-and-pi-1-upgrade.md).
+
+> Cancel/cleanup superseded by [ADR 0019](0019-per-turn-process-containment.md): `pkill` patterns were replaced by per-turn containment.

@@ -691,3 +691,65 @@ def test_controller_terminates_a_session_whose_environment_cancel_destroyed():
     assert controller.terminate(session.session_id).status is RuntimeStatus.TERMINATED
     assert controller.status(session.session_id).status is RuntimeStatus.TERMINATED
     assert [e.kind.value for e in controller.events] == ["runtime_started", "runtime_cancelled", "runtime_terminated"]
+
+
+def test_herdr_runtime_contains_the_pane_and_sweeps_after_each_turn():
+    from sdf_core import turn_guard as tg
+
+    class Transport:
+        def __init__(self):
+            self.runner = FakeHerdr()
+            self.log = []
+            self.close_calls = []
+
+        def run(self, command, timeout_ms):
+            self.log.append(("herdr", tuple(command[1:3])))
+            if tuple(command[1:3]) == ("pane", "process-info"):
+                return json.dumps({"result": {"process_info": {"shell_pid": 4242, "foreground_processes": []}}})
+            return self.runner(command, timeout_ms)
+
+        def exec_argv(self, argv, timeout_ms):
+            self.log.append(("exec", argv[3], tuple(argv[4:])))
+            return "cgroup\n"
+
+        def close(self, timeout_ms):
+            self.log.append(("close",))
+            self.close_calls.append(timeout_ms)
+
+    transport = Transport()
+    runtime = HerdrRuntime(transport=transport)
+    session = runtime.start(attempt_id="ATTEMPT-CONTAIN", agent="codex")
+    names = [entry[:2] for entry in transport.log]
+    enter = names.index(("exec", "sdf-turn-enter"))
+    assert enter < names.index(("herdr", ("agent", "start")))
+    cid = transport.log[enter][2][0]
+    assert cid.startswith("herdr-ATTEMPT-CONTAIN-") and transport.log[enter][2][1] == "4242"
+
+    runtime.send(session.session_id, "hello")
+    assert ("exec", "sdf-turn-sweep", (str(tg.GRACE_S), cid, "4242")) in transport.log
+
+    runtime.cancel(session.session_id)
+    kill = transport.log.index(("exec", "sdf-turn-kill", (str(tg.GRACE_S), cid)))
+    assert kill < transport.log.index(("close",))
+
+
+def test_herdr_containment_is_best_effort_when_exec_fails():
+    class Transport:
+        def __init__(self):
+            self.runner = FakeHerdr()
+
+        def run(self, command, timeout_ms):
+            if tuple(command[1:3]) == ("pane", "process-info"):
+                return json.dumps({"process_info": {"shell_pid": 77, "foreground_processes": []}})
+            return self.runner(command, timeout_ms)
+
+        def exec_argv(self, argv, timeout_ms):
+            raise RuntimeError("no sh")
+
+        def close(self, timeout_ms):
+            pass
+
+    runtime = HerdrRuntime(transport=Transport())
+    session = runtime.start(attempt_id="ATTEMPT-BEST-EFFORT", agent="codex")
+    assert runtime.send(session.session_id, "hello").status is RuntimeStatus.COMPLETED
+    assert runtime.cancel(session.session_id).status is RuntimeStatus.CANCELLED

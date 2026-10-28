@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sdf_core.turn_guard import kill_argv
 
 from sdf_core import opencode_runtime as ocr
 from sdf_core.agent_models import agent_model_args, model_agent_args, resolve_agent_models
@@ -323,7 +324,7 @@ class LocalTransport:
 
     def exec_argv(self, argv, timeout_ms):
         self.calls.append(list(argv))
-        if "pkill" in argv[-1]:
+        if "pkill" in argv[-1] or argv[3:4] == ["sdf-turn-kill"]:
             return ""  # never signal real processes on the test host
         result = subprocess.run(list(argv), env=self.env, capture_output=True, text=True, timeout=timeout_ms / 1000)
         if result.returncode != 0:
@@ -549,7 +550,8 @@ def test_cancel_closes_the_environment(local):
     runtime.bind_workspace("ATTEMPT-6", workspace)
     session = runtime.start(attempt_id="ATTEMPT-6", agent="opencode")
     assert runtime.cancel(session.session_id).status is RuntimeStatus.CANCELLED
-    assert transport.calls[-1] == ["sh", "-c", "pkill -f '[o]pencode (run|serve) ' || true"]
+    # ADR-0019: the session's turns are killed by containment, not a pattern.
+    assert transport.calls[-1] == kill_argv(f"{session.session_id}-t")
     assert transport.closed == 1
     assert runtime.send(session.session_id, "x").status is RuntimeStatus.CANCELLED
     with pytest.raises(ocr.HerdrUnsupportedOperation):

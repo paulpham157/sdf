@@ -26,13 +26,13 @@ Write-capable modes are enabled only after the one fresh production E2B claim
 from __future__ import annotations
 
 import re
-import shlex
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Protocol, Sequence
 
 from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
+from .turn_guard import GRACE_S, guard_argv, kill_argv
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
 _TIMEOUT_EXITS = frozenset({124, 137})
@@ -222,8 +222,6 @@ class HeadlessAgentRuntime:
     WRAPPER: ClassVar[str]
     # Workspace entries refused on the host before staging (and in the box).
     PROJECT_CONFIG_ENTRIES: ClassVar[tuple[str, ...]] = ()
-    # ``pkill -f`` pattern; the first letter in brackets so it never matches itself.
-    CANCEL_PATTERN: ClassVar[str]
     # Private per-Attempt scratch files (output, stderr, prompt, history).
     SCRATCH_DIR: ClassVar[str] = "/tmp"
 
@@ -367,6 +365,11 @@ class HeadlessAgentRuntime:
             *self.agent_argv(binding, f"{base}.prompt"),
         ]
 
+    def _next_turn_id(self, session_id: str) -> str:
+        with self._lock:
+            self._turn_seq = getattr(self, "_turn_seq", 0) + 1
+            return f"{session_id}-t{self._turn_seq}"
+
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
         binding, current = self._known(session_id)
         if current.status in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
@@ -375,7 +378,9 @@ class HeadlessAgentRuntime:
         self._set(session_id, RuntimeStatus.RUNNING, current.output)
         # The transport watchdog sits after the agent's own timeout + kill grace.
         budget_ms = (self._turn_timeout_s + KILL_AFTER_S + 20) * 1000
-        raw = self._transport.exec_argv(argv, budget_ms)
+        # ADR-0019: the turn runs in its own session/cgroup; the guard sweeps
+        # every leftover of the turn before it returns.
+        raw = self._transport.exec_argv(guard_argv(self._next_turn_id(session_id), argv), budget_ms + GRACE_S * 4000)
         body, rc, stderr_tail = split_exit(raw, self.marker())
         result = self.parse_turn(binding, body) if rc not in _SETUP_EXITS else TurnResult(())
         if rc is not None and rc not in _SETUP_EXITS:
@@ -414,9 +419,9 @@ class HeadlessAgentRuntime:
         _, current = self._known(session_id)
         if not self._closed:
             try:
-                self._transport.exec_argv(
-                    ["sh", "-c", f"pkill -f {shlex.quote(self.CANCEL_PATTERN)} || true"], self._control_timeout_ms
-                )
+                # ADR-0019: TERM then KILL every process of this session's turns
+                # (cgroup, session and environment tag), not a ``pkill`` pattern.
+                self._transport.exec_argv(kill_argv(f"{session_id}-t"), self._control_timeout_ms)
             finally:
                 # Sandbox destruction is the descendant-cleanup boundary.
                 self._close_environment()
