@@ -135,3 +135,14 @@ apply-patch, a write tool, never loads in read-only mode.
   re-vetting it, updating `PI_EXTENSIONS`, and rebuilding through private
   staging first.
 - Templates other than `sdf-herdr-agents` need `SDF_PI_EXTENSIONS=`.
+
+## Verification (2026-10-28)
+
+- Staging build `fda6c1cf-08cf-4f87-ad3b-098f60ea6338`:
+  - boot secret scan clean;
+  - extension load test: write mode, read-only and a bad `-e` path;
+  - live pi passed 2 of 2;
+  - opencode, qwen and agent-comm regression passed.
+- Public `sdf-herdr-agents` (`xj8glxnh091op795c7me`) rebuilt as
+  `dfc0c53e-e0b6-4c02-a14e-d7904a5cb2c6`, still public, and the pi smoke test
+  passed. Details are in the template README.

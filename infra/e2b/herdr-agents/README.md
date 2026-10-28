@@ -101,7 +101,33 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
-Built 2026-10-28 (ADR 0016: Aider and the Cursor Agent CLI removed): template
+Current build, 2026-10-28 (ADR 0017: Pi extensions `@cad0p/pi-steering`
+0.2.0 and `@paulpham157/apply-patch` 0.3.1 baked in): template id
+`xj8glxnh091op795c7me`, build `dfc0c53e-e0b6-4c02-a14e-d7904a5cb2c6`
+(2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at
+commit `848c038`; E2B `diskSizeMB` 13645. It was first built as the private
+staging template (`sdf-herdr-agents-staging`, build
+`fda6c1cf-08cf-4f87-ad3b-098f60ea6338`, since deleted) and verified there:
+
+- Secret check: the same boot scan as below. No credential files, and none
+  of the operator's E2B/Vultr key values (compared by SHA-256 only); the
+  key-shaped matches are the same baseline as before. `/opt/sdf-pi-extensions`
+  (5.2 MiB) is root-owned and not writable by `user`. The `@earendil-works`
+  peers link to the global `@mariozechner` Pi 0.73.1.
+- Extension load (Pi 0.73.1 against a 127.0.0.1 stub model):
+  - write mode: pi-steering blocked `git push --force`, and `apply_patch`
+    patched the file;
+  - read-only (`--tools read,grep,find,ls` with pi-steering only): the tools
+    were `find,grep,ls,read`, "Tool apply_patch not found", and the file was
+    unchanged;
+  - a missing `-e` path: exit 1, "Failed to load extension".
+- Live on Vultr glm-5.3 with egress locked:
+  - pi with both extensions: 2 of 2 passed, both criteria PASS, tools
+    `read` and `apply_patch`, 16–29s;
+  - opencode, qwen, and agent-comm (OpenCode lead, Pi workers) all passed.
+  - A pi smoke on the public build passed (20s).
+
+Previous build, ADR 0016 (Aider and the Cursor Agent CLI removed): template
 id `xj8glxnh091op795c7me`, build `a8d59540-a08d-4352-8c5a-60d90987ad21`
 (2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at
 commit `48c131e`. Contains every CLI in the table above: Herdr, Codex, Claude
@@ -126,7 +152,7 @@ before the public image was replaced:
   agent-comm run (OpenCode lead, Pi workers). A Pi + Qwen smoke passed on
   the public build.
 
-Previous build, before ADR 0016 (it still contained Aider and the Cursor
+Before that, without ADR 0016 (it still contained Aider and the Cursor
 Agent CLI): `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`, from commit `535318b`.
 Before that: `172d9021-919b-4de1-8391-35aaed26cad2` (without Qwen Code,
 Goose and Aider).
@@ -139,7 +165,7 @@ Anthropic's terms require it, withdraw it with
 `e2b template unpublish sdf-herdr-agents -y` (or rebuild without Claude Code). Users of the public template remain bound by
 each CLI's own license and need their own credentials; the image holds none.
 The published build is the secret-checked one above
-(`a8d59540-a08d-4352-8c5a-60d90987ad21`); rebuilding replaces the public
+(`dfc0c53e-e0b6-4c02-a14e-d7904a5cb2c6`); rebuilding replaces the public
 image, so build a private staging template first and repeat the secret check
 there before any rebuild.
 
