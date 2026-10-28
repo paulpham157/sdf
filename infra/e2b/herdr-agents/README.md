@@ -70,8 +70,10 @@ scripts/e2b-env.sh e2b template create sdf-herdr-agents \
 copies, so a stray `.env` or credential file here never reaches the build.
 Dockerfile `ARG`/`ENV` hold only versions, SHA-256 sums and non-secret flags.
 
-The template is private to the operator's E2B team. Select it for the live
-tests with `SDF_E2B_HERDR_TEMPLATE=sdf-herdr-agents`,
+The template is **public** (published 2026-10-28 with
+`e2b template publish sdf-herdr-agents -y`). Other E2B teams reference it as
+`paul-pham-157/sdf-herdr-agents`; the owning team can also use the bare name
+`sdf-herdr-agents`. Select it for the live tests with `SDF_E2B_HERDR_TEMPLATE=sdf-herdr-agents`,
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
@@ -80,10 +82,16 @@ Built 2026-10-28: template id `xj8glxnh091op795c7me`, build
 boot check found no credential files, no key-shaped strings and no secret env
 names in the image.
 
-Do not `e2b template publish` it: a public template redistributes Claude Code
-(proprietary, "SEE LICENSE IN README.md") and the Cursor Agent CLI tarball to
-every E2B team. Codex (Apache-2.0), OpenCode (MIT) and Pi (MIT) alone would
-be fine.
+Licensing caveat: publishing redistributes Claude Code (proprietary,
+"SEE LICENSE IN README.md") and the Cursor Agent CLI tarball to every E2B team.
+Codex (Apache-2.0), OpenCode (MIT) and Pi (MIT) carry no such restriction. The
+operator published it knowingly, accepting that risk; if Anthropic or Cursor
+terms require it, withdraw it with `e2b template unpublish sdf-herdr-agents -y`
+(or rebuild without those CLIs). Users of the public template remain bound by
+each CLI's own license and need their own credentials; the image holds none.
+The published build is the secret-checked one above
+(`172d9021-919b-4de1-8391-35aaed26cad2`); rebuilding replaces the public
+image, so repeat the secret check before any rebuild.
 
 Dockerfile `ENV` reaches the image entrypoint (and so the Herdr server), but
 not commands run through the E2B SDK, which start with a clean environment.

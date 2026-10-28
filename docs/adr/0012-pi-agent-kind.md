@@ -96,9 +96,9 @@ or run commands.
 - One sandbox holds one Pi base URL and key.
 - `HTTP(S)_PROXY` are not stripped (not Pi-specific); containment is the
   sandbox and its egress allowlist.
-- The `sdf-herdr-agents` Dockerfile installs the pinned package (template not
-  rebuilt here); the live test bootstraps E2B's public `codex` template
-  instead.
+- The `sdf-herdr-agents` Dockerfile installs the pinned package. The live test
+  bootstraps E2B's public `codex` template by default, or uses the prebuilt
+  (public) `sdf-herdr-agents` template via `SDF_E2B_VULTR_TEMPLATE`.
 
 ## Verification (2026-10-28)
 
