@@ -7,7 +7,8 @@ loaded into a private mapping; presence is checked, values never printed).
 Flow, all through the HTTP API (FastAPI TestClient, no listening socket):
 propose plan -> start run (409, not approved) -> human approves -> run a lead
 (``SDF_LIVE_LEAD_KIND``, default opencode) and two workers
-(``SDF_LIVE_WORKER_KIND``, default pi), one ``sdf-herdr-agents`` sandbox each,
+(``SDF_LIVE_WORKER_KIND``, default pi), one sandbox each (``SDF_E2B_AGENT_TEMPLATE``,
+default ``sdf-herdr-agents``),
 on the toy repo (fix ``add`` in calc.py, add ``mul`` to calc2.py).  Success
 needs host Evidence for both subtasks.  Afterwards no sandbox of the run may
 still be running.  A JSON report goes to ``/tmp/sdf-live-reports``.
@@ -24,7 +25,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from sdf_core.agent_sandbox import agent_environ, describe_env, e2b_factory, running_sandbox_ids
+from sdf_core.agent_sandbox import DEFAULT_TEMPLATE, agent_environ, describe_env, e2b_factory, running_sandbox_ids
 from sdf_core.api import app
 from sdf_core.credentials import load_dotenv
 from tests.agent_comm_support import make_fixture, plan_dict
@@ -38,6 +39,8 @@ pytestmark = pytest.mark.skipif(not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_L
 
 LEAD_KIND = ENV.get("SDF_LIVE_LEAD_KIND", "opencode")
 WORKER_KIND = ENV.get("SDF_LIVE_WORKER_KIND", "pi")
+# E.g. a private staging build of the image before it replaces the public one.
+TEMPLATE = ENV.get("SDF_E2B_AGENT_TEMPLATE", DEFAULT_TEMPLATE)
 REPORT_DIR = Path("/tmp/sdf-live-reports")
 
 
@@ -54,14 +57,14 @@ def test_live_plan_gate_lead_and_two_workers(tmp_path, monkeypatch):
         seen.update(ids)
         return ids & running_sandbox_ids(key)
 
-    app.state.agent_sandbox_factory = e2b_factory(env)
+    app.state.agent_sandbox_factory = e2b_factory(env, template=TEMPLATE)
     app.state.agent_cleanup_check = check
     # ADR 0015: ephemeral tokens in the test DB - an operator proposes and
     # runs, a different human approver approves; agents get no token.
     client = client_as("operator", principal="live-operator")
     approver = client_as("approver", principal="hung")
     assert TestClient(app).post("/plans", json={}).status_code == 401
-    report: dict = {"lead_kind": LEAD_KIND, "worker_kind": WORKER_KIND, "steps": []}
+    report: dict = {"lead_kind": LEAD_KIND, "worker_kind": WORKER_KIND, "template": TEMPLATE, "steps": []}
     t0 = time.monotonic()
     try:
         plan_id = f"PLAN-LIVE-{uuid.uuid4().hex[:8]}"

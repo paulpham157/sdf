@@ -98,7 +98,7 @@ GOOSE_URL = (f"https://github.com/aaif-goose/goose/releases/download/v{GOOSE_VER
 GOOSE_SHA256 = "80e7716fef3dccc3fef6850e24e5b846b7340e10e13098e53b4f47769f5803ef"
 HEADLESS = {"pi": PiHeadlessRuntime, "qwen": QwenHeadlessRuntime, "goose": GooseHeadlessRuntime,
             "aider": AiderHeadlessRuntime}
-# Runtime installs for the ADR-0013 kinds (not in the published template yet).
+# Runtime installs for the ADR-0013 kinds on the bare ``codex`` base template only.
 EXTRA_INSTALL = {
     "qwen": (
         f"curl -fsSL --retry 3 -o /tmp/node22.tar.xz {NODE22_URL}",
@@ -140,8 +140,17 @@ CLAUDE_USER_SETTINGS = {
 }
 
 
+# A prebuilt image (sdf-herdr-agents) already carries the ADR-0013 CLIs: check
+# their versions only; a missing CLI fails the bootstrap (no runtime install).
+IMAGE_VERSION_CHECK = {
+    "qwen": (f'test "$(qwen --version)" = {QWEN_VERSION}', "qwen --version"),
+    "goose": (f'test "$(goose --version | tr -d \' \')" = {GOOSE_VERSION}', "goose --version"),
+    "aider": (f'test "$(aider --version)" = "aider {AIDER_VERSION}"', "aider --version"),
+}
+
+
 def _bootstrap_script(agent: str = "") -> str:
-    extra = EXTRA_INSTALL.get(agent, ())
+    extra = (IMAGE_VERSION_CHECK if PREBUILT_TEMPLATE else EXTRA_INSTALL).get(agent, ())
     if PREBUILT_TEMPLATE:
         # The image's settings.json only pre-accepts the dangerous-mode prompt.
         return "\n".join((
