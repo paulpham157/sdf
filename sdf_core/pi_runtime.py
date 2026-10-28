@@ -194,6 +194,22 @@ _PROJECT_REFUSAL = (
 )
 
 
+# Pi 1.4.0 with ``--approve`` (ADR-0021) and pi-lens can print
+# ``agent_settled`` (the run is over) and then never exit: live, the turn sat
+# idle until the turn timeout.  Once ``agent_settled`` is in the output the
+# wrapper gives Pi ``_SETTLED_GRACE_S`` to exit on its own, then TERMs (and
+# after 3 s KILLs) the children of ``timeout`` (Pi) and reports exit 0; the
+# turn guard (ADR-0019) still sweeps anything left.
+_SETTLED_GRACE_S = 5
+_SETTLED_EXIT = (
+    'while kill -0 "$pid" 2>/dev/null; do '
+    'if grep -Eq \'"type" *: *"agent_settled"\' "$out" 2>/dev/null; then n=0; '
+    'while kill -0 "$pid" 2>/dev/null && [ "$n" -lt ' + str(_SETTLED_GRACE_S * 2) + ' ]; do sleep 0.5; n=$((n+1)); done; '
+    'if kill -0 "$pid" 2>/dev/null; then settled=1; pkill -TERM -P "$pid"; n=0; '
+    'while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 6 ]; do sleep 0.5; n=$((n+1)); done; '
+    'pkill -KILL -P "$pid"; kill -KILL "$pid" 2>/dev/null; fi; break; fi; sleep 1; done; '
+)
+
 def _wrapper(refuse_project: bool) -> str:
     return (
         'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
@@ -204,7 +220,9 @@ def _wrapper(refuse_project: bool) -> str:
         '[ -n "$model" ] || { echo ' + _EXIT_MARKER + str(_NO_MODEL_EXIT) + '; exit 0; }; '
         '(umask 077; mkdir -p "$sess"); '
         'printf "%s" "$prompt" | timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" --model "$model" '
-        '>"$out" 2>"$err"; rc=$?; '
+        '>"$out" 2>"$err" & pid=$!; settled=; '
+        + _SETTLED_EXIT +
+        'wait "$pid"; rc=$?; [ -n "$settled" ] && rc=0; '
         'grep -E \'^\\{"type":"(message_end|tool_execution_end)"\' "$out" || true; '
         'echo ' + _EXIT_MARKER + '$rc; if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'
     )
