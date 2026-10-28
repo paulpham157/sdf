@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 import textwrap
 from pathlib import Path
 
@@ -185,6 +186,7 @@ FAKE_PI = textwrap.dedent('''\
         import time; time.sleep(30)
     if mode == "mkpi":
         os.mkdir(".pi")
+    settle_hang = mode == "settle-hang"
     if "--tools" not in args:
         open("calc.py", "w").write("def add(a, b):\\n    return a + b\\n")
     usage = {"input": 80, "output": 20, "cacheRead": 10, "cacheWrite": 0, "totalTokens": 110,
@@ -202,6 +204,10 @@ FAKE_PI = textwrap.dedent('''\
                        "stopReason": "error", "errorMessage": "401 Unauthorized", "content": []}})
     for event in events:
         print(json.dumps(event, separators=(",", ":")))
+    if settle_hang:
+        # Pi 1.4.0 + --approve + pi-lens: settled, then never exits.
+        print(json.dumps({"type": "agent_settled", "aborted": False}), flush=True)
+        import time; time.sleep(60)
 ''')
 
 
@@ -467,6 +473,20 @@ def test_turn_timeout_is_enforced_inside_the_sandbox(local, monkeypatch):
     with pytest.raises(PiRuntimeError, match="exceeded 1s"):
         runtime.send(session.session_id, "fix")
     assert runtime.status(session.session_id).status is RuntimeStatus.TERMINATED
+
+
+@pytest.mark.skipif(shutil.which("pkill") is None, reason="procps pkill is required")
+def test_a_pi_that_settles_but_never_exits_completes_the_turn(local):
+    transport, workspace, _ = local
+    transport.env["FAKE_PI_MODE"] = "settle-hang"
+    runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=40)
+    runtime.bind_workspace("ATTEMPT-13", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-13", agent="pi")
+    started = time.monotonic()
+    result = runtime.send(session.session_id, "fix")
+    assert time.monotonic() - started < 20
+    assert result.status is RuntimeStatus.COMPLETED
+    assert "DONE" in result.output
 
 
 def test_cancel_closes_the_environment(local):
