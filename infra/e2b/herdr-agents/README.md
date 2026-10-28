@@ -106,7 +106,46 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
-Current build, 2026-10-28 (ADR 0017: Pi extensions `@cad0p/pi-steering`
+Current build, 2026-10-28 (ADR 0018: Herdr 0.9.5, Codex 0.165.0, Claude Code
+2.1.308, OpenCode 2 2.2.0, Pi 1.4.0, Qwen Code 0.26.2, Goose 1.56.0, Node
+22.23.4): template id `xj8glxnh091op795c7me`, build
+`56678a3b-9c19-4547-97f2-464c332856bd` (2 vCPU, 2048 MiB), still public
+(`public: true`), from the Dockerfile at commit `ff227dd` (the build context is
+unchanged through `d288649`); E2B `diskSizeMB` 14297. It was first built as the
+private staging template (`sdf-herdr-agents-staging`, build
+`5bccc49b-3892-45cf-ab7f-013cab75848c`, since deleted) and verified there:
+
+- Secret check: no credential files, npmrc tokens or secret env names; the
+  only key-shaped matches are the 3 E2B SSH host-key baseline lines; the
+  operator's E2B/Vultr key values are absent (compared by SHA-256 only). The
+  same scan passed on the public build. Installed versions match every pin;
+  Node >= 22.19; no second Pi under `/opt/sdf-pi-extensions` (5.2 MiB,
+  root-owned, not writable by `user`); pi-lens and pi-fabric absent.
+- Extension load (Pi 1.4.0, 127.0.0.1 stub, `--no-mcp --no-approve`):
+  write mode had tools `apply_patch,bash,read`, pi-steering blocked a force
+  push and `apply_patch` patched the file; read-only had `find,grep,ls,read`,
+  "Tool apply_patch not found", file unchanged; a bad `-e` path exits 1.
+- Live on Vultr glm-5.3 with egress locked (only `api.vultrinference.com`
+  reachable), one kind at a time, both criteria PASS for each:
+  codex (50.5s, 41.9k in / 401 out, about $0.033), claude (41.9s, served
+  glm-5.3; Vultr's Anthropic endpoint reports zero usage), pi (22.2s, 4.8k
+  tokens, $0.004), qwen (15.8s, 26.4k tokens, $0.021), goose (25.7s, 7.5k
+  tokens, $0.011; Goose does not report the served model) and opencode
+  (18.2s, 13.2k tokens, $0.010). Served model glm-5.3 wherever the agent
+  reports it; no leaks, 0 leftover sandboxes.
+- The first OpenCode live run failed: OpenCode 2.2.0 takes its project
+  directory from `$PWD`, which in E2B is the image `WORKDIR`
+  (`/home/user/project`), so the agent looked in an empty folder. Fixed in
+  the runtime (`d288649`, the driver sets `PWD` to the Attempt directory);
+  the image needed no change.
+- Pi read-only live with both extensions loaded (`--tools read,grep,find,ls`,
+  asked to edit with any tool): only `read` ran, the file hash was unchanged,
+  and the model reported it had no write tools.
+- Agent-comm (OpenCode lead, two Pi workers): run succeeded in 65s, $0.087,
+  0 sandboxes left.
+- Public build: pi (36.0s) and qwen (44.1s) smokes passed, served glm-5.3.
+
+Previous build, 2026-10-28 (ADR 0017: Pi extensions `@cad0p/pi-steering`
 0.2.0 and `@paulpham157/apply-patch` 0.3.1 baked in): template id
 `xj8glxnh091op795c7me`, build `dfc0c53e-e0b6-4c02-a14e-d7904a5cb2c6`
 (2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at

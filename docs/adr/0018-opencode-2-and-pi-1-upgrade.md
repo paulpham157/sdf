@@ -116,4 +116,10 @@ Local, against 127.0.0.1 stub models:
   without the flag leaked).
 - Full suite and PostgreSQL suite pass; ruff F unchanged from main.
 
-Live results are recorded in the template README.
+Live (staging, then public build `56678a3b-9c19-4547-97f2-464c332856bd`):
+all six kinds passed on Vultr glm-5.3 with egress locked, as did Pi read-only
+with both extensions and one agent-comm run (OpenCode lead, Pi workers); the
+template README has the per-kind numbers. Staging found one OpenCode 2
+regression the stubs missed: OpenCode resolves its project directory from
+`$PWD`, not the process cwd. The turn driver now sets `PWD` to the Attempt
+directory, and a unit test covers a stale `PWD`.
