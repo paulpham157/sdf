@@ -1,0 +1,9 @@
+# Build context allowlist: only what the Dockerfile COPYs. Never add .env,
+# credentials or local state here.
+*
+!Dockerfile
+!entrypoint.sh
+!herdr-endpoint.mjs
+!claude/
+!claude/claude.json
+!claude/settings.json

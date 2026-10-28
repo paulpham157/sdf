@@ -32,3 +32,16 @@ Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
 - Pi as an agent kind (2026-10-28): Attempt completed, both criteria PASS,
   served model `glm-5.3`, 4,180 in / 91 out tokens, $0.0034, 37.4 s,
   egress locked, 0 sandboxes left.
+- Prebuilt `sdf-herdr-agents` template (2026-10-28,
+  `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`, no runtime install): all four
+  agents pass both criteria on glm-5.3 with egress locked to
+  `api.vultrinference.com` and 0 sandboxes left. Codex 48,783 in / 410 out
+  ($0.038, 80.4 s); Claude 3 calls, served `glm-5.3` (usage 0/0, see above;
+  43.2 s); Pi 4,177 in / 97 out ($0.0034, 22.6 s); OpenCode 20,671 in / 121
+  out ($0.016, 17.8 s). Sandbox setup before the Attempt: 15.5-22.2 s,
+  against 27.2-27.4 s for the `codex` template plus install.
+- On that template Claude Code starts fast enough that Herdr reports it
+  interactive a few seconds before it accepts Enter: the prompt sits in the
+  composer and Herdr reports `agent_prompt_stalled` (reproduced with a dummy
+  key; a manual Enter, or waiting about 8 s, submits it). The Herdr runtime
+  now resubmits Enter for Claude as it already did for Codex.
