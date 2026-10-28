@@ -24,7 +24,11 @@ turn's leftovers before it returns.  :func:`kill_argv` is the cancel path.
 The Herdr runtime (codex, claude) keeps one long-lived agent process per
 session, so its pane shell is enrolled with :func:`enter_argv` and after each
 turn :func:`sweep_argv` kills only members that are no longer descendants of
-the pane shell (detached or orphaned leftovers); cancel/terminate kill all.
+the pane shell (detached or orphaned leftovers) or that left the pane's
+session (``setsid`` / detached tool commands).  A turn that outlives
+Herdr's wait stays RUNNING and is not swept (the agent may still be working);
+the caller terminates the session, which kills the whole cgroup, as do
+cancel and terminate.
 """
 
 from __future__ import annotations
@@ -50,9 +54,12 @@ _LIB = (
     '  } | sort -un | grep -vx -e 1 -e "$$" )\n'
     '  [ -n "$_m" ] || return 0\n'
     '  if [ -z "$2" ]; then printf "%s\\n" "$_m"; return 0; fi\n'
-    '  ps -e -o pid=,ppid= | awk -v r="$2" -v m="$_m" \'{par[$1]=$2} END {n=split(m,a,"\\n");'
+    # A kept descendant must also still be in the root's session: a tool
+    # command the agent started with setsid (or a detached background job) is
+    # a leftover once the turn is over.
+    '  ps -e -o pid=,ppid=,sid= | awk -v r="$2" -v m="$_m" \'{par[$1]=$2; sid[$1]=$3} END {rs=sid[r]; n=split(m,a,"\\n");'
     ' for(i=1;i<=n;i++){p=a[i]; if(p=="") continue; q=p; k=0;'
-    ' while(q!="" && q!="0" && k<512){ if(q==r){p=""; break}; q=par[q]; k++ } if(p!="") print p}}\'\n'
+    ' while(q!="" && q!="0" && k<512){ if(q==r){ if(sid[p]==rs) p=""; break}; q=par[q]; k++ } if(p!="") print p}}\'\n'
     '}\n'
     # TERM, wait up to $2 s, then KILL (cgroup.kill when nothing is kept) until empty.
     'sdf_kill() {\n'

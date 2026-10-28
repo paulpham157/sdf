@@ -148,3 +148,25 @@ def test_enter_and_sweep_keep_the_long_lived_root(tmp_path):
         subprocess.run(tg.kill_argv(turn, grace_s=1), timeout=60, capture_output=True)
         root.kill()
     assert root.wait(timeout=10) is not None
+
+
+def test_sweep_kills_a_descendant_that_left_the_root_session(tmp_path):
+    # A Herdr agent's tool command started with setsid (or a detached job) is a
+    # leftover once the turn ends, even while it is still the agent's descendant;
+    # a same-session child (e.g. an MCP server) is kept.
+    turn = _id()
+    root = subprocess.Popen(["setsid", "sh", "-c",
+                             f"sleep 120 & setsid sh -c 'while :; do date >> {tmp_path}/d.txt; sleep 0.2; done' & wait"],
+                            stdout=subprocess.DEVNULL)
+    try:
+        time.sleep(0.5)
+        subprocess.run(tg.enter_argv(turn, root.pid), capture_output=True, text=True, timeout=30)
+        out = subprocess.run(tg.sweep_argv(turn, root.pid, grace_s=1), capture_output=True, text=True, timeout=60)
+        assert "SDF_TURN_SWEPT" in out.stdout
+        assert root.poll() is None
+        assert _quiet(tmp_path / "d.txt")
+        kids = subprocess.run(["ps", "-o", "args=", "--ppid", str(root.pid)], capture_output=True, text=True).stdout
+        assert "sleep 120" in kids
+    finally:
+        subprocess.run(tg.kill_argv(turn, grace_s=1), timeout=60, capture_output=True)
+        root.kill()
