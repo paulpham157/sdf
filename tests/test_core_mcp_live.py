@@ -2,7 +2,7 @@
 
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_CORE_MCP=1`` plus
 E2B/Vultr keys (presence only; values never printed).  Kind via
-``SDF_LIVE_CORE_KIND`` (opencode | pi).  One sandbox, one turn: the agent must
+``SDF_LIVE_CORE_KIND`` (opencode | pi | goose).  One sandbox, one turn: the agent must
 query ``get_plan`` through ``sdf-core`` (CLI or MCP) and write the hash to
 HASH.txt; the host serves requests with the coordinator's own relay while the
 turn runs, and also checks a forged ``approve_plan`` is denied.
@@ -38,7 +38,8 @@ pytestmark = pytest.mark.skipif(not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_L
 KIND = ENV.get("SDF_LIVE_CORE_KIND", "pi")
 TEMPLATE = ENV.get("SDF_E2B_AGENT_TEMPLATE", DEFAULT_TEMPLATE)
 REPORT_DIR = Path("/tmp/sdf-live-reports")
-# "mcp" forces OpenCode's registered sdfcore MCP server instead of the CLI.
+# "mcp" forces the sdfcore MCP server (OpenCode registered / Goose --with-extension) instead of the CLI.
+MCP_TOOL = {"opencode": "sdfcore_get_plan", "goose": "sdfcore__get_plan"}.get(KIND, "get_plan")
 VIA = ENV.get("SDF_LIVE_CORE_VIA", "any")
 
 PROMPT = ("Task: read your approved plan from SDF Core. Run the shell command `sdf-core get_plan` "
@@ -87,7 +88,7 @@ def test_live_agent_reads_plan_hash(tmp_path):
         result: dict = {}
         prompt = PROMPT if VIA != "mcp" else PROMPT.replace(
             "Run the shell command `sdf-core get_plan` (or call the sdf-core MCP tool get_plan)",
-            "Call the MCP tool sdfcore_get_plan (do NOT use the shell or the sdf-core CLI for this; "
+            f"Call the MCP tool {MCP_TOOL} (do NOT use the shell or the sdf-core CLI for this; "
             "you may use your file-write tool)")
         report["via"] = VIA
         th = threading.Thread(target=lambda: result.update(turn=sandbox.turn(prompt)))

@@ -341,8 +341,14 @@ def registration_script(kind: str) -> str:
     raise ValueError(f"unknown agent kind {kind!r}")
 
 
+GOOSE_EXTENSION = "sdfcore"
+
+
 def goose_extension_args() -> list[str]:
-    return ["--with-extension", " ".join(MCP_COMMAND)]
+    """``goose run`` argv for the stdio server, named ``sdfcore`` (goose's
+    ``[name:]command`` form), so its tools are ``sdfcore__<tool>``."""
+
+    return ["--with-extension", f"{GOOSE_EXTENSION}:" + " ".join(MCP_COMMAND)]
 
 
 AGENT_HINT = (

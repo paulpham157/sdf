@@ -34,6 +34,9 @@ VULTR_HOST = "api.vultrinference.com"
 DEFAULT_TEMPLATE = "sdf-herdr-agents"
 DEFAULT_NETWORK = {"allow_out": [VULTR_HOST], "deny_out": ["0.0.0.0/0"], "allow_public_traffic": False}
 SUPPORTED_KINDS = ("opencode", "pi")
+# E2BAgentSandbox can also host a single Goose agent (sdf-core over its
+# stdio MCP extension, ADR 0022); the coordinator roles stay SUPPORTED_KINDS.
+SANDBOX_KINDS = (*SUPPORTED_KINDS, "goose")
 
 
 @dataclass(frozen=True)
@@ -115,7 +118,7 @@ class E2BAgentSandbox:
         sandbox_timeout_s: int = 1800, turn_timeout_s: int = 420, network: Mapping[str, Any] | None = None,
         mcp_for_opencode: bool = True, core_access: bool = True,
     ) -> None:
-        if spec.kind not in SUPPORTED_KINDS:
+        if spec.kind not in SANDBOX_KINDS:
             raise ValueError(f"agent kind {spec.kind!r} is not supported by the coordinator (use {SUPPORTED_KINDS})")
         self.spec = spec
         self._environ = dict(environ)
@@ -145,7 +148,7 @@ class E2BAgentSandbox:
         from .credential_injection import create_credentialed_transport
 
         pi_extensions: tuple[str, ...] = ()
-        if self.spec.kind != "opencode":
+        if self.spec.kind == "pi":
             from .pi_runtime import PI_EXTENSIONS_ENV, resolve_pi_extensions
 
             # ADR-0017: validated before any sandbox exists.
@@ -159,6 +162,12 @@ class E2BAgentSandbox:
 
             self._runtime = OpenCodeHeadlessRuntime(
                 transport=self._transport, turn_timeout_s=self._turn_timeout_s, model=self.spec.model)
+        elif self.spec.kind == "goose":
+            from .goose_runtime import GooseHeadlessRuntime
+
+            self._runtime = GooseHeadlessRuntime(
+                transport=self._transport, turn_timeout_s=self._turn_timeout_s, model=self.spec.model,
+                core_mcp=self._core)
         else:
             from .pi_runtime import PiHeadlessRuntime
 

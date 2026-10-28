@@ -226,7 +226,35 @@ def test_install_script_installs_core_and_goose_args():
     script = _install_script("worker-1", False, "pi", core=True)
     assert core_mcp.CORE_SHIM_PATH in script and core_mcp.REQ_DIR in script
     assert core_mcp.CORE_SHIM_PATH not in _install_script("worker-1", False, "pi", core=False)
-    assert core_mcp.goose_extension_args() == ["--with-extension", "python3 /usr/local/bin/sdf-core mcp"]
+    assert core_mcp.goose_extension_args() == ["--with-extension", "sdfcore:python3 /usr/local/bin/sdf-core mcp"]
+
+
+def _goose_argv(core: bool, auto: bool) -> list[str]:
+    from sdf_core.goose_runtime import GooseHeadlessRuntime
+    from sdf_core.headless_runtime import HeadlessBinding
+
+    rt = GooseHeadlessRuntime(transport=type("T", (), {"exec_argv": lambda *a: ""})(), core_mcp=core)
+    binding = HeadlessBinding("ATT-1", "/tmp/sdf/ATT-1", auto)
+    return rt.agent_argv(binding, "/tmp/p")
+
+
+def test_goose_turn_argv_carries_the_core_extension_only_when_enabled():
+    with_core = _goose_argv(True, True)
+    i = with_core.index("--with-extension")
+    assert with_core[i + 1] == "sdfcore:python3 /usr/local/bin/sdf-core mcp"
+    assert "--no-profile" in with_core and with_core.count("--with-extension") == 1
+    assert "--with-extension" not in _goose_argv(False, True)
+    # Chat (read-only, no tools) turns load no extension at all.
+    assert "--with-extension" not in _goose_argv(True, False)
+
+
+def test_e2b_agent_sandbox_hosts_goose_but_the_coordinator_roles_do_not():
+    from sdf_core.agent_sandbox import SANDBOX_KINDS, SUPPORTED_KINDS, AgentSpec, E2BAgentSandbox
+
+    assert "goose" in SANDBOX_KINDS and "goose" not in SUPPORTED_KINDS
+    E2BAgentSandbox(AgentSpec("worker-1", "worker", "goose"), environ={})
+    with pytest.raises(ValueError):
+        E2BAgentSandbox(AgentSpec("worker-1", "worker", "qwen"), environ={})
 
 
 def test_shim_mcp_lists_read_tools_plus_message_post(tmp_path):

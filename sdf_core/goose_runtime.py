@@ -126,6 +126,14 @@ class GooseHeadlessRuntime(HeadlessAgentRuntime):
     PROJECT_CONFIG_ENTRIES = PROJECT_CONFIG_ENTRIES
     CANCEL_PATTERN = "[g]oose run -i -"
 
+    def __init__(self, *, core_mcp: bool = False, **kwargs: Any) -> None:
+        """``core_mcp``: add the ADR-0022 read-only ``sdf-core`` MCP server as
+        a stdio extension on write-mode turns (``--no-profile`` loads no
+        configured extension, so it must ride on the argv)."""
+
+        super().__init__(**kwargs)
+        self._core_mcp = core_mcp
+
     def agent_argv(self, binding: HeadlessBinding, prompt_file: str) -> list[str]:
         argv = ["env", f"GOOSE_MODE={'auto' if binding.auto else 'chat'}", self._binary, "run", "-i", "-",
                 "--output-format", "json", "--no-profile", "-n", f"sdf-{binding.attempt_id}"]
@@ -133,6 +141,10 @@ class GooseHeadlessRuntime(HeadlessAgentRuntime):
             argv.append("-r")
         if binding.auto:
             argv += ["--with-builtin", "developer"]
+            if self._core_mcp:
+                from .core_mcp import goose_extension_args
+
+                argv += goose_extension_args()
         return argv
 
     def parse_turn(self, binding: HeadlessBinding, body: str) -> TurnResult:

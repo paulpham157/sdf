@@ -48,12 +48,18 @@ gate, ADR 0015's roles).
      permission `sdfcore_*`.
    * Claude: `~/.claude.json` `mcpServers.sdf-core`.
    * Codex: `[mcp_servers.sdf_core]` in `~/.codex/config.toml`.
-   * Pi, Qwen, Goose: **CLI only** (the prompt tells the agent to run
-     `sdf-core <tool> '<json>'`). Their hardened turn flags (`--no-mcp`, `--bare`,
-     `--no-profile`) deliberately disable configured MCP; re-enabling it would
-     also re-enable repo-supplied MCP. Goose could take it per turn with
-     `--with-extension "python3 /usr/local/bin/sdf-core mcp"`
-     (`goose_extension_args()`), not wired by default.
+   * Pi, Qwen: **CLI only** (the prompt tells the agent to run
+     `sdf-core <tool> '<json>'`). Their hardened turn flags (`--no-mcp`, `--bare`)
+     deliberately disable configured MCP; re-enabling it would also re-enable
+     repo-supplied MCP.
+   * Goose: CLI, plus the MCP server on the argv of every write-mode turn
+     (`GooseHeadlessRuntime(core_mcp=True)`, set by `E2BAgentSandbox` when core
+     access is on): `--with-extension "sdfcore:python3 /usr/local/bin/sdf-core mcp"`
+     (goose 1.56.0 `[name:]command` form; tools are `sdfcore__<tool>`).
+     `--no-profile` stays, so no configured or repo extension loads.
+     `E2BAgentSandbox` can host a Goose agent; coordinator roles stay
+     OpenCode/Pi. Live-verified: goose called `sdfcore__get_plan`, wrote the
+     right hash, a forged `approve_plan` request was denied.
 7. **No image change.** The shim is uploaded at sandbox start like `sdf-msg`;
    the public template is untouched.
 
