@@ -35,13 +35,14 @@ scripts.
 | --- | --- | --- |
 | `@cad0p/pi-steering` | `0.2.0` | write and read-only turns |
 | `@paulpham157/apply-patch` | `0.3.1` | write turns only |
-| `pi-lens` | `4.4.6` | write turns only |
 
 `link-pi-host.mjs` points their `@earendil-works/pi-*` peer imports at the
 global `@mariozechner` Pi 0.73.1, so no second Pi is installed.
 `verify-pins.mjs` fails the build on any drift. Pi loads them only by explicit
-`-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. `pi-fabric`
-was vetted and rejected because it needs Pi >= 1.0 and Node >= 24.
+`-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. Two
+requested packages were vetted and rejected: `pi-fabric` needs Pi >= 1.0 and
+Node >= 24, and `pi-lens` 4.4.6 intermittently hung live Pi turns after the
+final answer.
 
 ## Claude first-run state
 

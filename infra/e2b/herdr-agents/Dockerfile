@@ -64,7 +64,6 @@ RUN cd /opt/sdf-pi-extensions \
     && npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund \
     && node link-pi-host.mjs "$(npm root -g)/@mariozechner/pi-coding-agent" /opt/sdf-pi-extensions \
     && node verify-pins.mjs /opt/sdf-pi-extensions \
-    && test -x node_modules/@ast-grep/cli-linux-x64-gnu/ast-grep \
     && npm cache clean --force \
     && chown -R root:root /opt/sdf-pi-extensions \
     && chmod -R a+rX,go-w /opt/sdf-pi-extensions

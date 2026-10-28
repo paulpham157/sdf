@@ -328,7 +328,6 @@ def test_write_tools_only_with_the_fresh_e2b_claim(local, monkeypatch):
     assert [args[i + 1] for i, a in enumerate(args) if a == "-e"] == [
         f"{ext}/@cad0p/pi-steering/src/index.ts",
         f"{ext}/@paulpham157/apply-patch/src/index.ts",
-        f"{ext}/pi-lens/dist/index.js",
     ]
     assert runtime.loaded_extensions(session.session_id) == tuple(pir.PI_EXTENSIONS)
     runtime.collect_workspace("ATTEMPT-2", workspace)
@@ -356,9 +355,6 @@ def test_turn_strips_every_pi_variable_and_forces_offline(local):
     runtime.send(session.session_id, "fix")
     assert _calls(log)[0]["env"] == {
         "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
-        # pi-lens: no runtime installs, state under HOME (ADR-0017).
-        "PI_LENS_DISABLE_TOOL_INSTALL": "1", "PI_LENS_DISABLE_LSP_INSTALL": "1",
-        "PI_LENS_DISABLE_TOOL_REFRESH": "1", "PI_LENS_HOME": f"{transport.env['HOME']}/.pi-lens",
     }
 
 
@@ -549,16 +545,27 @@ def test_extension_selection_defaults_to_all_and_empty_means_none():
     assert pir.resolve_pi_extensions("") == ()
     assert pir.resolve_pi_extensions(" , ") == ()
     # Canonical load order and de-duplication, whatever the operator wrote.
-    assert pir.resolve_pi_extensions(" pi-lens,@cad0p/pi-steering,pi-lens ") == ("@cad0p/pi-steering", "pi-lens")
+    assert pir.resolve_pi_extensions(" @paulpham157/apply-patch,@cad0p/pi-steering,@paulpham157/apply-patch ") == (
+        "@cad0p/pi-steering", "@paulpham157/apply-patch")
 
 
-@pytest.mark.parametrize("value", ["pi-fabric", "pi-lens,pi-fabric"])
-def test_rejected_extension_is_refused_with_the_reason(value):
-    with pytest.raises(ValueError, match="Pi >= 1.0"):
+@pytest.mark.parametrize("value, reason", [
+    ("pi-fabric", "Pi >= 1.0"),
+    ("@cad0p/pi-steering,pi-fabric", "Pi >= 1.0"),
+    ("pi-lens", "turn_end/agent_end hooks"),
+    ("@paulpham157/apply-patch,pi-lens", "hangs until the timeout"),
+])
+def test_rejected_extension_is_refused_with_the_reason(value, reason):
+    with pytest.raises(ValueError, match=reason):
         pir.resolve_pi_extensions(value)
 
 
-@pytest.mark.parametrize("value", ["left-pad", "npm:pi-lens", "pi-lens@4.4.6", "./x.ts", "/opt/sdf-pi-extensions/x"])
+def test_rejected_extensions_are_not_baked_or_allowlisted():
+    for name in ("pi-fabric", "pi-lens"):
+        assert name in pir.UNAVAILABLE_PI_EXTENSIONS and name not in pir.PI_EXTENSIONS
+
+
+@pytest.mark.parametrize("value", ["left-pad", "npm:@cad0p/pi-steering", "@cad0p/pi-steering@0.2.0", "./x.ts", "/opt/sdf-pi-extensions/x"])
 def test_only_allowlisted_names_are_accepted(value):
     with pytest.raises(ValueError, match="not an image-baked Pi extension"):
         pir.resolve_pi_extensions(value)
@@ -566,8 +573,8 @@ def test_only_allowlisted_names_are_accepted(value):
 
 def test_constructor_reads_the_environment_and_explicit_values_win(local, monkeypatch):
     transport, *_ = local
-    monkeypatch.setenv("SDF_PI_EXTENSIONS", "pi-lens")
-    assert PiHeadlessRuntime(transport=transport).extensions == ("pi-lens",)
+    monkeypatch.setenv("SDF_PI_EXTENSIONS", "@paulpham157/apply-patch")
+    assert PiHeadlessRuntime(transport=transport).extensions == ("@paulpham157/apply-patch",)
     assert PiHeadlessRuntime(transport=transport, extensions=()).extensions == ()
     monkeypatch.setenv("SDF_PI_EXTENSIONS", "evil")
     with pytest.raises(ValueError):
@@ -579,7 +586,7 @@ def test_read_only_turns_load_only_read_only_safe_extensions():
     every = tuple(pir.PI_EXTENSIONS)
     assert pir.extensions_for_turn(every, auto=False) == ("@cad0p/pi-steering",)
     assert pir.extensions_for_turn(every, auto=True) == every
-    assert pir.extensions_for_turn(("pi-lens",), auto=False) == ()
+    assert pir.extensions_for_turn(("@paulpham157/apply-patch",), auto=False) == ()
 
 
 def test_no_extensions_means_no_dash_e_and_no_probe(local, monkeypatch):
@@ -606,11 +613,11 @@ def test_discovery_flags_stay_with_extensions_and_paths_stay_in_the_baked_dir(lo
     for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"):
         assert flag in args
     paths = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
-    assert len(paths) == 3 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
+    assert len(paths) == 2 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
 
 
 @pytest.mark.parametrize("versions, message", [
-    ({"pi-lens": "4.4.7"}, "pi-lens 4.4.7 is installed but SDF is pinned to 4.4.6"),
+    ({"@paulpham157/apply-patch": "0.3.2"}, "@paulpham157/apply-patch 0.3.2 is installed but SDF is pinned to 0.3.1"),
     ({"@cad0p/pi-steering": None}, "@cad0p/pi-steering is not installed"),
 ])
 def test_extension_pins_are_checked_in_the_sandbox_before_the_claim(tmp_path, local, monkeypatch, versions, message):
@@ -640,4 +647,4 @@ def test_agent_environ_passes_the_extension_choice_through_even_when_empty():
 
     assert agent_environ({"SDF_PI_EXTENSIONS": ""}, {"pi"})["SDF_PI_EXTENSIONS"] == ""
     assert "SDF_PI_EXTENSIONS" not in agent_environ({}, {"pi"})
-    assert "SDF_PI_EXTENSIONS" not in agent_environ({"SDF_PI_EXTENSIONS": "pi-lens"}, {"opencode"})
+    assert "SDF_PI_EXTENSIONS" not in agent_environ({"SDF_PI_EXTENSIONS": "@cad0p/pi-steering"}, {"opencode"})

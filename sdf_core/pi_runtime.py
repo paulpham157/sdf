@@ -88,17 +88,15 @@ PI_EXTENSIONS: dict[str, PiExtension] = {
         "sha512-qqO0zcG0hW7lTdst0GXw+85ex3cJ+T94iLic4R3mpPakwrp1B/jOAU1cov72fiQBSyf9NJO2eRj9BeJdNz41Rw==",
         "src/index.ts", read_only=False,
     ),
-    # Post-write lint/LSP feedback; spawns analysers and writes ~/.pi-lens.
-    "pi-lens": PiExtension(
-        "4.4.6",
-        "sha512-Hlf4YJuLNpzOnIUj0MMobtsG2mH4n3fkgjdywQhVvwmetUpkgr0J4n9NJKMhRaDszyTshQ4itJtkyd3nUKfktw==",
-        "dist/index.js", read_only=False,
-    ),
 }
 DEFAULT_PI_EXTENSIONS: tuple[str, ...] = tuple(PI_EXTENSIONS)
 # Vetted and rejected (ADR-0017); named so the error says why.
 UNAVAILABLE_PI_EXTENSIONS = {
     "pi-fabric": "pi-fabric needs Pi >= 1.0 and Node >= 24 (SDF pins Pi 0.73.1 on Node 22)",
+    "pi-lens": (
+        "pi-lens 4.4.6 intermittently never finishes its turn_end/agent_end hooks under Pi 0.73.1 "
+        "print mode, so the headless turn hangs until the timeout"
+    ),
 }
 PI_EXTENSIONS_ENV = "SDF_PI_EXTENSIONS"
 
@@ -155,11 +153,6 @@ _WRAPPER = (
     'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
     'for v in $(env | sed -n "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; '
     'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0; '
-    # pi-lens (ADR-0017): no runtime tool/LSP installs or refreshes, and its
-    # state outside the workspace (it would use <cwd>/.pi-lens-probe-home
-    # under /tmp).  Set after the PI_* purge, so callers cannot override them.
-    'export PI_LENS_DISABLE_TOOL_INSTALL=1 PI_LENS_DISABLE_LSP_INSTALL=1 PI_LENS_DISABLE_TOOL_REFRESH=1 '
-    'PI_LENS_HOME="$HOME/.pi-lens"; '
     'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
     'if [ -e ' + PROJECT_CONFIG_DIR + ' ] || [ -L ' + PROJECT_CONFIG_DIR + ' ]; then echo '
     + _EXIT_MARKER + str(_PROJECT_CONFIG_EXIT) + '; exit 0; fi; '
