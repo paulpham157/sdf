@@ -534,13 +534,15 @@ def test_a_working_read_after_a_completed_turn_reports_running_until_idle_again(
     assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
 
 
-def test_codex_swallowed_enter_is_resubmitted_until_the_turn_runs_and_then_completes():
-    # Codex 0.157 can swallow the submitting Enter: Herdr reports a stall while
-    # the pane stays idle.  The runtime presses Enter (never retyping the text)
-    # until the turn is seen working, then waits for it to return to idle.
-    runner = TurnHerdr("codex", prompt="stalled", states=("idle", "idle", "idle", "working", "idle"))
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_swallowed_enter_is_resubmitted_until_the_turn_runs_and_then_completes(agent):
+    # Codex 0.157 and a fast-starting Claude Code 2.1.282 can swallow the
+    # submitting Enter: Herdr reports a stall while the pane stays idle.  The
+    # runtime presses Enter (never retyping the text) until the turn is seen
+    # working, then waits for it to return to idle.
+    runner = TurnHerdr(agent, prompt="stalled", states=("idle", "idle", "idle", "working", "idle"))
     runtime = HerdrRuntime(runner=runner)
-    session = runtime.start(attempt_id="ATTEMPT-ENTER", agent="codex")
+    session = runtime.start(attempt_id=f"ATTEMPT-ENTER-{agent}", agent=agent)
 
     assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
     assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
@@ -558,10 +560,10 @@ def test_codex_resubmit_gives_up_as_running_when_the_turn_never_starts():
     assert sum(c[1:3] == ("pane", "send-keys") for c in runner.calls) == 3
 
 
-def test_claude_stall_is_never_resubmitted():
-    runner = TurnHerdr("claude", prompt="stalled", states=("idle", "working", "idle"))
+def test_a_stall_of_another_agent_kind_is_never_resubmitted():
+    runner = TurnHerdr("cursor", prompt="stalled", states=("idle", "working", "idle"))
     runtime = HerdrRuntime(runner=runner)
-    session = runtime.start(attempt_id="ATTEMPT-CLAUDE-STALL", agent="claude")
+    session = runtime.start(attempt_id="ATTEMPT-OTHER-STALL", agent="cursor")
     runtime.send(session.session_id, "fix it")
     assert not any(c[1:3] == ("pane", "send-keys") for c in runner.calls)
 

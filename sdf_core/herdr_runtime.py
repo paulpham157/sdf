@@ -56,9 +56,11 @@ def _claim_fresh_e2b_permission_bypass(transport: object | None) -> bool:
 
 # Codex 0.157 can take Herdr's typed prompt into its composer but swallow the
 # submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
-# stays idle.  For these kinds the runtime presses Enter again (never retyping
-# the prompt) until the turn is observed working.
-_RESUBMIT_ENTER_AGENTS = frozenset({"codex"})
+# stays idle.  Claude Code 2.1.282 does the same when it starts fast (the
+# prebuilt ``sdf-herdr-agents`` template): Herdr reports it interactive a few
+# seconds before it accepts Enter.  For these kinds the runtime presses Enter
+# again (never retyping the prompt) until the turn is observed working.
+_RESUBMIT_ENTER_AGENTS = frozenset({"codex", "claude"})
 _RESUBMIT_ATTEMPTS = 3
 _SUBMIT_WINDOW_MS = 8_000
 # Herdr states that prove a turn is in progress after a submission.
