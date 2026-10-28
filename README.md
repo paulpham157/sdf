@@ -52,7 +52,7 @@ agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-
 
 Pi (`pi`, pinned `0.73.1`) is a second headless agent kind
 (`sdf_core.pi_runtime.PiHeadlessRuntime`, `pi -p --mode json`) with the same
-Vultr defaults (`VULTR_INFERENCE_API_KEY`, `glm-5.3`); it refuses a workspace
+Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 

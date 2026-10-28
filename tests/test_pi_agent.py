@@ -27,7 +27,7 @@ from sdf_core.pi_runtime import PiHeadlessRuntime, PiRuntimeError, parse_events
 from sdf_core.runtime import CredentialMetadata, RuntimeStatus
 
 KEY = "vk-test-0123456789abcdef-secret"
-PI = {"SDF_CREDENTIAL_MODE_PI": "api-key", "VULTR_INFERENCE_API_KEY": KEY}
+PI = {"SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY": KEY}
 
 
 # --- credential plan ------------------------------------------------------
@@ -37,12 +37,12 @@ def test_pi_is_an_agent_kind_with_vultr_defaults():
     plan = resolve_credential_plan("pi", PI)
     assert plan.mode is CredentialMode.API_KEY
     assert dict(plan.set_variables) == {
-        "VULTR_INFERENCE_API_KEY": KEY,
+        "SDF_PI_API_KEY": KEY,
         "SDF_PI_BASE_URL": "https://api.vultrinference.com/v1",
         "SDF_PI_MODEL": "glm-5.3",
     }
     assert DEFAULT_PI_BASE_URL == "https://api.vultrinference.com/v1"
-    assert [(s.action, s.variable) for s in plan.seed_steps] == [("pi-models", "VULTR_INFERENCE_API_KEY")]
+    assert [(s.action, s.variable) for s in plan.seed_steps] == [("pi-models", "SDF_PI_API_KEY")]
     assert set(plan.strip_variables) >= {
         "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
         "PI_SHARE_VIEWER_URL", "PI_OAUTH_CALLBACK_HOST",
@@ -53,7 +53,7 @@ def test_pi_named_key_variable_replaces_the_default():
     env = {**PI, "SDF_PI_API_KEY_ENV": "GATEWAY_API_KEY", "GATEWAY_API_KEY": "gw-key-value"}
     plan = resolve_credential_plan("pi", env)
     assert plan.set_variables["GATEWAY_API_KEY"] == "gw-key-value"
-    assert "VULTR_INFERENCE_API_KEY" not in plan.set_variables
+    assert "SDF_PI_API_KEY" not in plan.set_variables
     assert plan.seed_steps[0].variable == "GATEWAY_API_KEY"
 
 
@@ -64,8 +64,23 @@ def test_pi_named_key_unset_fails_closed_without_fallback():
     assert KEY not in str(err.value)
 
 
+def test_pi_default_key_follows_the_sdf_convention_and_ignores_the_vultr_variable():
+    """SDF_PI_API_KEY like SDF_OPENCODE_API_KEY; a bare VULTR_INFERENCE_API_KEY
+    is only read when SDF_PI_API_KEY_ENV names it (ADR-0007, no fallback)."""
+
+    with pytest.raises(CredentialConfigError, match="SDF_PI_API_KEY") as err:
+        resolve_credential_plan("pi", {"SDF_CREDENTIAL_MODE_PI": "api-key", "VULTR_INFERENCE_API_KEY": KEY})
+    assert KEY not in str(err.value)
+    plan = resolve_credential_plan("pi", {
+        "SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
+        "VULTR_INFERENCE_API_KEY": KEY,
+    })
+    assert dict(plan.set_variables)["VULTR_INFERENCE_API_KEY"] == KEY
+    assert "SDF_PI_API_KEY" not in plan.set_variables
+
+
 def test_pi_default_key_unset_fails_closed():
-    with pytest.raises(CredentialConfigError, match="VULTR_INFERENCE_API_KEY"):
+    with pytest.raises(CredentialConfigError, match="SDF_PI_API_KEY"):
         resolve_credential_plan("pi", {"SDF_CREDENTIAL_MODE_PI": "api-key"})
 
 
@@ -82,7 +97,7 @@ def test_pi_subscription_mode_is_rejected_and_mode_is_required():
     with pytest.raises(CredentialConfigError, match="subscription is not supported for pi"):
         resolve_credential_plan("pi", {**PI, "SDF_CREDENTIAL_MODE_PI": "subscription"})
     with pytest.raises(CredentialConfigError, match="SDF_CREDENTIAL_MODE_PI"):
-        resolve_credential_plan("pi", {"VULTR_INFERENCE_API_KEY": KEY})
+        resolve_credential_plan("pi", {"SDF_PI_API_KEY": KEY})
 
 
 def test_pi_custom_base_url_and_model():
@@ -128,7 +143,7 @@ def test_pi_models_seed_references_the_key_by_name_only(tmp_path):
     assert provider["baseUrl"] == DEFAULT_PI_BASE_URL
     assert provider["api"] == "openai-completions"
     # A NAME, not a `!command` and not the value.
-    assert provider["apiKey"] == "VULTR_INFERENCE_API_KEY"
+    assert provider["apiKey"] == "SDF_PI_API_KEY"
     [model] = provider["models"]
     assert model["id"] == "glm-5.3"
     assert model["cost"] == {"input": 0.75, "output": 3, "cacheRead": 0, "cacheWrite": 0}

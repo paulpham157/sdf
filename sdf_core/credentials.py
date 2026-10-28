@@ -83,9 +83,6 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 DEFAULT_OPENCODE_BASE_URL = "https://api.vultrinference.com/v1"
 # Same default endpoint for Pi (ADR-0012); overridable with SDF_PI_BASE_URL.
 DEFAULT_PI_BASE_URL = DEFAULT_OPENCODE_BASE_URL
-# Pi's default key variable is the Vultr key's own name, not an SDF_* name
-# (ADR-0012); SDF_PI_API_KEY_ENV names another one instead, never in addition.
-DEFAULT_PI_API_KEY_VARIABLE = "VULTR_INFERENCE_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,8 +164,8 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
         "pi": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_PI",
             connection_variable="SDF_CONNECTION_PI",
-            api_key_source=DEFAULT_PI_API_KEY_VARIABLE,
-            api_key_target=DEFAULT_PI_API_KEY_VARIABLE,
+            api_key_source="SDF_PI_API_KEY",
+            api_key_target="SDF_PI_API_KEY",
             api_key_seed="pi-models",
             base_url_source="SDF_PI_BASE_URL",
             base_url_target="SDF_PI_BASE_URL",
@@ -243,8 +240,7 @@ def resolve_credential_plan(
     """Resolve the Agent Credential plan for ``agent`` from ``environ``.
 
     Only ``SDF_*`` variables are read, plus the one key variable an operator
-    explicitly names in ``SDF_<AGENT>_API_KEY_ENV`` (ADR-0011) and, for Pi
-    only, its default key variable ``VULTR_INFERENCE_API_KEY`` (ADR-0012); the shell's
+    explicitly names in ``SDF_<AGENT>_API_KEY_ENV`` (ADR-0011); the shell's
     provider variables (``ANTHROPIC_API_KEY``, ``OPENAI_BASE_URL``, ...) are
     ignored and can never be named.  There is no default mode and no fallback
     from one mode to the other, nor from a named key variable to the default.  A

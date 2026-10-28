@@ -15,17 +15,26 @@ Wiring (no proxy):
   Responses API), ``-m glm-5.3``; Herdr pane.
 * claude - native: SDF api-key mode, ``SDF_ANTHROPIC_BASE_URL`` (Vultr serves
   Anthropic ``/v1/messages``), ``--model glm-5.3``; Herdr pane.
-* pi - the ``pi`` agent kind (ADR 0012): SDF api-key mode with the default
-  ``VULTR_INFERENCE_API_KEY`` / Vultr base URL / ``glm-5.3``; the ``pi-models``
+* pi - the ``pi`` agent kind (ADR 0012): SDF api-key mode with
+  ``SDF_PI_API_KEY_ENV=VULTR_INFERENCE_API_KEY`` and the default Vultr base URL
+  / ``glm-5.3``; the ``pi-models``
   seed writes ``~/.pi/agent/models.json`` naming the key variable, and
   ``sdf_core.pi_runtime.PiHeadlessRuntime`` runs ``pi -p --mode json`` turns.
 
-The account has no ``sdf-herdr-agents`` template (building one is out of
-scope), so the sandbox factory bootstraps E2B's public ``codex`` template:
-pinned Herdr (sha256-checked) and CLIs are installed with open egress, then
-``update_network`` locks egress to the inference host before any credential
-seed or agent runs.  The factory replaces ``_PRODUCTION_SANDBOX_FACTORY`` so
-the ADR-0008 fresh-sandbox capability still applies to Claude.
+Sandbox source:
+
+* ``SDF_E2B_VULTR_TEMPLATE`` set (e.g. ``sdf-herdr-agents``, built from
+  ``infra/e2b/herdr-agents``): the image already carries Herdr and the CLIs, so
+  the factory only adds the Claude user settings below and makes sure the
+  Herdr server is up.
+* unset: the factory bootstraps E2B's public ``codex`` template
+  (``SDF_E2B_VULTR_BASE_TEMPLATE``): pinned Herdr (sha256-checked) and CLIs are
+  installed with open egress.
+
+Either way ``update_network`` then locks egress to the inference host before
+any credential seed or agent runs.  The factory replaces
+``_PRODUCTION_SANDBOX_FACTORY`` so the ADR-0008 fresh-sandbox capability still
+applies to Claude.
 """
 
 from __future__ import annotations
@@ -63,7 +72,8 @@ pytestmark = pytest.mark.skipif(
     not LIVE, reason="live check: set SDF_LIVE_E2B=1 SDF_LIVE_VULTR_AGENTS=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY"
 )
 
-BASE_TEMPLATE = ENV.get("SDF_E2B_VULTR_BASE_TEMPLATE", "codex")
+PREBUILT_TEMPLATE = ENV.get("SDF_E2B_VULTR_TEMPLATE", "")
+BASE_TEMPLATE = PREBUILT_TEMPLATE or ENV.get("SDF_E2B_VULTR_BASE_TEMPLATE", "codex")
 INFERENCE_HOST = "api.vultrinference.com"
 MODEL = "glm-5.3"
 PRICE_IN, PRICE_OUT = 0.75 / 1e6, 3.00 / 1e6  # Vultr glm-5.3, USD per token
@@ -87,6 +97,13 @@ CLAUDE_USER_SETTINGS = {
 
 
 def _bootstrap_script() -> str:
+    if PREBUILT_TEMPLATE:
+        # The image's settings.json only pre-accepts the dangerous-mode prompt.
+        return "\n".join((
+            "set -e",
+            f"printf %s {shlex.quote(json.dumps(CLAUDE_USER_SETTINGS))} > ~/.claude/settings.json",
+            "herdr --version; codex --version; claude --version; pi --version 2>&1",
+        ))
     claude_json = (REPO / "infra/e2b/herdr-agents/claude/claude.json").read_text()
     return "\n".join((
         "set -e",
@@ -102,7 +119,7 @@ def _bootstrap_script() -> str:
 
 
 class BootstrapFactory:
-    """``Sandbox.create`` stand-in: public template + pinned tools, then lock egress."""
+    """``Sandbox.create`` stand-in: template (+ pinned tools if public), then lock egress."""
 
     def __init__(self) -> None:
         self.versions = ""
@@ -115,7 +132,10 @@ class BootstrapFactory:
         sandbox = Sandbox.create(template=BASE_TEMPLATE, timeout=timeout, envs=envs, **opts)
         try:
             self.versions = sandbox.commands.run(_bootstrap_script(), timeout=300).stdout.strip()
-            sandbox.commands.run("herdr server >/tmp/herdr-server.log 2>&1", background=True)
+            if not PREBUILT_TEMPLATE or sandbox.commands.run(
+                "herdr workspace list >/dev/null 2>&1 && echo ok || true", timeout=10
+            ).stdout.strip() != "ok":
+                sandbox.commands.run("herdr server >/tmp/herdr-server.log 2>&1", background=True)
             for _ in range(30):
                 if sandbox.commands.run("herdr workspace list >/dev/null 2>&1 && echo ok || true", timeout=10).stdout.strip() == "ok":
                     break
@@ -213,8 +233,9 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         environ |= {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_CLAUDE_API_KEY_ENV": KEY_VAR,
                     "SDF_ANTHROPIC_BASE_URL": f"https://{INFERENCE_HOST}", "SDF_CLAUDE_MODEL": MODEL}
     elif agent == "pi":
-        # Defaults only: VULTR_INFERENCE_API_KEY, Vultr base URL, glm-5.3.
-        environ |= {"SDF_CREDENTIAL_MODE_PI": "api-key"}
+        # Default base URL and model (Vultr, glm-5.3); the key is named explicitly
+        # because the default variable is SDF_PI_API_KEY.
+        environ |= {"SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY_ENV": KEY_VAR}
     transport, injection = create_credentialed_transport(
         agents=(agent,), environ=environ, template=BASE_TEMPLATE, timeout_seconds=900, network=network
     )

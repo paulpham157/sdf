@@ -10,7 +10,7 @@ Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
 |---|---|---|
 | codex 0.157.0 | native, Responses API | `SDF_CREDENTIAL_MODE_CODEX=api-key`, `SDF_CODEX_API_KEY_ENV=VULTR_INFERENCE_API_KEY`, `SDF_OPENAI_BASE_URL=https://api.vultrinference.com/v1`, `SDF_CODEX_MODEL=glm-5.3`, **plus agent arg `-c web_search="disabled"`** |
 | claude 2.1.282 | native, Anthropic `/v1/messages` | `SDF_CREDENTIAL_MODE_CLAUDE=api-key`, `SDF_CLAUDE_API_KEY_ENV=VULTR_INFERENCE_API_KEY`, `SDF_ANTHROPIC_BASE_URL=https://api.vultrinference.com`, `SDF_CLAUDE_MODEL=glm-5.3`; user settings `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`/`ANTHROPIC_SMALL_FAST_MODEL=glm-5.3` |
-| pi 0.73.1 | the `pi` agent kind ([ADR 0012](../adr/0012-pi-agent-kind.md)), headless `pi -p --mode json` | `SDF_CREDENTIAL_MODE_PI=api-key` only; defaults `VULTR_INFERENCE_API_KEY`, `https://api.vultrinference.com/v1`, `glm-5.3`. Seeded `~/.pi/agent/models.json` provider `sdf`, `api: openai-completions`, `apiKey: "VULTR_INFERENCE_API_KEY"` (variable name) |
+| pi 0.73.1 | the `pi` agent kind ([ADR 0012](../adr/0012-pi-agent-kind.md)), headless `pi -p --mode json` | `SDF_CREDENTIAL_MODE_PI=api-key` only; `SDF_PI_API_KEY_ENV=VULTR_INFERENCE_API_KEY` (default key variable `SDF_PI_API_KEY`); defaults `https://api.vultrinference.com/v1`, `glm-5.3`. Seeded `~/.pi/agent/models.json` provider `sdf`, `api: openai-completions`, `apiKey: "VULTR_INFERENCE_API_KEY"` (variable name) |
 
 ## Findings
 

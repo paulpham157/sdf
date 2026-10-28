@@ -30,6 +30,12 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
 
 - `opencode` supports only `api-key` mode; `SDF_CREDENTIAL_MODE_OPENCODE=subscription`
   is a configuration error, never a silent switch.
+- Every agent kind's default key variable is an `SDF_*` name:
+  `SDF_<PROVIDER>_API_KEY` for the native CLIs (`SDF_ANTHROPIC_API_KEY`,
+  `SDF_OPENAI_API_KEY`) and `SDF_<AGENT>_API_KEY` for agents with a configurable
+  provider (`SDF_OPENCODE_API_KEY`, `SDF_PI_API_KEY` in ADR 0012). A provider's
+  own variable (e.g. `VULTR_INFERENCE_API_KEY`) is read only when an
+  `SDF_<AGENT>_API_KEY_ENV` names it.
 - A `*_API_KEY_ENV` name is read instead of the default variable, never in
   addition to it: an unset named variable fails closed. The name must end in
   `_API_KEY` and may not be a shell provider variable (`OPENAI_API_KEY`, ...),

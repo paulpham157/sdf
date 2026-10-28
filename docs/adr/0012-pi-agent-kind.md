@@ -15,16 +15,18 @@ project-config layout.
 
 | Agent | Base URL | Key variable name | Model |
 | --- | --- | --- | --- |
-| `pi` | `SDF_PI_BASE_URL` (default `https://api.vultrinference.com/v1`) → provider `baseUrl` | `SDF_PI_API_KEY_ENV` (default `VULTR_INFERENCE_API_KEY`) → same name, written as the provider `apiKey` | `SDF_PI_MODEL` (default `glm-5.3`) → `--model` and the registered model id |
+| `pi` | `SDF_PI_BASE_URL` (default `https://api.vultrinference.com/v1`) → provider `baseUrl` | `SDF_PI_API_KEY_ENV` (default `SDF_PI_API_KEY`) → same name, written as the provider `apiKey` | `SDF_PI_MODEL` (default `glm-5.3`) → `--model` and the registered model id |
 
 ## Credentials
 
 - `api-key` mode only (`SDF_CREDENTIAL_MODE_PI=api-key`); `subscription` is a
   configuration error, and a missing mode fails closed (ADR 0007).
-- The default key variable is `VULTR_INFERENCE_API_KEY`, not an `SDF_*` name.
-  This is a deliberate, documented exception: Vultr is the default provider and
-  the operator already holds that variable. `SDF_PI_API_KEY_ENV` *replaces* it,
-  never adds a fallback; an unset named variable fails closed. The ADR 0007 /
+- The default key variable is `SDF_PI_API_KEY`, following the ADR 0011 rule
+  (`SDF_<AGENT>_API_KEY` for a configurable provider, like
+  `SDF_OPENCODE_API_KEY`). An operator who keeps the Vultr key in
+  `VULTR_INFERENCE_API_KEY` sets `SDF_PI_API_KEY_ENV=VULTR_INFERENCE_API_KEY`;
+  a bare `VULTR_INFERENCE_API_KEY` is never read. `SDF_PI_API_KEY_ENV`
+  *replaces* the default, never adds a fallback; an unset named variable fails closed. The ADR 0007 /
   0011 name rules apply (`[A-Z][A-Z0-9_]*_API_KEY`, not a provider variable,
   not an `E2B_`/`DAYTONA_`/`HERDR_`/`SDF_CREDENTIAL_MODE_`/`SDF_CONNECTION_`
   name); for Pi a `PI_*` name is also refused, because the turn wrapper unsets
