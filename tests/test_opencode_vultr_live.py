@@ -90,7 +90,6 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
             environ[name] = ENV[name]
     inference_host = urlsplit(environ.get("SDF_OPENCODE_BASE_URL", DEFAULT_OPENCODE_BASE_URL)).hostname
     secrets = {name: environ[name] for name in ("E2B_API_KEY", KEY_VAR)}
-    before = _running_ids()
 
     transport, injection = create_credentialed_transport(
         agents=("opencode",), environ=environ, template=TEMPLATE, timeout_seconds=900,

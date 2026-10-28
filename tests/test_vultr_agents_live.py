@@ -294,7 +294,6 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
     network = {"allow_out": [INFERENCE_HOST], "deny_out": ["0.0.0.0/0"]}
     secrets = {name: ENV[name] for name in ("E2B_API_KEY", KEY_VAR)}
-    before = _running_ids()
     environ = {"E2B_API_KEY": ENV["E2B_API_KEY"], KEY_VAR: ENV[KEY_VAR]}
     injection = None
     if agent == "codex":
