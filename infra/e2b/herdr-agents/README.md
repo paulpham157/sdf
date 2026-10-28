@@ -105,7 +105,36 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
-Current build, 2026-10-28 (ADR 0018: Herdr 0.9.5, Codex 0.165.0, Claude Code
+Current build, 2026-10-28 (ADR 0017 update: pi-lens 4.4.6 baked in for
+write turns; otherwise the ADR 0018 versions below): template id
+`xj8glxnh091op795c7me`, build `45ba7067-6549-48e3-8510-b69caeef0333`
+(2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at
+commit `d7d2964`; E2B `diskSizeMB` 14400 (+103 over the previous build).
+It was first built as the private staging template
+(`sdf-herdr-agents-staging`, build `9f463227-59fc-4ebd-aa76-2430125ee0c1`,
+since deleted) and verified there:
+
+- Secret check: no credential files, npmrc tokens or secret env names; the
+  only key-shaped matches are the same 3 E2B SSH host-key baseline lines; the
+  operator's E2B/Vultr key values are absent (SHA-256 only). Versions match
+  every pin. `/opt/sdf-pi-extensions` is 105 MiB (was 5.2 MiB; pi-lens 28 MiB,
+  `@ast-grep` native 62 MiB), root-owned, not writable by `user`; no second
+  Pi; pi-fabric absent.
+- Extension load (Pi 1.4.0, 127.0.0.1 stub, `--no-mcp --no-approve`, the
+  `PI_LENS_*` runtime env): write mode had `apply_patch`, `bash`, `read` plus
+  the pi-lens tools (`lens_diagnostics`, `symbol_search`, `read_symbol`, ...);
+  pi-steering blocked a force push and `apply_patch` patched the file; the
+  workspace held no pi-lens files afterwards. Read-only (pi-steering only)
+  had `find,grep,ls,read`, "Tool apply_patch not found", file unchanged.
+- Live on Vultr glm-5.3 with egress locked: pi with all three extensions
+  4 of 4 passed (24-40s each, no hangs, about 12.6k input tokens and $0.0097
+  per run against 4.8k and $0.004 without pi-lens); Pi read-only live (only
+  `read` ran, file hash unchanged); opencode passed; agent-comm (OpenCode
+  lead, Pi workers) succeeded in 91s, $0.10.
+- Public build: a pi smoke passed (58s, served glm-5.3, 0 leftover
+  sandboxes).
+
+Previous build, 2026-10-28 (ADR 0018: Herdr 0.9.5, Codex 0.165.0, Claude Code
 2.1.308, OpenCode 2 2.2.0, Pi 1.4.0, Qwen Code 0.26.2, Goose 1.56.0, Node
 22.23.4): template id `xj8glxnh091op795c7me`, build
 `56678a3b-9c19-4547-97f2-464c332856bd` (2 vCPU, 2048 MiB), still public
@@ -208,7 +237,7 @@ Anthropic's terms require it, withdraw it with
 `e2b template unpublish sdf-herdr-agents -y` (or rebuild without Claude Code). Users of the public template remain bound by
 each CLI's own license and need their own credentials; the image holds none.
 The published build is the secret-checked one above
-(`dfc0c53e-e0b6-4c02-a14e-d7904a5cb2c6`); rebuilding replaces the public
+(`45ba7067-6549-48e3-8510-b69caeef0333`); rebuilding replaces the public
 image, so build a private staging template first and repeat the secret check
 there before any rebuild.
 
