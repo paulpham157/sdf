@@ -99,6 +99,12 @@ class E2BHerdrTransport:
     def sandbox_id(self) -> str | None:
         return self._sandbox_id
 
+    def fresh_permission_bypass_available(self) -> bool:
+        """True while the bypass could still be claimed (does not claim it)."""
+
+        with self._sandbox_lock:
+            return self._can_grant_fresh_permission_bypass and not self._permission_bypass_claimed
+
     def claim_fresh_permission_bypass(self) -> bool:
         """Grant the first Claude start the bypass only for a fresh production sandbox."""
 

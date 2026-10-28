@@ -14,10 +14,15 @@ Hardening, because the Attempt workspace is untrusted content:
 
 * Pi merges ``<cwd>/.pi/settings.json`` and loads
   ``<cwd>/.pi/{extensions,skills,prompts,themes,mcp,SYSTEM.md,APPEND_SYSTEM.md}``.
-  Pi 1.x adds ``--no-approve`` (ignore project-local files), which every turn
-  passes, but a workspace with ``.pi`` is still refused, on the host before
-  staging and again in the sandbox before every turn (the agent itself could
-  create one), so no Pi release's project-trust rules are relied on alone.
+  ADR-0021: after the fresh E2B claim and with ``SDF_PI_PROJECT_TRUST=always``
+  (the default) turns pass ``--approve`` and ``.pi`` is loaded; the seeded
+  ``~/.pi/agent/settings.json`` carries ``defaultProjectTrust: always``.
+  Verified on 1.4.0: a project ``models.json`` / ``defaultProvider`` /
+  ``defaultModel`` did not beat SDF's provider and ``--provider``/``--model``,
+  and project extensions/skills/packages stayed off (``--no-extensions`` etc.,
+  ``PI_OFFLINE``).  Otherwise every turn passes ``--no-approve`` and a
+  workspace with ``.pi`` is refused, on the host before staging and again in
+  the sandbox before every turn (the agent itself could create one).
 * Extension, skill, prompt-template and theme discovery and built-in MCP
   (``--no-mcp``) are disabled by flag.
 * Every ``PI_*`` (and pi-lens ``PILENS_*``) variable is unset per turn
@@ -47,7 +52,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
-from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
+from . import project_trust
+from .herdr_runtime import (
+    HerdrRuntimeError,
+    HerdrUnsupportedOperation,
+    _claim_fresh_e2b_permission_bypass,
+    _fresh_e2b_permission_bypass_available,
+)
 from .turn_guard import GRACE_S, guard_argv, kill_argv
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
@@ -177,20 +188,31 @@ _PURGE_PI_ENV = (
     'for v in $(env | sed -n -e "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p" -e "s/^\\(PILENS_[A-Za-z0-9_]*\\)=.*/\\1/p"); '
     'do unset "$v"; done; '
 )
-_WRAPPER = (
-    'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
-    + _PURGE_PI_ENV +
-    'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 ' + _PI_LENS_ENV + '; '
-    'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
+_PROJECT_REFUSAL = (
     'if [ -e ' + PROJECT_CONFIG_DIR + ' ] || [ -L ' + PROJECT_CONFIG_DIR + ' ]; then echo '
     + _EXIT_MARKER + str(_PROJECT_CONFIG_EXIT) + '; exit 0; fi; '
-    '[ -n "$model" ] || { echo ' + _EXIT_MARKER + str(_NO_MODEL_EXIT) + '; exit 0; }; '
-    '(umask 077; mkdir -p "$sess"); '
-    'printf "%s" "$prompt" | timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" --model "$model" '
-    '>"$out" 2>"$err"; rc=$?; '
-    'grep -E \'^\\{"type":"(message_end|tool_execution_end)"\' "$out" || true; '
-    'echo ' + _EXIT_MARKER + '$rc; if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'
 )
+
+
+def _wrapper(refuse_project: bool) -> str:
+    return (
+        'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
+        + _PURGE_PI_ENV +
+        'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 ' + _PI_LENS_ENV + '; '
+        'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
+        + (_PROJECT_REFUSAL if refuse_project else '') +
+        '[ -n "$model" ] || { echo ' + _EXIT_MARKER + str(_NO_MODEL_EXIT) + '; exit 0; }; '
+        '(umask 077; mkdir -p "$sess"); '
+        'printf "%s" "$prompt" | timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" --model "$model" '
+        '>"$out" 2>"$err"; rc=$?; '
+        'grep -E \'^\\{"type":"(message_end|tool_execution_end)"\' "$out" || true; '
+        'echo ' + _EXIT_MARKER + '$rc; if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'
+    )
+
+
+_WRAPPER = _wrapper(True)
+# ADR-0021 trusted project: ``.pi/`` is loaded (``--approve``), not refused.
+_TRUSTED_WRAPPER = _wrapper(False)
 
 
 class PiRuntimeError(HerdrRuntimeError):
@@ -267,6 +289,7 @@ class _Binding:
     extensions: tuple[str, ...] = ()
     turns: int = 0
     usage: PiUsage = field(default_factory=PiUsage)
+    project_trusted: bool = False
 
 
 def parse_events(raw: str) -> tuple[tuple[str, ...], PiUsage, tuple[str, ...]]:
@@ -370,7 +393,7 @@ class PiHeadlessRuntime:
         path = Path(workspace).expanduser().resolve()
         if not path.is_dir():
             raise ValueError("workspace must be an existing directory")
-        if workspace_has_project_config(path):
+        if workspace_has_project_config(path) and not self.may_trust_project():
             raise PiRuntimeError(
                 "the Attempt workspace contains .pi/; Pi project settings and extensions are untrusted, "
                 "so SDF refuses to run it there (ADR-0012)"
@@ -417,7 +440,8 @@ class PiHeadlessRuntime:
             self._counter += 1
             session_id = f"pi-{attempt_id}-{self._counter}"
         self._bindings[session_id] = _Binding(
-            attempt_id, workspace, auto, extensions_for_turn(self.extensions, auto=auto))
+            attempt_id, workspace, auto, extensions_for_turn(self.extensions, auto=auto),
+            project_trusted=project_trust.effective(AGENT_KIND, fresh_e2b=auto))
         session = RuntimeSession(session_id, attempt_id, agent, RuntimeStatus.CREATED, credential=credential)
         self._sessions[session_id] = session
         return session
@@ -471,6 +495,16 @@ class PiHeadlessRuntime:
     def permission_skipping(self, session_id: str) -> bool:
         return self._known(session_id)[0].auto
 
+    def project_trusted(self, session_id: str) -> bool:
+        """True when this session's turns load the workspace's ``.pi/`` (ADR-0021)."""
+
+        return self._known(session_id)[0].project_trusted
+
+    def may_trust_project(self) -> bool:
+        """``SDF_PI_PROJECT_TRUST=always`` and the fresh E2B claim still available."""
+
+        return project_trust.wants_trust(AGENT_KIND) and _fresh_e2b_permission_bypass_available(self._transport)
+
     def usage(self, session_id: str) -> dict[str, Any]:
         return self._known(session_id)[0].usage.as_dict()
 
@@ -484,7 +518,10 @@ class PiHeadlessRuntime:
         argv = [
             self._binary, "-p", "--mode", "json",
             "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes",
-            "--no-mcp", "--no-approve",
+            "--no-mcp",
+            # ADR-0021: trust override per turn; the seeded settings.json also
+            # says ``defaultProjectTrust: always``, the flag makes it explicit.
+            "--approve" if binding.project_trusted else "--no-approve",
         ]
         # ADR-0017: discovery stays off; explicit paths to the baked allowlist only.
         for name in binding.extensions:
@@ -496,7 +533,7 @@ class PiHeadlessRuntime:
             argv += ["--tools", READ_ONLY_TOOLS]
         argv += ["--provider", PI_PROVIDER]
         return [
-            "sh", "-c", _WRAPPER, "sdf-pi", binding.workspace, str(self._turn_timeout_s),
+            "sh", "-c", _TRUSTED_WRAPPER if binding.project_trusted else _WRAPPER, "sdf-pi", binding.workspace, str(self._turn_timeout_s),
             f"{base}.jsonl", f"{base}.err", f"{base}/sessions", self._model or "", input_text, *argv,
         ]
 

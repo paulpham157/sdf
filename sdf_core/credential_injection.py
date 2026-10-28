@@ -110,7 +110,11 @@ _PI_MODELS = (
     'const price=/^https:\\/\\/api\\.vultrinference\\.com\\/v1\\/*$/.test(u)&&/^glm-5\\.3$/.test(m)?[0.75,3]:[0,0];'
     'const c={providers:{sdf:{baseUrl:u,api:"openai-completions",apiKey:"$"+v,models:[{id:m,name:m,reasoning:true,'
     'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:price[0],output:price[1],cacheRead:0,cacheWrite:0}}]}}};'
-    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600);'
+    # ADR-0021: SDF-owned Pi settings; nobody is at the sandbox to answer
+    # Pi's project-trust prompt.  Turns still pass --approve / --no-approve.
+    'const sf=d+"/settings.json";let st={};try{st=JSON.parse(fs.readFileSync(sf,"utf8"))}catch{}'
+    'st.defaultProjectTrust="always";fs.writeFileSync(sf,JSON.stringify(st,null,2)+"\\n",{mode:0o600})'
 )
 # Qwen Code (ADR-0013) takes the endpoint and model on its argv and
 # the key only from OPENAI_API_KEY, which the turn wrapper exports per turn
@@ -157,12 +161,33 @@ _PANE_ENV = (
 )
 # Claude asks whether to trust a folder the first time it opens there; the
 # Attempt workspace is created per Attempt, so trust it right before start.
+#
+# It also writes SDF's ``--settings`` file (ADR-0021) and prints its path.
+# Flag settings outrank project/local settings, so when the project is trusted
+# (``--setting-sources user,project,local``) a workspace ``.claude/settings.json``
+# ``env`` / ``apiKeyHelper`` cannot redirect the endpoint or swap the key:
+# ``ANTHROPIC_BASE_URL`` is pinned to the sandbox value (default endpoint when
+# unset), the provider switches and every key variable SDF did not set are
+# blanked, and an SDF-set ``ANTHROPIC_API_KEY`` is blanked in Claude's own
+# environment (so hooks / MCP servers do not inherit it) and supplied instead
+# by an ``apiKeyHelper`` that reads the pane env file the pane-env seed wrote.
+# Values are read from ``process.env`` in the sandbox; none is on argv.
 _CLAUDE_TRUST_WORKSPACE = (
-    'const fs=require("fs"),f=process.env.HOME+"/.claude.json",p=process.argv[1];'
+    'const fs=require("fs"),e=process.env,f=e.HOME+"/.claude.json",p=process.argv[1];'
     'let c={};try{c=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}'
     'c.projects=c.projects||{};c.projects[p]=Object.assign({},c.projects[p],{hasTrustDialogAccepted:true});'
-    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600)'
+    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600);'
+    'const d=e.HOME+"/.config/sdf",sf=d+"/claude-settings.json";'
+    'const env={ANTHROPIC_BASE_URL:e.ANTHROPIC_BASE_URL||"https://api.anthropic.com",'
+    'CLAUDE_CODE_USE_BEDROCK:"",CLAUDE_CODE_USE_VERTEX:"",CLAUDE_CODE_USE_FOUNDRY:"",ANTHROPIC_API_KEY:""};'
+    'if(!e.ANTHROPIC_AUTH_TOKEN)env.ANTHROPIC_AUTH_TOKEN="";'
+    'if(!e.CLAUDE_CODE_OAUTH_TOKEN)env.CLAUDE_CODE_OAUTH_TOKEN="";'
+    'const st={env};if(e.ANTHROPIC_API_KEY)'
+    'st.apiKeyHelper="sh -c \'. \\"$HOME/' + _AGENT_ENV_FILE + '\\"; printf %s \\"$ANTHROPIC_API_KEY\\"\'";'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(sf,JSON.stringify(st),{mode:0o600});fs.chmodSync(sf,0o600);'
+    'console.log(sf)'
 )
+CLAUDE_SETTINGS_SUFFIX = "/.config/sdf/claude-settings.json"
 # Codex (0.157 and 0.165) shows its folder-trust dialog for a fresh Attempt directory even
 # with a ``-c projects.<dir>.trust_level`` override (observed live, #16); only a
 # ``[projects."<dir>"]`` table in ~/.codex/config.toml suppresses it.  Appended
@@ -347,14 +372,22 @@ class CredentialSeedingMixin:
                 self._kill_after_timeout()  # type: ignore[attr-defined]
                 raise HerdrRuntimeError("credential seed step failed; sandbox killed") from None
 
-    def prepare_agent_workspace(self, agent: str, workspace: str) -> None:
-        """Pre-trust an Attempt workspace for an agent kind that asks about it."""
+    def prepare_agent_workspace(self, agent: str, workspace: str) -> str | None:
+        """Pre-trust an Attempt workspace for an agent kind that asks about it.
+
+        For Claude, returns the path of SDF's ``--settings`` file (ADR-0021).
+        """
 
         script = _WORKSPACE_TRUST.get(agent)
         if script is None:
-            return
+            return None
         command = f"node -e {shlex.quote(script)} {shlex.quote(workspace)}"
-        self._exec(command, self.timeout_seconds * 1000)  # type: ignore[attr-defined]
+        out = self._exec(command, self.timeout_seconds * 1000)  # type: ignore[attr-defined]
+        if agent != "claude" or not isinstance(out, str):
+            return None
+        lines = out.strip().splitlines()
+        path = lines[-1].strip() if lines else ""
+        return path if path.startswith("/") and path.endswith(CLAUDE_SETTINGS_SUFFIX) else None
 
 
 class CredentialedE2BHerdrTransport(CredentialSeedingMixin, E2BHerdrTransport):

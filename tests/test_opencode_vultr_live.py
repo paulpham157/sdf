@@ -32,6 +32,7 @@ from sdf_core.execution import ExecutionService
 from sdf_core.model import utcnow
 from sdf_core.opencode_runtime import OpenCodeHeadlessRuntime
 from sdf_core.runtime import RuntimeController
+from tests import live_project_marker
 from tests.test_herdr_e2b_execution import POSITIVE
 from tests.test_vultr_agents_live import DELEGATE_PREFIX, SUBAGENT_TOOLS
 
@@ -122,16 +123,21 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
     engine = make_engine()
     Base.metadata.create_all(engine)
     db = sessionmaker(engine, expire_on_commit=False)()
+    checks = {**CHECKS, **live_project_marker.checks("opencode")} if live_project_marker.ENABLED else CHECKS
     db.add(GraphNodeRow(id="ASSUMPTION-CALC", kind="assumption", title="add() is correct", source="test",
                         owner="product", confidence=1.0, created_at=utcnow()))
     db.add(TaskRow(id="TASK-OC-LIVE", title="fix add", status="created", idempotency_key="task-oc-live",
-                   acceptance_criteria=list(CHECKS), created_at=utcnow()))
+                   acceptance_criteria=list(checks), created_at=utcnow()))
     db.commit()
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "calc.py").write_text(
         "def add(a, b):\n    return a - b\n\n\ndef sub(a, b):\n    return a - b\n", encoding="utf-8"
     )
+    prompt = POSITIVE
+    if live_project_marker.ENABLED:
+        live_project_marker.write("opencode", fixture)
+        prompt = live_project_marker.PROMPT
     service = ExecutionService(
         db, workspace_root=tmp_path / "workspaces", artifact_root=tmp_path / "artifacts",
         adapter=RuntimeAgentAdapter(RuntimeController(runtime, source="opencode-e2b"), agent="opencode"),
@@ -140,8 +146,8 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
     try:
         attempt = service.run(
             task_id="TASK-OC-LIVE", dispatch_key="dispatch-oc-live", fixture=fixture,
-            instructions=(DELEGATE_PREFIX + POSITIVE) if DELEGATE else POSITIVE,
-            commands=[], criterion_checks=CHECKS, validation_target=("assumption", "ASSUMPTION-CALC"),
+            instructions=(DELEGATE_PREFIX + prompt) if DELEGATE else prompt,
+            commands=[], criterion_checks=checks, validation_target=("assumption", "ASSUMPTION-CALC"),
         )
     finally:
         transport.close()  # idempotent; the runtime already closed it on success
@@ -180,5 +186,5 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
     assert not leaked
     assert not leftover and len(created) == 1
     assert report["task"] == "succeeded"
-    assert report["evidence"] == [("add returns the sum", "PASS"), ("sub still subtracts", "PASS")]
+    assert report["evidence"] == sorted((name, "PASS") for name in checks)
     assert relations == {"validates"}

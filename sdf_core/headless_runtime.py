@@ -31,7 +31,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Protocol, Sequence
 
-from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
+from . import project_trust
+from .herdr_runtime import (
+    HerdrRuntimeError,
+    HerdrUnsupportedOperation,
+    _claim_fresh_e2b_permission_bypass,
+    _fresh_e2b_permission_bypass_available,
+)
 from .turn_guard import GRACE_S, guard_argv, kill_argv
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
@@ -101,6 +107,8 @@ class HeadlessBinding:
     usage: HeadlessUsage = field(default_factory=HeadlessUsage)
     # Per-kind continuation state (session id, message count, ...).
     state: dict[str, Any] = field(default_factory=dict)
+    # ADR-0021: the workspace's project config is loaded (auto + trust always).
+    project_trusted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +228,8 @@ class HeadlessAgentRuntime:
     ADR: ClassVar[str] = "ADR-0013"
     ERROR: ClassVar[type[HerdrRuntimeError]] = HerdrRuntimeError
     WRAPPER: ClassVar[str]
+    # ADR-0021: the wrapper for a trusted project (no project-config refusal).
+    TRUSTED_WRAPPER: ClassVar[str | None] = None
     # Workspace entries refused on the host before staging (and in the box).
     PROJECT_CONFIG_ENTRIES: ClassVar[tuple[str, ...]] = ()
     # Private per-Attempt scratch files (output, stderr, prompt, history).
@@ -284,7 +294,10 @@ class HeadlessAgentRuntime:
         if not path.is_dir():
             raise ValueError("workspace must be an existing directory")
         entry = self.workspace_has_project_config(path)
-        if entry is not None:
+        # ADR-0021: with trust ``always`` and a claimable fresh E2B sandbox the
+        # entry is staged; the in-sandbox wrapper still refuses it if the
+        # claim at start does not succeed.
+        if entry is not None and not self.may_trust_project():
             raise self.ERROR(
                 f"the Attempt workspace contains {entry}, which {self.LABEL} would load as project "
                 f"config; SDF refuses to run it there ({self.ADR})"
@@ -325,10 +338,11 @@ class HeadlessAgentRuntime:
             self.require_compatible()
         # ADR-0008: claim at the start boundary, after setup succeeded.
         auto = _claim_fresh_e2b_permission_bypass(self._transport)
+        trusted = self.TRUSTED_WRAPPER is not None and project_trust.effective(self.AGENT_KIND, fresh_e2b=auto)
         with self._lock:
             self._counter += 1
             session_id = f"{self.AGENT_KIND}-{attempt_id}-{self._counter}"
-        self._bindings[session_id] = HeadlessBinding(attempt_id, workspace, auto)
+        self._bindings[session_id] = HeadlessBinding(attempt_id, workspace, auto, project_trusted=trusted)
         session = RuntimeSession(session_id, attempt_id, agent, RuntimeStatus.CREATED, credential=credential)
         self._sessions[session_id] = session
         return session
@@ -349,6 +363,20 @@ class HeadlessAgentRuntime:
     def permission_skipping(self, session_id: str) -> bool:
         return self._known(session_id)[0].auto
 
+    def project_trusted(self, session_id: str) -> bool:
+        """True when this session's turns load the workspace's project config (ADR-0021)."""
+
+        return self._known(session_id)[0].project_trusted
+
+    def may_trust_project(self) -> bool:
+        """Trust ``always`` for this kind and the fresh E2B claim still available."""
+
+        return (
+            self.TRUSTED_WRAPPER is not None
+            and project_trust.wants_trust(self.AGENT_KIND)
+            and _fresh_e2b_permission_bypass_available(self._transport)
+        )
+
     def usage(self, session_id: str) -> dict[str, Any]:
         return self._known(session_id)[0].usage.as_dict()
 
@@ -359,8 +387,9 @@ class HeadlessAgentRuntime:
         if not input_text.strip():
             raise ValueError("input_text must be non-empty")
         base = self.scratch(binding)
+        wrapper = self.TRUSTED_WRAPPER if binding.project_trusted and self.TRUSTED_WRAPPER else self.WRAPPER
         return [
-            "sh", "-c", self.WRAPPER, f"sdf-{self.AGENT_KIND}", binding.workspace, str(self._turn_timeout_s),
+            "sh", "-c", wrapper, f"sdf-{self.AGENT_KIND}", binding.workspace, str(self._turn_timeout_s),
             f"{base}.out", f"{base}.err", f"{base}.prompt", self._model or "", input_text,
             *self.agent_argv(binding, f"{base}.prompt"),
         ]

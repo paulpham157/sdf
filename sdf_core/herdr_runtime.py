@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from . import subagents
+from . import project_trust, subagents
 from .turn_guard import enter_argv, kill_argv, sweep_argv
 from .runtime import AgentRuntime, CredentialMetadata, RuntimeSession, RuntimeStatus
 
@@ -56,6 +56,27 @@ def _claim_fresh_e2b_permission_bypass(transport: object | None) -> bool:
         return False
     return transport.claim_fresh_permission_bypass()
 
+def _fresh_e2b_permission_bypass_available(transport: object | None) -> bool:
+    """Whether the start-boundary claim could still succeed; claims nothing.
+
+    Used before setup (``bind_workspace``) to decide if project config may be
+    staged under ADR-0021; the claim at start remains the only grant.
+    """
+
+    if transport is None:
+        return False
+    try:
+        from .credential_injection import CredentialedE2BHerdrTransport
+        from .e2b_herdr_transport import E2BHerdrTransport
+    except ModuleNotFoundError as exc:
+        if exc.name == "e2b":
+            return False
+        raise
+    if type(transport) not in (E2BHerdrTransport, CredentialedE2BHerdrTransport):
+        return False
+    return transport.fresh_permission_bypass_available()
+
+
 # Codex (0.157, 0.165) can take Herdr's typed prompt into its composer but swallow the
 # submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
 # stays idle.  Claude Code 2.1.282 does the same when it starts fast (the
@@ -90,8 +111,15 @@ def _agent_start_args(
     workspace_dir: Path | str | None,
     *,
     allow_dangerous_permissions: bool = False,
+    trust_project: bool | None = None,
+    claude_settings: str | None = None,
 ) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
+
+    ADR-0021: ``trust_project`` (default: ``SDF_<AGENT>_PROJECT_TRUST``) lets
+    Claude load project/local settings, CLAUDE.md, skills, hooks; it needs
+    ``claude_settings``, SDF's flag settings file, which outranks them for the
+    endpoint and key.  For Codex it chooses ``trusted`` / ``untrusted``.
 
     Codex does not inherit trust from a parent directory.  Codex (0.157 and 0.165) still
     shows its folder-trust dialog with only this override, so a transport also
@@ -107,8 +135,15 @@ def _agent_start_args(
 
     # ADR-0020: sub-agents off, on the command line so no settings file can undo it.
     args: tuple[str, ...] = subagents.start_args(agent)
+    if trust_project is None:
+        trust_project = project_trust.wants_trust(agent)
     if agent == "claude":
-        args = (*args, "--setting-sources", "user")
+        if trust_project and claude_settings:
+            args = (*args, "--setting-sources", "user,project,local")
+        else:
+            args = (*args, "--setting-sources", "user")
+        if claude_settings:
+            args = (*args, "--settings", claude_settings)
         if allow_dangerous_permissions:
             args = (*args, "--dangerously-skip-permissions")
     if agent == "codex":
@@ -118,7 +153,8 @@ def _agent_start_args(
         args = (*args, *_CODEX_PINNED_POLICY)
         if workspace_dir is not None:
             # A JSON string is a valid TOML basic string for any path.
-            args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")
+            level = "trusted" if trust_project else "untrusted"
+            args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"{level}\"")
     return args
 
 
@@ -473,13 +509,16 @@ class HerdrRuntime(AgentRuntime):
 
         workspace_args = self._command("workspace", "create")
         workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
+        claude_settings: str | None = None
         if workspace_dir is not None:
             workspace_args.extend(("--cwd", str(workspace_dir)))
             # A transport may need to prepare agent state for this directory
             # (Claude's folder-trust dialog) before the agent opens there.
             prepare = getattr(self._transport, "prepare_agent_workspace", None)
             if callable(prepare):
-                prepare(agent, str(workspace_dir))
+                prepared = prepare(agent, str(workspace_dir))
+                if agent == "claude" and isinstance(prepared, str):
+                    claude_settings = prepared
         workspace = self._object(workspace_args)
         root_pane = workspace.get("root_pane", workspace.get("rootPane", workspace))
         if not isinstance(root_pane, Mapping):
@@ -499,9 +538,20 @@ class HerdrRuntime(AgentRuntime):
         allow_dangerous_permissions = (
             agent == "claude" and _claim_fresh_e2b_permission_bypass(self._transport)
         )
+        # ADR-0021: Claude loads the project only in a fresh E2B sandbox and
+        # with SDF's flag settings pinning endpoint and key.  Codex keeps its
+        # ADR-0011 trust (any transport) and only follows the setting.
+        if agent == "claude":
+            trust_project = allow_dangerous_permissions and project_trust.wants_trust(agent)
+        else:
+            trust_project = project_trust.wants_trust(agent)
         agent_args = (
             *_agent_start_args(
-                agent, workspace_dir, allow_dangerous_permissions=allow_dangerous_permissions
+                agent,
+                workspace_dir,
+                allow_dangerous_permissions=allow_dangerous_permissions,
+                trust_project=trust_project,
+                claude_settings=claude_settings,
             ),
             *self._agent_args.get(agent, ()),
         )
