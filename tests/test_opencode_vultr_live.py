@@ -156,9 +156,11 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
         transport.close()  # idempotent; the runtime already closed it on success
         elapsed = round(time.monotonic() - started, 1)
         deadline = time.monotonic() + 30
-        while (_running_ids() - before) and time.monotonic() < deadline:
+        # Only this test's own sandboxes count: other runs on the same E2B
+        # account (parallel live tests) may start sandboxes meanwhile.
+        while (set(created) & _running_ids()) and time.monotonic() < deadline:
             time.sleep(1)
-        leftover = sorted(_running_ids() - before)
+        leftover = sorted(set(created) & _running_ids())
 
     session_id = next(iter(runtime._bindings))
     evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
