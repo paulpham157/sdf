@@ -8,7 +8,7 @@ every kind; ``SDF_LIVE_CONTAINMENT_SCENARIOS`` picks ``timeout,sigkill,cancel``.
 
 Per (kind, scenario), one fresh sandbox: the agent is asked to run
 ``sh spawn.sh``, which starts ``setsid sleep 300``, ``env -i setsid sleep 301``
-(no tag), a double-forked workspace writer (``leak_writer.sh``, reparented to
+(no tag), a double-forked workspace writer (``tick.sh``, reparented to
 PID 1) and then blocks in ``sleep 600``.  Once the spawn marker exists the test
 
 * ``timeout`` - lets the runtime's own turn timeout fire;
@@ -55,7 +55,7 @@ SPAWN = f"""#!/bin/sh
 mkdir -p {D}; pwd > {D}/ws
 setsid sleep 300 </dev/null >/dev/null 2>&1 &
 env -i /usr/bin/setsid /bin/sleep 301 </dev/null >/dev/null 2>&1 &
-( setsid sh "$PWD/leak_writer.sh" "$PWD" </dev/null >/dev/null 2>&1 & )
+( setsid sh "$PWD/tick.sh" "$PWD" </dev/null >/dev/null 2>&1 & )
 touch {D}/spawned
 echo spawned
 sleep 600
@@ -64,11 +64,20 @@ WRITER = 'while :; do date >> "$1/leak.txt"; sleep 1; done\n'
 PROMPT = ("Run exactly this one shell command in the current directory and wait for it to finish: "
           "`sh spawn.sh` . It is a long-running integration probe; do not stop it, do not run anything else, "
           "do not edit any file.")
+# Qwen Code + glm-5.3: the open-ended PROMPT above (plus a workspace file named
+# ``leak_writer.sh``) made the model reason for 3-7 min (~23k chars: tool
+# timeouts, "do not run anything else", whether to read the scripts first)
+# before its first tool call.  A literal tool call with neutral file names
+# reaches the spawn in seconds; nothing about containment changes.
+FAST_PROMPT = ("Call run_shell_command exactly once, immediately, with command `sh spawn.sh` and timeout "
+               "600000 (foreground). Do not read or inspect any file first. The script prints 'spawned' and "
+               "then keeps running for minutes; that is expected, just wait. Afterwards reply 'done'.")
+PROMPTS = {"qwen": FAST_PROMPT}
 CHECK = f"""sleep 3
 ws=$(cat {D}/ws 2>/dev/null)
 s1=$(stat -c %s "$ws/leak.txt" 2>/dev/null || echo 0); sleep 5; s2=$(stat -c %s "$ws/leak.txt" 2>/dev/null || echo 0)
 echo "LEAK $s1 $s2"
-ps -eo pid=,args= | grep -E '[s]leep (300|301|600)|[l]eak_writer' || true
+ps -eo pid=,args= | grep -E '[s]leep (300|301|600)|[t]ick[.]sh' || true
 echo "CGROUPS $(find /sys/fs/cgroup/sdf-turns -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
 """
 
@@ -94,7 +103,7 @@ def _kill_agent_script(kind: str) -> str:
     # its session (not the probe's own shell / sleeps).
     return ("for f in /tmp/sdf-turns/*/sid; do s=$(cat $f); "
             "for p in $(ps -eo pid=,sid=,args= | awk -v s=$s '$2==s' "
-            "| grep -vE '^ *[0-9]+ +[0-9]+ +((/bin/)?sleep [0-9]+|sh [^ ]*leak_writer[.]sh.*|sh spawn[.]sh)$' "
+            "| grep -vE '^ *[0-9]+ +[0-9]+ +((/bin/)?sleep [0-9]+|sh [^ ]*tick[.]sh.*|sh spawn[.]sh)$' "
             "| awk '{print $1}'); do sudo kill -9 $p; done; done; echo KILLED")
 
 
@@ -116,8 +125,7 @@ def test_live_turn_leftovers_do_not_survive(kind, scenario, tmp_path, monkeypatc
     real_close = transport.close
     closes: list[str] = []
     transport.close = lambda timeout_ms=30_000: closes.append("deferred")  # type: ignore[method-assign]
-    slow = kind == "qwen"  # Qwen Code takes minutes to reach its first tool call
-    turn_s = (360 if slow else 75) if scenario == "timeout" else (600 if slow else 400)
+    turn_s = 75 if scenario == "timeout" else 400
     if kind == "opencode":
         runtime: Any = OpenCodeHeadlessRuntime(transport=transport, turn_timeout_s=turn_s)
     elif headless:
@@ -130,7 +138,7 @@ def test_live_turn_leftovers_do_not_survive(kind, scenario, tmp_path, monkeypatc
     fixture = tmp_path / "ws"
     fixture.mkdir()
     (fixture / "spawn.sh").write_text(SPAWN)
-    (fixture / "leak_writer.sh").write_text(WRITER)
+    (fixture / "tick.sh").write_text(WRITER)
     report: dict[str, Any] = {"kind": kind, "scenario": scenario}
     t0 = time.monotonic()
     box = None
@@ -143,13 +151,13 @@ def test_live_turn_leftovers_do_not_survive(kind, scenario, tmp_path, monkeypatc
 
         def run_turn():
             try:
-                result["status"] = runtime.send(session, PROMPT).status.value
+                result["status"] = runtime.send(session, PROMPTS.get(kind, PROMPT)).status.value
             except Exception as exc:  # noqa: BLE001
                 result["error"] = f"{type(exc).__name__}: {str(exc)[-300:]}"
 
         th = threading.Thread(target=run_turn, daemon=True)
         th.start()
-        deadline = time.monotonic() + (420 if slow else 240)
+        deadline = time.monotonic() + 240
         spawned = False
         while time.monotonic() < deadline and th.is_alive():
             if box.commands.run(f"test -f {D}/spawned && echo yes || true", timeout=20).stdout.strip() == "yes":
