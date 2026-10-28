@@ -23,7 +23,8 @@ Hardening (verified against 0.86.2 with a local mock endpoint):
   input history go to ``/tmp``; ``--no-gitignore`` keeps ``.gitignore`` intact.
 * Every ``AIDER_*``, ``OPENAI_*`` and ``LITELLM_*`` variable is unset per turn.
 * ``--chat-mode ask --no-suggest-shell-commands`` (no edits, no shell) unless
-  the fresh production E2B claim (ADR-0008) succeeded, then ``code`` mode.
+  the fresh production E2B claim (ADR-0008) succeeded; then the model's default
+  edit format with ``--yes-always`` (edits and suggested shell commands run).
 * Aider prints token counts per exchange; it does not report the served model.
 """
 
@@ -121,9 +122,9 @@ class AiderHeadlessRuntime(HeadlessAgentRuntime):
             "--chat-history-file", f"{base}.chat.md", "--input-history-file", f"{base}.input",
             "--restore-chat-history" if binding.turns else "--no-restore-chat-history",
         ]
-        if binding.auto:
-            argv += ["--chat-mode", "code"]
-        else:
+        if not binding.auto:
+            # Write mode keeps the model's default edit format (``--chat-mode``
+            # is an alias of ``--edit-format``; there is no "code" choice).
             argv += ["--chat-mode", "ask", "--no-suggest-shell-commands"]
         return argv
 

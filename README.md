@@ -56,6 +56,13 @@ Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 
+Qwen Code (`qwen`, `0.26.2`), Goose (`goose`, `1.56.0`) and Aider (`aider`,
+`0.86.2`) are further headless kinds for any OpenAI-compatible endpoint (same
+Vultr defaults; keys `SDF_QWEN_API_KEY`, `SDF_GOOSE_API_KEY`,
+`SDF_AIDER_API_KEY` or a name in `SDF_<AGENT>_API_KEY_ENV`). They refuse
+workspaces carrying their project config and run read-only outside a fresh E2B
+sandbox ([ADR 0013](docs/adr/0013-openai-compatible-headless-agent-kinds.md)).
+
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 

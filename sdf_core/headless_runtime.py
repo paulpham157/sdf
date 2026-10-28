@@ -196,16 +196,18 @@ def build_wrapper(
     return "".join(parts)
 
 
-def split_exit(raw: str, marker: str) -> tuple[str, int | None]:
+def split_exit(raw: str, marker: str) -> tuple[str, int | None, str]:
+    """``(stdout body, exit code, stderr tail printed after the marker)``."""
+
     lines = raw.splitlines()
     for index in range(len(lines) - 1, -1, -1):
         if lines[index].startswith(marker):
             try:
                 rc = int(lines[index][len(marker):].strip())
             except ValueError:
-                return raw, None
-            return "\n".join(lines[:index]), rc
-    return raw, None
+                return raw, None, ""
+            return "\n".join(lines[:index]), rc, "\n".join(lines[index + 1:]).strip()
+    return raw, None, ""
 
 
 def as_int(value: Any) -> int:
@@ -377,7 +379,7 @@ class HeadlessAgentRuntime:
         # The transport watchdog sits after the agent's own timeout + kill grace.
         budget_ms = (self._turn_timeout_s + KILL_AFTER_S + 20) * 1000
         raw = self._transport.exec_argv(argv, budget_ms)
-        body, rc = split_exit(raw, self.marker())
+        body, rc, stderr_tail = split_exit(raw, self.marker())
         result = self.parse_turn(binding, body) if rc not in _SETUP_EXITS else TurnResult(())
         if rc is not None and rc not in _SETUP_EXITS:
             binding.turns += 1
@@ -401,7 +403,8 @@ class HeadlessAgentRuntime:
             raise self.ERROR(f"no {label} key: the seeded key variable is missing or empty in the sandbox")
         if rc is None:
             raise self.ERROR(f"{label} turn ended without an exit marker")
-        detail = "; ".join(result.errors) or (result.lines[-1] if result.lines else "")
+        detail = "; ".join((*result.errors, stderr_tail[-600:]) if stderr_tail else result.errors)
+        detail = detail or (result.lines[-1] if result.lines else "")
         raise self.ERROR(f"{label} run failed (exit {rc}): {detail[-1000:]}")
 
     def stream(self, session_id: str) -> tuple[str, ...]:

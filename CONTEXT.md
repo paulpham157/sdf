@@ -97,11 +97,11 @@ The per-agent-kind base URL, key variable name and model(s) an `api-key` Agent C
 _Avoid_: hard-coded provider, plaintext key
 
 **Project Agent Config**:
-Agent configuration an Attempt workspace carries (`.claude/`, `.codex/config.toml`, `opencode.json`, `.opencode/`, `.pi/`); untrusted, so it is ignored (Claude, OpenCode), outranked by pinned invocation overrides (Codex approval/sandbox policy) or the workspace is refused (Pi).
+Agent configuration an Attempt workspace carries (`.claude/`, `.codex/config.toml`, `opencode.json`, `.opencode/`, `.pi/`, `.qwen/`, `.goose/`, `.aider*`, `.env`); untrusted, so it is ignored (Claude, OpenCode), outranked by pinned invocation overrides (Codex approval/sandbox policy) or the workspace is refused (Pi, Qwen Code, Goose, Aider).
 _Avoid_: repo settings, trusted config
 
 **Headless Agent Runtime**:
-An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`, Pi `-p`), instead of driving an agent in a Herdr pane.
+An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`, Pi `-p`, Qwen Code `-o json`, Goose `run`, Aider `--message-file`), instead of driving an agent in a Herdr pane.
 _Avoid_: Herdr pane, interactive session
 
 **Tool Proxy**:

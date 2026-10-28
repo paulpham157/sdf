@@ -159,6 +159,8 @@ FAKE = textwrap.dedent('''\
         sys.exit(0)
     prompt = sys.stdin.read()
     if kind == "aider":
+        if "--chat-mode" in args and args[args.index("--chat-mode") + 1] not in ("ask", "architect", "whole", "diff"):
+            sys.stderr.write("aider: error: argument --edit-format/--chat-mode: invalid choice\\n"); sys.exit(2)
         prompt_file = open(args[args.index("--message-file") + 1]).read()
         assert prompt_file == prompt
     seen = {k: v for k, v in os.environ.items() if k.split("_")[0] in {"qwen": ("QWEN", "OPENAI", "GEMINI"),
@@ -174,7 +176,7 @@ FAKE = textwrap.dedent('''\
     if mode == "mkcfg":
         os.mkdir(os.environ["FAKE_CFG"])
     write = ("--approval-mode" in args and args[args.index("--approval-mode") + 1] == "yolo") or \\
-            os.environ.get("GOOSE_MODE") == "auto" or ("--chat-mode" in args and args[args.index("--chat-mode") + 1] == "code")
+            os.environ.get("GOOSE_MODE") == "auto" or (kind == "aider" and "--chat-mode" not in args)
     if write:
         open("calc.py", "w").write("def add(a, b):\\n    return a + b\\n")
     if kind == "aider":
@@ -356,7 +358,7 @@ def test_write_mode_only_with_the_fresh_e2b_claim(local, monkeypatch):
         assert call["env"]["GOOSE_MODE"] == "auto"
         assert args[args.index("--with-builtin") + 1] == "developer" and "other-1" in args
     else:
-        assert args[args.index("--chat-mode") + 1] == "code" and "openai/other-1" in args
+        assert "--chat-mode" not in args and "--no-suggest-shell-commands" not in args and "openai/other-1" in args
     runtime.collect_workspace("ATTEMPT-2", workspace)
     assert "a + b" in (workspace / "calc.py").read_text()
 
@@ -464,7 +466,7 @@ def test_failed_turn_raises_with_stderr_tail(local):
     runtime = cls(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-9", workspace)
     session = runtime.start(attempt_id="ATTEMPT-9", agent=kind)
-    with pytest.raises(RUNTIMES[kind][1], match=r"exit 3\)"):
+    with pytest.raises(RUNTIMES[kind][1], match=r"exit 3\): .*provider exploded"):
         runtime.send(session.session_id, "fix")
 
 

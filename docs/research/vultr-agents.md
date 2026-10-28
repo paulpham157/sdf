@@ -1,7 +1,7 @@
-# Codex, Claude Code and Pi on Vultr Serverless Inference (glm-5.3)
+# Codex, Claude Code, Pi, Qwen Code, Goose and Aider on Vultr Serverless Inference (glm-5.3)
 
 Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
-`SDF_LIVE_VULTR_AGENTS=1|codex,claude,pi`, `E2B_API_KEY`,
+`SDF_LIVE_VULTR_AGENTS=1|codex,claude,pi,qwen,goose,aider`, `E2B_API_KEY`,
 `VULTR_INFERENCE_API_KEY`). Same endpoint and model as the OpenCode check.
 
 ## Wiring (no proxy needed)
@@ -45,3 +45,11 @@ Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
   composer and Herdr reports `agent_prompt_stalled` (reproduced with a dummy
   key; a manual Enter, or waiting about 8 s, submits it). The Herdr runtime
   now resubmits Enter for Claude as it already did for Codex.
+- Qwen Code / Goose / Aider as agent kinds (2026-10-28, runtime install on
+  the `codex` template, [ADR 0013](../adr/0013-openai-compatible-headless-agent-kinds.md)):
+  all three complete with both criteria PASS, egress locked, 0 sandboxes left.
+  Qwen 26,496 in / 371 out ($0.021, 62.1 s, served `glm-5.3`); Goose 7,515 /
+  221 ($0.0063, 34.1 s; Goose's own cost estimate $0.0115 is not
+  authoritative); Aider 785 / 65 ($0.0008, 78.2 s). Goose and Aider do not
+  report the served model. Aider 0.86.2 rejects `--chat-mode code` (it aliases
+  `--edit-format`), so write mode omits the flag.
