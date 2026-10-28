@@ -255,7 +255,7 @@ FAKE_OPENCODE = textwrap.dedent('''\
             sys.exit(1)
         host, port = args[args.index("--hostname") + 1], int(args[args.index("--port") + 1])
         expected = "Basic " + base64.b64encode(("opencode:" + os.environ["OPENCODE_SERVER_PASSWORD"]).encode()).decode()
-        log({"serve": [host, port], "pid": os.getpid()})
+        log({"serve": [host, port], "pid": os.getpid(), "pwd": os.environ.get("PWD")})
         polls = [0]
         class H(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -293,7 +293,7 @@ FAKE_OPENCODE = textwrap.dedent('''\
         sys.stderr.write("server auth failed: %s\\n" % exc); sys.exit(5)
     prompt = sys.stdin.read()
     rest = args[:args.index("--server")] + args[args.index("--server") + 2:]
-    log({"cwd": os.getcwd(), "args": rest, "server": server, "prompt": prompt,
+    log({"cwd": os.getcwd(), "pwd": os.environ.get("PWD"), "args": rest, "server": server, "prompt": prompt,
          "env": {k: os.environ.get(k) for k in ENV_KEYS}})
     if mode == "fail":
         sys.stderr.write("provider exploded\\n"); sys.exit(3)
@@ -484,6 +484,20 @@ def test_turn_timeout_is_enforced_inside_the_sandbox(local, monkeypatch):
     with pytest.raises(OpenCodeRuntimeError, match="exceeded 1s"):
         runtime.send(session.session_id, "fix")
     assert runtime.status(session.session_id).status is RuntimeStatus.TERMINATED
+
+
+def test_stale_pwd_does_not_move_opencode_out_of_the_workspace(local):
+    # OpenCode 2.2.0 resolves its project directory from $PWD; in E2B that is
+    # the image WORKDIR, not the Attempt directory (observed live).
+    transport, workspace, log = local
+    transport.env["PWD"] = str(transport.root)
+    runtime = OpenCodeHeadlessRuntime(transport=transport, turn_timeout_s=20)
+    runtime.bind_workspace("ATTEMPT-P", workspace)
+    session = runtime.start(attempt_id="ATTEMPT-P", agent="opencode")
+    runtime.send(session.session_id, "fix")
+    serve, call = _calls(log)[:2]
+    remote = str(transport.root / "remote" / "ATTEMPT-P")
+    assert serve["pwd"] == remote and call["pwd"] == remote == call["cwd"]
 
 
 def test_server_that_never_starts_is_reported(local, monkeypatch):

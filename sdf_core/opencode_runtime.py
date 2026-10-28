@@ -88,6 +88,9 @@ try:
     os.chdir(wd)
 except OSError:
     done(97); sys.exit(0)
+# OpenCode 2 takes its project directory from $PWD, not the process cwd: a
+# stale PWD (the image WORKDIR) would point the agent at the wrong folder.
+os.environ["PWD"] = os.getcwd()
 pw = secrets.token_hex(24)
 s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
 url = "http://127.0.0.1:%d" % port
