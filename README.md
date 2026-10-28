@@ -58,6 +58,11 @@ Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 
+Every agent turn runs in its own process session and cgroup v2 leaf; leftovers
+(detached, double-forked or reparented to PID 1) are killed (TERM, then KILL)
+when the turn ends, times out, or is cancelled
+([ADR 0019](docs/adr/0019-per-turn-process-containment.md)).
+
 Qwen Code (`qwen`, `0.26.2`) and Goose (`goose`, `1.56.0`) are further
 headless kinds for any OpenAI-compatible endpoint (same Vultr defaults; keys
 `SDF_QWEN_API_KEY`, `SDF_GOOSE_API_KEY` or a name in `SDF_<AGENT>_API_KEY_ENV`).

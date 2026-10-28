@@ -164,3 +164,5 @@ Same criteria, all PASS:
 Qwen Code 0.26.2 and Goose 1.56.0 are still the latest stable releases; their
 pins are unchanged and were re-verified with the rest of the agent upgrade
 ([ADR 0018](0018-opencode-2-and-pi-1-upgrade.md)).
+
+> Cancel/cleanup superseded by [ADR 0019](0019-per-turn-process-containment.md): `pkill` patterns were replaced by per-turn containment.

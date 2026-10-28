@@ -124,3 +124,5 @@ template README has the per-kind numbers. Staging found one OpenCode 2
 regression the stubs missed: OpenCode resolves its project directory from
 `$PWD`, not the process cwd. The turn driver now sets `PWD` to the Attempt
 directory, and a unit test covers a stale `PWD`.
+
+> Cancel/cleanup superseded by [ADR 0019](0019-per-turn-process-containment.md): `pkill` patterns were replaced by per-turn containment.

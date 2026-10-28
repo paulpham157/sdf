@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
 from .herdr_runtime import HerdrRuntimeError, HerdrUnsupportedOperation, _claim_fresh_e2b_permission_bypass
+from .turn_guard import GRACE_S, guard_argv, kill_argv
 from .runtime import CredentialMetadata, RuntimeSession, RuntimeStatus
 
 # Pinned to the npm ``latest`` release of ``@earendil-works/pi-coding-agent``
@@ -499,6 +500,11 @@ class PiHeadlessRuntime:
             f"{base}.jsonl", f"{base}.err", f"{base}/sessions", self._model or "", input_text, *argv,
         ]
 
+    def _next_turn_id(self, session_id: str) -> str:
+        with self._lock:
+            self._turn_seq = getattr(self, "_turn_seq", 0) + 1
+            return f"{session_id}-t{self._turn_seq}"
+
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
         binding, current = self._known(session_id)
         if current.status in (RuntimeStatus.CANCELLED, RuntimeStatus.TERMINATED):
@@ -507,7 +513,8 @@ class PiHeadlessRuntime:
         self._set(session_id, RuntimeStatus.RUNNING, current.output)
         # The transport watchdog sits after Pi's own timeout + kill grace.
         budget_ms = (self._turn_timeout_s + _KILL_AFTER_S + 20) * 1000
-        raw = self._transport.exec_argv(argv, budget_ms)
+        # ADR-0019: own session/cgroup per turn; the guard sweeps leftovers.
+        raw = self._transport.exec_argv(guard_argv(self._next_turn_id(session_id), argv), budget_ms + GRACE_S * 4000)
         body, rc = _split_exit(raw)
         lines, usage, errors = parse_events(body)
         binding.usage.merge(usage)
@@ -539,9 +546,11 @@ class PiHeadlessRuntime:
     def cancel(self, session_id: str) -> RuntimeSession:
         _, current = self._known(session_id)
         if not self._closed:
-            # ``[p]`` keeps pkill from matching (and killing) its own ``sh -c``.
+            # ADR-0019: Pi retitles itself ``pi``, so a ``pkill -f`` pattern only
+            # ever matched the ``timeout`` wrapper.  Kill the turns' whole
+            # session/cgroup/tagged set instead (TERM, grace, KILL).
             try:
-                self._transport.exec_argv(["sh", "-c", "pkill -f '[p]i -p --mode json' || true"], self._control_timeout_ms)
+                self._transport.exec_argv(kill_argv(f"{session_id}-t"), self._control_timeout_ms)
             finally:
                 # Sandbox destruction is the descendant-cleanup boundary.
                 self._close_environment()

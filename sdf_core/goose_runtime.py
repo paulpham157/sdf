@@ -124,7 +124,6 @@ class GooseHeadlessRuntime(HeadlessAgentRuntime):
     ERROR = GooseRuntimeError
     WRAPPER = _WRAPPER
     PROJECT_CONFIG_ENTRIES = PROJECT_CONFIG_ENTRIES
-    CANCEL_PATTERN = "[g]oose run -i -"
 
     def agent_argv(self, binding: HeadlessBinding, prompt_file: str) -> list[str]:
         argv = ["env", f"GOOSE_MODE={'auto' if binding.auto else 'chat'}", self._binary, "run", "-i", "-",
