@@ -220,4 +220,6 @@ run whatever those names resolve to on `PATH`, which a previous write turn
 could have changed under `$HOME`. Read-only turns still load pi-steering alone.
 
 `pi-fabric` stays the only rejected package. Live results and the image-size
-delta are under Verification in the template README.
+delta are in the template README's "Current build" (public build
+`45ba7067-6549-48e3-8510-b69caeef0333`, `diskSizeMB` 14400, +103 MB;
+`/opt/sdf-pi-extensions` 105 MiB, was 5.2 MiB).
