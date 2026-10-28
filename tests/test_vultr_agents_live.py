@@ -185,12 +185,16 @@ class BootstrapFactory:
         self.agent = agent
         self.versions = ""
         self.timings: dict[str, float] = {}
+        self.created: list[str] = []  # every sandbox this factory started
 
     def __call__(self, *, template: str, timeout: int, envs: dict[str, str], network: Any = None, **opts: Any):
         from e2b import Sandbox
 
         started = time.monotonic()
+        # Tag the sandbox so a leftover can be traced to this test run.
+        opts["metadata"] = {**(opts.get("metadata") or {}), "sdf_live_test": f"vultr-{self.agent}-{os.getpid()}"}
         sandbox = Sandbox.create(template=BASE_TEMPLATE, timeout=timeout, envs=envs, **opts)
+        self.created.append(sandbox.sandbox_id)
         try:
             self.versions = sandbox.commands.run(_bootstrap_script(self.agent), timeout=420).stdout.strip()
             if not PREBUILT_TEMPLATE or sandbox.commands.run(
@@ -290,7 +294,6 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
     network = {"allow_out": [INFERENCE_HOST], "deny_out": ["0.0.0.0/0"]}
     secrets = {name: ENV[name] for name in ("E2B_API_KEY", KEY_VAR)}
-    before = _running_ids()
     environ = {"E2B_API_KEY": ENV["E2B_API_KEY"], KEY_VAR: ENV[KEY_VAR]}
     injection = None
     if agent == "codex":
@@ -392,9 +395,11 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         sandbox_alive_s = elapsed
         transport.close()
         deadline = time.monotonic() + 30
-        while (_running_ids() - before) and time.monotonic() < deadline:
+        # Only this test's own sandboxes count: other runs on the same E2B
+        # account (parallel live tests) may start sandboxes meanwhile.
+        while ((set(created) | set(factory.created)) & _running_ids()) and time.monotonic() < deadline:
             time.sleep(1)
-        leftover = sorted(_running_ids() - before)
+        leftover = sorted((set(created) | set(factory.created)) & _running_ids())
 
     evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all() if attempt else []
     relations = {edge.relation for edge in db.query(DecisionEdgeRow).filter_by(target_id="ASSUMPTION-CALC")}

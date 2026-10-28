@@ -90,7 +90,6 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
             environ[name] = ENV[name]
     inference_host = urlsplit(environ.get("SDF_OPENCODE_BASE_URL", DEFAULT_OPENCODE_BASE_URL)).hostname
     secrets = {name: environ[name] for name in ("E2B_API_KEY", KEY_VAR)}
-    before = _running_ids()
 
     transport, injection = create_credentialed_transport(
         agents=("opencode",), environ=environ, template=TEMPLATE, timeout_seconds=900,
@@ -156,9 +155,11 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
         transport.close()  # idempotent; the runtime already closed it on success
         elapsed = round(time.monotonic() - started, 1)
         deadline = time.monotonic() + 30
-        while (_running_ids() - before) and time.monotonic() < deadline:
+        # Only this test's own sandboxes count: other runs on the same E2B
+        # account (parallel live tests) may start sandboxes meanwhile.
+        while (set(created) & _running_ids()) and time.monotonic() < deadline:
             time.sleep(1)
-        leftover = sorted(_running_ids() - before)
+        leftover = sorted(set(created) & _running_ids())
 
     session_id = next(iter(runtime._bindings))
     evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
