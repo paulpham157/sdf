@@ -35,7 +35,7 @@ def plan_dict(fixture: Path, plan_id: str | None = None) -> dict[str, Any]:
     return {
         **({"id": plan_id} if plan_id else {}),
         "title": "Fix add and implement mul",
-        "proposed_by": "hung",
+        "proposed_by": "planner",
         "fixture_dir": str(fixture),
         "subtasks": [
             {"key": "add", "title": "Fix add in calc.py",

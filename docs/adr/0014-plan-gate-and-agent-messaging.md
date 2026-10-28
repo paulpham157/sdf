@@ -1,6 +1,6 @@
 # Human-approved plans gate multi-agent runs; agents talk through an SDF message hub
 
-Status: accepted
+Status: accepted (HTTP identity superseded by ADR 0015)
 
 SDF can now run one lead agent and N worker agents on an approved plan, one
 disposable sandbox per agent, with agents talking to each other only through
@@ -105,9 +105,9 @@ for tests; otherwise 503).
   agents already had.
 - Agents are bound to their subtask by the host, not by what they say; agent
   text is labelled untrusted in every inbox read.
-- The HTTP API is unauthenticated (as before): `decided_by`/`resolved_by` are
-  self-asserted human names. Bind it to 127.0.0.1 and front it with auth before
-  exposing it.
+- ~~The HTTP API is unauthenticated: `decided_by`/`resolved_by` are
+  self-asserted human names.~~ Superseded by ADR 0015: the API requires bearer
+  tokens and the decider is the authenticated principal.
 
 ## Consequences / limits
 

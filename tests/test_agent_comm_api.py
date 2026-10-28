@@ -5,13 +5,14 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi.testclient import TestClient
-
 from sdf_core.api import app
 from sdf_core.plans import task_id_for
 from tests.agent_comm_support import fake_factory, lead_behavior, make_fixture, plan_dict, worker_behavior
+from tests.auth_support import client_as
 
-client = TestClient(app)
+# ADR 0015: the operator proposes and runs; a different human approves.
+client = client_as("operator", principal="planner")
+approver = client_as("approver", principal="hung")
 
 
 @pytest.fixture()
@@ -45,13 +46,15 @@ def test_plan_gate_and_lead_worker_run_over_http(tmp_path, fake_agents):
     task_run = client.post(f"/tasks/{task_id_for(plan_id, 'add')}/run",
                            json={"fixture_dir": str(tmp_path / "toy"), "instructions": "bypass"})
     assert task_run.status_code == 409
-    assert client.post(f"/plans/{plan_id}/approve", json={"decided_by": "lead"}).status_code == 409
-    assert client.post(f"/plans/{plan_id}/approve", json={"decided_by": "hung",
-                                                          "expected_sha256": "f" * 64}).status_code == 409
-    approved = client.post(f"/plans/{plan_id}/approve", json={
-        "decided_by": "hung", "rationale": "small, testable", "expected_sha256": body["content_sha256"]})
+    assert body["proposed_by"] == "planner"
+    # An operator cannot approve, whatever name it claims.
+    assert client.post(f"/plans/{plan_id}/approve", json={"decided_by": "hung"}).status_code == 403
+    assert approver.post(f"/plans/{plan_id}/approve", json={"expected_sha256": "f" * 64}).status_code == 409
+    approved = approver.post(f"/plans/{plan_id}/approve", json={
+        "decided_by": "lead", "rationale": "small, testable", "expected_sha256": body["content_sha256"]})
     assert approved.status_code == 200 and approved.json()["status"] == "approved"
-    assert client.post(f"/plans/{plan_id}/reject", json={"decided_by": "hung"}).status_code == 409
+    assert approved.json()["decision_request"]["resolved_by"] == "hung"  # spoofed decided_by ignored
+    assert approver.post(f"/plans/{plan_id}/reject", json={}).status_code == 409
 
     started = client.post(f"/plans/{plan_id}/runs", json={"config": FAST, "wait": True})
     assert started.status_code == 202, started.text
@@ -69,19 +72,20 @@ def test_plan_gate_and_lead_worker_run_over_http(tmp_path, fake_agents):
     assert len(pending) == 1 and pending[0]["requested_by"] == "worker-2"
     rid = pending[0]["id"]
     assert client.post(f"/decision-requests/{rid}/resolve",
-                       json={"outcome": "approved", "resolved_by": "worker-1"}).status_code == 409
-    resolved = client.post(f"/decision-requests/{rid}/resolve",
-                           json={"outcome": "rejected", "resolved_by": "hung", "resolution": "keep it minimal"})
+                       json={"outcome": "approved", "resolved_by": "hung"}).status_code == 403
+    resolved = approver.post(f"/decision-requests/{rid}/resolve",
+                             json={"outcome": "rejected", "resolved_by": "worker-1", "resolution": "keep it minimal"})
     assert resolved.status_code == 200 and resolved.json()["resolver_kind"] == "human"
-    assert client.post(f"/decision-requests/{rid}/resolve",
-                       json={"outcome": "approved", "resolved_by": "hung"}).status_code == 409
+    assert resolved.json()["resolved_by"] == "hung"
+    assert approver.post(f"/decision-requests/{rid}/resolve", json={"outcome": "approved"}).status_code == 409
+    assert run["started_by"] == "planner"
 
 
 def test_run_endpoint_without_factory_is_503_and_bad_config_422(tmp_path, monkeypatch):
     monkeypatch.delenv("SDF_AGENT_SANDBOX", raising=False)
     plan_id = f"PLAN-API-{uuid.uuid4().hex[:8]}"
     body = client.post("/plans", json=plan_dict(make_fixture(tmp_path), plan_id)).json()
-    client.post(f"/plans/{plan_id}/approve", json={"decided_by": "hung", "expected_sha256": body["content_sha256"]})
+    approver.post(f"/plans/{plan_id}/approve", json={"expected_sha256": body["content_sha256"]})
     assert client.post(f"/plans/{plan_id}/runs", json={"config": {"max_cost_usd": 99}}).status_code == 422
     assert client.post(f"/plans/{plan_id}/runs", json={}).status_code == 503
 

@@ -196,7 +196,8 @@ class Coordinator:
         self.log = log or (lambda _msg: None)
 
     # -- run creation (the gate) --------------------------------------------
-    def create_run(self, plan_id: str, config: RunConfig | None = None) -> AgentRunRow:
+    def create_run(self, plan_id: str, config: RunConfig | None = None, *,
+                   started_by: str | None = None) -> AgentRunRow:
         config = config or RunConfig()
         plan = self.db.get(PlanRow, plan_id)
         if plan is None:
@@ -210,7 +211,7 @@ class Coordinator:
                                                    TaskState.INCONCLUSIVE.value):
                 raise PlanGateError(f"subtask {sub['key']} is not runnable (status {task.status if task else None})")
         run = AgentRunRow(id=f"RUN-{uuid4().hex[:10]}", plan_id=plan_id, status="running",
-                          config=config.as_dict(), started_at=utcnow(), cost_usd=0.0)
+                          config=config.as_dict(), started_at=utcnow(), cost_usd=0.0, started_by=started_by)
         self.db.add(run)
         self.db.flush()
         self.db.add(AgentRunMemberRow(run_id=run.id, agent_id="lead-1", role="lead", agent_kind=config.lead.kind,

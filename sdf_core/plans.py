@@ -92,7 +92,8 @@ class PlanSpec(BaseModel):
     id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     title: str = Field(min_length=1, max_length=500)
     objective_id: str | None = None
-    proposed_by: str = Field(min_length=1, max_length=120)
+    # Over HTTP this is always replaced by the authenticated principal (ADR 0015).
+    proposed_by: str = Field(default="", max_length=120)
     fixture_dir: str = Field(min_length=1, max_length=1000)
     subtasks: list[SubtaskSpec] = Field(min_length=1, max_length=8)
 
@@ -112,6 +113,10 @@ def task_id_for(plan_id: str, key: str) -> str:
     return f"{plan_id}--{key}"
 
 
+class SeparationOfDutiesError(PlanGateError):
+    """The principal who proposed a plan tried to approve it (ADR 0015)."""
+
+
 def validate_human(actor: str) -> str:
     actor = (actor or "").strip()
     if not _ACTOR.fullmatch(actor) or _RESERVED_ACTORS.fullmatch(actor):
@@ -127,6 +132,8 @@ def _edge(db: Session, src: tuple[str, str], dst: tuple[str, str], relation: str
 
 
 def propose_plan(db: Session, spec: PlanSpec) -> PlanRow:
+    if not _ACTOR.fullmatch(spec.proposed_by or ""):
+        raise ValueError("a plan needs a proposer (proposed_by)")
     plan_id = spec.id or f"PLAN-{uuid4().hex[:12]}"
     if db.get(PlanRow, plan_id) or db.get(GraphNodeRow, plan_id):
         raise ValueError(f"plan already exists: {plan_id}")
@@ -188,9 +195,13 @@ def _decision_node(db: Session, request: DecisionRequestRow, title: str, metadat
 
 def decide_plan(
     db: Session, plan_id: str, *, approve: bool, decided_by: str, rationale: str = "",
-    expected_sha256: str | None = None,
+    expected_sha256: str | None = None, allow_self_approval: bool = False,
+    principal: dict[str, Any] | None = None,
 ) -> PlanRow:
-    """Resolve a plan-approval request.  Only a named human can do this."""
+    """Resolve a plan-approval request.  Only a named human can do this, and
+    not the one who proposed the plan unless single-user mode allows it
+    (``allow_self_approval``; rejecting your own plan is always allowed).
+    ``principal`` is the authenticated identity recorded on the Decision."""
 
     actor = validate_human(decided_by)
     plan = db.get(PlanRow, plan_id)
@@ -198,6 +209,11 @@ def decide_plan(
         raise LookupError("plan not found")
     if plan.status != "proposed":
         raise PlanGateError(f"plan {plan_id} is already {plan.status}")
+    self_decision = actor.casefold() == (plan.proposed_by or "").casefold()
+    if approve and self_decision and not allow_self_approval:
+        raise SeparationOfDutiesError(
+            f"separation of duties: {actor} proposed plan {plan_id} and cannot approve it "
+            "(another approver must, or enable SDF_AUTH_SINGLE_USER for a solo deployment)")
     if expected_sha256 is not None and expected_sha256 != plan.content_sha256:
         raise PlanGateError("plan content changed since it was reviewed (content_sha256 mismatch)")
     if content_hash(plan.content) != plan.content_sha256:
@@ -214,7 +230,9 @@ def decide_plan(
     node_id = _decision_node(
         db, request, f"{'Approve' if approve else 'Reject'} plan {plan_id}",
         {"decision_request_id": request.id, "plan_id": plan_id, "content_sha256": plan.content_sha256,
-         "outcome": request.status, "rationale": rationale[:2000]},
+         "outcome": request.status, "rationale": rationale[:2000], "proposed_by": plan.proposed_by,
+         "decided_by": actor, "principal": principal or {"name": actor, "method": "in_process"},
+         "self_approval": bool(approve and self_decision)},
     )
     _edge(db, ("decision", node_id), ("plan", plan_id), "constrains" if approve else "contradicts", "plans")
     plan.status = "approved" if approve else "rejected"
@@ -292,7 +310,7 @@ class RuleDecisionPolicy:
 
 def resolve_request(
     db: Session, request_id: str, *, outcome: Outcome, resolved_by: str, resolver_kind: Literal["human", "policy"],
-    resolution: str = "",
+    resolution: str = "", allow_self_approval: bool = False, principal: dict[str, Any] | None = None,
 ) -> DecisionRequestRow:
     request = db.get(DecisionRequestRow, request_id)
     if request is None:
@@ -301,7 +319,7 @@ def resolve_request(
         if resolver_kind != "human" or outcome == "answered":
             raise PlanGateError("only a human approves or rejects a plan")
         decide_plan(db, request.subject_id, approve=outcome == "approved", decided_by=resolved_by,
-                    rationale=resolution)
+                    rationale=resolution, allow_self_approval=allow_self_approval, principal=principal)
         return request
     if request.status != "pending":
         raise PlanGateError("decision request is already resolved")
@@ -325,7 +343,8 @@ def resolve_request(
     _decision_node(
         db, request, f"{outcome}: {request.question[:400]}",
         {"decision_request_id": request.id, "run_id": request.run_id, "requested_by": request.requested_by,
-         "outcome": outcome, "resolver_kind": resolver_kind},
+         "outcome": outcome, "resolver_kind": resolver_kind, "resolved_by": actor,
+         "principal": principal or {"name": actor, "method": "in_process" if resolver_kind == "human" else "policy"}},
     )
     db.flush()
     return request

@@ -17,7 +17,7 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync --all-groups
 uv run pytest
-uv run uvicorn sdf_core.api:app --reload
+SDF_AUTH_DEV_INSECURE=1 uv run uvicorn sdf_core.api:app --reload --host 127.0.0.1
 ```
 
 The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL:
@@ -25,7 +25,7 @@ The API starts with an in-memory SQLite database for local development. For a pe
 ```bash
 export SDF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/sdf_core'
 uv run alembic upgrade head
-uv run uvicorn sdf_core.api:app
+uv run uvicorn sdf_core.api:app --host 127.0.0.1
 ```
 
 For the live E2B/Herdr path, copy `.env.example` to `.env` and provide the
@@ -64,8 +64,34 @@ each on Vultr `glm-5.3`, with `SDF_AGENT_SANDBOX=e2b`. Agents talk only through
 the host's append-only message hub with the in-sandbox `sdf-msg` CLI / MCP
 server; a worker's "done" is a claim, and the run succeeds only when the host's
 own checks give PASS Evidence for every subtask. Agent questions wait in
-`GET /decision-requests` for `POST /decision-requests/{id}/resolve`. The API has
-no auth: run it on `127.0.0.1` only.
+`GET /decision-requests` for `POST /decision-requests/{id}/resolve`.
+
+### API authentication ([ADR 0015](docs/adr/0015-api-authentication.md))
+
+Every route except `GET /healthz` needs `Authorization: Bearer <token>`; the
+API refuses to start without `SDF_AUTH_PEPPER` (32+ random characters, kept
+out of the database). Tokens are stored HMAC-hashed, expire (default 90 days)
+and are managed only from the CLI; the plaintext is printed once:
+
+```bash
+uv run python -m sdf_core.auth_cli create --principal hung --role operator --role approver
+uv run python -m sdf_core.auth_cli list
+uv run python -m sdf_core.auth_cli revoke <token-id>
+```
+
+Roles: `viewer` (read), `operator` (create tasks/plans, start/cancel runs),
+`approver` (approve/reject plans, resolve decision requests), `admin`. The
+proposer, approver and run starter recorded in the Decision Graph are always
+the token's principal, never a request field. Nobody approves their own plan
+unless `SDF_AUTH_SINGLE_USER=1` (solo deployments; recorded as
+`self_approval`). Agent/sandbox names and `service` tokens can never approve.
+For local hacking only, `SDF_AUTH_DEV_INSECURE=1` serves header-less requests
+as admin `local-dev` from loopback only. Always bind to loopback unless a TLS
+reverse proxy sits in front:
+
+```bash
+uv run uvicorn sdf_core.api:app --host 127.0.0.1
+```
 
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.

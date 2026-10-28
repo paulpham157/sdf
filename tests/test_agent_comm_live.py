@@ -28,6 +28,7 @@ from sdf_core.agent_sandbox import agent_environ, describe_env, e2b_factory, run
 from sdf_core.api import app
 from sdf_core.credentials import load_dotenv
 from tests.agent_comm_support import make_fixture, plan_dict
+from tests.auth_support import client_as
 
 ENV = dict(os.environ)
 load_dotenv(environ=ENV)
@@ -55,7 +56,11 @@ def test_live_plan_gate_lead_and_two_workers(tmp_path, monkeypatch):
 
     app.state.agent_sandbox_factory = e2b_factory(env)
     app.state.agent_cleanup_check = check
-    client = TestClient(app)
+    # ADR 0015: ephemeral tokens in the test DB - an operator proposes and
+    # runs, a different human approver approves; agents get no token.
+    client = client_as("operator", principal="live-operator")
+    approver = client_as("approver", principal="hung")
+    assert TestClient(app).post("/plans", json={}).status_code == 401
     report: dict = {"lead_kind": LEAD_KIND, "worker_kind": WORKER_KIND, "steps": []}
     t0 = time.monotonic()
     try:
@@ -65,15 +70,17 @@ def test_live_plan_gate_lead_and_two_workers(tmp_path, monkeypatch):
         report["steps"].append({"propose": proposed.status_code, "plan_sha256": proposed.json()["content_sha256"]})
 
         config = {"lead": {"kind": LEAD_KIND}, "worker": {"kind": WORKER_KIND}, "evidence_mode": "live",
-                  "max_cost_usd": 0.75, "max_wall_s": 1200}
+                  "max_cost_usd": 0.19, "max_wall_s": 1200}
         early = client.post(f"/plans/{plan_id}/runs", json={"config": config, "wait": True})
         report["steps"].append({"start_before_approval": early.status_code, "detail": early.json()["detail"]})
         assert early.status_code == 409
 
-        approved = client.post(f"/plans/{plan_id}/approve", json={
-            "decided_by": "hung", "rationale": "live E2E: toy subtasks with host checks",
+        assert client.post(f"/plans/{plan_id}/approve", json={}).status_code == 403
+        approved = approver.post(f"/plans/{plan_id}/approve", json={
+            "decided_by": "spoofed-name", "rationale": "live E2E: toy subtasks with host checks",
             "expected_sha256": proposed.json()["content_sha256"]})
         assert approved.status_code == 200, approved.text
+        assert approved.json()["decision_request"]["resolved_by"] == "hung"
         report["steps"].append({"approve": approved.status_code,
                                 "decision_request": approved.json()["decision_request"]})
 
@@ -99,6 +106,7 @@ def test_live_plan_gate_lead_and_two_workers(tmp_path, monkeypatch):
 
     assert report.get("run_sandboxes_still_running") == []
     assert run["status"] == "succeeded", run["error"]
+    assert run["started_by"] == "live-operator"
     for key_, sub in run["summary"]["subtasks"].items():
         assert sub["verdict"] == "PASS", key_
         assert all(e["status"] == "PASS" and e["mode"] == "live" for e in sub["attempts"][-1]["evidence"])

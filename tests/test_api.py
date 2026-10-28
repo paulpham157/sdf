@@ -1,13 +1,13 @@
-from fastapi.testclient import TestClient
+from tests.auth_support import admin_client
 from datetime import datetime, timezone
 
-from sdf_core.api import app, configured_containment, configured_tool_policy
+from sdf_core.api import configured_containment, configured_tool_policy
 from sdf_core.api import SessionLocal
 from sdf_core.db import AttemptRow, RuntimeEventRow, TaskRow
 from sdf_core.policy import ActionRequest
 
 
-client = TestClient(app)
+client = admin_client()
 
 
 def test_configured_containment_requires_explicit_smoke_promotion(monkeypatch):

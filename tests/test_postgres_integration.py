@@ -43,7 +43,7 @@ def clean_postgres(postgres_engine):
             "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, "
             "artifacts, attempts, tasks, graph_nodes, objective_metrics, "
             "outcome_observations, agent_claims, agent_messages, agent_run_members, agent_runs, "
-            "plan_tasks, plans, decision_requests RESTART IDENTITY CASCADE"
+            "plan_tasks, plans, decision_requests, api_tokens, auth_audit RESTART IDENTITY CASCADE"
         ))
 
 
@@ -191,5 +191,66 @@ def test_postgres_plan_gate_and_agent_comm_triggers_fence_direct_writes(postgres
             with pytest.raises(DBAPIError):
                 db.execute(statement)
             db.rollback()
+    finally:
+        db.close()
+
+
+def test_postgres_api_tokens_and_auth_audit_are_fenced(postgres_engine):
+    """ADR 0015 on PostgreSQL: tokens authenticate through the API; the audit
+    log is append-only and a token's identity/roles/hash are immutable and
+    revocation final, even for Core statements that skip the ORM guards."""
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import update
+
+    from sdf_core import auth
+    from sdf_core.api import app, get_db
+    from sdf_core.db import ApiTokenRow, AuthAuditRow
+
+    factory = sessionmaker(postgres_engine, expire_on_commit=False)
+
+    def pg_db():
+        db = factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    db = _session(postgres_engine)
+    try:
+        row, plaintext = auth.create_token(db, principal="pg-operator", roles=["operator"], created_by="test")
+        db.commit()
+        app.dependency_overrides[get_db] = pg_db
+        try:
+            client = TestClient(app, headers={"Authorization": f"Bearer {plaintext}"})
+            assert client.get("/auth/whoami").json()["name"] == "pg-operator"
+            created = client.post("/tasks", json={"id": "TASK-PG-AUTH", "title": "t", "idempotency_key": "pg-a"})
+            assert created.status_code == 201, created.text
+            assert TestClient(app).get("/auth/whoami").status_code == 401
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+        db.expire_all()
+        events = {(r.event, r.principal) for r in db.query(AuthAuditRow).all()}
+        assert {("token_created", "test"), ("mutation", "pg-operator"), ("auth_failed", None)} <= events
+        assert db.get(ApiTokenRow, row.id).last_used_at is not None
+
+        for statement in (
+            update(AuthAuditRow).values(principal="someone-else"),
+            text("DELETE FROM auth_audit"),
+            update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(roles=["admin"]),
+            update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(principal="hung"),
+            update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(secret_hash="0" * 64),
+            text("DELETE FROM api_tokens"),
+        ):
+            with pytest.raises(DBAPIError):
+                db.execute(statement)
+            db.rollback()
+        auth.revoke_token(db, row.id, revoked_by="test")
+        db.commit()
+        with pytest.raises(DBAPIError):
+            db.execute(update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(revoked_at=None))
+        db.rollback()
+        with pytest.raises(auth.AuthError, match="revoked"):
+            auth.verify_token(db, plaintext, key=auth.pepper())
     finally:
         db.close()

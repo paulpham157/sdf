@@ -259,6 +259,9 @@ class AgentRunRow(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    # ADR 0015: authenticated principals, never request fields.
+    started_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    cancel_requested_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -335,6 +338,43 @@ def make_engine(url: str = "sqlite+pysqlite:///:memory:"):
     if url.startswith("sqlite") and ":memory:" in url:
         kwargs.update({"connect_args": {"check_same_thread": False}, "poolclass": StaticPool})
     return create_engine(url, **kwargs)
+
+
+class ApiTokenRow(Base):
+    """A bearer API token (ADR 0015).  Only an HMAC-SHA256 of the secret, keyed
+    with a server-side pepper, is stored; the plaintext is shown once."""
+
+    __tablename__ = "api_tokens"
+    __table_args__ = (CheckConstraint("kind IN ('human','service')", name="ck_api_tokens_kind"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    principal: Mapped[str] = mapped_column(String(120), index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    roles: Mapped[list[str]] = mapped_column(JSON)
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(String(120))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuthAuditRow(Base):
+    """Append-only audit of authenticated mutations and authentication failures."""
+
+    __tablename__ = "auth_audit"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    event: Mapped[str] = mapped_column(String(32), index=True)
+    principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    token_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    method: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    route: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    client: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 def make_session_factory(url: str = "sqlite+pysqlite:///:memory:"):
@@ -488,3 +528,32 @@ def _enforce_plan_gate(session: Session, flush_context: Any, instances: Any) -> 
                 plan = session.get(PlanRow, item.plan_id)
                 if plan is None or plan.status != "approved":
                     raise PlanGateError(f"plan {item.plan_id} is not approved; no agent run may start")
+
+
+_TOKEN_MUTABLE = {"last_used_at", "revoked_at", "revoked_by"}
+
+
+@event.listens_for(Session, "before_flush")
+def _guard_auth_rows(session: Session, flush_context: Any, instances: Any) -> None:
+    """Audit rows are append-only; a token's identity, roles, secret hash and
+    expiry are immutable, it is never deleted, and revocation is final."""
+
+    from sqlalchemy import inspect as sa_inspect
+
+    for item in session.deleted:
+        if isinstance(item, AuthAuditRow):
+            raise ValueError("auth audit rows are append-only and cannot be deleted")
+        if isinstance(item, ApiTokenRow):
+            raise ValueError("API tokens are revoked, never deleted")
+    for item in session.dirty:
+        if isinstance(item, AuthAuditRow) and session.is_modified(item, include_collections=False):
+            raise ValueError("auth audit rows are append-only and cannot be updated")
+        if isinstance(item, ApiTokenRow) and session.is_modified(item, include_collections=False):
+            state = sa_inspect(item)
+            changed = {attr.key for attr in state.attrs if attr.history.has_changes()}
+            if changed - _TOKEN_MUTABLE:
+                raise ValueError("an API token's identity, roles, secret and expiry are immutable")
+            history = state.attrs.revoked_at.history
+            before = (history.deleted or history.unchanged or [None])[0]
+            if before is not None and changed & {"revoked_at", "revoked_by"}:
+                raise ValueError("a revoked API token stays revoked")

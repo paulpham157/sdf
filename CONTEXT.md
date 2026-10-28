@@ -82,6 +82,32 @@ _Avoid_: chat, instruction
 What an agent reports about its own work. A Claim triggers host verification and is never Evidence.
 _Avoid_: result, evidence
 
+## Access language
+
+**Principal**:
+The authenticated identity behind an API request, taken only from its credential (an API token today). Proposers, approvers, run starters and audit rows record the Principal, never a name sent in the request (ADR 0015).
+_Avoid_: user field, decided_by
+
+**API Token**:
+A bearer credential `sdf_<id>.<secret>` for one Principal with roles and an expiry, stored only as a peppered hash, shown once at creation, revoked but never deleted. Agents never get one.
+_Avoid_: API key, password
+
+**Role**:
+What a Principal may do: viewer (read), operator (create and run work), approver (decide), admin (all).
+_Avoid_: permission level, scope
+
+**Separation of Duties**:
+The rule that the Principal who proposed a Plan cannot approve it, and that agent, sandbox and service identities can never approve.
+_Avoid_: four-eyes check
+
+**Single-user Mode**:
+`SDF_AUTH_SINGLE_USER=1`: a solo deployment where the proposer may approve their own Plan; each such Decision is marked `self_approval`.
+_Avoid_: admin mode
+
+**Auth Audit**:
+The append-only log of token creation and revocation, failed or denied requests, and every authenticated mutating request with its Principal.
+_Avoid_: access log
+
 ## Ownership language
 
 **SDF Task**:
