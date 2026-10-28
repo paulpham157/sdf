@@ -83,7 +83,9 @@ Operator and approver are deliberately disjoint. A solo user holds both
 - **Approving needs all three:** the approver role, a `human` token, and a
   name that is not reserved. Reserved names include `sdf`, `host`, `lead`,
   `manager`, `worker`, `worker-N`, `agent*`, `policy*`, `sandbox*`, `sbx*`,
-  `e2b*`, `system`, `root`, `dev` and `anonymous`.
+  `e2b*`, `system`, `root`, `dev`, `anonymous`, and every agent kind name
+  alone or as a prefix (`pi`, `qwen`, `opencode:lead-1`, `pi:worker-1`, ...;
+  derived from `credentials.AGENT_KINDS`).
   - Such names are refused when a token is created and checked again on
     every request.
   - `service` tokens cannot hold `approver` or `admin`.

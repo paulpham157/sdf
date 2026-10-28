@@ -37,6 +37,7 @@ from typing import Any, Iterable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .credentials import AGENT_KINDS
 from .db import ApiTokenRow, AuthAuditRow
 from .model import utcnow
 
@@ -51,9 +52,12 @@ TOKEN_KINDS = ("human", "service")
 _PRIVILEGED = {"approver", "admin"}
 _NAME = re.compile(r"[A-Za-z0-9._@+-]{1,120}")
 # Agent, sandbox, host and policy identities (plans._RESERVED_ACTORS plus
-# sandbox ids) can never be principals, so they can never hold approver.
+# sandbox ids, and the coordinator's ``<kind>:<agent id>`` labels for every
+# agent kind) can never be principals, so they can never hold approver.
+_KINDS = "|".join(sorted(map(re.escape, AGENT_KINDS)))
 _RESERVED = re.compile(r"(?i)(sdf|host|lead(-\d+)?|manager|workers?(-\d+)?|agent[:._-].*|policy[:._-].*|"
-                       r"sandbox[:._-].*|sbx[:._-].*|e2b[:._-].*|dev|system|root|anonymous)")
+                       r"sandbox[:._-].*|sbx[:._-].*|e2b[:._-].*|dev|system|root|anonymous|"
+                       rf"(?:{_KINDS})(?:[:._-].*)?)")
 _TOKEN = re.compile(r"sdf_([0-9a-f]{16})\.([A-Za-z0-9_-]{43})")
 PEPPER_MIN_LENGTH = 32
 DEFAULT_EXPIRY_DAYS = 90
