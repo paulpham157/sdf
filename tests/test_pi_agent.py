@@ -742,3 +742,32 @@ def test_trusted_binding_falls_back_to_refusal_when_the_claim_fails(local, monke
     assert runtime.project_trusted(session.session_id) is False
     with pytest.raises(PiRuntimeError, match="gained a .pi/"):
         runtime.send(session.session_id, "fix")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_preload_unrefs_only_the_jsonrpc_partial_message_timer(tmp_path):
+    """ADR-0021: the wrapper's preload, written exactly as the wrapper writes it."""
+
+    assert 'NODE_OPTIONS="--import=file://$shim"' in pir._WRAPPER
+    assert 'NODE_OPTIONS="--import=file://$shim"' in pir._TRUSTED_WRAPPER
+    shim = subprocess.run(
+        ["sh", "-c", 'sess=$1/sessions; mkdir -p "$sess"; ' + pir._UNREF_PRELOAD + 'printf "%s" "$shim"', "x", str(tmp_path)],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert shim == f"{tmp_path}/unref-partial-timer.mjs"
+    # vscode-jsonrpc's reader re-arms this ref'd timer forever; with the shim
+    # the script exits at once instead of after 10 s ticks forever.
+    script = (
+        "const reader = { token: 0, arm() { setTimeout((token, timeout) => {"
+        " if (token === this.token) { this.firePartialMessage(); this.arm(); } }, 10000, this.token, 10000); },"
+        " firePartialMessage() {} };"
+        "reader.arm();"
+        "const plain = setTimeout(() => {}, 1); clearTimeout(plain);"
+        "const keep = setTimeout(() => {}, 5); console.log(keep.hasRef());"
+        "require('node:util').promisify(setTimeout)(1).then(() => console.log('promisified'));"
+    )
+    started = time.monotonic()
+    done = subprocess.run(["node", f"--import=file://{shim}", "-e", script], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == ["true", "promisified"]
+    assert time.monotonic() - started < 8

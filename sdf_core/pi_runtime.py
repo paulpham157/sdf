@@ -210,6 +210,30 @@ _SETTLED_EXIT = (
     'pkill -KILL -P "$pid"; kill -KILL "$pid" 2>/dev/null; fi; break; fi; sleep 1; done; '
 )
 
+# Root cause of that hang (ADR-0021): vscode-jsonrpc (bundled in pi-lens)
+# arms a *ref'd* 10 s "partial message" timer whenever an LSP stream has sent
+# a header but not yet the body, and re-arms it forever; nothing clears it when
+# the stream closes.  pi-lens only spawns LSP servers in a trusted project, and
+# when one (live: ``ast-grep lsp``) is SIGTERMed mid-message at shutdown the
+# timer alone keeps Pi's event loop alive.  The timer is diagnostic only, so
+# this preload (``NODE_OPTIONS=--import``, Pi's process only needs it) unrefs
+# it.  No single quotes: it is written with ``printf '%s'``.
+_UNREF_PARTIAL_TIMER_JS = (
+    'const real = globalThis.setTimeout; '
+    'const wrapped = function setTimeout(fn, ms, ...args) { '
+    'const t = real(fn, ms, ...args); '
+    'if (args.length === 2 && typeof fn === "function" && typeof t?.unref === "function" '
+    '&& String(fn).includes("firePartialMessage")) t.unref(); return t; }; '
+    'Object.defineProperties(wrapped, Object.getOwnPropertyDescriptors(real)); '
+    'globalThis.setTimeout = wrapped;'
+)
+assert "'" not in _UNREF_PARTIAL_TIMER_JS
+_UNREF_PRELOAD = (
+    'shim="${sess%/*}/unref-partial-timer.mjs"; '
+    "(umask 077; printf '%s\\n' '" + _UNREF_PARTIAL_TIMER_JS + "' >\"$shim\"); "
+)
+
+
 def _wrapper(refuse_project: bool) -> str:
     return (
         'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
@@ -219,7 +243,8 @@ def _wrapper(refuse_project: bool) -> str:
         + (_PROJECT_REFUSAL if refuse_project else '') +
         '[ -n "$model" ] || { echo ' + _EXIT_MARKER + str(_NO_MODEL_EXIT) + '; exit 0; }; '
         '(umask 077; mkdir -p "$sess"); '
-        'printf "%s" "$prompt" | timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" --model "$model" '
+        + _UNREF_PRELOAD +
+        'printf "%s" "$prompt" | NODE_OPTIONS="--import=file://$shim" timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" --model "$model" '
         '>"$out" 2>"$err" & pid=$!; settled=; '
         + _SETTLED_EXIT +
         'wait "$pid"; rc=$?; [ -n "$settled" ] && rc=0; '

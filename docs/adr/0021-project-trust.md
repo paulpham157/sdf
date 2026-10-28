@@ -64,3 +64,17 @@ layer and were re-checked under the hostile configs above.
   is unit-tested only, not live-verified.
 * Permission-skipping and trust remain tied to the one fresh-E2B claim; reusing
   a sandbox or any other transport falls back to the pre-0021 behaviour.
+* Pi trusted turns could print `agent_settled` and never exit (intermittent,
+  live: idle until the turn timeout). Root cause, from a hung live Pi 1.4.0
+  over the inspector: the only ref'd handle left was vscode-jsonrpc 9.0.3's
+  `ReadableStreamMessageReader` "partial message" timer (10 s, re-armed for
+  ever, never cleared on stream close or `dispose()`, same on upstream main).
+  pi-lens 4.4.6 spawns LSP servers only in a trusted project; its auxiliary
+  `ast-grep lsp` was SIGTERMed at shutdown after writing a
+  `Content-Length: 102` header but no body, so the reader kept the timer.
+  Unref'ing that one timer in the hung process made Pi exit at once. Not
+  pi-steering or apply-patch (no LSP); the untrusted path never spawns LSPs.
+  Fix: the Pi wrapper writes a tiny preload (`NODE_OPTIONS=--import`) that
+  unrefs timers whose callback calls `firePartialMessage` (diagnostic only).
+  The `agent_settled` grace kill stays as a safety net. Upstream draft:
+  `/workspace/tools/vscode-jsonrpc-partial-timer-issue.md`.
