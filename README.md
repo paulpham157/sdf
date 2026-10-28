@@ -91,6 +91,10 @@ the host's append-only message hub with the in-sandbox `sdf-msg` CLI / MCP
 server; a worker's "done" is a claim, and the run succeeds only when the host's
 own checks give PASS Evidence for every subtask. Agent questions wait in
 `GET /decision-requests` for `POST /decision-requests/{id}/resolve`.
+Agents can also read their own run from SDF Core with the in-sandbox
+`sdf-core` CLI / MCP server (plan + hash, task, decisions, evidence, messages,
+status): read-only, scoped to their run, never able to approve, no ports and no
+token in the sandbox ([ADR 0022](docs/adr/0022-core-mcp.md)).
 
 ### API authentication ([ADR 0015](docs/adr/0015-api-authentication.md))
 
