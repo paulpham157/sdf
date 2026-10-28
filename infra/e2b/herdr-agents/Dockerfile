@@ -9,6 +9,13 @@ ARG OPENCODE_VERSION=1.19.4
 # Pi (npm `@mariozechner/pi-coding-agent`): headless `pi -p` agent kind, ADR 0012.
 # `pi --version` prints to stderr.
 ARG PI_VERSION=0.73.1
+# Qwen Code (npm `@qwen-code/qwen-code`, Apache-2.0): headless `qwen -o json` agent kind, ADR 0013.
+ARG QWEN_CODE_VERSION=0.26.2
+# Goose (Apache-2.0) static musl release tarball from github.com/aaif-goose/goose, ADR 0013.
+ARG GOOSE_VERSION=1.56.0
+ARG GOOSE_SHA256=80e7716fef3dccc3fef6850e24e5b846b7340e10e13098e53b4f47769f5803ef
+# Aider (PyPI `aider-chat`, Apache-2.0) in its own venv on Debian python3, ADR 0013.
+ARG AIDER_VERSION=0.86.2
 # Cursor Agent CLI linux/x64 tarball from downloads.cursor.com/lab/<version>/...
 # Version observed in Slice 1 path spike; build fails on SHA or --version mismatch.
 ARG CURSOR_AGENT_VERSION=2026.09.28-64d2043
@@ -21,22 +28,41 @@ ENV DEBIAN_FRONTEND=noninteractive \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     PI_OFFLINE=1 \
     PI_SKIP_VERSION_CHECK=1 \
-    PI_TELEMETRY=0
+    PI_TELEMETRY=0 \
+    QWEN_USAGE_STATISTICS_ENABLED=false \
+    QWEN_TELEMETRY_ENABLED=false \
+    GOOSE_DISABLE_KEYRING=1 \
+    GOOSE_TELEMETRY_ENABLED=false \
+    AIDER_CHECK_UPDATE=false \
+    AIDER_ANALYTICS_DISABLE=true
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar \
+    && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar python3 python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL --retry 3 \
        -o /usr/local/bin/herdr \
        "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64" \
     && echo "${HERDR_SHA256}  /usr/local/bin/herdr" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/herdr \
-    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "opencode-ai@${OPENCODE_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}" \
+    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "opencode-ai@${OPENCODE_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}" "@qwen-code/qwen-code@${QWEN_CODE_VERSION}" \
     && test "$(herdr --version | awk '{print $2}')" = "${HERDR_VERSION}" \
     && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}" \
     && test "$(claude --version | awk '{print $1}')" = "${CLAUDE_CODE_VERSION}" \
     && test "$(opencode --version)" = "${OPENCODE_VERSION}" \
     && test "$(pi --version 2>&1)" = "${PI_VERSION}" \
+    && test "$(qwen --version)" = "${QWEN_CODE_VERSION}" \
+    && curl -fsSL --retry 3 \
+       -o /tmp/goose.tar.gz \
+       "https://github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/goose-x86_64-unknown-linux-musl.tar.gz" \
+    && echo "${GOOSE_SHA256}  /tmp/goose.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/goose.tar.gz -C /usr/local/bin ./goose \
+    && rm -f /tmp/goose.tar.gz \
+    && chmod 0755 /usr/local/bin/goose \
+    && test "$(goose --version | tr -d ' ')" = "${GOOSE_VERSION}" \
+    && python3 -m venv /opt/aider \
+    && /opt/aider/bin/pip install --no-cache-dir --disable-pip-version-check "aider-chat==${AIDER_VERSION}" \
+    && ln -sf /opt/aider/bin/aider /usr/local/bin/aider \
+    && test "$(aider --version)" = "aider ${AIDER_VERSION}" \
     && curl -fsSL --retry 3 \
        -o /tmp/cursor-agent.tar.gz \
        "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \

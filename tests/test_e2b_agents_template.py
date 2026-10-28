@@ -21,6 +21,9 @@ def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
         "CLAUDE_CODE_VERSION",
         "OPENCODE_VERSION",
         "PI_VERSION",
+        "QWEN_CODE_VERSION",
+        "GOOSE_VERSION",
+        "AIDER_VERSION",
         "CURSOR_AGENT_VERSION",
     }
     for name, version in pins.items():
@@ -39,6 +42,13 @@ def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
     assert '"@mariozechner/pi-coding-agent@${PI_VERSION}"' in dockerfile
     # Pi prints its version on stderr.
     assert 'test "$(pi --version 2>&1)" = "${PI_VERSION}"' in dockerfile
+    assert '"@qwen-code/qwen-code@${QWEN_CODE_VERSION}"' in dockerfile
+    assert 'test "$(qwen --version)" = "${QWEN_CODE_VERSION}"' in dockerfile
+    assert re.search(r"^ARG GOOSE_SHA256=[0-9a-f]{64}$", dockerfile, re.MULTILINE)
+    assert 'echo "${GOOSE_SHA256}  /tmp/goose.tar.gz" | sha256sum -c -' in dockerfile
+    assert "github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/goose-x86_64-unknown-linux-musl.tar.gz" in dockerfile
+    assert '"aider-chat==${AIDER_VERSION}"' in dockerfile
+    assert 'test "$(aider --version)" = "aider ${AIDER_VERSION}"' in dockerfile
     assert "downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" in dockerfile
     assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent' in dockerfile
     assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent' in dockerfile
@@ -95,3 +105,14 @@ def test_pi_template_pin_matches_runtime_pin():
     from sdf_core.pi_runtime import PI_VERSION
 
     assert _pins()["PI_VERSION"] == PI_VERSION
+
+
+def test_headless_runtime_pins_match_the_dockerfile():
+    from sdf_core.aider_runtime import AIDER_VERSION
+    from sdf_core.goose_runtime import GOOSE_VERSION
+    from sdf_core.qwen_runtime import QWEN_VERSION
+
+    pins = _pins()
+    assert pins["QWEN_CODE_VERSION"] == QWEN_VERSION
+    assert pins["GOOSE_VERSION"] == GOOSE_VERSION
+    assert pins["AIDER_VERSION"] == AIDER_VERSION

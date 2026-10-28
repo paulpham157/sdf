@@ -4,7 +4,8 @@ same Vultr Serverless Inference endpoint and model as OpenCode (glm-5.3).
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_VULTR_AGENTS=1``
 plus ``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY`` (env or the repo-root
 ``.env``, loaded into a private mapping).  ``SDF_LIVE_VULTR_AGENTS`` may also
-name a comma-separated subset (``codex,claude,pi``).
+name a comma-separated subset (``codex,claude,pi,qwen,goose,aider``); ``1``
+keeps the original three.
 
 Each case runs the full SDF loop (Task -> Attempt -> agent run -> host-side
 criterion checks -> Evidence) on the toy ``calc.py`` add bug.
@@ -20,6 +21,13 @@ Wiring (no proxy):
   / ``glm-5.3``; the ``pi-models``
   seed writes ``~/.pi/agent/models.json`` naming the key variable, and
   ``sdf_core.pi_runtime.PiHeadlessRuntime`` runs ``pi -p --mode json`` turns.
+* qwen / goose / aider - the ADR-0013 kinds: SDF api-key mode with
+  ``SDF_<KIND>_API_KEY_ENV=VULTR_INFERENCE_API_KEY`` and the default Vultr base
+  URL / ``glm-5.3``; their seeds record the key's NAME and the headless runtimes
+  in ``sdf_core.{qwen,goose,aider}_runtime`` run one CLI process per turn.
+  Not in the published template yet: on the ``codex`` base the factory installs
+  Node 22 + Qwen Code (npm), the sha256-checked Goose musl tarball, or Aider
+  (pip, own venv) before egress is locked.
 
 Sandbox source:
 
@@ -58,7 +66,10 @@ from sdf_core.db import ArtifactRow, Base, DecisionEdgeRow, EvidenceRow, GraphNo
 from sdf_core.execution import ExecutionService
 from sdf_core.herdr_runtime import HerdrRuntime
 from sdf_core.model import utcnow
+from sdf_core.aider_runtime import AIDER_VERSION, AiderHeadlessRuntime
+from sdf_core.goose_runtime import GOOSE_VERSION, GooseHeadlessRuntime
 from sdf_core.pi_runtime import PiHeadlessRuntime
+from sdf_core.qwen_runtime import QWEN_VERSION, QwenHeadlessRuntime
 from sdf_core.runtime import RuntimeController
 from tests.test_herdr_e2b_execution import POSITIVE
 
@@ -80,6 +91,39 @@ PRICE_IN, PRICE_OUT = 0.75 / 1e6, 3.00 / 1e6  # Vultr glm-5.3, USD per token
 HERDR_URL = "https://github.com/herdrdev/herdr/releases/download/v0.9.1/herdr-linux-x86_64"
 HERDR_SHA256 = "2a02fed16beb651ef006e1d43f048f652ca4dc58ad053cd2d44450563d5c54b7"
 PACKAGES = ("@openai/codex@0.157.0", "@anthropic-ai/claude-code@2.1.282", "@mariozechner/pi-coding-agent@0.73.1")
+NODE22_URL = "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz"
+NODE22_SHA256 = "00bbd05e306ea68b6e13e17360d0e2f680b493ef95f2fea1c4296ff7437530bc"
+GOOSE_URL = (f"https://github.com/aaif-goose/goose/releases/download/v{GOOSE_VERSION}/"
+             "goose-x86_64-unknown-linux-musl.tar.gz")
+GOOSE_SHA256 = "80e7716fef3dccc3fef6850e24e5b846b7340e10e13098e53b4f47769f5803ef"
+HEADLESS = {"pi": PiHeadlessRuntime, "qwen": QwenHeadlessRuntime, "goose": GooseHeadlessRuntime,
+            "aider": AiderHeadlessRuntime}
+# Runtime installs for the ADR-0013 kinds (not in the published template yet).
+EXTRA_INSTALL = {
+    "qwen": (
+        f"curl -fsSL --retry 3 -o /tmp/node22.tar.xz {NODE22_URL}",
+        f"echo '{NODE22_SHA256}  /tmp/node22.tar.xz' | sha256sum -c - >/dev/null",
+        "sudo mkdir -p /opt/node22 && sudo tar -xJf /tmp/node22.tar.xz --strip-components=1 -C /opt/node22",
+        "sudo env PATH=/opt/node22/bin:/usr/bin:/bin npm install -g --no-fund --no-audit --loglevel=error "
+        f"@qwen-code/qwen-code@{QWEN_VERSION} >/tmp/npm-qwen.log 2>&1",
+        "printf '#!/bin/sh\\nexec /opt/node22/bin/node /opt/node22/lib/node_modules/@qwen-code/qwen-code/cli-entry.js \"$@\"\\n'"
+        " | sudo tee /usr/local/bin/qwen >/dev/null && sudo chmod 0755 /usr/local/bin/qwen",
+        "qwen --version",
+    ),
+    "goose": (
+        f"curl -fsSL --retry 3 -o /tmp/goose.tar.gz {GOOSE_URL}",
+        f"echo '{GOOSE_SHA256}  /tmp/goose.tar.gz' | sha256sum -c - >/dev/null",
+        "sudo tar -xzf /tmp/goose.tar.gz -C /usr/local/bin ./goose && sudo chmod 0755 /usr/local/bin/goose",
+        "goose --version",
+    ),
+    "aider": (
+        "sudo python3 -m venv /opt/aider",
+        f"sudo /opt/aider/bin/pip install -q --no-cache-dir --disable-pip-version-check aider-chat=={AIDER_VERSION}"
+        " >/tmp/pip-aider.log 2>&1",
+        "sudo ln -sf /opt/aider/bin/aider /usr/local/bin/aider",
+        "aider --version",
+    ),
+}
 REPO = Path(__file__).resolve().parents[1]
 CHECKS = {
     "add returns the sum": [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]],
@@ -96,13 +140,15 @@ CLAUDE_USER_SETTINGS = {
 }
 
 
-def _bootstrap_script() -> str:
+def _bootstrap_script(agent: str = "") -> str:
+    extra = EXTRA_INSTALL.get(agent, ())
     if PREBUILT_TEMPLATE:
         # The image's settings.json only pre-accepts the dangerous-mode prompt.
         return "\n".join((
             "set -e",
             f"printf %s {shlex.quote(json.dumps(CLAUDE_USER_SETTINGS))} > ~/.claude/settings.json",
             "herdr --version; codex --version; claude --version; pi --version 2>&1",
+            *extra,
         ))
     claude_json = (REPO / "infra/e2b/herdr-agents/claude/claude.json").read_text()
     return "\n".join((
@@ -115,13 +161,15 @@ def _bootstrap_script() -> str:
         f"printf %s {shlex.quote(claude_json)} > ~/.claude.json",
         f"printf %s {shlex.quote(json.dumps(CLAUDE_USER_SETTINGS))} > ~/.claude/settings.json",
         "herdr --version; codex --version; claude --version; pi --version 2>&1",
+        *extra,
     ))
 
 
 class BootstrapFactory:
     """``Sandbox.create`` stand-in: template (+ pinned tools if public), then lock egress."""
 
-    def __init__(self) -> None:
+    def __init__(self, agent: str = "") -> None:
+        self.agent = agent
         self.versions = ""
         self.timings: dict[str, float] = {}
 
@@ -131,7 +179,7 @@ class BootstrapFactory:
         started = time.monotonic()
         sandbox = Sandbox.create(template=BASE_TEMPLATE, timeout=timeout, envs=envs, **opts)
         try:
-            self.versions = sandbox.commands.run(_bootstrap_script(), timeout=300).stdout.strip()
+            self.versions = sandbox.commands.run(_bootstrap_script(self.agent), timeout=420).stdout.strip()
             if not PREBUILT_TEMPLATE or sandbox.commands.run(
                 "herdr workspace list >/dev/null 2>&1 && echo ok || true", timeout=10
             ).stdout.strip() != "ok":
@@ -215,11 +263,11 @@ EGRESS_PROBE = (
 )
 
 
-@pytest.mark.parametrize("agent", ["codex", "claude", "pi"])
+@pytest.mark.parametrize("agent", ["codex", "claude", "pi", "qwen", "goose", "aider"])
 def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if agent not in AGENTS:
         pytest.skip(f"{agent} not selected in SDF_LIVE_VULTR_AGENTS")
-    factory = BootstrapFactory()
+    factory = BootstrapFactory(agent)
     monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
     network = {"allow_out": [INFERENCE_HOST], "deny_out": ["0.0.0.0/0"]}
     secrets = {name: ENV[name] for name in ("E2B_API_KEY", KEY_VAR)}
@@ -236,11 +284,15 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         # Default base URL and model (Vultr, glm-5.3); the key is named explicitly
         # because the default variable is SDF_PI_API_KEY.
         environ |= {"SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY_ENV": KEY_VAR}
+    elif agent in ("qwen", "goose", "aider"):
+        upper = agent.upper()
+        environ |= {f"SDF_CREDENTIAL_MODE_{upper}": "api-key", f"SDF_{upper}_API_KEY_ENV": KEY_VAR}
     transport, injection = create_credentialed_transport(
         agents=(agent,), environ=environ, template=BASE_TEMPLATE, timeout_seconds=900, network=network
     )
-    if agent == "pi":
-        runtime: Any = PiHeadlessRuntime(transport=transport, turn_timeout_s=420)
+    headless = agent in HEADLESS
+    if headless:
+        runtime: Any = HEADLESS[agent](transport=transport, turn_timeout_s=420)
     else:
         agent_args = model_agent_args((agent,), environ)
         if agent == "codex":
@@ -266,14 +318,14 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
             created.append(transport.sandbox_id)
         # Pi's records come from the runtime's own event parsing (below).
         probe_argv = {"egress": ["sh", "-c", EGRESS_PROBE]}
-        if agent != "pi":
+        if not headless:
             probe_argv["records"] = ["python3", "-c", _RECORDS, agent]
         for name, argv in probe_argv.items():
             try:
                 probes[name] = transport.exec_argv(argv, 90_000)
             except Exception as exc:  # noqa: BLE001 - diagnostics only
                 probes[name] = f"probe failed: {type(exc).__name__}"
-        if agent != "pi":
+        if not headless:
             try:
                 probes["pane"] = runtime._raw(runtime._command("agent", "read", session_id, "--source", "recent-unwrapped"))
             except Exception as exc:  # noqa: BLE001
@@ -329,7 +381,7 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         records = json.loads(probes.get("records", "").strip().splitlines()[-1])
     except (ValueError, IndexError):
         records = {"raw": probes.get("records", "")[-300:]}
-    if agent == "pi":
+    if headless:
         records = runtime.usage(next(iter(runtime._bindings))) if runtime._bindings else {}
         records["fresh_e2b_claim"] = bool(runtime._bindings) and runtime.permission_skipping(next(iter(runtime._bindings)))
         tokens_in = records.get("input_tokens", 0) + records.get("cache_read_tokens", 0)
@@ -356,8 +408,8 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
         "e2b_cost_usd_est": round((sandbox_alive_s + 5) * 0.000056, 5),
         "sandboxes_created": len(created), "leftover_sandboxes": len(leftover),
         "egress": probes.get("egress", "").strip().splitlines(), "leaks": leaked,
-        "pane_tail": probes.get("pane", "")[-1500:] if agent != "pi" else None,
-        "stream_tail": list(runtime.stream(next(iter(runtime._bindings))))[-6:] if agent == "pi" and runtime._bindings else None,
+        "pane_tail": probes.get("pane", "")[-1500:] if not headless else None,
+        "stream_tail": list(runtime.stream(next(iter(runtime._bindings))))[-6:] if headless and runtime._bindings else None,
     }
     print(f"SDF_LIVE_VULTR_REPORT {json.dumps(report, default=str)}")
     Path("/tmp/sdf-live-reports").mkdir(exist_ok=True)
@@ -368,7 +420,12 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     assert report["task"] == "succeeded"
     assert report["evidence"] == [("add returns the sum", "PASS"), ("sub still subtracts", "PASS")]
     assert relations == {"validates"}
-    if agent == "pi":
-        # What the endpoint reported serving, not just what was requested.
-        assert records["served_models"] == [MODEL] and records["requested_models"] == [MODEL]
+    if headless:
+        assert records["requested_models"] == [MODEL]
         assert records["fresh_e2b_claim"] is True
+    if agent in ("pi", "qwen"):
+        # What the endpoint reported serving, not just what was requested.
+        assert records["served_models"] == [MODEL]
+    elif headless:
+        # Goose and Aider do not surface the response's model id (caveat, ADR 0013).
+        assert records["served_model_reported"] is False

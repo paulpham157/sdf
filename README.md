@@ -56,11 +56,19 @@ Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 
+Qwen Code (`qwen`, `0.26.2`), Goose (`goose`, `1.56.0`) and Aider (`aider`,
+`0.86.2`) are further headless kinds for any OpenAI-compatible endpoint (same
+Vultr defaults; keys `SDF_QWEN_API_KEY`, `SDF_GOOSE_API_KEY`,
+`SDF_AIDER_API_KEY` or a name in `SDF_<AGENT>_API_KEY_ENV`). They refuse
+workspaces carrying their project config and run read-only outside a fresh E2B
+sandbox ([ADR 0013](docs/adr/0013-openai-compatible-headless-agent-kinds.md)).
+
 Multi-agent runs ([ADR 0014](docs/adr/0014-plan-gate-and-agent-messaging.md)):
 `POST /plans` proposes a plan, a human approves it with `POST /plans/{id}/approve`
 (no Attempt or run starts before that; 409), then `POST /plans/{id}/runs` runs a
 lead (default OpenCode) and one worker per subtask (default Pi), one E2B sandbox
-each on Vultr `glm-5.3`, with `SDF_AGENT_SANDBOX=e2b`. Agents talk only through
+each on Vultr `glm-5.3`, with `SDF_AGENT_SANDBOX=e2b` (lead and worker kinds:
+`opencode` or `pi` only for now). Agents talk only through
 the host's append-only message hub with the in-sandbox `sdf-msg` CLI / MCP
 server; a worker's "done" is a claim, and the run succeeds only when the host's
 own checks give PASS Evidence for every subtask. Agent questions wait in

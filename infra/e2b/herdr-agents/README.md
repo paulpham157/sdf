@@ -11,6 +11,9 @@ and carries the supported agent kinds:
 | Claude Code (`@anthropic-ai/claude-code`) | `2.1.282` |
 | OpenCode (`opencode-ai`, headless `opencode run`, [ADR 0011](../../../docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)) | `1.19.4` |
 | Pi (`@mariozechner/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)) | `0.73.1` |
+| Qwen Code (`@qwen-code/qwen-code`, headless `qwen -o json`, [ADR 0013](../../../docs/adr/0013-openai-compatible-headless-agent-kinds.md)) | `0.26.2` |
+| Goose (`goose`, musl release tarball, SHA-256 verified, ADR 0013) | `1.56.0` |
+| Aider (`aider-chat` in `/opt/aider` venv on Debian `python3`, ADR 0013) | `0.86.2` |
 | Cursor Agent CLI (`agent` / `cursor-agent`, linux/x64 tarball, SHA-256 verified) | `2026.09.28-64d2043` |
 | Node.js runtime | `22` (`node:22-bookworm-slim`) |
 
@@ -77,6 +80,12 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
+> **Rebuild pending.** The Dockerfile now also pins Qwen Code, Goose and Aider
+> (ADR 0013). The published build below predates them and does not contain
+> those CLIs; rebuilding replaces the public image, so repeat the secret check
+> and the licensing review first. Until then the live tests install the three
+> CLIs at runtime (`tests/test_vultr_agents_live.py`).
+
 Built 2026-10-28: template id `xj8glxnh091op795c7me`, build
 `172d9021-919b-4de1-8391-35aaed26cad2` (2 vCPU, 2048 MiB, ~110 s build). A
 boot check found no credential files, no key-shaped strings and no secret env
@@ -84,7 +93,8 @@ names in the image.
 
 Licensing caveat: publishing redistributes Claude Code (proprietary,
 "SEE LICENSE IN README.md") and the Cursor Agent CLI tarball to every E2B team.
-Codex (Apache-2.0), OpenCode (MIT) and Pi (MIT) carry no such restriction. The
+Codex (Apache-2.0), OpenCode (MIT), Pi (MIT), Qwen Code, Goose and Aider
+(all Apache-2.0) carry no such restriction. The
 operator published it knowingly, accepting that risk; if Anthropic or Cursor
 terms require it, withdraw it with `e2b template unpublish sdf-herdr-agents -y`
 (or rebuild without those CLIs). Users of the public template remain bound by
