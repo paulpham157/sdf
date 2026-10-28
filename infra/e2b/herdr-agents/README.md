@@ -41,9 +41,13 @@ modules, so no peer is installed or linked; `verify-pins.mjs` fails the build
 on any version drift and if a second Pi (`@earendil-works` or
 `@mariozechner`) appears under the extensions' `node_modules`. Pi loads them only by explicit
 `-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. Two
-requested packages were vetted and rejected: `pi-fabric` needs Pi >= 1.0 and
-Node >= 24, and `pi-lens` 4.4.6 intermittently hung live Pi turns after the
-final answer.
+requested packages are not baked in. `pi-fabric` stays rejected: it sends
+prompts and code to its own third-party model services (outside the egress
+lock), embeds a second Pi, and needs Node >= 24. `pi-lens` 4.4.6 hung 2 of 3
+live turns under Pi 0.73.1; re-tested under Pi 1.4.0 on the staging image it
+did not hang (0 of 8 stub turns, 0 of 4 live glm-5.3 turns with egress
+locked), but it adds about 100 MiB to the image and about 8k prompt tokens per
+request (11 extra tools), so it stays out; enabling it is a separate decision.
 
 ## Claude first-run state
 

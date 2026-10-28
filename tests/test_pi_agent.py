@@ -563,8 +563,8 @@ def test_extension_selection_defaults_to_all_and_empty_means_none():
 @pytest.mark.parametrize("value, reason", [
     ("pi-fabric", "third-party model services"),
     ("@cad0p/pi-steering,pi-fabric", "third-party model services"),
-    ("pi-lens", "turn_end/agent_end hooks"),
-    ("@paulpham157/apply-patch,pi-lens", "hangs until the timeout"),
+    ("pi-lens", "not baked into the image"),
+    ("@paulpham157/apply-patch,pi-lens", "8k prompt tokens"),
 ])
 def test_rejected_extension_is_refused_with_the_reason(value, reason):
     with pytest.raises(ValueError, match=reason):

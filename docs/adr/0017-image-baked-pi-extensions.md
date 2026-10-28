@@ -155,4 +155,8 @@ fails if any `@earendil-works`/`@mariozechner` package appears under the
 extensions' `node_modules`. Extension pins and lockfile hashes are unchanged.
 pi-fabric was re-vetted and stays rejected (it sends prompts and code to its
 own third-party model services, embeds a second Pi, and needs Node >= 24).
-pi-lens: see the template README for the re-test under Pi 1.4.0.
+pi-lens 4.4.6 was re-tested under Pi 1.4.0 on the staging image: no hang in
+8 stub turns or 4 live glm-5.3 turns (egress locked; about 12.6k tokens and
+$0.0096 per turn), versus 2 of 3 live hangs under Pi 0.73.1. It still is not
+baked in, because it adds about 100 MiB and about 8k prompt tokens per request
+for 11 extra tools; `SDF_PI_EXTENSIONS=pi-lens` keeps failing closed.

@@ -100,8 +100,8 @@ UNAVAILABLE_PI_EXTENSIONS = {
         "it also needs Node >= 24 (the template runs Node 22)"
     ),
     "pi-lens": (
-        "pi-lens 4.4.6 intermittently never finishes its turn_end/agent_end hooks under Pi 0.73.1 "
-        "print mode, so the headless turn hangs until the timeout"
+        "pi-lens 4.4.6 is not baked into the image: it hung 2 of 3 live turns under Pi 0.73.1 and, although "
+        "0 of 4 live turns hung under Pi 1.4.0, it adds about 100 MiB and about 8k prompt tokens per request"
     ),
 }
 PI_EXTENSIONS_ENV = "SDF_PI_EXTENSIONS"
