@@ -15,9 +15,10 @@ Wiring (no proxy):
   Responses API), ``-m glm-5.3``; Herdr pane.
 * claude - native: SDF api-key mode, ``SDF_ANTHROPIC_BASE_URL`` (Vultr serves
   Anthropic ``/v1/messages``), ``--model glm-5.3``; Herdr pane.
-* pi - not an SDF agent kind; a test-local headless runtime runs one
-  ``pi -p --mode json`` turn with a ``models.json`` provider whose ``apiKey`` is
-  the *name* of the key variable.
+* pi - the ``pi`` agent kind (ADR 0012): SDF api-key mode with the default
+  ``VULTR_INFERENCE_API_KEY`` / Vultr base URL / ``glm-5.3``; the ``pi-models``
+  seed writes ``~/.pi/agent/models.json`` naming the key variable, and
+  ``sdf_core.pi_runtime.PiHeadlessRuntime`` runs ``pi -p --mode json`` turns.
 
 The account has no ``sdf-herdr-agents`` template (building one is out of
 scope), so the sandbox factory bootstraps E2B's public ``codex`` template:
@@ -45,12 +46,11 @@ from sdf_core.agent_models import model_agent_args
 from sdf_core.credential_injection import create_credentialed_transport
 from sdf_core.credentials import load_dotenv
 from sdf_core.db import ArtifactRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow, make_engine
-from sdf_core.e2b_herdr_transport import E2BHerdrTransport
 from sdf_core.execution import ExecutionService
 from sdf_core.herdr_runtime import HerdrRuntime
 from sdf_core.model import utcnow
-from sdf_core.opencode_runtime import OpenCodeHeadlessRuntime, OpenCodeRuntimeError, _split_exit
-from sdf_core.runtime import RuntimeController, RuntimeSession, RuntimeStatus
+from sdf_core.pi_runtime import PiHeadlessRuntime
+from sdf_core.runtime import RuntimeController
 from tests.test_herdr_e2b_execution import POSITIVE
 
 ENV = dict(os.environ)
@@ -127,104 +127,6 @@ class BootstrapFactory:
             raise
         self.timings["bootstrap_s"] = round(time.monotonic() - started, 1)
         return sandbox
-
-
-# --- Pi: test-local headless runtime ---------------------------------------
-_PI_EXIT = "SDF_OPENCODE_EXIT="  # reuse the OpenCode exit-marker parser
-_PI_WRAPPER = (
-    'dir=$1; secs=$2; out=$3; err=$4; shift 4; cd "$dir" || { echo ' + _PI_EXIT + '97; exit 0; }; '
-    # Pi has no switch to ignore project .pi/ (settings can auto-install
-    # packages, extensions run code, models.json "!cmd" keys execute): refuse.
-    'if [ -e .pi ]; then echo ' + _PI_EXIT + '96; exit 0; fi; '
-    'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0; unset PI_CODING_AGENT_DIR; '
-    'timeout --kill-after=10 "$secs" "$@" </dev/null >"$out" 2>"$err"; rc=$?; '
-    'grep -E \'^\\{"type":"(message_end|tool_execution_end)"\' "$out" || true; '
-    'echo ' + _PI_EXIT + '$rc; if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'
-)
-PI_MODELS = {
-    "providers": {
-        "vultr": {
-            "baseUrl": f"https://{INFERENCE_HOST}/v1", "api": "openai-completions", "apiKey": KEY_VAR,
-            "models": [{
-                "id": MODEL, "name": "GLM 5.3 (Vultr)", "reasoning": True, "input": ["text"],
-                "contextWindow": 1_000_000, "maxTokens": 32_000,
-                "cost": {"input": 0.75, "output": 3.0, "cacheRead": 0, "cacheWrite": 0},
-            }],
-        }
-    }
-}
-
-
-class PiHeadlessRuntime(OpenCodeHeadlessRuntime):
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(binary="pi", expected_version="0.73.1", credentials={}, **kwargs)
-        self.pi_usage: dict[str, Any] = {"input": 0, "output": 0, "cacheRead": 0, "total": 0, "cost": 0.0,
-                                         "messages": 0, "models": [], "response_models": [], "errors": []}
-
-    def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
-        assert agent == "pi"
-        workspace = self._workspaces[attempt_id]
-        self.require_compatible()
-        self._transport.exec_argv(
-            ["python3", "-c", "import os,sys;d=os.path.expanduser('~/.pi/agent');os.makedirs(d,exist_ok=True);"
-             "open(d+'/models.json','w').write(sys.argv[1])", json.dumps(PI_MODELS)], self._control_timeout_ms)
-        from sdf_core.opencode_runtime import _Binding
-
-        session_id = f"pi-{attempt_id}"
-        self._bindings[session_id] = _Binding(attempt_id, workspace, False)
-        session = RuntimeSession(session_id, attempt_id, agent, RuntimeStatus.CREATED)
-        self._sessions[session_id] = session
-        return session
-
-    def command(self, session_id: str, input_text: str) -> list[str]:
-        binding, _ = self._known(session_id)
-        argv = ["pi", "-p", "--mode", "json", "--no-session", "--no-extensions", "--no-skills",
-                "--no-prompt-templates", "--no-themes", "--provider", "vultr", "--model", MODEL, input_text]
-        out, err = f"/tmp/sdf-pi-{binding.attempt_id}.jsonl", f"/tmp/sdf-pi-{binding.attempt_id}.err"
-        return ["sh", "-c", _PI_WRAPPER, "sdf-pi", binding.workspace, str(self._turn_timeout_s), out, err, *argv]
-
-    def send(self, session_id: str, input_text: str) -> RuntimeSession:
-        _, current = self._known(session_id)
-        self._set(session_id, RuntimeStatus.RUNNING, current.output)
-        raw = self._transport.exec_argv(self.command(session_id, input_text), (self._turn_timeout_s + 40) * 1000)
-        body, rc = _split_exit(raw)
-        lines: list[str] = []
-        for line in body.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                lines.append(line)
-                continue
-            if event.get("type") == "tool_execution_end":
-                lines.append(f"[tool {event.get('toolName')}: {'error' if event.get('isError') else 'ok'}]")
-                continue
-            message = event.get("message") or {}
-            if message.get("role") != "assistant":
-                continue
-            usage = message.get("usage") or {}
-            u = self.pi_usage
-            u["messages"] += 1
-            for key in ("input", "output", "cacheRead"):
-                u[key] += int(usage.get(key) or 0)
-            u["total"] += int(usage.get("totalTokens") or 0)
-            u["cost"] += float((usage.get("cost") or {}).get("total") or 0)
-            for key, bucket in (("model", "models"), ("responseModel", "response_models")):
-                if message.get(key) and message[key] not in u[bucket]:
-                    u[bucket].append(message[key])
-            if message.get("errorMessage"):
-                u["errors"].append(str(message["errorMessage"])[:300])
-            for part in message.get("content") or []:
-                if part.get("type") == "text" and part.get("text", "").strip():
-                    lines.append(part["text"])
-        output = current.output + tuple(lines)
-        if rc == 0 and not self.pi_usage["errors"]:
-            return self._set(session_id, RuntimeStatus.COMPLETED, output)
-        self._set(session_id, current.status, output)
-        raise OpenCodeRuntimeError(f"pi run failed (exit {rc}): {'; '.join(self.pi_usage['errors']) or (lines[-1] if lines else '')}")
-
-    def installed_version(self) -> str:
-        # pi prints its version on stderr
-        return self._transport.exec_argv(["sh", "-c", "pi --version 2>&1"], self._control_timeout_ms).strip()
 
 
 # --- agent-side records of model and usage ----------------------------------
@@ -310,14 +212,15 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     elif agent == "claude":
         environ |= {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_CLAUDE_API_KEY_ENV": KEY_VAR,
                     "SDF_ANTHROPIC_BASE_URL": f"https://{INFERENCE_HOST}", "SDF_CLAUDE_MODEL": MODEL}
+    elif agent == "pi":
+        # Defaults only: VULTR_INFERENCE_API_KEY, Vultr base URL, glm-5.3.
+        environ |= {"SDF_CREDENTIAL_MODE_PI": "api-key"}
+    transport, injection = create_credentialed_transport(
+        agents=(agent,), environ=environ, template=BASE_TEMPLATE, timeout_seconds=900, network=network
+    )
     if agent == "pi":
-        transport = E2BHerdrTransport(template=BASE_TEMPLATE, environ=environ, envs={KEY_VAR: ENV[KEY_VAR]},
-                                      timeout_seconds=900, network=network)
         runtime: Any = PiHeadlessRuntime(transport=transport, turn_timeout_s=420)
     else:
-        transport, injection = create_credentialed_transport(
-            agents=(agent,), environ=environ, template=BASE_TEMPLATE, timeout_seconds=900, network=network
-        )
         agent_args = model_agent_args((agent,), environ)
         if agent == "codex":
             # Vultr's Responses API rejects Codex's hosted ``web_search`` tool
@@ -402,8 +305,10 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     except (ValueError, IndexError):
         records = {"raw": probes.get("records", "")[-300:]}
     if agent == "pi":
-        records = dict(runtime.pi_usage)
-        tokens_in, tokens_out = records["input"] + records["cacheRead"], records["output"]
+        records = runtime.usage(next(iter(runtime._bindings))) if runtime._bindings else {}
+        records["fresh_e2b_claim"] = bool(runtime._bindings) and runtime.permission_skipping(next(iter(runtime._bindings)))
+        tokens_in = records.get("input_tokens", 0) + records.get("cache_read_tokens", 0)
+        tokens_out = records.get("output_tokens", 0)
     elif agent == "claude":
         u = records.get("usage") or {}
         tokens_in, tokens_out = u.get("input", 0) + u.get("cache_read", 0) + u.get("cache_write", 0), u.get("output", 0)
@@ -438,3 +343,7 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     assert report["task"] == "succeeded"
     assert report["evidence"] == [("add returns the sum", "PASS"), ("sub still subtracts", "PASS")]
     assert relations == {"validates"}
+    if agent == "pi":
+        # What the endpoint reported serving, not just what was requested.
+        assert records["served_models"] == [MODEL] and records["requested_models"] == [MODEL]
+        assert records["fresh_e2b_claim"] is True

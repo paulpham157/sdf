@@ -65,11 +65,27 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # from the seeded config file; these would replace, redirect or widen
         # that config (ADR-0011).
         "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION"),
+        # Pi 0.73.1 reads its provider and key reference from the seeded
+        # ~/.pi/agent/models.json; these would move that directory (and with it
+        # models.json, settings and extensions) or redirect Pi's own fetches
+        # (ADR-0012).  The turn wrapper also unsets every other PI_* variable.
+        "pi": (
+            "PI_CODING_AGENT_DIR",
+            "PI_CODING_AGENT_SESSION_DIR",
+            "PI_PACKAGE_DIR",
+            "PI_SHARE_VIEWER_URL",
+            "PI_OAUTH_CALLBACK_HOST",
+        ),
     }
 )
 
 # Vultr Serverless Inference is the example/default OpenCode provider only.
 DEFAULT_OPENCODE_BASE_URL = "https://api.vultrinference.com/v1"
+# Same default endpoint for Pi (ADR-0012); overridable with SDF_PI_BASE_URL.
+DEFAULT_PI_BASE_URL = DEFAULT_OPENCODE_BASE_URL
+# Pi's default key variable is the Vultr key's own name, not an SDF_* name
+# (ADR-0012); SDF_PI_API_KEY_ENV names another one instead, never in addition.
+DEFAULT_PI_API_KEY_VARIABLE = "VULTR_INFERENCE_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +158,22 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             default_base_url=DEFAULT_OPENCODE_BASE_URL,
             subscription_supported=False,
         ),
+        # Pi (ADR-0012): one OpenAI-compatible custom provider in the seeded
+        # ~/.pi/agent/models.json whose ``apiKey`` is the key variable's NAME.
+        "pi": _AgentSpec(
+            mode_variable="SDF_CREDENTIAL_MODE_PI",
+            connection_variable="SDF_CONNECTION_PI",
+            api_key_source=DEFAULT_PI_API_KEY_VARIABLE,
+            api_key_target=DEFAULT_PI_API_KEY_VARIABLE,
+            api_key_seed="pi-models",
+            base_url_source="SDF_PI_BASE_URL",
+            base_url_target="SDF_PI_BASE_URL",
+            subscription_seeds=MappingProxyType({}),
+            api_key_env_variable="SDF_PI_API_KEY_ENV",
+            api_key_target_follows_source=True,
+            default_base_url=DEFAULT_PI_BASE_URL,
+            subscription_supported=False,
+        ),
     }
 )
 
@@ -206,7 +238,8 @@ def resolve_credential_plan(
     """Resolve the Agent Credential plan for ``agent`` from ``environ``.
 
     Only ``SDF_*`` variables are read, plus the one key variable an operator
-    explicitly names in ``SDF_<AGENT>_API_KEY_ENV`` (ADR-0011); the shell's
+    explicitly names in ``SDF_<AGENT>_API_KEY_ENV`` (ADR-0011) and, for Pi
+    only, its default key variable ``VULTR_INFERENCE_API_KEY`` (ADR-0012); the shell's
     provider variables (``ANTHROPIC_API_KEY``, ``OPENAI_BASE_URL``, ...) are
     ignored and can never be named.  There is no default mode and no fallback
     from one mode to the other, nor from a named key variable to the default.  A
@@ -237,14 +270,16 @@ def resolve_credential_plan(
             variables[spec.base_url_target] = base_url
             if spec.base_url_seed is not None:
                 seeds.append(SeedStep(spec.base_url_seed, spec.base_url_target))
-        if agent == "opencode":
+        if agent in ("opencode", "pi"):
             # Lazy: agent_models imports CredentialConfigError from here.
             from .agent_models import MODEL_VARIABLES, SMALL_MODEL_VARIABLES, resolve_agent_models
 
             selection = resolve_agent_models(agent, environ)
-            assert selection.model is not None and selection.small_model is not None
+            assert selection.model is not None
             variables[MODEL_VARIABLES[agent]] = selection.model
-            variables[SMALL_MODEL_VARIABLES[agent]] = selection.small_model
+            if agent in SMALL_MODEL_VARIABLES:
+                assert selection.small_model is not None
+                variables[SMALL_MODEL_VARIABLES[agent]] = selection.small_model
         return _plan(agent, mode, None, variables, tuple(seeds))
 
     if spec.api_key_env_variable and environ.get(spec.api_key_env_variable, "").strip():

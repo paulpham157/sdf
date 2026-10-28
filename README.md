@@ -50,6 +50,12 @@ OpenAI-compatible endpoint; Vultr Serverless Inference with `vultr/glm-5.3` is
 only the default. Base URL, key variable name and model are configurable per
 agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)).
 
+Pi (`pi`, pinned `0.73.1`) is a second headless agent kind
+(`sdf_core.pi_runtime.PiHeadlessRuntime`, `pi -p --mode json`) with the same
+Vultr defaults (`VULTR_INFERENCE_API_KEY`, `glm-5.3`); it refuses a workspace
+containing `.pi/` and gets write tools only in a fresh E2B sandbox
+([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
+
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 

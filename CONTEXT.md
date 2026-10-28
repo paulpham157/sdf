@@ -96,8 +96,12 @@ _Avoid_: auth method, fallback
 The per-agent-kind base URL, key variable name and model(s) an `api-key` Agent Credential uses; the key itself only ever comes from the environment.
 _Avoid_: hard-coded provider, plaintext key
 
+**Project Agent Config**:
+Agent configuration an Attempt workspace carries (`opencode.json`, `.opencode/`, `.pi/`); untrusted, so it is ignored (OpenCode) or the workspace is refused (Pi).
+_Avoid_: repo settings, trusted config
+
 **Headless Agent Runtime**:
-An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`), instead of driving an agent in a Herdr pane.
+An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`, Pi `-p`), instead of driving an agent in a Herdr pane.
 _Avoid_: Herdr pane, interactive session
 
 **Tool Proxy**:

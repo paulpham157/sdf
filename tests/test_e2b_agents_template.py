@@ -20,6 +20,7 @@ def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
         "CODEX_VERSION",
         "CLAUDE_CODE_VERSION",
         "OPENCODE_VERSION",
+        "PI_VERSION",
         "CURSOR_AGENT_VERSION",
     }
     for name, version in pins.items():
@@ -35,6 +36,9 @@ def test_dockerfile_pins_herdr_codex_claude_and_cursor_to_exact_versions():
     assert '"@openai/codex@${CODEX_VERSION}"' in dockerfile
     assert '"opencode-ai@${OPENCODE_VERSION}"' in dockerfile
     assert 'test "$(opencode --version)" = "${OPENCODE_VERSION}"' in dockerfile
+    assert '"@mariozechner/pi-coding-agent@${PI_VERSION}"' in dockerfile
+    # Pi prints its version on stderr.
+    assert 'test "$(pi --version 2>&1)" = "${PI_VERSION}"' in dockerfile
     assert "downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" in dockerfile
     assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent' in dockerfile
     assert 'ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent' in dockerfile
@@ -85,3 +89,9 @@ def test_opencode_template_pin_matches_runtime_pin():
     from sdf_core.opencode_runtime import OPENCODE_VERSION
 
     assert _pins()["OPENCODE_VERSION"] == OPENCODE_VERSION
+
+
+def test_pi_template_pin_matches_runtime_pin():
+    from sdf_core.pi_runtime import PI_VERSION
+
+    assert _pins()["PI_VERSION"] == PI_VERSION

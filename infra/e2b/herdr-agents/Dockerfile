@@ -6,6 +6,9 @@ ARG CODEX_VERSION=0.157.0
 ARG CLAUDE_CODE_VERSION=2.1.282
 # OpenCode (npm `opencode-ai`): headless `opencode run` agent kind, ADR 0011.
 ARG OPENCODE_VERSION=1.19.4
+# Pi (npm `@mariozechner/pi-coding-agent`): headless `pi -p` agent kind, ADR 0012.
+# `pi --version` prints to stderr.
+ARG PI_VERSION=0.73.1
 # Cursor Agent CLI linux/x64 tarball from downloads.cursor.com/lab/<version>/...
 # Version observed in Slice 1 path spike; build fails on SHA or --version mismatch.
 ARG CURSOR_AGENT_VERSION=2026.09.28-64d2043
@@ -15,7 +18,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     NPM_CONFIG_FUND=false \
     DISABLE_AUTOUPDATER=1 \
-    OPENCODE_DISABLE_AUTOUPDATE=1
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    PI_OFFLINE=1 \
+    PI_SKIP_VERSION_CHECK=1 \
+    PI_TELEMETRY=0
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git procps bash tar \
@@ -25,11 +31,12 @@ RUN apt-get update \
        "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64" \
     && echo "${HERDR_SHA256}  /usr/local/bin/herdr" | sha256sum -c - \
     && chmod 0755 /usr/local/bin/herdr \
-    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "opencode-ai@${OPENCODE_VERSION}" \
+    && npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "opencode-ai@${OPENCODE_VERSION}" "@mariozechner/pi-coding-agent@${PI_VERSION}" \
     && test "$(herdr --version | awk '{print $2}')" = "${HERDR_VERSION}" \
     && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}" \
     && test "$(claude --version | awk '{print $1}')" = "${CLAUDE_CODE_VERSION}" \
     && test "$(opencode --version)" = "${OPENCODE_VERSION}" \
+    && test "$(pi --version 2>&1)" = "${PI_VERSION}" \
     && curl -fsSL --retry 3 \
        -o /tmp/cursor-agent.tar.gz \
        "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \

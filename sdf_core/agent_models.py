@@ -15,6 +15,9 @@ Supported overrides, per agent kind:
   ``vultr/glm-5.3``) and ``SDF_OPENCODE_SMALL_MODEL`` (same provider, default
   ``vultr/glm-5.3-flash``).  Both are written into the seeded OpenCode config
   (``model`` / ``small_model``); ``--model`` selects the main model per run.
+* ``pi`` - ``SDF_PI_MODEL`` (a bare model id, default ``glm-5.3``), written
+  into the seeded ``~/.pi/agent/models.json`` and selected per turn with
+  ``pi --provider sdf --model <id>`` (ADR-0012).
 
 Error messages name variables, never values: an operator may paste a secret
 into the wrong variable.
@@ -30,19 +33,24 @@ from types import MappingProxyType
 from .credentials import CredentialConfigError
 
 MODEL_VARIABLES: Mapping[str, str] = MappingProxyType(
-    {"claude": "SDF_CLAUDE_MODEL", "codex": "SDF_CODEX_MODEL", "opencode": "SDF_OPENCODE_MODEL"}
+    {"claude": "SDF_CLAUDE_MODEL", "codex": "SDF_CODEX_MODEL", "opencode": "SDF_OPENCODE_MODEL", "pi": "SDF_PI_MODEL"}
 )
 SMALL_MODEL_VARIABLES: Mapping[str, str] = MappingProxyType({"opencode": "SDF_OPENCODE_SMALL_MODEL"})
 # Vultr Serverless Inference is the example/default OpenCode provider only;
 # every part of it is overridable (base URL in credentials.py).
-DEFAULT_MODELS: Mapping[str, str] = MappingProxyType({"opencode": "vultr/glm-5.3"})
+DEFAULT_MODELS: Mapping[str, str] = MappingProxyType({"opencode": "vultr/glm-5.3", "pi": "glm-5.3"})
 DEFAULT_SMALL_MODELS: Mapping[str, str] = MappingProxyType({"opencode": "vultr/glm-5.3-flash"})
 # The flag each CLI documents for model selection.
-_MODEL_FLAGS: Mapping[str, str] = MappingProxyType({"claude": "--model", "codex": "-m", "opencode": "--model"})
+_MODEL_FLAGS: Mapping[str, str] = MappingProxyType(
+    {"claude": "--model", "codex": "-m", "opencode": "--model", "pi": "--model"}
+)
 
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,199}")
 # OpenCode model ids are ``<provider id>/<model id>``; the provider id becomes a
 # JSON key in the seeded config, so keep it to a conservative identifier.
+# Pi resolves ``--model`` against the seeded provider's model ids; a ``:``
+# would be read as a thinking-level suffix, so it is not allowed.
+_PI_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@/+-]{0,199}")
 _OPENCODE_MODEL = re.compile(r"([a-z0-9][a-z0-9_-]{0,63})/([A-Za-z0-9][A-Za-z0-9._:@+-]{0,199})")
 
 
@@ -84,6 +92,10 @@ def resolve_agent_models(agent: str, environ: Mapping[str, str]) -> AgentModelSe
         if tiny.group(1) != main.group(1):
             # One custom provider (one base URL, one key) per OpenCode sandbox.
             raise CredentialConfigError(f"{small_variable} must use the same provider as {variable}")
+    if agent == "pi":
+        assert model is not None
+        if not _PI_MODEL.fullmatch(model):
+            raise CredentialConfigError(f"{variable} must be a bare model id without ':', e.g. glm-5.3")
     return AgentModelSelection(agent, model, small)
 
 

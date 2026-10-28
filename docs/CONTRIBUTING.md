@@ -124,6 +124,10 @@ a private mapping). A green unit suite without that gate is not live evidence.
   `E2B_API_KEY` + the configured OpenCode key) must record Task → Attempt →
   Evidence, token/cost totals, the egress allowlist and sandbox cleanup.
   Skipped without the gates.
+- A live Vultr agents loop (`SDF_LIVE_E2B=1` + `SDF_LIVE_VULTR_AGENTS=1` or
+  a subset such as `pi` + `E2B_API_KEY` + `VULTR_INFERENCE_API_KEY`) must
+  record the same, plus the served model (Pi: `served_models == ["glm-5.3"]`).
+  Skipped without the gates.
 - A remote Herdr milestone requires authenticated SDF → HTTPS bridge → Herdr
   evidence, including start, input, output, cancellation, termination,
   reconnect, and no duplicate execution.

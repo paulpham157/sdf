@@ -10,6 +10,7 @@ and carries the supported agent kinds:
 | Codex CLI (`@openai/codex`) | `0.157.0` |
 | Claude Code (`@anthropic-ai/claude-code`) | `2.1.282` |
 | OpenCode (`opencode-ai`, headless `opencode run`, [ADR 0011](../../../docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md)) | `1.19.4` |
+| Pi (`@mariozechner/pi-coding-agent`, headless `pi -p`, [ADR 0012](../../../docs/adr/0012-pi-agent-kind.md)) | `0.73.1` |
 | Cursor Agent CLI (`agent` / `cursor-agent`, linux/x64 tarball, SHA-256 verified) | `2026.09.28-64d2043` |
 | Node.js runtime | `22` (`node:22-bookworm-slim`) |
 
