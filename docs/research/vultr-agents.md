@@ -68,3 +68,16 @@ below are historical.
   agent-comm (OpenCode lead, Pi workers) succeeded on staging ($0.075,
   58.6 s). Smoke on the public build: Pi ($0.0034, setup 18.2 s) and Qwen
   ($0.021, setup 15.8 s) pass.
+- Removed Aider and the Cursor Agent CLI (2026-10-28,
+  [ADR 0016](../adr/0016-remove-aider-and-cursor-agent-kinds.md)); rebuilt
+  `sdf-herdr-agents` as build `a8d59540-a08d-4352-8c5a-60d90987ad21`, still
+  public, rootfs 2.2 GiB (was 4.1 GiB). Verified first on an identical
+  private staging build, no runtime install, egress locked, 0 sandboxes left,
+  both criteria PASS for all six kinds: Codex 52,338 / 610 ($0.041, 50.9 s);
+  Claude (usage 0/0, 39.7 s); Pi 4,176 / 94 ($0.0034, 17.3 s); OpenCode
+  27,725 / 173 ($0.022); Qwen 26,417 / 392 ($0.021, 18.9 s); Goose 7,397 /
+  196 ($0.0061, 22.6 s). ADR 0014 agent-comm (OpenCode lead, Pi workers)
+  succeeded ($0.088, 149.1 s, 13 messages); a first attempt run in parallel
+  with the OpenCode test failed at the lead's credential seed step and passed
+  when rerun alone. Smoke on the public build: Pi ($0.0034, 23.5 s) and Qwen
+  ($0.021, 29.9 s) pass.

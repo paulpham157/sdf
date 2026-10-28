@@ -81,14 +81,15 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
-Previous build, before ADR 0016 (it still contained Aider and the Cursor
-Agent CLI). Built 2026-10-28 (rebuild with Qwen Code, Goose and Aider): template id
-`xj8glxnh091op795c7me`, build `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`
+Built 2026-10-28 (ADR 0016: Aider and the Cursor Agent CLI removed): template
+id `xj8glxnh091op795c7me`, build `a8d59540-a08d-4352-8c5a-60d90987ad21`
 (2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at
-commit `535318b`. Contains every CLI in the table above: Herdr, Codex, Claude
-Code, OpenCode, Pi, Qwen Code, Goose, Aider and the Cursor Agent CLI. It was
-first built as a private staging template (`sdf-herdr-agents-staging`, ~140 s
-build, since deleted) and verified there before the public image was replaced:
+commit `48c131e`. Contains every CLI in the table above: Herdr, Codex, Claude
+Code, OpenCode, Pi, Qwen Code and Goose. Root filesystem 2.2 GiB (was
+4.1 GiB; `/opt/aider` was 679 MiB and `/opt/cursor-agent` 556 MiB); E2B
+`diskSizeMB` 14581 (was 15944). It was first built as a private staging
+template (`sdf-herdr-agents-staging`, since deleted) and verified there
+before the public image was replaced:
 
 - Secret check: the build context is the `.dockerignore` allowlist; Dockerfile
   `ARG`/`ENV` hold only versions, SHA-256 pins and telemetry flags. A boot
@@ -96,13 +97,18 @@ build, since deleted) and verified there before the public image was replaced:
   `.netrc`, `.npmrc` tokens, ...), no key-shaped strings, no secret env names,
   and none of the operator's E2B/Vultr key values (compared by SHA-256 only).
   The only private keys are `/etc/ssh/ssh_host_*_key`, which E2B's own
-  provisioning layer (`openssh-server`) adds to every template; the previous
-  build had the same ones and this Dockerfile installs no SSH.
-- Live: all seven kinds (codex, claude, opencode, pi, qwen, goose, aider) pass
-  on Vultr glm-5.3 with egress locked and no runtime install, plus an ADR 0014
-  agent-comm run (OpenCode lead, Pi workers).
+  provisioning layer (`openssh-server`) adds to every template; this
+  Dockerfile installs no SSH.
+- Removal check: `aider`, `agent` and `cursor-agent` are not on `PATH`, and
+  `/opt/aider` and `/opt/cursor-agent` do not exist.
+- Live: all six kinds (codex, claude, opencode, pi, qwen, goose) pass on
+  Vultr glm-5.3 with egress locked and no runtime install, plus an ADR 0014
+  agent-comm run (OpenCode lead, Pi workers). A Pi + Qwen smoke passed on
+  the public build.
 
-Previous build: `172d9021-919b-4de1-8391-35aaed26cad2` (without Qwen Code,
+Previous build, before ADR 0016 (it still contained Aider and the Cursor
+Agent CLI): `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`, from commit `535318b`.
+Before that: `172d9021-919b-4de1-8391-35aaed26cad2` (without Qwen Code,
 Goose and Aider).
 
 Licensing caveat: publishing redistributes Claude Code (proprietary,
@@ -113,7 +119,7 @@ Anthropic's terms require it, withdraw it with
 `e2b template unpublish sdf-herdr-agents -y` (or rebuild without Claude Code). Users of the public template remain bound by
 each CLI's own license and need their own credentials; the image holds none.
 The published build is the secret-checked one above
-(`60e6172b-fe69-4c5e-b81a-b60b28a59c9b`); rebuilding replaces the public
+(`a8d59540-a08d-4352-8c5a-60d90987ad21`); rebuilding replaces the public
 image, so build a private staging template first and repeat the secret check
 there before any rebuild.
 

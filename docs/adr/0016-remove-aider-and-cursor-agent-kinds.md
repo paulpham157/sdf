@@ -62,6 +62,16 @@ documents stay, marked superseded, as the record of that decision.
 - Docs: `.env.example`, README, CONTEXT and the template README no longer list
   Aider or Cursor; the template's licensing caveat now names only Claude Code.
 
+## Rollout
+
+Verified on a private staging template before the public image was replaced:
+boot scan clean (no secrets; only E2B's SSH host keys), `aider`, `agent`,
+`cursor-agent`, `/opt/aider` and `/opt/cursor-agent` absent, and all six kinds
+plus an agent-comm run pass on Vultr glm-5.3 with egress locked. Public
+`sdf-herdr-agents` is now build `a8d59540-a08d-4352-8c5a-60d90987ad21`
+(still public; rootfs 2.2 GiB, down from 4.1 GiB). Details are in
+`infra/e2b/herdr-agents/README.md` and `docs/research/vultr-agents.md`.
+
 ## Data
 
 No migration. The agent kind is free text in the database (no enum or CHECK
