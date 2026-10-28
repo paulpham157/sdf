@@ -7,8 +7,10 @@ Task -> Attempt -> OpenCodeHeadlessRuntime (one ``opencode run`` turn in the
 sandbox) -> host-side criterion checks -> Evidence.  Egress is restricted to
 the inference host; the sandbox is killed and verified gone.
 
-Template: ``SDF_E2B_OPENCODE_TEMPLATE`` (default: E2B's public ``opencode``
-template).  Provider/model follow the normal per-agent config
+Template: ``SDF_E2B_OPENCODE_TEMPLATE`` (default: the shared
+``sdf_core.agent_sandbox.DEFAULT_TEMPLATE``, the pinned ``sdf-herdr-agents``
+image with OpenCode 2.2.0; E2B's public ``opencode`` template ships an older
+OpenCode the runtime does not support).  Provider/model follow the normal per-agent config
 (``SDF_OPENCODE_BASE_URL``, ``SDF_OPENCODE_MODEL``, ...); Vultr is the default.
 """
 
@@ -24,6 +26,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from sdf_core.adapter import RuntimeAgentAdapter
+from sdf_core.agent_sandbox import DEFAULT_TEMPLATE
 from sdf_core.credential_injection import create_credentialed_transport
 from sdf_core.credentials import DEFAULT_OPENCODE_BASE_URL, load_dotenv
 from sdf_core.db import ArtifactRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow, make_engine
@@ -44,7 +47,7 @@ pytestmark = pytest.mark.skipif(
     not LIVE, reason="live OpenCode check: set SDF_LIVE_E2B=1 SDF_LIVE_OPENCODE=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY"
 )
 
-TEMPLATE = ENV.get("SDF_E2B_OPENCODE_TEMPLATE", "opencode")
+TEMPLATE = ENV.get("SDF_E2B_OPENCODE_TEMPLATE", DEFAULT_TEMPLATE)
 CHECKS = {
     "add returns the sum": [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]],
     "sub still subtracts": [["python3", "-c", "from calc import sub; assert sub(5, 3) == 2"]],
