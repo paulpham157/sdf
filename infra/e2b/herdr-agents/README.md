@@ -35,19 +35,18 @@ scripts.
 | --- | --- | --- |
 | `@cad0p/pi-steering` | `0.2.0` | write and read-only turns |
 | `@paulpham157/apply-patch` | `0.3.1` | write turns only |
+| `pi-lens` | `4.4.6` | write turns only |
 
 Pi 1.x resolves an extension's `@earendil-works/pi-*` imports to its own
 modules, so no peer is installed or linked; `verify-pins.mjs` fails the build
 on any version drift and if a second Pi (`@earendil-works` or
 `@mariozechner`) appears under the extensions' `node_modules`. Pi loads them only by explicit
-`-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. Two
-requested packages are not baked in. `pi-fabric` stays rejected: it sends
-prompts and code to its own third-party model services (outside the egress
-lock), embeds a second Pi, and needs Node >= 24. `pi-lens` 4.4.6 hung 2 of 3
-live turns under Pi 0.73.1; re-tested under Pi 1.4.0 on the staging image it
-did not hang (0 of 8 stub turns, 0 of 4 live glm-5.3 turns with egress
-locked), but it adds about 100 MiB to the image and about 8k prompt tokens per
-request (11 extra tools), so it stays out; enabling it is a separate decision.
+`-e` path, chosen with `SDF_PI_EXTENSIONS`; discovery stays off. `pi-lens`
+(ADR 0017 update) runs with tool/LSP installs and rule-pack refresh disabled
+and `PI_LENS_HOME=$HOME/.pi-lens`, set by the turn wrapper; Pi's
+`--no-approve` keeps it from running binaries inside the workspace. `pi-fabric`
+stays rejected: it sends prompts and code to its own third-party model
+services (outside the egress lock), embeds a second Pi, and needs Node >= 24.
 
 ## Claude first-run state
 

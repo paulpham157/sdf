@@ -175,7 +175,7 @@ FAKE_PI = textwrap.dedent('''\
         print(v); sys.exit(0)
     prompt = sys.stdin.read()
     with open(os.environ["FAKE_PI_LOG"], "a") as f:
-        env = {k: v for k, v in os.environ.items() if k.startswith("PI_")}
+        env = {k: v for k, v in os.environ.items() if k.startswith(("PI_", "PILENS_"))}
         f.write(json.dumps({"cwd": os.getcwd(), "args": args, "prompt": prompt, "env": env}) + "\\n")
     mode = os.environ.get("FAKE_PI_MODE", "ok")
     if mode == "fail":
@@ -332,6 +332,7 @@ def test_write_tools_only_with_the_fresh_e2b_claim(local, monkeypatch):
     assert [args[i + 1] for i, a in enumerate(args) if a == "-e"] == [
         f"{ext}/@cad0p/pi-steering/src/index.ts",
         f"{ext}/@paulpham157/apply-patch/src/index.ts",
+        f"{ext}/pi-lens/dist/index.js",
     ]
     assert runtime.loaded_extensions(session.session_id) == tuple(pir.PI_EXTENSIONS)
     runtime.collect_workspace("ATTEMPT-2", workspace)
@@ -352,13 +353,18 @@ def test_real_claim_is_refused_for_non_production_transports(local):
 def test_turn_strips_every_pi_variable_and_forces_offline(local):
     transport, workspace, log = local
     transport.env.update({"PI_CODING_AGENT_DIR": "/tmp/evil", "PI_PACKAGE_DIR": "/tmp/evil", "PI_ANYTHING": "1",
-                          "PI_LENS_HOME": "/tmp/evil", "PI_LENS_DISABLE_TOOL_INSTALL": "0"})
+                          "PI_LENS_HOME": "/tmp/evil", "PI_LENS_DISABLE_TOOL_INSTALL": "0",
+                          "PILENS_PROBE": "1", "PILENS_DATA_DIR": "/tmp/evil"})
     runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-3", workspace)
     session = runtime.start(attempt_id="ATTEMPT-3", agent="pi")
     runtime.send(session.session_id, "fix")
     assert _calls(log)[0]["env"] == {
         "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
+        # pi-lens: set after the purge, so "0" in the sandbox cannot re-enable installs.
+        "PI_LENS_DISABLE_TOOL_INSTALL": "1", "PI_LENS_DISABLE_LSP_INSTALL": "1", "PI_LENS_DISABLE_TOOL_REFRESH": "1",
+        # Pinned: unset, pi-lens logs into <cwd>/.pi-lens-probe-home under /tmp.
+        "PI_LENS_HOME": os.path.join(transport.env["HOME"], ".pi-lens"),
     }
 
 
@@ -563,8 +569,6 @@ def test_extension_selection_defaults_to_all_and_empty_means_none():
 @pytest.mark.parametrize("value, reason", [
     ("pi-fabric", "third-party model services"),
     ("@cad0p/pi-steering,pi-fabric", "third-party model services"),
-    ("pi-lens", "not baked into the image"),
-    ("@paulpham157/apply-patch,pi-lens", "8k prompt tokens"),
 ])
 def test_rejected_extension_is_refused_with_the_reason(value, reason):
     with pytest.raises(ValueError, match=reason):
@@ -572,8 +576,16 @@ def test_rejected_extension_is_refused_with_the_reason(value, reason):
 
 
 def test_rejected_extensions_are_not_baked_or_allowlisted():
-    for name in ("pi-fabric", "pi-lens"):
-        assert name in pir.UNAVAILABLE_PI_EXTENSIONS and name not in pir.PI_EXTENSIONS
+    assert set(pir.UNAVAILABLE_PI_EXTENSIONS) == {"pi-fabric"}
+    assert "pi-fabric" not in pir.PI_EXTENSIONS
+
+
+def test_pi_lens_is_baked_by_default_for_write_turns_only():
+    assert pir.DEFAULT_PI_EXTENSIONS == ("@cad0p/pi-steering", "@paulpham157/apply-patch", "pi-lens")
+    lens = pir.PI_EXTENSIONS["pi-lens"]
+    assert (lens.version, lens.entry, lens.read_only) == ("4.4.6", "dist/index.js", False)
+    assert pir.resolve_pi_extensions("pi-lens") == ("pi-lens",)
+    assert pir.extensions_for_turn(("pi-lens",), auto=False) == ()
 
 
 @pytest.mark.parametrize("value", ["left-pad", "npm:@cad0p/pi-steering", "@cad0p/pi-steering@0.2.0", "./x.ts", "/opt/sdf-pi-extensions/x"])
@@ -624,7 +636,7 @@ def test_discovery_flags_stay_with_extensions_and_paths_stay_in_the_baked_dir(lo
     for flag in ("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-mcp", "--no-approve"):
         assert flag in args
     paths = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
-    assert len(paths) == 2 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
+    assert len(paths) == 3 and all(p.startswith(pir.PI_EXTENSIONS_DIR + "/node_modules/") for p in paths)
 
 
 @pytest.mark.parametrize("versions, message", [

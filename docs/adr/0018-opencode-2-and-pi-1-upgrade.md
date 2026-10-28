@@ -84,7 +84,8 @@ pin, comment and test updates.
   apply-patch 0.3.1 keep their pins and lockfile hashes.
 - **pi-fabric stays rejected.** It routes prompts and code to its own
   third-party model services and embeds a second Pi; it also needs Node >= 24.
-- **pi-lens stays out, for cost rather than hangs.** Under Pi 1.4.0 it did
+- **pi-lens stays out, for cost rather than hangs** (later reversed at the
+  owner's request: baked in for write turns, see the ADR 0017 update). Under Pi 1.4.0 it did
   not hang (0 of 8 stub, 0 of 4 live turns), but it adds about 100 MiB and
   about 8k prompt tokens per request; the unavailable reason says so.
 - `--tools` stays a hard allowlist in 1.4.0: read-only turns get

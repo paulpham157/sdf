@@ -20,9 +20,11 @@ Hardening, because the Attempt workspace is untrusted content:
   create one), so no Pi release's project-trust rules are relied on alone.
 * Extension, skill, prompt-template and theme discovery and built-in MCP
   (``--no-mcp``) are disabled by flag.
-* Every ``PI_*`` variable is unset per turn (``PI_CODING_AGENT_DIR`` would move
-  models.json/settings/extensions); ``PI_OFFLINE``, ``PI_SKIP_VERSION_CHECK``
-  and ``PI_TELEMETRY=0`` are then set so Pi makes no calls besides inference.
+* Every ``PI_*`` (and pi-lens ``PILENS_*``) variable is unset per turn
+  (``PI_CODING_AGENT_DIR`` would move models.json/settings/extensions); ``PI_OFFLINE``, ``PI_SKIP_VERSION_CHECK``
+  and ``PI_TELEMETRY=0`` are then set so Pi makes no calls besides inference,
+  and ``PI_LENS_DISABLE_{TOOL_INSTALL,LSP_INSTALL,TOOL_REFRESH}=1`` so pi-lens
+  never downloads or installs a linter, language server or rule pack.
 * The prompt goes in on stdin: Pi has no ``--`` and would read a leading
   ``-`` or ``@`` argument as a flag or a file.
 * Pi has no permission system.  Its write tools (``bash``, ``edit``,
@@ -91,6 +93,15 @@ PI_EXTENSIONS: dict[str, PiExtension] = {
         "sha512-qqO0zcG0hW7lTdst0GXw+85ex3cJ+T94iLic4R3mpPakwrp1B/jOAU1cov72fiQBSyf9NJO2eRj9BeJdNz41Rw==",
         "src/index.ts", read_only=False,
     ),
+    # Post-write diagnostics, format and autofix, plus lens_*/ast_grep_*/lsp_*
+    # tools (``ast_grep_replace`` writes): write turns only.  Downloads and
+    # installs are off (see ``_PI_LENS_ENV``); Pi's ``--no-approve`` makes it
+    # refuse project-local binaries and language servers.
+    "pi-lens": PiExtension(
+        "4.4.6",
+        "sha512-Hlf4YJuLNpzOnIUj0MMobtsG2mH4n3fkgjdywQhVvwmetUpkgr0J4n9NJKMhRaDszyTshQ4itJtkyd3nUKfktw==",
+        "dist/index.js", read_only=False,
+    ),
 }
 DEFAULT_PI_EXTENSIONS: tuple[str, ...] = tuple(PI_EXTENSIONS)
 # Vetted and rejected (ADR-0017); named so the error says why.
@@ -98,10 +109,6 @@ UNAVAILABLE_PI_EXTENSIONS = {
     "pi-fabric": (
         "pi-fabric routes prompts and code to its own third-party model services and embeds a second Pi; "
         "it also needs Node >= 24 (the template runs Node 22)"
-    ),
-    "pi-lens": (
-        "pi-lens 4.4.6 is not baked into the image: it hung 2 of 3 live turns under Pi 0.73.1 and, although "
-        "0 of 4 live turns hung under Pi 1.4.0, it adds about 100 MiB and about 8k prompt tokens per request"
     ),
 }
 PI_EXTENSIONS_ENV = "SDF_PI_EXTENSIONS"
@@ -155,11 +162,24 @@ PROJECT_CONFIG_DIR = ".pi"
 # reported by this runtime, not swallowed by the transport.  Only the
 # ``message_end`` / ``tool_execution_end`` events are printed: ``--mode json``
 # also streams one ``message_update`` per token.
-_PURGE_PI_ENV = 'for v in $(env | sed -n "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; '
+# pi-lens (ADR-0017): no tool/LSP installs and no rule-pack refresh.  Set
+# after the purge, so the sandbox environment cannot turn them back on.
+# ``PI_LENS_HOME`` is pinned because, unset, pi-lens writes its logs to
+# ``<cwd>/.pi-lens-probe-home`` whenever the cwd is under ``/tmp`` (the turn
+# workspace is), which would land in the collected workspace.
+_PI_LENS_ENV = (
+    "PI_LENS_DISABLE_TOOL_INSTALL=1 PI_LENS_DISABLE_LSP_INSTALL=1 PI_LENS_DISABLE_TOOL_REFRESH=1 "
+    'PI_LENS_HOME="$HOME/.pi-lens"'
+)
+# ``PI_*`` and pi-lens's ``PILENS_*`` (data dir, probe mode).
+_PURGE_PI_ENV = (
+    'for v in $(env | sed -n -e "s/^\\(PI_[A-Za-z0-9_]*\\)=.*/\\1/p" -e "s/^\\(PILENS_[A-Za-z0-9_]*\\)=.*/\\1/p"); '
+    'do unset "$v"; done; '
+)
 _WRAPPER = (
     'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
     + _PURGE_PI_ENV +
-    'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0; '
+    'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 ' + _PI_LENS_ENV + '; '
     'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
     'if [ -e ' + PROJECT_CONFIG_DIR + ' ] || [ -L ' + PROJECT_CONFIG_DIR + ' ]; then echo '
     + _EXIT_MARKER + str(_PROJECT_CONFIG_EXIT) + '; exit 0; fi; '

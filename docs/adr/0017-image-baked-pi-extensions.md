@@ -89,11 +89,12 @@ extension fails the turn rather than being silently skipped.
 
 **Selection: `SDF_PI_EXTENSIONS`.**
 
-- Unset: both.
+- Unset: all allowlisted packages (pi-steering, apply-patch and, since the
+  update below, pi-lens).
 - Empty: none.
 - Otherwise: a comma-separated list of allowlisted package names. Anything
-  else, including paths, `npm:` specs, version ranges, `pi-fabric` and
-  `pi-lens`, is refused before a sandbox is created.
+  else, including paths, `npm:` specs, version ranges and `pi-fabric`, is
+  refused before a sandbox is created.
 
 Nothing is ever installed at runtime. Before the ADR 0008 claim, `start()`
 reads each selected package's `package.json` in the sandbox and refuses a
@@ -160,3 +161,63 @@ pi-lens 4.4.6 was re-tested under Pi 1.4.0 on the staging image: no hang in
 $0.0096 per turn), versus 2 of 3 live hangs under Pi 0.73.1. It still is not
 baked in, because it adds about 100 MiB and about 8k prompt tokens per request
 for 11 extra tools; `SDF_PI_EXTENSIONS=pi-lens` keeps failing closed.
+
+## Update (2026-10-28): pi-lens 4.4.6 baked in, write turns only
+
+The owner asked for pi-lens, accepting the size and token cost. 4.4.6 is still
+npm `latest`; it declares `@earendil-works/pi-coding-agent`, `pi-tui` and
+`typebox` as peers (resolved from the host Pi 1.4.0) and Node >= 22.19.0 (the
+image has 22.23.4). It is pinned in `package.json` and the lockfile
+(`sha512-Hlf4YJuL…`), installed by the same `npm ci --ignore-scripts
+--legacy-peer-deps`; `verify-pins.mjs` covers it and still finds no second
+Pi. It adds 15 packages. The only install script in the tree is
+`@ast-grep/cli`'s postinstall (it swaps the JS shim for the native binary);
+with `--ignore-scripts` the shim stays and resolves
+`@ast-grep/cli-linux-x64-gnu`, and pi-lens resolves the native binary
+directly anyway.
+
+Re-vetting the 4.4.6 bundle (`dist/index.js`):
+
+- **Network.** Every outbound call is a tool or data download: managed
+  linter/LSP installs (GitHub releases via `api.github.com`, npm, pip/pipx,
+  gem, `go install`, `dotnet tool`), the opengrep rule-pack refresh
+  (`semgrep.dev/c/auto`) and tree-sitter grammar fetches (`unpkg.com`) for
+  grammars not vendored. Installs are refused when
+  `PI_LENS_DISABLE_TOOL_INSTALL=1`/`PI_LENS_DISABLE_LSP_INSTALL=1`, the
+  refresh when `PI_LENS_DISABLE_TOOL_REFRESH=1`; the grammar fetch can only
+  write into the package's own `grammars/` directory, which is root-owned. The
+  only `net.createConnection` is a local IPC socket. No telemetry, no prompts
+  or code leave the sandbox.
+- **Processes.** After a write it runs formatters, autofixers (Biome, Ruff,
+  ESLint), linters, type-checkers, language servers and the project's test
+  runner if found, plus `git` and the bundled `ast-grep`. Binaries inside the
+  project (`node_modules/.bin`, `.venv/bin`, `venv/bin`, `vendor/bin`), any
+  installs, and language-server spawns are gated on Pi's
+  `ctx.isProjectTrusted()`. SDF passes `--no-approve`, which makes it `false`
+  (Pi `dist/cli/args.js`, `dist/main.js`), so pi-lens latches "untrusted".
+  Checked with a workspace that planted marker scripts as `ruff`, `pyright`,
+  `eslint`, `tsc` and the like in all four directories: with `--no-approve`
+  none ran; the control run with `--approve` ran
+  `.venv/bin/pyright-langserver` and `node_modules/.bin/pyright-langserver`.
+- **Environment.** It reads `PI_LENS_*`/`PILENS_*` settings, `PATH`, `HOME`,
+  `PI_CODING_AGENT_DIR`, `VIRTUAL_ENV`, `GOPATH` and similar; no credential
+  variables.
+- **Files.** State goes to `~/.pi-lens` (logs, caches,
+  `projects/<hash>`). Unset `PI_LENS_HOME`, it puts its logs in
+  `<cwd>/.pi-lens-probe-home` whenever the cwd is under `/tmp`, which the
+  turn workspace is, so that directory would show up in the Attempt's diff.
+
+**Runtime.** The turn wrapper now also purges `PILENS_*`, then sets
+`PI_LENS_DISABLE_TOOL_INSTALL=1 PI_LENS_DISABLE_LSP_INSTALL=1
+PI_LENS_DISABLE_TOOL_REFRESH=1 PI_LENS_HOME=$HOME/.pi-lens` after the purge,
+so nothing in the sandbox environment can turn installs back on. pi-lens is
+in the default set and loads last.
+
+**Read-only.** pi-lens is **write turns only** (`read_only=False`). It
+registers `ast_grep_replace` (a write tool) and runs formatters and autofixers
+from its hooks. `--tools` would hide the tool but not the hooks, and the hooks
+run whatever those names resolve to on `PATH`, which a previous write turn
+could have changed under `$HOME`. Read-only turns still load pi-steering alone.
+
+`pi-fabric` stays the only rejected package. Live results and the image-size
+delta are under Verification in the template README.
