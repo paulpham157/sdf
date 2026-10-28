@@ -53,3 +53,15 @@ Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
   authoritative); Aider 785 / 65 ($0.0008, 78.2 s). Goose and Aider do not
   report the served model. Aider 0.86.2 rejects `--chat-mode code` (it aliases
   `--edit-format`), so write mode omits the flag.
+- Rebuilt `sdf-herdr-agents` with Qwen Code / Goose / Aider (2026-10-28,
+  build `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`, still public). Verified first
+  on an identical private staging build, no runtime install, egress locked,
+  0 sandboxes left, all both criteria PASS: Codex 38,977 / 381 ($0.030,
+  44.9 s, setup 13.5 s); Claude (usage 0/0, 71.3 s, setup 47.2 s); Pi 4,176
+  / 89 ($0.0034, 12.9 s, setup 7.0 s); OpenCode 20,662 / 110 ($0.016,
+  16.2 s); Qwen 26,503 / 363 ($0.021, 36.3 s, setup 21.2 s vs 41 s with the
+  runtime install); Goose 7,466 / 166 ($0.0061, 24.1 s, setup 18.3 s vs
+  28.7 s); Aider 785 / 65 ($0.0008, 31.2 s, setup 16.2 s vs 70.9 s). ADR 0014
+  agent-comm (OpenCode lead, Pi workers) succeeded on staging ($0.075,
+  58.6 s). Smoke on the public build: Pi ($0.0034, setup 18.2 s) and Qwen
+  ($0.021, setup 15.8 s) pass.

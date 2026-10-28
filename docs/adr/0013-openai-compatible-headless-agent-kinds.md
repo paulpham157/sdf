@@ -119,8 +119,8 @@ reused sandbox, tests) each kind runs read-only:
 
 ## Live verification (E2B, Vultr glm-5.3, egress locked to `api.vultrinference.com`)
 
-Installed at runtime on the `codex` template (the published
-`sdf-herdr-agents` image does not contain these agents yet; Qwen also needed
+First run: installed at runtime on the `codex` template (the published
+`sdf-herdr-agents` image did not contain these agents yet; Qwen also needed
 Node 22 there). Every run: Attempt completed, both acceptance criteria PASS,
 1 sandbox, 0 left, no key value in output or reports.
 
@@ -130,10 +130,23 @@ Node 22 there). Every run: Attempt completed, both acceptance criteria PASS,
 | goose | 7,515 / 221 | $0.0063 | 34.1 s (28.7 s) | not reported |
 | aider | 785 / 65 | $0.0008 | 78.2 s (70.9 s) | not reported |
 
+Rebuilt image (2026-10-28, `sdf-herdr-agents` build
+`60e6172b-fe69-4c5e-b81a-b60b28a59c9b`, verified first on an identical
+private staging build): the three CLIs come from the image, and the live test
+only checks their `--version` (`IMAGE_VERSION_CHECK`), with no runtime install.
+Same criteria, all PASS:
+
+| Kind | Tokens in / out | LLM est. | Duration (bootstrap) | Bootstrap vs runtime install |
+| --- | --- | --- | --- | --- |
+| qwen | 26,503 / 363 | $0.021 | 36.3 s (21.2 s) | 1.9x faster |
+| goose | 7,466 / 166 | $0.0061 | 24.1 s (18.3 s) | 1.6x faster |
+| aider | 785 / 65 | $0.0008 | 31.2 s (16.2 s) | 4.4x faster |
+
 ## Consequences
 
-- The Dockerfile installs all three (pins in ARGs, `--version` checks), but
-  the public `sdf-herdr-agents` template must be rebuilt before they are
-  available without a runtime install.
+- The Dockerfile installs all three (pins in ARGs, `--version` checks); the
+  public `sdf-herdr-agents` template was rebuilt with them on 2026-10-28
+  (build `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`), so no runtime install is
+  needed. The runtime install path remains only for the bare `codex` template.
 - Aider is a pair programmer, not an autonomous agent: one turn is one model
   exchange plus its edits.

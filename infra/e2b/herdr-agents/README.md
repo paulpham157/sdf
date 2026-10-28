@@ -80,16 +80,28 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
-> **Rebuild pending.** The Dockerfile now also pins Qwen Code, Goose and Aider
-> (ADR 0013). The published build below predates them and does not contain
-> those CLIs; rebuilding replaces the public image, so repeat the secret check
-> and the licensing review first. Until then the live tests install the three
-> CLIs at runtime (`tests/test_vultr_agents_live.py`).
+Built 2026-10-28 (rebuild with Qwen Code, Goose and Aider): template id
+`xj8glxnh091op795c7me`, build `60e6172b-fe69-4c5e-b81a-b60b28a59c9b`
+(2 vCPU, 2048 MiB), still public (`public: true`), from the Dockerfile at
+commit `535318b`. Contains every CLI in the table above: Herdr, Codex, Claude
+Code, OpenCode, Pi, Qwen Code, Goose, Aider and the Cursor Agent CLI. It was
+first built as a private staging template (`sdf-herdr-agents-staging`, ~140 s
+build, since deleted) and verified there before the public image was replaced:
 
-Built 2026-10-28: template id `xj8glxnh091op795c7me`, build
-`172d9021-919b-4de1-8391-35aaed26cad2` (2 vCPU, 2048 MiB, ~110 s build). A
-boot check found no credential files, no key-shaped strings and no secret env
-names in the image.
+- Secret check: the build context is the `.dockerignore` allowlist; Dockerfile
+  `ARG`/`ENV` hold only versions, SHA-256 pins and telemetry flags. A boot
+  scan found no credential files (`auth.json`, `.credentials.json`, `.env`,
+  `.netrc`, `.npmrc` tokens, ...), no key-shaped strings, no secret env names,
+  and none of the operator's E2B/Vultr key values (compared by SHA-256 only).
+  The only private keys are `/etc/ssh/ssh_host_*_key`, which E2B's own
+  provisioning layer (`openssh-server`) adds to every template; the previous
+  build had the same ones and this Dockerfile installs no SSH.
+- Live: all seven kinds (codex, claude, opencode, pi, qwen, goose, aider) pass
+  on Vultr glm-5.3 with egress locked and no runtime install, plus an ADR 0014
+  agent-comm run (OpenCode lead, Pi workers).
+
+Previous build: `172d9021-919b-4de1-8391-35aaed26cad2` (without Qwen Code,
+Goose and Aider).
 
 Licensing caveat: publishing redistributes Claude Code (proprietary,
 "SEE LICENSE IN README.md") and the Cursor Agent CLI tarball to every E2B team.
@@ -100,8 +112,9 @@ terms require it, withdraw it with `e2b template unpublish sdf-herdr-agents -y`
 (or rebuild without those CLIs). Users of the public template remain bound by
 each CLI's own license and need their own credentials; the image holds none.
 The published build is the secret-checked one above
-(`172d9021-919b-4de1-8391-35aaed26cad2`); rebuilding replaces the public
-image, so repeat the secret check before any rebuild.
+(`60e6172b-fe69-4c5e-b81a-b60b28a59c9b`); rebuilding replaces the public
+image, so build a private staging template first and repeat the secret check
+there before any rebuild.
 
 Dockerfile `ENV` reaches the image entrypoint (and so the Herdr server), but
 not commands run through the E2B SDK, which start with a clean environment.
