@@ -243,7 +243,11 @@ def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypa
     def probing_terminate(session_id: str):
         if transport.sandbox_id and transport.sandbox_id not in created:
             created.append(transport.sandbox_id)
-        for name, argv in (("egress", ["sh", "-c", EGRESS_PROBE]), ("records", ["python3", "-c", _RECORDS, agent])):
+        # Pi's records come from the runtime's own event parsing (below).
+        probe_argv = {"egress": ["sh", "-c", EGRESS_PROBE]}
+        if agent != "pi":
+            probe_argv["records"] = ["python3", "-c", _RECORDS, agent]
+        for name, argv in probe_argv.items():
             try:
                 probes[name] = transport.exec_argv(argv, 90_000)
             except Exception as exc:  # noqa: BLE001 - diagnostics only

@@ -97,7 +97,7 @@ The per-agent-kind base URL, key variable name and model(s) an `api-key` Agent C
 _Avoid_: hard-coded provider, plaintext key
 
 **Project Agent Config**:
-Agent configuration an Attempt workspace carries (`opencode.json`, `.opencode/`, `.pi/`); untrusted, so it is ignored (OpenCode) or the workspace is refused (Pi).
+Agent configuration an Attempt workspace carries (`.claude/`, `.codex/config.toml`, `opencode.json`, `.opencode/`, `.pi/`); untrusted, so it is ignored (Claude, OpenCode), outranked by pinned invocation overrides (Codex approval/sandbox policy) or the workspace is refused (Pi).
 _Avoid_: repo settings, trusted config
 
 **Headless Agent Runtime**:
