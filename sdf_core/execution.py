@@ -268,6 +268,8 @@ class ExecutionService:
                     commands=commands,
                     criteria=tuple(task.acceptance_criteria or ()),
                     criterion_checks=criterion_checks,
+                    # The check's own files must match the server fixture (ADR 0025).
+                    reference=fixture,
                 )
         except Exception:
             self._fail_attempt(task, attempt)

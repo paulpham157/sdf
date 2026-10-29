@@ -10,14 +10,15 @@ argv behind each id comes from a source only the server operator controls:
 
 Both use the same JSON shape::
 
-    {"checks": {"unit-tests": {"argv": ["pytest", "-q"], "timeout_seconds": 60},
+    {"checks": {"unit-tests": {"argv": ["pytest", "-q", "tests/test_calc.py"], "timeout_seconds": 60},
                 "add-works": ["python3", "-c", "from calc import add; assert add(2, 3) == 5"]}}
 
 Every argv is validated when it is loaded: the executable is a bare name from
 the evaluator allowlist (no path), no argument contains NUL, a ``python``
 check uses one of the forms the evaluator can harden (``-c``, ``-m`` or a
 script path, after a small set of harmless flags), and the timeout is bounded
-(1-600 s).  An id defined in both sources is a configuration error.  Plan
+(1-600 s).  A ``pytest`` check (bare or ``python -m pytest``) must name
+its test files (:func:`pytest_targets`).  An id defined in both sources is a configuration error.  Plan
 checks (``sdf_core.plans``) go through the same :func:`validate_argv`.
 """
 
@@ -80,12 +81,103 @@ def validate_argv(argv: Sequence[Any], *, where: str = "check") -> tuple[str, ..
         raise CheckConfigError(
             f"{where}: executable must be a bare name from {sorted(ALLOWED_EXECUTABLES)}, not a path"
         )
-    if executable in {"python", "python3"}:
-        try:
+    try:
+        if executable in {"python", "python3"}:
             python_invocation(out)
-        except ValueError as exc:
-            raise CheckConfigError(f"{where}: {exc}") from None
+        check_targets(out)
+    except ValueError as exc:
+        raise CheckConfigError(f"{where}: {exc}") from None
     return tuple(out)
+
+
+# pytest options a check may use.  Anything else (``-p``, ``--pyargs``,
+# ``--rootdir``, ``-c``, ``--confcutdir``, ``-o``, ``--no-summary``, ...) could
+# load code, change what is collected or hide the result summary.
+PYTEST_FLAGS_ALLOWED = frozenset({
+    "-q", "--quiet", "-v", "--verbose", "-vv", "-x", "--exitfirst", "-s", "-l", "--showlocals",
+    "--no-header", "--strict-markers", "--strict-config", "--disable-warnings", "--color=no", "--color=yes",
+})
+PYTEST_FLAGS_WITH_VALUE_ALLOWED = frozenset({"-k", "-m", "-W"})
+PYTEST_FLAG_PATTERN = re.compile(r"-r[a-zA-Z]+|--tb=(auto|long|short|line|native|no)|--maxfail=\d+|--durations=\d+")
+_GLOB = re.compile(r"[*?\[\]]")
+
+
+def is_pytest(argv: Sequence[str]) -> bool:
+    """``pytest ...`` or ``python -m pytest ...``."""
+
+    if not argv:
+        return False
+    if os.path.basename(argv[0]) == "pytest":
+        return True
+    if os.path.basename(argv[0]) in {"python", "python3"}:
+        try:
+            _, mode, target, _ = python_invocation(argv)
+        except ValueError:
+            return False
+        return mode == "-m" and target == "pytest"
+    return False
+
+
+def pytest_targets(args: Sequence[str]) -> list[str]:
+    """The test files/node ids a pytest check names; ``ValueError`` if it is not explicit.
+
+    A check must name the test files it runs (``tests/test_calc.py`` or
+    ``tests/test_calc.py::test_add``).  Without them pytest *collects*, so an
+    agent-added test file (with ``pytest_plugins`` or ``os._exit(0)``) would
+    run inside the check and could end it with status 0 (ADR 0025).
+    Directories, globs and ``..`` are refused for the same reason.
+    """
+
+    targets: list[str] = []
+    quiet = 0
+    i = 0
+    while i < len(args):
+        part = args[i]
+        if part in PYTEST_FLAGS_WITH_VALUE_ALLOWED:
+            if i + 1 >= len(args):
+                raise ValueError(f"pytest option {part} needs a value")
+            i += 2
+            continue
+        if part.startswith("-"):
+            if part not in PYTEST_FLAGS_ALLOWED and not PYTEST_FLAG_PATTERN.fullmatch(part):
+                raise ValueError(f"pytest option {part!r} is not allowed in a check "
+                                 f"(allowed: {sorted(PYTEST_FLAGS_ALLOWED | PYTEST_FLAGS_WITH_VALUE_ALLOWED)}, "
+                                 "-r<chars>, --tb=, --maxfail=, --durations=)")
+            quiet += {"-q": 1, "--quiet": 1, "-v": -1, "--verbose": -1, "-vv": -2}.get(part, 0)
+            i += 1
+            continue
+        path = part.split("::", 1)[0]
+        if not path.endswith(".py") or _GLOB.search(path) or ".." in Path(path).parts or not path.strip("/"):
+            raise ValueError(f"pytest target {part!r} must be a test file or node id (path/to/test_x.py[::name]), "
+                             "not a directory, glob or parent path")
+        targets.append(part)
+        i += 1
+    if quiet >= 2:
+        raise ValueError("pytest -qq hides the result summary the evaluator checks")
+    if not targets:
+        raise ValueError("a pytest check must name its test files (e.g. pytest -q tests/test_calc.py); "
+                         "without them pytest collects files the agent added")
+    return targets
+
+
+def check_targets(argv: Sequence[str]) -> list[str]:
+    """Files the check runs as test or script code (to verify against the server fixture).
+
+    For pytest the test files of its node ids; for ``python SCRIPT`` the script.
+    """
+
+    name = os.path.basename(argv[0]) if argv else ""
+    if name == "pytest":
+        return [t.split("::", 1)[0] for t in pytest_targets(list(argv[1:]))]
+    if name in {"python", "python3"}:
+        _, mode, target, rest = python_invocation(argv)
+        if mode == "-m" and target == "pytest":
+            return [t.split("::", 1)[0] for t in pytest_targets(rest)]
+        if mode == "path":
+            if ".." in Path(target).parts:
+                raise ValueError(f"python script {target!r} must not use a parent path")
+            return [target]
+    return []
 
 
 def python_invocation(argv: Sequence[str]) -> tuple[list[str], str, str, list[str]]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import re
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .checks import ALLOWED_EXECUTABLES, python_invocation
+from .checks import ALLOWED_EXECUTABLES, check_targets, is_pytest, python_invocation
 from .containment import ContainmentUnavailable
 from .sandbox import FixtureSandbox, SandboxViolation
 
@@ -38,10 +39,15 @@ RUFF_FLAGS = ("--isolated", "--no-cache")
 # Run a python check with -I (no PYTHON* env, no user site, no cwd/script dir
 # first on sys.path); the workspace is *appended* so the code under test is
 # importable but cannot shadow the stdlib or an installed package (pytest, ...).
+# A script check also gets its own directory appended (before the cwd), as
+# plain python would put it first: sibling helpers import, but a sibling
+# ``json.py`` cannot replace the stdlib one.
 PYTHON_BOOTSTRAP = (
     "import sys, os, runpy\n"
     "_m, _t = sys.argv[1], sys.argv[2]\n"
     "sys.argv = ['-c' if _m == '-c' else _t, *sys.argv[3:]]\n"
+    "if _m == 'path':\n"
+    "    sys.path.append(os.path.dirname(os.path.abspath(_t)))\n"
     "sys.path.append(os.getcwd())\n"
     "if _m == '-c':\n"
     "    exec(compile(_t, '<string>', 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})\n"
@@ -72,21 +78,77 @@ def protect_server_process() -> bool:
         return False
 
 
-def harden_argv(argv: Sequence[str]) -> list[str]:
+def _protect_or_warn() -> None:
+    """Call :func:`protect_server_process`; log when it fails on Linux (checks then could read /proc)."""
+
+    if not protect_server_process() and sys.platform.startswith("linux"):
+        _log.warning("server_process_not_protected", extra={
+            "reason": "prctl(PR_SET_DUMPABLE, 0) failed; a host check can read this process's /proc environ"})
+
+
+# pytest's final summary, e.g. "1 failed, 2 passed in 0.03s" or "==== 2 passed in 0.01s ====".
+_PYTEST_SUMMARY = re.compile(r"^=*\s*(?P<body>\d+ [a-z]+(?:, \d+ [a-z]+)*) in [0-9.]+s\b.*$")
+
+
+def pytest_summary(stdout: str) -> dict[str, int] | None:
+    """Counts from the last pytest summary line in ``stdout`` (``None`` if there is none)."""
+
+    for line in reversed(stdout.splitlines()):
+        match = _PYTEST_SUMMARY.match(line.strip())
+        if match:
+            counts: dict[str, int] = {}
+            for item in match.group("body").split(", "):
+                number, word = item.split(" ", 1)
+                word = {"error": "errors", "warning": "warnings"}.get(word, word)
+                counts[word] = counts.get(word, 0) + int(number)
+            return counts
+    return None
+
+
+def pytest_verdict(stdout: str, truncated: bool = False) -> tuple[str, str] | None:
+    """Why an exit-0 pytest run is not a PASS: ``(status, reason)``, or ``None`` if it is one.
+
+    Defense in depth (ADR 0025): code the test imports can end pytest with
+    status 0 (``os._exit(0)``, an ``atexit`` hook, a plugin); the summary then
+    reports failures or is missing.  A PASS needs a summary with at least one
+    passed test and no failures or errors.  This can only turn a PASS into
+    FAIL/INCONCLUSIVE, so printing a fake summary gains nothing.
+    """
+
+    counts = pytest_summary(stdout)
+    if counts is None:
+        if truncated:
+            return "INCONCLUSIVE", "pytest output was truncated before its result summary"
+        return "FAIL", "pytest exited 0 without a result summary"
+    if counts.get("failed", 0) or counts.get("errors", 0):
+        return "FAIL", f"pytest exited 0 but its summary reports failures: {counts}"
+    if not counts.get("passed", 0):
+        return "FAIL", f"pytest exited 0 but no test passed: {counts}"
+    return None
+
+
+def harden_argv(argv: Sequence[str], *, pytest_python: str | None = None) -> list[str]:
     """Rewrite an allowlisted check argv so workspace files cannot change how it runs.
 
-    ``argv[0]`` is kept as given (the caller resolves it).  Raises ``ValueError``
-    for a python invocation the evaluator cannot harden.
+    ``argv[0]`` is kept as given (the caller resolves it).  With
+    ``pytest_python`` (the interpreter of the resolved ``pytest``), a bare
+    ``pytest`` check runs as ``<python> -I -c BOOTSTRAP -m pytest`` so it gets
+    the same ``sys.path`` as ``python -m pytest`` (workspace appended, root
+    imports work).  Raises ``ValueError`` for a check form the evaluator
+    cannot harden (see :func:`sdf_core.checks.validate_argv`).
     """
 
     name = os.path.basename(argv[0])
     rest = list(argv[1:])
+    check_targets(argv)  # pytest must name its test files; no parent paths
     if name in {"python", "python3"}:
         flags, mode, target, tail = python_invocation(argv)
         if mode == "-m" and target == "pytest":
             tail = [*PYTEST_FLAGS, *tail]
         return [argv[0], "-I", *flags, "-c", PYTHON_BOOTSTRAP, mode, target, *tail]
     if name == "pytest":
+        if pytest_python is not None:
+            return [pytest_python, "-I", "-c", PYTHON_BOOTSTRAP, "-m", "pytest", *PYTEST_FLAGS, *rest]
         return [argv[0], *PYTEST_FLAGS, *rest]
     if name == "ruff":
         if rest and not rest[0].startswith("-"):
@@ -172,8 +234,14 @@ class DeterministicEvaluator:
         commands: Sequence[Sequence[str]] | None = None,
         criteria: Sequence[str] | None = None,
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
+        reference: Path | None = None,
     ) -> EvaluationResult:
         """Evaluate explicit criterion/check mappings.
+
+        ``reference`` is the server fixture the workspace was copied from.  A
+        check's own files (pytest test files, a python script) named by a
+        relative path must be byte-identical to the fixture's copy, so the
+        agent cannot rewrite the check it is judged by.
 
         ``commands`` remains a compatibility path for callers that used the
         original evaluator API. When a task supplies ``criteria`` (including
@@ -231,6 +299,7 @@ class DeterministicEvaluator:
                         criterion=criterion,
                         index=index + 1,
                         position=position,
+                        reference=reference,
                     )
                 )
 
@@ -251,6 +320,7 @@ class DeterministicEvaluator:
                     command=command,
                     criterion=None,
                     index=index + 1,
+                    reference=reference,
                 )
             )
 
@@ -381,6 +451,7 @@ class DeterministicEvaluator:
         criterion: str | None,
         index: int,
         position: int = 0,
+        reference: Path | None = None,
     ) -> Evidence:
         argv = tuple(command)
         rendered = " ".join(argv)
@@ -402,8 +473,12 @@ class DeterministicEvaluator:
         safe_path = self._safe_path(workspace)
         try:
             process_argv = harden_argv(argv)
+            targets = check_targets(argv)
         except ValueError as exc:
             return self._inconclusive(attempt_id, index, rendered, criterion, f"unsupported check form: {exc}")
+        problem = _verify_targets(targets, workspace, reference)
+        if problem is not None:
+            return self._inconclusive(attempt_id, index, rendered, criterion, problem)
         if self.containment_backend is None:
             if self.require_containment:
                 return self._inconclusive(attempt_id, index, rendered, criterion,
@@ -412,8 +487,15 @@ class DeterministicEvaluator:
             if executable is None:
                 return self._inconclusive(attempt_id, index, rendered, criterion,
                                           "executable not found outside the workspace")
-            process_argv[0] = executable
-            protect_server_process()
+            if os.path.basename(argv[0]) == "pytest":
+                interpreter = self._pytest_interpreter(executable, workspace, safe_path)
+                if interpreter is None:
+                    return self._inconclusive(attempt_id, index, rendered, criterion,
+                                              "cannot find the python interpreter of the pytest executable")
+                process_argv = harden_argv(argv, pytest_python=interpreter)
+            else:
+                process_argv[0] = executable
+            _protect_or_warn()
         try:
             sandbox = FixtureSandbox(
                 workspace,
@@ -431,6 +513,12 @@ class DeterministicEvaluator:
                                       (completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout,
                                       runner=self.runner)
         result_status = "PASS" if completed.returncode == 0 else "FAIL"
+        stderr = completed.stderr
+        if result_status == "PASS" and is_pytest(argv):
+            verdict = pytest_verdict(completed.stdout or "", bool(getattr(completed, "output_truncated", False)))
+            if verdict is not None:
+                result_status, reason = verdict
+                stderr = f"{stderr or ''}\n[evaluator] {reason}".lstrip("\n")
         return Evidence(
             evidence_id=f"EVIDENCE-{attempt_id}-{index}",
             attempt_id=attempt_id,
@@ -439,11 +527,37 @@ class DeterministicEvaluator:
             command=rendered,
             exit_code=completed.returncode,
             stdout=completed.stdout,
-            stderr=completed.stderr,
+            stderr=stderr,
             confidence=1.0 if result_status == "PASS" else 0.95,
             criterion=criterion,
             runner=self.runner,
         )
+
+    def _pytest_interpreter(self, pytest_path: str, workspace: Path, safe_path: str) -> str | None:
+        """The interpreter a ``pytest`` console script runs with (its shebang), outside the workspace."""
+
+        try:
+            with open(pytest_path, "rb") as handle:
+                first = handle.readline(4096).decode("utf-8", "replace").strip()
+        except OSError:
+            return None
+        candidate: str | None = None
+        if first.startswith("#!"):
+            words = first[2:].split()
+            if words and os.path.basename(words[0]) == "env" and len(words) > 1:
+                candidate = (self._resolve_executable(words[1], workspace, safe_path)
+                             if words[1].startswith("python") else None)
+            elif words:
+                candidate = words[0]
+        if candidate is None:
+            sibling = os.path.join(os.path.dirname(pytest_path), "python")
+            candidate = sibling if os.path.isfile(sibling) else None
+        if candidate is None or not os.path.isabs(candidate) or not os.access(candidate, os.X_OK):
+            return None
+        root = workspace.resolve()
+        if Path(candidate).resolve().is_relative_to(root):
+            return None
+        return candidate
 
     @staticmethod
     def _as_text(value: str | bytes | None) -> str:
@@ -452,6 +566,52 @@ class DeterministicEvaluator:
         if isinstance(value, bytes):
             return value.decode(errors="replace")
         return value
+
+
+def _verify_targets(targets: Sequence[str], workspace: Path, reference: Path | None) -> str | None:
+    """Why the check's own files cannot be trusted, or ``None``.
+
+    An absolute target must lie outside the workspace (a server directory).
+    A relative one must exist as a regular file in the server fixture and the
+    workspace copy must be byte-identical (no symlink, nothing rewritten).
+    """
+
+    root = workspace.resolve()
+    for target in targets:
+        if os.path.isabs(target):
+            try:
+                resolved = Path(target).resolve()
+            except (OSError, RuntimeError):
+                return f"cannot resolve check file {target}"
+            if resolved == root or resolved.is_relative_to(root):
+                return f"check file {target} is inside the workspace; name it relative to the fixture"
+            continue
+        if reference is None:
+            return f"check file {target} cannot be verified: no server fixture to compare it with"
+        ref_root = Path(reference).resolve()
+        expected = _read_plain(ref_root, target)
+        if expected is None:
+            return f"check file {target} is not a regular file in the server fixture"
+        actual = _read_plain(root, target)
+        if actual != expected:
+            return f"check file {target} differs from the server fixture (the agent changed or replaced it)"
+    return None
+
+
+def _read_plain(root: Path, relative: str) -> bytes | None:
+    """Bytes of ``root/relative`` if every component is a real directory/file inside ``root``."""
+
+    current = root
+    for part in Path(relative).parts:
+        current = current / part
+        if current.is_symlink():
+            return None
+    try:
+        if not current.resolve().is_relative_to(root) or not current.is_file():
+            return None
+        return current.read_bytes()
+    except OSError:
+        return None
 
 
 def _backend_name(backend: Any) -> str:
