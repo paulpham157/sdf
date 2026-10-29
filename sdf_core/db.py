@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, create_engine, select
+from sqlalchemy import CheckConstraint, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -75,6 +75,10 @@ class AttemptRow(Base):
     error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ADR 0024: OpenTelemetry trace id (32 hex) when tracing was on.
     trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # ADR 0026: the authenticated principal that started the Attempt. Only that
+    # principal (or an admin) may drive its Tool Proxy actions; NULL (internal
+    # or pre-0018 Attempts) means admin-only over HTTP.
+    principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -198,12 +202,18 @@ class UsageLedgerRow(Base):
 
 class ToolAuditRow(Base):
     __tablename__ = "tool_audits"
+    # ADR 0026: execution events (claim, executed, failed) stay unique per
+    # action, which is the idempotency fence; ``policy_decided`` rows are one
+    # per delivery so every caller's decision is recorded with its principal.
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_tool_audits_execution_event",
             "attempt_id",
             "action_id",
             "event",
-            name="uq_tool_audits_attempt_action_event",
+            unique=True,
+            sqlite_where=text("event <> 'policy_decided'"),
+            postgresql_where=text("event <> 'policy_decided'"),
         ),
     )
     audit_id: Mapped[str] = mapped_column(String(120), primary_key=True)
@@ -221,6 +231,9 @@ class ToolAuditRow(Base):
     detail: Mapped[str] = mapped_column(String(1000))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
+    # Authenticated API principal that requested the action (#51); NULL for
+    # in-process callers and rows written before migration 0018.
+    principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
 
 
 # --- P4: plan-approval gate, decision requests and agent messaging (ADR 0014) ---

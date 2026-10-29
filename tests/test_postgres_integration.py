@@ -120,10 +120,16 @@ def test_tool_audit_replay_is_idempotent_on_postgresql(postgres_engine):
     decision = AllowlistPolicy({("filesystem", "read")}).decide(request)
     with _session(postgres_engine) as db:
         sink = SqlAlchemyAuditSink(db)
-        sink.append(AuditRecord.for_request(request, event=AuditEvent.POLICY_DECIDED, decision=decision, executed=False, outcome="allow", detail="first"))
-        sink.append(AuditRecord.for_request(request, event=AuditEvent.POLICY_DECIDED, decision=decision, executed=False, outcome="allow", detail="redelivery"))
+        first = AuditRecord.for_request(request, event=AuditEvent.POLICY_DECIDED, decision=decision, executed=False, outcome="allow", detail="first")
+        sink.append(first)
+        sink.append(first)  # redelivery of the same record
         db.commit()
-        assert db.query(ToolAuditRow).count() == 1
+        assert db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-PG-AUDIT").count() == 1
+        # ADR 0026: execution outcomes are deduplicated per action.
+        for detail in ("ran", "redelivered"):
+            sink.append(AuditRecord.for_request(request, event=AuditEvent.ACTION_EXECUTED, decision=decision, executed=True, outcome="executed", detail=detail))
+        db.commit()
+        assert db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-PG-AUDIT", event="action_executed").count() == 1
 
 
 def test_postgresql_claim_race_has_exactly_one_winner(postgres_engine):
@@ -254,3 +260,50 @@ def test_postgres_api_tokens_and_auth_audit_are_fenced(postgres_engine):
             auth.verify_token(db, plaintext, key=auth.pepper())
     finally:
         db.close()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="SDF_POSTGRES_TEST_URL is not set")
+def test_tool_audit_principal_column_round_trips_and_migrates_on_postgresql(postgres_engine):
+    request = ActionRequest(attempt_id="ATTEMPT-PG-PRINCIPAL", actor="agent:test", tool="filesystem",
+                            action="write", resource="a.txt", context={})
+    decision = AllowlistPolicy({("filesystem", "write")}).decide(request)
+    with _session(postgres_engine) as db:
+        SqlAlchemyAuditSink(db, principal="op-pg").append(AuditRecord.for_request(
+            request, event=AuditEvent.POLICY_DECIDED, decision=decision,
+            executed=False, outcome="decided", detail=decision.reason,
+        ))
+        db.commit()
+        row = db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-PG-PRINCIPAL").one()
+        assert row.principal == "op-pg"
+        # ADR 0026: a second principal's decision on the same action is its own
+        # row; execution outcomes stay deduplicated by the partial unique index.
+        SqlAlchemyAuditSink(db, principal="op-pg-2").append(AuditRecord.for_request(
+            request, event=AuditEvent.POLICY_DECIDED, decision=decision,
+            executed=False, outcome="decided", detail=decision.reason,
+        ))
+        for _ in range(2):
+            SqlAlchemyAuditSink(db, principal="op-pg").append(AuditRecord.for_request(
+                request, event=AuditEvent.ACTION_EXECUTED, decision=decision,
+                executed=True, outcome="executed", detail="ok",
+            ))
+        db.commit()
+        rows = db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-PG-PRINCIPAL").all()
+        assert sorted(r.principal for r in rows if r.event == "policy_decided") == ["op-pg", "op-pg-2"]
+        assert [r.event for r in rows].count("action_executed") == 1
+
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    os.environ["SDF_DATABASE_URL"] = POSTGRES_URL
+    command.downgrade(config, "0017_trace_id")
+    try:
+        assert "principal" not in {c["name"] for c in inspect(postgres_engine).get_columns("tool_audits")}
+        assert "principal" not in {c["name"] for c in inspect(postgres_engine).get_columns("attempts")}
+        with postgres_engine.connect() as conn:  # duplicates folded, append-only trigger restored
+            assert conn.execute(text("SELECT COUNT(*) FROM tool_audits WHERE attempt_id='ATTEMPT-PG-PRINCIPAL' "
+                                     "AND event='policy_decided'")).scalar() == 1
+            assert conn.execute(text("SELECT tgenabled FROM pg_trigger WHERE tgname='trg_tool_audits_append_only'"
+                                     )).scalar() == "O"
+    finally:
+        command.upgrade(config, "head")
+    assert "principal" in {c["name"] for c in inspect(postgres_engine).get_columns("tool_audits")}
+    assert "principal" in {c["name"] for c in inspect(postgres_engine).get_columns("attempts")}
+    assert "uq_tool_audits_execution_event" in {i["name"] for i in inspect(postgres_engine).get_indexes("tool_audits")}
