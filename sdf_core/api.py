@@ -10,7 +10,7 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -36,7 +36,7 @@ from .observability import configure_logging, get_logger, log_context
 from . import tracing
 from .timeline import build_timeline
 from .policy import ActionRequest, AllowlistPolicy
-from .tools import ActorBindingPolicy
+from .tools import AttemptBinding
 from .containment import MacOSSandboxBackend
 from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
@@ -307,6 +307,16 @@ class ToolActionRequest(BaseModel):
     action: str = Field(min_length=1, max_length=120)
     resource: str = Field(min_length=1, max_length=500)
     context: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("context")
+    @classmethod
+    def _no_reserved_context_keys(cls, value: dict[str, Any]) -> dict[str, Any]:
+        # ADR 0026: ``sdf_*`` context keys are reserved for the server; a
+        # caller must not be able to forge server-side annotations.
+        reserved = sorted(k for k in value if str(k).lower().startswith("sdf_"))
+        if reserved:
+            raise ValueError(f"reserved context keys (sdf_*) are not allowed: {reserved}")
+        return value
 
 
 class MetricDeclarationRequest(BaseModel):
@@ -630,12 +640,15 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, request: Re
     server configuration, never from the request body, and a missing
     workspace or inactive Attempt fails closed.  The actor is derived from
     the Attempt (``agent:<attempt.agent>``) and every audit row carries the
-    authenticated principal (#51); a mismatching ``payload.actor`` is denied
-    and audited, then answered with 403.
+    authenticated principal (#51). A mismatching ``payload.actor``, or a
+    principal that did not start the Attempt (and is not an admin), is denied
+    and audited, then answered with 403 (ADR 0026).
     """
 
-    principal = getattr(getattr(request.state, "principal", None), "name", None)
+    principal_obj = getattr(request.state, "principal", None)
+    principal = getattr(principal_obj, "name", None)
     if principal is None:
+        # Defense in depth: the auth middleware already requires a principal.
         raise HTTPException(status_code=401, detail="authenticated principal required")
 
     attempt = db.get(AttemptRow, attempt_id)
@@ -650,33 +663,35 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, request: Re
         artifact_root=Path(".sdf-artifacts"),
     )
     actor = f"agent:{attempt.agent}"
-    context = dict(payload.context)
-    if payload.actor is not None and payload.actor != actor:
-        # Record the forged claim and give the denial its own action identity,
-        # so it cannot occupy the audit slot of the legitimate action.
-        context["sdf_claimed_actor"] = payload.actor
+    # The claimed actor is never part of the hashed action identity; it is
+    # reported in the (per-delivery) decision row's reason instead.
     action = ActionRequest(
         attempt_id=attempt_id,
         actor=actor,
         tool=payload.tool,
         action=payload.action,
         resource=payload.resource,
-        context=context,
+        context=dict(payload.context),
+    )
+    binding = AttemptBinding(
+        claimed_actor=payload.actor, principal=principal, owner=attempt.principal,
+        is_admin=bool(principal_obj is not None and principal_obj.has("admin")),
     )
     containment_backend, require_containment = configured_containment()
     result = service.execute_tool(
         attempt_id=attempt_id,
         request=action,
-        policy=ActorBindingPolicy(configured_tool_policy(), claimed_actor=payload.actor),
+        policy=configured_tool_policy(),
         containment_backend=containment_backend,
         require_containment=require_containment,
         principal=principal,
+        binding=binding,
     )
     db.commit()
-    if result.decision.policy == ActorBindingPolicy.name:
+    if result.decision.policy in (AttemptBinding.ACTOR, AttemptBinding.OWNER):
         raise HTTPException(status_code=403, detail={
-            "error": "actor_mismatch", "action_id": action.action_id, "actor": actor,
-            "reason": result.decision.reason,
+            "error": "actor_mismatch" if result.decision.policy == AttemptBinding.ACTOR else "attempt_not_owned",
+            "action_id": action.action_id, "actor": actor, "reason": result.decision.reason,
         })
     value = result.value
     if value is not None and not isinstance(value, (str, int, float, bool, list, dict)):
@@ -750,6 +765,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     # human approved the Plan; SDF_REQUIRE_PLAN_APPROVAL=1 also
                     # refuses Tasks that have no Plan at all.
                     require_plan_approval=require_plan_approval(),
+                    principal=principal,
                 )
         except CredentialConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

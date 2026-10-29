@@ -286,17 +286,30 @@ def test_sqlalchemy_audit_sink_replay_is_idempotent_by_attempt_action_event():
         request = action(attempt_id="ATTEMPT-REPLAY")
         decision = AllowlistPolicy({("filesystem", "write")}).decide(request)
         sink = SqlAlchemyAuditSink(db)
-        sink.append(AuditRecord.for_request(
+        first = AuditRecord.for_request(
             request, event=AuditEvent.POLICY_DECIDED, decision=decision,
             executed=False, outcome="allow", detail="first",
-        ))
+        )
+        sink.append(first)
         db.commit()
-        sink.append(AuditRecord.for_request(
-            request, event=AuditEvent.POLICY_DECIDED, decision=decision,
-            executed=False, outcome="allow", detail="redelivery",
-        ))
+        sink.append(first)  # redelivery of the same record is a no-op
         db.commit()
         assert db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-REPLAY").count() == 1
+        # ADR 0026: a second decision for the same action is its own row ...
+        sink.append(AuditRecord.for_request(
+            request, event=AuditEvent.POLICY_DECIDED, decision=decision,
+            executed=False, outcome="allow", detail="second decision",
+        ))
+        db.commit()
+        assert db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-REPLAY", event="policy_decided").count() == 2
+        # ... while execution outcomes stay one per action.
+        for detail in ("ran", "redelivered"):
+            sink.append(AuditRecord.for_request(
+                request, event=AuditEvent.ACTION_EXECUTED, decision=decision,
+                executed=True, outcome="executed", detail=detail,
+            ))
+            db.commit()
+        assert db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-REPLAY", event="action_executed").count() == 1
 
 
 def test_sqlalchemy_audit_sink_claim_has_one_winner():
@@ -368,13 +381,15 @@ def test_tool_proxy_emits_trusted_source_labelled_events_and_replays_idempotentl
         assert [row.kind for row in rows] == ["tool_policy_decided", "tool_action_executed"]
         assert all(row.payload["action_id"] == request.action_id for row in rows)
 
-        # Re-delivery of the same structured action does not append another
-        # normalized event, even though a new AuditRecord receives a new id.
+        # Re-delivery of the same structured action records its own policy
+        # decision (ADR 0026: every decision is attributable), but never a
+        # second execution event or a second execution.
         proxy.execute(request)
         db.commit()
-        assert db.query(RuntimeEventRow).filter_by(
+        kinds = [row.kind for row in db.query(RuntimeEventRow).filter_by(
             source="tool-proxy", attempt_id="ATTEMPT-TOOL-EVENT"
-        ).count() == 2
+        ).order_by(RuntimeEventRow.sequence)]
+        assert kinds == ["tool_policy_decided", "tool_action_executed", "tool_policy_decided"]
         assert executor.calls == [request]
 
 
