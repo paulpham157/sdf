@@ -44,6 +44,12 @@ not `scripts/postgres-test.sh`, which also migrates, runs pytest, and tears down
 on EXIT), and `e2b-doctor`. Prefer `scripts/e2b-env.sh e2b-box up …` in an
 interactive terminal when you need a box attach — it is not wrapped here.
 
+## Live full loop (public run path)
+
+See [live-full-loop.md](live-full-loop.md) for `SDF_RUN_ADAPTER=herdr`, Credential
+Mode, template, and the live-gated HTTP proof for issue #46. Default CI remains
+`FakeNativeAdapter`. That note also lists what is **not** claimed.
+
 ## E2B and Herdr
 
 Copy `.env.example` to `.env`, set the E2B credentials in your environment, and

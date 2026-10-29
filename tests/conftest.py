@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import os
 import secrets
+import tempfile
 
 import pytest
 
 os.environ["SDF_AUTH_PEPPER"] = secrets.token_urlsafe(48)
 os.environ.pop("SDF_AUTH_DEV_INSECURE", None)
 os.environ.pop("SDF_AUTH_SINGLE_USER", None)
+# Tests build fixtures under pytest's tmp dirs; the API confines fixture_dir
+# to SDF_FIXTURES_ROOT (ADR 0023).
+os.environ.setdefault("SDF_FIXTURES_ROOT", os.path.realpath(tempfile.gettempdir()))
 
 
 @pytest.fixture(autouse=True)

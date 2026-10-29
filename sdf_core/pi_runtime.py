@@ -201,6 +201,9 @@ _PROJECT_REFUSAL = (
 # after 3 s KILLs) the children of ``timeout`` (Pi) and reports exit 0; the
 # turn guard (ADR-0019) still sweeps anything left.
 _SETTLED_GRACE_S = 5
+# Printed on its own line when the grace path ended the turn, so the host can
+# record the ``settled_grace`` outcome (ADR 0023) instead of a silent exit 0.
+_SETTLED_MARKER = "__SDF_PI_SETTLED_GRACE__"
 _SETTLED_EXIT = (
     'while kill -0 "$pid" 2>/dev/null; do '
     'if grep -Eq \'"type" *: *"agent_settled"\' "$out" 2>/dev/null; then n=0; '
@@ -247,7 +250,7 @@ def _wrapper(refuse_project: bool) -> str:
         'printf "%s" "$prompt" | NODE_OPTIONS="--import=file://$shim" timeout --kill-after=' + str(_KILL_AFTER_S) + ' "$secs" "$@" --model "$model" '
         '>"$out" 2>"$err" & pid=$!; settled=; '
         + _SETTLED_EXIT +
-        'wait "$pid"; rc=$?; [ -n "$settled" ] && rc=0; '
+        'wait "$pid"; rc=$?; [ -n "$settled" ] && rc=0 && echo ' + _SETTLED_MARKER + '; '
         'grep -E \'^\\{"type":"(message_end|tool_execution_end)"\' "$out" || true; '
         'echo ' + _EXIT_MARKER + '$rc; if [ "$rc" -ne 0 ]; then tail -c 2000 "$err"; fi; exit 0'
     )
@@ -333,6 +336,8 @@ class _Binding:
     turns: int = 0
     usage: PiUsage = field(default_factory=PiUsage)
     project_trusted: bool = False
+    settled_grace_turns: int = 0
+    last_turn_settled: bool = False
 
 
 def parse_events(raw: str) -> tuple[tuple[str, ...], PiUsage, tuple[str, ...]]:
@@ -551,6 +556,11 @@ class PiHeadlessRuntime:
     def usage(self, session_id: str) -> dict[str, Any]:
         return self._known(session_id)[0].usage.as_dict()
 
+    def last_turn_settled(self, session_id: str) -> bool:
+        """True when the last turn ended through the ``agent_settled`` grace path."""
+
+        return self._known(session_id)[0].last_turn_settled
+
     def command(self, session_id: str, input_text: str) -> list[str]:
         """The exact argv a turn runs (no credential material: names only)."""
 
@@ -596,6 +606,11 @@ class PiHeadlessRuntime:
         # ADR-0019: own session/cgroup per turn; the guard sweeps leftovers.
         raw = self._transport.exec_argv(guard_argv(self._next_turn_id(session_id), argv), budget_ms + GRACE_S * 4000)
         body, rc = _split_exit(raw)
+        settled = _SETTLED_MARKER in body.splitlines()
+        if settled:
+            body = "\n".join(line for line in body.splitlines() if line != _SETTLED_MARKER)
+            binding.settled_grace_turns += 1
+        binding.last_turn_settled = settled
         lines, usage, errors = parse_events(body)
         binding.usage.merge(usage)
         if rc not in (_PROJECT_CONFIG_EXIT, _NO_WORKSPACE_EXIT, _NO_MODEL_EXIT):

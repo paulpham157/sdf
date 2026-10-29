@@ -29,8 +29,11 @@ from .db import (
 )
 from .escalation import ModelTier
 from .execution import ExecutionService
-from .adapter import FakeNativeAdapter
+from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
+from .run_adapter import RunBusyError, configured_run_adapter, run_slot
+from .observability import configure_logging, get_logger, log_context
+from .timeline import build_timeline
 from .policy import ActionRequest, AllowlistPolicy
 from .containment import MacOSSandboxBackend
 from .e2b_containment import E2BContainmentBackend
@@ -176,11 +179,47 @@ async def _lifespan(_app: FastAPI):
         raise RuntimeError(
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
+    configure_logging()
     yield
 
 
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
               docs_url=None, redoc_url=None, openapi_url=None)
+
+
+_log = get_logger("api")
+
+
+@app.middleware("http")
+async def _request_context(request: Request, call_next):
+    # ADR 0023: every log line of a request carries its request id.
+    supplied = request.headers.get("x-request-id", "")
+    request_id = supplied if supplied.isascii() and 0 < len(supplied) <= 64 and supplied.replace("-", "").isalnum() \
+        else uuid4().hex
+    with log_context(request_id=request_id):
+        response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+def fixtures_root() -> Path:
+    """The only directory tree ``fixture_dir`` may point into (``SDF_FIXTURES_ROOT``)."""
+
+    return Path(os.environ.get("SDF_FIXTURES_ROOT") or Path.cwd() / "fixtures").resolve()
+
+
+def resolve_fixture(raw: str) -> Path:
+    """Resolve ``fixture_dir`` (symlinks included) and keep it inside the fixtures root."""
+
+    root = fixtures_root()
+    try:
+        candidate = Path(raw)
+        resolved = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
+    if not resolved.is_dir() or not resolved.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
+    return resolved
 
 
 @app.get("/healthz")
@@ -616,49 +655,78 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, db: Session
     }
 
 
+@app.get("/runs/{run_id}/timeline")
+def run_timeline(run_id: str, db: Session = Depends(get_db)):
+    """Merged, redacted timeline for an agent run id or an Attempt id (ADR 0023)."""
+
+    timeline = build_timeline(db, run_id)
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="no agent run or attempt with that id")
+    return timeline
+
+
 @app.post("/tasks/{task_id}/run")
-def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db)):
+def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Session = Depends(get_db)):
     if not db.get(TaskRow, task_id):
         raise HTTPException(status_code=404, detail="task not found")
-    fixture = Path(payload.fixture_dir)
-    if not fixture.is_dir():
-        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory")
+    fixture = resolve_fixture(payload.fixture_dir)
     target = None
     if payload.validation_target_kind and payload.validation_target_id:
         target = (payload.validation_target_kind, payload.validation_target_id)
         target_node = db.get(GraphNodeRow, payload.validation_target_id)
         if target_node is None or target_node.kind != payload.validation_target_kind:
             raise HTTPException(status_code=404, detail="validation target not found")
-    service = ExecutionService(
-        db,
-        workspace_root=Path(".sdf-workspaces"),
-        artifact_root=Path(".sdf-artifacts"),
-        adapter=FakeNativeAdapter("app.py", "print('updated')\n"),
-    )
-    try:
-        attempt = service.run(
-            task_id=task_id,
-            dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
-            fixture=fixture,
-            instructions=payload.instructions,
-            commands=payload.commands,
-            criterion_checks=payload.criterion_checks,
-            validation_target=target,
-            parent_attempt_id=payload.parent_attempt_id,
-            model_tier=payload.model_tier,
-            cost_usd=payload.cost_usd,
-            provider=payload.provider,
-            latency_ms=payload.latency_ms,
-            input_tokens=payload.input_tokens,
-            output_tokens=payload.output_tokens,
-            escalation_reason=payload.escalation_reason,
-            # ADR 0014: a Task that belongs to a Plan never starts before a
-            # human approved the Plan; SDF_REQUIRE_PLAN_APPROVAL=1 also
-            # refuses Tasks that have no Plan at all.
-            require_plan_approval=require_plan_approval(),
-        )
-    except (ValueError, FileExistsError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    principal = getattr(getattr(request.state, "principal", None), "name", None)
+    adapter = None
+    with log_context(task_id=task_id, principal=principal):
+        try:
+            # One handler for every configuration error (adapter, provider,
+            # credentials): it is the operator's to fix, so 400, before any sandbox.
+            adapter = configured_run_adapter(db)
+            with run_slot(adapter):
+                service = ExecutionService(
+                    db,
+                    workspace_root=Path(".sdf-workspaces"),
+                    artifact_root=Path(".sdf-artifacts"),
+                    adapter=adapter,
+                )
+                attempt = service.run(
+                    task_id=task_id,
+                    dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
+                    fixture=fixture,
+                    instructions=payload.instructions,
+                    commands=payload.commands,
+                    criterion_checks=payload.criterion_checks,
+                    validation_target=target,
+                    parent_attempt_id=payload.parent_attempt_id,
+                    model_tier=payload.model_tier,
+                    cost_usd=payload.cost_usd,
+                    provider=payload.provider,
+                    latency_ms=payload.latency_ms,
+                    input_tokens=payload.input_tokens,
+                    output_tokens=payload.output_tokens,
+                    escalation_reason=payload.escalation_reason,
+                    # ADR 0014: a Task that belongs to a Plan never starts before a
+                    # human approved the Plan; SDF_REQUIRE_PLAN_APPROVAL=1 also
+                    # refuses Tasks that have no Plan at all.
+                    require_plan_approval=require_plan_approval(),
+                )
+        except CredentialConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RunBusyError as exc:
+            raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        except (ValueError, FileExistsError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            last = getattr(adapter, "last_run", None) or {}
+            _log.error("run_failed", extra={"error_type": type(exc).__name__, "error_class": last.get("error_class")})
+            if not last:
+                raise
+            # The Attempt is already recorded FAILED with its ledger rows.
+            raise HTTPException(status_code=502, detail={
+                "error": "agent run failed", "error_class": last.get("error_class"),
+                "attempt_id": last.get("attempt_id"), "sandbox_id": last.get("sandbox_id"),
+            }) from exc
     task = db.get(TaskRow, task_id)
     return {
         "task_id": task_id,
@@ -673,6 +741,7 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
         "input_tokens": attempt.input_tokens,
         "output_tokens": attempt.output_tokens,
         "escalation_reason": attempt.escalation_reason,
+        "error_class": attempt.error_class,
     }
 
 
@@ -812,8 +881,7 @@ def _gate(exc: Exception) -> HTTPException:
 @app.post("/plans", status_code=status.HTTP_201_CREATED)
 def create_plan(payload: PlanSpec, db: Session = Depends(get_db),
                 principal: _auth.Principal = Depends(current_principal)):
-    if not Path(payload.fixture_dir).is_dir():
-        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory")
+    resolve_fixture(payload.fixture_dir)
     # The proposer is the authenticated principal, whatever the body says.
     payload = payload.model_copy(update={"proposed_by": principal.name})
     try:
