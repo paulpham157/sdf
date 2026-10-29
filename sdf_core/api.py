@@ -303,11 +303,15 @@ class RunTaskRequest(BaseModel):
     )
     validation_target_kind: str | None = None
     validation_target_id: str | None = None
-    parent_attempt_id: str | None = None
-    model_tier: ModelTier = ModelTier.BASIC
-    # cost_usd, provider, latency_ms, input_tokens, output_tokens, error_class
-    # and escalation_reason were removed (#50, ADR 0027): they are measured by
-    # the server, and extra="forbid" rejects a request that still sends them.
+    parent_attempt_id: str | None = Field(default=None, description=(
+        "Retry/escalate a finished Attempt of the same Task that did not pass every check."))
+    model_tier: ModelTier | None = Field(default=None, description=(
+        "Declared routing tier (not measured). Default basic; a retry defaults to the parent's tier "
+        "and may not go below it."))
+    # cost_usd, provider, latency_ms, input_tokens, output_tokens and
+    # escalation_reason were removed (#50, ADR 0027): they are measured by the
+    # server, and extra="forbid" rejects a request that still sends them (or
+    # any other telemetry name such as error_class, which was never accepted).
 
 
 class ToolActionRequest(BaseModel):
@@ -872,8 +876,12 @@ def declare_objective_metric(objective_id: str, payload: MetricDeclarationReques
 
 
 @app.post("/objectives/{objective_id}/observations", status_code=status.HTTP_201_CREATED)
-def record_outcome_observation(objective_id: str, payload: ObservationRequest, db: Session = Depends(get_db)):
+def record_outcome_observation(objective_id: str, payload: ObservationRequest, request: Request,
+                               db: Session = Depends(get_db)):
     get_objective_node(db, objective_id)
+    # ADR 0027 §6: observations are caller-reported, not measured.  The row has
+    # no principal column (out of scope for #50); the audit log line says who.
+    principal = getattr(getattr(request.state, "principal", None), "name", None)
     observation_id = f"OBSERVATION-{uuid4().hex[:12]}"
     db.add(OutcomeObservationRow(
         id=observation_id,
@@ -886,6 +894,8 @@ def record_outcome_observation(objective_id: str, payload: ObservationRequest, d
         created_at=datetime.now(timezone.utc),
     ))
     db.commit()
+    _log.info("observation_recorded", extra={"observation_id": observation_id, "objective_id": objective_id,
+                                             "principal": principal, "mode": payload.mode})
     return {
         "id": observation_id,
         "objective_id": objective_id,
@@ -924,7 +934,7 @@ import threading as _threading  # noqa: E402
 
 from .agent_sandbox import agent_environ, e2b_factory, running_sandbox_ids  # noqa: E402
 from .credentials import load_dotenv  # noqa: E402
-from .coordinator import Coordinator, RunConfig, request_cancel  # noqa: E402
+from .coordinator import Coordinator, RunConfig, ServerConfigError, request_cancel  # noqa: E402
 from .db import (  # noqa: E402
     AgentClaimRow,
     AgentMessageRow,
@@ -1053,6 +1063,11 @@ def _cleanup_check():
     return None
 
 
+def factory_evidence_mode(factory: Any) -> str:
+    """``live`` only for a factory that builds real agents (``e2b_factory``)."""
+    return "live" if getattr(factory, "evidence_mode", None) == "live" else "synthetic"
+
+
 def _coordinator(db: Session) -> Coordinator:
     factory = _agent_factory()
     if factory is None:
@@ -1089,7 +1104,10 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
     if plan.status != "approved":
         raise HTTPException(status_code=409, detail=f"plan {plan_id} is {plan.status}; a human must approve it first")
     try:
-        config = RunConfig.from_dict(payload.config)
+        # ADR 0027 §4: prices from the server, Evidence mode from the agent factory.
+        config = RunConfig.from_request(payload.config, evidence_mode=factory_evidence_mode(_agent_factory()))
+    except ServerConfigError as exc:
+        raise HTTPException(status_code=503, detail=f"server run configuration is invalid: {exc}") from exc
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     coordinator = _coordinator(db)

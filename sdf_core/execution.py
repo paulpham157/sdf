@@ -74,7 +74,7 @@ class ExecutionService:
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
         validation_target: tuple[str, str] | None = None,
         parent_attempt_id: str | None = None,
-        model_tier: ModelTier = ModelTier.BASIC,
+        model_tier: ModelTier | None = None,
         require_plan_approval: bool = False,
     ):
         """Run one Attempt end to end.
@@ -157,7 +157,7 @@ class ExecutionService:
         fixture: Path,
         validation_target: tuple[str, str] | None = None,
         parent_attempt_id: str | None = None,
-        model_tier: ModelTier = ModelTier.BASIC,
+        model_tier: ModelTier | None = None,
         cost_usd: float = 0.0,
         provider: str | None = None,
         latency_ms: float | None = None,
@@ -191,10 +191,12 @@ class ExecutionService:
             raise ValueError("input_tokens must not be negative")
         if output_tokens is not None and output_tokens < 0:
             raise ValueError("output_tokens must not be negative")
-        model_tier = ModelTier(model_tier)
         parent = self.db.get(AttemptRow, parent_attempt_id) if parent_attempt_id else None
         if parent_attempt_id and (parent is None or parent.task_id != task_id):
             raise ValueError("parent attempt not found for task")
+        if parent is not None:
+            check_retry_parent(self.db, parent)
+        model_tier = retry_tier(parent, model_tier)
         if parent is not None and escalation_reason is None:
             escalation_reason = derived_escalation_reason(parent)
         if validation_target:
@@ -477,6 +479,39 @@ class ExecutionService:
         if task.status == TaskState.EVALUATING.value:
             task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
         self.db.commit()
+
+
+TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,
+                                     AttemptState.CANCELLED.value})
+_TIER_RANK = {ModelTier.BASIC: 0, ModelTier.MEDIUM: 1, ModelTier.HIGH: 2}
+
+
+def check_retry_parent(db: Session, parent: AttemptRow) -> None:
+    """A retry/escalation parent must be finished and not accepted (#50 review)."""
+
+    if parent.status not in TERMINAL_ATTEMPT_STATES:
+        raise ValueError(f"parent attempt {parent.id} is {parent.status}; only a finished attempt can be retried")
+    statuses = [row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))]
+    if parent.status == AttemptState.COMPLETED.value and statuses and all(s == "PASS" for s in statuses):
+        raise ValueError(f"parent attempt {parent.id} passed every check; there is nothing to retry")
+
+
+def retry_tier(parent: AttemptRow | None, declared: ModelTier | str | None) -> ModelTier:
+    """The Attempt's model tier.
+
+    The tier is a label the caller declares for routing (it is not measured);
+    a retry defaults to the parent's tier and may not go below it.
+    """
+
+    if parent is None:
+        return ModelTier(declared) if declared is not None else ModelTier.BASIC
+    parent_tier = ModelTier(parent.model_tier or ModelTier.BASIC.value)
+    if declared is None:
+        return parent_tier
+    tier = ModelTier(declared)
+    if _TIER_RANK[tier] < _TIER_RANK[parent_tier]:
+        raise ValueError(f"model_tier {tier.value} is below the parent attempt's tier {parent_tier.value}")
+    return tier
 
 
 def derived_escalation_reason(parent: AttemptRow) -> str:

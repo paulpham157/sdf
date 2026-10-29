@@ -297,8 +297,7 @@ def test_http_run_records_where_each_check_ran(tmp_path):
         db.close()
 
 
-FAST = {"poll_interval_s": 0.01, "stall_s": 0.5, "max_wall_s": 20, "max_verify_rounds": 1,
-        "evidence_mode": "synthetic"}
+FAST = {"poll_interval_s": 0.01, "stall_s": 0.5, "max_wall_s": 20, "max_verify_rounds": 1}
 
 
 def test_plan_run_honours_required_containment(tmp_path, monkeypatch):

@@ -30,7 +30,7 @@ def fake_agents(tmp_path, monkeypatch):
         app.state.agent_cleanup_check = None
 
 
-FAST = {"poll_interval_s": 0.01, "stall_s": 0.5, "max_wall_s": 60, "evidence_mode": "synthetic"}
+FAST = {"poll_interval_s": 0.01, "stall_s": 0.5, "max_wall_s": 60}  # evidence_mode is server-set (ADR 0027)
 
 
 def test_plan_gate_and_lead_worker_run_over_http(tmp_path, fake_agents):

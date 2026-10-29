@@ -72,7 +72,7 @@ def test_live_plan_gate_lead_and_two_workers(tmp_path, monkeypatch):
         assert proposed.status_code == 201, proposed.text
         report["steps"].append({"propose": proposed.status_code, "plan_sha256": proposed.json()["content_sha256"]})
 
-        config = {"lead": {"kind": LEAD_KIND}, "worker": {"kind": WORKER_KIND}, "evidence_mode": "live",
+        config = {"lead": {"kind": LEAD_KIND}, "worker": {"kind": WORKER_KIND},
                   "max_cost_usd": 0.19, "max_wall_s": 1200}
         early = client.post(f"/plans/{plan_id}/runs", json={"config": config, "wait": True})
         report["steps"].append({"start_before_approval": early.status_code, "detail": early.json()["detail"]})
