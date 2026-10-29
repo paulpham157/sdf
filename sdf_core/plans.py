@@ -37,7 +37,7 @@ from .db import (
 )
 from .model import utcnow
 
-CHECK_EXECUTABLES = frozenset({"python", "python3", "pytest", "ruff"})
+from .checks import ALLOWED_EXECUTABLES as CHECK_EXECUTABLES, validate_argv  # noqa: F401 (re-export)
 _KEY = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 _ACTOR = re.compile(r"[A-Za-z0-9._@:+-]{1,120}")
 _RESERVED_ACTORS = re.compile(r"(?i)(sdf|host|lead(-\d+)?|manager|workers?(-\d+)?|agent:.*|policy:.*)")
@@ -79,10 +79,11 @@ class SubtaskSpec(BaseModel):
         extra = set(self.criterion_checks) - set(self.acceptance_criteria)
         if extra:
             raise ValueError(f"checks for unknown criteria: {sorted(extra)}")
-        for checks in self.criterion_checks.values():
+        for criterion, checks in self.criterion_checks.items():
             for argv in checks:
-                if not argv or PurePosixPath(argv[0]).name not in CHECK_EXECUTABLES:
-                    raise ValueError(f"check executable must be one of {sorted(CHECK_EXECUTABLES)}")
+                # The same validation as a server-registered check (ADR 0025): a
+                # bare allowlisted executable, never a path, and a hardenable form.
+                validate_argv(argv, where=f"check for {criterion!r}")
         if set(self.allowed_paths) & set(self.protected_paths):
             raise ValueError("a path cannot be both allowed and protected")
         return self
