@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from sdf_core import usage
-from sdf_core.adapter import AdapterResult, FakeNativeAdapter
+from sdf_core.adapter import FakeNativeAdapter
 from sdf_core.api import SessionLocal
 from sdf_core.db import AttemptRow, Base, TaskRow, make_engine
 from sdf_core.execution import ExecutionService
