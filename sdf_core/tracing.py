@@ -4,13 +4,17 @@ Off by default.  With ``SDF_OTEL_ENABLED`` unset nothing here imports the
 OpenTelemetry SDK, no provider or exporter exists, and :func:`span` returns a
 shared no-op context manager.  When enabled, spans are exported over OTLP/HTTP
 (or to the console for development); any OTLP backend works - Jaeger, Grafana
-Tempo, Langfuse, LangSmith - through the standard ``OTEL_*`` variables, which
-the SDK reads itself:
+Tempo, Langfuse, LangSmith - through the standard ``OTEL_*`` variables.  The
+API reads them from the environment *and* the repo-root ``.env``:
 
 * ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT``
-* ``OTEL_EXPORTER_OTLP_HEADERS`` (backend auth; never logged or attached to spans)
+* ``OTEL_EXPORTER_OTLP_HEADERS`` (backend auth; values never logged or attached to spans)
 * ``OTEL_SERVICE_NAME`` (default ``sdf-core``)
-* ``OTEL_TRACES_SAMPLER`` / ``OTEL_TRACES_SAMPLER_ARG``
+
+``OTEL_TRACES_SAMPLER(_ARG)``, ``OTEL_EXPORTER_OTLP_TIMEOUT/COMPRESSION`` and
+``OTEL_RESOURCE_ATTRIBUTES`` are read by the SDK from the process environment
+only.  ``OTEL_SDK_DISABLED=true`` and ``OTEL_TRACES_EXPORTER=none`` keep
+tracing off.  OTLP/gRPC is not supported (OTLP/HTTP protobuf only).
 
 SDF switches: ``SDF_OTEL_ENABLED=1``; ``SDF_OTEL_EXPORTER=otlp|console``
 (``OTEL_TRACES_EXPORTER=console`` is honoured too); ``SDF_OTEL_DB=1`` adds
@@ -31,8 +35,11 @@ or proxied through sandboxes, whose egress stays as configured (Vultr-only).
 from __future__ import annotations
 
 import contextvars
+import sys
 import logging
 import os
+import re
+from urllib.parse import unquote
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
@@ -95,6 +102,7 @@ class _State:
     tracer: Any = None
     exporter: Any = None
     db_instrumented = False
+    fastapi_apps: list = []
 
 
 _state = _State()
@@ -139,25 +147,84 @@ def span(name: str, **fields: Any):
     manager when tracing is off.
     """
 
-    if not _state.enabled:
+    tracer = _state.tracer  # captured once: a concurrent shutdown() cannot null it mid-span
+    if not _state.enabled or tracer is None:
         return _NOOP_CONTEXT
-    return _real_span(name, clean_attributes(_attr_kwargs(fields)))
+    return _real_span(tracer, name, clean_attributes(_attr_kwargs(fields)))
+
+
+def _record_exception(current: Any, exc: BaseException) -> None:
+    """Class name only: exception messages may carry prompts or output.
+
+    Client errors (an ``HTTPException`` with a 4xx ``status_code``) are the
+    caller's mistake, not a failed span: only ``error.type`` is recorded.
+    """
+
+    from opentelemetry.trace import Status, StatusCode
+
+    current.set_attribute("error.type", type(exc).__name__)
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and 400 <= status_code < 500:
+        return
+    current.set_status(Status(StatusCode.ERROR, type(exc).__name__))
 
 
 @contextmanager
-def _real_span(name: str, attributes: dict[str, Any]) -> Iterator[Any]:
-    from opentelemetry.trace import Status, StatusCode
-
-    with _state.tracer.start_as_current_span(
+def _real_span(tracer: Any, name: str, attributes: dict[str, Any]) -> Iterator[Any]:
+    with tracer.start_as_current_span(
         name, attributes=attributes, record_exception=False, set_status_on_exception=False,
     ) as current:
         try:
             yield current
         except BaseException as exc:
-            # Class name only: exception messages may carry prompts or output.
-            current.set_attribute("error.type", type(exc).__name__)
-            current.set_status(Status(StatusCode.ERROR, type(exc).__name__))
+            _record_exception(current, exc)
             raise
+
+
+def detached_root(name: str, **fields: Any) -> Any:
+    """Start (not activate) a new *root* span linked to the current span.
+
+    For work that outlives the request that started it (background runs): the
+    request span ends first, so the work gets its own trace with a span link
+    back to the request.  End it with :func:`activate`.  ``NOOP_SPAN`` when off.
+    """
+
+    tracer = _state.tracer
+    if not _state.enabled or tracer is None:
+        return NOOP_SPAN
+    from opentelemetry import trace
+    from opentelemetry.context import Context
+
+    parent = trace.get_current_span().get_span_context()
+    links = [trace.Link(parent)] if parent.is_valid else []
+    return tracer.start_span(name, context=Context(), links=links,
+                             attributes=clean_attributes(_attr_kwargs(fields)))
+
+
+@contextmanager
+def activate(target: Any) -> Iterator[Any]:
+    """Make a :func:`detached_root` span current for the block, then end it."""
+
+    if target is NOOP_SPAN or target is None:
+        yield NOOP_SPAN
+        return
+    from opentelemetry import trace
+
+    with trace.use_span(target, end_on_exit=True, record_exception=False, set_status_on_exception=False):
+        try:
+            yield target
+        except BaseException as exc:
+            _record_exception(target, exc)
+            raise
+
+
+def span_trace_id(target: Any) -> str | None:
+    """Hex trace id of ``target`` (``None`` for the no-op span)."""
+
+    if target is NOOP_SPAN or target is None:
+        return None
+    ctx = target.get_span_context()
+    return format(ctx.trace_id, "032x") if ctx.is_valid else None
 
 
 def set_attributes(target: Any = None, **fields: Any) -> None:
@@ -226,38 +293,105 @@ def in_current_context(fn: Callable[..., Any]) -> Callable[..., Any]:
 # --- setup ---------------------------------------------------------------------
 
 
-def _redacting_exporter(inner: Any) -> Any:
-    from opentelemetry.sdk.trace import Event, ReadableSpan
-    from opentelemetry.sdk.trace.export import SpanExporter
+# Attributes the HTTP/DB instrumentations add that identify people or carry
+# free text: never exported.
+_DROP_ATTRIBUTES = frozenset({
+    "net.peer.ip", "net.peer.port", "net.sock.peer.addr", "net.sock.peer.port", "client.address", "client.port", "http.client_ip",
+    "network.peer.address", "http.user_agent", "user_agent.original", "url.query",
+})
+_DROP_PREFIXES = ("http.request.header.", "http.response.header.")
+# URL-valued attributes keep scheme/host/path only: query strings, fragments and
+# userinfo can carry tokens whose names no pattern recognises.
+_URL_ATTRIBUTES = frozenset({"http.url", "http.target", "url.full", "url.path"})
+_USERINFO = re.compile(r"//[^/@]*@")
+_SAFE_STATUS = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,63}")
+EXCEPTION_EVENT = "exception"
 
-    def scrub(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        for key, value in (attributes or {}).items():
-            if isinstance(value, str):
-                out[key] = redact(value)
-            elif isinstance(value, (tuple, list)):
-                out[key] = tuple(redact(v) if isinstance(v, str) else v for v in value)
-            else:
-                out[key] = value
-        return out
+
+def _strip_url(value: str) -> str:
+    return _USERINFO.sub("//", value.split("?", 1)[0].split("#", 1)[0])
+
+
+def _scrub(attributes: Mapping[str, Any] | None) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in (attributes or {}).items():
+        if key in _DROP_ATTRIBUTES or key.startswith(_DROP_PREFIXES):
+            continue
+        if isinstance(value, str):
+            out[key] = redact(_strip_url(value) if key in _URL_ATTRIBUTES else value)
+        elif isinstance(value, (tuple, list)):
+            out[key] = tuple(redact(v) if isinstance(v, str) else v for v in value)
+        else:
+            out[key] = value
+    return out
+
+
+def _scrub_event(event: Any) -> Any:
+    from opentelemetry.sdk.trace import Event
+
+    if event.name == EXCEPTION_EVENT:
+        # Instrumentations record message and stacktrace: both may hold prompts or output.
+        kept = {"exception.type": event.attributes["exception.type"]} \
+            if event.attributes and "exception.type" in event.attributes else {}
+        return Event(EXCEPTION_EVENT, kept, event.timestamp)
+    return Event(event.name, _scrub(event.attributes), event.timestamp)
+
+
+def _scrub_status(status: Any, attributes: Mapping[str, Any]) -> Any:
+    """Keep only an identifier-like description (error class / exception class).
+
+    The SQLAlchemy instrumentation puts ``str(exc)`` here, which for
+    Postgres includes ``DETAIL: Key (col)=(value)``.
+    """
+
+    from opentelemetry.trace import Status
+
+    description = status.description
+    if not description or _SAFE_STATUS.fullmatch(description):
+        return status
+    fallback = attributes.get("error.type")
+    safe = fallback if isinstance(fallback, str) and _SAFE_STATUS.fullmatch(fallback) else "error"
+    return Status(status.status_code, safe)
+
+
+def _redacting_exporter(inner: Any) -> Any:
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import ReadableSpan
+    from opentelemetry.sdk.trace.export import SpanExporter
+    from opentelemetry.trace import Link
+
+    resources: dict[int, Any] = {}
+
+    def resource(original: Any) -> Any:
+        key = id(original)
+        if key not in resources:
+            resources[key] = Resource(_scrub(original.attributes), original.schema_url)
+        return resources[key]
 
     class RedactingSpanExporter(SpanExporter):
-        """Redact every string attribute (and event attribute) before export."""
+        """Scrub spans before export.
+
+        String attributes (span, event, link, resource) are redacted; URL
+        attributes lose query/fragment/userinfo; client address, user agent and
+        captured headers are dropped; ``exception`` events keep only the type;
+        status descriptions keep only an identifier.
+        """
 
         def __init__(self, wrapped: Any) -> None:
             self.wrapped = wrapped
 
         def export(self, spans: Any) -> Any:
-            scrubbed = [
-                ReadableSpan(
-                    name=s.name, context=s.context, parent=s.parent, resource=s.resource,
-                    attributes=scrub(s.attributes),
-                    events=[Event(e.name, scrub(e.attributes), e.timestamp) for e in s.events],
-                    links=s.links, kind=s.kind, status=s.status, start_time=s.start_time,
+            scrubbed = []
+            for s in spans:
+                attributes = _scrub(s.attributes)
+                scrubbed.append(ReadableSpan(
+                    name=s.name, context=s.context, parent=s.parent, resource=resource(s.resource),
+                    attributes=attributes,
+                    events=[_scrub_event(e) for e in s.events],
+                    links=[Link(link.context, _scrub(link.attributes)) for link in s.links],
+                    kind=s.kind, status=_scrub_status(s.status, attributes), start_time=s.start_time,
                     end_time=s.end_time, instrumentation_scope=s.instrumentation_scope,
-                )
-                for s in spans
-            ]
+                ))
             return self.wrapped.export(scrubbed)
 
         def shutdown(self) -> None:
@@ -269,22 +403,56 @@ def _redacting_exporter(inner: Any) -> Any:
     return RedactingSpanExporter(inner)
 
 
-def _otlp_kwargs(env: Mapping[str, str]) -> dict[str, Any]:
-    """Endpoint/headers from an explicit mapping (the SDK itself only reads ``os.environ``)."""
+_HEADER_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]+")
 
-    if env is os.environ:
-        return {}
+
+def parse_otlp_headers(raw: str | None) -> dict[str, str]:
+    """Parse ``OTEL_EXPORTER_OTLP_*HEADERS`` (``k=v,k2=v2``, values URL-decoded).
+
+    Malformed entries are skipped and only their count is logged; values are
+    secrets (backend auth) and never appear in a log line.
+    """
+
+    headers: dict[str, str] = {}
+    malformed = 0
+    for entry in (raw or "").split(","):
+        if not entry.strip():
+            continue
+        name, sep, value = entry.partition("=")
+        name = unquote(name).strip()
+        if not sep or not _HEADER_NAME.fullmatch(name) or not value.strip():
+            malformed += 1
+            continue
+        headers[name.lower()] = unquote(value).strip()
+    if malformed:
+        _log.warning("ignored malformed OTLP header entries", extra={
+            "malformed_entries": malformed, "header_names": ",".join(sorted(headers))})
+    return headers
+
+
+class _HideOtelHeaderValues(logging.Filter):
+    """``opentelemetry.util.re`` logs malformed header strings verbatim; hide them."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg, record.args = "malformed OTLP header entry ignored (value hidden)", ()
+        return True
+
+
+_HEADER_LOG_FILTER = _HideOtelHeaderValues()
+
+
+def _otlp_kwargs(env: Mapping[str, str]) -> dict[str, Any]:
+    """Endpoint/headers from ``env`` (the SDK itself would only read ``os.environ``)."""
+
     kwargs: dict[str, Any] = {}
     endpoint = env.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
     if not endpoint and env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         endpoint = env["OTEL_EXPORTER_OTLP_ENDPOINT"].rstrip("/") + "/v1/traces"
     if endpoint:
         kwargs["endpoint"] = endpoint
-    headers = env.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS") or env.get("OTEL_EXPORTER_OTLP_HEADERS")
-    if headers:
-        from opentelemetry.util.re import parse_env_headers
-
-        kwargs["headers"] = parse_env_headers(headers, liberal=True)
+    raw = env.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS") or env.get("OTEL_EXPORTER_OTLP_HEADERS")
+    if raw:
+        kwargs["headers"] = parse_otlp_headers(raw)
     return kwargs
 
 
@@ -292,40 +460,48 @@ def configure_tracing(environ: Mapping[str, str] | None = None, *, exporter: Any
     """Enable tracing when ``SDF_OTEL_ENABLED`` is truthy; return whether it is on.
 
     Idempotent.  ``exporter`` (tests) replaces the env-selected exporter and is
-    flushed synchronously.  A missing ``sdf[otel]`` install logs one warning
+    flushed synchronously.  A missing ``sdf-core[otel]`` install logs one warning
     and leaves tracing off.
     """
 
     env = os.environ if environ is None else environ
     if _state.enabled:
         return True
-    if not _truthy(env.get("SDF_OTEL_ENABLED")):
+    if not _truthy(env.get("SDF_OTEL_ENABLED")) or _truthy(env.get("OTEL_SDK_DISABLED")):
+        return False
+    kind = (env.get("SDF_OTEL_EXPORTER") or env.get("OTEL_TRACES_EXPORTER") or "otlp").strip().lower()
+    if kind == "none" and exporter is None:
+        return False
+    protocol = (env.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL") or env.get("OTEL_EXPORTER_OTLP_PROTOCOL") or "").lower()
+    if exporter is None and protocol.startswith("grpc"):
+        _log.warning("OTLP/gRPC is not supported; use http/protobuf (port 4318). Tracing stays off")
         return False
     try:
         from opentelemetry.sdk.resources import SERVICE_NAME, Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter, SimpleSpanProcessor
     except ImportError:
-        _log.warning("SDF_OTEL_ENABLED is set but OpenTelemetry is not installed; install sdf[otel]")
+        _log.warning("SDF_OTEL_ENABLED is set but OpenTelemetry is not installed; install sdf-core[otel]")
         return False
 
     # TracerProvider reads OTEL_TRACES_SAMPLER(_ARG) from the process environment.
     resource = Resource.create({SERVICE_NAME: env.get("OTEL_SERVICE_NAME") or DEFAULT_SERVICE_NAME})
     provider = TracerProvider(resource=resource)
-    kind = (env.get("SDF_OTEL_EXPORTER") or env.get("OTEL_TRACES_EXPORTER") or "otlp").strip().lower()
     label = kind
     if exporter is not None:
         label = "custom"
         processor = SimpleSpanProcessor(_redacting_exporter(exporter))
     elif kind == "console":
-        processor = SimpleSpanProcessor(_redacting_exporter(ConsoleSpanExporter()))
+        # The SDK's default ``out`` is bound to sys.stdout at import time.
+        processor = SimpleSpanProcessor(_redacting_exporter(ConsoleSpanExporter(out=sys.stdout)))
     elif kind in {"otlp", "otlp_proto_http", ""}:
         try:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         except ImportError:
-            _log.warning("OTLP exporter is not installed; install sdf[otel]")
+            _log.warning("OTLP exporter is not installed; install sdf-core[otel]")
             return False
-        # Endpoint, headers, timeout and compression come from OTEL_EXPORTER_OTLP_*.
+        # Endpoint and headers come from ``env``; timeout/compression from os.environ.
+        logging.getLogger("opentelemetry.util.re").addFilter(_HEADER_LOG_FILTER)
         exporter = OTLPSpanExporter(**_otlp_kwargs(env))
         processor = BatchSpanProcessor(_redacting_exporter(exporter))
     else:
@@ -353,9 +529,33 @@ def instrument_fastapi(app: Any) -> bool:
         return False
     if getattr(app, "_is_instrumented_by_opentelemetry", False):
         return True
-    FastAPIInstrumentor.instrument_app(app, tracer_provider=_state.provider, excluded_urls="healthz")
+    # An empty capture list would fall back to OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*,
+    # so pass a header nobody sends and sanitise everything; the exporter also drops
+    # http.*.header.* attributes.
+    FastAPIInstrumentor.instrument_app(
+        app, tracer_provider=_state.provider, excluded_urls="healthz",
+        http_capture_headers_server_request=[_NO_HEADER], http_capture_headers_server_response=[_NO_HEADER],
+        http_capture_headers_sanitize_fields=[".*"], exclude_spans=["receive", "send"],
+    )
     app.middleware_stack = None  # rebuilt on the next request, now with the tracing middleware
+    if app not in _state.fastapi_apps:
+        _state.fastapi_apps.append(app)
     return True
+
+
+_NO_HEADER = "x-sdf-no-header-capture"
+
+
+def uninstrument_fastapi(app: Any) -> None:
+    """Undo :func:`instrument_fastapi` (lifespan exit); safe to call twice."""
+
+    _state.fastapi_apps[:] = [a for a in _state.fastapi_apps if a is not app]
+    if not getattr(app, "_is_instrumented_by_opentelemetry", False):
+        return
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.uninstrument_app(app)
+    app.middleware_stack = None
 
 
 def instrument_sqlalchemy(engines: Any, environ: Mapping[str, str] | None = None) -> bool:
@@ -381,11 +581,13 @@ def instrument_sqlalchemy(engines: Any, environ: Mapping[str, str] | None = None
 
 
 def shutdown() -> None:
-    """Flush and drop the provider (tests and process exit)."""
+    """Uninstrument, flush and drop the provider (lifespan exit, tests)."""
 
     provider = _state.provider
     _state.enabled = False
     _state.provider = _state.tracer = _state.exporter = None
+    for app in list(_state.fastapi_apps):
+        uninstrument_fastapi(app)
     if _state.db_instrumented:
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 

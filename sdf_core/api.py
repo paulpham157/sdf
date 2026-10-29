@@ -182,16 +182,18 @@ async def _lifespan(_app: FastAPI):
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
     # ADR 0024: off unless SDF_OTEL_ENABLED; spans never leave SDF Core for a sandbox.
-    owned = not tracing.enabled() and tracing.configure_tracing()
+    # SDF_OTEL_* / OTEL_* may live in the repo-root .env like every other setting.
+    otel_env = _operator_env()
+    owned = not tracing.enabled() and tracing.configure_tracing(otel_env)
     if owned:
         tracing.instrument_fastapi(_app)
         # SessionLocal owns its own engine; the instrumentor is a singleton, so pass both at once.
-        tracing.instrument_sqlalchemy([engine, SessionLocal.kw.get("bind")])
+        tracing.instrument_sqlalchemy([engine, SessionLocal.kw.get("bind")], otel_env)
     try:
         yield
     finally:
         if owned:
-            tracing.shutdown()  # flush queued spans
+            tracing.shutdown()  # uninstrument app and DB, flush queued spans
 
 
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
@@ -1026,15 +1028,25 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
     run_id = run.id
     factory, check = coordinator.factory, coordinator.cleanup_check
 
+    # ADR 0024: the request span ends before the run does, so the run gets its own
+    # root span (new trace, linked to the request).  Its trace id is stored on the
+    # run now, so the 202 response and `runs show` report the same trace.
+    root = tracing.detached_root("sdf.run.background", run_id=run_id, plan_id=plan_id)
+    root_trace = tracing.span_trace_id(root)
+    if root_trace:
+        run.trace_id = root_trace
+        db.commit()
+
     def background() -> None:
         session = SessionLocal()
         try:
-            Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
-                        artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
+            with tracing.activate(root):
+                Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
+                            artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
         finally:
             session.close()
 
-    # The background run stays in this request's trace (and log context).
+    # in_current_context carries the log context; activate() replaces the current span.
     _threading.Thread(target=tracing.in_current_context(background), name=f"sdf-{run_id}", daemon=True).start()
     return run_payload(run, db)
 

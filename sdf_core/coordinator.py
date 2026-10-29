@@ -264,12 +264,12 @@ class Coordinator:
         run = self.db.get(AgentRunRow, run_id)
         if run is None:
             raise LookupError("run not found")
-        trace_id = tracing.current_trace_id()
+        if run.status != "running":
+            raise PlanGateError(f"run {run_id} is {run.status}")
+        trace_id = tracing.current_trace_id()  # only for a run this call actually executes
         if trace_id and run.trace_id != trace_id:
             run.trace_id = trace_id
             self.db.commit()
-        if run.status != "running":
-            raise PlanGateError(f"run {run_id} is {run.status}")
         plan = self.db.get(PlanRow, run.plan_id)
         if plan is None or plan.status != "approved":  # re-checked at execution time
             raise PlanGateError("plan is not approved")
