@@ -1,0 +1,24 @@
+# Changelog
+
+## Unreleased
+
+### Breaking API changes
+
+- **Registered checks (#52, ADR 0025).** `POST /tasks/{id}/run` no longer
+  accepts `commands`; `criterion_checks` maps criteria to check ids registered
+  in the fixture's `sdf-checks.json` or the server checks file. Unknown request
+  keys return `422`. Live `/run` and plan-run checks default to
+  `SDF_EVALUATOR_CONTAINMENT=require`, so without a promoted containment
+  backend they are `INCONCLUSIVE` until one is promoted or containment is set
+  to `off` explicitly.
+- **Server-measured telemetry (#50, ADR 0027).**
+  - `POST /tasks/{id}/run` rejects `cost_usd`, `provider`, `latency_ms`,
+    `input_tokens`, `output_tokens` and `escalation_reason` with `422`; the
+    server measures or derives them.
+  - Retries (`parent_attempt_id`) must name a finished Attempt of the same Task
+    that did not pass every check, at a `model_tier` no lower than the parent's
+    (default: the parent's tier); otherwise `409`.
+  - `POST /plans/{id}/runs` rejects `price_in_per_m`, `price_out_per_m`,
+    `sandbox_usd_per_s` and `evidence_mode` in `config` with `422`. Set prices
+    with `SDF_RUN_PRICE_IN_PER_M`, `SDF_RUN_PRICE_OUT_PER_M` and
+    `SDF_RUN_SANDBOX_USD_PER_S`; an invalid value returns `503`.

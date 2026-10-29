@@ -267,6 +267,7 @@ def e2b_factory(environ: Mapping[str, str], **kwargs: Any) -> AgentSandboxFactor
     def build(spec: AgentSpec) -> AgentSandbox:
         return E2BAgentSandbox(spec, environ=environ, **kwargs)
 
+    build.evidence_mode = "live"  # type: ignore[attr-defined]  # real agents (ADR 0027 §4)
     return build
 
 

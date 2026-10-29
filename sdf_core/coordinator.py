@@ -19,6 +19,8 @@ sandbox is closed in ``finally``.
 from __future__ import annotations
 
 import json
+import math
+import os
 import shutil
 import tempfile
 import threading
@@ -26,7 +28,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -91,7 +93,25 @@ class RunConfig:
         return out
 
     @classmethod
+    def from_request(cls, data: dict[str, Any] | None, *, evidence_mode: str,
+                     environ: Mapping[str, str] | None = None) -> "RunConfig":
+        """A caller's run config (ADR 0027 §4).
+
+        Prices and the Evidence mode decide the cost cap and whether Evidence
+        counts as live, so they are never taken from the caller: prices come
+        from the server environment, the mode from the agent factory.
+        """
+        data = dict(data or {})
+        server_set = sorted(set(data) & set(SERVER_FIELDS))
+        if server_set:
+            raise ValueError(f"run config keys {server_set} are set by the server, not the caller")
+        data.update(server_pricing(environ))
+        data["evidence_mode"] = evidence_mode
+        return cls.from_dict(data)
+
+    @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "RunConfig":
+        """Validate a full config (a stored run's, or one built by ``from_request``)."""
         data = dict(data or {})
         for role in ("lead", "worker"):
             if isinstance(data.get(role), dict):
@@ -113,7 +133,50 @@ class RunConfig:
             raise ValueError("max_wall_s must be in (0, 7200]")
         if not 1 <= config.max_turns_per_agent <= 30 or not 1 <= config.max_verify_rounds <= 5:
             raise ValueError("turn / verify caps out of range")
+        if config.evidence_mode not in EVIDENCE_MODES:
+            raise ValueError(f"evidence_mode must be one of {list(EVIDENCE_MODES)}")
+        for name, upper in PRICE_LIMITS.items():
+            _check_price(name, getattr(config, name), upper)
         return config
+
+
+SERVER_FIELDS = ("price_in_per_m", "price_out_per_m", "sandbox_usd_per_s", "evidence_mode")
+EVIDENCE_MODES = ("live", "synthetic")
+# Upper bounds only catch typos; the lower bound (>= 0) keeps the cost cap meaningful.
+PRICE_LIMITS = {"price_in_per_m": 1000.0, "price_out_per_m": 1000.0, "sandbox_usd_per_s": 1.0}
+PRICE_ENV = {"price_in_per_m": "SDF_RUN_PRICE_IN_PER_M", "price_out_per_m": "SDF_RUN_PRICE_OUT_PER_M",
+             "sandbox_usd_per_s": "SDF_RUN_SANDBOX_USD_PER_S"}
+
+
+def _check_price(name: str, value: Any, upper: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) \
+            or not 0 <= value <= upper:
+        raise ValueError(f"{name} must be a number in [0, {upper}]")
+    return float(value)
+
+
+def server_pricing(environ: Mapping[str, str] | None = None) -> dict[str, float]:
+    """Run prices from ``SDF_RUN_PRICE_IN_PER_M`` etc., or the defaults."""
+    env = os.environ if environ is None else environ
+    out: dict[str, float] = {}
+    for name, var in PRICE_ENV.items():
+        raw = env.get(var, "").strip()
+        if not raw:
+            out[name] = RunConfig.__dataclass_fields__[name].default
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ServerConfigError(f"{var} must be a number") from None
+        try:
+            out[name] = _check_price(var, value, PRICE_LIMITS[name])
+        except ValueError as exc:
+            raise ServerConfigError(str(exc)) from None
+    return out
+
+
+class ServerConfigError(RuntimeError):
+    """The server's own run configuration is invalid (not the caller's fault)."""
 
 
 # --- prompts (instructions only; agents see their messages via the shim) ---

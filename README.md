@@ -133,6 +133,9 @@ uv run uvicorn sdf_core.api:app --host 127.0.0.1
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 
+See [CHANGELOG.md](CHANGELOG.md) for breaking API changes (registered checks,
+server-measured telemetry and run prices).
+
 ## Core principle
 
 An agent reporting completion is not success. A Task has an **Accepted Outcome** only when independent Evidence satisfies its explicit acceptance criteria.

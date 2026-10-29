@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -12,7 +13,10 @@ from dataclasses import dataclass
 
 from .adapter import AdapterResult, FakeNativeAdapter, NativeAdapter
 from .artifacts import ArtifactStore, WorkspaceManager
-from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow
+from .db import (
+    ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow,
+    UsageLedgerRow,
+)
 from .escalation import ModelTier
 from . import tracing
 from .evaluator import DeterministicEvaluator
@@ -71,23 +75,23 @@ class ExecutionService:
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
         validation_target: tuple[str, str] | None = None,
         parent_attempt_id: str | None = None,
-        model_tier: ModelTier = ModelTier.BASIC,
-        cost_usd: float = 0.0,
-        provider: str | None = None,
-        latency_ms: float | None = None,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        escalation_reason: str | None = None,
+        model_tier: ModelTier | None = None,
         require_plan_approval: bool = False,
         principal: str | None = None,
     ):
+        """Run one Attempt end to end.
+
+        Telemetry (cost, provider, latency, tokens, error class, escalation
+        reason) is never taken from the caller (#50): it is measured here or
+        by the adapter and summed from the usage ledger, so the scorecard
+        cannot be forged through the run request.
+        """
         with tracing.span("sdf.attempt", task_id=task_id, model_tier=getattr(model_tier, "value", model_tier),
                           parent_attempt_id=parent_attempt_id) as attempt_span:
             begun = self.begin(
                 task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
-                parent_attempt_id=parent_attempt_id, model_tier=model_tier, cost_usd=cost_usd, provider=provider,
-                latency_ms=latency_ms, input_tokens=input_tokens, output_tokens=output_tokens,
-                escalation_reason=escalation_reason, require_plan_approval=require_plan_approval,
+                parent_attempt_id=parent_attempt_id, model_tier=model_tier,
+                require_plan_approval=require_plan_approval,
                 principal=principal,
             )
             tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id)
@@ -96,21 +100,47 @@ class ExecutionService:
                 return begun.attempt
             task = self.db.get(TaskRow, task_id)
             attempt = begun.attempt
+            started = time.monotonic()
             try:
                 result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
-            except Exception:
+            except Exception as exc:
+                self._record_measured_telemetry(attempt, time.monotonic() - started, error=exc)
                 attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
                 task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
                 task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
                 self.db.commit()
                 self._trace_outcome(attempt_span, attempt)
                 raise
+            self._record_measured_telemetry(attempt, time.monotonic() - started)
             finished = self.finish(
                 attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
                 criterion_checks=criterion_checks, validation_target=validation_target,
             )
             self._trace_outcome(attempt_span, finished)
             return finished
+
+    def _record_measured_telemetry(self, attempt: AttemptRow, seconds: float, *, error: Exception | None = None) -> None:
+        """Fill Attempt telemetry from server-side measurement (#50).
+
+        A metering adapter (the live run adapter) has already written the
+        values from its usage ledger; those are kept. Otherwise (fake and
+        in-process adapters) the provider is the adapter's identity, latency is
+        the wall clock measured here, and cost/tokens are summed from any
+        usage-ledger rows for this Attempt.
+        """
+
+        if attempt.provider is not None:
+            return
+        rows = self.db.scalars(select(UsageLedgerRow).where(UsageLedgerRow.attempt_id == attempt.id)).all()
+        attempt.provider = _adapter_identity(self.adapter)
+        attempt.latency_ms = round(max(seconds, 0.0) * 1000, 1)
+        attempt.cost_usd = round(sum(row.cost_usd or 0.0 for row in rows), 8)
+        attempt.input_tokens = _sum_or_none(row.input_tokens for row in rows)
+        attempt.output_tokens = _sum_or_none(row.output_tokens for row in rows)
+        if error is not None and attempt.error_class is None:
+            from .observability import classify_error
+
+            attempt.error_class = classify_error(error)
 
     @staticmethod
     def _trace_outcome(target, attempt: AttemptRow) -> None:
@@ -130,7 +160,7 @@ class ExecutionService:
         fixture: Path,
         validation_target: tuple[str, str] | None = None,
         parent_attempt_id: str | None = None,
-        model_tier: ModelTier = ModelTier.BASIC,
+        model_tier: ModelTier | None = None,
         cost_usd: float = 0.0,
         provider: str | None = None,
         latency_ms: float | None = None,
@@ -165,10 +195,14 @@ class ExecutionService:
             raise ValueError("input_tokens must not be negative")
         if output_tokens is not None and output_tokens < 0:
             raise ValueError("output_tokens must not be negative")
-        model_tier = ModelTier(model_tier)
         parent = self.db.get(AttemptRow, parent_attempt_id) if parent_attempt_id else None
         if parent_attempt_id and (parent is None or parent.task_id != task_id):
             raise ValueError("parent attempt not found for task")
+        if parent is not None:
+            check_retry_parent(self.db, parent)
+        model_tier = retry_tier(parent, model_tier)
+        if parent is not None and escalation_reason is None:
+            escalation_reason = derived_escalation_reason(parent)
         if validation_target:
             target = self.db.get(GraphNodeRow, validation_target[1])
             if target is None or target.kind != validation_target[0]:
@@ -456,3 +490,56 @@ class ExecutionService:
         if task.status == TaskState.EVALUATING.value:
             task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
         self.db.commit()
+
+
+TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,
+                                     AttemptState.CANCELLED.value})
+_TIER_RANK = {ModelTier.BASIC: 0, ModelTier.MEDIUM: 1, ModelTier.HIGH: 2}
+
+
+def check_retry_parent(db: Session, parent: AttemptRow) -> None:
+    """A retry/escalation parent must be finished and not accepted (#50 review)."""
+
+    if parent.status not in TERMINAL_ATTEMPT_STATES:
+        raise ValueError(f"parent attempt {parent.id} is {parent.status}; only a finished attempt can be retried")
+    statuses = [row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))]
+    if parent.status == AttemptState.COMPLETED.value and statuses and all(s == "PASS" for s in statuses):
+        raise ValueError(f"parent attempt {parent.id} passed every check; there is nothing to retry")
+
+
+def retry_tier(parent: AttemptRow | None, declared: ModelTier | str | None) -> ModelTier:
+    """The Attempt's model tier.
+
+    The tier is a label the caller declares for routing (it is not measured);
+    a retry defaults to the parent's tier and may not go below it.
+    """
+
+    if parent is None:
+        return ModelTier(declared) if declared is not None else ModelTier.BASIC
+    parent_tier = ModelTier(parent.model_tier or ModelTier.BASIC.value)
+    if declared is None:
+        return parent_tier
+    tier = ModelTier(declared)
+    if _TIER_RANK[tier] < _TIER_RANK[parent_tier]:
+        raise ValueError(f"model_tier {tier.value} is below the parent attempt's tier {parent_tier.value}")
+    return tier
+
+
+def derived_escalation_reason(parent: AttemptRow) -> str:
+    """Server-side escalation reason from the parent Attempt's recorded state (#50)."""
+
+    state = parent.status if not parent.outcome else f"{parent.status}/{parent.outcome}"
+    reason = f"escalated from {parent.id} (tier {parent.model_tier}, {state}"
+    if parent.error_class:
+        reason += f", error {parent.error_class}"
+    return (reason + ")")[:500]
+
+
+def _adapter_identity(adapter: object) -> str:
+    name = getattr(adapter, "provider", None) or getattr(adapter, "agent", None) or type(adapter).__name__
+    return str(name)[:120]
+
+
+def _sum_or_none(values) -> int | None:
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None
