@@ -38,35 +38,96 @@ could be self-forged (`python -c pass` for every criterion).
    timeout is 1-600 s. Unknown keys and an id defined in both sources are
    configuration errors. Unknown ids or a bad registry → 400 before any
    Attempt or sandbox exists.
-3. **Hardened evaluator for every caller** (public runs, plans, coordinator):
+3. **Hardened evaluator for every caller** (public runs, plan runs, coordinator):
    - argv[0] must be a bare allowlisted name; the allowlist can only be
      narrowed by callers;
    - the executable is resolved on a safe `PATH` (absolute entries outside the
-     workspace) and must not resolve into the workspace, so an agent cannot
-     plant `./bin/python`;
-   - checks run through `FixtureSandbox`: reduced environment (no server
-     variables), `HOME` = workspace, new session with process-group kill on
-     timeout, bounded output;
-   - timeouts, errors and refusals are `INCONCLUSIVE`, never `PASS`.
-4. **Optional containment** via `SDF_EVALUATOR_CONTAINMENT`:
-   `off` (default), `prefer` (use the promoted containment backend,
-   `SDF_CONTAINMENT_BACKEND` + `SDF_CONTAINMENT_SMOKE=passed`, when present)
-   or `require` (no backend → every check is `INCONCLUSIVE`). Any other value
-   → 400.
+     workspace, world-writable directories such as `/tmp` dropped) and must not
+     resolve into the workspace, so an agent cannot plant `./bin/python`;
+   - checks run through `FixtureSandbox`: an environment built from scratch
+     (no server variables; `PYTHONPATH`, `PYTHONSTARTUP`, `PYTEST_ADDOPTS`,
+     `PYTEST_PLUGINS`, ... are never passed, which a helper asserts), `HOME` =
+     workspace, new session with process-group kill on timeout, bounded output;
+   - the argv is rewritten so files in the workspace cannot change *how* the
+     check runs (`sdf_core.evaluator.harden_argv`):
+     - `python`/`python3` run with `-I` (no `PYTHON*` variables, no user site,
+       no cwd or script directory first on `sys.path`) through a small
+       bootstrap that **appends** the workspace to `sys.path` and then runs the
+       original `-c CODE`, `-m MODULE` or script. The code under test stays
+       importable, but a workspace `fractions.py`, `pytest.py`,
+       `sitecustomize.py` or user-site `.pth` cannot shadow the stdlib or an
+       installed package. Only `-c`, `-m`, a script path and the harmless flags
+       `-B -u -O -OO -b -bb -q -W <arg>` are accepted (validated at load time);
+     - `pytest` (bare or `python -m pytest`) gets `--noconftest -c /dev/null
+       --rootdir / -p no:cacheprovider --import-mode=append` and
+       `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`: no workspace `conftest.py`,
+       `pytest.ini`/`pyproject.toml`/`tox.ini`/`setup.cfg` (`addopts`, `-p`,
+       `pythonpath`), cache, or entry-point plugin from a planted `*.dist-info`;
+       test modules are appended to `sys.path`. Checks therefore cannot rely on
+       a `conftest.py` fixture either;
+     - `ruff` gets `--isolated --no-cache`, so a workspace `ruff.toml` /
+       `pyproject.toml` cannot exclude every file. Select rules in the argv;
+   - on the host, the server process is made non-dumpable
+     (`prctl(PR_SET_DUMPABLE, 0)`) before a check starts. A check runs as the
+     server's uid, and without this it could read `/proc/<server pid>/environ`
+     (the server's initial environment: API keys) or `/proc/<pid>/mem`. Checks
+     are `execve`d and therefore dumpable again; they are unaffected;
+   - timeouts, errors, refusals and unsupported forms are `INCONCLUSIVE`,
+     never `PASS`;
+   - every Evidence records where its check ran (`runner`: `host` or the
+     containment backend's name) in the evaluator-output artifact and the
+     artifact node's metadata.
+4. **Containment** via `SDF_EVALUATOR_CONTAINMENT`: `off`, `prefer` (use the
+   promoted containment backend, `SDF_CONTAINMENT_BACKEND` +
+   `SDF_CONTAINMENT_SMOKE=passed`, when present; otherwise run on the host and
+   log `evaluator_runs_on_host`) or `require` (no backend → every check is
+   `INCONCLUSIVE`). Any other value → 400. **Unset, the mode is `require`
+   whenever the workspace was written by a live agent** (`SDF_RUN_ADAPTER=live`
+   and every plan run) and `off` only for the deterministic fake adapter.
+   Running live-agent checks on the host needs an explicit `off`/`prefer`, which
+   logs `evaluator_runs_on_host`. The mode applies to plan runs too: the
+   coordinator (synchronous and background) uses the same configured
+   evaluator as `/run`.
 5. **Plans keep argv checks.** Plan subtasks are human-approved (ADR 0014) and
-   the approver sees the exact argv; they now run through the hardened
+   the approver sees the exact argv. At proposal time each argv goes through
+   the same `checks.validate_argv` as a registered check (bare allowlisted name,
+   no path, hardenable python form), and at run time through the hardened
    evaluator above.
+6. **Check sources must be server-controlled.** A `fixture_dir` (and therefore
+   its `sdf-checks.json`) or `SDF_EVALUATOR_CHECKS_FILE` that resolves under a
+   workspace or artifact root (`SDF_WORKSPACE_ROOT`, `SDF_ARTIFACT_ROOT`, the
+   default `.sdf-workspaces`/`.sdf-artifacts`) is refused with 400. Registry
+   files are opened with `O_NOFOLLOW` and must be regular files (`fstat`), at
+   most 1 MiB. Timeouts are looked up by check id, so two ids with the same
+   argv keep their own limits.
 
 ## Consequences
 
 - **Breaking API change:** `commands` is gone and `criterion_checks` takes
   ids. Callers must register checks in the fixture's `sdf-checks.json` or the
   server checks file.
-- With `SDF_EVALUATOR_CONTAINMENT=off`, checks still execute
-  agent-modified workspace code (e.g. `pytest` imports the agent's modules) on
-  the host with the server user's filesystem privileges, but without its
-  environment. Production deployments should set `require` with a promoted
-  backend.
+- **Breaking default for live runs:** with no containment backend promoted,
+  live `/run` and plan-run checks are `INCONCLUSIVE` until the operator
+  promotes a backend or sets `SDF_EVALUATOR_CONTAINMENT=off` explicitly.
+- Checks that relied on a workspace `conftest.py`, pytest ini options or ruff
+  config must move those options into the registered argv.
+- **What remains (inherent).** A check exists to run the agent's code, so the
+  agent controls whatever the check imports: an imported module can call
+  `sys.exit(0)`/`os._exit(0)` and end the check with status 0, or patch the
+  assertion it is imported by. The hardening above stops the workspace from
+  changing the interpreter, the test runner and its configuration; it cannot
+  make imported code honest. Prefer checks whose verdict does not depend on
+  code the agent wrote besides the function under test, and use containment.
+- With `off` (or `prefer` without a backend), checks still run on the host
+  with the server user's filesystem privileges: a check can read any file the
+  server user can (e.g. a host `.env`, the database file) and print it into
+  Evidence. The process environment is protected (above); files are not.
+  Production deployments should use `require` with a promoted backend.
+- Non-dumpable also means no core dumps and no same-uid `ptrace` of the
+  server (e.g. `py-spy`) - acceptable for a server. It does not protect
+  against a root-owned check, and it is a no-op off Linux.
 - An agent can still edit test files in its workspace copy; for plans
   `protected_paths` mitigates this. Registering checks that live outside the
-  workspace (e.g. `python -c ...` assertions) avoids it.
+  workspace (e.g. `python -c ...` assertions, or test files under a server
+  directory passed by absolute path) avoids it, subject to the inherent limit
+  above.

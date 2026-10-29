@@ -48,7 +48,7 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_RUN_EGRESS_ALLOW` | Extra egress hosts, comma-separated |
 | `SDF_FIXTURES_ROOT` | Root that `fixture_dir` must resolve into (default `./fixtures`) |
 | `SDF_EVALUATOR_CHECKS_FILE` | Server check registry; `criterion_checks` takes ids from it or `<fixture>/sdf-checks.json` (ADR 0025) |
-| `SDF_EVALUATOR_CONTAINMENT` | `off` (default), `prefer` or `require` containment for evaluator checks |
+| `SDF_EVALUATOR_CONTAINMENT` | `off`, `prefer` or `require` containment for evaluator checks; unset = `require` for live agents (`SDF_RUN_ADAPTER=live`, every plan run) and `off` for the fake adapter (ADR 0025) |
 | `SDF_RUN_MAX_CONCURRENT` | Live runs per process (default `2`; more → 429) |
 | `SDF_HERDR_TIMEOUT_MS` / `SDF_RUN_TURN_TIMEOUT_S` | Herdr / headless turn timeouts (`240000` / `420`) |
 | `SDF_E2B_SANDBOX_TIMEOUT_SECONDS` | E2B sandbox lifetime (default `900`) |

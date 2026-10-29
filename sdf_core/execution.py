@@ -301,7 +301,8 @@ class ExecutionService:
                     owner="evaluator",
                     confidence=evidence.confidence,
                     created_at=utcnow(),
-                    metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion},
+                    metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion,
+                                   "runner": evidence.runner},
                 )
             )
             self.db.flush()

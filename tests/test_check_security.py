@@ -266,7 +266,8 @@ def test_registry_resolves_ids_from_fixture_and_server_file(tmp_path):
     assert set(registry.ids()) == {"unit", "lint"}
     resolved = registry.resolve({"tests pass": ["unit", "lint"]})
     assert resolved == {"tests pass": [["pytest", "-q"], ["ruff", "check", "."]]}
-    assert registry.timeout_for(["pytest", "-q"]) == 5
+    assert registry.timeout_for("unit") == 5
+    assert registry.slot_timeout("tests pass", 0) == 5 and registry.slot_timeout("tests pass", 1) == 30
     with pytest.raises(UnknownCheckError):
         registry.resolve({"x": ["missing"]})
 
@@ -310,5 +311,8 @@ def test_registry_rejects_unknown_keys_and_bad_timeouts(tmp_path):
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={})
     write_checks(fixture, {"unit": {"argv": ["pytest"], "timeout_seconds": 100000}})
+    with pytest.raises(CheckConfigError):
+        CheckRegistry.load(fixture, environ={})
+    write_checks(fixture, {"unit": {"argv": ["pytest"], "timeout_seconds": 0.001}})
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={})

@@ -28,6 +28,7 @@ from .db import (
     make_session_factory,
 )
 from .escalation import ModelTier
+from .adapter import FakeNativeAdapter
 from .execution import ExecutionService
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
@@ -235,6 +236,10 @@ def resolve_fixture(raw: str) -> Path:
         raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
     if not resolved.is_dir() or not resolved.is_relative_to(root):
         raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
+    # A fixture inside a workspace or artifact tree is agent-writable, and its
+    # sdf-checks.json would be too (ADR 0025).
+    if any(resolved == write_root or resolved.is_relative_to(write_root) for write_root in server_write_roots()):
+        raise HTTPException(status_code=400, detail="fixture_dir must not be under a workspace or artifact root")
     return resolved
 
 
@@ -376,24 +381,52 @@ def configured_containment() -> tuple[object | None, bool]:
     return backend, required
 
 
-def configured_evaluator(registry: CheckRegistry | None = None) -> DeterministicEvaluator:
-    """Evaluator for public runs (ADR 0025).
+EVALUATOR_MODES = ("off", "prefer", "require")
 
-    ``SDF_EVALUATOR_CONTAINMENT``: ``off`` (default) runs checks on the host
-    with a reduced environment; ``prefer`` uses the promoted containment
-    backend (``SDF_CONTAINMENT_BACKEND`` + ``SDF_CONTAINMENT_SMOKE=passed``)
-    when there is one; ``require`` never runs a check outside it.
+
+def evaluator_mode(*, live: bool) -> str:
+    """``SDF_EVALUATOR_CONTAINMENT``; unset means ``require`` for a live agent, ``off`` otherwise."""
+
+    raw = os.getenv("SDF_EVALUATOR_CONTAINMENT")
+    mode = (raw or "").strip().lower() or ("require" if live else "off")
+    if mode not in EVALUATOR_MODES:
+        raise HTTPException(status_code=400, detail="SDF_EVALUATOR_CONTAINMENT must be off, prefer or require")
+    return mode
+
+
+def configured_evaluator(registry: CheckRegistry | None = None, *, live: bool = False) -> DeterministicEvaluator:
+    """Evaluator for public runs and plan runs (ADR 0025).
+
+    ``SDF_EVALUATOR_CONTAINMENT``: ``off`` runs checks on the host with a
+    reduced environment and hardened argv; ``prefer`` uses the promoted
+    containment backend (``SDF_CONTAINMENT_BACKEND`` +
+    ``SDF_CONTAINMENT_SMOKE=passed``) when there is one and otherwise runs on
+    the host with a warning; ``require`` never runs a check outside it
+    (INCONCLUSIVE).  Unset, the mode is ``require`` when the workspace was
+    written by a live agent (``live=True``: ``SDF_RUN_ADAPTER=live`` and every
+    plan run) and ``off`` for the deterministic fake adapter.  Every Evidence
+    records where its check ran (``runner``).
     """
 
-    mode = os.getenv("SDF_EVALUATOR_CONTAINMENT", "off").strip().lower() or "off"
-    if mode not in {"off", "prefer", "require"}:
-        raise HTTPException(status_code=400, detail="SDF_EVALUATOR_CONTAINMENT must be off, prefer or require")
+    mode = evaluator_mode(live=live)
     backend = configured_containment()[0] if mode in {"prefer", "require"} else None
+    if backend is None and mode != "require" and live:
+        _log.warning("evaluator_runs_on_host", extra={
+            "mode": mode, "reason": "no promoted containment backend" if mode == "prefer" else "mode off",
+        })
     return DeterministicEvaluator(
         containment_backend=backend,
         require_containment=mode == "require",
-        timeout_for=registry.timeout_for if registry is not None else None,
+        timeout_for=registry.slot_timeout if registry is not None else None,
     )
+
+
+def server_write_roots() -> tuple[Path, ...]:
+    """Trees an agent run writes into; a check source there is not server-controlled."""
+
+    raw = [os.getenv("SDF_WORKSPACE_ROOT") or ".sdf-workspaces", ".sdf-workspaces",
+           os.getenv("SDF_ARTIFACT_ROOT") or ".sdf-artifacts", ".sdf-artifacts"]
+    return tuple(dict.fromkeys(Path(item).resolve() for item in raw))
 
 
 def resolve_registered_checks(
@@ -404,7 +437,7 @@ def resolve_registered_checks(
     if criterion_checks is None:
         return None, None
     try:
-        registry = CheckRegistry.load(fixture)
+        registry = CheckRegistry.load(fixture, forbidden_roots=server_write_roots())
         return registry, registry.resolve(criterion_checks)
     except CheckConfigError as exc:
         raise HTTPException(status_code=400, detail=f"check registry error: {exc}") from exc
@@ -753,7 +786,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     workspace_root=Path(".sdf-workspaces"),
                     artifact_root=Path(".sdf-artifacts"),
                     adapter=adapter,
-                    evaluator=configured_evaluator(registry),
+                    evaluator=configured_evaluator(registry, live=not isinstance(adapter, FakeNativeAdapter)),
                 )
                 attempt = service.run(
                     task_id=task_id,
@@ -1038,6 +1071,8 @@ def _coordinator(db: Session) -> Coordinator:
         workspace_root=Path(os.getenv("SDF_WORKSPACE_ROOT", ".sdf-workspaces")),
         artifact_root=Path(os.getenv("SDF_ARTIFACT_ROOT", ".sdf-artifacts")),
         cleanup_check=_cleanup_check(),
+        # Plan workspaces are always written by live agents (ADR 0025).
+        evaluator=configured_evaluator(live=True),
     )
 
 
@@ -1076,7 +1111,7 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
         run = coordinator.execute(run.id)
         return run_payload(run, db)
     run_id = run.id
-    factory, check = coordinator.factory, coordinator.cleanup_check
+    factory, check, evaluator = coordinator.factory, coordinator.cleanup_check, coordinator.evaluator
 
     # ADR 0024: the request span ends before the run does, so the run gets its own
     # root span (new trace, linked to the request).  Its trace id is stored on the
@@ -1092,7 +1127,8 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
         try:
             with tracing.activate(root):
                 Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
-                            artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
+                            artifact_root=coordinator.artifact_root, cleanup_check=check,
+                            evaluator=evaluator).execute(run_id)
         finally:
             session.close()
 

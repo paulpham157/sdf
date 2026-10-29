@@ -199,6 +199,7 @@ class Coordinator:
         self.artifact_root = Path(artifact_root)
         self.service = ExecutionService(db, workspace_root=self.workspace_root, artifact_root=self.artifact_root,
                                         evaluator=evaluator)
+        self.evaluator = self.service.evaluator
         self.policy = policy or NoAutoResolvePolicy()
         self.cleanup_check = cleanup_check
         self.log = log or (lambda _msg: None)

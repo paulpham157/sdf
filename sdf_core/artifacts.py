@@ -87,6 +87,7 @@ class ArtifactStore:
                 "stdout": evidence.stdout,
                 "stderr": evidence.stderr,
                 "confidence": evidence.confidence,
+                "runner": evidence.runner,
             },
             ensure_ascii=False,
             indent=2,
