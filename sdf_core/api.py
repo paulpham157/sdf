@@ -4,13 +4,13 @@ import os
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Literal
+from typing import Annotated, Any, Generator, Literal
 from uuid import uuid4
 
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,7 @@ from .db import (
     make_session_factory,
 )
 from .escalation import ModelTier
+from .adapter import FakeNativeAdapter
 from .execution import ExecutionService
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
@@ -38,6 +39,8 @@ from .timeline import build_timeline
 from .policy import ActionRequest, AllowlistPolicy
 from .tools import AttemptBinding
 from .containment import MacOSSandboxBackend
+from .checks import CheckConfigError, CheckRegistry, UnknownCheckError
+from .evaluator import DeterministicEvaluator
 from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
 from .impact_repository import load_metric_declaration, load_observations, load_scorecard_facts
@@ -234,6 +237,10 @@ def resolve_fixture(raw: str) -> Path:
         raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
     if not resolved.is_dir() or not resolved.is_relative_to(root):
         raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
+    # A fixture inside a workspace or artifact tree is agent-writable, and its
+    # sdf-checks.json would be too (ADR 0025).
+    if any(resolved == write_root or resolved.is_relative_to(write_root) for write_root in server_write_roots()):
+        raise HTTPException(status_code=400, detail="fixture_dir must not be under a workspace or artifact root")
     return resolved
 
 
@@ -277,13 +284,23 @@ class TaskRequest(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
 
 
+CheckId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")]
+
+
 class RunTaskRequest(BaseModel):
+    # Unknown fields are rejected, so the removed ``commands`` field and the
+    # old argv form of ``criterion_checks`` fail loudly instead of being ignored.
+    model_config = ConfigDict(extra="forbid")
+
     dispatch_key: str | None = Field(default=None, min_length=1, max_length=200)
     fixture_dir: str
     instructions: str = "complete the task"
-    commands: list[list[str]] = Field(default_factory=list)
-    criterion_checks: dict[str, list[list[str]]] | None = Field(
-        default=None, description="Explicit criterion checks take precedence over legacy commands, including an empty mapping."
+    criterion_checks: dict[str, list[CheckId]] | None = Field(
+        default=None,
+        description=(
+            "Map each acceptance criterion to server-registered check ids (ADR 0025): ids come from the "
+            "fixture's sdf-checks.json or SDF_EVALUATOR_CHECKS_FILE. Callers cannot supply commands."
+        ),
     )
     validation_target_kind: str | None = None
     validation_target_id: str | None = None
@@ -375,6 +392,70 @@ def configured_containment() -> tuple[object | None, bool]:
         backend = None
     required = os.getenv("SDF_REQUIRE_CONTAINMENT", "1").strip().lower() not in {"0", "false", "no"}
     return backend, required
+
+
+EVALUATOR_MODES = ("off", "prefer", "require")
+
+
+def evaluator_mode(*, live: bool) -> str:
+    """``SDF_EVALUATOR_CONTAINMENT``; unset means ``require`` for a live agent, ``off`` otherwise."""
+
+    raw = os.getenv("SDF_EVALUATOR_CONTAINMENT")
+    mode = (raw or "").strip().lower() or ("require" if live else "off")
+    if mode not in EVALUATOR_MODES:
+        raise HTTPException(status_code=400, detail="SDF_EVALUATOR_CONTAINMENT must be off, prefer or require")
+    return mode
+
+
+def configured_evaluator(registry: CheckRegistry | None = None, *, live: bool = False) -> DeterministicEvaluator:
+    """Evaluator for public runs and plan runs (ADR 0025).
+
+    ``SDF_EVALUATOR_CONTAINMENT``: ``off`` runs checks on the host with a
+    reduced environment and hardened argv; ``prefer`` uses the promoted
+    containment backend (``SDF_CONTAINMENT_BACKEND`` +
+    ``SDF_CONTAINMENT_SMOKE=passed``) when there is one and otherwise runs on
+    the host with a warning; ``require`` never runs a check outside it
+    (INCONCLUSIVE).  Unset, the mode is ``require`` when the workspace was
+    written by a live agent (``live=True``: ``SDF_RUN_ADAPTER=live`` and every
+    plan run) and ``off`` for the deterministic fake adapter.  Every Evidence
+    records where its check ran (``runner``).
+    """
+
+    mode = evaluator_mode(live=live)
+    backend = configured_containment()[0] if mode in {"prefer", "require"} else None
+    if backend is None and mode != "require" and live:
+        _log.warning("evaluator_runs_on_host", extra={
+            "mode": mode, "reason": "no promoted containment backend" if mode == "prefer" else "mode off",
+        })
+    return DeterministicEvaluator(
+        containment_backend=backend,
+        require_containment=mode == "require",
+        timeout_for=registry.slot_timeout if registry is not None else None,
+    )
+
+
+def server_write_roots() -> tuple[Path, ...]:
+    """Trees an agent run writes into; a check source there is not server-controlled."""
+
+    raw = [os.getenv("SDF_WORKSPACE_ROOT") or ".sdf-workspaces", ".sdf-workspaces",
+           os.getenv("SDF_ARTIFACT_ROOT") or ".sdf-artifacts", ".sdf-artifacts"]
+    return tuple(dict.fromkeys(Path(item).resolve() for item in raw))
+
+
+def resolve_registered_checks(
+    fixture: Path, criterion_checks: dict[str, list[str]] | None
+) -> tuple[CheckRegistry | None, dict[str, list[list[str]]] | None]:
+    """Turn requested check ids into server-owned argv, before any sandbox starts."""
+
+    if criterion_checks is None:
+        return None, None
+    try:
+        registry = CheckRegistry.load(fixture, forbidden_roots=server_write_roots())
+        return registry, registry.resolve(criterion_checks)
+    except CheckConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"check registry error: {exc}") from exc
+    except UnknownCheckError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class EvidenceResponse(BaseModel):
@@ -730,6 +811,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
         target_node = db.get(GraphNodeRow, payload.validation_target_id)
         if target_node is None or target_node.kind != payload.validation_target_kind:
             raise HTTPException(status_code=404, detail="validation target not found")
+    registry, checks = resolve_registered_checks(fixture, payload.criterion_checks)
     principal = getattr(getattr(request.state, "principal", None), "name", None)
     adapter = None
     with log_context(task_id=task_id, principal=principal), \
@@ -744,14 +826,15 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     workspace_root=Path(".sdf-workspaces"),
                     artifact_root=Path(".sdf-artifacts"),
                     adapter=adapter,
+                    evaluator=configured_evaluator(registry, live=not isinstance(adapter, FakeNativeAdapter)),
                 )
                 attempt = service.run(
                     task_id=task_id,
                     dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
                     fixture=fixture,
                     instructions=payload.instructions,
-                    commands=payload.commands,
-                    criterion_checks=payload.criterion_checks,
+                    commands=[],
+                    criterion_checks=checks,
                     validation_target=target,
                     parent_attempt_id=payload.parent_attempt_id,
                     model_tier=payload.model_tier,
@@ -1029,6 +1112,8 @@ def _coordinator(db: Session) -> Coordinator:
         workspace_root=Path(os.getenv("SDF_WORKSPACE_ROOT", ".sdf-workspaces")),
         artifact_root=Path(os.getenv("SDF_ARTIFACT_ROOT", ".sdf-artifacts")),
         cleanup_check=_cleanup_check(),
+        # Plan workspaces are always written by live agents (ADR 0025).
+        evaluator=configured_evaluator(live=True),
     )
 
 
@@ -1067,7 +1152,7 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
         run = coordinator.execute(run.id)
         return run_payload(run, db)
     run_id = run.id
-    factory, check = coordinator.factory, coordinator.cleanup_check
+    factory, check, evaluator = coordinator.factory, coordinator.cleanup_check, coordinator.evaluator
 
     # ADR 0024: the request span ends before the run does, so the run gets its own
     # root span (new trace, linked to the request).  Its trace id is stored on the
@@ -1083,7 +1168,8 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
         try:
             with tracing.activate(root):
                 Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
-                            artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
+                            artifact_root=coordinator.artifact_root, cleanup_check=check,
+                            evaluator=evaluator).execute(run_id)
         finally:
             session.close()
 

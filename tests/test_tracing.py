@@ -22,6 +22,7 @@ from sdf_core.api import SessionLocal, app
 from sdf_core.db import AgentRunRow, AttemptRow
 from sdf_core.timeline import build_timeline, format_timeline
 from tests.auth_support import admin_client
+from tests.check_support import write_checks
 
 SECRET = "sk-tracing-secret-value-0123456789"
 PROMPT = "PROMPT-TEXT-must-never-be-a-span-attribute"
@@ -218,12 +219,13 @@ def test_http_task_attempt_hierarchy_and_trace_id_on_attempt(spans, tmp_path):
         fixture = tmp_path / "fixture"
         fixture.mkdir()
         (fixture / "app.py").write_text("print('old')\n")
+        write_checks(fixture, {"prints-ok": ["python", "-c", "print('ok')"]})
         task_id = f"TASK-OTEL-{uuid.uuid4().hex[:8]}"
         client.post("/tasks", json={"id": task_id, "title": "otel", "idempotency_key": task_id,
                                     "acceptance_criteria": ["command succeeds"]})
         response = client.post(f"/tasks/{task_id}/run?api_key={SECRET}", json={
             "fixture_dir": str(fixture), "instructions": PROMPT,
-            "commands": [["python", "-c", "print('ok')"]]})
+            "criterion_checks": {"command succeeds": ["prints-ok"]}})
         assert response.status_code == 200, response.text
     finally:
         tracing.uninstrument_fastapi(app)

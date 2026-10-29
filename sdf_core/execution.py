@@ -274,6 +274,8 @@ class ExecutionService:
                     commands=commands,
                     criteria=tuple(task.acceptance_criteria or ()),
                     criterion_checks=criterion_checks,
+                    # The check's own files must match the server fixture (ADR 0025).
+                    reference=fixture,
                 )
         except Exception:
             self._fail_attempt(task, attempt)
@@ -307,7 +309,8 @@ class ExecutionService:
                     owner="evaluator",
                     confidence=evidence.confidence,
                     created_at=utcnow(),
-                    metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion},
+                    metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion,
+                                   "runner": evidence.runner},
                 )
             )
             self.db.flush()

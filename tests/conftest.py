@@ -18,6 +18,10 @@ os.environ.pop("SDF_AUTH_SINGLE_USER", None)
 # Tests build fixtures under pytest's tmp dirs; the API confines fixture_dir
 # to SDF_FIXTURES_ROOT (ADR 0023).
 os.environ.setdefault("SDF_FIXTURES_ROOT", os.path.realpath(tempfile.gettempdir()))
+# Plan runs default to SDF_EVALUATOR_CONTAINMENT=require (ADR 0025) and tests have
+# no containment backend; the fake agents here are not live, so run checks on
+# the host.  Tests of the default delete this variable.
+os.environ["SDF_EVALUATOR_CONTAINMENT"] = "off"
 
 
 @pytest.fixture(autouse=True)
