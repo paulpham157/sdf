@@ -4,7 +4,7 @@ SDF Core can emit OpenTelemetry traces to any OTLP backend. It is off by
 default; see ADR 0024 for the design.
 
 ```bash
-pip install 'sdf[otel]'          # or: uv sync --extra otel
+pip install 'sdf-core[otel]'          # or: uv sync --extra otel
 export SDF_OTEL_ENABLED=1
 ```
 
@@ -16,9 +16,14 @@ export SDF_OTEL_ENABLED=1
 | `OTEL_SERVICE_NAME` | Defaults to `sdf-core`. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base URL; `/v1/traces` is appended. Or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the full URL. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Backend auth, `key=value,key2=value2` (URL-encode spaces as `%20`). Never logged or put on spans. |
-| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard sampling, e.g. `parentbased_traceidratio` / `0.1`. |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard sampling, e.g. `parentbased_traceidratio` / `0.1`. Process environment only. |
+| `OTEL_SDK_DISABLED=true`, `OTEL_TRACES_EXPORTER=none` | Keep tracing off. |
 
-Only OTLP over HTTP/protobuf is bundled.
+The API reads these from the environment and the repo-root `.env`
+(sampler, timeout, compression and `OTEL_RESOURCE_ATTRIBUTES` from the
+process environment only). Only OTLP over HTTP/protobuf is bundled;
+`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` is refused with a warning. A malformed
+header entry is skipped and logged by count and names only.
 
 ## Backends
 
@@ -65,11 +70,14 @@ POST /tasks/{task_id}/run
       └─ sdf.evaluate
 ```
 
-Coordinator runs use `sdf.run` as the root, with `sdf.agent.start`,
-`sdf.agent.turn`, `sdf.verify` and `sdf.sandbox.cleanup` beneath it. Failed
+Coordinator runs use `sdf.run` with `sdf.agent.start`, `sdf.agent.turn`,
+`sdf.verify` and `sdf.sandbox.cleanup` beneath it. A `wait=false` run starts
+a new trace whose root `sdf.run.background` links to the request span. Failed
 spans have ERROR status plus `sdf.error_class` from the ADR-0023 taxonomy.
 
-`/tasks/{id}/run` returns `trace_id`, `runs show <id>` prints it, and every
+`/tasks/{id}/run` and `POST /plans/{id}/runs` return `trace_id` (the trace
+stored on the attempt/run: the request's, or the background run's own),
+`runs show <id>` prints it, and every
 JSON log line inside a span has `trace_id`/`span_id`, so you can jump from a
 log line or run to the trace.
 
@@ -79,8 +87,10 @@ log line or run to the trace.
   content in span attributes.** Use `tracing.span(...)` /
   `tracing.set_attributes(...)` with keys from `tracing.ATTRIBUTE_KEYS`; other
   keys are dropped, strings are redacted (`observability.redact`) and
-  truncated, and the exporter redacts again. Exceptions record the class name
-  only. Add a new key to the allow-list only for ids, enums or numbers.
+  truncated, and the exporter redacts again, strips URL query strings, and
+  drops client IPs, user agents, headers and exception messages/stacks.
+  Exceptions record the class name only; a 4xx `HTTPException` is not an
+  error span. Add a new key to the allow-list only for ids, enums or numbers.
 - **Tracing never runs in sandboxes.** No exporter, collector or OTEL env var
   is passed to an agent sandbox; sandbox egress stays Vultr-only.
 - Bind local collectors to `127.0.0.1`.

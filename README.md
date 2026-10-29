@@ -97,7 +97,7 @@ status): read-only, scoped to their run, never able to approve, no ports and no
 token in the sandbox ([ADR 0022](docs/adr/0022-core-mcp.md)).
 
 Tracing ([ADR 0024](docs/adr/0024-otel-tracing.md), [docs/tracing.md](docs/tracing.md)):
-`pip install 'sdf[otel]'` and `SDF_OTEL_ENABLED=1` export OpenTelemetry spans
+`pip install 'sdf-core[otel]'` and `SDF_OTEL_ENABLED=1` export OpenTelemetry spans
 (HTTP → task → attempt → agent turn / sandbox create / cleanup, coordinator
 runs) over OTLP to any backend (Jaeger, Tempo, Langfuse, LangSmith...) via the
 standard `OTEL_*` variables. Off by default; span attributes never carry
