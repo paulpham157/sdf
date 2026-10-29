@@ -1,12 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi.testclient import TestClient
+from tests.auth_support import admin_client
 
-from sdf_core.api import app
 from sdf_core.impact import V0_METRICS
 
 
-client = TestClient(app)
+client = admin_client()
 
 
 def make_objective(objective_id: str, business_context_id: str) -> None:

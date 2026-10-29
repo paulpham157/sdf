@@ -5,6 +5,15 @@ import pytest
 
 from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime, HerdrRuntimeError, SshHerdrTransport
 from sdf_core.runtime import RuntimeStatus
+from sdf_core.subagents import CLAUDE_ARGS, CODEX_ARGS
+
+# ADR-0020 sub-agent switches come first, then the pinned policy.
+CODEX_POLICY = (
+    *CODEX_ARGS,
+    "-c", 'approval_policy="on-request"',
+    "-c", 'sandbox_mode="workspace-write"',
+    "-c", "sandbox_workspace_write.network_access=false",
+)
 
 
 class FakeHerdr:
@@ -352,23 +361,74 @@ def test_herdr_runtime_rejects_malformed_provider_payload():
         runtime.start(attempt_id="ATTEMPT-104", agent="codex")
 
 
-def test_herdr_runtime_starts_claude_with_bypass_permissions_for_the_disposable_sandbox():
+def test_herdr_runtime_does_not_grant_bypass_permissions_without_sandbox_capability():
     runner = FakeHerdr()
     HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CLAUDE", agent="claude")
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
     assert starts == [
-        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1",
-         "--", "--dangerously-skip-permissions"),
+        ("herdr", "agent", "start", "claude", "--kind", "claude", "--pane", "pane-1", "--", *CLAUDE_ARGS, "--setting-sources", "user"),
     ]
 
 
-def test_herdr_runtime_passes_no_extra_agent_args_to_codex_without_a_workspace():
+def test_herdr_runtime_rejects_caller_supplied_permission_bypass_argument():
+    with pytest.raises(ValueError, match="managed by the selected sandbox transport"):
+        HerdrRuntime(runner=FakeHerdr(), agent_args={"claude": ("--dangerously-skip-permissions",)})
+
+
+def test_custom_transport_cannot_claim_the_e2b_permission_bypass():
+    class CustomTransport:
+        allows_dangerous_permissions = True
+
+        def run(self, command, timeout_ms):
+            return runner(command, timeout_ms)
+
+    runner = FakeHerdr()
+    HerdrRuntime(transport=CustomTransport()).start(attempt_id="ATTEMPT-CUSTOM-CLAUDE", agent="claude")
+
+    starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert len(starts) == 1
+    assert "--dangerously-skip-permissions" not in starts[0]
+
+
+def test_claude_ignores_workspace_settings_so_a_task_cannot_redirect_its_key():
+    """A Task workspace's .claude/settings.json can set env.ANTHROPIC_BASE_URL
+    and hooks; Claude Code applies them in a trusted folder.  Only user (SDF
+    seeded) settings may load."""
+
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner, agent_args={"claude": ("--model", "glm-5.3")})
+    runtime.bind_remote_workspace("ATTEMPT-CLAUDE", "/tmp/sdf/ATTEMPT-CLAUDE")
+    runtime.start(attempt_id="ATTEMPT-CLAUDE", agent="claude")
+
+    (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    assert start[start.index("--") + 1 :] == (*CLAUDE_ARGS, "--setting-sources", "user", "--model", "glm-5.3")
+
+
+def test_herdr_runtime_pins_codex_policy_without_a_workspace():
     runner = FakeHerdr()
     HerdrRuntime(runner=runner).start(attempt_id="ATTEMPT-CODEX", agent="codex")
 
     starts = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
-    assert starts == [("herdr", "agent", "start", "codex", "--kind", "codex", "--pane", "pane-1")]
+    assert starts == [
+        ("herdr", "agent", "start", "codex", "--kind", "codex", "--pane", "pane-1", "--", *CODEX_POLICY),
+    ]
+
+
+def test_codex_pins_approval_and_sandbox_against_a_workspace_config():
+    """A trusted project's .codex/config.toml can set approval_policy="never",
+    sandbox_mode="danger-full-access" and sandbox network access; Codex lets
+    invocation -c overrides win, so the runtime pins its defaults."""
+
+    runner = FakeHerdr()
+    runtime = HerdrRuntime(runner=runner, agent_args={"codex": ("-m", "glm-5.3")})
+    runtime.bind_remote_workspace("ATTEMPT-CODEX", "/tmp/sdf/ATTEMPT-CODEX")
+    runtime.start(attempt_id="ATTEMPT-CODEX", agent="codex")
+
+    (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
+    argv = start[start.index("--") + 1 :]
+    assert argv[: len(CODEX_POLICY)] == CODEX_POLICY
+    assert argv[-2:] == ("-m", "glm-5.3")
 
 
 def test_herdr_runtime_starts_codex_trusting_exactly_its_attempt_directory():
@@ -378,7 +438,9 @@ def test_herdr_runtime_starts_codex_trusting_exactly_its_attempt_directory():
     runtime.start(attempt_id="ATTEMPT-CODEX", agent="codex")
 
     (start,) = [command for command, _ in runner.calls if tuple(command[1:3]) == ("agent", "start")]
-    assert start[-3:] == ("--", "-c", 'projects."/tmp/sdf/ATTEMPT-CODEX".trust_level="trusted"')
+    assert start[start.index("--") + 1 :] == (
+        *CODEX_POLICY, "-c", 'projects."/tmp/sdf/ATTEMPT-CODEX".trust_level="trusted"'
+    )
 
 class TurnHerdr:
     """Herdr 0.9.1 as observed live: a finished turn reads ``idle``, never ``done``.
@@ -475,13 +537,15 @@ def test_a_working_read_after_a_completed_turn_reports_running_until_idle_again(
     assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
 
 
-def test_codex_swallowed_enter_is_resubmitted_until_the_turn_runs_and_then_completes():
-    # Codex 0.157 can swallow the submitting Enter: Herdr reports a stall while
-    # the pane stays idle.  The runtime presses Enter (never retyping the text)
-    # until the turn is seen working, then waits for it to return to idle.
-    runner = TurnHerdr("codex", prompt="stalled", states=("idle", "idle", "idle", "working", "idle"))
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_swallowed_enter_is_resubmitted_until_the_turn_runs_and_then_completes(agent):
+    # Codex (0.157, 0.165) and a fast-starting Claude Code 2.1.282 can swallow the
+    # submitting Enter: Herdr reports a stall while the pane stays idle.  The
+    # runtime presses Enter (never retyping the text) until the turn is seen
+    # working, then waits for it to return to idle.
+    runner = TurnHerdr(agent, prompt="stalled", states=("idle", "idle", "idle", "working", "idle"))
     runtime = HerdrRuntime(runner=runner)
-    session = runtime.start(attempt_id="ATTEMPT-ENTER", agent="codex")
+    session = runtime.start(attempt_id=f"ATTEMPT-ENTER-{agent}", agent=agent)
 
     assert runtime.send(session.session_id, "fix it").status is RuntimeStatus.COMPLETED
     assert runtime.status(session.session_id).status is RuntimeStatus.COMPLETED
@@ -499,10 +563,10 @@ def test_codex_resubmit_gives_up_as_running_when_the_turn_never_starts():
     assert sum(c[1:3] == ("pane", "send-keys") for c in runner.calls) == 3
 
 
-def test_claude_stall_is_never_resubmitted():
-    runner = TurnHerdr("claude", prompt="stalled", states=("idle", "working", "idle"))
+def test_a_stall_of_another_agent_kind_is_never_resubmitted():
+    runner = TurnHerdr("opencode", prompt="stalled", states=("idle", "working", "idle"))
     runtime = HerdrRuntime(runner=runner)
-    session = runtime.start(attempt_id="ATTEMPT-CLAUDE-STALL", agent="claude")
+    session = runtime.start(attempt_id="ATTEMPT-OTHER-STALL", agent="opencode")
     runtime.send(session.session_id, "fix it")
     assert not any(c[1:3] == ("pane", "send-keys") for c in runner.calls)
 
@@ -630,3 +694,65 @@ def test_controller_terminates_a_session_whose_environment_cancel_destroyed():
     assert controller.terminate(session.session_id).status is RuntimeStatus.TERMINATED
     assert controller.status(session.session_id).status is RuntimeStatus.TERMINATED
     assert [e.kind.value for e in controller.events] == ["runtime_started", "runtime_cancelled", "runtime_terminated"]
+
+
+def test_herdr_runtime_contains_the_pane_and_sweeps_after_each_turn():
+    from sdf_core import turn_guard as tg
+
+    class Transport:
+        def __init__(self):
+            self.runner = FakeHerdr()
+            self.log = []
+            self.close_calls = []
+
+        def run(self, command, timeout_ms):
+            self.log.append(("herdr", tuple(command[1:3])))
+            if tuple(command[1:3]) == ("pane", "process-info"):
+                return json.dumps({"result": {"process_info": {"shell_pid": 4242, "foreground_processes": []}}})
+            return self.runner(command, timeout_ms)
+
+        def exec_argv(self, argv, timeout_ms):
+            self.log.append(("exec", argv[3], tuple(argv[4:])))
+            return "cgroup\n"
+
+        def close(self, timeout_ms):
+            self.log.append(("close",))
+            self.close_calls.append(timeout_ms)
+
+    transport = Transport()
+    runtime = HerdrRuntime(transport=transport)
+    session = runtime.start(attempt_id="ATTEMPT-CONTAIN", agent="codex")
+    names = [entry[:2] for entry in transport.log]
+    enter = names.index(("exec", "sdf-turn-enter"))
+    assert enter < names.index(("herdr", ("agent", "start")))
+    cid = transport.log[enter][2][0]
+    assert cid.startswith("herdr-ATTEMPT-CONTAIN-") and transport.log[enter][2][1] == "4242"
+
+    runtime.send(session.session_id, "hello")
+    assert ("exec", "sdf-turn-sweep", (str(tg.GRACE_S), cid, "4242")) in transport.log
+
+    runtime.cancel(session.session_id)
+    kill = transport.log.index(("exec", "sdf-turn-kill", (str(tg.GRACE_S), cid)))
+    assert kill < transport.log.index(("close",))
+
+
+def test_herdr_containment_is_best_effort_when_exec_fails():
+    class Transport:
+        def __init__(self):
+            self.runner = FakeHerdr()
+
+        def run(self, command, timeout_ms):
+            if tuple(command[1:3]) == ("pane", "process-info"):
+                return json.dumps({"process_info": {"shell_pid": 77, "foreground_processes": []}})
+            return self.runner(command, timeout_ms)
+
+        def exec_argv(self, argv, timeout_ms):
+            raise RuntimeError("no sh")
+
+        def close(self, timeout_ms):
+            pass
+
+    runtime = HerdrRuntime(transport=Transport())
+    session = runtime.start(attempt_id="ATTEMPT-BEST-EFFORT", agent="codex")
+    assert runtime.send(session.session_id, "hello").status is RuntimeStatus.COMPLETED
+    assert runtime.cancel(session.session_id).status is RuntimeStatus.CANCELLED

@@ -12,6 +12,7 @@ command line, a Herdr pane or Evidence.
 from __future__ import annotations
 
 import inspect
+import json
 import re
 import shlex
 from collections.abc import Iterable, Mapping
@@ -19,11 +20,16 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+from . import subagents
 from .credentials import CONFLICTING_VARIABLES, ConnectionReader, CredentialConfigError, CredentialPlan, SeedStep, resolve_credential_plan
+from .daytona_herdr_transport import DaytonaHerdrTransport
 from .e2b_herdr_transport import E2BHerdrTransport
 from .herdr_runtime import HerdrRuntimeError
 from .plugin_bridge import PluginConnectionBridge
 from .runtime import CredentialMetadata
+
+SANDBOX_PROVIDERS = frozenset({"e2b", "daytona"})
+DEFAULT_SANDBOX_PROVIDER = "e2b"
 
 # Seed scripts read their credential from ``process.env`` inside the box; the
 # host only ever sends the variable NAME.  Existing state is merged, never
@@ -60,6 +66,84 @@ _CODEX_SESSION_AUTH = (
     'try{if(fs.statSync(f).size>0)process.exit(0)}catch{}'
     'fs.writeFileSync(f,s,{mode:0o600})'
 )
+# Writes the OpenCode 2 user config (ADR-0011/0018): one OpenAI-compatible
+# custom provider whose ``apiKey`` is the literal reference ``{env:NAME}`` (NAME
+# is argv[1]), so OpenCode reads the key from its own environment and the value
+# is never written to disk.  Base URL and models come from the plan's
+# ``SDF_OPENCODE_*`` sandbox variables.  The provider id is the model prefix;
+# the small model titles sessions (``agents.title``).  OpenCode 2 permissions
+# are ordered ``{action, resource, effect}`` rules (last match wins): every
+# action defaults to ``ask`` (headless runs auto-reject asks; ``opencode run
+# --auto`` approves them only after a fresh production E2B sandbox claim,
+# ADR-0008); read/glob/grep are allowed except ``.env`` files; network tools,
+# Code Mode ``execute`` (its ``fetch`` bypasses ``webfetch``) and the
+# ungated worktree/session-move tools are denied even under ``--auto``, as are
+# the sub-agent tools (ADR-0020, ``subagents.OPENCODE_DENIED_ACTIONS``).
+_OPENCODE_CONFIG = (
+    'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/opencode",f=d+"/opencode.json",v=process.argv[1];'
+    'if(!e[v]){process.exit(0)}const u=e.SDF_OPENCODE_BASE_URL||"",m=e.SDF_OPENCODE_MODEL||"",s=e.SDF_OPENCODE_SMALL_MODEL||m;'
+    'const i=m.indexOf("/");if(!u||i<1){console.error("opencode-config: base URL or model missing");process.exit(1)}'
+    'const p=m.slice(0,i),models={};for(const x of [m,s]){if(!x.startsWith(p+"/")){console.error("opencode-config: small model provider differs");process.exit(1)}models[x.slice(i+1)]={capabilities:{tools:true}}}'
+    'const r=(a,x,y)=>({action:a,resource:x,effect:y}),permissions=[r("*","*","ask"),r("read","*","allow"),r("glob","*","allow"),'
+    'r("grep","*","allow"),r("read","*.env","ask"),r("read","*.env.*","ask"),r("read","*.env.example","allow")];'
+    'for(const a of ["webfetch","websearch","execute","opencode_worktree_create","opencode_worktree_remove","opencode_session_move",'
+    + ",".join(json.dumps(a) for a in subagents.OPENCODE_DENIED_ACTIONS)
+    + '])permissions.push(r(a,"*","deny"));'
+    'const c={$schema:"https://opencode.ai/config.json",model:m,update:"disable",share:"disabled",permissions,agents:{title:{model:s}},'
+    'providers:{[p]:{package:"aisdk:@ai-sdk/openai-compatible",name:p,settings:{baseURL:u,apiKey:"{env:"+v+"}"},models}}};'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+)
+# Writes Pi's user model registry ~/.pi/agent/models.json (ADR-0012): one
+# OpenAI-compatible provider ``sdf`` whose ``apiKey`` is the key variable's
+# reference ``$NAME`` (NAME is argv[1]).  Pi 1.x resolves ``$NAME`` from its
+# environment (a bare name would be sent as the literal key), so the key
+# value is never written to disk.  Base URL and
+# model come from the plan's ``SDF_PI_*`` sandbox variables.  Token prices are
+# filled in only for the default Vultr glm-5.3 (USD per 1M tokens); any other
+# model reports tokens with a zero cost.  URL and model are matched by escaped
+# regexes because a seed command may not contain a plan variable's value
+# (``SDF_PI_BASE_URL`` / ``SDF_PI_MODEL``).
+_PI_MODELS = (
+    'const fs=require("fs"),e=process.env,d=e.HOME+"/.pi/agent",f=d+"/models.json",v=process.argv[1];'
+    'if(!e[v]){process.exit(0)}const u=e.SDF_PI_BASE_URL||"",m=e.SDF_PI_MODEL||"";'
+    'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("pi-models: base URL, model or key name missing");process.exit(1)}'
+    'const price=/^https:\\/\\/api\\.vultrinference\\.com\\/v1\\/*$/.test(u)&&/^glm-5\\.3$/.test(m)?[0.75,3]:[0,0];'
+    'const c={providers:{sdf:{baseUrl:u,api:"openai-completions",apiKey:"$"+v,models:[{id:m,name:m,reasoning:true,'
+    'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:price[0],output:price[1],cacheRead:0,cacheWrite:0}}]}}};'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600);'
+    # ADR-0021: SDF-owned Pi settings; nobody is at the sandbox to answer
+    # Pi's project-trust prompt.  Turns still pass --approve / --no-approve.
+    'const sf=d+"/settings.json";let st={};try{st=JSON.parse(fs.readFileSync(sf,"utf8"))}catch{}'
+    'st.defaultProjectTrust="always";fs.writeFileSync(sf,JSON.stringify(st,null,2)+"\\n",{mode:0o600})'
+)
+# Qwen Code (ADR-0013) takes the endpoint and model on its argv and
+# the key only from OPENAI_API_KEY, which the turn wrapper exports per turn
+# (never in the sandbox env, so it cannot clash with codex).  The seed records
+# the key variable's NAME (argv[1]) in a private file the wrapper reads; the
+# value is never written to disk.  Base URL and model must be in the plan.
+def _key_ref(agent: str) -> str:
+    upper = agent.upper()
+    return (
+        f'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/sdf",f=d+"/{agent}-api-key-name",v=process.argv[1];'
+        f'if(!e[v]){{process.exit(0)}}if(!e.SDF_{upper}_BASE_URL||!e.SDF_{upper}_MODEL||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v))'
+        f'{{console.error("{agent}-key-ref: base URL, model or key name missing");process.exit(1)}}'
+        'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,v+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+    )
+
+
+# Writes Goose's declarative custom provider (ADR-0013)
+# ~/.config/goose/custom_providers/sdf_openai.json: engine ``openai`` with
+# ``api_key_env`` = the key variable's NAME (argv[1]); Goose 1.56 reads the key
+# from that variable at run time, so the value is never written to disk.  Base
+# URL and model come from the plan's ``SDF_GOOSE_*`` sandbox variables.
+_GOOSE_PROVIDER = (
+    'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/goose/custom_providers",f=d+"/sdf_openai.json",v=process.argv[1];'
+    'if(!e[v]){process.exit(0)}const u=e.SDF_GOOSE_BASE_URL||"",m=e.SDF_GOOSE_MODEL||"";'
+    'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("goose-provider: base URL, model or key name missing");process.exit(1)}'
+    'const c={name:"sdf_openai",engine:"openai",display_name:"SDF OpenAI-compatible",description:"SDF seeded provider",'
+    'api_key_env:v,base_url:u,models:[{name:m,context_limit:200000}],supports_streaming:true,requires_auth:true};'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
+)
 # Herdr's server starts from the template entrypoint before ``Sandbox.create``
 # envs apply to later commands, so an agent pane does not inherit them.  This
 # seed writes the plan's variables (named on argv, read from ``process.env``)
@@ -77,13 +161,34 @@ _PANE_ENV = (
 )
 # Claude asks whether to trust a folder the first time it opens there; the
 # Attempt workspace is created per Attempt, so trust it right before start.
+#
+# It also writes SDF's ``--settings`` file (ADR-0021) and prints its path.
+# Flag settings outrank project/local settings, so when the project is trusted
+# (``--setting-sources user,project,local``) a workspace ``.claude/settings.json``
+# ``env`` / ``apiKeyHelper`` cannot redirect the endpoint or swap the key:
+# ``ANTHROPIC_BASE_URL`` is pinned to the sandbox value (default endpoint when
+# unset), the provider switches and every key variable SDF did not set are
+# blanked, and an SDF-set ``ANTHROPIC_API_KEY`` is blanked in Claude's own
+# environment (so hooks / MCP servers do not inherit it) and supplied instead
+# by an ``apiKeyHelper`` that reads the pane env file the pane-env seed wrote.
+# Values are read from ``process.env`` in the sandbox; none is on argv.
 _CLAUDE_TRUST_WORKSPACE = (
-    'const fs=require("fs"),f=process.env.HOME+"/.claude.json",p=process.argv[1];'
+    'const fs=require("fs"),e=process.env,f=e.HOME+"/.claude.json",p=process.argv[1];'
     'let c={};try{c=JSON.parse(fs.readFileSync(f,"utf8"))}catch{}'
     'c.projects=c.projects||{};c.projects[p]=Object.assign({},c.projects[p],{hasTrustDialogAccepted:true});'
-    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600)'
+    'fs.writeFileSync(f,JSON.stringify(c),{mode:0o600});fs.chmodSync(f,0o600);'
+    'const d=e.HOME+"/.config/sdf",sf=d+"/claude-settings.json";'
+    'const env={ANTHROPIC_BASE_URL:e.ANTHROPIC_BASE_URL||"https://api.anthropic.com",'
+    'CLAUDE_CODE_USE_BEDROCK:"",CLAUDE_CODE_USE_VERTEX:"",CLAUDE_CODE_USE_FOUNDRY:"",ANTHROPIC_API_KEY:""};'
+    'if(!e.ANTHROPIC_AUTH_TOKEN)env.ANTHROPIC_AUTH_TOKEN="";'
+    'if(!e.CLAUDE_CODE_OAUTH_TOKEN)env.CLAUDE_CODE_OAUTH_TOKEN="";'
+    'const st={env};if(e.ANTHROPIC_API_KEY)'
+    'st.apiKeyHelper="sh -c \'. \\"$HOME/' + _AGENT_ENV_FILE + '\\"; printf %s \\"$ANTHROPIC_API_KEY\\"\'";'
+    'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(sf,JSON.stringify(st),{mode:0o600});fs.chmodSync(sf,0o600);'
+    'console.log(sf)'
 )
-# Codex 0.157 shows its folder-trust dialog for a fresh Attempt directory even
+CLAUDE_SETTINGS_SUFFIX = "/.config/sdf/claude-settings.json"
+# Codex (0.157 and 0.165) shows its folder-trust dialog for a fresh Attempt directory even
 # with a ``-c projects.<dir>.trust_level`` override (observed live, #16); only a
 # ``[projects."<dir>"]`` table in ~/.codex/config.toml suppresses it.  Appended
 # once, so earlier top-level keys (``openai_base_url``) stay first.
@@ -102,6 +207,10 @@ _SEED_SCRIPTS: Mapping[str, str] = MappingProxyType(
         "codex-auth-json-api-key": _CODEX_API_KEY_AUTH,
         "codex-config-base-url": _CODEX_CONFIG_BASE_URL,
         "codex-auth-json": _CODEX_SESSION_AUTH,
+        "opencode-config": _OPENCODE_CONFIG,
+        "pi-models": _PI_MODELS,
+        "qwen-key-ref": _key_ref("qwen"),
+        "goose-provider": _GOOSE_PROVIDER,
     }
 )
 
@@ -208,63 +317,142 @@ def _lazy_plugin_bridge(environ: Mapping[str, str]) -> ConnectionReader:
     return read
 
 
-class CredentialedE2BHerdrTransport(E2BHerdrTransport):
+def resolve_sandbox_provider(environ: Mapping[str, str], provider: str | None = None) -> str:
+    """Return ``e2b`` (default) or ``daytona`` from an explicit arg or env knob."""
+
+    raw = provider if provider is not None else environ.get("SDF_SANDBOX_PROVIDER", DEFAULT_SANDBOX_PROVIDER)
+    selected = (raw or DEFAULT_SANDBOX_PROVIDER).strip().lower() or DEFAULT_SANDBOX_PROVIDER
+    if selected not in SANDBOX_PROVIDERS:
+        raise CredentialConfigError(
+            f"SDF_SANDBOX_PROVIDER must be one of {', '.join(sorted(SANDBOX_PROVIDERS))}; got {raw!r}"
+        )
+    return selected
+
+
+class CredentialSeedingMixin:
+    """Provider-agnostic create-time credential seeding (ADR-0007)."""
+
+    credential_metadata: Mapping[str, CredentialMetadata]
+    _seed_commands: tuple[str, ...]
+
+    def _init_credential_seeding(self, injection: CredentialInjection) -> None:
+        self.credential_metadata = injection.metadata
+        self._seed_commands = injection.seed_commands
+        # Use the provider lifecycle lock for both sandbox operations and
+        # seeding. Besides making close wait for the complete seed sequence,
+        # one reentrant lock preserves lock order for E2B's permission claim
+        # and for seed-failure cleanup (which closes from inside _ensure_sandbox).
+        self._credential_seed_lock = self._sandbox_lock  # type: ignore[attr-defined]
+
+    def _ensure_sandbox(self) -> Any:
+        # The lock spans both the freshness check and seed sequence. It is
+        # reentrant because each seed command calls _exec -> _ensure_sandbox.
+        with self._credential_seed_lock:
+            fresh = self._sandbox is None and self._sandbox_id is None  # type: ignore[attr-defined]
+            sandbox = super()._ensure_sandbox()  # type: ignore[misc]
+            if fresh and self._seed_commands:
+                self._seed()
+            return sandbox
+
+    def close(self, timeout_ms: int = 30_000) -> None:
+        # Match _ensure_sandbox's lock order (credential seed, then provider
+        # sandbox). Acquiring the provider lock first would deadlock if a seed
+        # command needed _ensure_sandbox while close waited for this lock.
+        # RLock also lets seed-failure cleanup close the sandbox reentrantly.
+        with self._credential_seed_lock:
+            super().close(timeout_ms)  # type: ignore[misc]
+
+    def _seed(self) -> None:
+        timeout_ms = self.timeout_seconds * 1000  # type: ignore[attr-defined]
+        for command in self._seed_commands:
+            try:
+                self._exec(command, timeout_ms)  # type: ignore[attr-defined]
+            except HerdrRuntimeError:
+                # Command output is not echoed: a seed handles credential state.
+                self._kill_after_timeout()  # type: ignore[attr-defined]
+                raise HerdrRuntimeError("credential seed step failed; sandbox killed") from None
+
+    def prepare_agent_workspace(self, agent: str, workspace: str) -> str | None:
+        """Pre-trust an Attempt workspace for an agent kind that asks about it.
+
+        For Claude, returns the path of SDF's ``--settings`` file (ADR-0021).
+        """
+
+        script = _WORKSPACE_TRUST.get(agent)
+        if script is None:
+            return None
+        command = f"node -e {shlex.quote(script)} {shlex.quote(workspace)}"
+        out = self._exec(command, self.timeout_seconds * 1000)  # type: ignore[attr-defined]
+        if agent != "claude" or not isinstance(out, str):
+            return None
+        lines = out.strip().splitlines()
+        path = lines[-1].strip() if lines else ""
+        return path if path.startswith("/") and path.endswith(CLAUDE_SETTINGS_SUFFIX) else None
+
+
+class CredentialedE2BHerdrTransport(CredentialSeedingMixin, E2BHerdrTransport):
     """E2B Herdr transport that seeds agent credentials once after creation."""
 
     def __init__(self, *, injection: CredentialInjection, **kwargs: Any) -> None:
         super().__init__(envs=injection.envs, **kwargs)
-        self.credential_metadata = injection.metadata
-        self._seed_commands = injection.seed_commands
+        self._init_credential_seeding(injection)
 
-    def _ensure_sandbox(self) -> Any:
-        fresh = self._sandbox is None and self._sandbox_id is None
-        sandbox = super()._ensure_sandbox()
-        if fresh and self._seed_commands:
-            self._seed()
-        return sandbox
 
-    def _seed(self) -> None:
-        timeout_ms = self.timeout_seconds * 1000
-        for command in self._seed_commands:
-            try:
-                self._exec(command, timeout_ms)
-            except HerdrRuntimeError:
-                # Command output is not echoed: a seed handles credential state.
-                self._kill_after_timeout()
-                raise HerdrRuntimeError("credential seed step failed; sandbox killed") from None
+class CredentialedDaytonaHerdrTransport(CredentialSeedingMixin, DaytonaHerdrTransport):
+    """Daytona Herdr transport that seeds agent credentials once after creation."""
 
-    def prepare_agent_workspace(self, agent: str, workspace: str) -> None:
-        """Pre-trust an Attempt workspace for an agent kind that asks about it."""
+    def __init__(self, *, injection: CredentialInjection, **kwargs: Any) -> None:
+        super().__init__(envs=injection.envs, **kwargs)
+        self._init_credential_seeding(injection)
 
-        script = _WORKSPACE_TRUST.get(agent)
-        if script is None:
-            return
-        command = f"node -e {shlex.quote(script)} {shlex.quote(workspace)}"
-        self._exec(command, self.timeout_seconds * 1000)
 
 def create_credentialed_transport(
     *,
-    template: str,
     agents: Iterable[str],
     environ: Mapping[str, str],
+    template: str | None = None,
+    snapshot: str | None = None,
+    provider: str | None = None,
     read_connection: ConnectionReader | None = None,
     envs: Mapping[str, str] | None = None,
     **transport_kwargs: Any,
-) -> tuple[CredentialedE2BHerdrTransport, CredentialInjection]:
+) -> tuple[CredentialedE2BHerdrTransport | CredentialedDaytonaHerdrTransport, CredentialInjection]:
     """Resolve credentials for ``agents``, then build the persistent transport.
 
-    The sandbox itself is created lazily on the first command; a credential
-    configuration error surfaces here, so no sandbox is ever created for it.
+    Provider selection: ``provider=`` or ``SDF_SANDBOX_PROVIDER`` (default
+    ``e2b``). E2B uses ``template=``; Daytona uses ``snapshot=`` (``template=``
+    is accepted as an alias). The sandbox itself is created lazily on the first
+    command; a credential configuration error surfaces here, so no sandbox is
+    ever created for it.
     """
 
+    selected = resolve_sandbox_provider(environ, provider)
     # The connection must outlive the box, so check against its real lifetime.
-    timeout_seconds = transport_kwargs.get(
-        "timeout_seconds", inspect.signature(E2BHerdrTransport).parameters["timeout_seconds"].default
-    )
+    if selected == "daytona":
+        timeout_default = inspect.signature(DaytonaHerdrTransport).parameters["timeout_seconds"].default
+        image = (snapshot or template or environ.get("SDF_DAYTONA_SNAPSHOT", "")).strip()
+        if not image:
+            raise CredentialConfigError(
+                "Daytona credentialed transport requires snapshot= (or template= / SDF_DAYTONA_SNAPSHOT)"
+            )
+        timeout_seconds = transport_kwargs.get("timeout_seconds", timeout_default)
+        injection = prepare_credential_injection(
+            agents, environ, read_connection=read_connection, base_envs=envs, sandbox_timeout_seconds=timeout_seconds
+        )
+        transport = CredentialedDaytonaHerdrTransport(
+            injection=injection, snapshot=image, environ=environ, **transport_kwargs
+        )
+        return transport, injection
+
+    timeout_default = inspect.signature(E2BHerdrTransport).parameters["timeout_seconds"].default
+    image = (template or "").strip()
+    if not image:
+        raise CredentialConfigError("E2B credentialed transport requires template=")
+    timeout_seconds = transport_kwargs.get("timeout_seconds", timeout_default)
     injection = prepare_credential_injection(
         agents, environ, read_connection=read_connection, base_envs=envs, sandbox_timeout_seconds=timeout_seconds
     )
     transport = CredentialedE2BHerdrTransport(
-        injection=injection, template=template, environ=environ, **transport_kwargs
+        injection=injection, template=image, environ=environ, **transport_kwargs
     )
     return transport, injection

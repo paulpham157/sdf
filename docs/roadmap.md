@@ -49,13 +49,16 @@ These slices are a proposed implementation breakdown, not completed work. Histor
 The fixture/evaluator loop, append-only Evidence and graph-edge guards, durable
 Tool Proxy audit/events, measured routing, Herdr/E2B seams, workspace binding,
 and fail-closed public process actions are implemented and covered by local
-tests. Public process actions can now select an explicit E2B containment backend
-(`SDF_CONTAINMENT_BACKEND=e2b`), which syncs, executes, pulls, and kills a
-disposable box; the structured SDF `network.request` action is explicitly
-disabled in that mode while the coding agent retains E2B network egress. The
-live E2B process path has also verified an HTTPS request to the E2B endpoint;
-this is provider egress evidence, not a general outbound allowlist. The
-remaining milestone claims require external evidence: a disposable live Herdr
-session, verified cancellation/termination, and PostgreSQL concurrency/trigger
-proof. Until those gates pass, no real repository is authorized and local green
-tests must not be reported as production proof.
+tests. The persistent Herdr transport can select Daytona beside E2B via
+`SDF_SANDBOX_PROVIDER` (default `e2b`); Daytona unit coverage uses fakes, and
+live Daytona smoke is gated on `SDF_LIVE_DAYTONA=1`. Public process actions can
+select an explicit E2B containment backend (`SDF_CONTAINMENT_BACKEND=e2b`),
+which syncs, executes, pulls, and kills a disposable box; Daytona containment
+is not yet offered. The structured SDF `network.request` action is explicitly
+disabled in E2B containment mode while the coding agent retains E2B network
+egress. The live E2B process path has also verified an HTTPS request to the E2B
+endpoint; this is provider egress evidence, not a general outbound allowlist.
+The remaining milestone claims require external evidence: a disposable live
+Herdr session, verified cancellation/termination, and PostgreSQL
+concurrency/trigger proof. Until those gates pass, no real repository is
+authorized and local green tests must not be reported as production proof.

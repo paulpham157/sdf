@@ -26,8 +26,9 @@ Tool actions are Attempt-bound and pass through the Tool Proxy. The proxy obtain
 SDF Control Plane (this host)
   → Internal Agent Runtime
   → Agent Credential per agent kind, resolved on the host (Credential Mode)
-  → HerdrRuntime + persistent E2B Herdr transport (SSH/API is an alternate deployment)
-  → Herdr workspace inside the sdf-herdr-agents sandbox (credential as create-time envs)
+  → HerdrRuntime + persistent sandbox Herdr transport
+      (E2B default; Daytona selectable via SDF_SANDBOX_PROVIDER)
+  → Herdr workspace inside the sandbox (credential as create-time envs)
   → one coding agent (Codex or Claude Code)
   → Tool Proxy + Policy Decision
   → evaluator artifacts and Evidence pulled back to SDF
@@ -36,22 +37,28 @@ SDF Control Plane (this host)
 The control plane must not require the coding agent to run on the SDF host.
 `HerdrRuntime` therefore accepts an injected transport; the local subprocess
 runner is only a test/development fallback. The preferred deployment transport
-is a persistent E2B sandbox created with the E2B Python SDK
+defaults to a persistent E2B sandbox created with the E2B Python SDK
 (`Sandbox.create(envs=)`, repeated `commands.run`, then `kill`), so
-prompt/reconnect/cancel can address the same Herdr process and workspace. SSH remains a compatibility transport for a controlled host. The
-long-term remote shape is `HerdrEndpointTransport`: SDF sends authenticated
-HTTPS JSON commands to a small deployment-owned bridge running beside Herdr
-inside the sandbox. The bridge owns the local Herdr socket/CLI; SDF never starts
-Herdr or Codex locally. The endpoint must be HTTPS-only, token-authenticated,
-and implement the command-response contract tested in
+prompt/reconnect/cancel can address the same Herdr process and workspace.
+Operators may select Daytona beside E2B with `SDF_SANDBOX_PROVIDER=daytona`
+(`DaytonaHerdrTransport`: create with `env_vars=`, `process.exec`, SDK
+filesystem stage/collect, then `delete`). E2B remains the default; existing
+`SDF_E2B_*` / `E2B_*` knobs are unchanged. SSH remains a compatibility
+transport for a controlled host. The long-term remote shape is
+`HerdrEndpointTransport`: SDF sends authenticated HTTPS JSON commands to a
+small deployment-owned bridge running beside Herdr inside the sandbox. The
+bridge owns the local Herdr socket/CLI; SDF never starts Herdr or Codex
+locally. The endpoint must be HTTPS-only, token-authenticated, and implement
+the command-response contract tested in
 `tests/test_herdr_endpoint_transport.py`.
 
 `HERDR_ENDPOINT_TOKEN` is an endpoint credential created by the deployment
-operator. It is unrelated to `E2B_API_KEY`, Codex authentication, or any model
-provider key. The bridge can read it from the `HERDR_ENDPOINT_TOKEN` environment
-variable or from the mounted secret file named by `HERDR_ENDPOINT_TOKEN_FILE`
-(default `/run/secrets/herdr_endpoint_token`). The token must never be committed
-to the repository, baked into the image, or printed in logs.
+operator. It is unrelated to `E2B_API_KEY`, `DAYTONA_API_KEY`, Codex
+authentication, or any model provider key. The bridge can read it from the
+`HERDR_ENDPOINT_TOKEN` environment variable or from the mounted secret file
+named by `HERDR_ENDPOINT_TOKEN_FILE` (default
+`/run/secrets/herdr_endpoint_token`). The token must never be committed to the
+repository, baked into the image, or printed in logs.
 
 The agent's Agent Credential enters the sandbox only at creation (ADR 0007).
 `create_credentialed_transport` resolves one Credential Mode per agent kind
@@ -62,14 +69,17 @@ steps write agent config by variable name, including
 `~/.config/sdf/agent-env.sh` because the image's Herdr server starts before
 the seeds and panes would otherwise miss the envs. The Runtime Session and its
 `runtime_started` event record the mode and connection id, never the secret.
-Claude Code starts with `--dangerously-skip-permissions` only in this
-disposable sandbox (ADR 0008); Codex gets its workspace marked trusted. The
-single template is `sdf-herdr-agents` (ADR 0009). The headless `e2b-box run`
+Claude Code receives `--dangerously-skip-permissions` only from the E2B
+transport (ADR 0008); Daytona does not inherit that capability merely by using
+Herdr. Codex gets its workspace marked trusted. The
+E2B template remains `sdf-herdr-agents` (ADR 0009); Daytona uses
+`SDF_DAYTONA_SNAPSHOT` (operator-chosen snapshot). The headless `e2b-box run`
 path is separate: the plugin selects the credential itself and SDF records only
 the terminal result.
 
-Transport is not containment: the E2B/process boundary must still enforce
-filesystem, process and network limits.
+Transport is not containment: the provider process boundary must still enforce
+filesystem, process and network limits. Daytona as
+`SDF_CONTAINMENT_BACKEND` is not yet offered.
 
 The current implementation retains deterministic fake adapters for tests. A live provider must demonstrate session start, input, output, cancellation, termination, reconnect, and non-duplicated execution before it can support milestone claims.
 

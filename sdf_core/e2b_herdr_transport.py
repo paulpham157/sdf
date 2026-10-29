@@ -40,6 +40,8 @@ from .herdr_runtime import HerdrRuntimeError
 
 SandboxFactory = Callable[..., Any]
 SandboxConnector = Callable[..., Any]
+_PRODUCTION_SANDBOX_FACTORY = Sandbox.create
+_PRODUCTION_SANDBOX_CAPABILITY = object()
 _TRANSFER_LIMIT = 8 * 1024 * 1024
 # envd lists recursively only to a fixed depth; bounded fixtures stay well inside it.
 _COLLECT_DEPTH = 64
@@ -60,6 +62,7 @@ class E2BHerdrTransport:
         sandbox_factory: SandboxFactory | None = None,
         sandbox_connector: SandboxConnector | None = None,
         sandbox_id: str | None = None,
+        network: Mapping[str, Any] | None = None,
     ) -> None:
         if not template.strip():
             raise ValueError("E2B Herdr template must be non-empty")
@@ -73,31 +76,78 @@ class E2BHerdrTransport:
         self.request_timeout_seconds = request_timeout_seconds
         self._environ = dict(os.environ if environ is None else environ)
         self._envs = dict(envs or {})
-        self._factory = sandbox_factory or Sandbox.create
+        # E2B ``SandboxNetworkOpts`` (``allow_out`` / ``deny_out``), applied at
+        # creation only; ``None`` keeps the template's default egress.
+        self._network = dict(network) if network is not None else None
+        self._factory = _PRODUCTION_SANDBOX_FACTORY if sandbox_factory is None else sandbox_factory
+        self._creation_capability = (
+            _PRODUCTION_SANDBOX_CAPABILITY if sandbox_factory is None else None
+        )
         self._connector = sandbox_connector or Sandbox.connect
         self._sandbox_id = sandbox_id
         self._sandbox: Any = None
+        self._sandbox_lock = threading.RLock()
+        self._fresh_sandbox = False
+        self._can_grant_fresh_permission_bypass = (
+            sandbox_id is None
+            and self._creation_capability is _PRODUCTION_SANDBOX_CAPABILITY
+            and self._factory is _PRODUCTION_SANDBOX_FACTORY
+        )
+        self._permission_bypass_claimed = sandbox_id is not None
 
     @property
     def sandbox_id(self) -> str | None:
         return self._sandbox_id
+
+    def fresh_permission_bypass_available(self) -> bool:
+        """True while the bypass could still be claimed (does not claim it)."""
+
+        with self._sandbox_lock:
+            return self._can_grant_fresh_permission_bypass and not self._permission_bypass_claimed
+
+    def claim_fresh_permission_bypass(self) -> bool:
+        """Grant the first Claude start the bypass only for a fresh production sandbox."""
+
+        with self._sandbox_lock:
+            if (
+                self._permission_bypass_claimed
+                or not self._can_grant_fresh_permission_bypass
+            ):
+                return False
+            # Provision first so a failed create does not consume the grant.
+            # _ensure_sandbox uses the same reentrant lock, binding this claim
+            # to the fresh sandbox the shared transport will actually use.
+            self._ensure_sandbox()
+            if not self._fresh_sandbox:
+                return False
+            self._permission_bypass_claimed = True
+            return True
 
     def run(self, command: Sequence[str], timeout_ms: int) -> str:
         if not command:
             raise ValueError("Herdr command must not be empty")
         return self._exec(shlex.join([self.herdr_binary, *command[1:]]), timeout_ms)
 
+    def exec_argv(self, argv: Sequence[str], timeout_ms: int) -> str:
+        """Run one non-Herdr argv in the sandbox (headless agent runtimes)."""
+
+        if not argv:
+            raise ValueError("sandbox command must not be empty")
+        return self._exec(shlex.join(argv), timeout_ms)
+
     def close(self, timeout_ms: int = 30_000) -> None:
         """Kill the persistent sandbox and forget its provider identity."""
 
-        if self._sandbox_id is None:
-            return
-        try:
-            sandbox = self._ensure_sandbox()
-            sandbox.kill(request_timeout=timeout_ms / 1000)
-        finally:
-            self._sandbox = None
-            self._sandbox_id = None
+        with self._sandbox_lock:
+            if self._sandbox_id is None:
+                return
+            try:
+                sandbox = self._ensure_sandbox()
+                sandbox.kill(request_timeout=timeout_ms / 1000)
+            finally:
+                self._sandbox = None
+                self._sandbox_id = None
+                self._fresh_sandbox = False
 
     def stage_workspace(self, attempt_id: str, workspace: Path) -> str:
         """Copy a bounded local workspace into this Attempt's sandbox directory.
@@ -195,20 +245,31 @@ class E2BHerdrTransport:
         return relative
 
     def _ensure_sandbox(self) -> Any:
-        if self._sandbox is not None:
-            return self._sandbox
-        opts = self._api_opts()
-        try:
-            if self._sandbox_id is not None:
-                self._sandbox = self._connector(self._sandbox_id, **opts)
-            else:
-                self._sandbox = self._factory(
-                    template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
-                )
-        except SandboxException as exc:
-            raise HerdrRuntimeError(f"E2B sandbox provisioning failed: {exc}") from exc
-        self._sandbox_id = self._sandbox.sandbox_id
-        return self._sandbox
+        with self._sandbox_lock:
+            if self._sandbox is not None:
+                return self._sandbox
+            opts = self._api_opts()
+            is_fresh = self._sandbox_id is None
+            try:
+                if not is_fresh:
+                    sandbox = self._connector(self._sandbox_id, **opts)
+                else:
+                    if self._network is not None:
+                        opts["network"] = dict(self._network)
+                    sandbox = self._factory(
+                        template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
+                    )
+                sandbox_id = sandbox.sandbox_id
+            except SandboxException as exc:
+                raise HerdrRuntimeError(f"E2B sandbox provisioning failed: {exc}") from exc
+            if not isinstance(sandbox_id, str) or not sandbox_id:
+                raise HerdrRuntimeError("E2B sandbox provisioning failed: sandbox has no ID")
+            # Publish both pieces of shared state only after creation and ID
+            # lookup succeed. Concurrent callers then observe one binding.
+            self._sandbox = sandbox
+            self._sandbox_id = sandbox_id
+            self._fresh_sandbox = is_fresh
+            return sandbox
 
     def _exec(self, cmd: str, timeout_ms: int) -> str:
         sandbox = self._ensure_sandbox()

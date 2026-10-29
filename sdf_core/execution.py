@@ -8,9 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .adapter import FakeNativeAdapter, NativeAdapter
+from dataclasses import dataclass
+
+from .adapter import AdapterResult, FakeNativeAdapter, NativeAdapter
 from .artifacts import ArtifactStore, WorkspaceManager
-from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow
+from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow
 from .escalation import ModelTier
 from .evaluator import DeterministicEvaluator
 from .model import AttemptState, TaskState, utcnow
@@ -26,6 +28,26 @@ from .tools import (
     ToolProxy,
 )
 from .sandbox import FixtureSandbox
+
+
+@dataclass(frozen=True)
+class BegunAttempt:
+    attempt: AttemptRow
+    workspace: Path
+    existing: bool
+
+
+def check_plan_gate(db: Session, task_id: str, *, require_plan: bool = False) -> None:
+    """Refuse to start a Task whose Plan is not human-approved (ADR 0014)."""
+
+    link = db.get(PlanTaskRow, task_id)
+    if link is None:
+        if require_plan:
+            raise PlanGateError(f"task {task_id} has no approved plan (SDF_REQUIRE_PLAN_APPROVAL)")
+        return
+    plan = db.get(PlanRow, link.plan_id)
+    if plan is None or plan.status != "approved":
+        raise PlanGateError(f"plan {link.plan_id} is not approved; task {task_id} cannot start")
 
 
 class ExecutionService:
@@ -54,12 +76,62 @@ class ExecutionService:
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         escalation_reason: str | None = None,
+        require_plan_approval: bool = False,
     ):
+        begun = self.begin(
+            task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
+            parent_attempt_id=parent_attempt_id, model_tier=model_tier, cost_usd=cost_usd, provider=provider,
+            latency_ms=latency_ms, input_tokens=input_tokens, output_tokens=output_tokens,
+            escalation_reason=escalation_reason, require_plan_approval=require_plan_approval,
+        )
+        if begun.existing:
+            return begun.attempt
+        task = self.db.get(TaskRow, task_id)
+        attempt = begun.attempt
+        try:
+            result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
+        except Exception:
+            attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
+            task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
+            task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
+            self.db.commit()
+            raise
+        return self.finish(
+            attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
+            criterion_checks=criterion_checks, validation_target=validation_target,
+        )
+
+    def begin(
+        self,
+        *,
+        task_id: str,
+        dispatch_key: str,
+        fixture: Path,
+        validation_target: tuple[str, str] | None = None,
+        parent_attempt_id: str | None = None,
+        model_tier: ModelTier = ModelTier.BASIC,
+        cost_usd: float = 0.0,
+        provider: str | None = None,
+        latency_ms: float | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        escalation_reason: str | None = None,
+        agent: str = "native",
+        require_plan_approval: bool = False,
+    ) -> "BegunAttempt":
+        """Create and dispatch an Attempt and its disposable workspace.
+
+        The plan-approval gate (ADR 0014) is checked here, before any row is
+        written, and again by the ORM/PostgreSQL fences when the Attempt is
+        flushed.  ``require_plan_approval`` also refuses Tasks with no Plan.
+        """
+
+        check_plan_gate(self.db, task_id, require_plan=require_plan_approval)
         existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
         if existing:
             if existing.task_id != task_id:
                 raise ValueError(f"dispatch key already belongs to task: {existing.task_id}")
-            return existing
+            return BegunAttempt(existing, self.workspaces.root / existing.id, existing=True)
         task = self.db.get(TaskRow, task_id)
         if task is None:
             raise ValueError(f"task not found: {task_id}")
@@ -82,7 +154,7 @@ class ExecutionService:
         attempt_id = f"ATTEMPT-{uuid4().hex[:12]}"
         attempt = AttemptRow(
             id=attempt_id, task_id=task_id, status=AttemptState.CREATED.value,
-            dispatch_key=dispatch_key, agent="native", parent_attempt_id=parent_attempt_id,
+            dispatch_key=dispatch_key, agent=agent, parent_attempt_id=parent_attempt_id,
             model_tier=model_tier.value, cost_usd=cost_usd, created_at=utcnow(),
             provider=provider, latency_ms=latency_ms, input_tokens=input_tokens,
             output_tokens=output_tokens, escalation_reason=escalation_reason,
@@ -104,7 +176,7 @@ class ExecutionService:
             if winner is not None:
                 if winner.task_id != task_id:
                     raise ValueError(f"dispatch key already belongs to task: {winner.task_id}")
-                return winner
+                return BegunAttempt(winner, self.workspaces.root / winner.id, existing=True)
             raise
         task.status = transition_task(TaskState(task.status), TaskState.READY).value
         task.status = transition_task(TaskState(task.status), TaskState.RUNNING).value
@@ -112,20 +184,38 @@ class ExecutionService:
         attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.RUNNING).value
         self.db.commit()
 
-        before = fixture
         try:
             workspace = self.workspaces.create(attempt_id, fixture)
         except Exception:
             self._fail_attempt(task, attempt)
             raise
-        try:
-            result = self.adapter.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
-        except Exception:
-            attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
-            task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
-            task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
-            self.db.commit()
-            raise
+        return BegunAttempt(attempt, workspace, existing=False)
+
+    def finish(
+        self,
+        *,
+        attempt_id: str,
+        result: AdapterResult,
+        fixture: Path,
+        commands: list[list[str]],
+        criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
+        validation_target: tuple[str, str] | None = None,
+        evidence_mode: str | None = None,
+    ):
+        """Capture artifacts and let the deterministic Evaluator decide.
+
+        The adapter's own status is only a precondition: a Task succeeds only
+        on PASS Evidence from the Evaluator, never on an agent's claim.
+        """
+
+        attempt = self.db.get(AttemptRow, attempt_id)
+        if attempt is None:
+            raise ValueError(f"attempt not found: {attempt_id}")
+        if attempt.status != AttemptState.RUNNING.value:
+            raise ValueError(f"attempt {attempt_id} is not running")
+        task = self.db.get(TaskRow, attempt.task_id)
+        workspace = self.workspaces.root / attempt_id
+        before = fixture
         try:
             diff = self.artifacts.capture_diff(artifact_id=f"{attempt_id}-DIFF", before=before, after=workspace, files=result.changed_files)
             process = self.artifacts.capture_process(artifact_id=f"{attempt_id}-LOG", stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_code)
@@ -162,10 +252,14 @@ class ExecutionService:
             self._fail_attempt(task, attempt)
             raise
         for evidence in evaluation.evidence:
-            evaluator_artifact = self.artifacts.capture_evaluator_output(
-                artifact_id=f"{evidence.evidence_id}-OUTPUT",
-                evidence=evidence,
-            )
+            try:
+                evaluator_artifact = self.artifacts.capture_evaluator_output(
+                    artifact_id=f"{evidence.evidence_id}-OUTPUT",
+                    evidence=evidence,
+                )
+            except Exception:
+                self._fail_attempt(task, attempt)
+                raise
             self.db.add(
                 ArtifactRow(
                     id=evaluator_artifact.artifact_id,
@@ -217,6 +311,7 @@ class ExecutionService:
                     criterion=evidence.criterion,
                     measured_at=utcnow(),
                     created_at=utcnow(),
+                    **({"evidence_mode": evidence_mode} if evidence_mode else {}),
                 )
             )
             self.db.add(

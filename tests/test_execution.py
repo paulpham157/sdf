@@ -3,7 +3,7 @@ import json
 import pytest
 
 from sdf_core.adapter import FakeNativeAdapter
-from sdf_core.db import Base, GraphNodeRow, RuntimeEventRow, TaskRow, make_engine
+from sdf_core.db import ArtifactRow, AttemptRow, Base, EvidenceRow, GraphNodeRow, RuntimeEventRow, TaskRow, make_engine
 from sdf_core.evaluator import DeterministicEvaluator
 from sdf_core.execution import ExecutionService
 from sdf_core.model import utcnow
@@ -93,6 +93,114 @@ def test_duplicate_dispatch_returns_existing_attempt(tmp_path: Path):
         assert second.id == first.id
 
 
+@pytest.mark.parametrize(
+    "first_outcome, first_checks",
+    [
+        ("failed", {"check": [["python", "-c", "raise SystemExit(2)"]]}),
+        ("inconclusive", {}),
+    ],
+)
+def test_terminal_duplicate_dispatch_does_not_execute_again(tmp_path: Path, first_outcome, first_checks):
+    class CountingAdapter:
+        def __init__(self):
+            self.calls = 0
+            self.fake = FakeNativeAdapter("app.py", "print('new')\n")
+
+        def run(self, **kwargs):
+            self.calls += 1
+            return self.fake.run(**kwargs)
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(TaskRow(
+            id="TASK-TERMINAL-DUP", title="terminal redelivery", status="created",
+            idempotency_key="terminal-duplicate", acceptance_criteria=["check"], created_at=utcnow(),
+        ))
+        db.commit()
+        adapter = CountingAdapter()
+        service = ExecutionService(
+            db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "artifacts", adapter=adapter,
+        )
+        arguments = dict(
+            task_id="TASK-TERMINAL-DUP", dispatch_key="terminal-dispatch", fixture=fixture,
+            instructions="change", commands=[], criterion_checks=first_checks,
+        )
+        first = service.run(**arguments)
+        evidence_count = db.query(EvidenceRow).filter_by(attempt_id=first.id).count()
+        second = service.run(**arguments)
+
+        assert second.id == first.id
+        assert db.get(TaskRow, "TASK-TERMINAL-DUP").status == first_outcome
+        assert adapter.calls == 1
+        assert db.query(EvidenceRow).filter_by(attempt_id=first.id).count() == evidence_count
+
+
+@pytest.mark.parametrize(
+    "first_outcome, first_checks",
+    [
+        ("failed", {"check": [["python", "-c", "raise SystemExit(2)"]]}),
+        ("inconclusive", {}),
+    ],
+)
+def test_deliberate_retry_preserves_prior_evidence_and_records_lineage(tmp_path: Path, first_outcome, first_checks):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(TaskRow(
+            id="TASK-RETRY", title="retry terminal outcome", status="created",
+            idempotency_key="retry-terminal", acceptance_criteria=["check"], created_at=utcnow(),
+        ))
+        db.commit()
+        service = ExecutionService(
+            db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "artifacts",
+            adapter=FakeNativeAdapter("app.py", "print('new')\n"),
+        )
+        prior = service.run(
+            task_id="TASK-RETRY", dispatch_key="retry-first", fixture=fixture,
+            instructions="first attempt", commands=[], criterion_checks=first_checks,
+        )
+        assert db.get(TaskRow, "TASK-RETRY").status == first_outcome
+        attempt_before = (
+            prior.id, prior.task_id, prior.status, prior.dispatch_key,
+            prior.parent_attempt_id, prior.model_tier, prior.cost_usd,
+        )
+        evidence_before = [
+            (row.id, row.attempt_id, row.status, row.command, row.artifact_ref, row.confidence, row.criterion)
+            for row in db.query(EvidenceRow).filter_by(attempt_id=prior.id).order_by(EvidenceRow.id)
+        ]
+        assert evidence_before
+
+        retried = service.run(
+            task_id="TASK-RETRY", dispatch_key="retry-second", fixture=fixture,
+            instructions="deliberate retry", commands=[],
+            criterion_checks={"check": [["python", "-c", "print('ok')"]]},
+            parent_attempt_id=prior.id,
+        )
+
+        assert retried.id != prior.id
+        assert retried.parent_attempt_id == prior.id
+        assert db.get(TaskRow, "TASK-RETRY").status == "succeeded"
+        assert (
+            prior.id, prior.task_id, prior.status, prior.dispatch_key,
+            prior.parent_attempt_id, prior.model_tier, prior.cost_usd,
+        ) == attempt_before
+        evidence_after = [
+            (row.id, row.attempt_id, row.status, row.command, row.artifact_ref, row.confidence, row.criterion)
+            for row in db.query(EvidenceRow).filter_by(attempt_id=prior.id).order_by(EvidenceRow.id)
+        ]
+        assert evidence_after == evidence_before
+        assert db.query(EvidenceRow).filter_by(attempt_id=retried.id).count() == 1
+        diff = db.get(ArtifactRow, f"{retried.id}-DIFF")
+        assert "+print('new')" in Path(diff.uri).read_text(encoding="utf-8")
+
+
 def test_dispatch_key_cannot_be_reused_for_another_task(tmp_path: Path):
     fixture = tmp_path / "fixture"
     fixture.mkdir()
@@ -118,7 +226,7 @@ def test_evaluator_failure_settles_attempt_and_task(tmp_path: Path):
     engine = make_engine()
     Base.metadata.create_all(engine)
     with sessionmaker(engine, expire_on_commit=False)() as db:
-        db.add(TaskRow(id="TASK-EVAL-CRASH", title="crash", status="created", idempotency_key="eval-crash", acceptance_criteria=[], created_at=utcnow()))
+        db.add(TaskRow(id="TASK-EVAL-CRASH", title="crash", status="created", idempotency_key="eval-crash", acceptance_criteria=["check"], created_at=utcnow()))
         db.commit()
         service = ExecutionService(db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "artifacts", evaluator=RaisingEvaluator())
         with pytest.raises(RuntimeError, match="evaluator crashed"):
@@ -126,6 +234,71 @@ def test_evaluator_failure_settles_attempt_and_task(tmp_path: Path):
         assert db.get(TaskRow, "TASK-EVAL-CRASH").status == "failed"
         attempt = db.query(__import__("sdf_core.db", fromlist=["AttemptRow"]).AttemptRow).one()
         assert attempt.status == "completed"
+        duplicate = service.run(
+            task_id="TASK-EVAL-CRASH", dispatch_key="eval-crash", fixture=fixture,
+            instructions="redelivered", commands=[],
+        )
+        assert duplicate.id == attempt.id
+
+        service.evaluator = DeterministicEvaluator()
+        retry = service.run(
+            task_id="TASK-EVAL-CRASH", dispatch_key="eval-crash-retry", fixture=fixture,
+            instructions="recover", commands=[],
+            criterion_checks={"check": [["python", "-c", "print('ok')"]]},
+            parent_attempt_id=attempt.id,
+        )
+        assert retry.id != attempt.id
+        assert retry.parent_attempt_id == attempt.id
+        assert db.get(TaskRow, "TASK-EVAL-CRASH").status == "succeeded"
+
+
+def test_evaluator_artifact_failure_settles_task_and_allows_deliberate_retry(tmp_path: Path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(TaskRow(
+            id="TASK-ARTIFACT-CRASH", title="recover artifact failure", status="created",
+            idempotency_key="artifact-crash", acceptance_criteria=["check passes"], created_at=utcnow(),
+        ))
+        db.commit()
+        service = ExecutionService(
+            db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "artifacts",
+            adapter=FakeNativeAdapter("app.py", "print('new')\n"),
+        )
+        capture_output = service.artifacts.capture_evaluator_output
+
+        def fail_once(**kwargs):
+            service.artifacts.capture_evaluator_output = capture_output
+            raise OSError("artifact store unavailable")
+
+        service.artifacts.capture_evaluator_output = fail_once
+
+        with pytest.raises(OSError, match="artifact store unavailable"):
+            service.run(
+                task_id="TASK-ARTIFACT-CRASH", dispatch_key="artifact-crash-first",
+                fixture=fixture, instructions="change", commands=[],
+                criterion_checks={"check passes": [["python", "-c", "print('ok')"]]},
+            )
+
+        prior = db.query(AttemptRow).one()
+        assert prior.status == "completed"
+        assert db.get(TaskRow, "TASK-ARTIFACT-CRASH").status == "failed"
+        prior_evidence = db.query(EvidenceRow).filter_by(attempt_id=prior.id).all()
+        assert prior_evidence == []
+
+        retried = service.run(
+            task_id="TASK-ARTIFACT-CRASH", dispatch_key="artifact-crash-retry",
+            fixture=fixture, instructions="retry", commands=[],
+            criterion_checks={"check passes": [["python", "-c", "print('ok')"]]},
+            parent_attempt_id=prior.id,
+        )
+
+        assert retried.id != prior.id
+        assert retried.parent_attempt_id == prior.id
+        assert db.get(TaskRow, "TASK-ARTIFACT-CRASH").status == "succeeded"
 
 
 def test_failed_evaluation_contradicts_assumption_and_fails_task(tmp_path: Path):

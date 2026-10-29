@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from . import project_trust, subagents
+from .turn_guard import enter_argv, kill_argv, sweep_argv
 from .runtime import AgentRuntime, CredentialMetadata, RuntimeSession, RuntimeStatus
 
 
@@ -29,19 +31,59 @@ class HerdrUnsupportedOperation(HerdrRuntimeError):
 
 HerdrRunner = Callable[[Sequence[str], int], str]
 
-# Extra argv per agent kind. Claude runs only in a disposable sandbox from the
-# sdf-herdr-agents template, so its permission prompts are skipped there; the
-# template pre-accepts the matching dangerous-mode disclaimer.
-_AGENT_START_ARGS: Mapping[str, tuple[str, ...]] = {
-    "claude": ("--dangerously-skip-permissions",),
-}
+
+def _claim_fresh_e2b_permission_bypass(transport: object | None) -> bool:
+    """Atomically claim the one bypass authorization owned by a production E2B transport."""
+
+    if transport is None:
+        return False
+    # Import lazily because the E2B adapter imports HerdrRuntimeError from here.
+    # A generic/local runtime remains usable when the optional provider SDK is
+    # absent; without that adapter, no E2B capability can be granted.
+    try:
+        from .credential_injection import CredentialedE2BHerdrTransport
+        from .e2b_herdr_transport import E2BHerdrTransport
+    except ModuleNotFoundError as exc:
+        if exc.name == "e2b":
+            return False
+        raise
+
+    # Exact types exclude subclasses that can replace creation semantics. The
+    # wrapper is an explicit production path. The private constructor token
+    # proves no factory was injected (even if it equals Sandbox.create), and
+    # the callable identity confirms that production factory remains selected.
+    if type(transport) not in (E2BHerdrTransport, CredentialedE2BHerdrTransport):
+        return False
+    return transport.claim_fresh_permission_bypass()
+
+def _fresh_e2b_permission_bypass_available(transport: object | None) -> bool:
+    """Whether the start-boundary claim could still succeed; claims nothing.
+
+    Used before setup (``bind_workspace``) to decide if project config may be
+    staged under ADR-0021; the claim at start remains the only grant.
+    """
+
+    if transport is None:
+        return False
+    try:
+        from .credential_injection import CredentialedE2BHerdrTransport
+        from .e2b_herdr_transport import E2BHerdrTransport
+    except ModuleNotFoundError as exc:
+        if exc.name == "e2b":
+            return False
+        raise
+    if type(transport) not in (E2BHerdrTransport, CredentialedE2BHerdrTransport):
+        return False
+    return transport.fresh_permission_bypass_available()
 
 
-# Codex 0.157 can take Herdr's typed prompt into its composer but swallow the
+# Codex (0.157, 0.165) can take Herdr's typed prompt into its composer but swallow the
 # submitting Enter, so Herdr reports ``agent_prompt_stalled`` while the pane
-# stays idle.  For these kinds the runtime presses Enter again (never retyping
-# the prompt) until the turn is observed working.
-_RESUBMIT_ENTER_AGENTS = frozenset({"codex"})
+# stays idle.  Claude Code 2.1.282 does the same when it starts fast (the
+# prebuilt ``sdf-herdr-agents`` template): Herdr reports it interactive a few
+# seconds before it accepts Enter.  For these kinds the runtime presses Enter
+# again (never retyping the prompt) until the turn is observed working.
+_RESUBMIT_ENTER_AGENTS = frozenset({"codex", "claude"})
 _RESUBMIT_ATTEMPTS = 3
 _SUBMIT_WINDOW_MS = 8_000
 # Herdr states that prove a turn is in progress after a submission.
@@ -56,18 +98,63 @@ _HERDR_WAIT_HEADROOM_MS = 5_000
 def _is_herdr_timeout(exc: Exception) -> bool:
     return "timeout" in str(exc).lower()
 
-def _agent_start_args(agent: str, workspace_dir: Path | str | None) -> tuple[str, ...]:
+# Codex settings a Task workspace must not change (see ``_agent_start_args``).
+_CODEX_PINNED_POLICY = (
+    "-c", 'approval_policy="on-request"',
+    "-c", 'sandbox_mode="workspace-write"',
+    "-c", "sandbox_workspace_write.network_access=false",
+)
+
+
+def _agent_start_args(
+    agent: str,
+    workspace_dir: Path | str | None,
+    *,
+    allow_dangerous_permissions: bool = False,
+    trust_project: bool | None = None,
+    claude_settings: str | None = None,
+) -> tuple[str, ...]:
     """Extra argv for ``agent``; Codex trusts exactly its Attempt directory.
 
-    Codex does not inherit trust from a parent directory.  Codex 0.157 still
+    ADR-0021: ``trust_project`` (default: ``SDF_<AGENT>_PROJECT_TRUST``) lets
+    Claude load project/local settings, CLAUDE.md, skills, hooks; it needs
+    ``claude_settings``, SDF's flag settings file, which outranks them for the
+    endpoint and key.  For Codex it chooses ``trusted`` / ``untrusted``.
+
+    Codex does not inherit trust from a parent directory.  Codex (0.157 and 0.165) still
     shows its folder-trust dialog with only this override, so a transport also
     pre-trusts the directory in config.toml (``prepare_agent_workspace``).
+
+    Claude always loads user settings only.  The Attempt workspace is
+    pre-trusted, so Claude Code would otherwise apply its
+    ``.claude/settings.json`` / ``settings.local.json``: an ``env`` block there
+    redirects ``ANTHROPIC_BASE_URL`` and sends the injected key to any host the
+    egress policy allows, and ``hooks`` run commands at session start.  The
+    workspace is Task input, not operator configuration.
     """
 
-    args = _AGENT_START_ARGS.get(agent, ())
-    if agent == "codex" and workspace_dir is not None:
-        # A JSON string is a valid TOML basic string for any path.
-        args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"trusted\"")
+    # ADR-0020: sub-agents off, on the command line so no settings file can undo it.
+    args: tuple[str, ...] = subagents.start_args(agent)
+    if trust_project is None:
+        trust_project = project_trust.wants_trust(agent)
+    if agent == "claude":
+        if trust_project and claude_settings:
+            args = (*args, "--setting-sources", "user,project,local")
+        else:
+            args = (*args, "--setting-sources", "user")
+        if claude_settings:
+            args = (*args, "--settings", claude_settings)
+        if allow_dangerous_permissions:
+            args = (*args, "--dangerously-skip-permissions")
+    if agent == "codex":
+        # A trusted project's .codex/config.toml may widen approval and the
+        # sandbox; Codex (since 0.157, still 0.165) ignores project base URL / provider keys.
+        # Invocation overrides outrank it; these are Codex's own defaults.
+        args = (*args, *_CODEX_PINNED_POLICY)
+        if workspace_dir is not None:
+            # A JSON string is a valid TOML basic string for any path.
+            level = "trusted" if trust_project else "untrusted"
+            args = (*args, "-c", f"projects.{json.dumps(str(workspace_dir))}.trust_level=\"{level}\"")
     return args
 
 
@@ -257,6 +344,13 @@ class HerdrRuntime(AgentRuntime):
         # Operator-supplied argv appended after the runtime's own per-agent
         # arguments; the runtime does not interpret it.
         self._agent_args = {agent: tuple(args) for agent, args in (agent_args or {}).items()}
+        if any(
+            "--dangerously-skip-permissions" in args
+            for args in self._agent_args.values()
+        ):
+            raise ValueError(
+                "--dangerously-skip-permissions is managed by the selected sandbox transport"
+            )
         self._poll_interval_s = poll_interval_s
         self._turn_settle_s = turn_settle_s
         self._bindings: dict[str, _Binding] = {}
@@ -270,6 +364,8 @@ class HerdrRuntime(AgentRuntime):
         # not claim provider process control it does not have.
         self._environment_close = getattr(transport, "close", None) if transport is not None else None
         self._environment_closed_sessions: set[str] = set()
+        # ADR-0019: session id -> (containment id, pane shell pid).
+        self._containment: dict[str, tuple[str, int]] = {}
         # Cancel claims the session before ctrl+c so a concurrent send that
         # observes idle from the interrupt cannot overwrite CANCELLED.
         self._cancel_requested: set[str] = set()
@@ -405,21 +501,24 @@ class HerdrRuntime(AgentRuntime):
             credential = self.credentials.get(agent)
             if credential is None:
                 raise HerdrRuntimeError(f"no resolved Agent Credential for {agent}; it was not injected at sandbox creation; set SDF_CREDENTIAL_MODE_{agent.upper()}")
-        if self.expected_version is not None:
-            self.require_compatible()
         existing_id = next((sid for sid, b in self._bindings.items() if b.attempt_id == attempt_id), None)
         if existing_id is not None:
             return self._sessions[existing_id]
+        if self.expected_version is not None:
+            self.require_compatible()
 
         workspace_args = self._command("workspace", "create")
         workspace_dir = self._attempt_workspaces.get(attempt_id, self._workspace_dir)
+        claude_settings: str | None = None
         if workspace_dir is not None:
             workspace_args.extend(("--cwd", str(workspace_dir)))
             # A transport may need to prepare agent state for this directory
             # (Claude's folder-trust dialog) before the agent opens there.
             prepare = getattr(self._transport, "prepare_agent_workspace", None)
             if callable(prepare):
-                prepare(agent, str(workspace_dir))
+                prepared = prepare(agent, str(workspace_dir))
+                if agent == "claude" and isinstance(prepared, str):
+                    claude_settings = prepared
         workspace = self._object(workspace_args)
         root_pane = workspace.get("root_pane", workspace.get("rootPane", workspace))
         if not isinstance(root_pane, Mapping):
@@ -430,8 +529,32 @@ class HerdrRuntime(AgentRuntime):
         workspace_id = self._required_string(workspace_record, "workspaceId", "workspace_id")
         pane_id = self._required_string(root_pane, "paneId", "pane_id")
 
+        # ADR-0019: enrol the pane shell (and so the agent it starts) in its
+        # own cgroup before the agent exists.
+        contain = self._enrol_pane(attempt_id, pane_id)
         start_args = self._command("agent", "start", agent, "--kind", agent, "--pane", pane_id)
-        agent_args = (*_agent_start_args(agent, workspace_dir), *self._agent_args.get(agent, ()))
+        # ADR-0008 is Claude-only. Claim at the start boundary, after setup has
+        # succeeded, so unrelated agents and failed setup do not consume it.
+        allow_dangerous_permissions = (
+            agent == "claude" and _claim_fresh_e2b_permission_bypass(self._transport)
+        )
+        # ADR-0021: Claude loads the project only in a fresh E2B sandbox and
+        # with SDF's flag settings pinning endpoint and key.  Codex keeps its
+        # ADR-0011 trust (any transport) and only follows the setting.
+        if agent == "claude":
+            trust_project = allow_dangerous_permissions and project_trust.wants_trust(agent)
+        else:
+            trust_project = project_trust.wants_trust(agent)
+        agent_args = (
+            *_agent_start_args(
+                agent,
+                workspace_dir,
+                allow_dangerous_permissions=allow_dangerous_permissions,
+                trust_project=trust_project,
+                claude_settings=claude_settings,
+            ),
+            *self._agent_args.get(agent, ()),
+        )
         if agent_args:
             start_args.extend(("--", *agent_args))
         started = self._object(start_args)
@@ -450,10 +573,30 @@ class HerdrRuntime(AgentRuntime):
         status = self._status(started_agent.get("status", started_agent.get("agent_status", started.get("status", "working"))))
         session = RuntimeSession(session_id, attempt_id, agent, status, credential=credential)
         self._bindings[session_id] = _Binding(attempt_id, agent, workspace_id, pane_id)
+        if contain is not None:
+            self._containment[session_id] = contain
         self._sessions[session_id] = session
         return session
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
+        """One turn (``_send``), then the ADR-0019 sweep of its leftovers.
+
+        Once the turn is over (any status but ``RUNNING``, or an error), every
+        process of the session's containment that is no longer a descendant of
+        the pane shell - detached, double-forked, reparented to PID 1 - is
+        killed (TERM, grace, KILL).  The agent and its own children stay.
+        """
+
+        ended = True
+        try:
+            result = self._send(session_id, input_text)
+            ended = result.status is not RuntimeStatus.RUNNING
+            return result
+        finally:
+            if ended:
+                self._sweep_leftovers(session_id)
+
+    def _send(self, session_id: str, input_text: str) -> RuntimeSession:
         """Submit one prompt and wait for the agent's turn to end.
 
         A normal return of ``agent prompt --wait --until idle`` means Herdr saw
@@ -735,13 +878,63 @@ class HerdrRuntime(AgentRuntime):
                 raise
 
     def _close_execution_environment(self, session_id: str) -> None:
-        """Destroy an optional Attempt-owned provider environment once."""
+        """Destroy an optional Attempt-owned provider environment once.
+
+        ADR-0019: first kill the session's whole containment (TERM, grace,
+        KILL), so cleanup does not depend on the provider teardown alone.
+        """
 
         if session_id in self._environment_closed_sessions:
             return
+        self._kill_containment(session_id)
         if callable(self._environment_close):
             self._environment_close(self._timeout_ms)
         self._environment_closed_sessions.add(session_id)
+
+    # --- ADR-0019 containment ---------------------------------------------
+    def _exec_argv(self) -> Any:
+        if self._transport is None:
+            return None
+        run = getattr(self._transport, "exec_argv", None)
+        return run if callable(run) else None
+
+    def _enrol_pane(self, attempt_id: str, pane_id: str) -> tuple[str, int] | None:
+        """Put the pane shell in a per-session cgroup; None when unsupported."""
+
+        run = self._exec_argv()
+        if run is None:
+            return None
+        try:
+            payload = self._object(self._command("pane", "process-info", "--pane", pane_id))
+            info = payload.get("process_info", payload)
+            shell_pid = info.get("shell_pid") if isinstance(info, Mapping) else None
+            if not isinstance(shell_pid, int) or isinstance(shell_pid, bool) or shell_pid <= 1:
+                return None
+            cid = "herdr-" + re.sub(r"[^A-Za-z0-9_-]", "_", f"{attempt_id}-{pane_id}")[:100]
+            run(enter_argv(cid, shell_pid), self._timeout_ms)
+            return cid, shell_pid
+        except Exception:  # noqa: BLE001 - containment is defence in depth
+            return None
+
+    def _sweep_leftovers(self, session_id: str) -> None:
+        contain = self._containment.get(session_id)
+        run = self._exec_argv()
+        if contain is None or run is None or session_id in self._environment_closed_sessions:
+            return
+        try:
+            run(sweep_argv(contain[0], contain[1]), self._timeout_ms)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _kill_containment(self, session_id: str) -> None:
+        contain = self._containment.get(session_id)
+        run = self._exec_argv()
+        if contain is None or run is None:
+            return
+        try:
+            run(kill_argv(contain[0]), self._timeout_ms)
+        except Exception:  # noqa: BLE001 - the provider teardown still follows
+            pass
 
     def reconnect(self, session_id: str) -> RuntimeSession:
         binding, current = self._known(session_id)

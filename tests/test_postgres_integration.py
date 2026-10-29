@@ -42,7 +42,8 @@ def clean_postgres(postgres_engine):
         connection.execute(text(
             "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, "
             "artifacts, attempts, tasks, graph_nodes, objective_metrics, "
-            "outcome_observations RESTART IDENTITY CASCADE"
+            "outcome_observations, agent_claims, agent_messages, agent_run_members, agent_runs, "
+            "plan_tasks, plans, decision_requests, api_tokens, auth_audit RESTART IDENTITY CASCADE"
         ))
 
 
@@ -142,3 +143,114 @@ def test_postgresql_claim_race_has_exactly_one_winner(postgres_engine):
     with _session(postgres_engine) as db:
         assert sum(winners) == 1
         assert db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-PG-RACE", event="action_claimed").count() == 1
+
+
+def test_postgres_plan_gate_and_agent_comm_triggers_fence_direct_writes(postgres_engine, tmp_path):
+    from sqlalchemy import insert, update
+
+    from sdf_core.agent_messaging import Member, MessageHub
+    from sdf_core.db import AgentMessageRow, AgentRunRow, AttemptRow, DecisionRequestRow, PlanRow
+    from sdf_core.model import utcnow
+    from sdf_core.plans import PlanSpec, decide_plan, propose_plan, task_id_for
+    from tests.agent_comm_support import make_fixture, plan_dict
+
+    db = _session(postgres_engine)
+    try:
+        plan = propose_plan(db, PlanSpec(**plan_dict(make_fixture(tmp_path), "PLAN-PG")))
+        db.commit()
+        attempt = {"id": "ATTEMPT-PG-GATE", "task_id": task_id_for("PLAN-PG", "add"), "status": "running",
+                   "dispatch_key": "pg-gate", "agent": "test", "created_at": utcnow()}
+        # Core statements skip the ORM guards; the database itself must refuse.
+        for statement in (
+            insert(AttemptRow).values(**attempt),
+            insert(AgentRunRow).values(id="RUN-PG", plan_id="PLAN-PG", status="running", config={},
+                                       started_at=utcnow()),
+            update(PlanRow).where(PlanRow.id == "PLAN-PG").values(status="approved"),
+        ):
+            with pytest.raises(DBAPIError, match="plan gate|requires a human"):
+                db.execute(statement)
+            db.rollback()
+        decide_plan(db, "PLAN-PG", approve=True, decided_by="hung")
+        db.commit()
+        db.execute(insert(AttemptRow).values(**attempt))
+        db.execute(insert(AgentRunRow).values(id="RUN-PG", plan_id="PLAN-PG", status="running", config={},
+                                              started_at=utcnow()))
+        db.commit()
+        hub = MessageHub(db, "RUN-PG", {"lead-1": Member("lead-1", "lead", None, "sbx-l"),
+                                        "worker-1": Member("worker-1", "worker", "add", "sbx-w")})
+        hub.ingest("worker-1", b'{"id": "%s", "kind": "report", "body": "done"}' % (b"b" * 32), sandbox_id="sbx-w")
+        db.commit()
+        for statement in (
+            update(AgentMessageRow).values(body="edited"),
+            update(PlanRow).where(PlanRow.id == "PLAN-PG").values(title="changed"),
+            update(DecisionRequestRow).where(DecisionRequestRow.id == plan.decision_request_id).values(
+                status="rejected"),
+            text("DELETE FROM agent_claims"),
+            text("DELETE FROM plans"),
+        ):
+            with pytest.raises(DBAPIError):
+                db.execute(statement)
+            db.rollback()
+    finally:
+        db.close()
+
+
+def test_postgres_api_tokens_and_auth_audit_are_fenced(postgres_engine):
+    """ADR 0015 on PostgreSQL: tokens authenticate through the API; the audit
+    log is append-only and a token's identity/roles/hash are immutable and
+    revocation final, even for Core statements that skip the ORM guards."""
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import update
+
+    from sdf_core import auth
+    from sdf_core.api import app, get_db
+    from sdf_core.db import ApiTokenRow, AuthAuditRow
+
+    factory = sessionmaker(postgres_engine, expire_on_commit=False)
+
+    def pg_db():
+        db = factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    db = _session(postgres_engine)
+    try:
+        row, plaintext = auth.create_token(db, principal="pg-operator", roles=["operator"], created_by="test")
+        db.commit()
+        app.dependency_overrides[get_db] = pg_db
+        try:
+            client = TestClient(app, headers={"Authorization": f"Bearer {plaintext}"})
+            assert client.get("/auth/whoami").json()["name"] == "pg-operator"
+            created = client.post("/tasks", json={"id": "TASK-PG-AUTH", "title": "t", "idempotency_key": "pg-a"})
+            assert created.status_code == 201, created.text
+            assert TestClient(app).get("/auth/whoami").status_code == 401
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+        db.expire_all()
+        events = {(r.event, r.principal) for r in db.query(AuthAuditRow).all()}
+        assert {("token_created", "test"), ("mutation", "pg-operator"), ("auth_failed", None)} <= events
+        assert db.get(ApiTokenRow, row.id).last_used_at is not None
+
+        for statement in (
+            update(AuthAuditRow).values(principal="someone-else"),
+            text("DELETE FROM auth_audit"),
+            update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(roles=["admin"]),
+            update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(principal="hung"),
+            update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(secret_hash="0" * 64),
+            text("DELETE FROM api_tokens"),
+        ):
+            with pytest.raises(DBAPIError):
+                db.execute(statement)
+            db.rollback()
+        auth.revoke_token(db, row.id, revoked_by="test")
+        db.commit()
+        with pytest.raises(DBAPIError):
+            db.execute(update(ApiTokenRow).where(ApiTokenRow.id == row.id).values(revoked_at=None))
+        db.rollback()
+        with pytest.raises(auth.AuthError, match="revoked"):
+            auth.verify_token(db, plaintext, key=auth.pepper())
+    finally:
+        db.close()

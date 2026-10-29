@@ -26,6 +26,8 @@ import pytest
 from e2b import Sandbox
 from fastapi.testclient import TestClient
 
+from sdf_core import auth as sdf_auth
+
 from sdf_core.api import app, get_db
 from sdf_core.credential_injection import create_credentialed_transport
 from sdf_core.db import AttemptRow, GraphNodeRow, RuntimeEventRow, TaskRow
@@ -197,7 +199,11 @@ def test_live_session_lifecycle_replay_and_provenance(tmp_path: Path):
         # 7. Public boundary: the same observations through the HTTP API.
         app.dependency_overrides[get_db] = lambda: db
         try:
-            client = TestClient(app)
+            # ADR 0015: an ephemeral viewer token in the overridden test DB.
+            _tok, _plain = sdf_auth.create_token(db, principal="live-viewer", roles=["viewer"],
+                                                 created_by="test", expires_in_days=1)
+            db.commit()
+            client = TestClient(app, headers={"Authorization": f"Bearer {_plain}"})
             api_events = client.get(f"/attempts/{attempt_id}/runtime-events")
             api_trace = client.get("/tasks/TASK-CALC/trace")
         finally:

@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any, Generator, Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -35,6 +37,8 @@ from .containment import MacOSSandboxBackend
 from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
 from .impact_repository import load_metric_declaration, load_observations, load_scorecard_facts
+from . import auth as _auth
+from .db import AuthAuditRow
 
 
 DATABASE_URL = os.getenv("SDF_DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -42,7 +46,158 @@ engine = make_engine(DATABASE_URL)
 Base.metadata.create_all(engine)
 SessionLocal = make_session_factory(DATABASE_URL)
 
-app = FastAPI(title="SDF Core", version="0.1.0")
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# --- ADR 0015: authentication and authorization ---------------------------------
+#
+# Every route requires a bearer token except ``GET /healthz``.  ``authorize`` is
+# an app-level dependency, so every route registered on ``app`` (including
+# future ones) passes through it; a route missing from ``auth.ROUTE_ROLES``
+# needs viewer for safe methods and admin otherwise (fail closed).
+
+auth_failures = _auth.limiter_from_env()
+
+
+def _client_host(request: Request) -> str:
+    return (request.client.host if request.client else "") or "unknown"
+
+
+def _audit(db: Session, request: Request, *, event: str, principal: "_auth.Principal | None",
+           status_code: int | None, route: str | None, detail: dict[str, Any] | None = None) -> None:
+    db.add(AuthAuditRow(
+        at=datetime.now(timezone.utc), event=event, principal=principal.name if principal else None,
+        token_id=principal.token_id if principal else None, method=request.method,
+        path=request.url.path[:500], route=(route or "")[:200] or None, status_code=status_code,
+        client=_client_host(request)[:64], detail=detail,
+    ))
+    db.commit()
+
+
+def _deny(db: Session, request: Request, route: str, status_code: int, reason: str, detail: str,
+          principal: "_auth.Principal | None" = None, headers: dict[str, str] | None = None) -> HTTPException:
+    try:
+        db.rollback()
+        _audit(db, request, event="auth_failed" if status_code == 401 else "denied", principal=principal,
+               status_code=status_code, route=route, detail={"reason": reason})
+    except Exception:  # noqa: BLE001 - auditing must not turn a denial into a 500
+        db.rollback()
+    return HTTPException(status_code=status_code, detail=detail, headers=headers)
+
+
+def _authenticate(request: Request, db: Session, route: str) -> "_auth.Principal":
+    client = _client_host(request)
+    retry = auth_failures.retry_after(client)
+    if retry:
+        raise _deny(db, request, route, 429, "locked_out", "too many failed authentication attempts",
+                    headers={"Retry-After": str(retry)})
+    header = request.headers.get("authorization", "")
+    scheme, _, presented = header.partition(" ")
+    if not header and _auth.dev_insecure():
+        server = (request.scope.get("server") or ("",))[0]
+        forwarded = any(h in request.headers for h in ("x-forwarded-for", "forwarded", "x-real-ip"))
+        if _auth.is_loopback(client) and _auth.is_loopback(server) and not forwarded:
+            return _auth.DEV_PRINCIPAL
+        raise _deny(db, request, route, 403, "dev_not_loopback",
+                    "SDF_AUTH_DEV_INSECURE only serves direct requests to 127.0.0.1")
+    key = _auth.pepper()
+    if key is None:
+        raise HTTPException(status_code=503, detail=(
+            "authentication is not configured: set SDF_AUTH_PEPPER and create a token "
+            "(python -m sdf_core.auth_cli create), or SDF_AUTH_DEV_INSECURE=1 on 127.0.0.1"))
+    challenge = {"WWW-Authenticate": "Bearer"}
+    if scheme.lower() != "bearer" or not presented.strip():
+        auth_failures.failure(client)
+        raise _deny(db, request, route, 401, "missing", "a bearer token is required", headers=challenge)
+    try:
+        principal = _auth.verify_token(db, presented.strip(), key=key)
+    except _auth.AuthError as exc:
+        auth_failures.failure(client)
+        raise _deny(db, request, route, 401, str(exc), "invalid, expired or revoked token",
+                    headers=challenge) from None
+    db.commit()  # last_used_at
+    return principal
+
+
+def authorize(request: Request, db: Session = Depends(get_db)):
+    route_obj = request.scope.get("route")
+    route = getattr(route_obj, "path", request.url.path)
+    method = request.method.upper()
+    if (method, route) in _auth.PUBLIC_ROUTES:
+        yield None
+        return
+    principal = _authenticate(request, db, route)
+    needed = _auth.required_role(method, route)
+    if not principal.has(needed):
+        raise _deny(db, request, route, 403, f"needs_{needed}", f"this action needs the {needed} role",
+                    principal=principal)
+    if needed == "approver" and not principal.can_approve:
+        raise _deny(db, request, route, 403, "not_human_approver",
+                    "only a human, non-agent identity may approve or decide", principal=principal)
+    request.state.principal = principal
+    if method in _auth.SAFE_METHODS:
+        yield principal
+        return
+    status_code = getattr(route_obj, "status_code", None) or 200
+    try:
+        yield principal
+    except HTTPException as exc:
+        status_code = exc.status_code
+        raise
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        try:
+            db.rollback()
+            _audit(db, request, event="mutation", principal=principal, status_code=status_code, route=route,
+                   detail={"roles": sorted(principal.roles), "method": principal.method,
+                           "path_params": dict(request.path_params)})
+        except Exception:  # noqa: BLE001
+            db.rollback()
+
+
+def current_principal(request: Request) -> "_auth.Principal":
+    principal = getattr(request.state, "principal", None)
+    if principal is None:  # unreachable for non-public routes; fail closed anyway
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return principal
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    if _auth.pepper() is None and not _auth.dev_insecure():
+        raise RuntimeError(
+            "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
+            "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
+    yield
+
+
+app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
+              docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/auth/whoami")
+def whoami(principal: "_auth.Principal" = Depends(current_principal)):
+    return {**principal.as_record(), "can_approve": principal.can_approve,
+            "single_user_mode": _auth.single_user_mode()}
+
+
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_schema():
+    return app.openapi()
 
 
 class NodeRequest(BaseModel):
@@ -167,14 +322,6 @@ class EvidenceResponse(BaseModel):
     artifact_ref: str | None
     confidence: float
     criterion: str | None = None
-
-
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 def node_payload(node: GraphNodeRow) -> dict[str, Any]:
@@ -374,7 +521,6 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
     evidence = db.get(EvidenceRow, evidence_id)
     if evidence is None:
         raise HTTPException(status_code=404, detail="evidence not found")
-    node = db.get(GraphNodeRow, evidence_id)
     criterion = evidence.criterion
     return {
         "id": evidence.id,
@@ -511,6 +657,10 @@ def run_task(task_id: str, payload: RunTaskRequest, db: Session = Depends(get_db
             input_tokens=payload.input_tokens,
             output_tokens=payload.output_tokens,
             escalation_reason=payload.escalation_reason,
+            # ADR 0014: a Task that belongs to a Plan never starts before a
+            # human approved the Plan; SDF_REQUIRE_PLAN_APPROVAL=1 also
+            # refuses Tasks that have no Plan at all.
+            require_plan_approval=require_plan_approval(),
         )
     except (RunAdapterConfigError, CredentialConfigError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -606,3 +756,274 @@ def get_objective_impact(objective_id: str, db: Session = Depends(get_db)):
 def get_impact_scorecard(db: Session = Depends(get_db)):
     facts = load_scorecard_facts(db)
     return build_scorecard(facts).as_dict()
+
+
+# --- ADR 0014: plans, plan-approval gate, agent runs, messages, decisions ---------
+#
+# The lead/worker coordinator is exposed on its own endpoints rather than on
+# ``POST /tasks/{id}/run``: that endpoint runs one Task synchronously through a
+# single NativeAdapter (the fake adapter here), while an agent run spans every
+# Task of a Plan, several sandboxes and minutes of wall time.  The gate itself
+# is shared: ``/tasks/{id}/run`` refuses a Task whose Plan is not approved.
+
+import threading as _threading  # noqa: E402
+
+from .agent_sandbox import agent_environ, e2b_factory, running_sandbox_ids  # noqa: E402
+from .credentials import load_dotenv  # noqa: E402
+from .coordinator import Coordinator, RunConfig, request_cancel  # noqa: E402
+from .db import (  # noqa: E402
+    AgentClaimRow,
+    AgentMessageRow,
+    AgentRunMemberRow,
+    AgentRunRow,
+    DecisionRequestRow,
+    PlanRow,
+)
+from .plans import (  # noqa: E402
+    PlanSpec,
+    SeparationOfDutiesError,
+    decide_plan,
+    decision_request_payload,
+    plan_payload,
+    propose_plan,
+    resolve_request,
+)
+
+
+def require_plan_approval() -> bool:
+    return os.getenv("SDF_REQUIRE_PLAN_APPROVAL", "").strip().lower() in {"1", "true", "yes"}
+
+
+class PlanDecisionRequest(BaseModel):
+    # The decider is the authenticated principal (ADR 0015); a client-supplied
+    # ``decided_by`` is not a field and is ignored like any unknown key.
+    rationale: str = Field(default="", max_length=4000)
+    expected_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+class StartRunRequest(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+    wait: bool = False
+
+
+class ResolveDecisionRequest(BaseModel):
+    outcome: Literal["approved", "rejected", "answered"]
+    # The resolver is the authenticated principal; ``resolved_by`` is ignored.
+    resolution: str = Field(default="", max_length=4000)
+
+
+def _gate(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/plans", status_code=status.HTTP_201_CREATED)
+def create_plan(payload: PlanSpec, db: Session = Depends(get_db),
+                principal: _auth.Principal = Depends(current_principal)):
+    if not Path(payload.fixture_dir).is_dir():
+        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory")
+    # The proposer is the authenticated principal, whatever the body says.
+    payload = payload.model_copy(update={"proposed_by": principal.name})
+    try:
+        plan = propose_plan(db, payload)
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return plan_payload(plan, db)
+
+
+@app.get("/plans/{plan_id}")
+def get_plan(plan_id: str, db: Session = Depends(get_db)):
+    plan = db.get(PlanRow, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return plan_payload(plan, db)
+
+
+def _decide(plan_id: str, payload: PlanDecisionRequest, approve: bool, db: Session,
+            principal: _auth.Principal) -> dict[str, Any]:
+    try:
+        plan = decide_plan(db, plan_id, approve=approve, decided_by=principal.name,
+                           rationale=payload.rationale, expected_sha256=payload.expected_sha256,
+                           allow_self_approval=_auth.single_user_mode(), principal=principal.as_record())
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SeparationOfDutiesError as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:  # PlanGateError included
+        db.rollback()
+        raise _gate(exc) from exc
+    return plan_payload(plan, db)
+
+
+@app.post("/plans/{plan_id}/approve")
+def approve_plan(plan_id: str, payload: PlanDecisionRequest, db: Session = Depends(get_db),
+                 principal: _auth.Principal = Depends(current_principal)):
+    return _decide(plan_id, payload, True, db, principal)
+
+
+@app.post("/plans/{plan_id}/reject")
+def reject_plan(plan_id: str, payload: PlanDecisionRequest, db: Session = Depends(get_db),
+                principal: _auth.Principal = Depends(current_principal)):
+    return _decide(plan_id, payload, False, db, principal)
+
+
+def _agent_factory():
+    factory = getattr(app.state, "agent_sandbox_factory", None)
+    if factory is not None:
+        return factory
+    if os.getenv("SDF_AGENT_SANDBOX", "").strip().lower() == "e2b":
+        return e2b_factory(agent_environ(_operator_env(), {"opencode", "pi"}))
+    return None
+
+
+def _operator_env() -> dict[str, str]:
+    """os.environ plus the repo-root .env, in a private mapping (values never logged)."""
+    env = dict(os.environ)
+    load_dotenv(environ=env)
+    return env
+
+
+def _cleanup_check():
+    check = getattr(app.state, "agent_cleanup_check", None)
+    if check is not None:
+        return check
+    key = _operator_env().get("E2B_API_KEY")
+    if os.getenv("SDF_AGENT_SANDBOX", "").strip().lower() == "e2b" and key:
+        return lambda ids: ids & running_sandbox_ids(key)
+    return None
+
+
+def _coordinator(db: Session) -> Coordinator:
+    factory = _agent_factory()
+    if factory is None:
+        raise HTTPException(status_code=503, detail="no agent sandbox factory configured (set SDF_AGENT_SANDBOX=e2b)")
+    return Coordinator(
+        db, factory=factory,
+        workspace_root=Path(os.getenv("SDF_WORKSPACE_ROOT", ".sdf-workspaces")),
+        artifact_root=Path(os.getenv("SDF_ARTIFACT_ROOT", ".sdf-artifacts")),
+        cleanup_check=_cleanup_check(),
+    )
+
+
+def run_payload(run: AgentRunRow, db: Session) -> dict[str, Any]:
+    members = db.scalars(select(AgentRunMemberRow).where(AgentRunMemberRow.run_id == run.id)).all()
+    return {
+        "id": run.id, "plan_id": run.plan_id, "status": run.status, "error": run.error, "cost_usd": run.cost_usd,
+        "config": run.config, "summary": run.summary, "started_by": run.started_by,
+        "cancel_requested_by": run.cancel_requested_by,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "members": [{"agent_id": m.agent_id, "role": m.role, "agent_kind": m.agent_kind, "subtask_key": m.subtask_key,
+                     "sandbox_id": m.sandbox_id, "status": m.status, "turns": m.turns} for m in members],
+    }
+
+
+@app.post("/plans/{plan_id}/runs", status_code=status.HTTP_202_ACCEPTED)
+def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depends(get_db),
+                    principal: _auth.Principal = Depends(current_principal)):
+    plan = db.get(PlanRow, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="plan not found")
+    if plan.status != "approved":
+        raise HTTPException(status_code=409, detail=f"plan {plan_id} is {plan.status}; a human must approve it first")
+    try:
+        config = RunConfig.from_dict(payload.config)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    coordinator = _coordinator(db)
+    try:
+        run = coordinator.create_run(plan_id, config, started_by=principal.name)
+    except ValueError as exc:
+        db.rollback()
+        raise _gate(exc) from exc
+    if payload.wait:
+        run = coordinator.execute(run.id)
+        return run_payload(run, db)
+    run_id = run.id
+    factory, check = coordinator.factory, coordinator.cleanup_check
+
+    def background() -> None:
+        session = SessionLocal()
+        try:
+            Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
+                        artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
+        finally:
+            session.close()
+
+    _threading.Thread(target=background, name=f"sdf-{run_id}", daemon=True).start()
+    return run_payload(run, db)
+
+
+@app.get("/runs/{run_id}")
+def get_agent_run(run_id: str, db: Session = Depends(get_db)):
+    run = db.get(AgentRunRow, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return run_payload(run, db)
+
+
+@app.post("/runs/{run_id}/cancel")
+def cancel_agent_run(run_id: str, db: Session = Depends(get_db),
+                     principal: _auth.Principal = Depends(current_principal)):
+    run = db.get(AgentRunRow, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if run.status == "running" and run.cancel_requested_at is None:
+        run.cancel_requested_at = datetime.now(timezone.utc)
+        run.cancel_requested_by = principal.name
+        db.commit()
+    request_cancel(run_id)
+    return run_payload(run, db)
+
+
+@app.get("/runs/{run_id}/messages")
+def get_agent_messages(run_id: str, db: Session = Depends(get_db)):
+    if db.get(AgentRunRow, run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    rows = db.scalars(select(AgentMessageRow).where(AgentMessageRow.run_id == run_id).order_by(AgentMessageRow.seq)).all()
+    claims = {c.message_id: c.id for c in db.scalars(select(AgentClaimRow).where(AgentClaimRow.run_id == run_id)).all()}
+    return [{"id": m.id, "seq": m.seq, "from": m.from_agent, "from_role": m.from_role, "to": m.to_agent,
+             "to_role": m.to_role, "kind": m.kind, "body": m.body, "truncated": m.truncated,
+             "attempt_id": m.attempt_id, "source_sandbox_id": m.source_sandbox_id, "meta": m.meta,
+             "claim_id": claims.get(m.id), "evidence": False,
+             "created_at": m.created_at.isoformat()} for m in rows]
+
+
+@app.get("/decision-requests")
+def list_decision_requests(status_filter: str | None = None, run_id: str | None = None,
+                           db: Session = Depends(get_db)):
+    query = select(DecisionRequestRow).order_by(DecisionRequestRow.created_at)
+    if status_filter:
+        query = query.where(DecisionRequestRow.status == status_filter)
+    if run_id:
+        query = query.where(DecisionRequestRow.run_id == run_id)
+    return [decision_request_payload(r) for r in db.scalars(query).all()]
+
+
+@app.post("/decision-requests/{request_id}/resolve")
+def resolve_decision_request(request_id: str, payload: ResolveDecisionRequest, db: Session = Depends(get_db),
+                             principal: _auth.Principal = Depends(current_principal)):
+    # The HTTP caller is the authenticated human principal (approver role,
+    # human token); policies run in-process only.
+    try:
+        request = resolve_request(db, request_id, outcome=payload.outcome, resolved_by=principal.name,
+                                  resolver_kind="human", resolution=payload.resolution,
+                                  allow_self_approval=_auth.single_user_mode(), principal=principal.as_record())
+        db.commit()
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SeparationOfDutiesError as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise _gate(exc) from exc
+    return decision_request_payload(request)

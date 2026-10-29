@@ -39,7 +39,7 @@ def test_api_key_plan_seeds_auth_json_only_without_a_base_url():
     assert plan.seed_steps == (SeedStep("codex-auth-json-api-key", "OPENAI_API_KEY"),)
 
 def test_base_url_is_applied_through_a_codex_config_seed():
-    # Codex 0.157.0 ignores OPENAI_BASE_URL; it reads openai_base_url from
+    # Codex (since 0.157, still 0.165) ignores OPENAI_BASE_URL; it reads openai_base_url from
     # ~/.codex/config.toml (docs/research/codex-base-url.md).
     plan = resolve_credential_plan("codex", {**ENV, "SDF_OPENAI_BASE_URL": BASE_URL})
     assert SeedStep("codex-config-base-url", "OPENAI_BASE_URL") in plan.seed_steps

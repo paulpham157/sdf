@@ -58,6 +58,56 @@ _Avoid_: knowledge graph, task graph
 A graph relationship in which Evidence supports or contradicts an Assumption or Decision.
 _Avoid_: inference, annotation
 
+**Plan**:
+An immutable, hashed proposal that splits work into subtasks, each an SDF Task with host-run criterion checks and the files it may change. No Attempt of a plan task starts until a human approves the plan (ADR 0014).
+_Avoid_: todo list, agent plan
+
+**Decision Request**:
+A pending question recorded in the Decision Graph, raised for a plan approval or by an agent. Only a human approves; a policy may reject or answer; nothing is auto-approved. A resolved request is final.
+_Avoid_: prompt, confirmation
+
+**Agent Run**:
+One execution of an approved Plan by a lead agent and worker agents, one sandbox each. It succeeds only when every subtask has PASS Evidence.
+_Avoid_: swarm, crew
+
+**Lead / Worker**:
+The coordinating agent of an Agent Run (assigns work by message, writes no code) and the agents bound by the host to exactly one subtask each.
+_Avoid_: orchestrator agent, sub-agent
+
+**Agent Message**:
+An append-only, sanitized message between agents, relayed by the SDF host, whose sender is the sandbox it came from. Agent text is untrusted data.
+_Avoid_: chat, instruction
+
+**Claim**:
+What an agent reports about its own work. A Claim triggers host verification and is never Evidence.
+_Avoid_: result, evidence
+
+## Access language
+
+**Principal**:
+The authenticated identity behind an API request, taken only from its credential (an API token today). Proposers, approvers, run starters and audit rows record the Principal, never a name sent in the request (ADR 0015).
+_Avoid_: user field, decided_by
+
+**API Token**:
+A bearer credential `sdf_<id>.<secret>` for one Principal with roles and an expiry, stored only as a peppered hash, shown once at creation, revoked but never deleted. Agents never get one.
+_Avoid_: API key, password
+
+**Role**:
+What a Principal may do: viewer (read), operator (create and run work), approver (decide), admin (all).
+_Avoid_: permission level, scope
+
+**Separation of Duties**:
+The rule that the Principal who proposed a Plan cannot approve it, and that agent, sandbox and service identities can never approve.
+_Avoid_: four-eyes check
+
+**Single-user Mode**:
+`SDF_AUTH_SINGLE_USER=1`: a solo deployment where the proposer may approve their own Plan; each such Decision is marked `self_approval`.
+_Avoid_: admin mode
+
+**Auth Audit**:
+The append-only log of token creation and revocation, failed or denied requests, and every authenticated mutating request with its Principal.
+_Avoid_: access log
+
 ## Ownership language
 
 **SDF Task**:
@@ -91,6 +141,22 @@ _Avoid_: auth, token
 **Credential Mode**:
 How an Agent Credential is obtained for one agent kind: `subscription` (a login made once on the operator's host and forwarded) or `api-key` (an operator-supplied provider key).
 _Avoid_: auth method, fallback
+
+**Agent Provider Config**:
+The per-agent-kind base URL, key variable name and model(s) an `api-key` Agent Credential uses; the key itself only ever comes from the environment.
+_Avoid_: hard-coded provider, plaintext key
+
+**Project Agent Config**:
+Agent configuration an Attempt workspace carries (`.claude/`, `.codex/config.toml`, `opencode.json`, `.opencode/`, `.pi/`, `.qwen/`, `.goose/`, `.env`); untrusted, so it is ignored (Claude, OpenCode), outranked by pinned invocation overrides (Codex approval/sandbox policy) or the workspace is refused (Pi, Qwen Code, Goose).
+_Avoid_: repo settings, trusted config
+
+**Headless Agent Runtime**:
+An Agent Runtime that runs one non-interactive agent turn per input in the sandbox (OpenCode `run`, Pi `-p`, Qwen Code `-o json`, Goose `run`), instead of driving an agent in a Herdr pane.
+_Avoid_: Herdr pane, interactive session
+
+**Baked Pi Extension**:
+A Pi extension package installed into the `sdf-herdr-agents` image at an exact, integrity-checked version and loaded only by explicit `-e` path from SDF's allowlist (`SDF_PI_EXTENSIONS`, ADR 0017); never discovered, never installed at runtime, and in read-only turns limited to the ones that add no write capability.
+_Avoid_: Pi package, plugin, project extension (`.pi/extensions` is refused)
 
 **Tool Proxy**:
 The SDF action boundary that obtains a Policy Decision before executing a requested tool action.

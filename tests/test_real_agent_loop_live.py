@@ -19,6 +19,8 @@ import pytest
 from e2b import Sandbox
 from fastapi.testclient import TestClient
 
+from sdf_core import auth as sdf_auth
+
 from sdf_core.adapter import RuntimeAgentAdapter
 from sdf_core.api import app, get_db, configured_tool_policy
 from sdf_core.credential_injection import create_credentialed_transport
@@ -401,7 +403,11 @@ def test_live_real_agent_loop_with_independent_evidence(tmp_path: Path, task_cas
         app.dependency_overrides[get_db] = override_get_db
 
         try:
-            client = TestClient(app)
+            # ADR 0015: an ephemeral viewer token in the overridden test DB.
+            _tok, _plain = sdf_auth.create_token(db_for_run, principal="live-viewer", roles=["viewer"],
+                                                 created_by="test", expires_in_days=1)
+            db_for_run.commit()
+            client = TestClient(app, headers={"Authorization": f"Bearer {_plain}"})
 
             # Test GET /tasks/{id}/trace with tight assertions
             trace_response = client.get(f"/tasks/TASK-CALC/trace")

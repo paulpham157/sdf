@@ -1,5 +1,10 @@
 # Cursor auth alternatives for disposable E2B (after subscription-forward blocked)
 
+> **Superseded by [ADR 0016](../adr/0016-remove-aider-and-cursor-agent-kinds.md)
+> (2026-10-28).** The Cursor Agent CLI was removed from `sdf-herdr-agents` and
+> SDF never wired a `cursor` agent kind. Kept as the historical record of the
+> original `cursor-e2b` track; it no longer describes the image or the code.
+
 Date: 2026-09-30. Track: `cursor-e2b`. Research only — no production `sdf_core/`
 credential wiring, no template publish, no PR unless Lead asks.
 
