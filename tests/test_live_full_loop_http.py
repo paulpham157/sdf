@@ -61,6 +61,19 @@ def _kill_own(attempt_id: str) -> set[str]:
     return found
 
 
+def _agent_output(attempt_id: str | None) -> list[str]:
+    """Last screen/output lines of the attempt (diagnostics; redacted by the timeline)."""
+
+    if not attempt_id:
+        return []
+    out: list[str] = []
+    for entry in admin_client().get(f"/runs/{attempt_id}/timeline").json().get("entries", []):
+        if entry.get("kind") == "runtime_output_observed":
+            payload = (entry.get("payload") or {}).get("output")
+            out.extend(payload if isinstance(payload, list) else [str(payload)])
+    return out[-25:]
+
+
 def _apply_live_env(monkeypatch: pytest.MonkeyPatch, agent: str, tmp_path: Path) -> None:
     monkeypatch.setenv("SDF_RUN_ADAPTER", "live")
     monkeypatch.setenv("SDF_RUN_AGENT", agent)
@@ -119,7 +132,7 @@ def test_live_full_loop_via_public_run_endpoint(tmp_path: Path, monkeypatch: pyt
         body = run.json()
         attempt_id = body.get("attempt_id") or (body.get("detail") or {}).get("attempt_id")
         assert run.status_code == 200, run.text
-        assert body["task_status"] == case["expected_task_status"], body
+        assert body["task_status"] == case["expected_task_status"], (body, _agent_output(attempt_id))
     finally:
         # Kill this test's own sandboxes first, then assert none had leaked.
         leaked = _kill_own(attempt_id) if attempt_id else set()
@@ -155,3 +168,70 @@ def test_live_full_loop_via_public_run_endpoint(tmp_path: Path, monkeypatch: pyt
     assert {bc_id, obj_id, task_id, attempt_id, assumption_id} <= {node["id"] for node in trace["nodes"]}
     assert any(edge["source_id"].startswith("EVIDENCE-") and edge["target_id"] == assumption_id
                and edge["relation"] == case["expected_edge"] for edge in trace["edges"])
+
+
+EGRESS_PROBE = r"""
+import json, socket, urllib.request
+out = {}
+for name, url in (("vultr", "https://api.vultrinference.com/v1/models"), ("example", "https://example.com"),
+                  ("pypi", "https://pypi.org/simple/")):
+    try:
+        urllib.request.urlopen(url, timeout=8)
+        out[name] = "ok"
+    except urllib.error.HTTPError as exc:
+        out[name] = f"http {exc.code}"
+    except Exception as exc:
+        out[name] = "blocked:" + type(exc).__name__
+print(json.dumps(out))
+"""
+
+
+def test_live_run_sandbox_egress_is_vultr_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The /run sandbox reaches Vultr Inference (HTTP answer) and nothing else."""
+
+    import json
+
+    from sdf_core.run_adapter import configured_run_adapter
+
+    _apply_live_env(monkeypatch, "opencode", tmp_path)
+    attempt_id = "ATTEMPT-LIVE-EGRESS-" + os.urandom(4).hex()
+    db = SessionLocal()
+    adapter = configured_run_adapter(db, environ=os.environ)
+    transport, _ = adapter._transport(attempt_id)
+    try:
+        raw = transport.exec_argv(["python3", "-c", EGRESS_PROBE], 60_000)
+    finally:
+        _sid, cleanup_error = adapter._teardown(transport)
+        db.close()
+        leaked = _kill_own(attempt_id)
+    result = json.loads(raw.strip().splitlines()[-1])
+    assert cleanup_error is None and not leaked
+    assert result["vultr"] == "ok" or result["vultr"].startswith("http "), result
+    assert result["example"].startswith("blocked") and result["pypi"].startswith("blocked"), result
+
+
+def test_live_run_forced_timeout_is_classified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A turn past SDF_RUN_TURN_TIMEOUT_S is killed, classified ``timeout``, and its sandbox is gone."""
+
+    _apply_live_env(monkeypatch, "opencode", tmp_path)
+    monkeypatch.setenv("SDF_RUN_TURN_TIMEOUT_S", "5")
+    client = admin_client()
+    assert client.post("/tasks", json={"id": "TASK-LIVE-TIMEOUT", "title": "timeout", "acceptance_criteria": ["c"],
+                                       "idempotency_key": "live-timeout-" + os.urandom(4).hex()}).status_code == 201
+    fixture = _fixture(tmp_path)
+    res = client.post("/tasks/TASK-LIVE-TIMEOUT/run", json={
+        "fixture_dir": str(fixture), "criterion_checks": {"c": CHECK_ADD},
+        "instructions": "Write a 3000-word essay about sandboxes to essay.md, then fix calc.py."})
+    body = res.json()
+    detail = body.get("detail") if isinstance(body.get("detail"), dict) else body
+    attempt_id = detail.get("attempt_id")
+    leaked = _kill_own(attempt_id) if attempt_id else set()
+    assert not leaked
+    assert detail.get("error_class") == "timeout", (res.status_code, body)
+    db = SessionLocal()
+    try:
+        assert db.get(AttemptRow, attempt_id).error_class == "timeout"
+        turns = db.query(UsageLedgerRow).filter_by(attempt_id=attempt_id, kind="turn").all()
+        assert turns and turns[-1].error_class == "timeout"
+    finally:
+        db.close()

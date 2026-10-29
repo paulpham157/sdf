@@ -216,6 +216,7 @@ class _MeteredRuntime:
         self._attempt_id = attempt_id
         self.session_id: str | None = None
         self.turns = 0
+        self.sandbox_id: str | None = None
         self.last_error_class: str | None = None
         self._session_usage: dict[str, Any] | None = None
         self.tokens = [0, 0]
@@ -253,6 +254,7 @@ class _MeteredRuntime:
 
     def send(self, session_id: str, input_text: str):
         self.turns += 1
+        self.sandbox_id = getattr(self._transport, "sandbox_id", None) or self.sandbox_id
         headless = self._adapter.agent not in HERDR_KINDS
         before = self._usage_now() if headless else None
         started = time.monotonic()
@@ -283,7 +285,7 @@ class _MeteredRuntime:
                 self.last_error_class = klass if klass != "settled_grace" else None
                 row = _usage.record_turn(
                     self._adapter.db, attempt_id=self._attempt_id, agent=self._adapter.agent, turn=self.turns,
-                    session_id=session_id, sandbox_id=getattr(self._transport, "sandbox_id", None),
+                    session_id=session_id, sandbox_id=self.sandbox_id,
                     sandbox_provider=self._adapter.provider, usage=turn_usage, status=status,
                     error_class=klass, seconds=round(seconds, 3), model=self._adapter.model,
                     environ=self._adapter.run_env,
@@ -308,6 +310,7 @@ class _MeteredRuntime:
         self._controller.collect_workspace(attempt_id, workspace)
 
     def terminate(self, session_id: str):
+        self.sandbox_id = getattr(self._transport, "sandbox_id", None) or self.sandbox_id
         return self._controller.terminate(session_id)
 
 
@@ -392,10 +395,14 @@ class LiveRunAdapter:
 
         DaytonaHerdrTransport(snapshot=self.image, environ=self.run_env, sandbox_id=sandbox_id).close()
 
-    def _teardown(self, transport: Any) -> tuple[str | None, str | None]:
-        """Kill the sandbox; returns (sandbox_id, cleanup error or None)."""
+    def _teardown(self, transport: Any, known_id: str | None = None) -> tuple[str | None, str | None]:
+        """Kill the sandbox; returns (sandbox_id, cleanup error or None).
 
-        sandbox_id = getattr(transport, "sandbox_id", None)
+        ``known_id`` is the id seen during the run: a runtime may already have
+        closed the transport (clearing its id) before teardown runs.
+        """
+
+        sandbox_id = getattr(transport, "sandbox_id", None) or known_id
         try:
             transport.close()
             return sandbox_id, None
@@ -436,7 +443,7 @@ class LiveRunAdapter:
                 result = adapter.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
             except BaseException as exc:
                 primary = exc
-            sandbox_id, cleanup_error = self._teardown(transport)
+            sandbox_id, cleanup_error = self._teardown(transport, metered.sandbox_id)
             seconds = time.monotonic() - started
             with log_context(sandbox_id=sandbox_id):
                 error_class = "cleanup_failed" if cleanup_error else (

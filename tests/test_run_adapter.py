@@ -238,3 +238,21 @@ def test_e2b_transport_gets_network_and_metadata(monkeypatch, tmp_path):
     assert seen["metadata"]["sdf_attempt_id"] == "A"
     assert seen["template"] == DEFAULT_TEMPLATE and seen["agents"] == ("opencode",)
     assert "SDF_DOTENV" not in seen["environ"]
+
+
+def test_sandbox_id_survives_runtime_closing_the_transport(monkeypatch, tmp_path):
+    """Herdr's terminate closes the transport (clearing its id) before teardown runs."""
+
+    transport = _Transport()
+
+    class _ClosesOnTerminate(_Completing):
+        def terminate(self, session_id):
+            transport.close()
+            return super().terminate(session_id)
+
+    db, adapter = _adapter(monkeypatch, _ClosesOnTerminate(), transport)
+    adapter.run(attempt_id="A", workspace=tmp_path, instructions="hi")
+    sandbox = db.scalars(select(UsageLedgerRow).where(UsageLedgerRow.kind == "sandbox")).one()
+    turn = db.scalars(select(UsageLedgerRow).where(UsageLedgerRow.kind == "turn")).one()
+    assert sandbox.sandbox_id == "sbx-1" == turn.sandbox_id
+    assert adapter.last_run["sandbox_id"] == "sbx-1"
