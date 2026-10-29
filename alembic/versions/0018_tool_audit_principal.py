@@ -12,7 +12,6 @@ depends_on = None
 _OLD_UNIQUE = "uq_tool_audits_attempt_action_event"
 _NEW_UNIQUE = "uq_tool_audits_execution_event"
 _WHERE = sa.text("event <> 'policy_decided'")
-_APPEND_ONLY_TRIGGER = "trg_tool_audits_append_only"
 
 
 def upgrade():
@@ -38,7 +37,7 @@ def downgrade():
     # and drop the per-delivery duplicates (lossy, documented in ADR 0026).
     postgres = op.get_bind().dialect.name == "postgresql"
     if postgres:
-        op.execute(f"ALTER TABLE tool_audits DISABLE TRIGGER {_APPEND_ONLY_TRIGGER}")
+        op.execute(sa.text("ALTER TABLE tool_audits DISABLE TRIGGER trg_tool_audits_append_only"))
     op.execute(sa.text("""
         DELETE FROM tool_audits
         WHERE event = 'policy_decided' AND audit_id NOT IN (
@@ -48,7 +47,7 @@ def downgrade():
         )
     """))
     if postgres:
-        op.execute(f"ALTER TABLE tool_audits ENABLE TRIGGER {_APPEND_ONLY_TRIGGER}")
+        op.execute(sa.text("ALTER TABLE tool_audits ENABLE TRIGGER trg_tool_audits_append_only"))
     op.create_index(_OLD_UNIQUE, "tool_audits", ["attempt_id", "action_id", "event"], unique=True)
     with op.batch_alter_table("tool_audits") as batch:
         batch.drop_index("ix_tool_audits_principal")
