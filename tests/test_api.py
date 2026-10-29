@@ -1,4 +1,5 @@
 from tests.auth_support import admin_client
+from tests.check_support import write_checks
 from datetime import datetime, timezone
 
 from sdf_core.api import configured_containment, configured_tool_policy
@@ -105,7 +106,8 @@ def test_task_trace_includes_attempt_runtime_events():
     assert response.json()["runtime_events"][0]["attempt_id"] == attempt_id
 
 
-def test_omitted_mapping_keeps_legacy_command_observable(tmp_path):
+def test_legacy_commands_field_is_rejected(tmp_path):
+    """ADR 0025: callers cannot hand the evaluator commands, not even as observations."""
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "app.py").write_text("print('old')\n")
@@ -113,11 +115,13 @@ def test_omitted_mapping_keeps_legacy_command_observable(tmp_path):
     result = client.post("/tasks/TASK-LEGACY-OBS/run", json={
         "fixture_dir": str(fixture), "commands": [["python", "-c", "print('legacy-observation')"]],
     })
-    assert result.status_code == 200
-    assert result.json()["task_status"] == "inconclusive"
-    trace = client.get("/tasks/TASK-LEGACY-OBS/trace").json()
-    observed = [client.get(f"/evidence/{n['id']}").json() for n in trace["nodes"] if n["kind"] == "evidence"]
-    assert any("legacy-observation" in item["command"] for item in observed)
+    assert result.status_code == 422
+    db = SessionLocal()
+    try:
+        assert db.get(TaskRow, "TASK-LEGACY-OBS").status == "created"
+        assert db.query(AttemptRow).filter_by(task_id="TASK-LEGACY-OBS").count() == 0
+    finally:
+        db.close()
 
 
 def test_can_create_business_intent_chain_and_trace_it():
@@ -199,7 +203,6 @@ def test_objective_metric_and_attempt_telemetry_are_persisted(tmp_path):
         "/tasks/TASK-METRIC-RUN/run",
         json={
             "fixture_dir": str(fixture),
-            "commands": [],
             "provider": "fake-provider",
             "latency_ms": 123.5,
             "input_tokens": 10,
@@ -363,6 +366,7 @@ def test_run_endpoint_executes_fixture_and_updates_task(tmp_path):
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    write_checks(fixture, {"prints-ok": ["python", "-c", "print('ok')"]})
     created = client.post(
         "/tasks",
         json={"id": "TASK-RUN-001", "title": "Run fixture", "idempotency_key": "task-run-001", "acceptance_criteria": ["command succeeds"]},
@@ -372,8 +376,7 @@ def test_run_endpoint_executes_fixture_and_updates_task(tmp_path):
         "/tasks/TASK-RUN-001/run",
         json={
             "fixture_dir": str(fixture),
-            "commands": [["python", "-c", "print('ok')"]],
-            "criterion_checks": {"command succeeds": [["python", "-c", "print('ok')"]]},
+            "criterion_checks": {"command succeeds": ["prints-ok"]},
         },
     )
     assert response.status_code == 200
@@ -390,12 +393,12 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    write_checks(fixture, {"prints-ok": ["python", "-c", "print('ok')"]})
     client.post("/assumptions", json={"id": "ASSUMPTION-API-001", "title": "change is safe", "owner": "product", "source": "test"})
     client.post("/tasks", json={"id": "TASK-TRACE-001", "title": "trace", "idempotency_key": "task-trace-001", "acceptance_criteria": ["command succeeds"]})
     response = client.post("/tasks/TASK-TRACE-001/run", json={
         "fixture_dir": str(fixture),
-        "commands": [["python", "-c", "print('ok')"]],
-        "criterion_checks": {"command succeeds": [["python", "-c", "print('ok')"]]},
+        "criterion_checks": {"command succeeds": ["prints-ok"]},
         "validation_target_kind": "assumption", "validation_target_id": "ASSUMPTION-API-001",
     })
     assert response.status_code == 200
@@ -426,7 +429,7 @@ def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
     assert created.status_code == 201
     response = client.post(
         "/tasks/TASK-MISSING-COVERAGE-001/run",
-        json={"fixture_dir": str(fixture), "commands": [["python", "-c", "print('arbitrary pass')"]]},
+        json={"fixture_dir": str(fixture)},
     )
 
     assert response.status_code == 200

@@ -16,6 +16,9 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
   need their vendor hosts). Daytona cannot lock egress at creation and is refused
   unless `SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS=1`.
 - Evidence is Attempt-bound and evaluator-derived (not agent self-report).
+  The request names **check ids** only (`"criterion_checks": {"<criterion>":
+  ["<id>"]}`); argv comes from the server registry (ADR 0025), and checks run
+  with a reduced environment, never the server's.
 - Teardown kills the sandbox by id with retries. A failed kill is surfaced as
   `cleanup_failed` on the Attempt, the usage ledger and a runtime event; it is
   never swallowed.
@@ -44,6 +47,8 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_CODEX_MODEL` | Codex model (`SDF_HERDR_CODEX_MODEL` is a deprecated alias) |
 | `SDF_RUN_EGRESS_ALLOW` | Extra egress hosts, comma-separated |
 | `SDF_FIXTURES_ROOT` | Root that `fixture_dir` must resolve into (default `./fixtures`) |
+| `SDF_EVALUATOR_CHECKS_FILE` | Server check registry; `criterion_checks` takes ids from it or `<fixture>/sdf-checks.json` (ADR 0025) |
+| `SDF_EVALUATOR_CONTAINMENT` | `off` (default), `prefer` or `require` containment for evaluator checks |
 | `SDF_RUN_MAX_CONCURRENT` | Live runs per process (default `2`; more → 429) |
 | `SDF_HERDR_TIMEOUT_MS` / `SDF_RUN_TURN_TIMEOUT_S` | Herdr / headless turn timeouts (`240000` / `420`) |
 | `SDF_E2B_SANDBOX_TIMEOUT_SECONDS` | E2B sandbox lifetime (default `900`) |

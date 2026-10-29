@@ -4,13 +4,13 @@ import os
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Literal
+from typing import Annotated, Any, Generator, Literal
 from uuid import uuid4
 
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,8 @@ from . import tracing
 from .timeline import build_timeline
 from .policy import ActionRequest, AllowlistPolicy
 from .containment import MacOSSandboxBackend
+from .checks import CheckConfigError, CheckRegistry, UnknownCheckError
+from .evaluator import DeterministicEvaluator
 from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
 from .impact_repository import load_metric_declaration, load_observations, load_scorecard_facts
@@ -276,13 +278,23 @@ class TaskRequest(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
 
 
+CheckId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")]
+
+
 class RunTaskRequest(BaseModel):
+    # Unknown fields are rejected, so the removed ``commands`` field and the
+    # old argv form of ``criterion_checks`` fail loudly instead of being ignored.
+    model_config = ConfigDict(extra="forbid")
+
     dispatch_key: str | None = Field(default=None, min_length=1, max_length=200)
     fixture_dir: str
     instructions: str = "complete the task"
-    commands: list[list[str]] = Field(default_factory=list)
-    criterion_checks: dict[str, list[list[str]]] | None = Field(
-        default=None, description="Explicit criterion checks take precedence over legacy commands, including an empty mapping."
+    criterion_checks: dict[str, list[CheckId]] | None = Field(
+        default=None,
+        description=(
+            "Map each acceptance criterion to server-registered check ids (ADR 0025): ids come from the "
+            "fixture's sdf-checks.json or SDF_EVALUATOR_CHECKS_FILE. Callers cannot supply commands."
+        ),
     )
     validation_target_kind: str | None = None
     validation_target_id: str | None = None
@@ -362,6 +374,42 @@ def configured_containment() -> tuple[object | None, bool]:
         backend = None
     required = os.getenv("SDF_REQUIRE_CONTAINMENT", "1").strip().lower() not in {"0", "false", "no"}
     return backend, required
+
+
+def configured_evaluator(registry: CheckRegistry | None = None) -> DeterministicEvaluator:
+    """Evaluator for public runs (ADR 0025).
+
+    ``SDF_EVALUATOR_CONTAINMENT``: ``off`` (default) runs checks on the host
+    with a reduced environment; ``prefer`` uses the promoted containment
+    backend (``SDF_CONTAINMENT_BACKEND`` + ``SDF_CONTAINMENT_SMOKE=passed``)
+    when there is one; ``require`` never runs a check outside it.
+    """
+
+    mode = os.getenv("SDF_EVALUATOR_CONTAINMENT", "off").strip().lower() or "off"
+    if mode not in {"off", "prefer", "require"}:
+        raise HTTPException(status_code=400, detail="SDF_EVALUATOR_CONTAINMENT must be off, prefer or require")
+    backend = configured_containment()[0] if mode in {"prefer", "require"} else None
+    return DeterministicEvaluator(
+        containment_backend=backend,
+        require_containment=mode == "require",
+        timeout_for=registry.timeout_for if registry is not None else None,
+    )
+
+
+def resolve_registered_checks(
+    fixture: Path, criterion_checks: dict[str, list[str]] | None
+) -> tuple[CheckRegistry | None, dict[str, list[list[str]]] | None]:
+    """Turn requested check ids into server-owned argv, before any sandbox starts."""
+
+    if criterion_checks is None:
+        return None, None
+    try:
+        registry = CheckRegistry.load(fixture)
+        return registry, registry.resolve(criterion_checks)
+    except CheckConfigError as exc:
+        raise HTTPException(status_code=400, detail=f"check registry error: {exc}") from exc
+    except UnknownCheckError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class EvidenceResponse(BaseModel):
@@ -690,6 +738,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
         target_node = db.get(GraphNodeRow, payload.validation_target_id)
         if target_node is None or target_node.kind != payload.validation_target_kind:
             raise HTTPException(status_code=404, detail="validation target not found")
+    registry, checks = resolve_registered_checks(fixture, payload.criterion_checks)
     principal = getattr(getattr(request.state, "principal", None), "name", None)
     adapter = None
     with log_context(task_id=task_id, principal=principal), \
@@ -704,14 +753,15 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     workspace_root=Path(".sdf-workspaces"),
                     artifact_root=Path(".sdf-artifacts"),
                     adapter=adapter,
+                    evaluator=configured_evaluator(registry),
                 )
                 attempt = service.run(
                     task_id=task_id,
                     dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
                     fixture=fixture,
                     instructions=payload.instructions,
-                    commands=payload.commands,
-                    criterion_checks=payload.criterion_checks,
+                    commands=[],
+                    criterion_checks=checks,
                     validation_target=target,
                     parent_attempt_id=payload.parent_attempt_id,
                     model_tier=payload.model_tier,

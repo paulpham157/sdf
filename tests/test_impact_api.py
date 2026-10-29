@@ -1,3 +1,4 @@
+from tests.check_support import write_checks
 from datetime import datetime, timedelta, timezone
 
 from tests.auth_support import admin_client
@@ -164,6 +165,7 @@ def test_scorecard_reflects_a_real_task_attempt_evidence_chain(tmp_path):
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    write_checks(fixture, {"prints-ok": ["python", "-c", "print('ok')"]})
     make_objective("OBJ-SCORECARD-001", "BC-SCORECARD-001")
 
     before = {item["name"]: item for item in client.get("/impact-scorecard").json()["metrics"]}
@@ -183,8 +185,7 @@ def test_scorecard_reflects_a_real_task_attempt_evidence_chain(tmp_path):
         "/tasks/TASK-SCORECARD-001/run",
         json={
             "fixture_dir": str(fixture),
-            "commands": [["python", "-c", "print('ok')"]],
-            "criterion_checks": {"command succeeds": [["python", "-c", "print('ok')"]]},
+            "criterion_checks": {"command succeeds": ["prints-ok"]},
         },
     )
     assert response.status_code == 200

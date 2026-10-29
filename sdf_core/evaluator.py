@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
+import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+from .checks import ALLOWED_EXECUTABLES
+from .containment import ContainmentUnavailable
+from .sandbox import FixtureSandbox, SandboxViolation
+
+MAX_CHECK_OUTPUT_BYTES = 256 * 1024
 
 
 @dataclass(frozen=True)
@@ -29,9 +35,36 @@ class EvaluationResult:
 
 
 class DeterministicEvaluator:
-    def __init__(self, *, timeout_seconds: float = 30.0, allowed_executables: set[str] | None = None):
+    """Run deterministic checks against an Attempt workspace (ADR 0025).
+
+    A check never inherits the server environment: it gets the reduced
+    environment of :class:`FixtureSandbox` (``PATH``, a workspace ``HOME`` and
+    temp dirs). The executable must be a bare allowlisted name; it is resolved
+    on the server ``PATH`` with relative entries and entries inside the
+    workspace removed, so a file the agent wrote cannot stand in for it. A
+    timeout kills the whole process group. With a ``containment_backend`` the
+    check runs there instead of on the host; with ``require_containment`` and
+    no backend it does not run at all (INCONCLUSIVE).
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 30.0,
+        allowed_executables: set[str] | None = None,
+        containment_backend: Any | None = None,
+        require_containment: bool = False,
+        timeout_for: Callable[[Sequence[str]], float | None] | None = None,
+        max_output_bytes: int = MAX_CHECK_OUTPUT_BYTES,
+    ):
         self.timeout_seconds = timeout_seconds
-        self.allowed_executables = allowed_executables or {"python", "python3", "pytest", "ruff"}
+        allowed = set(allowed_executables or ALLOWED_EXECUTABLES)
+        # The allowlist can only be narrowed: interpreters outside it are never trusted.
+        self.allowed_executables = allowed & set(ALLOWED_EXECUTABLES)
+        self.containment_backend = containment_backend
+        self.require_containment = require_containment
+        self.timeout_for = timeout_for
+        self.max_output_bytes = max_output_bytes
 
     def evaluate(
         self,
@@ -176,6 +209,60 @@ class DeterministicEvaluator:
             criterion=criterion,
         )
 
+    def _inconclusive(self, attempt_id: str, index: int, rendered: str, criterion: str | None, reason: str,
+                      stdout: str = "") -> Evidence:
+        return Evidence(
+            evidence_id=f"EVIDENCE-{attempt_id}-{index}",
+            attempt_id=attempt_id,
+            kind="evaluation",
+            status="INCONCLUSIVE",
+            command=rendered,
+            exit_code=None,
+            stdout=stdout,
+            stderr=reason,
+            confidence=0.2,
+            criterion=criterion,
+        )
+
+    @staticmethod
+    def _safe_path(workspace: Path) -> str:
+        """The server PATH without relative entries or entries inside the workspace."""
+
+        root = workspace.resolve()
+        keep: list[str] = []
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            if not entry or not os.path.isabs(entry):
+                continue
+            try:
+                resolved = Path(entry).resolve()
+            except (OSError, RuntimeError):
+                continue
+            if resolved == root or resolved.is_relative_to(root):
+                continue
+            keep.append(entry)
+        return os.pathsep.join(keep)
+
+    def _resolve_executable(self, name: str, workspace: Path, safe_path: str) -> str | None:
+        found = None
+        for entry in safe_path.split(os.pathsep):
+            candidate = os.path.join(entry, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                found = candidate
+                break
+        if found is None and name in {"python", "python3"}:
+            found = sys.executable
+        if found is None:
+            return None
+        root = workspace.resolve()
+        candidate = Path(found)
+        if not candidate.is_absolute():
+            return None
+        # Neither the PATH entry nor the symlink target may live in the workspace.
+        if candidate.resolve().is_relative_to(root) or candidate.parent.resolve().is_relative_to(root):
+            return None
+        # Keep the unresolved path: a venv interpreter must stay a venv interpreter.
+        return str(candidate)
+
     def _run_one(
         self,
         *,
@@ -187,71 +274,60 @@ class DeterministicEvaluator:
     ) -> Evidence:
         argv = tuple(command)
         rendered = " ".join(argv)
-        if not argv or Path(argv[0]).name not in self.allowed_executables:
-            return Evidence(
-                evidence_id=f"EVIDENCE-{attempt_id}-{index}",
-                attempt_id=attempt_id,
-                kind="evaluation",
-                status="INCONCLUSIVE",
-                command=rendered,
-                exit_code=None,
-                stdout="",
-                stderr="executable is not allowlisted",
-                confidence=0.2,
-                criterion=criterion,
-            )
+        if (
+            not argv
+            or not all(isinstance(part, str) for part in argv)
+            or "/" in argv[0]
+            or "\\" in argv[0]
+            or argv[0] not in self.allowed_executables
+        ):
+            return self._inconclusive(attempt_id, index, rendered, criterion,
+                                      "executable is not allowlisted (bare name required)")
+        if any("\x00" in part for part in argv):
+            return self._inconclusive(attempt_id, index, rendered, criterion, "argument contains a NUL byte")
+        timeout = self.timeout_seconds
+        if self.timeout_for is not None:
+            timeout = self.timeout_for(argv) or timeout
+        workspace = Path(workspace)
+        safe_path = self._safe_path(workspace)
+        process_argv = list(argv)
+        if self.containment_backend is None:
+            if self.require_containment:
+                return self._inconclusive(attempt_id, index, rendered, criterion,
+                                          "evaluator containment is required but no backend is configured")
+            executable = self._resolve_executable(argv[0], workspace, safe_path)
+            if executable is None:
+                return self._inconclusive(attempt_id, index, rendered, criterion,
+                                          "executable not found outside the workspace")
+            process_argv[0] = executable
         try:
-            executable = Path(argv[0]).name
-            process_argv = list(argv)
-            if executable in {"python", "python3"} and shutil.which(process_argv[0]) is None:
-                process_argv[0] = sys.executable
-            completed = subprocess.run(
-                process_argv,
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                check=False,
+            sandbox = FixtureSandbox(
+                workspace,
+                timeout_seconds=timeout,
+                max_output_bytes=self.max_output_bytes,
+                containment_backend=self.containment_backend,
+                require_containment=self.require_containment,
             )
-            result_status = "PASS" if completed.returncode == 0 else "FAIL"
-            return Evidence(
-                evidence_id=f"EVIDENCE-{attempt_id}-{index}",
-                attempt_id=attempt_id,
-                kind="evaluation",
-                status=result_status,
-                command=rendered,
-                exit_code=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
-                confidence=1.0 if result_status == "PASS" else 0.95,
-                criterion=criterion,
-            )
-        except subprocess.TimeoutExpired as exc:
-            return Evidence(
-                evidence_id=f"EVIDENCE-{attempt_id}-{index}",
-                attempt_id=attempt_id,
-                kind="evaluation",
-                status="INCONCLUSIVE",
-                command=rendered,
-                exit_code=None,
-                stdout=self._as_text(exc.stdout),
-                stderr=self._as_text(exc.stderr) or "timeout",
-                confidence=0.2,
-                criterion=criterion,
-            )
-        except OSError as exc:
-            return Evidence(
-                evidence_id=f"EVIDENCE-{attempt_id}-{index}",
-                attempt_id=attempt_id,
-                kind="evaluation",
-                status="INCONCLUSIVE",
-                command=rendered,
-                exit_code=None,
-                stdout="",
-                stderr=str(exc),
-                confidence=0.2,
-                criterion=criterion,
-            )
+            completed = sandbox.run(process_argv, env={"PATH": safe_path})
+        except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
+            return self._inconclusive(attempt_id, index, rendered, criterion,
+                                      f"check could not run: {type(exc).__name__}: {exc}"[:500])
+        if completed.timed_out:
+            return self._inconclusive(attempt_id, index, rendered, criterion,
+                                      (completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout)
+        result_status = "PASS" if completed.returncode == 0 else "FAIL"
+        return Evidence(
+            evidence_id=f"EVIDENCE-{attempt_id}-{index}",
+            attempt_id=attempt_id,
+            kind="evaluation",
+            status=result_status,
+            command=rendered,
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            confidence=1.0 if result_status == "PASS" else 0.95,
+            criterion=criterion,
+        )
 
     @staticmethod
     def _as_text(value: str | bytes | None) -> str:

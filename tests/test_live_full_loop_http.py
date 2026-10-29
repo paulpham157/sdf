@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from sdf_core.api import SessionLocal
+from tests.check_support import write_checks
 from sdf_core.credentials import load_dotenv
 from sdf_core.db import ArtifactRow, AttemptRow, EvidenceRow, RuntimeEventRow, UsageLedgerRow
 from tests.auth_support import admin_client
@@ -36,7 +37,7 @@ pytestmark = pytest.mark.skipif(
     reason="live /run check: set SDF_LIVE_FULL_LOOP=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY",
 )
 
-CHECK_ADD = [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]]
+CHECK_ADD = ["add-sum"]  # registered in the fixture's sdf-checks.json (ADR 0025)
 
 
 def _sandboxes_for(attempt_id: str) -> set[str]:
@@ -89,6 +90,7 @@ def _fixture(tmp_path: Path) -> Path:
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    write_checks(fixture, {"add-sum": ["python3", "-c", "from calc import add; assert add(2, 3) == 5"]})
     return fixture
 
 
