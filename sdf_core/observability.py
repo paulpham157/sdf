@@ -11,6 +11,8 @@
   the process environment are replaced, and token-shaped strings
   (``Bearer ...``, ``sk-...``, ``e2b_...``, ``key=value`` with a secret-ish
   key) are masked.  Secret *names* may be logged; values never.
+* When tracing is on (ADR 0024) records also carry ``trace_id``/``span_id``
+  of the active span.
 * :func:`classify_error` maps a turn/Attempt failure to one stable class
   (:data:`ERROR_CLASSES`) recorded in the usage ledger and on the Attempt.
 """
@@ -27,6 +29,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import unquote
 
 LOGGER_NAME = "sdf"
 CONTEXT_FIELDS = ("request_id", "principal", "run_id", "task_id", "attempt_id", "agent", "turn_id", "sandbox_id")
@@ -36,7 +39,10 @@ _CONTEXT: contextvars.ContextVar[Mapping[str, str]] = contextvars.ContextVar("sd
 
 REDACTED = "[REDACTED]"
 # Environment variables whose *values* must never appear in a log line.
-_SECRET_NAME = re.compile(r"(API_KEY|_TOKEN|_SECRET|PASSWORD|PEPPER|AUTH_JSON|PRIVATE_KEY|CREDENTIAL)", re.I)
+_SECRET_NAME = re.compile(
+    r"(API_KEY|_TOKEN|_SECRET|PASSWORD|PEPPER|AUTH_JSON|PRIVATE_KEY|CREDENTIAL|OTLP(?:_TRACES)?_HEADERS)", re.I)
+# Comma-separated ``name=value`` lists: each value is a secret on its own too.
+_HEADER_LIST_NAME = re.compile(r"OTLP(?:_TRACES)?_HEADERS$", re.I)
 _SECRET_NAME_EXCLUDE = re.compile(r"(_ENV|_MODE_[A-Z]+|CREDENTIAL_MODE.*)$", re.I)
 _PATTERNS = (
     re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}"),
@@ -52,6 +58,15 @@ def _secret_values(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
         value for name, value in env.items()
         if value and len(value) >= _MIN_SECRET_LEN and _SECRET_NAME.search(name) and not _SECRET_NAME_EXCLUDE.search(name)
     }
+    for name, value in env.items():
+        if value and _HEADER_LIST_NAME.search(name):
+            for entry in value.split(","):
+                part = entry.partition("=")[2].strip()
+                decoded = unquote(part)
+                # "Bearer%20<token>" / "Basic <b64>": the bare credential is a secret too.
+                for candidate in (part, decoded, *decoded.split()[1:]):
+                    if len(candidate) >= _MIN_SECRET_LEN:
+                        values.add(candidate)
     return tuple(sorted(values, key=len, reverse=True))
 
 
@@ -121,6 +136,11 @@ class ContextFilter(logging.Filter):
         for key, value in _CONTEXT.get().items():
             if not hasattr(record, key):
                 setattr(record, key, value)
+        # ADR 0024: correlate with the active OpenTelemetry span (no-op when tracing is off).
+        tracing = sys.modules.get("sdf_core.tracing")
+        ids = tracing.current_ids() if tracing is not None and tracing.enabled() else None
+        if ids is not None and not hasattr(record, "trace_id"):
+            record.trace_id, record.span_id = ids
         return True
 
 

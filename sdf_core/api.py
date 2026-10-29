@@ -33,6 +33,7 @@ from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
 from .run_adapter import RunBusyError, configured_run_adapter, run_slot
 from .observability import configure_logging, get_logger, log_context
+from . import tracing
 from .timeline import build_timeline
 from .policy import ActionRequest, AllowlistPolicy
 from .containment import MacOSSandboxBackend
@@ -180,7 +181,19 @@ async def _lifespan(_app: FastAPI):
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
-    yield
+    # ADR 0024: off unless SDF_OTEL_ENABLED; spans never leave SDF Core for a sandbox.
+    # SDF_OTEL_* / OTEL_* may live in the repo-root .env like every other setting.
+    otel_env = _operator_env()
+    owned = not tracing.enabled() and tracing.configure_tracing(otel_env)
+    if owned:
+        tracing.instrument_fastapi(_app)
+        # SessionLocal owns its own engine; the instrumentor is a singleton, so pass both at once.
+        tracing.instrument_sqlalchemy([engine, SessionLocal.kw.get("bind")], otel_env)
+    try:
+        yield
+    finally:
+        if owned:
+            tracing.shutdown()  # uninstrument app and DB, flush queued spans
 
 
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
@@ -197,6 +210,7 @@ async def _request_context(request: Request, call_next):
     request_id = supplied if supplied.isascii() and 0 < len(supplied) <= 64 and supplied.replace("-", "").isalnum() \
         else uuid4().hex
     with log_context(request_id=request_id):
+        tracing.set_attributes(request_id=request_id)
         response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     return response
@@ -678,7 +692,8 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
             raise HTTPException(status_code=404, detail="validation target not found")
     principal = getattr(getattr(request.state, "principal", None), "name", None)
     adapter = None
-    with log_context(task_id=task_id, principal=principal):
+    with log_context(task_id=task_id, principal=principal), \
+            tracing.span("sdf.task.run", task_id=task_id, principal=principal) as task_span:
         try:
             # One handler for every configuration error (adapter, provider,
             # credentials): it is the operator's to fix, so 400, before any sandbox.
@@ -719,6 +734,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             last = getattr(adapter, "last_run", None) or {}
+            tracing.mark_error(last.get("error_class") or "unknown", task_span)
             _log.error("run_failed", extra={"error_type": type(exc).__name__, "error_class": last.get("error_class")})
             if not last:
                 raise
@@ -727,12 +743,14 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                 "error": "agent run failed", "error_class": last.get("error_class"),
                 "attempt_id": last.get("attempt_id"), "sandbox_id": last.get("sandbox_id"),
             }) from exc
+        tracing.set_attributes(task_span, attempt_id=attempt.id, status=attempt.status)
     task = db.get(TaskRow, task_id)
     return {
         "task_id": task_id,
         "task_status": task.status,
         "attempt_id": attempt.id,
         "attempt_status": attempt.status,
+        "trace_id": attempt.trace_id,
         "parent_attempt_id": attempt.parent_attempt_id,
         "model_tier": attempt.model_tier,
         "cost_usd": attempt.cost_usd,
@@ -978,7 +996,7 @@ def run_payload(run: AgentRunRow, db: Session) -> dict[str, Any]:
     return {
         "id": run.id, "plan_id": run.plan_id, "status": run.status, "error": run.error, "cost_usd": run.cost_usd,
         "config": run.config, "summary": run.summary, "started_by": run.started_by,
-        "cancel_requested_by": run.cancel_requested_by,
+        "cancel_requested_by": run.cancel_requested_by, "trace_id": run.trace_id,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "members": [{"agent_id": m.agent_id, "role": m.role, "agent_kind": m.agent_kind, "subtask_key": m.subtask_key,
@@ -1010,15 +1028,26 @@ def start_agent_run(plan_id: str, payload: StartRunRequest, db: Session = Depend
     run_id = run.id
     factory, check = coordinator.factory, coordinator.cleanup_check
 
+    # ADR 0024: the request span ends before the run does, so the run gets its own
+    # root span (new trace, linked to the request).  Its trace id is stored on the
+    # run now, so the 202 response and `runs show` report the same trace.
+    root = tracing.detached_root("sdf.run.background", run_id=run_id, plan_id=plan_id)
+    root_trace = tracing.span_trace_id(root)
+    if root_trace:
+        run.trace_id = root_trace
+        db.commit()
+
     def background() -> None:
         session = SessionLocal()
         try:
-            Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
-                        artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
+            with tracing.activate(root):
+                Coordinator(session, factory=factory, workspace_root=coordinator.workspace_root,
+                            artifact_root=coordinator.artifact_root, cleanup_check=check).execute(run_id)
         finally:
             session.close()
 
-    _threading.Thread(target=background, name=f"sdf-{run_id}", daemon=True).start()
+    # in_current_context carries the log context; activate() replaces the current span.
+    _threading.Thread(target=tracing.in_current_context(background), name=f"sdf-{run_id}", daemon=True).start()
     return run_payload(run, db)
 
 

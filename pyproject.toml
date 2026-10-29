@@ -13,8 +13,24 @@ dependencies = [
   "daytona>=0.100,<1",
 ]
 
+[project.optional-dependencies]
+otel = [
+    "opentelemetry-api>=1.45.0,<1.46",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.0,<1.46",
+    "opentelemetry-instrumentation-fastapi==0.66b0",
+    "opentelemetry-instrumentation-sqlalchemy==0.66b0",
+    "opentelemetry-sdk>=1.45.0,<1.46",
+]
+
 [dependency-groups]
-dev = ["pytest>=8,<9", "httpx>=0.27,<1"]
+dev = [
+    "pytest>=8,<9",
+    "httpx>=0.27,<1",
+    "opentelemetry-sdk>=1.45.0,<1.46",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.0,<1.46",
+    "opentelemetry-instrumentation-fastapi==0.66b0",
+    "opentelemetry-instrumentation-sqlalchemy==0.66b0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
