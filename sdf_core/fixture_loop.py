@@ -50,6 +50,7 @@ class AgentFixtureLoop:
         commands: Sequence[Sequence[str]] = (),
         criteria: Sequence[str] = (),
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
+        reference: Path | None = None,
     ) -> FixtureLoopResult:
         workspace = Path(workspace).expanduser().resolve()
         if not workspace.is_dir():
@@ -74,5 +75,6 @@ class AgentFixtureLoop:
             commands=commands,
             criteria=criteria,
             criterion_checks=criterion_checks,
+            reference=reference,
         )
         return FixtureLoopResult(attempt_id, session, output, evaluation)

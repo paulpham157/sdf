@@ -593,6 +593,8 @@ class Coordinator:
             parent_attempt_id=parent, provider="vultr", agent=f"{spec.kind}:{spec.agent_id}",
             escalation_reason="host verification failed; worker asked to fix" if parent else None,
             require_plan_approval=True,
+            # ADR 0026: the run's starter owns its Attempts' Tool Proxy calls.
+            principal=self.db.get(AgentRunRow, run_id).started_by,
         )
         sub.attempt_id = begun.attempt.id
 

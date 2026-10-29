@@ -259,13 +259,13 @@ def test_evaluator_allowlist_can_only_be_narrowed(tmp_path):
 
 def test_registry_resolves_ids_from_fixture_and_server_file(tmp_path):
     fixture = _fixture(tmp_path)
-    write_checks(fixture, {"unit": {"argv": ["pytest", "-q"], "timeout_seconds": 5}})
+    write_checks(fixture, {"unit": {"argv": ["pytest", "-q", "test_a.py"], "timeout_seconds": 5}})
     server_file = tmp_path / "server-checks.json"
     server_file.write_text(json.dumps({"checks": {"lint": ["ruff", "check", "."]}}), encoding="utf-8")
     registry = CheckRegistry.load(fixture, environ={"SDF_EVALUATOR_CHECKS_FILE": str(server_file)})
     assert set(registry.ids()) == {"unit", "lint"}
     resolved = registry.resolve({"tests pass": ["unit", "lint"]})
-    assert resolved == {"tests pass": [["pytest", "-q"], ["ruff", "check", "."]]}
+    assert resolved == {"tests pass": [["pytest", "-q", "test_a.py"], ["ruff", "check", "."]]}
     assert registry.timeout_for("unit") == 5
     assert registry.slot_timeout("tests pass", 0) == 5 and registry.slot_timeout("tests pass", 1) == 30
     with pytest.raises(UnknownCheckError):
@@ -288,9 +288,9 @@ def test_registry_rejects_unsafe_argv(tmp_path, argv):
 
 def test_registry_rejects_duplicate_ids_across_sources(tmp_path):
     fixture = _fixture(tmp_path)
-    write_checks(fixture, {"unit": ["pytest"]})
+    write_checks(fixture, {"unit": ["pytest", "test_a.py"]})
     server_file = tmp_path / "server-checks.json"
-    server_file.write_text(json.dumps({"checks": {"unit": ["pytest", "-x"]}}), encoding="utf-8")
+    server_file.write_text(json.dumps({"checks": {"unit": ["pytest", "-x", "test_a.py"]}}), encoding="utf-8")
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={"SDF_EVALUATOR_CHECKS_FILE": str(server_file)})
 
@@ -299,7 +299,7 @@ def test_registry_rejects_duplicate_ids_across_sources(tmp_path):
 def test_registry_refuses_symlinked_fixture_manifest(tmp_path):
     fixture = _fixture(tmp_path)
     real = tmp_path / "elsewhere.json"
-    real.write_text(json.dumps({"checks": {"unit": ["pytest"]}}), encoding="utf-8")
+    real.write_text(json.dumps({"checks": {"unit": ["pytest", "test_a.py"]}}), encoding="utf-8")
     (fixture / "sdf-checks.json").symlink_to(real)
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={})
@@ -307,12 +307,12 @@ def test_registry_refuses_symlinked_fixture_manifest(tmp_path):
 
 def test_registry_rejects_unknown_keys_and_bad_timeouts(tmp_path):
     fixture = _fixture(tmp_path)
-    write_checks(fixture, {"unit": {"argv": ["pytest"], "env": {"X": "1"}}})
+    write_checks(fixture, {"unit": {"argv": ["pytest", "test_a.py"], "env": {"X": "1"}}})
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={})
-    write_checks(fixture, {"unit": {"argv": ["pytest"], "timeout_seconds": 100000}})
+    write_checks(fixture, {"unit": {"argv": ["pytest", "test_a.py"], "timeout_seconds": 100000}})
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={})
-    write_checks(fixture, {"unit": {"argv": ["pytest"], "timeout_seconds": 0.001}})
+    write_checks(fixture, {"unit": {"argv": ["pytest", "test_a.py"], "timeout_seconds": 0.001}})
     with pytest.raises(CheckConfigError):
         CheckRegistry.load(fixture, environ={})

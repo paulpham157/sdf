@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -109,11 +109,17 @@ class InMemoryAuditSink:
         return tuple(record for record in self._records if record.attempt_id == attempt_id)
 
 
+_EXECUTION_KEY = ["attempt_id", "action_id", "event"]
+_EXECUTION_WHERE = ToolAuditRow.event != AuditEvent.POLICY_DECIDED.value
+
+
 class SqlAlchemyAuditSink:
     """Persist immutable Tool Proxy audit observations alongside SDF state."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, principal: str | None = None):
         self.db = db
+        # The authenticated principal behind every row this sink writes (#51).
+        self.principal = principal
 
     def has_event(self, *, attempt_id: str, action_id: str, event: AuditEvent) -> bool:
         return self.db.scalar(select(ToolAuditRow.audit_id).where(
@@ -146,16 +152,17 @@ class SqlAlchemyAuditSink:
             "outcome": "claimed",
             "detail": "executor claim acquired",
             "created_at": decision.created_at,
+            "principal": self.principal,
         }
         bind = self.db.get_bind()
         dialect = bind.dialect.name
         if dialect == "sqlite":
             self.db.execute(sqlite_insert(ToolAuditRow).values(**values).on_conflict_do_nothing(
-                index_elements=["attempt_id", "action_id", "event"]
+                index_elements=_EXECUTION_KEY, index_where=_EXECUTION_WHERE,
             ))
         elif dialect == "postgresql":
             self.db.execute(postgres_insert(ToolAuditRow).values(**values).on_conflict_do_nothing(
-                index_elements=["attempt_id", "action_id", "event"]
+                index_elements=_EXECUTION_KEY, index_where=_EXECUTION_WHERE,
             ))
         else:
             existing = self.db.scalar(select(ToolAuditRow.audit_id).where(
@@ -190,16 +197,30 @@ class SqlAlchemyAuditSink:
             "outcome": record.outcome,
             "detail": record.detail,
             "created_at": record.created_at,
+            "principal": self.principal,
         }
         bind = self.db.get_bind()
         dialect = bind.dialect.name
+        if record.event is AuditEvent.POLICY_DECIDED:
+            # One decision row per decision (ADR 0026): a repeated request or
+            # another principal's identical request is still recorded; only a
+            # redelivery of the very same record (same audit_id) is a no-op.
+            if dialect == "sqlite":
+                self.db.execute(sqlite_insert(ToolAuditRow).values(**values).on_conflict_do_nothing(
+                    index_elements=["audit_id"]))
+            elif dialect == "postgresql":
+                self.db.execute(postgres_insert(ToolAuditRow).values(**values).on_conflict_do_nothing(
+                    index_elements=["audit_id"]))
+            elif self.db.get(ToolAuditRow, record.audit_id) is None:
+                self.db.execute(insert(ToolAuditRow).values(**values))
+            return
         if dialect == "sqlite":
             self.db.execute(sqlite_insert(ToolAuditRow).values(**values).on_conflict_do_nothing(
-                index_elements=["attempt_id", "action_id", "event"]
+                index_elements=_EXECUTION_KEY, index_where=_EXECUTION_WHERE,
             ))
         elif dialect == "postgresql":
             self.db.execute(postgres_insert(ToolAuditRow).values(**values).on_conflict_do_nothing(
-                index_elements=["attempt_id", "action_id", "event"]
+                index_elements=_EXECUTION_KEY, index_where=_EXECUTION_WHERE,
             ))
         else:
             existing = self.db.scalar(select(ToolAuditRow).where(
@@ -220,9 +241,10 @@ class SqlAlchemyToolEventSink:
         AuditEvent.ACTION_FAILED: RuntimeEventKind.TOOL_ACTION_FAILED,
     }
 
-    def __init__(self, db: Session, *, source: str = "tool-proxy"):
+    def __init__(self, db: Session, *, source: str = "tool-proxy", principal: str | None = None):
         self.db = db
         self.source = source
+        self.principal = principal
         self.events = SqlAlchemyRuntimeEventSink(db)
 
     def append(self, record: AuditRecord) -> None:
@@ -235,10 +257,14 @@ class SqlAlchemyToolEventSink:
                 & (RuntimeEventRow.session_id == session_id)
             )
         ).all()
+        # Execution outcomes are deduplicated per action; decisions per audit
+        # row, so each delivery's decision (and principal) is observable.
+        per_delivery = record.event is AuditEvent.POLICY_DECIDED
         if any(
             row.kind == kind.value
             and isinstance(row.payload, dict)
-            and row.payload.get("action_id") == record.action_id
+            and (row.payload.get("audit_id") == record.audit_id if per_delivery
+                 else row.payload.get("action_id") == record.action_id)
             for row in existing
         ):
             return
@@ -267,10 +293,50 @@ class SqlAlchemyToolEventSink:
                 "executed": record.executed,
                 "outcome": record.outcome,
                 "detail": record.detail,
+                **({"principal": self.principal} if self.principal is not None else {}),
             },
             source=self.source,
         )
         self.events.append(event)
+
+
+class AttemptBinding:
+    """Bind an HTTP Tool Proxy call to the Attempt it targets (ADR 0026).
+
+    Checked before the attempt guard and the configured policy, so a forged
+    identity is always reported as such (403), even on a terminal Attempt:
+
+    * ``claimed_actor``: a caller-sent actor must equal the server-derived
+      ``agent:<attempt.agent>``;
+    * ``principal``/``owner``: only the principal that started the Attempt,
+      or an admin, may drive its tools. An Attempt without an owner (internal
+      or created before migration 0018) is admin-only.
+    """
+
+    ACTOR = "actor-binding"
+    OWNER = "attempt-binding"
+
+    def __init__(self, *, claimed_actor: str | None, principal: str, owner: str | None, is_admin: bool):
+        self.claimed_actor = claimed_actor
+        self.principal = principal
+        self.owner = owner
+        self.is_admin = is_admin
+
+    def check(self, request: ActionRequest) -> PolicyDecision | None:
+        if self.claimed_actor is not None and self.claimed_actor != request.actor:
+            return PolicyDecision.deny(
+                request,
+                reason=f"claimed actor {self.claimed_actor[:120]!r} does not match the attempt's agent {request.actor!r}",
+                policy=self.ACTOR,
+            )
+        if not self.is_admin and (self.owner is None or self.owner != self.principal):
+            return PolicyDecision.deny(
+                request,
+                reason=f"principal {self.principal!r} did not start this attempt"
+                + ("" if self.owner is not None else " (attempt has no owner; admin only)"),
+                policy=self.OWNER,
+            )
+        return None
 
 
 class ToolProxy:
@@ -284,7 +350,9 @@ class ToolProxy:
         audit: AuditSink | None = None,
         attempt_guard: AttemptGuard | None = None,
         event_sink: ToolEventSink | None = None,
+        binding: AttemptBinding | None = None,
     ):
+        self.binding = binding
         self.policy = policy
         self.executor = executor
         self.audit = audit or InMemoryAuditSink()
@@ -300,7 +368,10 @@ class ToolProxy:
         if not isinstance(request, ActionRequest):
             raise TypeError("ToolProxy requires a structured ActionRequest; terminal text is not trusted")
 
-        if self.attempt_guard is not None and not self.attempt_guard.is_active(request.attempt_id):
+        binding_denial = self.binding.check(request) if self.binding is not None else None
+        if binding_denial is not None:
+            decision = binding_denial
+        elif self.attempt_guard is not None and not self.attempt_guard.is_active(request.attempt_id):
             decision = PolicyDecision.deny(
                 request,
                 reason="Attempt does not exist or is not active",

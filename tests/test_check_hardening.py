@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import subprocess
 import sys
 import textwrap
@@ -19,7 +18,7 @@ import pytest
 
 from sdf_core import api
 from sdf_core.api import SessionLocal, app
-from sdf_core.checks import CheckConfigError, CheckRegistry, validate_argv
+from sdf_core.checks import CheckConfigError, CheckRegistry, check_targets, validate_argv
 from sdf_core.db import ArtifactRow, AttemptRow, EvidenceRow
 from sdf_core.evaluator import CLEARED_ENV, DeterministicEvaluator, _check_env
 from sdf_core.plans import task_id_for
@@ -37,15 +36,33 @@ def _venv_on_path(monkeypatch):
     monkeypatch.setenv("PATH", f"{os.path.dirname(sys.executable)}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
-def _run(tmp_path: Path, files: dict[str, str], argv: list[str], **kwargs):
-    ws = tmp_path / f"ws-{uuid.uuid4().hex[:6]}"
-    ws.mkdir()
+def _write(root: Path, files: dict[str, str]) -> Path:
+    root.mkdir(parents=True)
     for name, content in files.items():
-        path = ws / name
+        path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(textwrap.dedent(content), encoding="utf-8")
+    return root
+
+
+def _run(tmp_path: Path, files: dict[str, str], argv: list[str], *, server: dict[str, str] | None = None, **kwargs):
+    """Run ``argv`` in a workspace holding ``files``.
+
+    The server fixture holds ``server`` (default: the files the check names,
+    as the operator registered them) so the check's own files verify.
+    """
+
+    tag = uuid.uuid4().hex[:6]
+    ws = _write(tmp_path / f"ws-{tag}", files)
+    if server is None:
+        try:
+            named = set(check_targets(argv))
+        except ValueError:
+            named = set()
+        server = {name: content for name, content in files.items() if name in named}
+    reference = _write(tmp_path / f"fixture-{tag}", server)
     return DeterministicEvaluator(**kwargs)._run_one(command=argv, workspace=ws, attempt_id="A", index=1,
-                                                     criterion="c")
+                                                     criterion="c", reference=reference)
 
 
 FAILING_TEST = "def test_x():\n    assert False\n"
@@ -56,18 +73,18 @@ FORGERIES = {
     "conftest-exitstatus": ({"test_a.py": FAILING_TEST, "conftest.py": textwrap.dedent("""
         def pytest_sessionfinish(session, exitstatus):
             session.exitstatus = 0
-        """)}, ["pytest", "-q"]),
+        """)}, ["pytest", "-q", "test_a.py"]),
     "pytest-ini-addopts-plugin": ({"test_a.py": FAILING_TEST, "pytest.ini": "[pytest]\naddopts = -p evil\npythonpath = .\n",
-                                   "evil.py": EXIT0}, ["pytest", "-q"]),
+                                   "evil.py": EXIT0}, ["pytest", "-q", "test_a.py"]),
     "pyproject-addopts-plugin": ({"test_a.py": FAILING_TEST, "evil.py": EXIT0,
                                   "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-p evil'\npythonpath = ['.']\n"},
-                                 ["pytest", "-q"]),
-    "pytest-module-shadow": ({"test_a.py": FAILING_TEST, "pytest.py": EXIT0}, ["python", "-m", "pytest", "-q"]),
+                                 ["pytest", "-q", "test_a.py"]),
+    "pytest-module-shadow": ({"test_a.py": FAILING_TEST, "pytest.py": EXIT0}, ["python", "-m", "pytest", "-q", "test_a.py"]),
     "user-site-pth": ({f".local/lib/{PYVER}/site-packages/evil.pth": EXIT0}, ["python3", "-c", "raise SystemExit(1)"]),
     "entry-point-plugin": ({"test_a.py": FAILING_TEST, "evil.py": EXIT0,
                             "evil-1.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: evil\nVersion: 1.0\n",
                             "evil-1.0.dist-info/entry_points.txt": "[pytest11]\nevil = evil\n"},
-                           ["python", "-m", "pytest", "-q"]),
+                           ["python", "-m", "pytest", "-q", "test_a.py"]),
     "sitecustomize-shadow": ({"sitecustomize.py": EXIT0, "usercustomize.py": EXIT0},
                              ["python3", "-c", "raise SystemExit(1)"]),
 }
@@ -89,8 +106,8 @@ def test_workspace_ruff_config_cannot_exclude_everything(tmp_path):
 
 
 @pytest.mark.parametrize("argv", [
-    ["pytest", "-q"],
-    ["python", "-m", "pytest", "-q"],
+    ["pytest", "-q", "test_calc.py"],
+    ["python", "-m", "pytest", "-q", "test_calc.py"],
     ["python3", "-c", "from calc import add; assert add(2, 3) == 5"],
     ["python3", "test_calc.py"],
     ["python3", "-B", "-W", "ignore", "-c", "import calc, sys; assert sys.argv == ['-c', 'x'], sys.argv", "x"],
@@ -131,6 +148,8 @@ def test_check_cannot_read_the_server_environment_through_proc(tmp_path):
     """e64b: a check read /proc/$PPID/environ, i.e. the server's initial env (its API keys)."""
     ws = tmp_path / "ws"
     ws.mkdir()
+    ref = tmp_path / "fixture"
+    ref.mkdir()
     (ws / "test_leak.py").write_text(textwrap.dedent("""
         import os
         def test_leak():
@@ -140,10 +159,12 @@ def test_check_cannot_read_the_server_environment_through_proc(tmp_path):
                 data = b""
             print("LEAK" if b"SDF_TEST_PROC_CANARY=proc-canary-31" in data else "noleak")
         """), encoding="utf-8")
+    (ref / "test_leak.py").write_bytes((ws / "test_leak.py").read_bytes())
     script = textwrap.dedent(f"""
         from pathlib import Path
         from sdf_core.evaluator import DeterministicEvaluator
-        e = DeterministicEvaluator()._run_one(command=["pytest", "-q", "-s"], workspace=Path({str(ws)!r}),
+        e = DeterministicEvaluator()._run_one(command=["pytest", "-q", "-s", "test_leak.py"],
+                                              workspace=Path({str(ws)!r}), reference=Path({str(ref)!r}),
                                               attempt_id="A", index=1, criterion="c")
         print("STATUS", e.status)
         print(e.stdout)
@@ -164,7 +185,7 @@ def test_world_writable_path_dir_is_not_trusted(tmp_path, monkeypatch):
     fake.write_text(f"#!/bin/sh\necho pwned > {marker}\nexit 0\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{shared}{os.pathsep}{os.environ['PATH']}")
-    _run(tmp_path, {"test_a.py": FAILING_TEST}, ["pytest", "-q"])
+    _run(tmp_path, {"test_a.py": FAILING_TEST}, ["pytest", "-q", "test_a.py"])
     assert not marker.exists(), "a binary in a world-writable PATH dir ran as the check"
 
 
@@ -200,7 +221,7 @@ def test_registry_refuses_sources_under_workspace_or_artifact_roots(tmp_path):
     work = tmp_path / "work"
     (work / "ATTEMPT-1").mkdir(parents=True)
     server_file = work / "ATTEMPT-1" / "checks.json"
-    server_file.write_text(json.dumps({"checks": {"unit": ["pytest"]}}), encoding="utf-8")
+    server_file.write_text(json.dumps({"checks": {"unit": ["pytest", "test_a.py"]}}), encoding="utf-8")
     with pytest.raises(CheckConfigError, match="workspace or artifact"):
         CheckRegistry.load(None, environ={"SDF_EVALUATOR_CHECKS_FILE": str(server_file)}, forbidden_roots=[work])
     with pytest.raises(CheckConfigError, match="workspace or artifact"):
@@ -225,7 +246,7 @@ def test_http_fixture_under_workspace_root_is_refused(tmp_path, monkeypatch):
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="fifo")
 def test_registry_refuses_symlinked_server_file_and_non_regular_manifest(tmp_path):
     real = tmp_path / "real.json"
-    real.write_text(json.dumps({"checks": {"unit": ["pytest"]}}), encoding="utf-8")
+    real.write_text(json.dumps({"checks": {"unit": ["pytest", "test_a.py"]}}), encoding="utf-8")
     link = tmp_path / "link.json"
     link.symlink_to(real)
     with pytest.raises(CheckConfigError):
@@ -240,8 +261,8 @@ def test_registry_refuses_symlinked_server_file_and_non_regular_manifest(tmp_pat
 def test_timeouts_are_keyed_by_check_id_not_argv(tmp_path):
     fixture = tmp_path / "fixture"
     fixture.mkdir()
-    write_checks(fixture, {"quick": {"argv": ["pytest", "-q"], "timeout_seconds": 2},
-                           "slow": {"argv": ["pytest", "-q"], "timeout_seconds": 300}})
+    write_checks(fixture, {"quick": {"argv": ["pytest", "-q", "test_a.py"], "timeout_seconds": 2},
+                           "slow": {"argv": ["pytest", "-q", "test_a.py"], "timeout_seconds": 300}})
     registry = CheckRegistry.load(fixture, environ={})
     registry.resolve({"a": ["slow"], "b": ["quick", "slow"]})
     assert registry.slot_timeout("a", 0) == 300

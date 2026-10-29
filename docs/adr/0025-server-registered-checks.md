@@ -31,11 +31,16 @@ could be self-forged (`python -c pass` for every criterion).
      manifest is refused), and/or
    - the file named by `SDF_EVALUATOR_CHECKS_FILE`.
 
-   Format: `{"checks": {"<id>": ["pytest", "-q"]}}` or
+   Format: `{"checks": {"<id>": ["pytest", "-q", "tests/test_calc.py"]}}` or
    `{"checks": {"<id>": {"argv": [...], "timeout_seconds": 60}}}`. Every argv
    must start with a bare allowlisted name (`python`, `python3`, `pytest`,
    `ruff`), with no path separators, NUL bytes or oversized arguments; the
-   timeout is 1-600 s. Unknown keys and an id defined in both sources are
+   timeout is 1-600 s. A pytest check must name its test files explicitly
+   (`path.py` or `path.py::node`, no directories, globs or `..`) and may only
+   use a small option allowlist (`-q`, `-v`, `-x`, `-k`, `-m`, `-r…`,
+   `--tb=…`, `--maxfail=N`, ...; no `-p`, `-c`, `-o`, `--rootdir`,
+   `--pyargs`, `-qq`), so pytest never collects a file the agent added.
+   Unknown keys and an id defined in both sources are
    configuration errors. Unknown ids or a bad registry → 400 before any
    Attempt or sandbox exists.
 3. **Hardened evaluator for every caller** (public runs, plan runs, coordinator):
@@ -53,7 +58,10 @@ could be self-forged (`python -c pass` for every criterion).
      - `python`/`python3` run with `-I` (no `PYTHON*` variables, no user site,
        no cwd or script directory first on `sys.path`) through a small
        bootstrap that **appends** the workspace to `sys.path` and then runs the
-       original `-c CODE`, `-m MODULE` or script. The code under test stays
+       original `-c CODE`, `-m MODULE` or script. A script check first gets its
+       own directory appended (`python3 checks/run.py` can import
+       `checks/helper.py`), after the stdlib and site-packages, so a sibling
+       `fractions.py` still cannot shadow anything. The code under test stays
        importable, but a workspace `fractions.py`, `pytest.py`,
        `sitecustomize.py` or user-site `.pth` cannot shadow the stdlib or an
        installed package. Only `-c`, `-m`, a script path and the harmless flags
@@ -64,14 +72,36 @@ could be self-forged (`python -c pass` for every criterion).
        `pytest.ini`/`pyproject.toml`/`tox.ini`/`setup.cfg` (`addopts`, `-p`,
        `pythonpath`), cache, or entry-point plugin from a planted `*.dist-info`;
        test modules are appended to `sys.path`. Checks therefore cannot rely on
-       a `conftest.py` fixture either;
+       a `conftest.py` fixture either. On the host, bare `pytest` runs as
+       `<its interpreter> -I -c BOOTSTRAP -m pytest ...` (interpreter from the
+       console script's shebang, outside the workspace), so it imports
+       root-level code like `python -m pytest`. Inside a containment backend
+       bare `pytest` keeps the plain form (only the flags above); prefer
+       `python -m pytest` there. For `python3 -m pytest` the venv python must be
+       first on the server's `PATH` (the safe `PATH` is derived from it);
+   - **the check's own files are verified against the server fixture.** Every
+     pytest test file and python script a check names by a relative path must
+     be a regular file in the original fixture, and the workspace copy must be
+     byte-identical and not a symlink, or the check is `INCONCLUSIVE` without
+     running. Absolute paths must lie outside the workspace;
+   - **the pytest summary must agree with the exit status.** Imported agent
+     code can still end pytest with `0` (`os._exit(0)`, an `atexit` hook). An
+     exit-0 pytest check is `PASS` only if pytest's final summary reports at
+     least one passed test and no failures or errors; otherwise it is `FAIL`
+     (`INCONCLUSIVE` if the output was truncated before the summary). This
+     can only downgrade a result, so a printed fake summary gains nothing.
+     JUnit XML was not used: a same-uid check can rewrite the file, and a
+     containment backend cannot write a host path;
      - `ruff` gets `--isolated --no-cache`, so a workspace `ruff.toml` /
        `pyproject.toml` cannot exclude every file. Select rules in the argv;
    - on the host, the server process is made non-dumpable
      (`prctl(PR_SET_DUMPABLE, 0)`) before a check starts. A check runs as the
      server's uid, and without this it could read `/proc/<server pid>/environ`
      (the server's initial environment: API keys) or `/proc/<pid>/mem`. Checks
-     are `execve`d and therefore dumpable again; they are unaffected;
+     are `execve`d and therefore dumpable again; they are unaffected. If
+     `prctl` fails on Linux the evaluator logs `server_process_not_protected`.
+     **This protects only the server process itself**, not other same-uid
+     processes that hold the same environment (see Consequences);
    - timeouts, errors, refusals and unsupported forms are `INCONCLUSIVE`,
      never `PASS`;
    - every Evidence records where its check ran (`runner`: `host` or the
@@ -121,13 +151,20 @@ could be self-forged (`python -c pass` for every criterion).
 - With `off` (or `prefer` without a backend), checks still run on the host
   with the server user's filesystem privileges: a check can read any file the
   server user can (e.g. a host `.env`, the database file) and print it into
-  Evidence. The process environment is protected (above); files are not.
-  Production deployments should use `require` with a promoted backend.
+  Evidence. Only the server process's own `/proc` entries are protected
+  (above): the `environ` of every other process running as the same user
+  stays readable, e.g. the shell or supervisor that launched the server with
+  the keys exported, a `uv run` parent, or a multi-worker master. Files are
+  not protected either. Host mode is therefore not a secret boundary.
+  Production deployments should use `require` with a promoted backend, or at
+  least run checks as a separate uid that can read neither the server's files
+  nor its processes.
 - Non-dumpable also means no core dumps and no same-uid `ptrace` of the
   server (e.g. `py-spy`) - acceptable for a server. It does not protect
   against a root-owned check, and it is a no-op off Linux.
-- An agent can still edit test files in its workspace copy; for plans
-  `protected_paths` mitigates this. Registering checks that live outside the
-  workspace (e.g. `python -c ...` assertions, or test files under a server
-  directory passed by absolute path) avoids it, subject to the inherent limit
-  above.
+- An agent can still edit test files in its workspace copy, but a check
+  whose named test file or script no longer matches the fixture is
+  `INCONCLUSIVE`. Helper modules those files import (and `-c`/`-m` checks)
+  are not verified: they are "imported code" in the sense of the inherent
+  limit above. Test files under a server directory passed by absolute path
+  avoid the fixture comparison entirely.

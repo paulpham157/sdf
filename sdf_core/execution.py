@@ -24,6 +24,7 @@ from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
 from .policy import ActionRequest, Policy
 from .tools import (
+    AttemptBinding,
     AuditSink,
     SandboxToolExecutor,
     SqlAlchemyAuditSink,
@@ -76,6 +77,7 @@ class ExecutionService:
         parent_attempt_id: str | None = None,
         model_tier: ModelTier | None = None,
         require_plan_approval: bool = False,
+        principal: str | None = None,
     ):
         """Run one Attempt end to end.
 
@@ -90,6 +92,7 @@ class ExecutionService:
                 task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
                 parent_attempt_id=parent_attempt_id, model_tier=model_tier,
                 require_plan_approval=require_plan_approval,
+                principal=principal,
             )
             tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id)
             if begun.existing:
@@ -166,6 +169,7 @@ class ExecutionService:
         escalation_reason: str | None = None,
         agent: str = "native",
         require_plan_approval: bool = False,
+        principal: str | None = None,
     ) -> "BegunAttempt":
         """Create and dispatch an Attempt and its disposable workspace.
 
@@ -212,6 +216,8 @@ class ExecutionService:
             output_tokens=output_tokens, escalation_reason=escalation_reason,
             # ADR 0024: the trace this Attempt ran in (None when tracing is off).
             trace_id=tracing.current_trace_id(),
+            # ADR 0026: who may drive this Attempt's Tool Proxy actions.
+            principal=principal,
         )
         self.db.add(attempt)
         self.db.add(GraphNodeRow(id=attempt_id, kind="attempt", title="Native execution attempt", source="execution", owner="sdf", confidence=1.0, created_at=utcnow()))
@@ -302,6 +308,8 @@ class ExecutionService:
                     commands=commands,
                     criteria=tuple(task.acceptance_criteria or ()),
                     criterion_checks=criterion_checks,
+                    # The check's own files must match the server fixture (ADR 0025).
+                    reference=fixture,
                 )
         except Exception:
             self._fail_attempt(task, attempt)
@@ -434,6 +442,8 @@ class ExecutionService:
         audit: AuditSink | None = None,
         containment_backend: object | None = None,
         require_containment: bool = True,
+        principal: str | None = None,
+        binding: AttemptBinding | None = None,
     ) -> ToolExecution:
         """Run one structured action inside an Attempt workspace.
 
@@ -451,7 +461,7 @@ class ExecutionService:
         workspace = self.workspaces.root / attempt_id
         if not workspace.is_dir():
             raise ValueError(f"attempt workspace not found: {attempt_id}")
-        durable_audit = audit or SqlAlchemyAuditSink(self.db)
+        durable_audit = audit or SqlAlchemyAuditSink(self.db, principal=principal)
         proxy = ToolProxy(
             policy=policy,
             executor=SandboxToolExecutor(
@@ -465,7 +475,8 @@ class ExecutionService:
             ),
             audit=durable_audit,
             attempt_guard=SqlAlchemyAttemptGuard(self.db),
-            event_sink=SqlAlchemyToolEventSink(self.db),
+            event_sink=SqlAlchemyToolEventSink(self.db, principal=principal),
+            binding=binding,
         )
         result = proxy.execute(request)
         self.db.commit()
