@@ -112,8 +112,10 @@ class InMemoryAuditSink:
 class SqlAlchemyAuditSink:
     """Persist immutable Tool Proxy audit observations alongside SDF state."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, principal: str | None = None):
         self.db = db
+        # The authenticated principal behind every row this sink writes (#51).
+        self.principal = principal
 
     def has_event(self, *, attempt_id: str, action_id: str, event: AuditEvent) -> bool:
         return self.db.scalar(select(ToolAuditRow.audit_id).where(
@@ -146,6 +148,7 @@ class SqlAlchemyAuditSink:
             "outcome": "claimed",
             "detail": "executor claim acquired",
             "created_at": decision.created_at,
+            "principal": self.principal,
         }
         bind = self.db.get_bind()
         dialect = bind.dialect.name
@@ -190,6 +193,7 @@ class SqlAlchemyAuditSink:
             "outcome": record.outcome,
             "detail": record.detail,
             "created_at": record.created_at,
+            "principal": self.principal,
         }
         bind = self.db.get_bind()
         dialect = bind.dialect.name
@@ -220,9 +224,10 @@ class SqlAlchemyToolEventSink:
         AuditEvent.ACTION_FAILED: RuntimeEventKind.TOOL_ACTION_FAILED,
     }
 
-    def __init__(self, db: Session, *, source: str = "tool-proxy"):
+    def __init__(self, db: Session, *, source: str = "tool-proxy", principal: str | None = None):
         self.db = db
         self.source = source
+        self.principal = principal
         self.events = SqlAlchemyRuntimeEventSink(db)
 
     def append(self, record: AuditRecord) -> None:
@@ -267,10 +272,37 @@ class SqlAlchemyToolEventSink:
                 "executed": record.executed,
                 "outcome": record.outcome,
                 "detail": record.detail,
+                **({"principal": self.principal} if self.principal is not None else {}),
             },
             source=self.source,
         )
         self.events.append(event)
+
+
+class ActorBindingPolicy:
+    """Deny any action whose caller-claimed actor differs from the server-derived one (#51).
+
+    The HTTP Tool Proxy derives ``ActionRequest.actor`` from the Attempt's
+    agent. A caller may still send ``actor`` for compatibility, but a value
+    that does not match is denied through the normal policy path, so the
+    attempt is audited (with the authenticated principal) instead of
+    silently executed under a forged identity.
+    """
+
+    name = "actor-binding"
+
+    def __init__(self, inner: Policy, *, claimed_actor: str | None):
+        self.inner = inner
+        self.claimed_actor = claimed_actor
+
+    def decide(self, request: ActionRequest) -> PolicyDecision:
+        if self.claimed_actor is not None and self.claimed_actor != request.actor:
+            return PolicyDecision.deny(
+                request,
+                reason=f"claimed actor {self.claimed_actor[:120]!r} does not match the attempt's agent {request.actor!r}",
+                policy=self.name,
+            )
+        return self.inner.decide(request)
 
 
 class ToolProxy:

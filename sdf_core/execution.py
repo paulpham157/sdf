@@ -399,6 +399,7 @@ class ExecutionService:
         audit: AuditSink | None = None,
         containment_backend: object | None = None,
         require_containment: bool = True,
+        principal: str | None = None,
     ) -> ToolExecution:
         """Run one structured action inside an Attempt workspace.
 
@@ -416,7 +417,7 @@ class ExecutionService:
         workspace = self.workspaces.root / attempt_id
         if not workspace.is_dir():
             raise ValueError(f"attempt workspace not found: {attempt_id}")
-        durable_audit = audit or SqlAlchemyAuditSink(self.db)
+        durable_audit = audit or SqlAlchemyAuditSink(self.db, principal=principal)
         proxy = ToolProxy(
             policy=policy,
             executor=SandboxToolExecutor(
@@ -430,7 +431,7 @@ class ExecutionService:
             ),
             audit=durable_audit,
             attempt_guard=SqlAlchemyAttemptGuard(self.db),
-            event_sink=SqlAlchemyToolEventSink(self.db),
+            event_sink=SqlAlchemyToolEventSink(self.db, principal=principal),
         )
         result = proxy.execute(request)
         self.db.commit()

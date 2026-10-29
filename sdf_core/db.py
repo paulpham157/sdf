@@ -221,6 +221,9 @@ class ToolAuditRow(Base):
     detail: Mapped[str] = mapped_column(String(1000))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
+    # Authenticated API principal that requested the action (#51); NULL for
+    # in-process callers and rows written before migration 0018.
+    principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
 
 
 # --- P4: plan-approval gate, decision requests and agent messaging (ADR 0014) ---

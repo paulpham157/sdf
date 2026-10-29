@@ -254,3 +254,27 @@ def test_postgres_api_tokens_and_auth_audit_are_fenced(postgres_engine):
             auth.verify_token(db, plaintext, key=auth.pepper())
     finally:
         db.close()
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="SDF_POSTGRES_TEST_URL is not set")
+def test_tool_audit_principal_column_round_trips_and_migrates_on_postgresql(postgres_engine):
+    request = ActionRequest(attempt_id="ATTEMPT-PG-PRINCIPAL", actor="agent:test", tool="filesystem",
+                            action="write", resource="a.txt", context={})
+    decision = AllowlistPolicy({("filesystem", "write")}).decide(request)
+    with _session(postgres_engine) as db:
+        SqlAlchemyAuditSink(db, principal="op-pg").append(AuditRecord.for_request(
+            request, event=AuditEvent.POLICY_DECIDED, decision=decision,
+            executed=False, outcome="decided", detail=decision.reason,
+        ))
+        db.commit()
+        row = db.query(ToolAuditRow).filter_by(attempt_id="ATTEMPT-PG-PRINCIPAL").one()
+        assert row.principal == "op-pg"
+
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    os.environ["SDF_DATABASE_URL"] = POSTGRES_URL
+    command.downgrade(config, "0017_trace_id")
+    try:
+        assert "principal" not in {c["name"] for c in inspect(postgres_engine).get_columns("tool_audits")}
+    finally:
+        command.upgrade(config, "head")
+    assert "principal" in {c["name"] for c in inspect(postgres_engine).get_columns("tool_audits")}

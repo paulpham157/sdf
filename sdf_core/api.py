@@ -36,6 +36,7 @@ from .observability import configure_logging, get_logger, log_context
 from . import tracing
 from .timeline import build_timeline
 from .policy import ActionRequest, AllowlistPolicy
+from .tools import ActorBindingPolicy
 from .containment import MacOSSandboxBackend
 from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
@@ -299,7 +300,9 @@ class RunTaskRequest(BaseModel):
 class ToolActionRequest(BaseModel):
     """Structured Tool Proxy input; terminal text is intentionally absent."""
 
-    actor: str = Field(min_length=1, max_length=120)
+    # Deprecated (#51): the server derives the actor from the Attempt's agent.
+    # If sent, it must equal that value; a mismatch is denied and audited.
+    actor: str | None = Field(default=None, min_length=1, max_length=120)
     tool: str = Field(min_length=1, max_length=120)
     action: str = Field(min_length=1, max_length=120)
     resource: str = Field(min_length=1, max_length=500)
@@ -619,13 +622,21 @@ def get_scorecard(db: Session = Depends(get_db)):
 
 
 @app.post("/attempts/{attempt_id}/actions")
-def execute_tool_action(attempt_id: str, payload: ToolActionRequest, db: Session = Depends(get_db)):
+def execute_tool_action(attempt_id: str, payload: ToolActionRequest, request: Request,
+                        db: Session = Depends(get_db)):
     """Execute one explicit, Attempt-bound Tool Proxy action.
 
     The endpoint accepts only structured fields.  Authorization comes from
     server configuration, never from the request body, and a missing
-    workspace or inactive Attempt fails closed.
+    workspace or inactive Attempt fails closed.  The actor is derived from
+    the Attempt (``agent:<attempt.agent>``) and every audit row carries the
+    authenticated principal (#51); a mismatching ``payload.actor`` is denied
+    and audited, then answered with 403.
     """
+
+    principal = getattr(getattr(request.state, "principal", None), "name", None)
+    if principal is None:
+        raise HTTPException(status_code=401, detail="authenticated principal required")
 
     attempt = db.get(AttemptRow, attempt_id)
     if attempt is None:
@@ -638,29 +649,43 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, db: Session
         workspace_root=Path(".sdf-workspaces"),
         artifact_root=Path(".sdf-artifacts"),
     )
-    request = ActionRequest(
+    actor = f"agent:{attempt.agent}"
+    context = dict(payload.context)
+    if payload.actor is not None and payload.actor != actor:
+        # Record the forged claim and give the denial its own action identity,
+        # so it cannot occupy the audit slot of the legitimate action.
+        context["sdf_claimed_actor"] = payload.actor
+    action = ActionRequest(
         attempt_id=attempt_id,
-        actor=payload.actor,
+        actor=actor,
         tool=payload.tool,
         action=payload.action,
         resource=payload.resource,
-        context=payload.context,
+        context=context,
     )
     containment_backend, require_containment = configured_containment()
     result = service.execute_tool(
         attempt_id=attempt_id,
-        request=request,
-        policy=configured_tool_policy(),
+        request=action,
+        policy=ActorBindingPolicy(configured_tool_policy(), claimed_actor=payload.actor),
         containment_backend=containment_backend,
         require_containment=require_containment,
+        principal=principal,
     )
     db.commit()
+    if result.decision.policy == ActorBindingPolicy.name:
+        raise HTTPException(status_code=403, detail={
+            "error": "actor_mismatch", "action_id": action.action_id, "actor": actor,
+            "reason": result.decision.reason,
+        })
     value = result.value
     if value is not None and not isinstance(value, (str, int, float, bool, list, dict)):
         value = str(value)
     return {
         "attempt_id": attempt_id,
-        "action_id": request.action_id,
+        "action_id": action.action_id,
+        "actor": actor,
+        "principal": principal,
         "status": result.status.value,
         "effect": result.decision.effect.value,
         "reason": result.decision.reason,
