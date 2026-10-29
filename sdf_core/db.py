@@ -70,6 +70,9 @@ class AttemptRow(Base):
     model_profile: Mapped[str | None] = mapped_column(String(120), nullable=True)
     outcome: Mapped[str | None] = mapped_column(String(40), nullable=True)
     evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
+    # ADR 0023: the turn error taxonomy class of a failed Attempt (or
+    # ``cleanup_failed`` when the work finished but the sandbox would not die).
+    error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -150,6 +153,44 @@ class RuntimeEventRow(Base):
     kind: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+USAGE_KINDS = ("turn", "sandbox")
+USAGE_SOURCES = ("reported", "estimated", "missing")
+
+
+class UsageLedgerRow(Base):
+    """Append-only usage/cost ledger (ADR 0023): one row per agent turn and
+    one per sandbox lifetime.  ``source`` says where the numbers came from:
+    ``reported`` by the agent/provider, ``estimated`` by SDF (price table,
+    wall clock) or ``missing`` (the agent reported nothing usable)."""
+
+    __tablename__ = "usage_ledger"
+    __table_args__ = (
+        CheckConstraint("kind IN ('turn','sandbox')", name="ck_usage_ledger_kind"),
+        CheckConstraint("source IN ('reported','estimated','missing')", name="ck_usage_ledger_source"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    attempt_id: Mapped[str] = mapped_column(String(120), index=True)
+    run_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16))
+    agent: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    turn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sandbox_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    sandbox_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source: Mapped[str] = mapped_column(String(16))
+    cost_source: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(32))
+    error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -448,13 +489,13 @@ def _reject_dangling_decision_edges(session: Session, flush_context: Any, instan
 
 @event.listens_for(Session, "before_flush")
 def _reject_agent_message_mutation(session: Session, flush_context: Any, instances: Any) -> None:
-    """Agent messages and claims are append-only, like Evidence."""
+    """Agent messages, claims and usage-ledger rows are append-only, like Evidence."""
 
     for item in session.deleted:
-        if isinstance(item, (AgentMessageRow, AgentClaimRow)):
+        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow)):
             raise ValueError(f"{type(item).__name__} rows are append-only and cannot be deleted")
     for item in session.dirty:
-        if isinstance(item, (AgentMessageRow, AgentClaimRow)) and session.is_modified(item, include_collections=False):
+        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow)) and session.is_modified(item, include_collections=False):
             raise ValueError(f"{type(item).__name__} rows are append-only and cannot be updated")
 
 

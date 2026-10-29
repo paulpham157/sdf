@@ -63,6 +63,7 @@ class E2BHerdrTransport:
         sandbox_connector: SandboxConnector | None = None,
         sandbox_id: str | None = None,
         network: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> None:
         if not template.strip():
             raise ValueError("E2B Herdr template must be non-empty")
@@ -79,6 +80,9 @@ class E2BHerdrTransport:
         # E2B ``SandboxNetworkOpts`` (``allow_out`` / ``deny_out``), applied at
         # creation only; ``None`` keeps the template's default egress.
         self._network = dict(network) if network is not None else None
+        # E2B sandbox metadata (non-secret tags, e.g. the Attempt id) so an
+        # operator or a test can find exactly the sandboxes one run created.
+        self._metadata = {str(k): str(v) for k, v in (metadata or {}).items()}
         self._factory = _PRODUCTION_SANDBOX_FACTORY if sandbox_factory is None else sandbox_factory
         self._creation_capability = (
             _PRODUCTION_SANDBOX_CAPABILITY if sandbox_factory is None else None
@@ -256,6 +260,8 @@ class E2BHerdrTransport:
                 else:
                     if self._network is not None:
                         opts["network"] = dict(self._network)
+                    if self._metadata:
+                        opts["metadata"] = dict(self._metadata)
                     sandbox = self._factory(
                         template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
                     )
