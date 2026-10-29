@@ -25,6 +25,9 @@ class NativeAdapter(Protocol):
 class FakeNativeAdapter:
     """Deterministic adapter used by tests and local development."""
 
+    # Recorded as ``attempts.provider`` by ExecutionService (#50).
+    provider = "fake"
+
     def __init__(self, relative_file: str, replacement: str):
         self.relative_file = relative_file
         self.replacement = replacement

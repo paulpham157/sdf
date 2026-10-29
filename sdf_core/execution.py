@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -12,7 +13,10 @@ from dataclasses import dataclass
 
 from .adapter import AdapterResult, FakeNativeAdapter, NativeAdapter
 from .artifacts import ArtifactStore, WorkspaceManager
-from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow
+from .db import (
+    ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow,
+    UsageLedgerRow,
+)
 from .escalation import ModelTier
 from . import tracing
 from .evaluator import DeterministicEvaluator
@@ -71,21 +75,21 @@ class ExecutionService:
         validation_target: tuple[str, str] | None = None,
         parent_attempt_id: str | None = None,
         model_tier: ModelTier = ModelTier.BASIC,
-        cost_usd: float = 0.0,
-        provider: str | None = None,
-        latency_ms: float | None = None,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        escalation_reason: str | None = None,
         require_plan_approval: bool = False,
     ):
+        """Run one Attempt end to end.
+
+        Telemetry (cost, provider, latency, tokens, error class, escalation
+        reason) is never taken from the caller (#50): it is measured here or
+        by the adapter and summed from the usage ledger, so the scorecard
+        cannot be forged through the run request.
+        """
         with tracing.span("sdf.attempt", task_id=task_id, model_tier=getattr(model_tier, "value", model_tier),
                           parent_attempt_id=parent_attempt_id) as attempt_span:
             begun = self.begin(
                 task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
-                parent_attempt_id=parent_attempt_id, model_tier=model_tier, cost_usd=cost_usd, provider=provider,
-                latency_ms=latency_ms, input_tokens=input_tokens, output_tokens=output_tokens,
-                escalation_reason=escalation_reason, require_plan_approval=require_plan_approval,
+                parent_attempt_id=parent_attempt_id, model_tier=model_tier,
+                require_plan_approval=require_plan_approval,
             )
             tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id)
             if begun.existing:
@@ -93,21 +97,47 @@ class ExecutionService:
                 return begun.attempt
             task = self.db.get(TaskRow, task_id)
             attempt = begun.attempt
+            started = time.monotonic()
             try:
                 result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
-            except Exception:
+            except Exception as exc:
+                self._record_measured_telemetry(attempt, time.monotonic() - started, error=exc)
                 attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
                 task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
                 task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
                 self.db.commit()
                 self._trace_outcome(attempt_span, attempt)
                 raise
+            self._record_measured_telemetry(attempt, time.monotonic() - started)
             finished = self.finish(
                 attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
                 criterion_checks=criterion_checks, validation_target=validation_target,
             )
             self._trace_outcome(attempt_span, finished)
             return finished
+
+    def _record_measured_telemetry(self, attempt: AttemptRow, seconds: float, *, error: Exception | None = None) -> None:
+        """Fill Attempt telemetry from server-side measurement (#50).
+
+        A metering adapter (the live run adapter) has already written the
+        values from its usage ledger; those are kept. Otherwise (fake and
+        in-process adapters) the provider is the adapter's identity, latency is
+        the wall clock measured here, and cost/tokens are summed from any
+        usage-ledger rows for this Attempt.
+        """
+
+        if attempt.provider is not None:
+            return
+        rows = self.db.scalars(select(UsageLedgerRow).where(UsageLedgerRow.attempt_id == attempt.id)).all()
+        attempt.provider = _adapter_identity(self.adapter)
+        attempt.latency_ms = round(max(seconds, 0.0) * 1000, 1)
+        attempt.cost_usd = round(sum(row.cost_usd or 0.0 for row in rows), 8)
+        attempt.input_tokens = _sum_or_none(row.input_tokens for row in rows)
+        attempt.output_tokens = _sum_or_none(row.output_tokens for row in rows)
+        if error is not None and attempt.error_class is None:
+            from .observability import classify_error
+
+            attempt.error_class = classify_error(error)
 
     @staticmethod
     def _trace_outcome(target, attempt: AttemptRow) -> None:
@@ -165,6 +195,8 @@ class ExecutionService:
         parent = self.db.get(AttemptRow, parent_attempt_id) if parent_attempt_id else None
         if parent_attempt_id and (parent is None or parent.task_id != task_id):
             raise ValueError("parent attempt not found for task")
+        if parent is not None and escalation_reason is None:
+            escalation_reason = derived_escalation_reason(parent)
         if validation_target:
             target = self.db.get(GraphNodeRow, validation_target[1])
             if target is None or target.kind != validation_target[0]:
@@ -444,3 +476,23 @@ class ExecutionService:
         if task.status == TaskState.EVALUATING.value:
             task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
         self.db.commit()
+
+
+def derived_escalation_reason(parent: AttemptRow) -> str:
+    """Server-side escalation reason from the parent Attempt's recorded state (#50)."""
+
+    state = parent.status if not parent.outcome else f"{parent.status}/{parent.outcome}"
+    reason = f"escalated from {parent.id} (tier {parent.model_tier}, {state}"
+    if parent.error_class:
+        reason += f", error {parent.error_class}"
+    return (reason + ")")[:500]
+
+
+def _adapter_identity(adapter: object) -> str:
+    name = getattr(adapter, "provider", None) or getattr(adapter, "agent", None) or type(adapter).__name__
+    return str(name)[:120]
+
+
+def _sum_or_none(values) -> int | None:
+    present = [value for value in values if value is not None]
+    return sum(present) if present else None

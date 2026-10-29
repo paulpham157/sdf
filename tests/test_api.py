@@ -199,23 +199,16 @@ def test_objective_metric_and_attempt_telemetry_are_persisted(tmp_path):
         json={"id": "TASK-METRIC-RUN", "title": "telemetry", "idempotency_key": "metric-run", "acceptance_criteria": []},
     )
     assert created.status_code == 201
-    response = client.post(
-        "/tasks/TASK-METRIC-RUN/run",
-        json={
-            "fixture_dir": str(fixture),
-            "provider": "fake-provider",
-            "latency_ms": 123.5,
-            "input_tokens": 10,
-            "output_tokens": 20,
-            "escalation_reason": "initial timeout",
-        },
-    )
+    response = client.post("/tasks/TASK-METRIC-RUN/run", json={"fixture_dir": str(fixture)})
     assert response.status_code == 200
-    assert response.json()["provider"] == "fake-provider"
-    assert response.json()["latency_ms"] == 123.5
-    assert response.json()["input_tokens"] == 10
-    assert response.json()["output_tokens"] == 20
-    assert response.json()["escalation_reason"] == "initial timeout"
+    # Telemetry is server-measured (#50): the fake adapter costs nothing,
+    # reports no tokens, and its latency is the wall clock SDF observed.
+    body = response.json()
+    assert body["provider"] == "fake"
+    assert body["cost_usd"] == 0.0
+    assert body["latency_ms"] is not None and body["latency_ms"] >= 0
+    assert body["input_tokens"] is None and body["output_tokens"] is None
+    assert body["escalation_reason"] is None
 
 
 def test_task_creation_is_idempotent():
