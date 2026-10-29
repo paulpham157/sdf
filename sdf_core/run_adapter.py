@@ -53,6 +53,7 @@ from .observability import classify_error, get_logger, log_context
 from .plugin_bridge import PluginConnectionBridge
 from .runtime import RuntimeController, RuntimeEvent, RuntimeEventKind, RuntimeStatus, SqlAlchemyRuntimeEventSink
 from . import usage as _usage
+from . import tracing
 
 log = get_logger("run")
 
@@ -228,8 +229,11 @@ class _MeteredRuntime:
         self._controller.bind_workspace(attempt_id, workspace)
 
     def start(self, *, attempt_id: str, agent: str):
-        session = self._controller.start(attempt_id=attempt_id, agent=agent)
-        self.session_id = session.session_id
+        with tracing.span("sdf.agent.start", attempt_id=attempt_id, agent__kind=agent,
+                          model=self._adapter.model) as current:
+            session = self._controller.start(attempt_id=attempt_id, agent=agent)
+            self.session_id = session.session_id
+            tracing.set_attributes(current, sandbox__id=getattr(self._transport, "sandbox_id", None))
         return session
 
     def _usage_now(self) -> dict[str, Any] | None:
@@ -260,7 +264,10 @@ class _MeteredRuntime:
         started = time.monotonic()
         error: BaseException | None = None
         session = None
-        with log_context(turn_id=str(self.turns)):
+        with tracing.span("sdf.agent.turn", attempt_id=self._attempt_id, agent__kind=self._adapter.agent,
+                          model=self._adapter.model, sandbox__id=self.sandbox_id,
+                          sandbox__provider=self._adapter.provider, turn=self.turns) as turn_span, \
+                log_context(turn_id=str(self.turns)):
             log.info("turn_started")
             try:
                 session = self._controller.send(session_id, input_text)
@@ -296,6 +303,15 @@ class _MeteredRuntime:
                 self.usage_sources.add(row.source)
                 self.cost_sources.add(row.cost_source)
                 self._adapter.db.flush()
+                tracing.set_attributes(
+                    turn_span, status=status, seconds=round(seconds, 3), usage_source=row.source,
+                    tokens__input=row.input_tokens, tokens__output=row.output_tokens, cost_usd=row.cost_usd,
+                    sandbox__id=getattr(self._transport, "sandbox_id", None) or self.sandbox_id,
+                )
+                if klass and klass != "settled_grace":
+                    tracing.mark_error(klass, turn_span)
+                elif klass:
+                    tracing.set_attributes(turn_span, error_class=klass)
                 log.info("turn_finished", extra={"status": status, "error_class": klass, "seconds": round(seconds, 3),
                                                  "usage_source": row.source, "input_tokens": row.input_tokens,
                                                  "output_tokens": row.output_tokens})
@@ -427,7 +443,9 @@ class LiveRunAdapter:
         if self.provider == "daytona" and not self.run_env.get("DAYTONA_API_KEY"):
             raise RunAdapterConfigError("DAYTONA_API_KEY is required when SDF_SANDBOX_PROVIDER=daytona")
         self.last_run = {}
-        with log_context(attempt_id=attempt_id, agent=self.agent):
+        with log_context(attempt_id=attempt_id, agent=self.agent), \
+                tracing.span("sdf.agent.run", attempt_id=attempt_id, agent__kind=self.agent, model=self.model,
+                             sandbox__provider=self.provider) as run_span:
             transport, _injection = self._transport(attempt_id)
             runtime = self._runtime(transport)
             controller = RuntimeController(runtime, event_sink=SqlAlchemyRuntimeEventSink(self.db),
@@ -443,7 +461,13 @@ class LiveRunAdapter:
                 result = adapter.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
             except BaseException as exc:
                 primary = exc
-            sandbox_id, cleanup_error = self._teardown(transport, metered.sandbox_id)
+            with tracing.span("sdf.sandbox.cleanup", attempt_id=attempt_id, sandbox__provider=self.provider,
+                              sandbox__id=metered.sandbox_id) as cleanup_span:
+                sandbox_id, cleanup_error = self._teardown(transport, metered.sandbox_id)
+                tracing.set_attributes(cleanup_span, sandbox__id=sandbox_id)
+                if cleanup_error:
+                    # The class only: the cleanup error text is kept on the event/ledger, not the span.
+                    tracing.mark_error("cleanup_failed", cleanup_span)
             seconds = time.monotonic() - started
             with log_context(sandbox_id=sandbox_id):
                 error_class = "cleanup_failed" if cleanup_error else (
@@ -473,6 +497,14 @@ class LiveRunAdapter:
                 self.db.flush()
                 log.info("run_finished", extra={"error_class": error_class, "seconds": round(seconds, 3),
                                                 "status": result.status if result else "error"})
+            run = self.last_run
+            tracing.set_attributes(
+                run_span, sandbox__id=sandbox_id, seconds=round(seconds, 3), cost_usd=run["cost_usd"],
+                tokens__input=run["input_tokens"], tokens__output=run["output_tokens"],
+                usage_source=run["usage_source"], turns=metered.turns,
+            )
+            if error_class:
+                tracing.mark_error(error_class, run_span)
             if primary is not None:
                 if cleanup_error:
                     primary.add_note(f"sandbox cleanup also failed: {cleanup_error[-300:]}")

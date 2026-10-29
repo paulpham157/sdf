@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .herdr_runtime import HerdrRuntimeError
+from . import tracing
 
 SandboxFactory = Callable[..., Any]
 SandboxConnector = Callable[..., Any]
@@ -231,11 +232,14 @@ class DaytonaHerdrTransport:
                 if self._sandbox_id is not None:
                     sandbox = connector(self._sandbox_id)
                 else:
-                    sandbox = factory(
-                        snapshot=self.snapshot,
-                        env_vars=dict(self._envs),
-                        timeout=self.timeout_seconds,
-                    )
+                    with tracing.span("sdf.sandbox.create", sandbox__provider="daytona",
+                                      sandbox__template=self.snapshot) as create_span:
+                        sandbox = factory(
+                            snapshot=self.snapshot,
+                            env_vars=dict(self._envs),
+                            timeout=self.timeout_seconds,
+                        )
+                        tracing.set_attributes(create_span, sandbox__id=getattr(sandbox, "id", None))
             except HerdrRuntimeError:
                 raise
             except Exception as exc:

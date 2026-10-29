@@ -73,6 +73,8 @@ class AttemptRow(Base):
     # ADR 0023: the turn error taxonomy class of a failed Attempt (or
     # ``cleanup_failed`` when the work finished but the sandbox would not die).
     error_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # ADR 0024: OpenTelemetry trace id (32 hex) when tracing was on.
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -305,6 +307,7 @@ class AgentRunRow(Base):
     cancel_requested_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(32), nullable=True)  # ADR 0024
 
 
 class AgentRunMemberRow(Base):

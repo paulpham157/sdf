@@ -116,6 +116,11 @@ def test_migration_creates_usage_ledger(tmp_path, monkeypatch):
     inspector = inspect(create_engine(url))
     assert "usage_ledger" in inspector.get_table_names()
     assert "error_class" in {c["name"] for c in inspector.get_columns("attempts")}
+    assert "trace_id" in {c["name"] for c in inspector.get_columns("attempts")}
+    assert "trace_id" in {c["name"] for c in inspector.get_columns("agent_runs")}
+    command.downgrade(config, "0016_usage_ledger")
+    inspector = inspect(create_engine(url))
+    assert "trace_id" not in {c["name"] for c in inspector.get_columns("attempts")}
     command.downgrade(config, "0015_api_auth")
     inspector = inspect(create_engine(url))
     assert "usage_ledger" not in inspector.get_table_names()

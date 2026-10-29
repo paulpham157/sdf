@@ -11,6 +11,8 @@
   the process environment are replaced, and token-shaped strings
   (``Bearer ...``, ``sk-...``, ``e2b_...``, ``key=value`` with a secret-ish
   key) are masked.  Secret *names* may be logged; values never.
+* When tracing is on (ADR 0024) records also carry ``trace_id``/``span_id``
+  of the active span.
 * :func:`classify_error` maps a turn/Attempt failure to one stable class
   (:data:`ERROR_CLASSES`) recorded in the usage ledger and on the Attempt.
 """
@@ -121,6 +123,12 @@ class ContextFilter(logging.Filter):
         for key, value in _CONTEXT.get().items():
             if not hasattr(record, key):
                 setattr(record, key, value)
+        # ADR 0024: correlate with the active OpenTelemetry span (no-op when tracing is off).
+        from .tracing import current_ids
+
+        ids = current_ids()
+        if ids is not None and not hasattr(record, "trace_id"):
+            record.trace_id, record.span_id = ids
         return True
 
 

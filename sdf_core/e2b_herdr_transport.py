@@ -37,6 +37,7 @@ from e2b import (
 )
 
 from .herdr_runtime import HerdrRuntimeError
+from . import tracing
 
 SandboxFactory = Callable[..., Any]
 SandboxConnector = Callable[..., Any]
@@ -262,9 +263,13 @@ class E2BHerdrTransport:
                         opts["network"] = dict(self._network)
                     if self._metadata:
                         opts["metadata"] = dict(self._metadata)
-                    sandbox = self._factory(
-                        template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
-                    )
+                    # ADR 0024: host-side span only; nothing about tracing reaches the sandbox.
+                    with tracing.span("sdf.sandbox.create", sandbox__provider="e2b",
+                                      sandbox__template=self.template) as create_span:
+                        sandbox = self._factory(
+                            template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
+                        )
+                        tracing.set_attributes(create_span, sandbox__id=getattr(sandbox, "sandbox_id", None))
                 sandbox_id = sandbox.sandbox_id
             except SandboxException as exc:
                 raise HerdrRuntimeError(f"E2B sandbox provisioning failed: {exc}") from exc

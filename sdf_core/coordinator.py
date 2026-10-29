@@ -48,6 +48,8 @@ from .db import (
 )
 from .evaluator import DeterministicEvaluator
 from .execution import ExecutionService
+from .observability import classify_error
+from . import tracing
 from .model import AttemptState, TaskState, utcnow
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
 from .state import transition_attempt, transition_task
@@ -232,9 +234,40 @@ class Coordinator:
 
     # -- main loop -----------------------------------------------------------
     def execute(self, run_id: str) -> AgentRunRow:
+        # ADR 0024: one ``sdf.run`` span; attempts, sandboxes, turns and cleanup nest under it.
+        with tracing.span("sdf.run", run_id=run_id) as run_span:
+            run = self._execute(run_id)
+            tracing.set_attributes(run_span, plan_id=run.plan_id, outcome=run.status, cost_usd=run.cost_usd)
+            if run.status != "succeeded":
+                tracing.mark_error(classify_error(run.error) or run.status, run_span)
+            return run
+
+    def _traced_start(self, agent: _Agent, start: Callable[[_Agent], None]) -> None:
+        spec = agent.spec
+        with tracing.span("sdf.agent.start", agent__id=spec.agent_id, agent__role=spec.role,
+                          agent__kind=spec.kind, model=spec.model) as current:
+            start(agent)
+            tracing.set_attributes(current, sandbox__id=agent.sandbox.sandbox_id)
+
+    @staticmethod
+    def _traced_turn(agent: _Agent, prompt: str, turn: int) -> Any:
+        spec = agent.spec
+        with tracing.span("sdf.agent.turn", agent__id=spec.agent_id, agent__role=spec.role, agent__kind=spec.kind,
+                          model=spec.model, sandbox__id=agent.sandbox.sandbox_id, turn=turn) as current:
+            result = agent.sandbox.turn(prompt)
+            tracing.set_attributes(current, ok=result.ok, seconds=round(result.seconds, 3))
+            if not result.ok:
+                tracing.mark_error(classify_error(result.error) or "unknown", current)
+            return result
+
+    def _execute(self, run_id: str) -> AgentRunRow:
         run = self.db.get(AgentRunRow, run_id)
         if run is None:
             raise LookupError("run not found")
+        trace_id = tracing.current_trace_id()
+        if trace_id and run.trace_id != trace_id:
+            run.trace_id = trace_id
+            self.db.commit()
         if run.status != "running":
             raise PlanGateError(f"run {run_id} is {run.status}")
         plan = self.db.get(PlanRow, run.plan_id)
@@ -280,7 +313,8 @@ class Coordinator:
 
             t0 = time.monotonic()
             with ThreadPoolExecutor(max_workers=len(agents)) as starter:
-                futures = {aid: starter.submit(start, ag) for aid, ag in agents.items()}
+                futures = {aid: starter.submit(tracing.in_current_context(self._traced_start), ag, start)
+                           for aid, ag in agents.items()}
                 start_errors = {aid: f.exception() for aid, f in futures.items() if f.exception() is not None}
             timings["sandboxes_ready_s"] = round(time.monotonic() - t0, 1)
             for aid, ag in agents.items():
@@ -384,7 +418,9 @@ class Coordinator:
                     worker = agents[sub.worker]
                     if sub.verify_requested and worker.future is None and sub.verdict != "PASS":
                         sub.verify_requested = False
-                        pending.extend(self._verify(run_id, hub, sub, worker, lead_id, fixture, config))
+                        with tracing.span("sdf.verify", attempt_id=sub.attempt_id, agent__id=sub.worker) as vspan:
+                            pending.extend(self._verify(run_id, hub, sub, worker, lead_id, fixture, config))
+                            tracing.set_attributes(vspan, verdict=sub.verdict)
 
                 if all(s.verdict == "PASS" for s in subtasks.values()) and not all_pass_notified:
                     all_pass_notified = True
@@ -424,7 +460,7 @@ class Coordinator:
                     prompt = self._prompt(ag)
                     ag.turns += 1
                     ag.started = True
-                    ag.future = pool.submit(ag.sandbox.turn, prompt)
+                    ag.future = pool.submit(tracing.in_current_context(self._traced_turn), ag, prompt, ag.turns)
                     busy += 1
                     self.log(f"{aid} turn {ag.turns} started")
 
@@ -465,14 +501,18 @@ class Coordinator:
             error = f"{type(exc).__name__}: {str(exc)[-800:]}"
             outcome = "failed"
         finally:
-            closed = self._close_all(agents)
-            pool.shutdown(wait=True, cancel_futures=True)
-            still_running: set[str] = set()
-            if self.cleanup_check is not None and closed:
-                try:
-                    still_running = self.cleanup_check(set(closed))
-                except Exception as exc:  # noqa: BLE001
-                    violations.append({"agent": "host", "error": f"cleanup check failed: {exc}"[:300]})
+            with tracing.span("sdf.sandbox.cleanup", run_id=run_id, agents=len(agents)) as cspan:
+                closed = self._close_all(agents)
+                pool.shutdown(wait=True, cancel_futures=True)
+                still_running: set[str] = set()
+                if self.cleanup_check is not None and closed:
+                    try:
+                        still_running = self.cleanup_check(set(closed))
+                    except Exception as exc:  # noqa: BLE001
+                        violations.append({"agent": "host", "error": f"cleanup check failed: {exc}"[:300]})
+                if still_running:
+                    tracing.set_attributes(cspan, cleanup_error=f"{len(still_running)} sandbox(es) still running")
+                    tracing.mark_error("cleanup_failed", cspan)
             _CANCEL_EVENTS.pop(run_id, None)
         return self._finalize(run_id, agents, subtasks, config, outcome, error, violations, timings,
                               time.monotonic() - started, closed, still_running, core_log)

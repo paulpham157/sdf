@@ -14,6 +14,7 @@ from .adapter import AdapterResult, FakeNativeAdapter, NativeAdapter
 from .artifacts import ArtifactStore, WorkspaceManager
 from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow
 from .escalation import ModelTier
+from . import tracing
 from .evaluator import DeterministicEvaluator
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
@@ -78,28 +79,45 @@ class ExecutionService:
         escalation_reason: str | None = None,
         require_plan_approval: bool = False,
     ):
-        begun = self.begin(
-            task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
-            parent_attempt_id=parent_attempt_id, model_tier=model_tier, cost_usd=cost_usd, provider=provider,
-            latency_ms=latency_ms, input_tokens=input_tokens, output_tokens=output_tokens,
-            escalation_reason=escalation_reason, require_plan_approval=require_plan_approval,
+        with tracing.span("sdf.attempt", task_id=task_id, model_tier=getattr(model_tier, "value", model_tier),
+                          parent_attempt_id=parent_attempt_id) as attempt_span:
+            begun = self.begin(
+                task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
+                parent_attempt_id=parent_attempt_id, model_tier=model_tier, cost_usd=cost_usd, provider=provider,
+                latency_ms=latency_ms, input_tokens=input_tokens, output_tokens=output_tokens,
+                escalation_reason=escalation_reason, require_plan_approval=require_plan_approval,
+            )
+            tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id)
+            if begun.existing:
+                tracing.set_attributes(attempt_span, status=begun.attempt.status, outcome="existing")
+                return begun.attempt
+            task = self.db.get(TaskRow, task_id)
+            attempt = begun.attempt
+            try:
+                result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
+            except Exception:
+                attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
+                task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
+                task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
+                self.db.commit()
+                self._trace_outcome(attempt_span, attempt)
+                raise
+            finished = self.finish(
+                attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
+                criterion_checks=criterion_checks, validation_target=validation_target,
+            )
+            self._trace_outcome(attempt_span, finished)
+            return finished
+
+    @staticmethod
+    def _trace_outcome(target, attempt: AttemptRow) -> None:
+        tracing.set_attributes(
+            target, status=attempt.status, outcome=attempt.outcome, cost_usd=attempt.cost_usd,
+            tokens__input=attempt.input_tokens, tokens__output=attempt.output_tokens,
+            provider=attempt.provider, error_class=attempt.error_class,
         )
-        if begun.existing:
-            return begun.attempt
-        task = self.db.get(TaskRow, task_id)
-        attempt = begun.attempt
-        try:
-            result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
-        except Exception:
-            attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
-            task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
-            task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
-            self.db.commit()
-            raise
-        return self.finish(
-            attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
-            criterion_checks=criterion_checks, validation_target=validation_target,
-        )
+        if attempt.status == AttemptState.FAILED.value:
+            tracing.mark_error(attempt.error_class or "failed", target)
 
     def begin(
         self,
@@ -158,6 +176,8 @@ class ExecutionService:
             model_tier=model_tier.value, cost_usd=cost_usd, created_at=utcnow(),
             provider=provider, latency_ms=latency_ms, input_tokens=input_tokens,
             output_tokens=output_tokens, escalation_reason=escalation_reason,
+            # ADR 0024: the trace this Attempt ran in (None when tracing is off).
+            trace_id=tracing.current_trace_id(),
         )
         self.db.add(attempt)
         self.db.add(GraphNodeRow(id=attempt_id, kind="attempt", title="Native execution attempt", source="execution", owner="sdf", confidence=1.0, created_at=utcnow()))
@@ -241,13 +261,14 @@ class ExecutionService:
             self.db.commit()
             return attempt
         try:
-            evaluation = self.evaluator.evaluate(
-                attempt_id=attempt_id,
-                workspace=workspace,
-                commands=commands,
-                criteria=tuple(task.acceptance_criteria or ()),
-                criterion_checks=criterion_checks,
-            )
+            with tracing.span("sdf.evaluate", attempt_id=attempt_id):
+                evaluation = self.evaluator.evaluate(
+                    attempt_id=attempt_id,
+                    workspace=workspace,
+                    commands=commands,
+                    criteria=tuple(task.acceptance_criteria or ()),
+                    criterion_checks=criterion_checks,
+                )
         except Exception:
             self._fail_attempt(task, attempt)
             raise

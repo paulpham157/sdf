@@ -62,7 +62,7 @@ def _attempt_entries(db: Session, attempt_ids: list[str]) -> list[dict[str, Any]
         out.append(_entry(a.created_at, "attempt", "attempt_created", attempt_id=a.id, task_id=a.task_id,
                           agent=a.agent, status=a.status, provider=a.provider, cost_usd=a.cost_usd,
                           input_tokens=a.input_tokens, output_tokens=a.output_tokens, latency_ms=a.latency_ms,
-                          error_class=a.error_class))
+                          error_class=a.error_class, trace_id=a.trace_id))
     for e in db.scalars(select(RuntimeEventRow).where(RuntimeEventRow.attempt_id.in_(attempt_ids))):
         out.append(_entry(e.created_at, "runtime", e.kind, attempt_id=e.attempt_id, session_id=e.session_id,
                           sequence=e.sequence, status=e.status, event_source=e.source, payload=e.payload))
@@ -96,7 +96,7 @@ def build_timeline(db: Session, run_or_attempt_id: str) -> dict[str, Any] | None
             if audit.route == "/tasks/{task_id}/run"
         ]
         return {"id": attempt.id, "kind": "attempt", "task_id": attempt.task_id, "status": attempt.status,
-                "error_class": attempt.error_class, "entries": _sorted(entries)}
+                "error_class": attempt.error_class, "trace_id": attempt.trace_id, "entries": _sorted(entries)}
 
     entries: list[dict[str, Any]] = [
         _entry(run.started_at, "run", "run_started", run_id=run.id, plan_id=run.plan_id, started_by=run.started_by),
@@ -129,7 +129,7 @@ def build_timeline(db: Session, run_or_attempt_id: str) -> dict[str, Any] | None
     entries += [_usage_entry(u)
                 for u in db.scalars(select(UsageLedgerRow).where(UsageLedgerRow.run_id == run.id,
                                                                  UsageLedgerRow.attempt_id.not_in(attempt_ids or {""})))]
-    return {"id": run.id, "kind": "agent_run", "plan_id": run.plan_id, "status": run.status,
+    return {"id": run.id, "kind": "agent_run", "plan_id": run.plan_id, "status": run.status, "trace_id": run.trace_id,
             "members": [{"agent_id": m.agent_id, "kind": m.agent_kind, "role": m.role, "sandbox_id": m.sandbox_id,
                          "status": m.status, "turns": m.turns, "input_tokens": m.input_tokens,
                          "output_tokens": m.output_tokens} for m in members],
@@ -148,6 +148,8 @@ def format_timeline(timeline: dict[str, Any]) -> str:
     head = f"{timeline['kind']} {timeline['id']} status={timeline.get('status')}"
     if timeline.get("error_class"):
         head += f" error_class={timeline['error_class']}"
+    if timeline.get("trace_id"):  # ADR 0024: look the trace up in the OTLP backend
+        head += f" trace_id={timeline['trace_id']}"
     lines = [head]
     skip = {"at", "source", "kind", "payload", "body"}
     for e in timeline["entries"]:
