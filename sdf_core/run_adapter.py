@@ -454,7 +454,7 @@ class LiveRunAdapter:
                     self._event(attempt_id, metered.session_id or "none", cleanup_error)
                 sandbox_cost = sandbox_row.cost_usd or 0.0
                 self.last_run = {
-                    "error_class": error_class, "sandbox_id": sandbox_id, "seconds": seconds,
+                    "attempt_id": attempt_id, "error_class": error_class, "sandbox_id": sandbox_id, "seconds": seconds,
                     "input_tokens": metered.tokens[0] if "reported" in metered.usage_sources else None,
                     "output_tokens": metered.tokens[1] if "reported" in metered.usage_sources else None,
                     "cost_usd": round(metered.cost + sandbox_cost, 8),
