@@ -36,6 +36,7 @@ MAX_ENVELOPE_BYTES = 32 * 1024
 MAX_MESSAGES_PER_AGENT = 200
 MAX_OPTIONS = 10
 MAX_OPTION_CHARS = 200
+MAX_CONSEQUENCE_CHARS = 1000
 ENVELOPE_NAME = re.compile(r"[0-9a-f]{32}\.json")
 AGENT_KINDS = frozenset({"message", "question", "report", "decision_request"})
 HOST = "sdf"
@@ -167,6 +168,20 @@ class MessageHub:
                 raise EnvelopeError("options must be a list")
             options = [sanitize_body(str(o), MAX_OPTION_CHARS)[0] for o in raw_options[:MAX_OPTIONS] if str(o).strip()]
             meta["options"] = options
+            # ADR 0033 (#60): a material request blocks its scope until a human
+            # resolves it.  Materiality is declared, never inferred from text.
+            material = envelope.get("material", False)
+            if not isinstance(material, bool):
+                raise EnvelopeError("material must be true or false")
+            if material:
+                consequence = envelope.get("consequence")
+                if not isinstance(consequence, str) or not consequence.strip():
+                    raise EnvelopeError("a material decision request needs a consequence")
+                if len(set(options)) < 2:
+                    raise EnvelopeError("a material decision request needs at least two distinct options")
+                meta["material"] = True
+                meta["consequence"] = sanitize_body(consequence, MAX_CONSEQUENCE_CHARS)[0]
+                meta["authority"] = "human"
         message = self._persist(
             envelope_id=envelope_id, from_agent=sender, from_role=member.role, to_agent=to_agent, to_role=to_role,
             kind=kind, body=body, truncated=truncated, attempt_id=attempt_id, source_sandbox_id=sandbox_id,

@@ -66,6 +66,10 @@ _Avoid_: todo list, agent plan
 A pending question recorded in the Decision Graph, raised for a plan approval or by an agent. Only a human approves; a policy may reject or answer; nothing is auto-approved. A resolved request is final.
 _Avoid_: prompt, confirmation
 
+**Material Decision Request**:
+A Decision Request an agent marks material, with the consequence of deciding wrongly and at least two options. Until a human resolves it, it holds dispatch, turns, verification, Attempt start/finish and run completion for its scope: the worker's subtask, or the whole Agent Run when the lead asks. No policy resolves it (ADR 0033).
+_Avoid_: blocking question, urgent request
+
 **Agent Run**:
 One execution of an approved Plan by a lead agent and worker agents, one sandbox each. It succeeds only when every subtask has PASS Evidence.
 _Avoid_: swarm, crew

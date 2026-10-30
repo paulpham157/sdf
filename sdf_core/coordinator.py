@@ -55,6 +55,7 @@ from .fixtures import resolve_fixture, server_write_roots
 from .observability import classify_error, redact
 from . import tracing
 from .model import AttemptState, TaskState, utcnow
+from .decision_gate import RUN_SCOPE, is_material, pending_material
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
 from .state import transition_attempt, transition_task
 
@@ -189,6 +190,7 @@ Messaging (the sdf MCP tools, or the `sdf-msg` CLI in the shell):
 - send_message / `sdf-msg send <to> <body>`: to a worker id (e.g. worker-1) or "workers".
 - report / `sdf-msg report --status done <summary>`: your final summary to the SDF host.
 - request_decision / `sdf-msg request-decision <question> --option A --option B`: ask the human manager; never assume approval.
+  If the choice is material (materially different outcomes for product, safety or authorization) add `--material --consequence "<what differs>"`: the whole run then waits until a human decides.
 The SDF host verifies every subtask itself by running its own tests; a worker's report is only a claim.
 """
 LEAD_WAKE = "You have new messages in your SDF inbox. Read them (read_messages) and act on them as the lead, then end your turn."
@@ -200,6 +202,7 @@ Use the `sdf-msg` CLI in your shell for all coordination:
 - `sdf-msg send lead "<text>"` messages the lead; `sdf-msg ask lead "<question>"` asks it something.
 - `sdf-msg report --status done "<what you changed>"` tells the SDF host your subtask is ready; the host then runs its own tests.
 - `sdf-msg request-decision "<question>" --option A --option B` asks the human manager when you need a decision.
+  If the options lead to materially different outcomes (product, safety, authorization), add `--material --consequence "<what differs>"`; your subtask then waits for the human, so do not pick a default yourself.
 Only edit files your assignment names. Do not edit tests. Keep it minimal.
 """
 WORKER_WAKE = "You have new messages: run `sdf-msg read` now and do what they ask. When your subtask is finished, run `sdf-msg report --status done \"<summary>\"` and stop."
@@ -350,6 +353,8 @@ class Coordinator:
         lead_reported = False
         all_pass_notified = False
         delivered_decisions: set[str] = set()
+        # ADR 0033: what each pending material decision held back (audit, in the run summary).
+        gate_log: dict[str, dict[str, Any]] = {}
         idle_since: float | None = None
         stall_verified: set[str] = set()  # attempts the host verified because agents went quiet
         pool = ThreadPoolExecutor(max_workers=config.max_concurrent_turns, thread_name_prefix=f"{run_id}-turn")
@@ -488,9 +493,35 @@ class Coordinator:
                     pending.append((req.requested_by, note))
                     self.db.commit()
 
+                # 3b. material decision gate (ADR 0033): recomputed every poll, after
+                # resolutions were delivered, so a resolved request lifts at once.
+                gate = pending_material(self.db, run_id=run_id)
+                blocked_scopes = {g.scope for g in gate}
+                run_blocked = RUN_SCOPE in blocked_scopes
+                blocked_agents = {g.requested_by for g in gate} | {
+                    s.worker for s in subtasks.values() if run_blocked or s.key in blocked_scopes}
+                if run_blocked:
+                    blocked_agents |= set(agents)
+
+                def hold(kind: str, scope: str | None = None) -> None:
+                    for g in gate:
+                        if scope is None or g.scope in (RUN_SCOPE, scope):
+                            entry = gate_log.setdefault(g.request_id, {
+                                "request_id": g.request_id, "requested_by": g.requested_by, "scope": g.scope,
+                                "consequence": g.consequence, "options": list(g.options), "held": []})
+                            if kind not in entry["held"]:
+                                entry["held"].append(kind)
+                                self.log(f"material decision {g.request_id} holds {kind}")
+
+                for g in gate:
+                    hold("pending", g.scope)
+
                 # 4. host verification (workers idle only)
                 for sub in subtasks.values():
                     worker = agents[sub.worker]
+                    if sub.verify_requested and (run_blocked or sub.key in blocked_scopes):
+                        hold(f"verification:{sub.key}", sub.key)
+                        continue  # stays requested; runs once a human resolves the decision
                     if sub.verify_requested and worker.future is None and sub.verdict != "PASS":
                         sub.verify_requested = False
                         with tracing.span("sdf.verify", attempt_id=sub.attempt_id, agent__id=sub.worker) as vspan:
@@ -520,6 +551,9 @@ class Coordinator:
                         break
                     if not ag.wake or ag.future is not None:
                         continue
+                    if aid in blocked_agents:
+                        hold(f"turn:{aid}", ag.subtask_key or RUN_SCOPE)
+                        continue  # keeps its wake flag; no new turn until the decision is resolved
                     ag.wake = False
                     try:
                         has_mail = ag.sandbox.inbox_count() > 0
@@ -544,8 +578,11 @@ class Coordinator:
                     ag.wake for ag in agents.values()) or any(s.verify_requested for s in subtasks.values())
                 verdicts_done = all(s.verdict == "PASS" for s in subtasks.values())
                 if verdicts_done and (lead_reported or not active):
-                    outcome = "succeeded"
-                    break
+                    if gate:
+                        hold("completion")  # never succeed past a pending material decision
+                    else:
+                        outcome = "succeeded"
+                        break
                 exhausted = [s for s in subtasks.values() if s.verdict in ("FAIL", "INCONCLUSIVE")
                              and s.rounds >= config.max_verify_rounds]
                 if exhausted and not active and all(
@@ -590,7 +627,7 @@ class Coordinator:
                     tracing.mark_error("cleanup_failed", cspan)
             _CANCEL_EVENTS.pop(run_id, None)
         return self._finalize(run_id, agents, subtasks, config, outcome, error, violations, timings,
-                              time.monotonic() - started, closed, still_running, core_log)
+                              time.monotonic() - started, closed, still_running, core_log, gate_log)
 
     # -- helpers --------------------------------------------------------------
     def _plan_fixture(self, plan: PlanRow) -> Path:
@@ -708,6 +745,8 @@ class Coordinator:
 
     def _apply_policy(self, request_id: str) -> None:
         request = self.db.get(DecisionRequestRow, request_id)
+        if is_material(self.db, request):
+            return  # ADR 0033: only a human resolves a material decision
         decision = self.policy.decide(request)
         if decision is not None:
             resolve_request(self.db, request_id, outcome=decision.outcome, resolved_by=decision.policy_name,
@@ -793,7 +832,8 @@ class Coordinator:
     def _finalize(self, run_id: str, agents: dict[str, _Agent], subtasks: dict[str, _Subtask], config: RunConfig,
                   outcome: str, error: str | None, violations: list[dict[str, Any]], timings: dict[str, float],
                   wall_s: float, closed: list[str], still_running: set[str],
-                  core_log: list[dict[str, Any]] | None = None) -> AgentRunRow:
+                  core_log: list[dict[str, Any]] | None = None,
+                  gate_log: dict[str, dict[str, Any]] | None = None) -> AgentRunRow:
         run = self.db.get(AgentRunRow, run_id)
         # Evidence is the only success criterion.
         if outcome == "succeeded" and not all(s.verdict == "PASS" for s in subtasks.values()):
@@ -830,6 +870,11 @@ class Coordinator:
             # Left pending on purpose: only a human (or an explicit policy) resolves a request.
             "pending_decision_requests": list(self.db.scalars(select(DecisionRequestRow.id).where(
                 DecisionRequestRow.run_id == run_id, DecisionRequestRow.status == "pending"))),
+            # ADR 0033: each material decision, what it held back, and how it ended.
+            "material_decisions": [
+                {**entry, "status": getattr(self.db.get(DecisionRequestRow, rid), "status", None)}
+                for rid, entry in (gate_log or {}).items()
+            ],
         }
         self.db.commit()
         self.log(f"run {run_id} {outcome}" + (f": {error}" if error else ""))

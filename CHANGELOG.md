@@ -105,3 +105,7 @@
     `sandbox_usd_per_s` and `evidence_mode` in `config` with `422`. Set prices
     with `SDF_RUN_PRICE_IN_PER_M`, `SDF_RUN_PRICE_OUT_PER_M` and
     `SDF_RUN_SANDBOX_USD_PER_S`; an invalid value returns `503`.
+
+### Added
+
+- **Material decision gate (#60, narrow scope, ADR 0033).** An agent can mark a decision request as material: `sdf-msg request --material --consequence TEXT` (and the `material`/`consequence` fields of the MCP `request` tool). A material request needs a non-empty consequence and at least two distinct options. While it is pending, it blocks its scope until a human resolves it: the worker's subtask, or the whole run when the lead asks. Blocked means no agent turns, no verification, no Attempt start or finish for the affected plan tasks (`DecisionGateError`), and no run success. Policies no longer resolve material requests, and `POST /decision-requests/{id}/resolve` with a policy outcome is refused for them. Any human outcome, including `rejected`, lifts the gate and the agent is told the result. Each hold is written to the run summary under `material_decisions`. Decision request API responses now include `material`, `consequence`, `authority` and `blocks`. Non-material requests behave exactly as before. There is no schema change: materiality is stored in the append-only agent message metadata.

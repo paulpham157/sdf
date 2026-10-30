@@ -331,6 +331,10 @@ def resolve_request(
     elif resolver_kind == "policy":
         if outcome == "approved":
             raise PlanGateError("a policy cannot approve a decision request; only a human can")
+        from .decision_gate import is_material
+
+        if is_material(db, request):
+            raise PlanGateError("a material decision request is resolved only by a human (ADR 0033)")
         actor = f"policy:{resolved_by}"
     else:
         raise ValueError("resolver_kind must be human or policy")
