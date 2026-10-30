@@ -232,6 +232,11 @@ def test_run_config_error_is_400_and_busy_is_429(tmp_path, monkeypatch):
     monkeypatch.delenv("SDF_RUN_AGENT")
     assert client.post("/tasks/TASK-RUNCFG/run", json={"fixture_dir": str(fixture)}).status_code == 400
     monkeypatch.delenv("SDF_SANDBOX_PROVIDER")
+    # Since #70, configured_run_adapter() validates provider keys; use dummies so
+    # the busy path is reached without depending on the real environment.
+    monkeypatch.setenv("E2B_API_KEY", "dummy-e2b-key")
+    monkeypatch.setenv("VULTR_INFERENCE_API_KEY", "dummy-vultr-key")
+    monkeypatch.setenv("DAYTONA_API_KEY", "dummy-daytona-key")
 
     def busy(adapter):
         raise run_adapter.RunBusyError("full")
