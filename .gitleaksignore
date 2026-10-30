@@ -1,0 +1,14 @@
+# Verified false positives only: dummy credentials used as test fixtures
+# (redaction-shape inputs and fake provider keys passed to fake adapters).
+# Format: <commit>:<file>:<rule>:<line>. Add an entry only after confirming
+# the value is not a real credential; never paste the value here.
+0395c65ad0e047aa3929f5e9703eb1f80604e7f2:tests/test_tracing.py:generic-api-key:446
+6f07d0514e8b2d957d7b2e7e295443d201f8cdb3:tests/test_subagents.py:generic-api-key:21
+36b9e899a5522921280496ec45ac58d83759abe9:tests/test_judge_state.py:curl-auth-header:29
+5e3351aae75cdc0bf139fd30a03bf14a43911737:tests/test_pi_agent.py:generic-api-key:29
+c9e236995d759681fafbeadd65590063c2772d3d:tests/test_openai_compatible_agents.py:generic-api-key:33
+183d36df8eac94931b79aa9fe7d2d89548c8c42e:tests/test_opencode_agent.py:generic-api-key:29
+01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:curl-auth-header:29
+01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:generic-api-key:9
+01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:generic-api-key:31
+01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:generic-api-key:32

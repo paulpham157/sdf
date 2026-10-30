@@ -41,6 +41,17 @@ It is hermetic: no secrets, no `SDF_LIVE_*` flags, no provider keys.
   migration step only), so the PostgreSQL integration
   tests run instead of skipping.
 
+`.github/workflows/security.yml` runs on the same triggers plus weekly:
+
+- `CodeQL (python)`: `security-extended` queries; results go to GitHub code
+  scanning (the only job with `security-events: write`).
+- `pip-audit (uv.lock)`: audits the exact hashed set from `uv export --locked
+  --all-groups`; any known vulnerability fails. Fix by upgrading the package
+  (`uv lock --upgrade-package <name>`), not by ignoring the advisory.
+- `gitleaks (full history)`: pinned, checksum-verified binary, `--redact`.
+  `.gitleaksignore` holds fingerprints of verified dummy test fixtures only;
+  never paste a value there. Locally: `gitleaks git . --redact`.
+
 Keep `uv.lock` in sync (`uv lock`); CI fails on a stale lock. A green CI run
 proves only these hermetic contracts. Live tests are skipped there and remain
 a separate, recorded verification step (see below). No lint or type-check
