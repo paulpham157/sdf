@@ -43,7 +43,7 @@ def clean_postgres(postgres_engine):
             "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, routing_decisions, "
             "artifacts, attempts, tasks, graph_nodes, objective_metrics, "
             "outcome_observations, agent_claims, agent_messages, agent_run_members, agent_runs, "
-            "plan_tasks, plans, decision_requests, api_tokens, auth_audit RESTART IDENTITY CASCADE"
+            "plan_tasks, plans, decision_requests, api_tokens, auth_audit, attempt_revisions RESTART IDENTITY CASCADE"
         ))
 
 
@@ -445,3 +445,83 @@ def test_tool_audit_evidence_mode_check_and_migration_0022_on_postgresql(postgre
     with pytest.raises(DBAPIError, match="append-only"), postgres_engine.begin() as connection:
         connection.execute(text(sql), {"id": "TA-X", "mode": "live"})
         connection.execute(text("UPDATE tool_audits SET evidence_mode = 'synthetic' WHERE audit_id = 'TA-X'"))
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="SDF_POSTGRES_TEST_URL is not set")
+def test_revision_bindings_are_fenced_and_0023_round_trips_on_postgresql(postgres_engine, tmp_path, monkeypatch):
+    """#62 / ADR 0032: direct SQL cannot write unbound, mismatched or cross-Attempt rows, or rewrite a revision."""
+
+    from sdf_core.db import ArtifactRow, EvidenceRow
+    from sdf_core.revisions import revision_for_attempt, verify_attempt_revision
+
+    revisions = []
+    with _session(postgres_engine) as db:
+        for name in ("A", "B"):
+            fixture = tmp_path / f"fixture-{name}"
+            fixture.mkdir()
+            (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+            db.add(TaskRow(id=f"TASK-PG-REV-{name}", title="rev", status="created", idempotency_key=f"pg-rev-{name}",
+                           acceptance_criteria=["tests pass"], created_at=utcnow()))
+            db.commit()
+            attempt = ExecutionService(
+                db, workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art",
+                adapter=FakeNativeAdapter("app.py", f"print('{name}')\n"),
+            ).run(task_id=f"TASK-PG-REV-{name}", dispatch_key=f"pg-rev-{name}", fixture=fixture, instructions="x",
+                  commands=[], criterion_checks={"tests pass": [["python", "-c", "print('ok')"]]})
+            assert db.get(TaskRow, f"TASK-PG-REV-{name}").status == "succeeded"
+            revisions.append(revision_for_attempt(db, attempt.id))
+            assert verify_attempt_revision(db, attempt.id)["status"] == "verified"
+        a, b = revisions
+        bound = {row.revision_id for row in db.query(ArtifactRow).filter_by(attempt_id=a.attempt_id)}
+        bound |= {row.revision_id for row in db.query(EvidenceRow).filter_by(attempt_id=a.attempt_id)}
+        assert bound == {a.id}
+
+    artifact = ("INSERT INTO artifacts (id, attempt_id, kind, uri, sha256, size_bytes, created_at, revision_id, "
+                "tree_sha256) VALUES (:id, :attempt, 'diff', 'x', :sha, 0, now(), :rev, :tree)")
+    evidence = ("INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at, "
+                "revision_id, tree_sha256) VALUES (:id, :attempt, 'evaluation', 'PASS', 'c', 1.0, 'synthetic', now(), "
+                ":rev, :tree)")
+    cases = [
+        ({"rev": None, "tree": None}, "missing revision binding"),
+        ({"rev": a.id, "tree": "f" * 64}, "mismatched revision"),
+        ({"rev": b.id, "tree": b.result_tree_sha256}, "cross-Attempt"),
+        ({"rev": "REV-nope", "tree": a.result_tree_sha256}, "unknown revision"),
+    ]
+    for sql in (artifact, evidence):
+        for params, message in cases:
+            with pytest.raises(DBAPIError, match=message), postgres_engine.begin() as connection:
+                connection.execute(text(sql), {"id": "PG-REV-X", "attempt": a.attempt_id, "sha": "0" * 64, **params})
+        with postgres_engine.begin() as connection:  # valid binding; and an unbound legacy Attempt
+            connection.execute(text(sql), {"id": "PG-REV-OK", "attempt": a.attempt_id, "sha": "0" * 64,
+                                           "rev": a.id, "tree": a.result_tree_sha256})
+            connection.execute(text(sql), {"id": "PG-REV-LEGACY", "attempt": "ATTEMPT-PG-LEGACY", "sha": "0" * 64,
+                                           "rev": None, "tree": None})
+    for statement, message in (
+        (f"UPDATE attempt_revisions SET base_tree_sha256 = '{'b' * 64}' WHERE id = '{a.id}'", "immutable"),
+        (f"UPDATE attempt_revisions SET result_tree_sha256 = '{'c' * 64}' WHERE id = '{a.id}'", "set once"),
+        (f"DELETE FROM attempt_revisions WHERE id = '{a.id}'", "cannot be deleted"),
+    ):
+        with pytest.raises(DBAPIError, match=message), postgres_engine.begin() as connection:
+            connection.execute(text(statement))
+
+    def fences():
+        with postgres_engine.connect() as connection:
+            return {r[0] for r in connection.execute(text(
+                "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE '%revision%'"))}
+
+    assert fences() == {"trg_attempt_revisions_guard", "trg_artifacts_revision_binding",
+                        "trg_evidence_revision_binding"}
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    monkeypatch.setenv("SDF_DATABASE_URL", POSTGRES_URL)
+    command.downgrade(config, "0022_tool_audit_mode_check")
+    try:
+        assert fences() == set()
+        columns = {c["name"] for c in inspect(postgres_engine).get_columns("evidence")}
+        assert "revision_id" not in columns and "attempt_revisions" not in inspect(postgres_engine).get_table_names()
+        with postgres_engine.connect() as connection:  # Evidence survived; the append-only trigger still holds
+            assert connection.execute(text("SELECT count(*) FROM evidence")).scalar() >= 4
+    finally:
+        command.upgrade(config, "head")
+    assert len(fences()) == 3
+    with pytest.raises(DBAPIError, match="append-only"), postgres_engine.begin() as connection:
+        connection.execute(text("UPDATE evidence SET status = 'FAIL'"))

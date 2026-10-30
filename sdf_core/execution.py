@@ -35,6 +35,7 @@ from .tools import (
     ToolProxy,
 )
 from .sandbox import FixtureSandbox
+from .revisions import close_revision, record_base_revision
 
 
 @dataclass(frozen=True)
@@ -257,7 +258,11 @@ class ExecutionService:
 
         try:
             workspace = self.workspaces.create(attempt_id, fixture)
+            # ADR 0032 (#62): the snapshot this Attempt starts from.
+            record_base_revision(self.db, attempt, fixture=fixture, workspace=workspace)
+            self.db.commit()
         except Exception:
+            self.db.rollback()
             self._fail_attempt(task, attempt)
             raise
         return BegunAttempt(attempt, workspace, existing=False)
@@ -288,14 +293,26 @@ class ExecutionService:
         workspace = self.workspaces.root / attempt_id
         before = fixture
         try:
+            # ADR 0032 (#62): fix the result snapshot before anything refers to it.
+            revision = close_revision(
+                self.db, attempt, fixture=fixture, workspace=workspace,
+                reported_result_tree=result.result_tree_sha256, base_commit=result.base_commit,
+                base_commit_source=result.base_commit_source,
+            )
+        except Exception:
+            self.db.rollback()
+            self._fail_attempt(task, attempt)
+            raise
+        binding = {"revision_id": revision.id, "tree_sha256": revision.result_tree_sha256}
+        try:
             diff = self.artifacts.capture_diff(artifact_id=f"{attempt_id}-DIFF", before=before, after=workspace, files=result.changed_files)
             process = self.artifacts.capture_process(artifact_id=f"{attempt_id}-LOG", stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_code)
         except Exception:
             self._fail_attempt(task, attempt)
             raise
         for artifact in (diff, process):
-            self.db.add(ArtifactRow(id=artifact.artifact_id, attempt_id=attempt_id, kind=artifact.kind, uri=str(artifact.path), sha256=artifact.sha256, size_bytes=artifact.size_bytes, created_at=utcnow()))
-            self.db.add(GraphNodeRow(id=artifact.artifact_id, kind="artifact", title=artifact.kind, source=str(artifact.path), owner="execution", confidence=1.0, created_at=utcnow()))
+            self.db.add(ArtifactRow(id=artifact.artifact_id, attempt_id=attempt_id, kind=artifact.kind, uri=str(artifact.path), sha256=artifact.sha256, size_bytes=artifact.size_bytes, created_at=utcnow(), **binding))
+            self.db.add(GraphNodeRow(id=artifact.artifact_id, kind="artifact", title=artifact.kind, source=str(artifact.path), owner="execution", confidence=1.0, created_at=utcnow(), metadata_json=dict(binding)))
         # PostgreSQL's endpoint-integrity trigger runs per edge row. Flush the
         # artifact graph nodes first so the trigger can observe them.
         self.db.flush()
@@ -330,6 +347,7 @@ class ExecutionService:
                 evaluator_artifact = self.artifacts.capture_evaluator_output(
                     artifact_id=f"{evidence.evidence_id}-OUTPUT",
                     evidence=evidence,
+                    revision=binding,
                 )
             except Exception:
                 self._fail_attempt(task, attempt)
@@ -343,6 +361,7 @@ class ExecutionService:
                     sha256=evaluator_artifact.sha256,
                     size_bytes=evaluator_artifact.size_bytes,
                     created_at=utcnow(),
+                    **binding,
                 )
             )
             self.db.add(
@@ -355,7 +374,7 @@ class ExecutionService:
                     confidence=evidence.confidence,
                     created_at=utcnow(),
                     metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion,
-                                   "runner": evidence.runner},
+                                   "runner": evidence.runner, **binding},
                 )
             )
             self.db.flush()
@@ -387,6 +406,7 @@ class ExecutionService:
                     measured_at=utcnow(),
                     created_at=utcnow(),
                     **({"evidence_mode": evidence_mode} if evidence_mode else {}),
+                    **binding,
                 )
             )
             self.db.add(
@@ -398,7 +418,8 @@ class ExecutionService:
                     owner="evaluator",
                     confidence=evidence.confidence,
                     created_at=utcnow(),
-                    metadata_json={"criterion": evidence.criterion, "artifact_ref": evaluator_artifact.artifact_id},
+                    metadata_json={"criterion": evidence.criterion, "artifact_ref": evaluator_artifact.artifact_id,
+                                   **binding},
                 )
             )
             self.db.flush()

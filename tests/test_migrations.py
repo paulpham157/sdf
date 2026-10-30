@@ -43,3 +43,47 @@ def test_evidence_rows_are_append_only_at_session_boundary():
         db.delete(row)
         with pytest.raises(ValueError, match="append-only"):
             db.commit()
+
+
+def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkeypatch):
+    """#62: 0023 adds the revision table and nullable bindings; legacy rows stay unbound and untouched."""
+
+    from sqlalchemy import text
+
+    database_url = f"sqlite:///{tmp_path / 'm0023.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    engine = create_engine(database_url)
+
+    def evidence_ddl():
+        with engine.connect() as connection:
+            return connection.execute(text("SELECT sql FROM sqlite_master WHERE name = 'evidence'")).scalar()
+
+    command.upgrade(config, "0022_tool_audit_mode_check")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at) "
+            "VALUES ('EV-LEGACY', 'ATTEMPT-LEGACY', 'evaluation', 'PASS', 'c', 1.0, 'synthetic', '2026-10-01')"))
+        connection.execute(text(
+            "INSERT INTO artifacts (id, attempt_id, kind, uri, sha256, size_bytes, created_at) "
+            "VALUES ('ART-LEGACY', 'ATTEMPT-LEGACY', 'diff', 'x', :sha, 0, '2026-10-01')"), {"sha": "0" * 64})
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    assert "attempt_revisions" in inspector.get_table_names()
+    for table in ("artifacts", "evidence"):
+        assert {"revision_id", "tree_sha256"} <= {c["name"] for c in inspector.get_columns(table)}
+    assert "ck_evidence_evidence_mode" in evidence_ddl()  # no rebuild dropped the CHECK
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT revision_id, tree_sha256 FROM evidence")).all() == [(None, None)]
+        assert connection.execute(text("SELECT revision_id, tree_sha256 FROM artifacts")).all() == [(None, None)]
+
+    command.downgrade(config, "0022_tool_audit_mode_check")
+    inspector = inspect(engine)
+    assert "attempt_revisions" not in inspector.get_table_names()
+    assert "revision_id" not in {c["name"] for c in inspector.get_columns("evidence")}
+    assert "ck_evidence_evidence_mode" in evidence_ddl()
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT id FROM evidence")).scalars().all() == ["EV-LEGACY"]
+    command.upgrade(config, "head")
+    assert "attempt_revisions" in inspect(engine).get_table_names()
+    engine.dispose()

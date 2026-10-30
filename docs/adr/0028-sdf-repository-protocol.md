@@ -57,5 +57,9 @@ store.
   agent behaviour; reports still depend on the agent following the guide.
 - Product proposals #60 (unresolved decisions as an SDF gate) and #62
   (binding artifacts to immutable revisions) remain separate and are not
-  approved by this decision.
+  approved by this decision. The maintainer later approved both on
+  2026-10-31: #62 as written ([ADR 0032](0032-attempt-revisions.md)) and #60
+  in a narrow scope (a pending *material* agent decision request blocks
+  dispatch and consequential mutation until resolved), recorded in its own
+  ADR with that change.
 - No GitHub branch-protection, CI or agent-permission change is made.

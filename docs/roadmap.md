@@ -50,7 +50,8 @@ These slices are a proposed implementation breakdown, not completed work. Histor
 
 ## Current local evidence boundary
 
-The fixture/evaluator loop, append-only Evidence and graph-edge guards, durable
+The fixture/evaluator loop, append-only Evidence and graph-edge guards,
+revision-bound artifacts and Evidence (ADR 0032), durable
 Tool Proxy audit/events, measured routing, Herdr/E2B seams, workspace binding,
 and fail-closed public process actions are implemented and covered by local
 tests. The persistent Herdr transport can select Daytona beside E2B via

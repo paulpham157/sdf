@@ -15,6 +15,12 @@ class AdapterResult:
     stdout: str = ""
     stderr: str = ""
     exit_code: int = 0
+    # ADR 0032 (#62): optional host-side revision facts an adapter computed
+    # (never taken from the agent). ExecutionService recomputes the result
+    # tree itself and refuses a mismatch.
+    result_tree_sha256: str | None = None
+    base_commit: str | None = None
+    base_commit_source: str | None = None
 
 
 class NativeAdapter(Protocol):
