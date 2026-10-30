@@ -51,7 +51,8 @@ from .db import (
 from .evaluator import DeterministicEvaluator
 from .execution import ExecutionService
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode
-from .observability import classify_error
+from .fixtures import resolve_fixture, server_write_roots
+from .observability import classify_error, redact
 from . import tracing
 from .model import AttemptState, TaskState, utcnow
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
@@ -277,6 +278,7 @@ class Coordinator:
             raise LookupError("plan not found")
         if plan.status != "approved":
             raise PlanGateError(f"plan {plan_id} is {plan.status}; a human must approve it before any run starts")
+        self._plan_fixture(plan)  # refused before a run row exists; re-checked in _execute
         subtasks = plan.content["subtasks"]
         for sub in subtasks:
             task = self.db.get(TaskRow, task_id_for(plan_id, sub["key"]))
@@ -340,7 +342,6 @@ class Coordinator:
             raise PlanGateError("plan is not approved")
         config = RunConfig.from_dict(run.config)
         cancel = _CANCEL_EVENTS.setdefault(run_id, threading.Event())
-        fixture = Path(plan.content["fixture_dir"]).expanduser().resolve()
         started = time.monotonic()
         agents: dict[str, _Agent] = {}
         subtasks: dict[str, _Subtask] = {}
@@ -356,6 +357,9 @@ class Coordinator:
         core_log: list[dict[str, Any]] = []
         timings: dict[str, float] = {}
         try:
+            # Re-checked at run time (the tree may have changed since approval);
+            # a refusal fails the run before any sandbox exists.
+            fixture = self._plan_fixture(plan)
             members_rows = self.db.scalars(select(AgentRunMemberRow).where(AgentRunMemberRow.run_id == run_id)).all()
             for row in members_rows:
                 role_cfg = config.lead if row.role == "lead" else config.worker
@@ -447,7 +451,7 @@ class Coordinator:
                         try:
                             res = hub.ingest(aid, envelope, sandbox_id=ag.sandbox.sandbox_id)
                         except EnvelopeError as exc:
-                            violations.append({"agent": aid, "error": str(exc)[:300]})
+                            violations.append({"agent": aid, "error": _safe(str(exc), 300)})
                             self.db.rollback()
                             note = hub.post_from_host(aid, f"Your message was refused: {exc}")
                             pending.append((aid, note))
@@ -520,7 +524,7 @@ class Coordinator:
                     try:
                         has_mail = ag.sandbox.inbox_count() > 0
                     except Exception as exc:  # noqa: BLE001
-                        violations.append({"agent": aid, "error": f"inbox check failed: {exc}"[:300]})
+                        violations.append({"agent": aid, "error": _safe(f"inbox check failed: {exc}", 300)})
                         ag.wake = True
                         continue
                     if not has_mail:
@@ -569,7 +573,7 @@ class Coordinator:
                 time.sleep(config.poll_interval_s)
         except Exception as exc:  # noqa: BLE001 - recorded on the run, then cleanup
             self.db.rollback()
-            error = f"{type(exc).__name__}: {str(exc)[-800:]}"
+            error = f"{type(exc).__name__}: {redact(str(exc))[-800:]}"
             outcome = "failed"
         finally:
             with tracing.span("sdf.sandbox.cleanup", run_id=run_id, agents=len(agents)) as cspan:
@@ -580,7 +584,7 @@ class Coordinator:
                     try:
                         still_running = self.cleanup_check(set(closed))
                     except Exception as exc:  # noqa: BLE001
-                        violations.append({"agent": "host", "error": f"cleanup check failed: {exc}"[:300]})
+                        violations.append({"agent": "host", "error": _safe(f"cleanup check failed: {exc}", 300)})
                 if still_running:
                     tracing.set_attributes(cspan, cleanup_error=f"{len(still_running)} sandbox(es) still running")
                     tracing.mark_error("cleanup_failed", cspan)
@@ -589,6 +593,21 @@ class Coordinator:
                               time.monotonic() - started, closed, still_running, core_log)
 
     # -- helpers --------------------------------------------------------------
+    def _plan_fixture(self, plan: PlanRow) -> Path:
+        """The Plan's fixture, confined to ``SDF_FIXTURES_ROOT`` like ``POST /plans``.
+
+        New Plans store the resolved absolute path; a legacy row holding a
+        relative string is resolved against the fixtures root (never the
+        server's cwd).  Anything outside the root, the root itself, or a
+        workspace/artifact tree is refused.
+        """
+
+        try:
+            return resolve_fixture(str(plan.content.get("fixture_dir") or ""),
+                                   write_roots=server_write_roots((self.workspace_root, self.artifact_root)))
+        except ValueError as exc:
+            raise PlanGateError(f"plan {plan.id}: {exc}") from exc
+
     def _member_row(self, run_id: str, agent_id: str) -> AgentRunMemberRow:
         return self.db.scalar(select(AgentRunMemberRow).where(
             AgentRunMemberRow.run_id == run_id, AgentRunMemberRow.agent_id == agent_id))
@@ -619,7 +638,7 @@ class Coordinator:
         try:
             return sorted(ag.sandbox.list_outbox())
         except Exception as exc:  # noqa: BLE001
-            violations.append({"agent": ag.spec.agent_id, "error": f"outbox list failed: {exc}"[:300]})
+            violations.append({"agent": ag.spec.agent_id, "error": _safe(f"outbox list failed: {exc}", 300)})
             return []
 
     @staticmethod
@@ -636,7 +655,7 @@ class Coordinator:
             ag.sandbox.remove_outbox(name)
             return data
         except Exception as exc:  # noqa: BLE001
-            violations.append({"agent": aid, "error": f"outbox read failed: {exc}"[:300]})
+            violations.append({"agent": aid, "error": _safe(f"outbox read failed: {exc}", 300)})
             return None
 
     def _serve_core(self, aid: str, ag: _Agent, service: CoreQueryService, core_log: list[dict[str, Any]],
@@ -647,7 +666,7 @@ class Coordinator:
         try:
             names = sorted(lister())
         except Exception as exc:  # noqa: BLE001
-            violations.append({"agent": aid, "error": f"core request list failed: {exc}"[:300]})
+            violations.append({"agent": aid, "error": _safe(f"core request list failed: {exc}", 300)})
             return
         for name, size in names:
             if name.startswith("."):
@@ -657,7 +676,7 @@ class Coordinator:
                     else ag.sandbox.read_core_request(name)
                 ag.sandbox.remove_core_request(name)
             except Exception as exc:  # noqa: BLE001
-                violations.append({"agent": aid, "error": f"core request read failed: {exc}"[:300]})
+                violations.append({"agent": aid, "error": _safe(f"core request read failed: {exc}", 300)})
                 continue
             if not raw:
                 violations.append({"agent": aid, "error": f"core request {name[:40]!r} refused (name or size)"})
@@ -668,12 +687,12 @@ class Coordinator:
             except Exception:  # noqa: BLE001
                 tool = "?"
             core_log.append({"agent": aid, "tool": tool, "ok": response["ok"], "denied": response.get("denied", False),
-                             "error": response.get("error")})
+                             "error": _safe(response["error"], 500) if response.get("error") else response.get("error")})
             if response.get("id"):
                 try:
                     ag.sandbox.write_core_response(f"{response['id']}.json", response_payload(response))
                 except Exception as exc:  # noqa: BLE001
-                    violations.append({"agent": aid, "error": f"core response write failed: {exc}"[:300]})
+                    violations.append({"agent": aid, "error": _safe(f"core response write failed: {exc}", 300)})
 
     def _deliver(self, ag: _Agent, message: Any, violations: list[dict[str, Any]]) -> bool:
         name = f"{message.seq:08d}-{message.id.lower().replace('msg-', '')}.json"
@@ -683,7 +702,7 @@ class Coordinator:
                 return True
             except Exception as exc:  # noqa: BLE001
                 if attempt == 2:
-                    violations.append({"agent": ag.spec.agent_id, "error": f"delivery failed: {exc}"[:300]})
+                    violations.append({"agent": ag.spec.agent_id, "error": _safe(f"delivery failed: {exc}", 300)})
                 time.sleep(0.2)
         return False
 
@@ -823,6 +842,12 @@ def _files(root: Path) -> dict[str, Path]:
 
 def _within(rel: str, prefixes: list[str]) -> bool:
     return any(rel == p.rstrip("/") or rel.startswith(p.rstrip("/") + "/") for p in prefixes)
+
+
+def _safe(text: str, limit: int) -> str:
+    """Redact secrets first, then truncate (a cut secret would escape the redaction)."""
+
+    return redact(str(text))[:limit]
 
 
 def _apply_scoped(fixture: Path, collected: Path, workspace: Path, allowed: list[str],

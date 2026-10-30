@@ -41,6 +41,20 @@ def test_json_logging_carries_context_and_redacts(monkeypatch):
     obs.configure_logging({"SDF_LOG_FORMAT": "text"}, stream=stream)
 
 
+def test_text_logging_escapes_line_breaks_in_caller_values():
+    stream = io.StringIO()
+    obs.configure_logging({"SDF_LOG_FORMAT": "text"}, stream=stream)
+    log = obs.get_logger("t")
+    forged = "OBJ-1\n2026-01-01 INFO sdf.api forged_event\r"
+    with obs.log_context(task_id="T-1\nfake"):
+        log.info("observation %s", "a\r\nb", extra={"objective_id": forged})
+    out = stream.getvalue()
+    assert out.count("\n") == 1 and out.endswith("\n") and "\r" not in out
+    assert "objective_id=OBJ-1\\n2026-01-01 INFO sdf.api forged_event\\r" in out
+    assert "task_id=T-1\\nfake" in out and "observation a\\r\\nb" in out
+    obs.configure_logging({"SDF_LOG_FORMAT": "json"}, stream=io.StringIO())
+
+
 def test_redact_value_masks_secret_keys():
     out = obs.redact_value({"api_key": "x" * 20, "nested": {"password": "hunter2hunter2"}, "ok": "fine"})
     assert out["api_key"] == obs.REDACTED and out["nested"]["password"] == obs.REDACTED and out["ok"] == "fine"
@@ -216,6 +230,33 @@ def test_fixture_dir_confined_to_fixtures_root(tmp_path, monkeypatch):
         assert res.status_code == 400, (bad, res.text)
         assert client.post("/plans", json={"title": "p", "fixture_dir": bad, "tasks": []}).status_code in (400, 422)
     assert client.post("/tasks/TASK-FIXROOT/run", json={"fixture_dir": "ok"}).status_code == 200
+    # The fixtures root itself is not a fixture (it resolved to the cwd for Plans before).
+    assert client.post("/tasks/TASK-FIXROOT/run", json={"fixture_dir": "."}).status_code == 400
+
+
+def test_plan_stores_the_resolved_confined_fixture(tmp_path, monkeypatch):
+    import uuid
+
+    from sdf_core.db import PlanRow
+    from tests.agent_comm_support import make_fixture, plan_dict
+
+    root = tmp_path / "fixtures"
+    fixture = make_fixture(root)
+    # A same-named directory next to the cwd must never be what a Plan runs on.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / fixture.name).mkdir()
+    monkeypatch.setenv("SDF_FIXTURES_ROOT", str(root))
+    for bad in (".", str(root), "..", str(tmp_path / fixture.name)):
+        body = {**plan_dict(fixture, f"PLAN-FX-{uuid.uuid4().hex[:8]}"), "fixture_dir": bad}
+        res = client.post("/plans", json=body)
+        assert res.status_code == 400, (bad, res.text)
+    for raw in (fixture.name, str(fixture)):
+        plan_id = f"PLAN-FX-{uuid.uuid4().hex[:8]}"
+        res = client.post("/plans", json={**plan_dict(fixture, plan_id), "fixture_dir": raw})
+        assert res.status_code == 201, (raw, res.text)
+        with SessionLocal() as session:
+            stored = session.get(PlanRow, plan_id).content["fixture_dir"]
+        assert stored == str(fixture.resolve()) and os.path.isabs(stored), (raw, stored)
 
 
 def test_run_config_error_is_400_and_busy_is_429(tmp_path, monkeypatch):

@@ -4,6 +4,23 @@
 
 ### Breaking API changes
 
+- **Fixture confinement and error hardening (CodeQL triage).**
+  - `POST /plans` now stores the resolved, confined absolute `fixture_dir`.
+    Before, it validated the path against `SDF_FIXTURES_ROOT` but stored the
+    raw string, and the Coordinator resolved that string against the server's
+    working directory: `"."` passed validation (it is the fixtures root) yet
+    ran on the server's cwd, and any relative name ran on `<cwd>/<name>`.
+  - The Coordinator re-checks the Plan fixture (`sdf_core/fixtures.py`, shared
+    with the API) in `create_run` (409) and at execution (failed run, no
+    sandbox). Legacy Plan rows with a relative path resolve against the
+    fixtures root; legacy absolute paths outside the root are now refused.
+  - `fixture_dir` may no longer be the fixtures root itself (400).
+  - Copying a fixture that contains a symlink into an Attempt workspace is
+    refused (the copy used to follow it and read the host target).
+  - Run errors, run-summary violations and Core query errors are redacted
+    (`observability.redact`) before they are stored and returned (CodeQL alert 19).
+  - `SDF_LOG_FORMAT=text` escapes CR/LF in the message, context ids and extra
+    values, so a caller-supplied value cannot forge a log line (CodeQL alert 21).
 - **Review follow-ups for #73.**
   - `POST /attempts/{id}/actions` now reports the mode of the `policy_decided`
     row this delivery wrote, looked up by id (no timestamp ties).

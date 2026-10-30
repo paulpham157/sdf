@@ -167,14 +167,28 @@ class JsonFormatter(logging.Formatter):
         return redact(json.dumps(redact_value(payload), default=str, sort_keys=False))
 
 
+def _one_line(value: Any) -> str:
+    """Escape CR/LF so one record stays one text line (log injection, CodeQL py/log-injection)."""
+
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
+
 class TextFormatter(logging.Formatter):
+    """``ts LEVEL logger message ids extra``; caller-supplied values cannot start a new line.
+
+    Message, context ids and extra values are escaped (``\\r``, ``\\n``); only a
+    traceback (``exc_info``), which the server itself produces, spans lines.
+    """
+
     def format(self, record: logging.LogRecord) -> str:
-        ids = " ".join(f"{k}={getattr(record, k)}" for k in CONTEXT_FIELDS if getattr(record, k, None) is not None)
+        ids = " ".join(f"{k}={_one_line(getattr(record, k))}" for k in CONTEXT_FIELDS
+                       if getattr(record, k, None) is not None)
         extra = " ".join(
-            f"{k}={v}" for k, v in vars(record).items()
+            f"{k}={_one_line(v)}" for k, v in vars(record).items()
             if k not in _RESERVED and k not in CONTEXT_FIELDS and not k.startswith("_")
         )
-        line = f"{self.formatTime(record)} {record.levelname} {record.name} {record.getMessage()} {ids} {extra}".rstrip()
+        line = (f"{self.formatTime(record)} {record.levelname} {record.name} {_one_line(record.getMessage())} "
+                f"{ids} {extra}").rstrip()
         if record.exc_info:
             line += "\n" + self.formatException(record.exc_info)
         return redact(line)

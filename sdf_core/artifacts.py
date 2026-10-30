@@ -27,8 +27,15 @@ class WorkspaceManager:
         destination = self.root / attempt_id
         if destination.exists():
             raise FileExistsError(f"workspace already exists: {attempt_id}")
+        # A symlink in the fixture would be followed by the copy below and pull
+        # its host target (any file the server can read) into the agent's
+        # workspace, so a fixture with one is refused before anything is copied.
+        sources = sorted(fixture.rglob("*"))
+        for source in sources:
+            if source.is_symlink():
+                raise ValueError(f"fixture must not contain symlinks: {source.relative_to(fixture).as_posix()}")
         destination.mkdir(parents=True)
-        for source in fixture.rglob("*"):
+        for source in sources:
             relative = source.relative_to(fixture)
             target = destination / relative
             if source.is_dir():
