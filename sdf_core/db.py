@@ -255,6 +255,7 @@ class ToolAuditRow(Base):
             sqlite_where=text("event <> 'policy_decided'"),
             postgresql_where=text("event <> 'policy_decided'"),
         ),
+        CheckConstraint(EVIDENCE_MODE_SQL, name="ck_tool_audits_evidence_mode"),
     )
     audit_id: Mapped[str] = mapped_column(String(120), primary_key=True)
     attempt_id: Mapped[str] = mapped_column(String(120), index=True)

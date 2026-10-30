@@ -79,9 +79,10 @@ usage-ledger `sandbox` row.
      can add the constraint `NOT VALID` and `VALIDATE` it beforehand. The
      migration then adds only the missing constraints and validates any that
      are still `NOT VALID`.
-   - `tool_audits.evidence_mode` is not constrained. Nothing writes it, and
-     the SQLite table rebuild would have to carry its partial unique index
-     (follow-up: #71).
+   - `tool_audits` is covered by migration `0022_tool_audit_mode_check`
+     (`ck_tool_audits_evidence_mode`, #71). It uses the same fail-closed
+     pre-count and PostgreSQL `NOT VALID` reuse as `0021`. See §9 for the
+     writer and the SQLite rebuild.
 
 6. **History is not rewritten.** Evidence is append-only (ADR 0002 and the
    triggers). `/run` and plan-run rows written before this change keep the
@@ -102,6 +103,40 @@ usage-ledger `sandbox` row.
 
 8. **Meaning.** `live` means a real agent was dispatched to a real sandbox and
    worked on a fixture. It is not production impact; ADR 0006 still applies.
+
+9. **Tool Proxy audits carry their Attempt's mode (#71).**
+   - **Writer:** `SqlAlchemyAuditSink` stamps every row it writes
+     (`policy_decided`, `action_claimed`, `action_executed`,
+     `action_failed`) with the Attempt's stored `evidence_mode` **at the
+     moment the row is written**. It reads the mode from the database, never
+     from the request. A row for an unknown Attempt is `synthetic`.
+   - **Promotion rule:** tool audits are append-only (the PostgreSQL
+     trigger from ADR 0011, the session guard on SQLite). Rows written while a
+     live `/run` Attempt was still `synthetic` (before its sandbox existed)
+     therefore stay `synthetic` and are never rewritten. Rows written after
+     the promotion are `live`. An agent's Tool Proxy calls happen during its
+     turns, after the sandbox exists, so in practice a live run's audits are
+     `live`. A row's mode answers "had this Attempt reached a real sandbox
+     when the action was audited?".
+   - **Readers:** the timeline's tool-audit entries and the
+     `POST /attempts/{id}/actions` response now include `evidence_mode`.
+     The scorecard does not read `tool_audits`, so it is unchanged.
+   - **SQLite rebuild (`0022`):** SQLite cannot add a CHECK in place, so the
+     table is rebuilt (batch "move and copy"). With the current SQLAlchemy,
+     the batch already keeps the partial unique index
+     `uq_tool_audits_execution_event` (`WHERE event <> 'policy_decided'`,
+     the ADR 0026 idempotency fence), the other indexes, and the
+     `evidence_mode DEFAULT 'synthetic' NOT NULL` column. The migration does
+     not rely on that:
+     - it records every index and trigger CREATE statement on the table
+       beforehand;
+     - it restores any that are missing or changed;
+     - it raises if the result still differs.
+
+     SQLite has no triggers on this table; its append-only fence is the ORM
+     session guard, which a rebuild cannot affect. On PostgreSQL,
+     `ADD CONSTRAINT` neither updates rows nor fires the `BEFORE UPDATE OR
+     DELETE` append-only trigger, and the trigger and indexes are untouched.
 
 ## Consequences
 
@@ -135,8 +170,20 @@ Local tests:
 - `tests/test_agent_comm.py` covers plan-run Attempts and retries matching
   their Evidence, and a worker whose sandbox never started staying
   `synthetic`.
-- `tests/test_postgres_integration.py` covers the constraint, the refusal for
-  each table, and the operator `NOT VALID` path on PostgreSQL when
+- `tests/test_tool_audit_evidence_mode.py` (#71) covers:
+  - every audit event carrying the Attempt's mode;
+  - the promotion rule (earlier rows stay `synthetic`);
+  - an unknown Attempt;
+  - a Tool Proxy call during a live `/run` (fake transport);
+  - the actions response and the timeline;
+  - the CHECK;
+  - migration `0022` on SQLite: identical indexes and column definition
+    before and after, the partial unique fence still enforced, the default
+    still applied, a round-trip, refusal of a bad legacy row without rewrite,
+    and the restore safety net.
+- `tests/test_postgres_integration.py` covers the constraints, the refusal for
+  each table, the operator `NOT VALID` path, and for `0022` that the
+  append-only trigger and the partial index survive, on PostgreSQL when
   `SDF_POSTGRES_TEST_URL` is set.
 
 Live checks:

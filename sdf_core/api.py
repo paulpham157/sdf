@@ -48,7 +48,7 @@ from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
 from .impact_repository import load_metric_declaration, load_observations, load_scorecard_facts
 from . import auth as _auth
-from .db import AuthAuditRow
+from .db import AuthAuditRow, ToolAuditRow
 
 
 DATABASE_URL = os.getenv("SDF_DATABASE_URL", "sqlite+pysqlite:///:memory:")
@@ -807,6 +807,10 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, request: Re
         "reason": result.decision.reason,
         "value": value,
         "error": result.error,
+        # ADR 0031 (#71): the mode stamped on this action's audit rows.
+        "evidence_mode": db.scalar(select(ToolAuditRow.evidence_mode).where(
+            ToolAuditRow.attempt_id == attempt_id, ToolAuditRow.action_id == action.action_id,
+        ).order_by(ToolAuditRow.created_at.desc()).limit(1)),
     }
 
 

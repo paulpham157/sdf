@@ -70,7 +70,8 @@ def _attempt_entries(db: Session, attempt_ids: list[str]) -> list[dict[str, Any]
                           category=category_of(e.kind).value, acceptance_evidence=False, payload=e.payload))
     for t in db.scalars(select(ToolAuditRow).where(ToolAuditRow.attempt_id.in_(attempt_ids))):
         out.append(_entry(t.created_at, "tool_audit", t.event, attempt_id=t.attempt_id, tool=t.tool,
-                          action=t.action, decision=t.decision, outcome=t.outcome, detail=t.detail))
+                          action=t.action, decision=t.decision, outcome=t.outcome, detail=t.detail,
+                          evidence_mode=t.evidence_mode))
     for ev in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id.in_(attempt_ids))):
         out.append(_entry(ev.created_at, "evidence", ev.kind, attempt_id=ev.attempt_id, status=ev.status,
                           criterion=ev.criterion, exit_code=ev.exit_code, evidence_mode=ev.evidence_mode))

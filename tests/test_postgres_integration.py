@@ -389,7 +389,59 @@ def test_evidence_mode_check_constraint_and_migration_0021_on_postgresql(postgre
     command.upgrade(config, "head")
     with postgres_engine.connect() as connection:
         rows = dict(connection.execute(text(
-            "SELECT conname, convalidated FROM pg_constraint WHERE conname LIKE 'ck_%_evidence_mode'")).all())
+            "SELECT conname, convalidated FROM pg_constraint "
+            "WHERE conname IN ('ck_evidence_evidence_mode', 'ck_attempts_evidence_mode')")).all())
     assert rows == {"ck_evidence_evidence_mode": True, "ck_attempts_evidence_mode": True}
     with pytest.raises(DBAPIError, match="evidence_mode"), postgres_engine.begin() as connection:
         connection.execute(text(sql[table]), {"id": "PG-BAD2", "mode": "production"})
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="SDF_POSTGRES_TEST_URL is not set")
+def test_tool_audit_evidence_mode_check_and_migration_0022_on_postgresql(postgres_engine, monkeypatch):
+    """#71: tool_audits holds only known modes; 0022 keeps the trigger and the partial index, never rewrites."""
+    sql = ("INSERT INTO tool_audits (audit_id, attempt_id, action_id, actor, tool, action, resource, context, event, "
+           "decision, executed, outcome, detail, created_at, evidence_mode) VALUES (:id, 'ATTEMPT-PG-TA', :id, "
+           "'test', 'filesystem', 'read', '.', '{}', 'policy_decided', 'allow', false, 'decided', 'test', now(), :mode)")
+
+    def schema():
+        with postgres_engine.connect() as connection:
+            triggers = {r[0] for r in connection.execute(text(
+                "SELECT tgname FROM pg_trigger WHERE tgrelid = 'tool_audits'::regclass AND NOT tgisinternal"))}
+            indexes = dict(connection.execute(text(
+                "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'tool_audits'")).all())
+        return triggers, indexes
+
+    with postgres_engine.begin() as connection:
+        connection.execute(text(sql), {"id": "TA-LIVE", "mode": "live"})
+    with pytest.raises(DBAPIError, match="evidence_mode"), postgres_engine.begin() as connection:
+        connection.execute(text(sql), {"id": "TA-BAD", "mode": "production"})
+    at_head = schema()
+    assert "trg_tool_audits_append_only" in at_head[0]
+    assert "WHERE" in at_head[1]["uq_tool_audits_execution_event"]
+
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    monkeypatch.setenv("SDF_DATABASE_URL", POSTGRES_URL)
+    command.downgrade(config, "0021_evidence_mode_check")
+    try:
+        with postgres_engine.begin() as connection:
+            connection.execute(text(sql), {"id": "TA-ODD", "mode": "staging"})
+        with pytest.raises(RuntimeError, match="1 tool_audits row"):
+            command.upgrade(config, "head")
+        with postgres_engine.connect() as connection:  # nothing was rewritten
+            assert dict(connection.execute(text("SELECT audit_id, evidence_mode FROM tool_audits")).all()) == {
+                "TA-LIVE": "live", "TA-ODD": "staging"}
+    finally:
+        with postgres_engine.begin() as connection:
+            connection.execute(text("TRUNCATE TABLE tool_audits"))
+    # Operator path for a large table: pre-created NOT VALID is reused and validated.
+    with postgres_engine.begin() as connection:
+        connection.execute(text("ALTER TABLE tool_audits ADD CONSTRAINT ck_tool_audits_evidence_mode "
+                                "CHECK (evidence_mode IN ('synthetic', 'live')) NOT VALID"))
+    command.upgrade(config, "head")
+    with postgres_engine.connect() as connection:
+        assert connection.execute(text("SELECT convalidated FROM pg_constraint "
+                                       "WHERE conname = 'ck_tool_audits_evidence_mode'")).scalar() is True
+    assert schema() == at_head  # trigger and indexes unchanged
+    with pytest.raises(DBAPIError, match="append-only"), postgres_engine.begin() as connection:
+        connection.execute(text(sql), {"id": "TA-X", "mode": "live"})
+        connection.execute(text("UPDATE tool_audits SET evidence_mode = 'synthetic' WHERE audit_id = 'TA-X'"))
