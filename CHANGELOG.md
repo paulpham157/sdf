@@ -4,6 +4,19 @@
 
 ### Breaking API changes
 
+- **Tool Proxy audits carry the evidence mode (#71, ADR 0031 §9).**
+  - Every `tool_audits` row is stamped with its Attempt's `evidence_mode`
+    when it is written, so audits from a live `/run` are `live`. Rows
+    written before the Attempt's promotion stay `synthetic` (append-only,
+    never rewritten). A row for an unknown Attempt is `synthetic`.
+  - `POST /attempts/{id}/actions` and the timeline's tool-audit entries now
+    include `evidence_mode`.
+  - Migration `0022_tool_audit_mode_check` adds `ck_tool_audits_evidence_mode`
+    (`synthetic`, `live`). It refuses to run if a stored row holds another
+    value, and never rewrites rows. On SQLite it rebuilds the table and
+    verifies that every index (including the partial unique fence) and the
+    column default are unchanged. On PostgreSQL it reuses an operator's
+    `NOT VALID` constraint.
 - **Live Evidence mode (Decision #8 option B, ADR 0031).**
   - An Attempt and its Evidence are `evidence_mode = "live"` once the run
     reached a real sandbox. That means E2B or Daytona via the live `/run`

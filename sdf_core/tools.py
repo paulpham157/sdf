@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .db import AttemptRow, RuntimeEventRow, ToolAuditRow
+from .impact import EvidenceMode
 from .model import AttemptState
 from .events import TOOL_PROXY_SOURCE, TRUSTED_ACTION_SOURCES, UntrustedEventError
 from .runtime import RuntimeEvent, RuntimeEventKind, RuntimeStatus, SqlAlchemyRuntimeEventSink
@@ -45,6 +46,18 @@ class AuditSink(Protocol):
 
 
 class ReplayAwareAuditSink(AuditSink, Protocol):
+    def _evidence_mode(self, attempt_id: str) -> str:
+        """The Attempt's mode at the moment this row is written (ADR 0031, #71).
+
+        Audit rows are append-only, so a row keeps the mode it was written
+        with: rows written before a live Attempt's promotion (no sandbox yet)
+        stay ``synthetic`` and are never rewritten. A row for an unknown
+        Attempt is ``synthetic``.
+        """
+
+        mode = self.db.scalar(select(AttemptRow.evidence_mode).where(AttemptRow.id == attempt_id))
+        return EvidenceMode.LIVE.value if mode == EvidenceMode.LIVE.value else EvidenceMode.SYNTHETIC.value
+
     def has_event(self, *, attempt_id: str, action_id: str, event: AuditEvent) -> bool:
         """Return whether a durable outcome already exists for an action."""
 
@@ -125,6 +138,18 @@ class SqlAlchemyAuditSink:
         # The authenticated principal behind every row this sink writes (#51).
         self.principal = principal
 
+    def _evidence_mode(self, attempt_id: str) -> str:
+        """The Attempt's mode at the moment this row is written (ADR 0031, #71).
+
+        Audit rows are append-only, so a row keeps the mode it was written
+        with: rows written before a live Attempt's promotion (no sandbox yet)
+        stay ``synthetic`` and are never rewritten. A row for an unknown
+        Attempt is ``synthetic``.
+        """
+
+        mode = self.db.scalar(select(AttemptRow.evidence_mode).where(AttemptRow.id == attempt_id))
+        return EvidenceMode.LIVE.value if mode == EvidenceMode.LIVE.value else EvidenceMode.SYNTHETIC.value
+
     def has_event(self, *, attempt_id: str, action_id: str, event: AuditEvent) -> bool:
         return self.db.scalar(select(ToolAuditRow.audit_id).where(
             (ToolAuditRow.attempt_id == attempt_id)
@@ -157,6 +182,7 @@ class SqlAlchemyAuditSink:
             "detail": "executor claim acquired",
             "created_at": decision.created_at,
             "principal": self.principal,
+            "evidence_mode": self._evidence_mode(request.attempt_id),
         }
         bind = self.db.get_bind()
         dialect = bind.dialect.name
@@ -202,6 +228,7 @@ class SqlAlchemyAuditSink:
             "detail": record.detail,
             "created_at": record.created_at,
             "principal": self.principal,
+            "evidence_mode": self._evidence_mode(record.attempt_id),
         }
         bind = self.db.get_bind()
         dialect = bind.dialect.name
