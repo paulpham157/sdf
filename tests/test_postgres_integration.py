@@ -40,7 +40,7 @@ def postgres_engine():
 def clean_postgres(postgres_engine):
     with postgres_engine.begin() as connection:
         connection.execute(text(
-            "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, "
+            "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, routing_decisions, "
             "artifacts, attempts, tasks, graph_nodes, objective_metrics, "
             "outcome_observations, agent_claims, agent_messages, agent_run_members, agent_runs, "
             "plan_tasks, plans, decision_requests, api_tokens, auth_audit RESTART IDENTITY CASCADE"
@@ -330,3 +330,22 @@ def test_runtime_events_provenance_check_and_append_only_trigger(postgres_engine
         with pytest.raises(DBAPIError, match="append-only"):
             with postgres_engine.begin() as connection:
                 connection.execute(text(statement))
+
+
+def test_routing_decisions_are_append_only_in_postgres(postgres_engine):
+    """ADR 0030: a recorded routing decision is never rewritten."""
+
+    with postgres_engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO routing_decisions (id, attempt_id, selected_agent, mode, reason, request, candidates, "
+            "created_at) VALUES ('ROUTE-PG', 'ATTEMPT-PG-ROUTE', 'pi', 'explicit', 'test', NULL, '[]', now())"))
+    for statement in ("UPDATE routing_decisions SET selected_agent = 'opencode' WHERE id = 'ROUTE-PG'",
+                      "DELETE FROM routing_decisions WHERE id = 'ROUTE-PG'"):
+        with pytest.raises(DBAPIError, match="append-only"):
+            with postgres_engine.begin() as connection:
+                connection.execute(text(statement))
+    with pytest.raises(DBAPIError, match="ck_routing_decisions_mode"):
+        with postgres_engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO routing_decisions (id, attempt_id, selected_agent, mode, reason, candidates, created_at) "
+                "VALUES ('ROUTE-PG-2', 'ATTEMPT-PG-ROUTE-2', 'pi', 'caller', 'x', '[]', now())"))

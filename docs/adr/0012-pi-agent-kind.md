@@ -100,8 +100,9 @@ or run commands.
 - `HTTP(S)_PROXY` are not stripped (not Pi-specific); containment is the
   sandbox and its egress allowlist.
 - The `sdf-herdr-agents` Dockerfile installs the pinned package. The live test
-  bootstraps E2B's public `codex` template by default, or uses the prebuilt
-  (public) `sdf-herdr-agents` template via `SDF_E2B_VULTR_TEMPLATE`. Templates
+  uses the prebuilt `sdf-herdr-agents` template by default (`SDF_E2B_VULTR_TEMPLATE`;
+  until 2026-10-30 the default was bootstrapping E2B's public `codex` template,
+  now only with an explicit `SDF_E2B_VULTR_BASE_TEMPLATE`). Templates
   without the ADR 0017 extensions need `SDF_PI_EXTENSIONS=` (empty).
 
 ## Verification (2026-10-28)

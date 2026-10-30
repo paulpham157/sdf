@@ -31,13 +31,14 @@ Wiring (no proxy):
 
 Sandbox source:
 
-* ``SDF_E2B_VULTR_TEMPLATE`` set (e.g. ``sdf-herdr-agents``, built from
-  ``infra/e2b/herdr-agents``): the image already carries Herdr and the CLIs, so
-  the factory only adds the Claude user settings below and makes sure the
-  Herdr server is up.
-* unset: the factory bootstraps E2B's public ``codex`` template
-  (``SDF_E2B_VULTR_BASE_TEMPLATE``): pinned Herdr (sha256-checked) and CLIs are
-  installed with open egress.
+* default: the prebuilt ``SDF_E2B_VULTR_TEMPLATE`` (unset =
+  ``sdf-herdr-agents``, built from ``infra/e2b/herdr-agents``): the image
+  already carries Herdr, Node 22 and every CLI, so the factory only adds the
+  Claude user settings below and makes sure the Herdr server is up.
+* ``SDF_E2B_VULTR_BASE_TEMPLATE`` set (and ``SDF_E2B_VULTR_TEMPLATE`` unset),
+  e.g. E2B's public ``codex`` template: the factory bootstraps that bare base,
+  installing pinned Herdr (sha256-checked) and CLIs with open egress.  E2B's
+  ``codex`` image runs Node 20, so Pi 1.x (Node >= 22.19) fails there.
 
 Either way ``update_network`` then locks egress to the inference host before
 any credential seed or agent runs.  The factory replaces
@@ -61,6 +62,7 @@ from sqlalchemy.orm import sessionmaker
 import sdf_core.e2b_herdr_transport as e2b_transport_module
 from sdf_core.adapter import RuntimeAgentAdapter
 from sdf_core.agent_models import model_agent_args
+from sdf_core.agent_sandbox import DEFAULT_TEMPLATE
 from sdf_core.credential_injection import create_credentialed_transport
 from sdf_core.credentials import load_dotenv
 from sdf_core.db import ArtifactRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow, make_engine
@@ -84,8 +86,11 @@ pytestmark = pytest.mark.skipif(
     not LIVE, reason="live check: set SDF_LIVE_E2B=1 SDF_LIVE_VULTR_AGENTS=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY"
 )
 
-PREBUILT_TEMPLATE = ENV.get("SDF_E2B_VULTR_TEMPLATE", "")
-BASE_TEMPLATE = PREBUILT_TEMPLATE or ENV.get("SDF_E2B_VULTR_BASE_TEMPLATE", "codex")
+# Prebuilt agents image by default; a bare base only when explicitly requested.
+PREBUILT_TEMPLATE = ENV.get("SDF_E2B_VULTR_TEMPLATE", "").strip() or (
+    "" if ENV.get("SDF_E2B_VULTR_BASE_TEMPLATE", "").strip() else DEFAULT_TEMPLATE
+)
+BASE_TEMPLATE = PREBUILT_TEMPLATE or ENV["SDF_E2B_VULTR_BASE_TEMPLATE"].strip()
 INFERENCE_HOST = "api.vultrinference.com"
 MODEL = "glm-5.3"
 PRICE_IN, PRICE_OUT = 0.75 / 1e6, 3.00 / 1e6  # Vultr glm-5.3, USD per token
@@ -110,7 +115,7 @@ DELEGATE_PREFIX = (
 SUBAGENT_TOOLS = {"Agent", "Task", "Workflow", "spawn_agent", "agent", "create_sub_session", "subagent", "task",
                   "delegate", "summon"}
 HEADLESS = {"pi": PiHeadlessRuntime, "qwen": QwenHeadlessRuntime, "goose": GooseHeadlessRuntime}
-# Runtime installs for the ADR-0013 kinds on the bare ``codex`` base template only.
+# Runtime installs for the ADR-0013 kinds on a bare base template only (SDF_E2B_VULTR_BASE_TEMPLATE).
 EXTRA_INSTALL = {
     "qwen": (
         f"curl -fsSL --retry 3 -o /tmp/node22.tar.xz {NODE22_URL}",

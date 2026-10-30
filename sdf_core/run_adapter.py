@@ -51,6 +51,7 @@ from .credentials import AGENT_KINDS, CredentialConfigError, _AGENTS
 from .herdr_runtime import HerdrRuntime
 from .observability import classify_error, get_logger, log_context
 from .plugin_bridge import PluginConnectionBridge
+from .qualification import AgentRoute, explicit_route, record_route, routing_request_from_env, select_agent
 from .runtime import RuntimeController, RuntimeEvent, RuntimeEventKind, RuntimeStatus, SqlAlchemyRuntimeEventSink
 from . import usage as _usage
 from . import tracing
@@ -352,6 +353,8 @@ class LiveRunAdapter:
         self._kill_by_id = kill_by_id or self._default_kill_by_id
         # Outcome of the last run(), for the caller (execution service).
         self.last_run: dict[str, Any] = {}
+        # How this agent was chosen; recorded per Attempt (ADR 0030).
+        self.route: AgentRoute = explicit_route(agent)
 
     # Backwards-compatible names used by the PR's tests/docs.
     @property
@@ -443,6 +446,8 @@ class LiveRunAdapter:
         if self.provider == "daytona" and not self.run_env.get("DAYTONA_API_KEY"):
             raise RunAdapterConfigError("DAYTONA_API_KEY is required when SDF_SANDBOX_PROVIDER=daytona")
         self.last_run = {}
+        # Correlate the routing decision with the Attempt before the agent starts (ADR 0030).
+        record_route(self.db, attempt_id, self.route)
         with log_context(attempt_id=attempt_id, agent=self.agent), \
                 tracing.span("sdf.agent.run", attempt_id=attempt_id, agent__kind=self.agent, model=self.model,
                              sandbox__provider=self.provider) as run_span:
@@ -552,8 +557,14 @@ def configured_run_adapter(db: Session, *, environ: Mapping[str, str] | None = N
     if mode not in _LIVE_MODES:
         raise RunAdapterConfigError(f"SDF_RUN_ADAPTER must be fake or live (alias herdr); got {mode!r}")
     agent = (env.get("SDF_RUN_AGENT") or _DEFAULT_AGENT).strip().lower() or _DEFAULT_AGENT
-    if agent not in AGENT_KINDS:
-        raise RunAdapterConfigError(f"SDF_RUN_AGENT must be one of {', '.join(AGENT_KINDS)}; got {agent!r}")
+    max_concurrent = _int(env, "SDF_RUN_MAX_CONCURRENT", _DEFAULT_MAX_CONCURRENT)
+    if agent == "auto":
+        route = _measured_route(db, env, capacity=max_concurrent)
+        agent = route.agent or ""
+    elif agent not in AGENT_KINDS:
+        raise RunAdapterConfigError(f"SDF_RUN_AGENT must be auto or one of {', '.join(AGENT_KINDS)}; got {agent!r}")
+    else:
+        route = explicit_route(agent)
     provider = resolve_sandbox_provider(env)
     if provider == "e2b":
         image = (env.get("SDF_E2B_AGENTS_TEMPLATE") or DEFAULT_TEMPLATE).strip() or DEFAULT_TEMPLATE
@@ -572,13 +583,38 @@ def configured_run_adapter(db: Session, *, environ: Mapping[str, str] | None = N
             resolve_pi_extensions(env.get(PI_EXTENSIONS_ENV))
         except ValueError as exc:
             raise RunAdapterConfigError(str(exc)) from exc
-    return LiveRunAdapter(
+    adapter = LiveRunAdapter(
         db=db, environ=env, agent=agent, provider=provider, image=image,
         timeout_ms=_int(env, "SDF_HERDR_TIMEOUT_MS", _DEFAULT_TIMEOUT_MS),
         turn_timeout_s=_int(env, "SDF_RUN_TURN_TIMEOUT_S", _DEFAULT_TURN_TIMEOUT_S),
         sandbox_timeout_s=_int(env, "SDF_E2B_SANDBOX_TIMEOUT_SECONDS", _DEFAULT_SANDBOX_TIMEOUT_S),
-        max_concurrent=_int(env, "SDF_RUN_MAX_CONCURRENT", _DEFAULT_MAX_CONCURRENT),
+        max_concurrent=max_concurrent,
     )
+    # Routing only picks the kind: the run path, Tool Proxy, egress lock and
+    # sandbox below are the same for every agent (ADR 0030).
+    adapter.route = route
+    return adapter
+
+
+def _measured_route(db: Session, env: Mapping[str, str], *, capacity: int) -> AgentRoute:
+    """``SDF_RUN_AGENT=auto``: choose among ``SDF_RUN_ROUTE_AGENTS`` from trusted measurements."""
+
+    candidates = [a.strip().lower() for a in (env.get("SDF_RUN_ROUTE_AGENTS") or "").split(",") if a.strip()]
+    if not candidates:
+        raise RunAdapterConfigError("SDF_RUN_AGENT=auto requires SDF_RUN_ROUTE_AGENTS (comma-separated agent kinds)")
+    unknown = [a for a in candidates if a not in AGENT_KINDS]
+    if unknown:
+        raise RunAdapterConfigError(f"SDF_RUN_ROUTE_AGENTS has unknown agent kind(s): {', '.join(unknown)}")
+    try:
+        request = routing_request_from_env(env)
+    except ValueError as exc:
+        raise RunAdapterConfigError(str(exc)) from exc
+    route = select_agent(db, candidates, request, capacity=capacity)
+    if route.agent is None:
+        # Fail closed: no measurement, no route (never a configured fallback).
+        raise RunAdapterConfigError(f"measured routing: {route.reason}")
+    log.info("run_routed", extra={"agent": route.agent, "reason": route.reason})
+    return route
 
 
 # Back-compat name from the first version of this PR.

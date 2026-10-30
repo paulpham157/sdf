@@ -4,6 +4,12 @@
 
 ### Breaking API changes
 
+- **Qualified routing (#58, ADR 0030).** `SDF_RUN_AGENT=auto` with
+  `SDF_RUN_ROUTE_AGENTS` picks the agent from trusted measurements, and fails
+  with `400` when no agent qualifies. Every live `/run` Attempt now gets an
+  append-only `routing_decisions` row (migration `0020_routing_decisions`).
+  New read endpoints: `GET /attempts/{id}/routing` and
+  `GET /routing/qualifications`.
 - **Runtime event contract (#57, ADR 0029).**
   - `runtime_events` gains migration `0019_runtime_event_provenance`. `tool_*`
     kinds are accepted only from `source = 'tool-proxy'`, which emits nothing

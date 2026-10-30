@@ -35,6 +35,8 @@ from .run_adapter import RunBusyError, configured_run_adapter, run_slot
 from .observability import configure_logging, get_logger, log_context
 from . import tracing
 from .timeline import build_timeline
+from .qualification import qualify_agents, routing_record, verified_loop_completed
+from .credentials import AGENT_KINDS
 from .events import events_for_attempts, kind_counts as event_kind_counts, normalized as normalized_event, summarize as summarize_events
 from .policy import ActionRequest, AllowlistPolicy
 from .tools import AttemptBinding
@@ -687,6 +689,38 @@ def get_event_streams(attempt_id: str, db: Session = Depends(get_db)):
         "streams": [summary.as_dict() for summary in summarize_events(rows)],
         "kinds": event_kind_counts(rows),
         "acceptance_evidence": False,
+    }
+
+
+@app.get("/attempts/{attempt_id}/routing")
+def get_attempt_routing(attempt_id: str, db: Session = Depends(get_db)):
+    """How the Attempt's agent was chosen and what came of it (ADR 0030)."""
+
+    record = routing_record(db, attempt_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no routing decision for this attempt")
+    return record
+
+
+@app.get("/routing/qualifications")
+def get_routing_qualifications(agents: str | None = None, db: Session = Depends(get_db)):
+    """Each agent's measured routing inputs from trusted records, or why it has none."""
+
+    names = [a.strip().lower() for a in (agents or os.environ.get("SDF_RUN_ROUTE_AGENTS") or "").split(",")
+             if a.strip()] or sorted(AGENT_KINDS)
+    unknown = [a for a in names if a not in AGENT_KINDS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown agent kind(s): {', '.join(unknown)}")
+    try:
+        capacity = max(1, int(os.environ.get("SDF_RUN_MAX_CONCURRENT") or 2))
+    except ValueError:
+        capacity = 2
+    quals = qualify_agents(db, names, capacity=capacity)
+    return {
+        "verified_loop_completed": verified_loop_completed(quals),
+        "agents": [q.as_dict() for q in quals.values()],
+        "note": ("measured only from live Attempts recorded in this database (usage-ledger sandbox rows, Evidence, "
+                 "trusted runtime events); configured profiles and caller-sent telemetry are never used"),
     }
 
 
