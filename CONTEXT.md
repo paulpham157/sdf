@@ -193,3 +193,9 @@ _Avoid_: agent completed, evaluator ran
 **Impact Measurement**:
 The attributable change in an Objective's outcome compared with its declared baseline over a defined measurement window.
 _Avoid_: task count, token count, dashboard activity
+
+## Repository language
+
+**Repository Protocol**:
+The rules for working in this repository (where authority lives, when work stays read-only, when a work plan is warranted, when to stop for a decision, how to report proof), kept only in `docs/agents/workflow.md` (ADR 0028). It governs contributors and coding agents working on SDF's code, not SDF's runtime Tasks or Attempts.
+_Avoid_: harness, Plan (the ADR 0014 product term), second task tracker
