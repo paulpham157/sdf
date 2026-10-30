@@ -525,3 +525,61 @@ def test_plan_run_attempt_whose_sandbox_never_started_is_not_live(db, fixture, t
             select(AttemptRow).where(AttemptRow.task_id == task_id))}
     assert by_worker["worker-1"] == {"synthetic"}  # never reached a sandbox
     assert by_worker["worker-2"] == {"live"}       # its sandbox started
+
+
+# --- fixture confinement at run time and redacted run errors ------------------
+
+
+def test_coordinator_refuses_a_plan_fixture_outside_the_fixtures_root(db, fixture, tmp_path, monkeypatch):
+    plan = _approved(db, fixture, "PLAN-FIXROOT-1")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.setenv("SDF_FIXTURES_ROOT", str(other))
+    created: list = []
+    coordinator = Coordinator(db, factory=lambda spec: created.append(spec), workspace_root=tmp_path / "ws",
+                              artifact_root=tmp_path / "art")
+    # Refused before a run row exists ...
+    with pytest.raises(PlanGateError, match="SDF_FIXTURES_ROOT"):
+        coordinator.create_run(plan.id, FAST)
+    assert db.scalars(select(AgentRunRow)).all() == []
+    # ... and re-checked at execution time (the root or tree changed after create_run).
+    monkeypatch.setenv("SDF_FIXTURES_ROOT", str(fixture.parent))
+    run = coordinator.create_run(plan.id, FAST)
+    monkeypatch.setenv("SDF_FIXTURES_ROOT", str(other))
+    run = coordinator.execute(run.id)
+    assert run.status == "failed" and "SDF_FIXTURES_ROOT" in (run.error or "")
+    assert created == []  # no sandbox was ever requested
+    assert db.scalars(select(AttemptRow)).all() == []
+
+
+def test_legacy_relative_plan_fixture_resolves_against_the_fixtures_root(db, fixture, tmp_path, monkeypatch):
+    monkeypatch.setenv("SDF_FIXTURES_ROOT", str(fixture.parent))
+    monkeypatch.chdir(tmp_path / "..")  # the server's cwd must never matter
+    legacy = {**plan_dict(fixture, "PLAN-FIXROOT-2"), "fixture_dir": fixture.name}
+    plan = propose_plan(db, PlanSpec(**legacy))
+    db.commit()
+    decide_plan(db, plan.id, approve=True, decided_by="hung", expected_sha256=plan.content_sha256)
+    db.commit()
+    coordinator = Coordinator(db, factory=lambda spec: None, workspace_root=tmp_path / "ws",
+                              artifact_root=tmp_path / "art")
+    assert coordinator._plan_fixture(plan) == fixture.resolve()
+    # The fixtures root itself (".") is not a fixture.
+    plan.content = {**plan.content, "fixture_dir": "."}
+    with pytest.raises(PlanGateError, match="not the root itself"):
+        coordinator._plan_fixture(plan)
+    db.rollback()
+
+
+def test_run_error_is_redacted(db, fixture, tmp_path, monkeypatch):
+    secret = "fake-secret-value-0123456789"
+    monkeypatch.setenv("SDF_FAKE_API_KEY", secret)
+    plan = _approved(db, fixture, "PLAN-REDACT-1")
+
+    def factory(spec):
+        raise RuntimeError(f"sandbox provider said: key={secret} token sk-abcdefghijklmnop")
+
+    coordinator = Coordinator(db, factory=factory, workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art")
+    run = coordinator.execute(coordinator.create_run(plan.id, FAST).id)
+    assert run.status == "failed" and "sandbox provider said" in run.error
+    assert secret not in run.error and "sk-abcdefghijklmnop" not in run.error
+    assert "[REDACTED]" in run.error

@@ -48,6 +48,8 @@ from .e2b_containment import E2BContainmentBackend
 from .impact import MetricDeclaration, build_scorecard, measure_objective
 from .impact_repository import load_metric_declaration, load_observations, load_scorecard_facts
 from . import auth as _auth
+from . import fixtures as _fixtures
+from .fixtures import fixtures_root, server_write_roots  # noqa: F401 - re-exported
 from .db import AuthAuditRow, ToolAuditRow
 
 
@@ -223,28 +225,13 @@ async def _request_context(request: Request, call_next):
     return response
 
 
-def fixtures_root() -> Path:
-    """The only directory tree ``fixture_dir`` may point into (``SDF_FIXTURES_ROOT``)."""
-
-    return Path(os.environ.get("SDF_FIXTURES_ROOT") or Path.cwd() / "fixtures").resolve()
-
-
 def resolve_fixture(raw: str) -> Path:
-    """Resolve ``fixture_dir`` (symlinks included) and keep it inside the fixtures root."""
+    """Resolve ``fixture_dir`` (symlinks included) and keep it strictly inside the fixtures root."""
 
-    root = fixtures_root()
     try:
-        candidate = Path(raw)
-        resolved = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
-    if not resolved.is_dir() or not resolved.is_relative_to(root):
-        raise HTTPException(status_code=400, detail="fixture_dir must be an existing directory under SDF_FIXTURES_ROOT")
-    # A fixture inside a workspace or artifact tree is agent-writable, and its
-    # sdf-checks.json would be too (ADR 0025).
-    if any(resolved == write_root or resolved.is_relative_to(write_root) for write_root in server_write_roots()):
-        raise HTTPException(status_code=400, detail="fixture_dir must not be under a workspace or artifact root")
-    return resolved
+        return _fixtures.resolve_fixture(raw)
+    except _fixtures.FixtureError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/healthz")
@@ -436,14 +423,6 @@ def configured_evaluator(registry: CheckRegistry | None = None, *, live: bool = 
         require_containment=mode == "require",
         timeout_for=registry.slot_timeout if registry is not None else None,
     )
-
-
-def server_write_roots() -> tuple[Path, ...]:
-    """Trees an agent run writes into; a check source there is not server-controlled."""
-
-    raw = [os.getenv("SDF_WORKSPACE_ROOT") or ".sdf-workspaces", ".sdf-workspaces",
-           os.getenv("SDF_ARTIFACT_ROOT") or ".sdf-artifacts", ".sdf-artifacts"]
-    return tuple(dict.fromkeys(Path(item).resolve() for item in raw))
 
 
 def resolve_registered_checks(
@@ -755,7 +734,8 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, request: Re
     attempt = db.get(AttemptRow, attempt_id)
     if attempt is None:
         raise HTTPException(status_code=404, detail="attempt not found")
-    workspace = Path(".sdf-workspaces") / attempt_id
+    # Built from the stored, server-generated id, not the raw path parameter.
+    workspace = Path(".sdf-workspaces") / attempt.id
     if not workspace.is_dir():
         raise HTTPException(status_code=409, detail="attempt workspace not found")
     service = ExecutionService(
@@ -1061,9 +1041,11 @@ def _gate(exc: Exception) -> HTTPException:
 @app.post("/plans", status_code=status.HTTP_201_CREATED)
 def create_plan(payload: PlanSpec, db: Session = Depends(get_db),
                 principal: _auth.Principal = Depends(current_principal)):
-    resolve_fixture(payload.fixture_dir)
+    # The Plan stores the resolved, confined absolute path: the Coordinator
+    # re-checks it at run time and never resolves it against the server's cwd.
+    fixture = resolve_fixture(payload.fixture_dir)
     # The proposer is the authenticated principal, whatever the body says.
-    payload = payload.model_copy(update={"proposed_by": principal.name})
+    payload = payload.model_copy(update={"proposed_by": principal.name, "fixture_dir": str(fixture)})
     try:
         plan = propose_plan(db, payload)
         db.commit()

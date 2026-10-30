@@ -37,8 +37,15 @@ failed, and there was no one place to see what happened in a run.
    and a `run-<provider>-cleanup` runtime event, and the Attempt fails. Every
    E2B sandbox carries the metadata `sdf_attempt_id`, so leftovers can be found.
 4. **Inputs and load.** `fixture_dir` (on `/tasks/{id}/run` and `/plans`) must
-   resolve, symlinks included, to a directory under `SDF_FIXTURES_ROOT`
-   (default `./fixtures`); anything else is a 400. Runs are synchronous; at
+   resolve, symlinks included, to a directory strictly inside `SDF_FIXTURES_ROOT`
+   (default `./fixtures`; the root itself is refused); anything else is a 400.
+   A relative `fixture_dir` is relative to that root, never to the server's
+   working directory (`sdf_core/fixtures.py`). `POST /plans` stores the
+   resolved absolute path, and the Coordinator re-checks it when a run is
+   created and again when it executes (a refusal is a 409, or a failed run
+   before any sandbox exists); a legacy Plan row holding a relative path is
+   resolved against the root the same way. A fixture containing a symlink is
+   refused when it is copied into an Attempt workspace. Runs are synchronous; at
    most `SDF_RUN_MAX_CONCURRENT` (default 2) live runs exist per process, and a
    request past that gets 429 with `Retry-After`. An async job API was not
    added. Every configuration error (adapter, provider, credentials) is a

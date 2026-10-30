@@ -186,3 +186,24 @@ def test_diff_capture_records_a_binary_file_the_agent_left_without_decoding_it(t
     diff = artifact.path.read_text(encoding="utf-8")
     assert "Binary files a/__pycache__/calc.cpython-312.pyc and b/__pycache__/calc.cpython-312.pyc differ" in diff
     assert "+return a + b" in diff
+
+
+def test_workspace_copy_refuses_a_fixture_with_symlinks(tmp_path: Path):
+    secret = tmp_path / "host-secret.env"
+    secret.write_text("SDF_AUTH_PEPPER=not-for-agents\n")
+    fixture = tmp_path / "fixture"
+    (fixture / "pkg").mkdir(parents=True)
+    (fixture / "app.py").write_text("x = 1\n")
+    (fixture / "pkg" / "config.env").symlink_to(secret)
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    with pytest.raises(ValueError, match="symlinks: pkg/config.env"):
+        manager.create("ATTEMPT-LINK", fixture)
+    assert not (tmp_path / "workspaces" / "ATTEMPT-LINK").exists()
+    # A symlinked directory is refused too (it is never descended into).
+    (fixture / "pkg" / "config.env").unlink()
+    (fixture / "linked").symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlinks: linked"):
+        manager.create("ATTEMPT-LINK", fixture)
+    (fixture / "linked").unlink()
+    workspace = manager.create("ATTEMPT-LINK", fixture)
+    assert (workspace / "app.py").read_text() == "x = 1\n" and (workspace / "pkg").is_dir()
