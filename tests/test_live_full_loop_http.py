@@ -150,6 +150,8 @@ def test_live_full_loop_via_public_run_endpoint(tmp_path: Path, monkeypatch: pyt
         ledger = db.query(UsageLedgerRow).filter_by(attempt_id=attempt_id).all()
         attempt = db.get(AttemptRow, attempt_id)
         assert [(row.criterion, row.status) for row in evidence] == [(criterion, case["expected_evidence"])]
+        # ADR 0031: a real sandbox run records live Evidence (and a live Attempt).
+        assert {row.evidence_mode for row in evidence} == {"live"} and attempt.evidence_mode == "live"
         log_ids = {a.id for a in artifacts if a.id.endswith("-LOG")}
         assert all(row.artifact_ref not in log_ids for row in evidence)
         kinds = [e.kind for e in sorted(events, key=lambda e: e.sequence)]

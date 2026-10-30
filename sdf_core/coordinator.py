@@ -50,6 +50,7 @@ from .db import (
 )
 from .evaluator import DeterministicEvaluator
 from .execution import ExecutionService
+from .impact import EVIDENCE_MODE_VALUES
 from .observability import classify_error
 from . import tracing
 from .model import AttemptState, TaskState, utcnow
@@ -141,7 +142,7 @@ class RunConfig:
 
 
 SERVER_FIELDS = ("price_in_per_m", "price_out_per_m", "sandbox_usd_per_s", "evidence_mode")
-EVIDENCE_MODES = ("live", "synthetic")
+EVIDENCE_MODES = EVIDENCE_MODE_VALUES  # single definition: sdf_core.impact.EvidenceMode
 # Upper bounds only catch typos; the lower bound (>= 0) keeps the cost cap meaningful.
 PRICE_LIMITS = {"price_in_per_m": 1000.0, "price_out_per_m": 1000.0, "sandbox_usd_per_s": 1.0}
 PRICE_ENV = {"price_in_per_m": "SDF_RUN_PRICE_IN_PER_M", "price_out_per_m": "SDF_RUN_PRICE_OUT_PER_M",

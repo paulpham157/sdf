@@ -334,6 +334,11 @@ class _MeteredRuntime:
 class LiveRunAdapter:
     """One-Attempt live adapter that always kills its sandbox (ADR 0023)."""
 
+    # A real agent in a real sandbox: ExecutionService records the Attempt and
+    # its Evidence as ``live`` (ADR 0031). The ledger ``sandbox`` row stays the
+    # authoritative live signal for routing (ADR 0030).
+    evidence_mode = "live"
+
     def __init__(self, *, db: Session, environ: Mapping[str, str], agent: str, provider: str, image: str,
                  timeout_ms: int, turn_timeout_s: int, sandbox_timeout_s: int, max_concurrent: int,
                  transport_factory: Any = None, kill_by_id: Any = None) -> None:

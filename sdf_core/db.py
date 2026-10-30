@@ -8,6 +8,8 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from .impact import EVIDENCE_MODE_VALUES
+
 
 class Base(DeclarativeBase):
     pass
@@ -51,8 +53,13 @@ class TaskRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+# ADR 0031: the Evidence-mode value set, from sdf_core.impact.EvidenceMode.
+EVIDENCE_MODE_SQL = "evidence_mode IN (" + ", ".join(f"'{v}'" for v in EVIDENCE_MODE_VALUES) + ")"
+
+
 class AttemptRow(Base):
     __tablename__ = "attempts"
+    __table_args__ = (CheckConstraint(EVIDENCE_MODE_SQL, name="ck_attempts_evidence_mode"),)
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     task_id: Mapped[str] = mapped_column(String(120), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
@@ -123,6 +130,7 @@ class ArtifactRow(Base):
 
 class EvidenceRow(Base):
     __tablename__ = "evidence"
+    __table_args__ = (CheckConstraint(EVIDENCE_MODE_SQL, name="ck_evidence_evidence_mode"),)
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     attempt_id: Mapped[str] = mapped_column(String(120), index=True)
     kind: Mapped[str] = mapped_column(String(40))

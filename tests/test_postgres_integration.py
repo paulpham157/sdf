@@ -349,3 +349,38 @@ def test_routing_decisions_are_append_only_in_postgres(postgres_engine):
             connection.execute(text(
                 "INSERT INTO routing_decisions (id, attempt_id, selected_agent, mode, reason, candidates, created_at) "
                 "VALUES ('ROUTE-PG-2', 'ATTEMPT-PG-ROUTE-2', 'pi', 'caller', 'x', '[]', now())"))
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="SDF_POSTGRES_TEST_URL is not set")
+def test_evidence_mode_check_constraint_and_migration_0021_on_postgresql(postgres_engine):
+    """ADR 0031: only 'synthetic' and 'live' are stored; 0021 never rewrites rows."""
+    evidence = ("INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at) "
+                "VALUES (:id, 'ATTEMPT-PG-MODE', 'evaluation', 'PASS', 'c', 1.0, :mode, now())")
+    attempt = ("INSERT INTO attempts (id, task_id, status, dispatch_key, agent, evidence_mode, created_at) "
+               "VALUES (:id, 'TASK-PG-MODE', 'created', :id, 'pi', :mode, now())")
+    with postgres_engine.begin() as connection:
+        connection.execute(text(evidence), {"id": "E-PG-LIVE", "mode": "live"})
+        connection.execute(text(attempt), {"id": "A-PG-LIVE", "mode": "live"})
+    for statement, row_id in ((evidence, "E-PG-BAD"), (attempt, "A-PG-BAD")):
+        with pytest.raises(DBAPIError, match="evidence_mode"):
+            with postgres_engine.begin() as connection:
+                connection.execute(text(statement), {"id": row_id, "mode": "production"})
+
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    os.environ["SDF_DATABASE_URL"] = POSTGRES_URL
+    command.downgrade(config, "0020_routing_decisions")
+    try:
+        with postgres_engine.begin() as connection:  # constraint gone; a stray value can exist pre-0021
+            connection.execute(text(evidence), {"id": "E-PG-ODD", "mode": "staging"})
+        with pytest.raises(RuntimeError, match="evidence_mode outside"):
+            command.upgrade(config, "head")
+        with postgres_engine.connect() as connection:  # nothing was rewritten
+            assert dict(connection.execute(text("SELECT id, evidence_mode FROM evidence")).all()) == {
+                "E-PG-LIVE": "live", "E-PG-ODD": "staging"}
+    finally:
+        with postgres_engine.begin() as connection:
+            connection.execute(text("TRUNCATE TABLE evidence, attempts"))
+        command.upgrade(config, "head")
+    with pytest.raises(DBAPIError, match="evidence_mode"):
+        with postgres_engine.begin() as connection:
+            connection.execute(text(evidence), {"id": "E-PG-BAD2", "mode": "production"})

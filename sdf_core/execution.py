@@ -18,6 +18,7 @@ from .db import (
     UsageLedgerRow,
 )
 from .escalation import ModelTier
+from .impact import declared_evidence_mode
 from . import tracing
 from .evaluator import DeterministicEvaluator
 from .model import AttemptState, TaskState, utcnow
@@ -100,6 +101,10 @@ class ExecutionService:
                 return begun.attempt
             task = self.db.get(TaskRow, task_id)
             attempt = begun.attempt
+            # The adapter, never the caller, says whether this is a real agent
+            # in a real sandbox (ADR 0031); fake adapters stay synthetic.
+            mode = declared_evidence_mode(self.adapter)
+            attempt.evidence_mode = mode.value
             started = time.monotonic()
             try:
                 result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
@@ -115,6 +120,7 @@ class ExecutionService:
             finished = self.finish(
                 attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
                 criterion_checks=criterion_checks, validation_target=validation_target,
+                evidence_mode=mode.value,
             )
             self._trace_outcome(attempt_span, finished)
             return finished

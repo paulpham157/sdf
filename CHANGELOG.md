@@ -4,6 +4,16 @@
 
 ### Breaking API changes
 
+- **Live Evidence mode for `/run` (Decision #8 option B, ADR 0031).** When
+  `/run` executes on the live adapter (a real E2B sandbox), its Attempt and
+  Evidence record `evidence_mode = "live"`; fake runs stay `synthetic`. The
+  mode is set when the Attempt begins, so a failed live Attempt is live too.
+  Migration `0021_evidence_mode_check` adds a CHECK (`synthetic`, `live`) on
+  `attempts` and `evidence`. It refuses to run if a stored row holds another
+  value, and never rewrites rows. Live `/run` rows written before this change
+  stay `synthetic`. Routing still identifies live samples by the usage-ledger
+  `sandbox` row, not by Evidence mode. `live` is not production impact
+  (ADR 0006).
 - **Qualified routing (#58, ADR 0030).** `SDF_RUN_AGENT=auto` with
   `SDF_RUN_ROUTE_AGENTS` picks the agent from trusted measurements, and fails
   with `400` when no agent qualifies. Every live `/run` Attempt now gets an
