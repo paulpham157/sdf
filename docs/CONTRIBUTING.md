@@ -37,7 +37,8 @@ It is hermetic: no secrets, no `SDF_LIVE_*` flags, no provider keys.
   the local dev version.
 - `pytest (PostgreSQL 16, py3.13)`: a `postgres:16-alpine` service (same
   credentials as `docker-compose.test.yml`), `alembic upgrade head`, then the
-  full suite with `SDF_POSTGRES_TEST_URL` set, so the PostgreSQL integration
+  full suite with only `SDF_POSTGRES_TEST_URL` set (`SDF_DATABASE_URL` is for the
+  migration step only), so the PostgreSQL integration
   tests run instead of skipping.
 
 Keep `uv.lock` in sync (`uv lock`); CI fails on a stale lock. A green CI run
