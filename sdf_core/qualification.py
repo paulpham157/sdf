@@ -7,9 +7,10 @@ Routing inputs come only from records the SDF server writes itself:
   names the agent kind that ran.
 * **Success** - Evaluator Evidence (append-only, ADR 0002): an Attempt counts
   as accepted only when it has Evidence and every row is ``PASS``.
-* **Cost** - the Attempt's ledger rows. An Attempt whose turn or sandbox row
+* **Cost** - the Attempt's ledger rows. A *sample* whose turn or sandbox row
   has ``cost_source = 'missing'`` has no measured cost and is left out of the
-  cost mean.
+  cost mean (it still counts toward success). The *agent* is unqualified for
+  cost only when none of its samples has a measured cost.
 * **Latency** - the ``seconds`` that the server measured on the ledger
   ``sandbox`` row (sandbox lifetime, the whole run).
 * **Availability** - the most recent live Attempt has a ``runtime_started``

@@ -282,3 +282,14 @@ def test_api_exposes_qualifications_and_attempt_routing():
     record = client.get("/attempts/A-API-ROUTE/routing").json()
     assert record["selected_agent"] == "pi" and record["mode"] == "explicit"
     assert client.get("/attempts/NOPE/routing").status_code == 404
+
+
+def test_a_sample_with_missing_cost_is_left_out_of_the_mean_not_the_agent(db):
+    measured = live_attempt(db, "pi", cost=0.02, minutes=1)
+    unmeasured = live_attempt(db, "pi", cost=None, cost_source="missing", passed=False, minutes=2)
+    q = qualify_agents(db, ["pi"])["pi"]
+    assert q.qualified and q.reason == "qualified"
+    assert q.measurement.cost_usd == 0.02  # mean over the measured sample only
+    assert q.measurement.sample_count == 2 and q.measurement.success_rate == 0.5  # still a success sample
+    assert q.provenance["cost_attempt_ids"] == [measured]
+    assert unmeasured in q.provenance["attempt_ids"]

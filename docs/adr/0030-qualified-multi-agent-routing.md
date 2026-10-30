@@ -26,8 +26,12 @@ Attempt is identified by its ledger sandbox row, not by Evidence mode.
    agent:
    - *success*: the Attempt has Evidence and all of it is `PASS`;
    - *cost*: the mean ledger cost of samples whose turn and sandbox rows all
-     have a measured cost (`cost_source` is not `missing`);
-   - *latency*: the mean server-measured sandbox `seconds`;
+     have a measured cost (`cost_source` is not `missing`). A sample with any
+     `missing` row is left out of the cost mean only; it still counts as a
+     sample for success. The provenance lists the samples used
+     (`cost_attempt_ids`);
+   - *latency*: the mean server-measured sandbox `seconds` (a sample without
+     a finite, non-negative value is left out the same way);
    - *availability*: the newest sample has a `runtime_started` event from a
      trusted `run-<provider>` stream (ADR 0029) and its server-set
      `error_class` is not an infrastructure class (`sandbox_error`,
@@ -40,8 +44,10 @@ Attempt is identified by its ledger sandbox row, not by Evidence mode.
 
    Ignored: `attempts.cost_usd/latency_ms/provider/tokens`, outcome
    observations, agent Claims, runtime output text and configured profiles.
-2. **Fail safe.** An agent with no finished live sample, or without measured
-   cost or latency, is not qualified, and the reason is recorded. There is no
+2. **Fail safe.** An agent with no finished live sample, or with **no sample
+   at all** that has a measured cost (or latency), is not qualified, and the
+   reason is recorded (`unmeasured cost`). One unmeasured sample does not
+   disqualify an agent that has other measured samples. There is no
    fallback to configured values. Routing is refused entirely until **at least
    one agent has an accepted live Attempt** (the verified fixture loop).
 3. **Deterministic selection.** `ModelRouter.route_measured` keeps the existing
