@@ -20,6 +20,8 @@ Track session identity, agent/model, workspace, process identity where available
 
 Normalize verified runtime observations into SDF events with Attempt/session correlation, ordering and replay handling. Runtime start, output and exit events do not certify task success. TOOL_REQUESTED and POLICY_DECIDED originate from trusted SDF action boundaries, not interpreted terminal text. Feed state, evaluation, audit and metrics; a UI may consume these later.
 
+The event contract (correlation, provenance, replay, ordering, and the rule that events are never acceptance evidence) is [ADR-0029](adr/0029-normalized-runtime-event-contract.md). It is implemented in `sdf_core/events.py` and proven locally. Live reconnect against a deployed Herdr bridge is still unverified.
+
 ## P4 Multi-agent routing
 
 After one real agent completes the verified fixture loop, add other agents through the same runtime boundary. Route by demonstrated capability, historical success, latency, cost, availability and load. Multiple agents alone are not a reason to introduce another protocol.

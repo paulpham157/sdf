@@ -4,6 +4,22 @@
 
 ### Breaking API changes
 
+- **Runtime event contract (#57, ADR 0029).**
+  - `runtime_events` gains migration `0019_runtime_event_provenance`. `tool_*`
+    kinds are accepted only from `source = 'tool-proxy'`, which emits nothing
+    else, and rows are append-only. The migration refuses to run if stored rows
+    break the rule.
+  - The Tool Proxy now records `tool_requested` before `tool_policy_decided`.
+  - `GET /attempts/{id}/runtime-events` and `/tasks/{id}/trace` return events
+    in the contract's deterministic order, with `category`,
+    `trusted_boundary` and `acceptance_evidence` (always `false`). The new
+    `GET /attempts/{id}/event-streams` summarises each stream, including gaps.
+  - `RuntimeController.recover(attempt_id)` restores a session binding from
+    the durable stream. `start` then asks the runtime whether it still has
+    that session. If not, a new session id rebinds the Attempt (the new
+    stream starts with `runtime_started` carrying `supersedes_session_id`,
+    and the old session is retired); the same id is recorded as a new
+    `runtime_started` with `replaces_lost_session: true`.
 - **Registered checks (#52, ADR 0025).** `POST /tasks/{id}/run` no longer
   accepts `commands`; `criterion_checks` maps criteria to check ids registered
   in the fixture's `sdf-checks.json` or the server checks file. Unknown request

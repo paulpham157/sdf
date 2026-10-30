@@ -26,10 +26,10 @@ from .db import (
     AuthAuditRow,
     DecisionRequestRow,
     EvidenceRow,
-    RuntimeEventRow,
     ToolAuditRow,
     UsageLedgerRow,
 )
+from .events import category_of, events_for_attempts
 from .observability import redact, redact_value
 from .usage import ledger_payload
 
@@ -63,9 +63,11 @@ def _attempt_entries(db: Session, attempt_ids: list[str]) -> list[dict[str, Any]
                           agent=a.agent, status=a.status, provider=a.provider, cost_usd=a.cost_usd,
                           input_tokens=a.input_tokens, output_tokens=a.output_tokens, latency_ms=a.latency_ms,
                           error_class=a.error_class, trace_id=a.trace_id))
-    for e in db.scalars(select(RuntimeEventRow).where(RuntimeEventRow.attempt_id.in_(attempt_ids))):
+    # Normalized events (ADR 0029): provenance-labelled telemetry, never Evidence.
+    for e in events_for_attempts(db, attempt_ids):
         out.append(_entry(e.created_at, "runtime", e.kind, attempt_id=e.attempt_id, session_id=e.session_id,
-                          sequence=e.sequence, status=e.status, event_source=e.source, payload=e.payload))
+                          sequence=e.sequence, status=e.status, event_source=e.source,
+                          category=category_of(e.kind).value, acceptance_evidence=False, payload=e.payload))
     for t in db.scalars(select(ToolAuditRow).where(ToolAuditRow.attempt_id.in_(attempt_ids))):
         out.append(_entry(t.created_at, "tool_audit", t.event, attempt_id=t.attempt_id, tool=t.tool,
                           action=t.action, decision=t.decision, outcome=t.outcome, detail=t.detail))

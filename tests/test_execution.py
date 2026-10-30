@@ -388,7 +388,7 @@ def test_execution_service_routes_structured_tool_action_through_attempt_workspa
         events = db.query(RuntimeEventRow).filter_by(
             source="tool-proxy", attempt_id="ATTEMPT-TOOL-INTEGRATION"
         ).all()
-        assert [event.kind for event in events] == ["tool_policy_decided", "tool_action_executed"]
+        assert [event.kind for event in events] == ["tool_requested", "tool_policy_decided", "tool_action_executed"]
 
         process_result = service.execute_tool(
             attempt_id="ATTEMPT-TOOL-INTEGRATION",

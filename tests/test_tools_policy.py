@@ -378,7 +378,7 @@ def test_tool_proxy_emits_trusted_source_labelled_events_and_replays_idempotentl
         rows = db.query(RuntimeEventRow).filter_by(
             source="tool-proxy", attempt_id="ATTEMPT-TOOL-EVENT"
         ).all()
-        assert [row.kind for row in rows] == ["tool_policy_decided", "tool_action_executed"]
+        assert [row.kind for row in rows] == ["tool_requested", "tool_policy_decided", "tool_action_executed"]
         assert all(row.payload["action_id"] == request.action_id for row in rows)
 
         # Re-delivery of the same structured action records its own policy
@@ -389,7 +389,8 @@ def test_tool_proxy_emits_trusted_source_labelled_events_and_replays_idempotentl
         kinds = [row.kind for row in db.query(RuntimeEventRow).filter_by(
             source="tool-proxy", attempt_id="ATTEMPT-TOOL-EVENT"
         ).order_by(RuntimeEventRow.sequence)]
-        assert kinds == ["tool_policy_decided", "tool_action_executed", "tool_policy_decided"]
+        # tool_requested is recorded once per action identity.
+        assert kinds == ["tool_requested", "tool_policy_decided", "tool_action_executed", "tool_policy_decided"]
         assert executor.calls == [request]
 
 
