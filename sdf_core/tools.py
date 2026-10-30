@@ -46,18 +46,6 @@ class AuditSink(Protocol):
 
 
 class ReplayAwareAuditSink(AuditSink, Protocol):
-    def _evidence_mode(self, attempt_id: str) -> str:
-        """The Attempt's mode at the moment this row is written (ADR 0031, #71).
-
-        Audit rows are append-only, so a row keeps the mode it was written
-        with: rows written before a live Attempt's promotion (no sandbox yet)
-        stay ``synthetic`` and are never rewritten. A row for an unknown
-        Attempt is ``synthetic``.
-        """
-
-        mode = self.db.scalar(select(AttemptRow.evidence_mode).where(AttemptRow.id == attempt_id))
-        return EvidenceMode.LIVE.value if mode == EvidenceMode.LIVE.value else EvidenceMode.SYNTHETIC.value
-
     def has_event(self, *, attempt_id: str, action_id: str, event: AuditEvent) -> bool:
         """Return whether a durable outcome already exists for an action."""
 
@@ -464,6 +452,7 @@ class ToolProxy:
                     action=request,
                     decision=decision,
                     status=ToolExecutionStatus.EXECUTED,
+                    audit_records=(decision_audit,),  # this delivery's own decision row
                 )
             if has_event(
                 attempt_id=request.attempt_id,
@@ -475,6 +464,7 @@ class ToolProxy:
                     decision=decision,
                     status=ToolExecutionStatus.FAILED,
                     error="durable action outcome is already failed; issue a new action identity to retry",
+                    audit_records=(decision_audit,),  # this delivery's own decision row
                 )
         claim_action = getattr(self.audit, "claim_action", None)
         if callable(claim_action) and not claim_action(request, decision):
@@ -483,6 +473,7 @@ class ToolProxy:
                 decision=decision,
                 status=ToolExecutionStatus.FAILED,
                 error="action is already claimed by another delivery; issue a new action identity to retry",
+                audit_records=(decision_audit,),  # this delivery's own decision row
             )
 
         try:

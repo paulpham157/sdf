@@ -18,6 +18,21 @@ It must also keep the ``DEFAULT 'synthetic' NOT NULL`` column definition. The
 migration therefore records the CREATE statements of every index and trigger
 on the table before the rebuild, restores any that are missing or changed
 afterwards, and verifies the result. It raises if anything still differs.
+The rebuild runs inside a SQLite ``SAVEPOINT`` (see ``_sqlite_rebuild``), so
+a failure leaves the table, its indexes and ``alembic_version`` exactly as
+they were at 0021.
+
+Manual recovery, if a SQLite upgrade was interrupted outside SQLite's own
+guarantees (for example, the file was copied mid-run, or a driver that
+autocommits DDL was used):
+1. Drop ``_alembic_tmp_tool_audits`` if it exists.
+2. Compare ``sqlite_master`` for ``tool_audits`` with a fresh ``alembic
+   upgrade head`` database.
+3. If ``tool_audits`` already has ``CONSTRAINT ck_tool_audits_evidence_mode``
+   and identical indexes, but ``alembic_version`` is still 0021, run
+   ``alembic stamp 0022_tool_audit_mode_check``. Do not re-run the upgrade on
+   top of it.
+4. If the constraint is absent, simply re-run the upgrade.
 
 PostgreSQL adds the constraint directly. ``ADD CONSTRAINT`` neither updates
 rows nor fires the append-only trigger (``BEFORE UPDATE OR DELETE``). As in
@@ -57,22 +72,42 @@ def _column_ddl(bind, column: str) -> tuple:
     return ()
 
 
+_SAVEPOINT = "sdf_0022_tool_audits"
+
+
 def _sqlite_rebuild(bind, alter) -> None:
-    before = _sqlite_objects(bind)
-    column_before = _column_ddl(bind, "evidence_mode")
-    with op.batch_alter_table(_TABLE) as batch:
-        alter(batch)
-    after = _sqlite_objects(bind)
-    for name, sql in before.items():
-        if after.get(name) != sql:
-            if name in after:
-                op.execute(f"DROP {'TRIGGER' if sql.upper().startswith('CREATE TRIGGER') else 'INDEX'} {name}")
-            op.execute(sql)
-    restored = _sqlite_objects(bind)
-    if restored != before or _column_ddl(bind, "evidence_mode") != column_before:
-        raise RuntimeError(
-            f"{_TABLE} rebuild changed its indexes, triggers or evidence_mode column; refusing (ADR 0031)"
-        )
+    """Rebuild atomically: on any failure the table is exactly as before.
+
+    The pysqlite driver does not open a transaction for DDL, so a plain
+    rebuild that fails half-way could leave ``_alembic_tmp_tool_audits``
+    behind or the new table in place with the version still at 0021. A
+    ``SAVEPOINT`` opens a real SQLite transaction (or nests in an open one).
+    On failure it is rolled back and the error re-raised. On success it is
+    left open, so Alembic's version stamp and commit land together with the
+    rebuild.
+    """
+
+    op.execute(f"SAVEPOINT {_SAVEPOINT}")
+    try:
+        before = _sqlite_objects(bind)
+        column_before = _column_ddl(bind, "evidence_mode")
+        with op.batch_alter_table(_TABLE) as batch:
+            alter(batch)
+        after = _sqlite_objects(bind)
+        for name, sql in before.items():
+            if after.get(name) != sql:
+                if name in after:
+                    op.execute(f"DROP {'TRIGGER' if sql.upper().startswith('CREATE TRIGGER') else 'INDEX'} {name}")
+                op.execute(sql)
+        restored = _sqlite_objects(bind)
+        if restored != before or _column_ddl(bind, "evidence_mode") != column_before:
+            raise RuntimeError(
+                f"{_TABLE} rebuild changed its indexes, triggers or evidence_mode column; refusing (ADR 0031)"
+            )
+    except BaseException:
+        op.execute(f"ROLLBACK TO SAVEPOINT {_SAVEPOINT}")
+        op.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
+        raise
 
 
 def upgrade():
