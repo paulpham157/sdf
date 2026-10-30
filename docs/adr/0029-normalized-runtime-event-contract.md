@@ -54,9 +54,31 @@ The contract lives in `sdf_core/events.py`.
    highest persisted sequence for its source, attempt and session, so it never
    reuses a sequence. Calling `RuntimeController.recover(attempt_id)` first
    restores the session binding from the durable stream without calling the
-   runtime. After that, `start` records no second start and `reconnect`
-   appends `runtime_reconnected` at the next sequence. Without `recover`, a
-   repeated `start` is recorded as a new observation at the next sequence.
+   runtime. That binding is *unconfirmed* until the runtime confirms it:
+   - `reconnect(session_id)` succeeds: `runtime_reconnected` is appended at
+     the next sequence. If the runtime no longer has the session it raises,
+     and the binding stays unconfirmed.
+   - `start` first asks the runtime (`status`) whether it still has the
+     recovered session; every runtime answers an unknown session with
+     `KeyError` before any provider call. If it still has it (e.g. Herdr
+     after `restore_binding`), the runtime reattached and no second start is
+     recorded. Session-id equality alone is not trusted: Herdr names an agent
+     after its kind, so a fresh sandbox returns the same id.
+   - The runtime lost the session and `start` returns a **new** id: the
+     Attempt is rebound. The new session's stream begins at sequence 1 with
+     `runtime_started` carrying `supersedes_session_id`. The old session is
+     retired (further calls on it raise) and nothing is synthesised on its
+     stream. A later `recover` follows the supersession chain to the newest
+     session.
+   - The runtime lost the session and `start` returns the **same** id (a
+     fresh process reusing the name): `runtime_started` is recorded at the
+     next sequence of that stream with `replaces_lost_session: true`.
+
+   A binding created by a live `start` in the same controller, or one the
+   runtime still has, is never rebound: a different session id from the
+   runtime is then an error.
+   Without `recover`, a repeated `start` is recorded as a new observation at
+   the next sequence.
 7. **Deterministic order.** Within a stream, `sequence` is authoritative.
    Across streams, `GET /attempts/{id}/runtime-events` and `/tasks/{id}/trace`
    merge by the head event's persisted time, then stream key, then sequence.
@@ -85,3 +107,11 @@ The contract lives in `sdf_core/events.py`.
   restart, and redelivery from a remote Herdr bridge, have not been exercised
   against a deployed endpoint (the P2 HTTPS bridge proof remains the gate for
   that).
+- **`recover` is not wired into `LiveRunAdapter` (follow-up).** Each `/run`
+  creates a fresh sandbox and kills it in `finally`, so there is no live
+  session to reattach to, and headless runtimes name sessions
+  `<kind>-<attempt>-<n>` per process: a re-run of the same Attempt would
+  reuse the old id and be mistaken for a reattach, suppressing a real
+  `runtime_started`. Real reattach needs the Herdr binding snapshot
+  (workspace and pane ids) and the sandbox id persisted, and a sandbox that
+  outlives the SDF process; that belongs with the P2 bridge work.

@@ -46,6 +46,10 @@ class RuntimeEventKind(StrEnum):
     TOOL_ACTION_FAILED = "tool_action_failed"
 
 
+def _kind_name(kind: Any) -> str:
+    return kind.value if isinstance(kind, StrEnum) else str(kind)
+
+
 class RuntimeEventConflictError(ValueError):
     """Raised when a replay reuses an event identity with different data."""
 
@@ -212,7 +216,15 @@ class RuntimeController:
         self.source = source
         self._attempts: dict[str, str] = {}
         self._attempt_sessions: dict[str, str] = {}
-        self._sequences: dict[str, int] = {}
+        # Highest sequence per stream: (attempt_id, session_id) within this source.
+        self._sequences: dict[tuple[str, str], int] = {}
+        # Attempts whose binding was restored from durable events (replay /
+        # ``recover``) and not yet confirmed by the runtime (``start`` returning
+        # the same session, or a successful ``reconnect``).
+        self._unconfirmed: set[str] = set()
+        # Recovered sessions the runtime could not reattach to: old session id
+        # -> the session that superseded it (ADR 0029, "Reconnect and restart").
+        self._superseded: dict[str, str] = {}
         self._events: list[RuntimeEvent] = []
         self._event_keys: set[tuple[str, str, str, int]] = set()
         # ``send`` blocks for a whole provider turn, so ``cancel`` can arrive
@@ -226,15 +238,20 @@ class RuntimeController:
     def _session(self, session_id: str) -> RuntimeSession:
         if session_id not in self._attempts:
             raise ValueError(f"session is not registered: {session_id}")
+        if session_id in self._superseded:
+            raise ValueError(
+                f"session {session_id} was superseded by {self._superseded[session_id]} after recovery"
+            )
         return self.runtime.status(session_id)
 
     def _record(self, kind: RuntimeEventKind, session: RuntimeSession, payload: dict[str, Any] | None = None) -> None:
         with self._lock:
-            if session.attempt_id not in self._sequences:
+            key = (session.attempt_id, session.session_id)
+            if key not in self._sequences:
                 # A new controller (process restart, reconnect) continues the
                 # durable stream instead of reusing sequence 1.
-                self._sequences[session.attempt_id] = self._durable_last(session)
-            sequence = self._sequences[session.attempt_id] + 1
+                self._sequences[key] = self._durable_last(session)
+            sequence = self._sequences[key] + 1
             event = RuntimeEvent(
                 kind,
                 session.session_id,
@@ -246,7 +263,7 @@ class RuntimeController:
             )
             if self.event_sink is not None:
                 self.event_sink.append(event)
-            self._sequences[session.attempt_id] = sequence
+            self._sequences[key] = sequence
             self._event_keys.add(event.identity)
             self._events.append(event)
 
@@ -260,9 +277,28 @@ class RuntimeController:
         """Restore this controller's durable stream for one Attempt after a restart.
 
         Reads the persisted events of this source from a durable sink and
-        replays them (no runtime call, no new rows). Afterwards ``start`` does
-        not record a second start, and ``reconnect``/``send`` continue the
-        same sequence.
+        replays them (no runtime call, no new rows). The restored binding is
+        *unconfirmed* until the runtime confirms it:
+
+        * ``reconnect(session_id)`` succeeds: the runtime still has the
+          session; ``runtime_reconnected`` is appended at the next sequence.
+        * ``start`` asks the runtime (``status``) whether it still has the
+          recovered session. If it does (e.g. Herdr after ``restore_binding``),
+          the runtime reattached and no second start is recorded.
+        * If the runtime lost it (``status`` raises ``KeyError``) and ``start``
+          returns a **new** session id (e.g. Herdr without a binding
+          snapshot), the Attempt is rebound: the new stream begins with
+          ``runtime_started`` carrying ``supersedes_session_id``. The old
+          session is retired: it accepts no further calls, and nothing is
+          synthesised on its stream.
+        * If the runtime lost it but ``start`` returns the **same** id (a fresh
+          process that reuses the name, e.g. Herdr names agents after their
+          kind), ``runtime_started`` is recorded at the next sequence of the
+          same stream with ``replaces_lost_session: true``.
+
+        A binding that a live ``start`` in this controller created, or one the
+        runtime still has, is never rebound; a different session id from the
+        runtime is then an error.
         """
 
         events_for = getattr(self.event_sink, "events_for", None)
@@ -271,17 +307,44 @@ class RuntimeController:
         return self.replay(events_for(attempt_id, source=self.source))
 
     def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
+        recovered = self._attempt_sessions.get(attempt_id) if attempt_id in self._unconfirmed else None
+        lost = False
+        if recovered is not None:
+            # Ask the runtime whether it still has the recovered session. Every
+            # runtime answers an unknown session with KeyError before any
+            # provider call; other errors propagate and nothing is recorded.
+            try:
+                self.runtime.status(recovered)
+            except KeyError:
+                lost = True
         session = self.runtime.start(attempt_id=attempt_id, agent=agent)
         if session.attempt_id != attempt_id:
             raise ValueError("runtime session is not bound to the requested attempt")
-        previous_session_id = self._attempt_sessions.get(attempt_id)
-        if previous_session_id is not None and previous_session_id != session.session_id:
-            raise ValueError("attempt is already bound to a different runtime session")
-        self._attempts[session.session_id] = attempt_id
-        self._attempt_sessions[attempt_id] = session.session_id
-        if previous_session_id is None:
-            payload = session.credential.as_dict() if session.credential is not None else None
-            self._record(RuntimeEventKind.STARTED, session, payload)
+        with self._lock:
+            previous_session_id = self._attempt_sessions.get(attempt_id)
+            if session.session_id in self._superseded:
+                raise ValueError(f"runtime returned superseded session {session.session_id}")
+            different = previous_session_id is not None and previous_session_id != session.session_id
+            if different and not (lost and previous_session_id == recovered):
+                raise ValueError("attempt is already bound to a different runtime session")
+            bound = self._attempts.get(session.session_id)
+            if bound is not None and bound != attempt_id:
+                raise ValueError("runtime session is already bound to a different attempt")
+            self._attempts[session.session_id] = attempt_id
+            self._attempt_sessions[attempt_id] = session.session_id
+            self._unconfirmed.discard(attempt_id)
+            if previous_session_id is None or lost:
+                payload = dict(session.credential.as_dict()) if session.credential is not None else {}
+                if different:
+                    # The runtime lost the recovered session and minted a new one.
+                    self._superseded[previous_session_id] = session.session_id
+                    payload["supersedes_session_id"] = previous_session_id
+                elif lost:
+                    # A fresh session under the same id (e.g. Herdr names the
+                    # agent after its kind in a new sandbox): same stream, next
+                    # sequence, marked so it is not read as a reattach.
+                    payload["replaces_lost_session"] = True
+                self._record(RuntimeEventKind.STARTED, session, payload or None)
         return session
 
     def send(self, session_id: str, input_text: str) -> RuntimeSession:
@@ -314,8 +377,12 @@ class RuntimeController:
         return updated
 
     def reconnect(self, session_id: str) -> RuntimeSession:
+        """Reattach to a known session. If the runtime no longer has it (it
+        raises), the binding stays unconfirmed so ``start`` may rebind."""
+
         self._session(session_id)
         updated = self.runtime.reconnect(session_id)
+        self._unconfirmed.discard(self._attempts[session_id])
         self._record(RuntimeEventKind.RECONNECTED, updated)
         return updated
 
@@ -351,24 +418,63 @@ class RuntimeController:
                 raise TypeError("runtime replay requires RuntimeEvent values")
             if event.source != self.source:
                 raise ValueError(f"controller for source {self.source!r} cannot replay {event.source!r} events")
-        for event in sorted(batch, key=lambda e: (e.attempt_id, e.session_id, e.sequence)):
-            if event.identity in self._event_keys:
-                continue
-            bound_attempt = self._attempts.get(event.session_id)
-            if bound_attempt is not None and bound_attempt != event.attempt_id:
-                raise ValueError("runtime session is already bound to a different attempt")
-            bound_session = self._attempt_sessions.get(event.attempt_id)
-            if bound_session is not None and bound_session != event.session_id:
-                raise ValueError("attempt is already bound to a different runtime session")
-            if self.event_sink is not None:
-                self.event_sink.append(event)
-            self._event_keys.add(event.identity)
-            self._events.append(event)
-            self._sequences[event.attempt_id] = max(self._sequences.get(event.attempt_id, 0), event.sequence)
-            self._attempts[event.session_id] = event.attempt_id
-            self._attempt_sessions.setdefault(event.attempt_id, event.session_id)
-            accepted.append(event)
+        # A recovery rebind (see ``recover``) is recorded as a start that
+        # names the session it supersedes; replay older sessions first.
+        supersedes = {e.session_id: e.payload["supersedes_session_id"] for e in batch
+                      if _kind_name(e.kind) == RuntimeEventKind.STARTED.value
+                      and isinstance(e.payload.get("supersedes_session_id"), str)}
+
+        def generation(session_id: str) -> int:
+            depth, seen = 0, {session_id}
+            while session_id in supersedes:
+                session_id = supersedes[session_id]
+                if session_id in seen:
+                    raise ValueError("runtime replay has a cyclic session supersession")
+                seen.add(session_id)
+                depth += 1
+            return depth
+
+        with self._lock:
+            for event in sorted(batch, key=lambda e: (e.attempt_id, generation(e.session_id), e.session_id,
+                                                      e.sequence)):
+                if event.identity in self._event_keys:
+                    continue
+                bound_attempt = self._attempts.get(event.session_id)
+                if bound_attempt is not None and bound_attempt != event.attempt_id:
+                    raise ValueError("runtime session is already bound to a different attempt")
+                bound_session = self._attempt_sessions.get(event.attempt_id)
+                rebind = False
+                if bound_session is not None and bound_session != event.session_id:
+                    if supersedes.get(event.session_id) == bound_session:
+                        rebind = True  # the durable record of a recovery rebind
+                    elif not self._retired_in_chain(event.session_id, bound_session):
+                        raise ValueError("attempt is already bound to a different runtime session")
+                if self.event_sink is not None:
+                    self.event_sink.append(event)
+                self._event_keys.add(event.identity)
+                self._events.append(event)
+                key = (event.attempt_id, event.session_id)
+                self._sequences[key] = max(self._sequences.get(key, 0), event.sequence)
+                self._attempts[event.session_id] = event.attempt_id
+                if bound_session is None:
+                    self._attempt_sessions[event.attempt_id] = event.session_id
+                    self._unconfirmed.add(event.attempt_id)
+                elif rebind:
+                    self._superseded[bound_session] = event.session_id
+                    self._attempt_sessions[event.attempt_id] = event.session_id
+                accepted.append(event)
         return tuple(accepted)
+
+    def _retired_in_chain(self, session_id: str, head: str) -> bool:
+        """``session_id`` is an older session that ``head`` (transitively) superseded."""
+
+        current, seen = session_id, set()
+        while current in self._superseded and current not in seen:
+            seen.add(current)
+            current = self._superseded[current]
+            if current == head:
+                return True
+        return False
 
 
 class SqlAlchemyRuntimeEventSink:
