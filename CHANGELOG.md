@@ -4,16 +4,28 @@
 
 ### Breaking API changes
 
-- **Live Evidence mode for `/run` (Decision #8 option B, ADR 0031).** When
-  `/run` executes on the live adapter (a real E2B sandbox), its Attempt and
-  Evidence record `evidence_mode = "live"`; fake runs stay `synthetic`. The
-  mode is set when the Attempt begins, so a failed live Attempt is live too.
-  Migration `0021_evidence_mode_check` adds a CHECK (`synthetic`, `live`) on
-  `attempts` and `evidence`. It refuses to run if a stored row holds another
-  value, and never rewrites rows. Live `/run` rows written before this change
-  stay `synthetic`. Routing still identifies live samples by the usage-ledger
-  `sandbox` row, not by Evidence mode. `live` is not production impact
-  (ADR 0006).
+- **Live Evidence mode (Decision #8 option B, ADR 0031).**
+  - An Attempt and its Evidence are `evidence_mode = "live"` once the run
+    reached a real sandbox. That means E2B or Daytona via the live `/run`
+    adapter, or a started plan-run sandbox.
+  - Fake runs stay `synthetic`, and so do sandbox-creation failures. A
+    failure after the sandbox existed is live.
+  - The Attempt is created with its mode (`ExecutionService.begin(evidence_mode=...)`).
+    A live `/run` is promoted `synthetic` → `live` once, committed as soon as
+    a sandbox id exists. Plan-run Attempts now match their Evidence, so their
+    basis is no longer `mixed`.
+  - A missing `E2B_API_KEY` / `DAYTONA_API_KEY` is now a `400` raised before
+    any Attempt is written.
+  - `POST /tasks/{id}/run` returns `evidence_mode`. The timeline's
+    `attempt_created` entry and the `sdf.attempt` span (`sdf.evidence_mode`)
+    carry it too.
+  - Migration `0021_evidence_mode_check` adds a CHECK (`synthetic`, `live`) on
+    `attempts` and `evidence`. It refuses to run if a stored row holds another
+    value, and never rewrites rows. On PostgreSQL it reuses constraints an
+    operator pre-created `NOT VALID`, validating them.
+  - Rows written before this change keep their mode.
+  - Routing still identifies live samples by the usage-ledger `sandbox` row,
+    not by Evidence mode. `live` is not production impact (ADR 0006).
 - **Qualified routing (#58, ADR 0030).** `SDF_RUN_AGENT=auto` with
   `SDF_RUN_ROUTE_AGENTS` picks the agent from trusted measurements, and fails
   with `400` when no agent qualifies. Every live `/run` Attempt now gets an

@@ -17,9 +17,10 @@ Two facts shaped the design. `/run` Attempts carry `agent = "native"`, so the
 agent kind that ran is recorded only on the usage ledger. When this ADR was
 written, Evidence from `/run` kept `evidence_mode = "synthetic"` even in live
 mode, so a live Attempt is identified by its ledger sandbox row, not by
-Evidence mode. Since ADR 0031, a live `/run` records `live`, but the ledger
-sandbox row is still the authoritative signal: older live rows stay
-`synthetic`, and plan-run Evidence is `live` without a per-Attempt ledger row.
+Evidence mode. Since ADR 0031, an Attempt that reached a real sandbox records
+`live`, but the ledger sandbox row is still the authoritative signal: older
+live rows stay `synthetic`, and plan-run Attempts are `live` without a
+per-Attempt ledger row.
 
 ## Decision
 

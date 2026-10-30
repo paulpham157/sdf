@@ -61,7 +61,7 @@ ATTRIBUTE_KEYS = frozenset({
     "sdf.turn", "sdf.turns", "sdf.status", "sdf.outcome", "sdf.ok", "sdf.seconds",
     "sdf.error_class", "sdf.cleanup_error", "sdf.verdict",
     "sdf.tokens.input", "sdf.tokens.output", "sdf.cost_usd", "sdf.usage_source", "sdf.provider",
-    "sdf.subtasks", "sdf.agents",
+    "sdf.subtasks", "sdf.agents", "sdf.evidence_mode",
 })
 
 

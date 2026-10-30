@@ -62,7 +62,7 @@ def _attempt_entries(db: Session, attempt_ids: list[str]) -> list[dict[str, Any]
         out.append(_entry(a.created_at, "attempt", "attempt_created", attempt_id=a.id, task_id=a.task_id,
                           agent=a.agent, status=a.status, provider=a.provider, cost_usd=a.cost_usd,
                           input_tokens=a.input_tokens, output_tokens=a.output_tokens, latency_ms=a.latency_ms,
-                          error_class=a.error_class, trace_id=a.trace_id))
+                          error_class=a.error_class, trace_id=a.trace_id, evidence_mode=a.evidence_mode))
     # Normalized events (ADR 0029): provenance-labelled telemetry, never Evidence.
     for e in events_for_attempts(db, attempt_ids):
         out.append(_entry(e.created_at, "runtime", e.kind, attempt_id=e.attempt_id, session_id=e.session_id,

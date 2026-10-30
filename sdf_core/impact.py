@@ -55,6 +55,20 @@ def declared_evidence_mode(source: Any) -> EvidenceMode:
         else EvidenceMode.SYNTHETIC
 
 
+def initial_evidence_mode(source: Any) -> EvidenceMode:
+    """The mode an Attempt is created with (ADR 0031).
+
+    A run path that sets ``live_after_sandbox = True`` (the live ``/run``
+    adapter) starts every Attempt ``synthetic`` and promotes it to ``live``
+    itself once a real sandbox exists, so an Attempt that never reached a
+    sandbox is never ``live``. Any other path starts with its declared mode.
+    """
+
+    if getattr(source, "live_after_sandbox", False) is True:
+        return EvidenceMode.SYNTHETIC
+    return declared_evidence_mode(source)
+
+
 @dataclass(frozen=True)
 class MetricDeclaration:
     objective_id: str

@@ -42,7 +42,8 @@ could make an expensive run look free, or a free run look expensive.
    misconfiguration and returns `503` with no run, never a free run. Evidence
    mode is `live` only when the agent factory is the E2B factory, else
    `synthetic`. `RunConfig.from_dict` validates stored configs the same way.
-   (`/run` follows the same rule since ADR 0031: the live adapter is `live`.)
+   (Since ADR 0031, `/run` follows the same rule, and Attempts are `live` only
+   once a real sandbox existed.)
    Config errors are checked before the coordinator is built, so `422` still
    precedes `503` for a missing live configuration.
 6. **Retries are constrained.** With `parent_attempt_id` the parent must belong

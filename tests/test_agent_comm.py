@@ -470,3 +470,58 @@ def test_pending_human_decision_suspends_stall_and_is_never_auto_resolved(db, fi
     assert request.status == "pending" and run.summary["pending_decision_requests"] == [request.id]
     assert run.summary["subtasks"]["mul"]["verdict"] == "PASS"
     assert running == set()
+
+
+# --- ADR 0031: plan-run Attempts carry their Evidence's mode ----------------------
+
+LIVE_FAST = RunConfig(poll_interval_s=0.01, stall_s=0.5, max_wall_s=60, evidence_mode="live")
+
+
+def test_plan_run_attempts_and_retries_match_their_evidence_mode(db, fixture, tmp_path):
+    from sdf_core.impact import EvidenceMode
+    from sdf_core.impact_repository import load_scorecard_facts
+
+    plan = _approved(db, fixture, "PLAN-EVMODE-1")
+    coordinator, running, _ = _coordinator(db, tmp_path, {
+        "lead": lead_behavior, "worker": worker_behavior(),
+        "worker-1": worker_behavior(honest=False, tamper_tests=True)})
+    run = coordinator.execute(coordinator.create_run(plan.id, LIVE_FAST).id)
+    attempt_ids = [a["attempt_id"] for sub in run.summary["subtasks"].values() for a in sub["attempts"]]
+    assert len(attempt_ids) == 3  # add: first + retry, mul: one
+    for attempt_id in attempt_ids:
+        assert db.get(AttemptRow, attempt_id).evidence_mode == "live"
+        modes = {e.evidence_mode for e in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt_id))}
+        assert modes == {"live"}
+    facts = load_scorecard_facts(db)  # no more "mixed": Attempt and Evidence agree
+    assert {f.mode for f in facts.attempts if f.attempt_id in attempt_ids} == {EvidenceMode.LIVE}
+    assert running == set()
+
+
+def test_plan_run_attempt_whose_sandbox_never_started_is_not_live(db, fixture, tmp_path):
+    from sdf_core.db import AgentRunMemberRow
+
+    plan = _approved(db, fixture, "PLAN-EVMODE-2")
+    running: set[str] = set()
+    created: list = []
+    base = fake_factory(tmp_path / "boxes", running, {"lead": lead_behavior, "worker": worker_behavior()}, created)
+
+    def factory(spec):
+        sandbox = base(spec)
+        if spec.agent_id == "worker-1":
+            def broken(workspace):
+                raise RuntimeError("sandbox create failed")
+            sandbox.start = broken
+        return sandbox
+
+    coordinator = Coordinator(db, factory=factory, workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art",
+                              cleanup_check=lambda ids: ids & running)
+    run = coordinator.execute(coordinator.create_run(plan.id, LIVE_FAST).id)
+    assert run.status == "failed" and "sandbox start failed" in (run.error or "")
+    by_worker = {}
+    for member in db.scalars(select(AgentRunMemberRow).where(AgentRunMemberRow.run_id == run.id,
+                                                             AgentRunMemberRow.role == "worker")):
+        task_id = task_id_for(plan.id, member.subtask_key)
+        by_worker[member.agent_id] = {a.evidence_mode for a in db.scalars(
+            select(AttemptRow).where(AttemptRow.task_id == task_id))}
+    assert by_worker["worker-1"] == {"synthetic"}  # never reached a sandbox
+    assert by_worker["worker-2"] == {"live"}       # its sandbox started

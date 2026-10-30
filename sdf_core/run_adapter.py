@@ -232,10 +232,19 @@ class _MeteredRuntime:
     def start(self, *, attempt_id: str, agent: str):
         with tracing.span("sdf.agent.start", attempt_id=attempt_id, agent__kind=agent,
                           model=self._adapter.model) as current:
-            session = self._controller.start(attempt_id=attempt_id, agent=agent)
+            try:
+                session = self._controller.start(attempt_id=attempt_id, agent=agent)
+            finally:
+                self._seen_sandbox()
             self.session_id = session.session_id
             tracing.set_attributes(current, sandbox__id=getattr(self._transport, "sandbox_id", None))
         return session
+
+    def _seen_sandbox(self) -> None:
+        """Record the sandbox id once it exists and promote the Attempt (ADR 0031)."""
+
+        self.sandbox_id = getattr(self._transport, "sandbox_id", None) or self.sandbox_id
+        self._adapter.confirm_live(self._attempt_id, self.sandbox_id)
 
     def _usage_now(self) -> dict[str, Any] | None:
         usage = getattr(self._runtime, "usage", None)
@@ -277,6 +286,7 @@ class _MeteredRuntime:
                 error = exc
                 raise
             finally:
+                self._seen_sandbox()
                 seconds = time.monotonic() - started
                 status = self._controller.status(session_id).status.value if self.session_id else "unknown"
                 if headless:
@@ -334,10 +344,13 @@ class _MeteredRuntime:
 class LiveRunAdapter:
     """One-Attempt live adapter that always kills its sandbox (ADR 0023)."""
 
-    # A real agent in a real sandbox: ExecutionService records the Attempt and
-    # its Evidence as ``live`` (ADR 0031). The ledger ``sandbox`` row stays the
-    # authoritative live signal for routing (ADR 0030).
+    # ADR 0031: the mode this adapter produces once a real sandbox (E2B or
+    # Daytona) exists. The Attempt is created ``synthetic`` and promoted to
+    # ``live`` (committed at once) when the sandbox id first appears, so config
+    # or sandbox-creation failures are never ``live``. The ledger ``sandbox``
+    # row stays the authoritative live signal for routing (ADR 0030).
     evidence_mode = "live"
+    live_after_sandbox = True
 
     def __init__(self, *, db: Session, environ: Mapping[str, str], agent: str, provider: str, image: str,
                  timeout_ms: int, turn_timeout_s: int, sandbox_timeout_s: int, max_concurrent: int,
@@ -360,6 +373,8 @@ class LiveRunAdapter:
         self.last_run: dict[str, Any] = {}
         # How this agent was chosen; recorded per Attempt (ADR 0030).
         self.route: AgentRoute = explicit_route(agent)
+        # Attempt id already promoted to live (confirm_live).
+        self._live_confirmed: str | None = None
 
     # Backwards-compatible names used by the PR's tests/docs.
     @property
@@ -445,11 +460,36 @@ class LiveRunAdapter:
                 last = f"{type(exc).__name__}: {exc}"
         return sandbox_id, f"close: {first}; {KILL_RETRIES} kill retries failed, last: {last}"
 
-    def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
+    def check_credentials(self) -> None:
+        """Provider credentials are present (config error, 400, before any Attempt)."""
+
         if self.provider == "e2b" and not self.run_env.get("E2B_API_KEY"):
             raise RunAdapterConfigError("E2B_API_KEY is required when SDF_RUN_ADAPTER=live and SDF_SANDBOX_PROVIDER=e2b")
         if self.provider == "daytona" and not self.run_env.get("DAYTONA_API_KEY"):
             raise RunAdapterConfigError("DAYTONA_API_KEY is required when SDF_SANDBOX_PROVIDER=daytona")
+
+    def confirm_live(self, attempt_id: str, sandbox_id: str | None) -> None:
+        """Promote the Attempt to ``live`` once a real sandbox exists (ADR 0031).
+
+        One-way and idempotent: ``synthetic`` -> ``live`` only, never back.
+        Committed at once, so a process that dies mid-run leaves a ``live``
+        RUNNING Attempt exactly when a sandbox existed.
+        """
+
+        if not sandbox_id or self._live_confirmed == attempt_id:
+            return
+        from .db import AttemptRow
+
+        attempt = self.db.get(AttemptRow, attempt_id)
+        if attempt is None:
+            return
+        attempt.evidence_mode = self.evidence_mode
+        self.db.commit()
+        self._live_confirmed = attempt_id
+
+    def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
+        # Checked in configured_run_adapter() too; kept for direct callers.
+        self.check_credentials()
         self.last_run = {}
         # Correlate the routing decision with the Attempt before the agent starts (ADR 0030).
         record_route(self.db, attempt_id, self.route)
@@ -471,6 +511,7 @@ class LiveRunAdapter:
                 result = adapter.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
             except BaseException as exc:
                 primary = exc
+            self.confirm_live(attempt_id, getattr(transport, "sandbox_id", None) or metered.sandbox_id)
             with tracing.span("sdf.sandbox.cleanup", attempt_id=attempt_id, sandbox__provider=self.provider,
                               sandbox__id=metered.sandbox_id) as cleanup_span:
                 sandbox_id, cleanup_error = self._teardown(transport, metered.sandbox_id)
@@ -595,6 +636,8 @@ def configured_run_adapter(db: Session, *, environ: Mapping[str, str] | None = N
         sandbox_timeout_s=_int(env, "SDF_E2B_SANDBOX_TIMEOUT_SECONDS", _DEFAULT_SANDBOX_TIMEOUT_S),
         max_concurrent=max_concurrent,
     )
+    # Missing provider credentials are a config error before any Attempt exists.
+    adapter.check_credentials()
     # Routing only picks the kind: the run path, Tool Proxy, egress lock and
     # sandbox below are the same for every agent (ADR 0030).
     adapter.route = route

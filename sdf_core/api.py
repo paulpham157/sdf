@@ -898,6 +898,8 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
         "output_tokens": attempt.output_tokens,
         "escalation_reason": attempt.escalation_reason,
         "error_class": attempt.error_class,
+        # ADR 0031: live only when a real sandbox (E2B or Daytona) existed.
+        "evidence_mode": attempt.evidence_mode,
     }
 
 

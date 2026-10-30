@@ -7,6 +7,18 @@ Evidence is append-only, and live ``/run`` rows written before this change
 stay ``synthetic`` (the ledger ``sandbox`` row remains the authoritative live
 signal, ADR 0030). Rows with any other value make the upgrade fail with a
 count, so an operator decides what they were.
+
+PostgreSQL locking: ``ADD CONSTRAINT ... CHECK`` takes ``ACCESS EXCLUSIVE`` and
+scans the table. Splitting it into ``NOT VALID`` + ``VALIDATE CONSTRAINT``
+inside this migration would not help: Alembic runs the migration in one
+transaction, so the first lock is held until commit anyway, and an
+autocommit block would let the constraint and the version stamp diverge on a
+crash. At today's table sizes the scan is short. For a large ``evidence``
+table, an operator can add the constraints beforehand, outside a transaction:
+``ALTER TABLE evidence ADD CONSTRAINT ck_evidence_evidence_mode CHECK (...)
+NOT VALID; ALTER TABLE evidence VALIDATE CONSTRAINT ck_evidence_evidence_mode``
+(same for ``attempts``). This migration then reuses them: it adds only the
+missing constraints and validates any that are still ``NOT VALID``.
 """
 
 import sqlalchemy as sa
@@ -34,6 +46,15 @@ def upgrade():
                 "inspect them before upgrading (ADR 0031)"
             )
     for table, name in _TABLES.items():
+        if bind.dialect.name == "postgresql":
+            validated = bind.execute(sa.text(
+                "SELECT convalidated FROM pg_constraint WHERE conname = :name AND conrelid = to_regclass(:table)"
+            ), {"name": name, "table": table}).scalar()
+            if validated is None:
+                op.execute(f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({_RULE})")
+            elif not validated:
+                op.execute(f"ALTER TABLE {table} VALIDATE CONSTRAINT {name}")
+            continue
         with op.batch_alter_table(table) as batch:
             batch.create_check_constraint(name, sa.text(_RULE))
 
