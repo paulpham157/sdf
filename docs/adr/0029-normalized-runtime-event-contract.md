@@ -58,18 +58,25 @@ The contract lives in `sdf_core/events.py`.
    - `reconnect(session_id)` succeeds: `runtime_reconnected` is appended at
      the next sequence. If the runtime no longer has the session it raises,
      and the binding stays unconfirmed.
-   - `start` returns the recovered session id (the runtime reattached, e.g.
-     Herdr after `restore_binding`): no second start is recorded.
-   - `start` returns a **new** session id (the runtime lost the session, e.g.
-     Herdr after a process restart without a binding snapshot): the Attempt
-     is rebound. The new session's stream begins at sequence 1 with
+   - `start` first asks the runtime (`status`) whether it still has the
+     recovered session; every runtime answers an unknown session with
+     `KeyError` before any provider call. If it still has it (e.g. Herdr
+     after `restore_binding`), the runtime reattached and no second start is
+     recorded. Session-id equality alone is not trusted: Herdr names an agent
+     after its kind, so a fresh sandbox returns the same id.
+   - The runtime lost the session and `start` returns a **new** id: the
+     Attempt is rebound. The new session's stream begins at sequence 1 with
      `runtime_started` carrying `supersedes_session_id`. The old session is
      retired (further calls on it raise) and nothing is synthesised on its
      stream. A later `recover` follows the supersession chain to the newest
      session.
+   - The runtime lost the session and `start` returns the **same** id (a
+     fresh process reusing the name): `runtime_started` is recorded at the
+     next sequence of that stream with `replaces_lost_session: true`.
 
-   A binding created by a live `start` in the same controller is never
-   rebound: a different session id from the runtime is still an error.
+   A binding created by a live `start` in the same controller, or one the
+   runtime still has, is never rebound: a different session id from the
+   runtime is then an error.
    Without `recover`, a repeated `start` is recorded as a new observation at
    the next sequence.
 7. **Deterministic order.** Within a stream, `sequence` is authoritative.

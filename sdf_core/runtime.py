@@ -282,17 +282,23 @@ class RuntimeController:
 
         * ``reconnect(session_id)`` succeeds: the runtime still has the
           session; ``runtime_reconnected`` is appended at the next sequence.
-        * ``start`` returns the recovered session id (the runtime reattached,
-          e.g. Herdr after ``restore_binding``): no second start is recorded.
-        * ``start`` returns a **new** session id (the runtime lost the session,
-          e.g. Herdr after a process restart without a binding snapshot): the
-          Attempt is rebound to the new session, whose stream begins with a
-          ``runtime_started`` event carrying ``supersedes_session_id``. The old
+        * ``start`` asks the runtime (``status``) whether it still has the
+          recovered session. If it does (e.g. Herdr after ``restore_binding``),
+          the runtime reattached and no second start is recorded.
+        * If the runtime lost it (``status`` raises ``KeyError``) and ``start``
+          returns a **new** session id (e.g. Herdr without a binding
+          snapshot), the Attempt is rebound: the new stream begins with
+          ``runtime_started`` carrying ``supersedes_session_id``. The old
           session is retired: it accepts no further calls, and nothing is
           synthesised on its stream.
+        * If the runtime lost it but ``start`` returns the **same** id (a fresh
+          process that reuses the name, e.g. Herdr names agents after their
+          kind), ``runtime_started`` is recorded at the next sequence of the
+          same stream with ``replaces_lost_session: true``.
 
-        A binding that a live ``start`` in this controller created is never
-        rebound; a different session id from the runtime is still an error.
+        A binding that a live ``start`` in this controller created, or one the
+        runtime still has, is never rebound; a different session id from the
+        runtime is then an error.
         """
 
         events_for = getattr(self.event_sink, "events_for", None)
@@ -301,6 +307,16 @@ class RuntimeController:
         return self.replay(events_for(attempt_id, source=self.source))
 
     def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
+        recovered = self._attempt_sessions.get(attempt_id) if attempt_id in self._unconfirmed else None
+        lost = False
+        if recovered is not None:
+            # Ask the runtime whether it still has the recovered session. Every
+            # runtime answers an unknown session with KeyError before any
+            # provider call; other errors propagate and nothing is recorded.
+            try:
+                self.runtime.status(recovered)
+            except KeyError:
+                lost = True
         session = self.runtime.start(attempt_id=attempt_id, agent=agent)
         if session.attempt_id != attempt_id:
             raise ValueError("runtime session is not bound to the requested attempt")
@@ -308,8 +324,8 @@ class RuntimeController:
             previous_session_id = self._attempt_sessions.get(attempt_id)
             if session.session_id in self._superseded:
                 raise ValueError(f"runtime returned superseded session {session.session_id}")
-            rebind = previous_session_id is not None and previous_session_id != session.session_id
-            if rebind and attempt_id not in self._unconfirmed:
+            different = previous_session_id is not None and previous_session_id != session.session_id
+            if different and not (lost and previous_session_id == recovered):
                 raise ValueError("attempt is already bound to a different runtime session")
             bound = self._attempts.get(session.session_id)
             if bound is not None and bound != attempt_id:
@@ -317,12 +333,17 @@ class RuntimeController:
             self._attempts[session.session_id] = attempt_id
             self._attempt_sessions[attempt_id] = session.session_id
             self._unconfirmed.discard(attempt_id)
-            if previous_session_id is None or rebind:
+            if previous_session_id is None or lost:
                 payload = dict(session.credential.as_dict()) if session.credential is not None else {}
-                if rebind:
-                    # The runtime could not reattach to the recovered session.
+                if different:
+                    # The runtime lost the recovered session and minted a new one.
                     self._superseded[previous_session_id] = session.session_id
                     payload["supersedes_session_id"] = previous_session_id
+                elif lost:
+                    # A fresh session under the same id (e.g. Herdr names the
+                    # agent after its kind in a new sandbox): same stream, next
+                    # sequence, marked so it is not read as a reattach.
+                    payload["replaces_lost_session"] = True
                 self._record(RuntimeEventKind.STARTED, session, payload or None)
         return session
 

@@ -500,3 +500,36 @@ def test_herdr_restart_without_snapshot_rebinds_and_with_snapshot_reattaches(db)
     rows = _stream(db, "A-HERDR")
     assert [(sid, seq, kind) for sid, seq, kind, _ in rows][-1] == ("agent-2", 1, "runtime_started")
     assert rows[-1][3]["supersedes_session_id"] == "agent-1"
+
+
+def test_a_lost_session_restarted_under_the_same_id_is_a_new_start_not_a_reattach(db):
+    sink = SqlAlchemyRuntimeEventSink(db)
+    old = RuntimeController(FakeRuntime(), event_sink=sink, source="run-e2b").start(attempt_id="A-SAME",
+                                                                                   agent="codex")
+    db.commit()
+    # A fresh runtime process that names its first session the same way (like
+    # Herdr's agent name = kind in a new sandbox): it does not know the session.
+    second = RuntimeController(FakeRuntime(), event_sink=sink, source="run-e2b")
+    second.recover("A-SAME")
+    again = second.start(attempt_id="A-SAME", agent="codex")
+    db.commit()
+    assert again.session_id == old.session_id
+    rows = _stream(db, "A-SAME")
+    assert [(seq, kind) for _, seq, kind, _ in rows] == [(1, "runtime_started"), (2, "runtime_started")]
+    assert rows[-1][3] == {"replaces_lost_session": True}
+
+
+def test_start_refuses_a_different_session_while_the_runtime_still_has_the_recovered_one(db):
+    class Forking(FakeRuntime):
+        def start(self, *, attempt_id, agent):
+            self._attempts.pop(attempt_id, None)
+            return super().start(attempt_id=attempt_id, agent=agent)
+
+    runtime = Forking()
+    sink = SqlAlchemyRuntimeEventSink(db)
+    RuntimeController(runtime, event_sink=sink, source="run-e2b").start(attempt_id="A-FORK", agent="codex")
+    db.commit()
+    second = RuntimeController(runtime, event_sink=sink, source="run-e2b")
+    second.recover("A-FORK")
+    with pytest.raises(ValueError, match="different runtime session"):
+        second.start(attempt_id="A-FORK", agent="codex")
