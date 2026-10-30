@@ -39,7 +39,7 @@ from .impact import declared_evidence_mode
 from .qualification import qualify_agents, routing_record, verified_loop_completed
 from .credentials import AGENT_KINDS
 from .events import events_for_attempts, kind_counts as event_kind_counts, normalized as normalized_event, summarize as summarize_events
-from .policy import ActionRequest, AllowlistPolicy
+from .policy import ActionRequest, AllowlistPolicy, AuditEvent
 from .tools import AttemptBinding
 from .containment import MacOSSandboxBackend
 from .checks import CheckConfigError, CheckRegistry, UnknownCheckError
@@ -807,11 +807,23 @@ def execute_tool_action(attempt_id: str, payload: ToolActionRequest, request: Re
         "reason": result.decision.reason,
         "value": value,
         "error": result.error,
-        # ADR 0031 (#71): the mode stamped on this action's audit rows.
-        "evidence_mode": db.scalar(select(ToolAuditRow.evidence_mode).where(
-            ToolAuditRow.attempt_id == attempt_id, ToolAuditRow.action_id == action.action_id,
-        ).order_by(ToolAuditRow.created_at.desc()).limit(1)),
+        "evidence_mode": _delivery_evidence_mode(db, result),
     }
+
+
+def _delivery_evidence_mode(db: Session, result) -> str | None:
+    """The mode stamped on the audit row this call itself wrote (ADR 0031 §9).
+
+    Every delivery writes exactly one ``policy_decided`` row (its own
+    ``audit_id``); a replayed action's execution rows are deduplicated and
+    keep their original mode, so they are not this call's answer. Looked up
+    by id: no timestamp ordering, no ties.
+    """
+
+    decided = [r.audit_id for r in result.audit_records if r.event is AuditEvent.POLICY_DECIDED]
+    if not decided:
+        return None
+    return db.scalar(select(ToolAuditRow.evidence_mode).where(ToolAuditRow.audit_id == decided[-1]))
 
 
 @app.get("/runs/{run_id}/timeline")

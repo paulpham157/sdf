@@ -249,3 +249,137 @@ def test_migration_0022_restores_an_index_a_rebuild_lost(tmp_path, monkeypatch):
         module._sqlite_rebuild(c, lossy)
     assert _schema(engine) == before
     engine.dispose()
+
+
+# --- review follow-ups (#73) ------------------------------------------------------
+
+def test_a_tool_call_from_a_separate_session_sees_the_committed_promotion(tmp_path, monkeypatch):
+    """Like the HTTP Tool Proxy: its own session/connection, not the run's."""
+
+    engine = make_engine(f"sqlite:///{tmp_path / 'shared.sqlite'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    with factory() as run_db:
+        run_db.add(TaskRow(id="T", title="t", status="created", idempotency_key="t",
+                           acceptance_criteria=["tests pass"], created_at=utcnow()))
+        run_db.commit()
+        fixture = tmp_path / "fixture"
+        fixture.mkdir()
+        (fixture / "app.py").write_text("print('old')\n")
+        seen = {}
+
+        class CallsTheProxyElsewhere(_Completing):
+            def send(self, session_id, input_text):
+                if not seen:
+                    with factory() as proxy_db:  # a new connection, as an HTTP request would have
+                        attempt = proxy_db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == "sep"))
+                        service = ExecutionService(proxy_db, workspace_root=tmp_path / "work",
+                                                   artifact_root=tmp_path / "art")
+                        seen["status"] = _tool(service, attempt.id, resource="app.py").status.value
+                        seen["id"] = attempt.id
+                return super().send(session_id, input_text)
+
+        run = ExecutionService(run_db, workspace_root=tmp_path / "work", artifact_root=tmp_path / "art",
+                               adapter=_live(run_db, monkeypatch, runtime=CallsTheProxyElsewhere()))
+        attempt = run.run(task_id="T", dispatch_key="sep", fixture=fixture, instructions="x", commands=[],
+                          criterion_checks=CHECK)
+        assert attempt.evidence_mode == "live" and seen["status"] == "executed"
+        assert {m for _, m in _modes(run_db, seen["id"])} == {"live"}
+    engine.dispose()
+
+
+def test_actions_response_reports_this_deliverys_own_row_across_a_promotion(tmp_path, monkeypatch):
+    """A replay after promotion: new decision row is live, deduped execution rows stay synthetic."""
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SDF_TOOL_ALLOWLIST", "filesystem:read")
+    attempt_id = "ATTEMPT-API-TOOL-REPLAY"
+    with SessionLocal() as api_db:
+        api_db.add(TaskRow(id="TASK-API-TOOL-REPLAY", title="t", status="running", idempotency_key="api-tool-replay",
+                           acceptance_criteria=[], created_at=datetime.now(UTC)))
+        api_db.add(AttemptRow(id=attempt_id, task_id="TASK-API-TOOL-REPLAY", status="running",
+                              dispatch_key="api-tool-replay", agent="test", evidence_mode="synthetic",
+                              created_at=datetime.now(UTC)))
+        api_db.commit()
+    (tmp_path / ".sdf-workspaces" / attempt_id).mkdir(parents=True)
+    (tmp_path / ".sdf-workspaces" / attempt_id / "a.txt").write_text("x")
+    client = admin_client()
+    payload = {"actor": "agent:test", "tool": "filesystem", "action": "read", "resource": "a.txt"}
+    first = client.post(f"/attempts/{attempt_id}/actions", json=payload).json()
+    assert (first["status"], first["evidence_mode"]) == ("executed", "synthetic")
+    with SessionLocal() as api_db:
+        api_db.get(AttemptRow, attempt_id).evidence_mode = "live"   # the sandbox now exists
+        api_db.commit()
+    again = client.post(f"/attempts/{attempt_id}/actions", json=payload).json()
+    assert again["action_id"] == first["action_id"] and again["status"] == "executed"
+    assert again["evidence_mode"] == "live"
+    with SessionLocal() as api_db:
+        rows = api_db.scalars(select(ToolAuditRow).where(ToolAuditRow.action_id == first["action_id"])).all()
+    assert sorted((r.event, r.evidence_mode) for r in rows) == [
+        ("action_claimed", "synthetic"), ("action_executed", "synthetic"),
+        ("policy_decided", "live"), ("policy_decided", "synthetic")]
+
+
+def test_migration_0022_keeps_duplicate_policy_decided_rows(tmp_path, monkeypatch):
+    """A rebuild that lost the partial WHERE would fail on these duplicates."""
+
+    url = f"sqlite:///{tmp_path / 'dups.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", url)
+    command.upgrade(ALEMBIC, "0021_evidence_mode_check")
+    engine = create_engine(url)
+    with engine.begin() as c:
+        for n in range(3):
+            c.execute(text(AUDIT_SQL), {"id": f"PD-{n}", "action": "ACT-1", "event": "policy_decided",
+                                        "mode": "synthetic"})
+        c.execute(text(AUDIT_SQL), {"id": "EX", "action": "ACT-1", "event": "action_executed", "mode": "synthetic"})
+    before = _schema(engine)
+    command.upgrade(ALEMBIC, "head")
+    assert _schema(engine) == before
+    with engine.begin() as c:
+        assert c.execute(text("SELECT COUNT(*) FROM tool_audits WHERE action_id = 'ACT-1'")).scalar() == 4
+    engine.dispose()
+
+
+def _load_0022():
+    path = Path(__file__).parents[1] / "alembic" / "versions" / "0022_tool_audit_mode_check.py"
+    spec = importlib.util.spec_from_file_location("m0022_atomic", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_migration_0022_failure_after_the_rebuild_rolls_everything_back(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'atomic.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", url)
+    command.upgrade(ALEMBIC, "0021_evidence_mode_check")
+    engine = create_engine(url)
+    with engine.begin() as c:
+        c.execute(text(AUDIT_SQL), {"id": "KEEP", "action": "A1", "event": "action_executed", "mode": "synthetic"})
+    before = _schema(engine)
+    module = _load_0022()
+    calls = {"n": 0}
+    real = module._column_ddl
+
+    def verify_fails(bind, column):  # the post-rebuild check sees a difference
+        calls["n"] += 1
+        return real(bind, column) if calls["n"] == 1 else ("changed",)
+
+    monkeypatch.setattr(module, "_column_ddl", verify_fails)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(connection)
+        with pytest.raises(RuntimeError, match="refusing"), Operations.context(context), \
+                context.begin_transaction():
+            module.upgrade()
+    assert calls["n"] == 2  # the rebuild really ran before the failure
+    with engine.connect() as c:
+        tables = {r[0] for r in c.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))}
+        table_sql = c.execute(text("SELECT sql FROM sqlite_master WHERE name = 'tool_audits'")).scalar()
+        assert "_alembic_tmp_tool_audits" not in tables and "ck_tool_audits_evidence_mode" not in table_sql
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0021_evidence_mode_check"
+        assert c.execute(text("SELECT COUNT(*) FROM tool_audits")).scalar() == 1
+    assert _schema(engine) == before
+    command.upgrade(ALEMBIC, "head")  # and a normal upgrade still works afterwards
+    with engine.connect() as c:
+        assert "ck_tool_audits_evidence_mode" in c.execute(text(
+            "SELECT sql FROM sqlite_master WHERE name = 'tool_audits'")).scalar()
+    engine.dispose()

@@ -120,6 +120,12 @@ usage-ledger `sandbox` row.
      when the action was audited?".
    - **Readers:** the timeline's tool-audit entries and the
      `POST /attempts/{id}/actions` response now include `evidence_mode`.
+     The response reports the mode of the `policy_decided` row this delivery
+     wrote, looked up by its `audit_id`; no timestamp ordering is involved.
+     Every delivery writes exactly one such row, including a replay or a
+     claim lost to another delivery. A replay across a promotion therefore
+     answers `live`, while the deduplicated execution rows keep their
+     original `synthetic`.
      The scorecard does not read `tool_audits`, so it is unchanged.
    - **SQLite rebuild (`0022`):** SQLite cannot add a CHECK in place, so the
      table is rebuilt (batch "move and copy"). With the current SQLAlchemy,
@@ -133,6 +139,13 @@ usage-ledger `sandbox` row.
      - it restores any that are missing or changed;
      - it raises if the result still differs.
 
+     The rebuild runs inside a SQLite `SAVEPOINT`, because pysqlite does
+     not open a transaction for DDL. A failure therefore rolls back the
+     table, its indexes and any leftover `_alembic_tmp_tool_audits`, and the
+     version stays at 0021. On success the savepoint commits with Alembic's
+     version stamp. The migration docstring describes manual recovery for an
+     upgrade interrupted outside SQLite's guarantees.
+
      SQLite has no triggers on this table; its append-only fence is the ORM
      session guard, which a rebuild cannot affect. On PostgreSQL,
      `ADD CONSTRAINT` neither updates rows nor fires the `BEFORE UPDATE OR
@@ -140,11 +153,15 @@ usage-ledger `sandbox` row.
 
 ## Consequences
 
-The mode is visible in four places:
+The mode is visible in these places:
 - the `POST /tasks/{id}/run` response (`evidence_mode`);
-- the timeline's `attempt_created` entry and its Evidence entries;
+- the `POST /attempts/{id}/actions` response (`evidence_mode`), which is the
+  mode of the `policy_decided` row that this delivery wrote (§9);
+- the timeline: the `attempt_created` entry, Evidence entries, and tool-audit
+  entries;
 - the `sdf.attempt` span (`sdf.evidence_mode`);
-- the scorecard basis.
+- Evidence in the Core MCP reads (`mode`);
+- the scorecard basis (Attempts and Evidence; tool audits are not read).
 
 Other consequences:
 - A misconfigured live server (a missing key) now returns `400` with no

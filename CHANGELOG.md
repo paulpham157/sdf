@@ -4,6 +4,15 @@
 
 ### Breaking API changes
 
+- **Review follow-ups for #73.**
+  - `POST /attempts/{id}/actions` now reports the mode of the `policy_decided`
+    row this delivery wrote, looked up by id (no timestamp ties).
+    `ToolExecution.audit_records` now also carries the decision record on
+    replay and lost-claim returns.
+  - On SQLite, migration `0022` runs its table rebuild in a `SAVEPOINT`, so a
+    failed verify leaves the database exactly at 0021.
+  - Removed a dead `_evidence_mode` copy from the `ReplayAwareAuditSink`
+    Protocol.
 - **Tool Proxy audits carry the evidence mode (#71, ADR 0031 §9).**
   - Every `tool_audits` row is stamped with its Attempt's `evidence_mode`
     when it is written, so audits from a live `/run` are `live`. Rows
