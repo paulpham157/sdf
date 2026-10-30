@@ -1,3 +1,7 @@
+## Start here
+
+How to work in this repository (authority, read-only work, when to plan, when to stop for a decision, how to report proof) is in **`docs/agents/workflow.md`** (ADR 0028). Read it before changing anything.
+
 ## Agent skills
 
 ### Issue tracker
