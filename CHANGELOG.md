@@ -14,6 +14,11 @@
     in the contract's deterministic order, with `category`,
     `trusted_boundary` and `acceptance_evidence` (always `false`). The new
     `GET /attempts/{id}/event-streams` summarises each stream, including gaps.
+  - `RuntimeController.recover(attempt_id)` restores a session binding from
+    the durable stream. If the runtime then cannot reattach and `start` returns
+    a new session id, the Attempt is rebound: the new stream starts with
+    `runtime_started` carrying `supersedes_session_id`, and the old session is
+    retired.
 - **Registered checks (#52, ADR 0025).** `POST /tasks/{id}/run` no longer
   accepts `commands`; `criterion_checks` maps criteria to check ids registered
   in the fixture's `sdf-checks.json` or the server checks file. Unknown request

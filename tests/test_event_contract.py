@@ -344,3 +344,159 @@ def test_migration_refuses_existing_rows_that_break_provenance(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match="provenance rule"):
         command.upgrade(config, "head")
     engine.dispose()
+
+
+# --- recovery when the runtime cannot reattach (#57 review) -----------------
+
+class _RestartedRuntime(FakeRuntime):
+    """A runtime process that lost every session: ``start`` mints a new id and
+    ``reconnect`` of an old id fails, like Herdr after a restart without a
+    binding snapshot."""
+
+    def __init__(self, prefix: str) -> None:
+        super().__init__()
+        self._prefix = prefix
+
+    def start(self, *, attempt_id: str, agent: str):
+        session = super().start(attempt_id=attempt_id, agent=agent)
+        if session.session_id.startswith(self._prefix):
+            return session
+        renamed = type(session)(f"{self._prefix}-{session.session_id}", session.attempt_id, session.agent,
+                                session.status)
+        del self._sessions[session.session_id]
+        self._sessions[renamed.session_id] = renamed
+        self._attempts[attempt_id] = renamed.session_id
+        return renamed
+
+
+def _stream(db, attempt):
+    return [(r.session_id, r.sequence, r.kind, r.payload)
+            for r in order_events(db.query(RuntimeEventRow).filter_by(attempt_id=attempt).all())]
+
+
+def test_recover_then_start_rebinds_when_the_runtime_mints_a_new_session(db):
+    sink = SqlAlchemyRuntimeEventSink(db)
+    first = RuntimeController(FakeRuntime(), event_sink=sink, source="run-e2b")
+    old = first.start(attempt_id="A-NEW", agent="codex")
+    first.send(old.session_id, "work")
+    db.commit()
+
+    runtime = _RestartedRuntime("restarted")
+    second = RuntimeController(runtime, event_sink=sink, source="run-e2b")
+    assert [e.sequence for e in second.recover("A-NEW")] == [1, 2]
+    with pytest.raises(KeyError):  # the restarted runtime no longer has the old session
+        second.reconnect(old.session_id)
+    new = second.start(attempt_id="A-NEW", agent="codex")
+    assert new.session_id != old.session_id
+    second.send(new.session_id, "continue")
+    db.commit()
+
+    rows = _stream(db, "A-NEW")
+    old_rows = [(seq, kind) for sid, seq, kind, _ in rows if sid == old.session_id]
+    new_rows = [(seq, kind, payload) for sid, seq, kind, payload in rows if sid == new.session_id]
+    assert old_rows == [(1, "runtime_started"), (2, "runtime_input_sent")]  # nothing synthesised
+    assert [(seq, kind) for seq, kind, _ in new_rows] == [(1, "runtime_started"), (2, "runtime_input_sent")]
+    assert new_rows[0][2]["supersedes_session_id"] == old.session_id
+    assert all(s.gaps == () for s in summarize(db.query(RuntimeEventRow).filter_by(attempt_id="A-NEW").all()))
+    # The retired session takes no further calls.
+    with pytest.raises(ValueError, match="superseded"):
+        second.send(old.session_id, "late")
+
+
+def test_a_second_restart_recovers_the_rebound_session(db):
+    sink = SqlAlchemyRuntimeEventSink(db)
+    first = RuntimeController(FakeRuntime(), event_sink=sink, source="run-e2b")
+    old = first.start(attempt_id="A-TWICE", agent="codex")
+    db.commit()
+    # Session ids that sort *before* the old one, so replay must follow supersession, not names.
+    second = RuntimeController(_RestartedRuntime("0-second"), event_sink=sink, source="run-e2b")
+    second.recover("A-TWICE")
+    mid = second.start(attempt_id="A-TWICE", agent="codex")
+    db.commit()
+
+    third_runtime = _RestartedRuntime("0-third")
+    third = RuntimeController(third_runtime, event_sink=sink, source="run-e2b")
+    assert len(third.recover("A-TWICE")) == 2
+    with pytest.raises(ValueError, match="superseded"):
+        third.send(old.session_id, "x")
+    newest = third.start(attempt_id="A-TWICE", agent="codex")
+    db.commit()
+    starts = [(sid, p.get("supersedes_session_id")) for sid, _, kind, p in _stream(db, "A-TWICE")
+              if kind == "runtime_started"]
+    assert sorted(starts, key=lambda s: s[1] or "") == sorted(
+        [(old.session_id, None), (mid.session_id, old.session_id), (newest.session_id, mid.session_id)],
+        key=lambda s: s[1] or "")
+
+
+def test_a_live_binding_is_never_silently_rebound(db):
+    class Fickle(FakeRuntime):
+        def start(self, *, attempt_id, agent):
+            self._attempts.pop(attempt_id, None)  # always a new session
+            return super().start(attempt_id=attempt_id, agent=agent)
+
+    controller = RuntimeController(Fickle(), event_sink=SqlAlchemyRuntimeEventSink(db), source="run-e2b")
+    controller.start(attempt_id="A-LIVE", agent="codex")
+    with pytest.raises(ValueError, match="different runtime session"):
+        controller.start(attempt_id="A-LIVE", agent="codex")
+
+
+def test_recover_then_reconnect_confirms_the_binding_so_start_cannot_rebind(db):
+    runtime = FakeRuntime()
+    sink = SqlAlchemyRuntimeEventSink(db)
+    old = RuntimeController(runtime, event_sink=sink, source="run-e2b").start(attempt_id="A-CONF", agent="codex")
+    db.commit()
+    second = RuntimeController(runtime, event_sink=sink, source="run-e2b")
+    second.recover("A-CONF")
+    second.reconnect(old.session_id)
+    runtime._attempts.pop("A-CONF")  # the runtime would now mint a new session
+    with pytest.raises(ValueError, match="different runtime session"):
+        second.start(attempt_id="A-CONF", agent="codex")
+
+
+def test_herdr_restart_without_snapshot_rebinds_and_with_snapshot_reattaches(db):
+    import json
+
+    from sdf_core.herdr_runtime import HerdrBindingSnapshot, HerdrRuntime
+
+    def herdr(agent_session: str):
+        def runner(command, timeout_ms):
+            verb = tuple(command[1:3])
+            if verb == ("workspace", "create"):
+                return json.dumps({"workspaceId": "ws-1", "paneId": "pane-1"})
+            if verb == ("agent", "start"):
+                return json.dumps({"agentSessionId": agent_session, "status": "working"})
+            if verb == ("api", "snapshot"):
+                return json.dumps({"snapshot": {"agents": [{"name": agent_session, "pane_id": "pane-1"}]}})
+            if verb == ("agent", "get"):
+                return json.dumps({"status": "working"})
+            if verb == ("pane", "process-info"):
+                return json.dumps({"process_info": {"foreground_processes": [{"pid": 1, "name": "zsh"}]}})
+            raise AssertionError(command)
+        return runner
+
+    sink = SqlAlchemyRuntimeEventSink(db)
+    first = RuntimeController(HerdrRuntime(runner=herdr("agent-1")), event_sink=sink, source="herdr-e2b")
+    first.start(attempt_id="A-HERDR", agent="codex")
+    db.commit()
+
+    # Restart with a snapshot: the runtime reattaches, no second start.
+    restored_runtime = HerdrRuntime(runner=herdr("agent-1"))
+    restored_runtime.restore_binding(HerdrBindingSnapshot("A-HERDR", "agent-1", "codex", "ws-1", "pane-1"))
+    restored = RuntimeController(restored_runtime, event_sink=sink, source="herdr-e2b")
+    restored.recover("A-HERDR")
+    assert restored.start(attempt_id="A-HERDR", agent="codex").session_id == "agent-1"
+    restored.reconnect("agent-1")
+    db.commit()
+    assert [(sid, kind) for sid, _, kind, _ in _stream(db, "A-HERDR")] == [
+        ("agent-1", "runtime_started"), ("agent-1", "runtime_reconnected")]
+
+    # Restart without a snapshot: Herdr mints agent-2, and the Attempt is rebound.
+    lost = RuntimeController(HerdrRuntime(runner=herdr("agent-2")), event_sink=sink, source="herdr-e2b")
+    lost.recover("A-HERDR")
+    with pytest.raises(KeyError):
+        lost.reconnect("agent-1")
+    assert lost.start(attempt_id="A-HERDR", agent="codex").session_id == "agent-2"
+    db.commit()
+    rows = _stream(db, "A-HERDR")
+    assert [(sid, seq, kind) for sid, seq, kind, _ in rows][-1] == ("agent-2", 1, "runtime_started")
+    assert rows[-1][3]["supersedes_session_id"] == "agent-1"
