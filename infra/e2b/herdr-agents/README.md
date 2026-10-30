@@ -105,6 +105,25 @@ The template is **public** (published 2026-10-28 with
 `SDF_E2B_OPENCODE_TEMPLATE=sdf-herdr-agents` or
 `SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents`.
 
+Second team copy, rebuilt 2026-10-30: the operator's other E2B team (the
+`E2B_API_KEY` on the CI/agent box) owns its own **private**
+`sdf-herdr-agents`, template id `tybptciqi1v4wnrvbhhu`. It had gone stale (a
+2026-09-25 image: Herdr 0.9.1, Codex 0.157.0, Claude Code 2.1.282, Node
+22.23.2, and no `pi`, `opencode`, `qwen` or `goose`, so those kinds exited
+127). It was rebuilt in place from this unchanged Dockerfile (commit
+`441173b`) with the build command above: build
+`a66e215d-bec8-4980-a79f-2e5f5d4cbba7` (2 vCPU, 2048 MiB, E2B `diskSizeMB`
+25328, envd 0.10.0). Verified in a fresh sandbox: Node v22.23.4, Herdr 0.9.5,
+Codex 0.165.0, Claude Code 2.1.308, OpenCode v2.2.0, Pi 1.4.0, Qwen Code
+0.26.2, Goose 1.56.0, the three Pi extensions present, Herdr server running;
+no credential files, npmrc tokens or secret env names. Live on Vultr glm-5.3:
+`tests/test_live_full_loop_http.py` 6 passed / 2 skipped (opencode, pi,
+codex) and `tests/test_vultr_agents_live.py` 5 of 5 (codex, claude, pi,
+qwen, goose). The live tests resolve the bare name, so with this key set
+`SDF_E2B_VULTR_TEMPLATE=sdf-herdr-agents` (unset, that test bootstraps E2B's
+`codex` base, whose Node 20 cannot run Pi 1.x); rebuild this copy whenever the
+public one is rebuilt.
+
 Current build, 2026-10-28 (ADR 0017 update: pi-lens 4.4.6 baked in for
 write turns; otherwise the ADR 0018 versions below): template id
 `xj8glxnh091op795c7me`, build `45ba7067-6549-48e3-8510-b69caeef0333`
