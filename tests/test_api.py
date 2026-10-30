@@ -313,7 +313,7 @@ def test_structured_tool_endpoint_uses_server_allowlist_and_persists_event(tmp_p
         rows = db.query(RuntimeEventRow).filter_by(
             source="tool-proxy", attempt_id=attempt_id,
         ).order_by(RuntimeEventRow.sequence).all()
-        assert [row.kind for row in rows] == ["tool_policy_decided", "tool_action_executed"]
+        assert [row.kind for row in rows] == ["tool_requested", "tool_policy_decided", "tool_action_executed"]
     finally:
         db.close()
 

@@ -6,12 +6,13 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, insert, select
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from .db import AttemptRow, RuntimeEventRow, ToolAuditRow
 from .model import AttemptState
+from .events import TOOL_PROXY_SOURCE, TRUSTED_ACTION_SOURCES, UntrustedEventError
 from .runtime import RuntimeEvent, RuntimeEventKind, RuntimeStatus, SqlAlchemyRuntimeEventSink
 from .policy import ActionRequest, AuditEvent, AuditRecord, Policy, PolicyDecision, PolicyEffect
 from uuid import uuid4
@@ -51,6 +52,9 @@ class ReplayAwareAuditSink(AuditSink, Protocol):
 class ToolEventSink(Protocol):
     def append(self, record: AuditRecord) -> None:
         """Emit one trusted Tool Proxy event."""
+
+    # Optional: ``requested(request: ActionRequest) -> None`` emits
+    # ``tool_requested`` when the boundary receives a structured request.
 
 
 class AttemptGuard(Protocol):
@@ -241,63 +245,77 @@ class SqlAlchemyToolEventSink:
         AuditEvent.ACTION_FAILED: RuntimeEventKind.TOOL_ACTION_FAILED,
     }
 
-    def __init__(self, db: Session, *, source: str = "tool-proxy", principal: str | None = None):
+    def __init__(self, db: Session, *, source: str = TOOL_PROXY_SOURCE, principal: str | None = None):
+        if source not in TRUSTED_ACTION_SOURCES:
+            raise UntrustedEventError(f"tool events must use a trusted action-boundary source, not {source!r}")
         self.db = db
         self.source = source
         self.principal = principal
         self.events = SqlAlchemyRuntimeEventSink(db)
 
-    def append(self, record: AuditRecord) -> None:
-        session_id = f"tool:{record.attempt_id}"
-        kind = self._KINDS[record.event]
+    def _emit(self, kind: RuntimeEventKind, attempt_id: str, payload: dict[str, Any], dedupe: tuple[str, str]) -> None:
+        session_id = f"tool:{attempt_id}"
         existing = self.db.scalars(
             select(RuntimeEventRow).where(
                 (RuntimeEventRow.source == self.source)
-                & (RuntimeEventRow.attempt_id == record.attempt_id)
+                & (RuntimeEventRow.attempt_id == attempt_id)
                 & (RuntimeEventRow.session_id == session_id)
             )
         ).all()
-        # Execution outcomes are deduplicated per action; decisions per audit
-        # row, so each delivery's decision (and principal) is observable.
-        per_delivery = record.event is AuditEvent.POLICY_DECIDED
+        field, value = dedupe
         if any(
-            row.kind == kind.value
-            and isinstance(row.payload, dict)
-            and (row.payload.get("audit_id") == record.audit_id if per_delivery
-                 else row.payload.get("action_id") == record.action_id)
+            row.kind == kind.value and isinstance(row.payload, dict) and row.payload.get(field) == value
             for row in existing
         ):
             return
-        current = self.db.scalar(
-            select(func.max(RuntimeEventRow.sequence)).where(
-                (RuntimeEventRow.source == self.source)
-                & (RuntimeEventRow.attempt_id == record.attempt_id)
-                & (RuntimeEventRow.session_id == session_id)
-            )
-        ) or 0
-        event = RuntimeEvent(
+        current = max((row.sequence for row in existing), default=0)
+        self.events.append(RuntimeEvent(
             kind=kind,
             session_id=session_id,
-            attempt_id=record.attempt_id,
+            attempt_id=attempt_id,
             sequence=int(current) + 1,
             status=RuntimeStatus.RUNNING,
-            payload={
-                "audit_id": record.audit_id,
-                "action_id": record.action_id,
-                "actor": record.actor,
-                "tool": record.tool,
-                "action": record.action,
-                "resource": record.resource,
-                "context": _durable_context(record.context),
-                "decision": record.decision.value,
-                "executed": record.executed,
-                "outcome": record.outcome,
-                "detail": record.detail,
-                **({"principal": self.principal} if self.principal is not None else {}),
-            },
+            payload=payload,
             source=self.source,
-        )
-        self.events.append(event)
+        ))
+
+    def requested(self, request: ActionRequest) -> None:
+        """``tool_requested``: the boundary received this structured request.
+
+        Recorded once per action identity; each delivery's principal and
+        decision are on the ``tool_policy_decided`` events that follow.
+        """
+
+        self._emit(RuntimeEventKind.TOOL_REQUESTED, request.attempt_id, {
+            "action_id": request.action_id,
+            "actor": request.actor,
+            "tool": request.tool,
+            "action": request.action,
+            "resource": request.resource,
+            "context": _durable_context(request.context),
+            **({"principal": self.principal} if self.principal is not None else {}),
+        }, ("action_id", request.action_id))
+
+    def append(self, record: AuditRecord) -> None:
+        kind = self._KINDS[record.event]
+        # Execution outcomes are deduplicated per action; decisions per audit
+        # row, so each delivery's decision (and principal) is observable.
+        per_delivery = record.event is AuditEvent.POLICY_DECIDED
+        dedupe = ("audit_id", record.audit_id) if per_delivery else ("action_id", record.action_id)
+        self._emit(kind, record.attempt_id, {
+            "audit_id": record.audit_id,
+            "action_id": record.action_id,
+            "actor": record.actor,
+            "tool": record.tool,
+            "action": record.action,
+            "resource": record.resource,
+            "context": _durable_context(record.context),
+            "decision": record.decision.value,
+            "executed": record.executed,
+            "outcome": record.outcome,
+            "detail": record.detail,
+            **({"principal": self.principal} if self.principal is not None else {}),
+        }, dedupe)
 
 
 class AttemptBinding:
@@ -367,6 +385,9 @@ class ToolProxy:
     def execute(self, request: ActionRequest) -> ToolExecution:
         if not isinstance(request, ActionRequest):
             raise TypeError("ToolProxy requires a structured ActionRequest; terminal text is not trusted")
+        requested = getattr(self.event_sink, "requested", None)
+        if callable(requested):
+            requested(request)
 
         binding_denial = self.binding.check(request) if self.binding is not None else None
         if binding_denial is not None:

@@ -58,8 +58,9 @@ def test_forged_actor_is_denied_and_audited_with_real_principal(tmp_path, monkey
     assert "agent:root" in rows[0].detail           # claim recorded outside the hash
     assert not any(k.startswith("sdf_") for k in rows[0].context)
     with SessionLocal() as db:
-        event = db.query(RuntimeEventRow).filter_by(source="tool-proxy", attempt_id=attempt_id).one()
-        assert event.payload["principal"] == "op-alice"
+        events = db.query(RuntimeEventRow).filter_by(source="tool-proxy", attempt_id=attempt_id).all()
+        assert [e.kind for e in events] == ["tool_requested", "tool_policy_decided"]
+        assert all(e.payload["principal"] == "op-alice" for e in events)
 
 
 def test_forged_denial_does_not_shadow_the_legitimate_action_audit(tmp_path, monkeypatch):

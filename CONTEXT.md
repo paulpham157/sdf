@@ -134,6 +134,10 @@ _Avoid_: domain core, Task owner
 An execution resource linked to an Attempt whose connection and process lifecycle are distinct from the Task outcome.
 _Avoid_: Task, Evidence
 
+**Runtime Event**:
+One normalized, append-only observation correlated to an Attempt and a session. It is a runtime observation from an Agent Runtime or, for `tool_*` kinds, an action-boundary event that only the Tool Proxy emits (ADR 0029). It is telemetry, never Evidence.
+_Avoid_: log line, status, proof of success
+
 **Agent Credential**:
 The right to call a model provider that an Agent Runtime receives when its sandbox is created; it belongs to the runtime, not to the Attempt.
 _Avoid_: auth, token

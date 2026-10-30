@@ -137,6 +137,12 @@ class EvidenceRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+RUNTIME_EVENT_PROVENANCE_SQL = (
+    "(substr(kind, 1, 5) = 'tool_' AND source = 'tool-proxy') "
+    "OR (substr(kind, 1, 5) <> 'tool_' AND source <> 'tool-proxy')"
+)
+
+
 class RuntimeEventRow(Base):
     __tablename__ = "runtime_events"
     __table_args__ = (
@@ -150,6 +156,9 @@ class RuntimeEventRow(Base):
             "sequence",
             name="uq_runtime_events_source_attempt_session_sequence",
         ),
+        # Provenance (ADR 0029): tool_* kinds are action-boundary events and
+        # only the Tool Proxy emits them; the Tool Proxy emits nothing else.
+        CheckConstraint(RUNTIME_EVENT_PROVENANCE_SQL, name="ck_runtime_events_provenance"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String(120), default="runtime", server_default="runtime")
@@ -505,13 +514,14 @@ def _reject_dangling_decision_edges(session: Session, flush_context: Any, instan
 
 @event.listens_for(Session, "before_flush")
 def _reject_agent_message_mutation(session: Session, flush_context: Any, instances: Any) -> None:
-    """Agent messages, claims and usage-ledger rows are append-only, like Evidence."""
+    """Agent messages, claims, usage-ledger rows and normalized runtime events
+    (ADR 0029) are append-only, like Evidence."""
 
     for item in session.deleted:
-        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow)):
+        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow, RuntimeEventRow)):
             raise ValueError(f"{type(item).__name__} rows are append-only and cannot be deleted")
     for item in session.dirty:
-        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow)) and session.is_modified(item, include_collections=False):
+        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow, RuntimeEventRow)) and session.is_modified(item, include_collections=False):
             raise ValueError(f"{type(item).__name__} rows are append-only and cannot be updated")
 
 

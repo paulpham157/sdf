@@ -307,3 +307,26 @@ def test_tool_audit_principal_column_round_trips_and_migrates_on_postgresql(post
     assert "principal" in {c["name"] for c in inspect(postgres_engine).get_columns("tool_audits")}
     assert "principal" in {c["name"] for c in inspect(postgres_engine).get_columns("attempts")}
     assert "uq_tool_audits_execution_event" in {i["name"] for i in inspect(postgres_engine).get_indexes("tool_audits")}
+
+
+def test_runtime_events_provenance_check_and_append_only_trigger(postgres_engine):
+    """ADR 0029: tool_* kinds only from tool-proxy; rows are never updated or deleted."""
+
+    insert_sql = ("INSERT INTO runtime_events (source, attempt_id, session_id, sequence, kind, status, payload, "
+                  "created_at) VALUES (:source, 'ATTEMPT-PG-PROV', :session, :seq, :kind, 'running', '{}', now())")
+    for source, kind in (("run-e2b", "tool_policy_decided"), ("tool-proxy", "runtime_output_observed")):
+        with pytest.raises(DBAPIError, match="ck_runtime_events_provenance"):
+            with postgres_engine.begin() as connection:
+                connection.execute(text(insert_sql), {"source": source, "session": "S", "seq": 1, "kind": kind})
+    with postgres_engine.begin() as connection:
+        connection.execute(text(insert_sql), {"source": "tool-proxy", "session": "tool:X", "seq": 1,
+                                              "kind": "tool_requested"})
+        connection.execute(text(insert_sql), {"source": "run-e2b", "session": "S", "seq": 1,
+                                              "kind": "runtime_output_observed"})
+    for statement in (
+        "UPDATE runtime_events SET status = 'completed' WHERE attempt_id = 'ATTEMPT-PG-PROV'",
+        "DELETE FROM runtime_events WHERE attempt_id = 'ATTEMPT-PG-PROV'",
+    ):
+        with pytest.raises(DBAPIError, match="append-only"):
+            with postgres_engine.begin() as connection:
+                connection.execute(text(statement))

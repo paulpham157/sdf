@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Iterable, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .credentials import CredentialMode
 from .db import RuntimeEventRow
+from .events import validate_provenance, validate_runtime_source
 from .model import utcnow
 
 
@@ -26,7 +27,12 @@ class RuntimeStatus(StrEnum):
 
 
 class RuntimeEventKind(StrEnum):
-    """Trusted lifecycle observations emitted by the runtime boundary."""
+    """Normalized event kinds (contract: :mod:`sdf_core.events`).
+
+    ``runtime_*`` kinds are lifecycle observations from an Agent Runtime.
+    ``tool_*`` kinds are emitted only by the Tool Proxy, the trusted SDF
+    action boundary, and never from interpreted terminal text.
+    """
 
     STARTED = "runtime_started"
     INPUT_SENT = "runtime_input_sent"
@@ -34,6 +40,7 @@ class RuntimeEventKind(StrEnum):
     CANCELLED = "runtime_cancelled"
     TERMINATED = "runtime_terminated"
     RECONNECTED = "runtime_reconnected"
+    TOOL_REQUESTED = "tool_requested"
     TOOL_POLICY_DECIDED = "tool_policy_decided"
     TOOL_ACTION_EXECUTED = "tool_action_executed"
     TOOL_ACTION_FAILED = "tool_action_failed"
@@ -68,6 +75,8 @@ class RuntimeEvent:
             raise ValueError("runtime event sequence must be a positive integer")
         if not isinstance(self.payload, dict):
             raise TypeError("runtime event payload must be a dictionary")
+        # Provenance: tool_* kinds only from the Tool Proxy, nothing else from it.
+        validate_provenance(self.source, self.kind)
 
     @property
     def identity(self) -> tuple[str, str, str, int]:
@@ -78,6 +87,12 @@ class RuntimeEvent:
 
 class RuntimeEventSink(Protocol):
     def append(self, event: RuntimeEvent) -> None: ...
+
+
+class DurableRuntimeEventSink(RuntimeEventSink, Protocol):
+    def last_sequence(self, *, source: str, attempt_id: str, session_id: str) -> int: ...
+    def events_for(self, attempt_id: str, *, source: str | None = None,
+                   session_id: str | None = None) -> tuple["RuntimeEvent", ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +206,7 @@ class RuntimeController:
             raise ValueError("runtime event source must be a non-empty string")
         if len(source) > 120:
             raise ValueError("runtime event source exceeds 120 characters")
+        validate_runtime_source(source)
         self.runtime = runtime
         self.event_sink = event_sink
         self.source = source
@@ -214,7 +230,11 @@ class RuntimeController:
 
     def _record(self, kind: RuntimeEventKind, session: RuntimeSession, payload: dict[str, Any] | None = None) -> None:
         with self._lock:
-            sequence = self._sequences.get(session.attempt_id, 0) + 1
+            if session.attempt_id not in self._sequences:
+                # A new controller (process restart, reconnect) continues the
+                # durable stream instead of reusing sequence 1.
+                self._sequences[session.attempt_id] = self._durable_last(session)
+            sequence = self._sequences[session.attempt_id] + 1
             event = RuntimeEvent(
                 kind,
                 session.session_id,
@@ -229,6 +249,26 @@ class RuntimeController:
             self._sequences[session.attempt_id] = sequence
             self._event_keys.add(event.identity)
             self._events.append(event)
+
+    def _durable_last(self, session: RuntimeSession) -> int:
+        last_sequence = getattr(self.event_sink, "last_sequence", None)
+        if not callable(last_sequence):
+            return 0
+        return int(last_sequence(source=self.source, attempt_id=session.attempt_id, session_id=session.session_id))
+
+    def recover(self, attempt_id: str) -> tuple[RuntimeEvent, ...]:
+        """Restore this controller's durable stream for one Attempt after a restart.
+
+        Reads the persisted events of this source from a durable sink and
+        replays them (no runtime call, no new rows). Afterwards ``start`` does
+        not record a second start, and ``reconnect``/``send`` continue the
+        same sequence.
+        """
+
+        events_for = getattr(self.event_sink, "events_for", None)
+        if not callable(events_for):
+            return ()
+        return self.replay(events_for(attempt_id, source=self.source))
 
     def start(self, *, attempt_id: str, agent: str) -> RuntimeSession:
         session = self.runtime.start(attempt_id=attempt_id, agent=agent)
@@ -299,12 +339,19 @@ class RuntimeController:
         Reconnect/restart recovery must apply trusted lifecycle observations,
         not call ``start``/``send`` again.  The durable sink performs the same
         identity check, so replaying an already persisted batch is harmless.
+        Events are applied in ``sequence`` order whatever order they arrive
+        in, and only this controller's own source is accepted: a runtime
+        controller cannot replay another producer's (e.g. Tool Proxy) events.
         """
 
         accepted: list[RuntimeEvent] = []
-        for event in events:
+        batch = list(events)
+        for event in batch:
             if not isinstance(event, RuntimeEvent):
                 raise TypeError("runtime replay requires RuntimeEvent values")
+            if event.source != self.source:
+                raise ValueError(f"controller for source {self.source!r} cannot replay {event.source!r} events")
+        for event in sorted(batch, key=lambda e: (e.attempt_id, e.session_id, e.sequence)):
             if event.identity in self._event_keys:
                 continue
             bound_attempt = self._attempts.get(event.session_id)
@@ -417,6 +464,18 @@ class SqlAlchemyRuntimeEventSink:
                 f"{event.identity!r}"
             )
         return row
+
+    def last_sequence(self, *, source: str, attempt_id: str, session_id: str) -> int:
+        """Highest persisted sequence of one stream (0 when it is empty)."""
+
+        value = self.db.scalar(
+            select(func.max(RuntimeEventRow.sequence)).where(
+                (RuntimeEventRow.source == source)
+                & (RuntimeEventRow.attempt_id == attempt_id)
+                & (RuntimeEventRow.session_id == session_id)
+            )
+        )
+        return int(value or 0)
 
     def replay(self, events: RuntimeEvent | Iterable[RuntimeEvent]):
         """Replay one event or a batch through the idempotent append path."""

@@ -22,7 +22,6 @@ from .db import (
     GraphNodeRow,
     ObjectiveMetricRow,
     OutcomeObservationRow,
-    RuntimeEventRow,
     TaskRow,
     make_engine,
     make_session_factory,
@@ -36,6 +35,7 @@ from .run_adapter import RunBusyError, configured_run_adapter, run_slot
 from .observability import configure_logging, get_logger, log_context
 from . import tracing
 from .timeline import build_timeline
+from .events import events_for_attempts, kind_counts as event_kind_counts, normalized as normalized_event, summarize as summarize_events
 from .policy import ActionRequest, AllowlistPolicy
 from .tools import AttemptBinding
 from .containment import MacOSSandboxBackend
@@ -639,27 +639,12 @@ def get_task_trace(task_id: str, db: Session = Depends(get_db)):
                 queue.append(related_node)
     ordered_nodes = list(nodes.values())
     attempt_ids = db.scalars(select(AttemptRow.id).where(AttemptRow.task_id == task_id)).all()
-    runtime_events = db.scalars(
-        select(RuntimeEventRow)
-        .where(RuntimeEventRow.attempt_id.in_(attempt_ids))
-        .order_by(RuntimeEventRow.attempt_id, RuntimeEventRow.sequence)
-    ).all()
+    # Grouped by Attempt; within one, the contract's deterministic merge order.
+    runtime_events = sorted(events_for_attempts(db, attempt_ids), key=lambda row: row.attempt_id)
     return {
         "nodes": [node_payload(n) for n in ordered_nodes],
         "edges": [edge_payload(e) for e in edges],
-        "runtime_events": [
-            {
-                "source": event.source,
-                "attempt_id": event.attempt_id,
-                "session_id": event.session_id,
-                "sequence": event.sequence,
-                "kind": event.kind,
-                "status": event.status,
-                "payload": event.payload,
-                "created_at": event.created_at,
-            }
-            for event in runtime_events
-        ],
+        "runtime_events": [normalized_event(event) for event in runtime_events],
     }
 
 
@@ -686,24 +671,23 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
 def get_runtime_events(attempt_id: str, db: Session = Depends(get_db)):
     if db.get(AttemptRow, attempt_id) is None:
         raise HTTPException(status_code=404, detail="attempt not found")
-    rows = db.scalars(
-        select(RuntimeEventRow)
-        .where(RuntimeEventRow.attempt_id == attempt_id)
-        .order_by(RuntimeEventRow.sequence)
-    ).all()
-    return [
-        {
-            "source": row.source,
-            "attempt_id": row.attempt_id,
-            "session_id": row.session_id,
-            "sequence": row.sequence,
-            "kind": row.kind,
-            "status": row.status,
-            "payload": row.payload,
-            "created_at": row.created_at,
-        }
-        for row in rows
-    ]
+    # Deterministic order and provenance per the event contract (ADR 0029).
+    return [normalized_event(row) for row in events_for_attempts(db, [attempt_id])]
+
+
+@app.get("/attempts/{attempt_id}/event-streams")
+def get_event_streams(attempt_id: str, db: Session = Depends(get_db)):
+    """Per-stream summary (sequence range, gaps, last state). Telemetry, not Evidence."""
+
+    if db.get(AttemptRow, attempt_id) is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    rows = events_for_attempts(db, [attempt_id])
+    return {
+        "attempt_id": attempt_id,
+        "streams": [summary.as_dict() for summary in summarize_events(rows)],
+        "kinds": event_kind_counts(rows),
+        "acceptance_evidence": False,
+    }
 
 
 @app.get("/scorecard")

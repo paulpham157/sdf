@@ -98,7 +98,7 @@ def test_runtime_event_identity_allows_independent_trusted_sources():
             source="runtime",
         )
         tool_event = RuntimeEvent(
-            RuntimeEventKind.STARTED,
+            RuntimeEventKind.TOOL_POLICY_DECIDED,
             "SESSION-006",
             "ATTEMPT-006",
             1,
