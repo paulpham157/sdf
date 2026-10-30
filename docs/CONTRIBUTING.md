@@ -27,6 +27,25 @@ Keep changes small and commit one coherent slice at a time. Do not commit
 `.env`, API keys, endpoint tokens, provider credentials, generated graph output,
 or live sandbox identifiers.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and on pushes to `main`.
+It is hermetic: no secrets, no `SDF_LIVE_*` flags, no provider keys.
+
+- `pytest (SQLite, py3.11 / py3.13)`: the full suite, `uv sync --locked
+  --all-groups` then `uv run pytest -rs`, on the minimum supported Python and
+  the local dev version.
+- `pytest (PostgreSQL 16, py3.13)`: a `postgres:16-alpine` service (same
+  credentials as `docker-compose.test.yml`), `alembic upgrade head`, then the
+  full suite with only `SDF_POSTGRES_TEST_URL` set (`SDF_DATABASE_URL` is for the
+  migration step only), so the PostgreSQL integration
+  tests run instead of skipping.
+
+Keep `uv.lock` in sync (`uv lock`); CI fails on a stale lock. A green CI run
+proves only these hermetic contracts. Live tests are skipped there and remain
+a separate, recorded verification step (see below). No lint or type-check
+gate exists yet.
+
 ## Paseo workspace scripts
 
 Root `paseo.json` only wraps the same long-lived / supervised commands documented
@@ -120,6 +139,8 @@ a private mapping). A green unit suite without that gate is not live evidence.
 ## Verification boundaries
 
 - `tests/` and fake transports prove local contracts only.
+- A green CI run is the same hermetic evidence on a clean runner (SQLite on
+  py3.11/3.13, PostgreSQL 16 on py3.13); it is not live-provider evidence.
 - A template build proves that the image can start and pass its readiness command.
 - A live E2B smoke test must record sandbox creation, command correlation,
   artifact handling, and cleanup; always kill the sandbox in a `finally` path.

@@ -68,7 +68,7 @@ class ActionRequest:
             "context": dict(self.context),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-        return f"ACTION-{hashlib.sha256(encoded.encode("utf-8")).hexdigest()}"
+        return f"ACTION-{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 @dataclass(frozen=True, slots=True)
