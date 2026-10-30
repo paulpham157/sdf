@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Hermetic only: no secrets, no live-provider flags. Live tests (SDF_LIVE_*)
+# skip themselves when their flags/keys are absent.
+env:
+  UV_LOCKED: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  test-sqlite:
+    name: pytest (SQLite, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Minimum supported (requires-python >=3.11) and the local dev version.
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+      - name: Run hermetic suite
+        run: uv run pytest -rs
+
+  test-postgres:
+    name: pytest (PostgreSQL 16, py3.13)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sdf_core
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sdf_core"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      # Same throwaway credentials as docker-compose.test.yml; not a secret.
+      SDF_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:55432/sdf_core
+      SDF_POSTGRES_TEST_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:55432/sdf_core
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+      - name: Run suite with PostgreSQL integration enabled
+        run: uv run pytest -rs
