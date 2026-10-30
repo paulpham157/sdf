@@ -3,8 +3,8 @@
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_CONTAINMENT``
 (``1`` = all six kinds, or a comma-separated subset) plus ``E2B_API_KEY`` and
 ``VULTR_INFERENCE_API_KEY`` (env / repo ``.env``; presence only, values never
-printed).  Template: ``SDF_E2B_VULTR_TEMPLATE`` (prebuilt agents image) for
-every kind; ``SDF_LIVE_CONTAINMENT_SCENARIOS`` picks ``timeout,sigkill,cancel``.
+printed).  Template: ``SDF_E2B_VULTR_TEMPLATE`` (prebuilt agents image, default
+``sdf-herdr-agents``) for every kind; ``SDF_LIVE_CONTAINMENT_SCENARIOS`` picks ``timeout,sigkill,cancel``.
 
 Per (kind, scenario), one fresh sandbox: the agent is asked to run
 ``sh spawn.sh``, which starts ``setsid sleep 300``, ``env -i setsid sleep 301``
@@ -46,7 +46,7 @@ KINDS = ("pi", "qwen", "goose", "opencode", "codex", "claude") if _SEL == "1" el
 SCENARIOS = tuple(ENV.get("SDF_LIVE_CONTAINMENT_SCENARIOS", "timeout,sigkill,cancel").split(","))
 LIVE = ENV.get("SDF_LIVE_E2B") == "1" and bool(KINDS) and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get(V.KEY_VAR))
 pytestmark = pytest.mark.skipif(not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_LIVE_CONTAINMENT=1 with E2B/Vultr keys")
-TEMPLATE = ENV.get("SDF_E2B_VULTR_TEMPLATE", "")
+TEMPLATE = V.PREBUILT_TEMPLATE or V.DEFAULT_TEMPLATE
 REPORT_DIR = Path("/tmp/sdf-live-reports")
 D = "/tmp/sdf-live"
 
