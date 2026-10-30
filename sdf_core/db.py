@@ -171,6 +171,29 @@ class RuntimeEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class RoutingDecisionRow(Base):
+    """Which agent a live Attempt ran with, and why (#58, ADR 0030).
+
+    One append-only row per Attempt, written before the agent starts. The
+    candidates carry each agent's measured inputs or rejection reason, with
+    the ids of the trusted rows they came from. The outcome is not stored here;
+    it is read from Evidence and the usage ledger when needed.
+    """
+
+    __tablename__ = "routing_decisions"
+    __table_args__ = (
+        CheckConstraint("mode IN ('explicit','measured')", name="ck_routing_decisions_mode"),
+    )
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    selected_agent: Mapped[str] = mapped_column(String(32), index=True)
+    mode: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(String(500))
+    request: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    candidates: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 USAGE_KINDS = ("turn", "sandbox")
 USAGE_SOURCES = ("reported", "estimated", "missing")
 
@@ -512,16 +535,19 @@ def _reject_dangling_decision_edges(session: Session, flush_context: Any, instan
         raise ValueError(f"decision edge references missing graph node(s): {sorted(missing)}")
 
 
+_APPEND_ONLY = (AgentMessageRow, AgentClaimRow, UsageLedgerRow, RuntimeEventRow, RoutingDecisionRow)
+
+
 @event.listens_for(Session, "before_flush")
 def _reject_agent_message_mutation(session: Session, flush_context: Any, instances: Any) -> None:
-    """Agent messages, claims, usage-ledger rows and normalized runtime events
-    (ADR 0029) are append-only, like Evidence."""
+    """Agent messages, claims, usage-ledger rows, normalized runtime events
+    (ADR 0029) and routing decisions (ADR 0030) are append-only, like Evidence."""
 
     for item in session.deleted:
-        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow, RuntimeEventRow)):
+        if isinstance(item, _APPEND_ONLY):
             raise ValueError(f"{type(item).__name__} rows are append-only and cannot be deleted")
     for item in session.dirty:
-        if isinstance(item, (AgentMessageRow, AgentClaimRow, UsageLedgerRow, RuntimeEventRow)) and session.is_modified(item, include_collections=False):
+        if isinstance(item, _APPEND_ONLY) and session.is_modified(item, include_collections=False):
             raise ValueError(f"{type(item).__name__} rows are append-only and cannot be updated")
 
 

@@ -178,6 +178,14 @@ _Avoid_: provider, model name
 A configured description of a model's capabilities, cost limits, latency expectations and provider identity.
 _Avoid_: model tier, agent
 
+**Routing Qualification**:
+An agent kind's routing inputs (demonstrated capability, success, latency, cost, availability and load), measured only from server-written live Attempt records: the usage ledger, Evidence and trusted Runtime Events. An agent without them is not routable (ADR 0030).
+_Avoid_: profile claim, agent score, benchmark
+
+**Routing Decision**:
+The append-only record of which agent kind a live Attempt ran with and why: either explicit configuration, or a measured choice that lists each candidate's inputs or rejection reason.
+_Avoid_: dispatch log, agent preference
+
 **Escalation Policy**:
 The SDF rule that maps verified Attempt outcomes and budget state to the next Model Tier.
 _Avoid_: agent fallback, retry prompt

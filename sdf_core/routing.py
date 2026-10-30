@@ -10,7 +10,7 @@ availability, latency, cost and success signals exclusively.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping, Sequence
 
 from .escalation import ModelTier
@@ -75,6 +75,8 @@ class RoutingRequest:
 class RouteDecision:
     profile: ModelProfile | None
     reason: str
+    # Why each ineligible profile was left out (measured routing only).
+    rejected: Mapping[str, str] = field(default_factory=dict)
 
 
 class ModelRouter:
@@ -101,11 +103,28 @@ class ModelRouter:
         # Supplying measurements opts into qualified routing: an absent
         # measurement is not allowed to fall back to a stale profile claim.
         candidates: list[tuple[ModelProfile, RoutingMeasurement | None]] = []
+        rejected: dict[str, str] = {}
         for profile in profiles:
             measured = measurements.get(profile.name) if measurements is not None else None
             if measurements is not None and measured is None:
+                rejected[profile.name] = "no trusted measurement"
                 continue
             candidates.append((profile, measured))
+        if measurements is not None:
+            for profile, measured in candidates:
+                assert measured is not None
+                missing = request.required_capabilities - measured.capabilities
+                if not measured.available:
+                    rejected[profile.name] = "unavailable"
+                elif missing:
+                    rejected[profile.name] = "capabilities not demonstrated: " + ", ".join(sorted(missing))
+                elif measured.cost_usd > request.max_cost_usd:
+                    rejected[profile.name] = f"measured cost {measured.cost_usd} above {request.max_cost_usd}"
+                elif measured.latency_ms > request.max_latency_ms:
+                    rejected[profile.name] = f"measured latency {measured.latency_ms} ms above {request.max_latency_ms}"
+                elif measured.success_rate < request.min_success_rate:
+                    rejected[profile.name] = (f"measured success {measured.success_rate} below "
+                                              f"{request.min_success_rate}")
 
         eligible = [
             (profile, measured)
@@ -119,9 +138,9 @@ class ModelRouter:
             and (measured.success_rate if measured is not None else rates.get(profile.name, 0.5)) >= request.min_success_rate
         ]
         if not eligible:
-            return RouteDecision(None, "no eligible profile")
+            return RouteDecision(None, "no eligible profile", rejected)
 
-        def score(candidate: tuple[ModelProfile, RoutingMeasurement | None]) -> tuple[float, str]:
+        def score(candidate: tuple[ModelProfile, RoutingMeasurement | None]) -> tuple[float, int, float, float, str]:
             profile, measured = candidate
             rate = measured.success_rate if measured is not None else rates.get(profile.name, 0.5)
             if not 0 <= rate <= 1:
@@ -130,10 +149,12 @@ class ModelRouter:
             latency = measured.latency_ms if measured is not None else profile.latency_ms
             load = measured.load if measured is not None else profile.load
             value = rate * 100 - cost * 10 - latency / 1000 - load * 10
-            return value, profile.name
+            samples = measured.sample_count if measured is not None else 0
+            # Ties: more samples, then lower cost, then lower latency, then name.
+            return value, samples, -cost, -latency, profile.name
 
         selected, _ = max(eligible, key=score)
-        return RouteDecision(selected, "selected highest-scoring eligible profile")
+        return RouteDecision(selected, "selected highest-scoring eligible profile", rejected)
 
     def route_measured(
         self,

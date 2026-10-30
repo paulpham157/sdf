@@ -26,6 +26,8 @@ The event contract (correlation, provenance, replay, ordering, and the rule that
 
 After one real agent completes the verified fixture loop, add other agents through the same runtime boundary. Route by demonstrated capability, historical success, latency, cost, availability and load. Multiple agents alone are not a reason to introduce another protocol.
 
+Qualified routing is [ADR-0030](adr/0030-qualified-multi-agent-routing.md): `SDF_RUN_AGENT=auto` chooses among `SDF_RUN_ROUTE_AGENTS` using only server-written measurements, and it refuses to route until one agent has an accepted live Attempt. It is covered by local tests only; no live multi-agent qualification has been recorded yet.
+
 ## Excluded from the active roadmap
 
 ACP adapters and A2A gateways have no planned phase or automatic activation gate. A future external-client or independent-SDF integration requirement requires a separate architecture decision. Herdr is the intended execution provider, not the owner of SDF domain state.
