@@ -81,7 +81,7 @@ usage-ledger `sandbox` row.
      are still `NOT VALID`.
    - `tool_audits.evidence_mode` is not constrained. Nothing writes it, and
      the SQLite table rebuild would have to carry its partial unique index
-     (follow-up issue).
+     (follow-up: #71).
 
 6. **History is not rewritten.** Evidence is append-only (ADR 0002 and the
    triggers). `/run` and plan-run rows written before this change keep the
