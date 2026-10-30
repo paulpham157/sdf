@@ -42,17 +42,22 @@ def resolve_fixture(raw: str, *, write_roots: Iterable[Path] | None = None) -> P
     anything inside a workspace or artifact tree, which an agent can write.
     """
 
-    root = fixtures_root()
+    root = str(fixtures_root())
+    inside = root if root.endswith(os.sep) else root + os.sep
     try:
-        candidate = Path(raw)
-        resolved = (candidate if candidate.is_absolute() else root / candidate).resolve(strict=True)
+        # ``realpath`` follows every symlink; an absolute ``raw`` replaces ``root`` in the join.
+        resolved = os.path.realpath(os.path.join(root, os.fspath(raw)))
     except (OSError, RuntimeError, ValueError, TypeError):
         raise FixtureError(f"fixture_dir must be an existing directory under {FIXTURES_ROOT_ENV}") from None
-    if not resolved.is_dir() or not resolved.is_relative_to(root):
-        raise FixtureError(f"fixture_dir must be an existing directory under {FIXTURES_ROOT_ENV}")
     if resolved == root:
         raise FixtureError(f"fixture_dir must be a directory inside {FIXTURES_ROOT_ENV}, not the root itself")
+    # Containment is decided on the resolved string before the path is touched.
+    if not resolved.startswith(inside):
+        raise FixtureError(f"fixture_dir must be an existing directory under {FIXTURES_ROOT_ENV}")
+    if not os.path.isdir(resolved):
+        raise FixtureError(f"fixture_dir must be an existing directory under {FIXTURES_ROOT_ENV}")
+    fixture = Path(resolved)
     roots = server_write_roots() if write_roots is None else tuple(write_roots)
-    if any(resolved == write_root or resolved.is_relative_to(write_root) for write_root in roots):
+    if any(fixture == write_root or fixture.is_relative_to(write_root) for write_root in roots):
         raise FixtureError("fixture_dir must not be under a workspace or artifact root")
-    return resolved
+    return fixture
