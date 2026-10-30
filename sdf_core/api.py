@@ -35,6 +35,7 @@ from .run_adapter import RunBusyError, configured_run_adapter, run_slot
 from .observability import configure_logging, get_logger, log_context
 from . import tracing
 from .timeline import build_timeline
+from .impact import declared_evidence_mode
 from .qualification import qualify_agents, routing_record, verified_loop_completed
 from .credentials import AGENT_KINDS
 from .events import events_for_attempts, kind_counts as event_kind_counts, normalized as normalized_event, summarize as summarize_events
@@ -897,6 +898,8 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
         "output_tokens": attempt.output_tokens,
         "escalation_reason": attempt.escalation_reason,
         "error_class": attempt.error_class,
+        # ADR 0031: live only when a real sandbox (E2B or Daytona) existed.
+        "evidence_mode": attempt.evidence_mode,
     }
 
 
@@ -1124,7 +1127,7 @@ def _cleanup_check():
 
 def factory_evidence_mode(factory: Any) -> str:
     """``live`` only for a factory that builds real agents (``e2b_factory``)."""
-    return "live" if getattr(factory, "evidence_mode", None) == "live" else "synthetic"
+    return declared_evidence_mode(factory).value
 
 
 def _coordinator(db: Session) -> Coordinator:

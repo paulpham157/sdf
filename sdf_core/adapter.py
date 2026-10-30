@@ -27,6 +27,8 @@ class FakeNativeAdapter:
 
     # Recorded as ``attempts.provider`` by ExecutionService (#50).
     provider = "fake"
+    # No real agent or sandbox: its Attempts and Evidence stay synthetic (ADR 0031).
+    evidence_mode = "synthetic"
 
     def __init__(self, relative_file: str, replacement: str):
         self.relative_file = relative_file

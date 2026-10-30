@@ -239,6 +239,8 @@ def test_http_task_attempt_hierarchy_and_trace_id_on_attempt(spans, tmp_path):
     assert attempt_span.parent.span_id == task_span.context.span_id
     assert names["sdf.evaluate"][0].parent.span_id == attempt_span.context.span_id
     assert attempt_span.attributes["sdf.attempt_id"] == body["attempt_id"]
+    # ADR 0031: the Attempt's evidence mode is on its span and in the response.
+    assert attempt_span.attributes["sdf.evidence_mode"] == body["evidence_mode"] == "synthetic"
     assert task_span.attributes["sdf.task_id"] == task_id
     trace_id = format(task_span.context.trace_id, "032x")
     assert body["trace_id"] == trace_id == format(server.context.trace_id, "032x")

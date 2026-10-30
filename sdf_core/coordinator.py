@@ -50,6 +50,7 @@ from .db import (
 )
 from .evaluator import DeterministicEvaluator
 from .execution import ExecutionService
+from .impact import EVIDENCE_MODE_VALUES, EvidenceMode
 from .observability import classify_error
 from . import tracing
 from .model import AttemptState, TaskState, utcnow
@@ -141,7 +142,7 @@ class RunConfig:
 
 
 SERVER_FIELDS = ("price_in_per_m", "price_out_per_m", "sandbox_usd_per_s", "evidence_mode")
-EVIDENCE_MODES = ("live", "synthetic")
+EVIDENCE_MODES = EVIDENCE_MODE_VALUES  # single definition: sdf_core.impact.EvidenceMode
 # Upper bounds only catch typos; the lower bound (>= 0) keeps the cost cap meaningful.
 PRICE_LIMITS = {"price_in_per_m": 1000.0, "price_out_per_m": 1000.0, "sandbox_usd_per_s": 1.0}
 PRICE_ENV = {"price_in_per_m": "SDF_RUN_PRICE_IN_PER_M", "price_out_per_m": "SDF_RUN_PRICE_OUT_PER_M",
@@ -364,9 +365,12 @@ class Coordinator:
                     sub = next(s for s in plan.content["subtasks"] if s["key"] == row.subtask_key)
                     subtasks[sub["key"]] = _Subtask(sub["key"], sub, task_id_for(plan.id, sub["key"]), row.agent_id)
             lead_id = next(a for a, ag in agents.items() if ag.spec.role == "lead")
-            # Attempts are created (gate-checked) before any sandbox exists.
+            # Attempts are created (gate-checked) before any sandbox exists, so
+            # they start synthetic and take the factory's mode only once their
+            # worker's sandbox has started (ADR 0031).
             for sub in subtasks.values():
-                self._begin_attempt(run_id, sub, fixture, agents[sub.worker].spec, parent=None)
+                self._begin_attempt(run_id, sub, fixture, agents[sub.worker].spec, parent=None,
+                                    evidence_mode=EvidenceMode.SYNTHETIC.value)
             lead_ws = self.workspace_root / f"{run_id}-lead"
             lead_ws.mkdir(parents=True, exist_ok=True)
             (lead_ws / "README.md").write_text("Lead workspace: coordinate via sdf messaging; no code here.\n")
@@ -385,6 +389,9 @@ class Coordinator:
                 row = self._member_row(run_id, aid)
                 row.sandbox_id = ag.sandbox.sandbox_id
                 row.status = "failed" if aid in start_errors else "ready"
+            for sub in subtasks.values():
+                if sub.worker not in start_errors and agents[sub.worker].sandbox.sandbox_id:
+                    self.db.get(AttemptRow, sub.attempt_id).evidence_mode = config.evidence_mode
             self.db.commit()
             if start_errors:
                 raise RuntimeError("sandbox start failed: " + "; ".join(
@@ -586,9 +593,11 @@ class Coordinator:
         return self.db.scalar(select(AgentRunMemberRow).where(
             AgentRunMemberRow.run_id == run_id, AgentRunMemberRow.agent_id == agent_id))
 
-    def _begin_attempt(self, run_id: str, sub: _Subtask, fixture: Path, spec: AgentSpec, parent: str | None) -> None:
+    def _begin_attempt(self, run_id: str, sub: _Subtask, fixture: Path, spec: AgentSpec, parent: str | None,
+                       *, evidence_mode: str) -> None:
         sub.rounds += 1
         begun = self.service.begin(
+            evidence_mode=evidence_mode,
             task_id=sub.task_id, dispatch_key=f"{run_id}:{sub.key}:{sub.rounds}", fixture=fixture,
             parent_attempt_id=parent, provider="vultr", agent=f"{spec.kind}:{spec.agent_id}",
             escalation_reason="host verification failed; worker asked to fix" if parent else None,
@@ -725,7 +734,9 @@ class Coordinator:
             text += f" Changes outside the subtask's files were ignored: {', '.join(out_of_scope[:10])}."
         out: list[tuple[str, Any]] = []
         if sub.verdict != "PASS" and sub.rounds < config.max_verify_rounds:
-            self._begin_attempt(run_id, sub, fixture, worker.spec, parent=attempt_id)
+            # A retry runs in the worker's already-started sandbox.
+            self._begin_attempt(run_id, sub, fixture, worker.spec, parent=attempt_id,
+                                evidence_mode=config.evidence_mode)
             hub.attempt_for[sub.worker] = sub.attempt_id
             text += f" Failing: {failed}. Fix it and report done again (new attempt {sub.attempt_id})."
             sub.verdict = None  # the retry attempt is unverified until the host checks it again

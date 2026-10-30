@@ -100,9 +100,12 @@ def test_daytona_requires_explicit_unrestricted_egress_opt_in():
 
 
 def test_fails_closed_without_e2b_key(tmp_path):
-    adapter = configured_run_adapter(_db(), environ={"SDF_RUN_ADAPTER": "live"})
+    # ADR 0031: a missing key is a config error before any Attempt exists.
     with pytest.raises(RunAdapterConfigError, match="E2B_API_KEY"):
-        adapter.run(attempt_id="A", workspace=tmp_path, instructions="noop")
+        configured_run_adapter(_db(), environ={"SDF_RUN_ADAPTER": "live"})
+    with pytest.raises(RunAdapterConfigError, match="DAYTONA_API_KEY"):
+        configured_run_adapter(_db(), environ={**LIVE, "SDF_SANDBOX_PROVIDER": "daytona", "SDF_DAYTONA_SNAPSHOT": "s",
+                                               "SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS": "1"})
 
 
 def test_concurrency_slot_429(monkeypatch):

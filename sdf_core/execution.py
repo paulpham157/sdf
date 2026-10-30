@@ -18,6 +18,7 @@ from .db import (
     UsageLedgerRow,
 )
 from .escalation import ModelTier
+from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
 from .evaluator import DeterministicEvaluator
 from .model import AttemptState, TaskState, utcnow
@@ -93,8 +94,10 @@ class ExecutionService:
                 parent_attempt_id=parent_attempt_id, model_tier=model_tier,
                 require_plan_approval=require_plan_approval,
                 principal=principal,
+                evidence_mode=initial_evidence_mode(self.adapter).value,
             )
-            tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id)
+            tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id,
+                                   evidence_mode=begun.attempt.evidence_mode)
             if begun.existing:
                 tracing.set_attributes(attempt_span, status=begun.attempt.status, outcome="existing")
                 return begun.attempt
@@ -115,6 +118,9 @@ class ExecutionService:
             finished = self.finish(
                 attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
                 criterion_checks=criterion_checks, validation_target=validation_target,
+                # ADR 0031: Evidence takes the Attempt's mode as stored now (a
+                # live adapter promotes it once its sandbox exists).
+                evidence_mode=attempt.evidence_mode,
             )
             self._trace_outcome(attempt_span, finished)
             return finished
@@ -147,7 +153,7 @@ class ExecutionService:
         tracing.set_attributes(
             target, status=attempt.status, outcome=attempt.outcome, cost_usd=attempt.cost_usd,
             tokens__input=attempt.input_tokens, tokens__output=attempt.output_tokens,
-            provider=attempt.provider, error_class=attempt.error_class,
+            provider=attempt.provider, error_class=attempt.error_class, evidence_mode=attempt.evidence_mode,
         )
         if attempt.status == AttemptState.FAILED.value:
             tracing.mark_error(attempt.error_class or "failed", target)
@@ -170,6 +176,7 @@ class ExecutionService:
         agent: str = "native",
         require_plan_approval: bool = False,
         principal: str | None = None,
+        evidence_mode: str = EvidenceMode.SYNTHETIC.value,
     ) -> "BegunAttempt":
         """Create and dispatch an Attempt and its disposable workspace.
 
@@ -178,6 +185,8 @@ class ExecutionService:
         flushed.  ``require_plan_approval`` also refuses Tasks with no Plan.
         """
 
+        if evidence_mode not in EVIDENCE_MODE_VALUES:
+            raise ValueError(f"evidence_mode must be one of {list(EVIDENCE_MODE_VALUES)}")
         check_plan_gate(self.db, task_id, require_plan=require_plan_approval)
         existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
         if existing:
@@ -218,6 +227,8 @@ class ExecutionService:
             trace_id=tracing.current_trace_id(),
             # ADR 0026: who may drive this Attempt's Tool Proxy actions.
             principal=principal,
+            # ADR 0031: created with the mode that is true now; never set by the caller.
+            evidence_mode=evidence_mode,
         )
         self.db.add(attempt)
         self.db.add(GraphNodeRow(id=attempt_id, kind="attempt", title="Native execution attempt", source="execution", owner="sdf", confidence=1.0, created_at=utcnow()))

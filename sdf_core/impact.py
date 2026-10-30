@@ -30,8 +30,43 @@ EXHAUSTED = "escalation_exhausted"
 
 
 class EvidenceMode(StrEnum):
+    """Whether a record came from a real agent in a real sandbox (``live``) or
+    from a fake/synthetic path. The one definition of the value set: the API,
+    the coordinator, ``/run`` and the database CHECK (migration 0021) use it.
+    ``live`` means *executed by a real agent*, not production impact (ADR 0006).
+    """
+
     SYNTHETIC = "synthetic"
     LIVE = "live"
+
+
+EVIDENCE_MODE_VALUES: tuple[str, ...] = tuple(mode.value for mode in EvidenceMode)
+
+
+def declared_evidence_mode(source: Any) -> EvidenceMode:
+    """The mode a run path declares for itself (ADR 0031).
+
+    Only an object that states ``evidence_mode = "live"`` (the live ``/run``
+    adapter, the E2B agent factory) yields ``live``; anything else, including
+    ``None`` and an unknown value, is ``synthetic``. A caller never sets it.
+    """
+
+    return EvidenceMode.LIVE if getattr(source, "evidence_mode", None) == EvidenceMode.LIVE.value \
+        else EvidenceMode.SYNTHETIC
+
+
+def initial_evidence_mode(source: Any) -> EvidenceMode:
+    """The mode an Attempt is created with (ADR 0031).
+
+    A run path that sets ``live_after_sandbox = True`` (the live ``/run``
+    adapter) starts every Attempt ``synthetic`` and promotes it to ``live``
+    itself once a real sandbox exists, so an Attempt that never reached a
+    sandbox is never ``live``. Any other path starts with its declared mode.
+    """
+
+    if getattr(source, "live_after_sandbox", False) is True:
+        return EvidenceMode.SYNTHETIC
+    return declared_evidence_mode(source)
 
 
 @dataclass(frozen=True)
