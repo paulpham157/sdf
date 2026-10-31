@@ -10,9 +10,11 @@ inside a disposable, short-lived sandbox in exchange for a single operator login
 and no public gateway to run. Each agent kind is configured with an explicit
 Credential Mode — `subscription` (a herdr-e2b plugin connection, resolved by the
 plugin's own code so it stays the single owner of the connection format) or
-`api-key` (dedicated `SDF_*` host variables, never the shell's
-`ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`, which may point at a host-local
-proxy). There is no default and no silent fallback between modes: a missing
+`api-key` (the allow-listed variables for that kind: `ANTHROPIC_API_KEY`,
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` for Claude; `OPENAI_API_KEY`,
+`OPENAI_BASE_URL` and `OPENAI_MODEL` for Codex; `PI_*`, `QWEN_*`,
+`OPENCODE_*` and `GOOSE_*` for the headless kinds). There is no alternate
+key name. There is no default and no silent fallback between modes: a missing
 mode or credential fails before any sandbox is created.
 
 ## Consequences

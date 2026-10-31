@@ -1,7 +1,7 @@
 """Live ADR 0014 end-to-end: plan gate + lead/worker agents in E2B on Vultr glm-5.3.
 
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_AGENT_COMM=1`` plus
-``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY`` (env or the repo-root ``.env``,
+``E2B_API_KEY`` plus each kind's allow-listed API key and base URL (env or the repo-root ``.env``,
 loaded into a private mapping; presence is checked, values never printed).
 
 Flow, all through the HTTP API (FastAPI TestClient, no listening socket):
@@ -27,18 +27,30 @@ from fastapi.testclient import TestClient
 
 from sdf_core.agent_sandbox import DEFAULT_TEMPLATE, agent_environ, describe_env, e2b_factory, running_sandbox_ids
 from sdf_core.api import app
-from sdf_core.credentials import load_dotenv
+from sdf_core.credentials import _AGENTS, load_dotenv
 from tests.agent_comm_support import make_fixture, plan_dict
 from tests.auth_support import client_as
 
 ENV = dict(os.environ)
 load_dotenv(environ=ENV)
-LIVE = (ENV.get("SDF_LIVE_E2B") == "1" and ENV.get("SDF_LIVE_AGENT_COMM") == "1"
-        and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get("VULTR_INFERENCE_API_KEY")))
-pytestmark = pytest.mark.skipif(not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_LIVE_AGENT_COMM=1 with E2B/Vultr keys")
+
+
+def _has_llm(kind: str) -> bool:
+    spec = _AGENTS[kind]
+    if not ENV.get(spec.api_key_source):
+        return False
+    if spec.base_url_required and not ENV.get(spec.base_url_source):
+        return False
+    return True
+
 
 LEAD_KIND = ENV.get("SDF_LIVE_LEAD_KIND", "opencode")
 WORKER_KIND = ENV.get("SDF_LIVE_WORKER_KIND", "pi")
+LIVE = (ENV.get("SDF_LIVE_E2B") == "1" and ENV.get("SDF_LIVE_AGENT_COMM") == "1"
+        and bool(ENV.get("E2B_API_KEY")) and _has_llm(LEAD_KIND) and _has_llm(WORKER_KIND))
+pytestmark = pytest.mark.skipif(
+    not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_LIVE_AGENT_COMM=1 with E2B_API_KEY and each kind's API key and base URL"
+)
 # E.g. a private staging build of the image before it replaces the public one.
 TEMPLATE = ENV.get("SDF_E2B_AGENT_TEMPLATE", DEFAULT_TEMPLATE)
 REPORT_DIR = Path("/tmp/sdf-live-reports")

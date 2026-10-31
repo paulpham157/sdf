@@ -20,7 +20,6 @@ from sdf_core.agent_models import agent_model_args
 from sdf_core.credential_injection import prepare_credential_injection
 from sdf_core.credentials import (
     AGENT_KINDS,
-    DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
     CredentialConfigError,
     CredentialMode,
     resolve_credential_plan,
@@ -32,6 +31,7 @@ from sdf_core.qwen_runtime import parse_events as parse_qwen
 from sdf_core.runtime import CredentialMetadata, RuntimeStatus
 
 KEY = "vk-test-0123456789abcdef-secret"
+BASE = "https://llm.example.com/v1"
 KINDS = ("qwen", "goose")
 SEEDS = {"qwen": "qwen-key-ref", "goose": "goose-provider"}
 RUNTIMES = {"qwen": (QwenHeadlessRuntime, QwenRuntimeError), "goose": (GooseHeadlessRuntime, GooseRuntimeError)}
@@ -40,81 +40,60 @@ CONFIG = {"qwen": (".qwen", ".env"), "goose": (".goose",)}
 
 
 def env_for(kind: str, **extra: str) -> dict[str, str]:
-    return {f"SDF_CREDENTIAL_MODE_{kind.upper()}": "api-key", f"SDF_{kind.upper()}_API_KEY": KEY, **extra}
+    upper = kind.upper()
+    return {
+        f"SDF_CREDENTIAL_MODE_{upper}": "api-key",
+        f"{upper}_API_KEY": KEY,
+        f"{upper}_BASE_URL": BASE,
+        **extra,
+    }
 
 
 # --- credential plan ------------------------------------------------------------
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_kind_is_api_key_only_with_vultr_defaults(kind):
+def test_kind_requires_base_url_and_defaults_the_model(kind):
     upper = kind.upper()
     assert kind in AGENT_KINDS
     plan = resolve_credential_plan(kind, env_for(kind))
     assert plan.mode is CredentialMode.API_KEY
     assert dict(plan.set_variables) == {
-        f"SDF_{upper}_API_KEY": KEY, f"SDF_{upper}_BASE_URL": DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
-        f"SDF_{upper}_MODEL": "glm-5.3",
+        f"{upper}_API_KEY": KEY, f"{upper}_BASE_URL": BASE, f"{upper}_MODEL": "glm-5.3",
     }
-    assert DEFAULT_OPENAI_COMPATIBLE_BASE_URL == "https://api.vultrinference.com/v1"
-    assert [(s.action, s.variable) for s in plan.seed_steps] == [(SEEDS[kind], f"SDF_{upper}_API_KEY")]
+    assert [(s.action, s.variable) for s in plan.seed_steps] == [(SEEDS[kind], f"{upper}_API_KEY")]
     with pytest.raises(CredentialConfigError, match=f"subscription is not supported for {kind}"):
         resolve_credential_plan(kind, env_for(kind, **{f"SDF_CREDENTIAL_MODE_{upper}": "subscription"}))
     with pytest.raises(CredentialConfigError, match=f"SDF_CREDENTIAL_MODE_{upper}"):
-        resolve_credential_plan(kind, {f"SDF_{upper}_API_KEY": KEY})
-
-
-@pytest.mark.parametrize("kind", KINDS)
-def test_named_key_variable_without_fallback(kind):
-    upper = kind.upper()
-    env = env_for(kind, **{f"SDF_{upper}_API_KEY_ENV": "VULTR_INFERENCE_API_KEY", "VULTR_INFERENCE_API_KEY": "v"})
-    plan = resolve_credential_plan(kind, env)
-    assert plan.set_variables["VULTR_INFERENCE_API_KEY"] == "v"
-    assert f"SDF_{upper}_API_KEY" not in plan.set_variables
-    with pytest.raises(CredentialConfigError, match="requires GATEWAY_API_KEY") as err:
-        resolve_credential_plan(kind, env_for(kind, **{f"SDF_{upper}_API_KEY_ENV": "GATEWAY_API_KEY"}))
+        resolve_credential_plan(kind, {f"{upper}_API_KEY": KEY, f"{upper}_BASE_URL": BASE})
+    with pytest.raises(CredentialConfigError, match=f"requires {upper}_BASE_URL"):
+        resolve_credential_plan(kind, {f"SDF_CREDENTIAL_MODE_{upper}": "api-key", f"{upper}_API_KEY": KEY})
+    with pytest.raises(CredentialConfigError, match=f"requires {upper}_API_KEY") as err:
+        resolve_credential_plan(kind, {
+            f"SDF_CREDENTIAL_MODE_{upper}": "api-key", f"{upper}_BASE_URL": BASE, "VULTR_INFERENCE_API_KEY": KEY,
+        })
     assert KEY not in str(err.value)
-    # The bare vendor variable is never read implicitly (ADR-0007).
-    with pytest.raises(CredentialConfigError, match=f"SDF_{upper}_API_KEY"):
-        resolve_credential_plan(kind, {f"SDF_CREDENTIAL_MODE_{upper}": "api-key", "VULTR_INFERENCE_API_KEY": KEY})
-
-
-@pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.parametrize("name", ["PATH", "lower_api_key", "OPENAI_API_KEY", "E2B_API_KEY", "OPENAI_X_API_KEY",
-                                  "SDF_CONNECTION_X_API_KEY", KEY])
-def test_named_key_must_be_a_dedicated_key_name(kind, name):
-    env = env_for(kind, **{f"SDF_{kind.upper()}_API_KEY_ENV": name, name: "value-of-the-named-var"})
-    with pytest.raises(CredentialConfigError) as err:
-        resolve_credential_plan(kind, env)
-    assert KEY not in str(err.value) and "value-of-the-named-var" not in str(err.value)
-
-
-@pytest.mark.parametrize(("kind", "name"), [("qwen", "QWEN_X_API_KEY"), ("goose", "GOOSE_X_API_KEY"),
-                                            ("qwen", "GEMINI_X_API_KEY")])
-def test_named_key_cannot_use_a_prefix_the_wrapper_unsets(kind, name):
-    env = env_for(kind, **{f"SDF_{kind.upper()}_API_KEY_ENV": name, name: "v"})
-    with pytest.raises(CredentialConfigError, match="control variable"):
-        resolve_credential_plan(kind, env)
 
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_custom_endpoint_and_model_rules(kind):
     upper = kind.upper()
-    plan = resolve_credential_plan(kind, env_for(kind, **{f"SDF_{upper}_BASE_URL": "https://llm.example.com/v1",
-                                                         f"SDF_{upper}_MODEL": "org/big-1"}))
-    assert plan.set_variables[f"SDF_{upper}_BASE_URL"] == "https://llm.example.com/v1"
-    assert plan.set_variables[f"SDF_{upper}_MODEL"] == "org/big-1"
+    plan = resolve_credential_plan(kind, env_for(kind, **{f"{upper}_BASE_URL": "https://llm.example.com/v1",
+                                                         f"{upper}_MODEL": "org/big-1"}))
+    assert plan.set_variables[f"{upper}_BASE_URL"] == "https://llm.example.com/v1"
+    assert plan.set_variables[f"{upper}_MODEL"] == "org/big-1"
     assert agent_model_args(kind, {})[-1] == "glm-5.3"
     for url in ("http://api.vultrinference.com/v1", "https://127.0.0.1/v1", "https://localhost/v1"):
         with pytest.raises(CredentialConfigError):
-            resolve_credential_plan(kind, env_for(kind, **{f"SDF_{upper}_BASE_URL": url}))
+            resolve_credential_plan(kind, env_for(kind, **{f"{upper}_BASE_URL": url}))
     for model in ("glm-5.3:high", "glm 5.3", "-x"):
         with pytest.raises(CredentialConfigError):
-            resolve_credential_plan(kind, env_for(kind, **{f"SDF_{upper}_MODEL": model}))
+            resolve_credential_plan(kind, env_for(kind, **{f"{upper}_MODEL": model}))
 
 
 def test_kinds_share_a_sandbox_with_codex_without_a_clash():
     environ = {**env_for("qwen"), **env_for("goose"),
-               "SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_OPENAI_API_KEY": "codex-key-value"}
+               "SDF_CREDENTIAL_MODE_CODEX": "api-key", "OPENAI_API_KEY": "codex-key-value",
+               "OPENAI_BASE_URL": "https://api.openai.com/v1"}
     injection = prepare_credential_injection(
         ["codex", "qwen", "goose"], environ,
         base_envs={"QWEN_HOME": "/tmp/evil", "GOOSE_PATH_ROOT": "/tmp/evil", "KEEP": "1"},
@@ -136,12 +115,12 @@ def test_seed_records_the_key_by_name_only(kind, tmp_path):
     if kind == "goose":
         path = tmp_path / ".config/goose/custom_providers/sdf_openai.json"
         provider = json.loads(path.read_text())
-        assert provider["api_key_env"] == "SDF_GOOSE_API_KEY"
-        assert provider["engine"] == "openai" and provider["base_url"] == DEFAULT_OPENAI_COMPATIBLE_BASE_URL
+        assert provider["api_key_env"] == "GOOSE_API_KEY"
+        assert provider["engine"] == "openai" and provider["base_url"] == BASE
         assert provider["models"] == [{"name": "glm-5.3", "context_limit": 200000}]
     else:
         path = tmp_path / f".config/sdf/{kind}-api-key-name"
-        assert path.read_text() == f"SDF_{kind.upper()}_API_KEY\n"
+        assert path.read_text() == f"{kind.upper()}_API_KEY\n"
     assert KEY not in path.read_text()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
@@ -246,7 +225,7 @@ def local(request, tmp_path, monkeypatch):
     (home / f".config/sdf/{kind}-api-key-name").write_text("SDF_TEST_API_KEY\n")
     upper = kind.upper()
     env = {"PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_LOG": str(tmp_path / "calls.jsonl"), "HOME": str(home),
-           f"SDF_{upper}_MODEL": "glm-5.3", f"SDF_{upper}_BASE_URL": "https://llm.example.com/v1",
+           f"{upper}_MODEL": "glm-5.3", f"{upper}_BASE_URL": "https://llm.example.com/v1",
            "SDF_TEST_API_KEY": KEY,
            # Ambient provider/agent variables a turn must never see.
            "OPENAI_API_KEY": "ambient-key", "OPENAI_BASE_URL": "https://evil.example/v1", f"{upper}_ANYTHING": "1",
@@ -390,10 +369,10 @@ def test_missing_endpoint_or_key_is_reported(local):
     runtime = cls(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-7", workspace)
     session = runtime.start(attempt_id="ATTEMPT-7", agent=kind)
-    saved = transport.env.pop(f"SDF_{kind.upper()}_MODEL")
-    with pytest.raises(RUNTIMES[kind][1], match=f"SDF_{kind.upper()}_MODEL"):
+    saved = transport.env.pop(f"{kind.upper()}_MODEL")
+    with pytest.raises(RUNTIMES[kind][1], match=f"{kind.upper()}_MODEL"):
         runtime.send(session.session_id, "fix")
-    transport.env[f"SDF_{kind.upper()}_MODEL"] = saved
+    transport.env[f"{kind.upper()}_MODEL"] = saved
     if kind != "goose":
         del transport.env["SDF_TEST_API_KEY"]
         with pytest.raises(RUNTIMES[kind][1], match="no .* key"):

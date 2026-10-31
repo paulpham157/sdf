@@ -18,7 +18,7 @@ from sdf_core.credentials import SeedStep, resolve_credential_plan
 OPENAI_KEY = "sk-openai-dummy-333333333333333333333333"
 BASE_URL = "https://gateway.example.com/openai/v1"
 
-ENV = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_OPENAI_API_KEY": OPENAI_KEY}
+ENV = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "OPENAI_API_KEY": OPENAI_KEY}
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="seed scripts run under node; node not on PATH")
 
@@ -41,19 +41,19 @@ def test_api_key_plan_seeds_auth_json_only_without_a_base_url():
 def test_base_url_is_applied_through_a_codex_config_seed():
     # Codex (since 0.157, still 0.165) ignores OPENAI_BASE_URL; it reads openai_base_url from
     # ~/.codex/config.toml (docs/research/codex-base-url.md).
-    plan = resolve_credential_plan("codex", {**ENV, "SDF_OPENAI_BASE_URL": BASE_URL})
+    plan = resolve_credential_plan("codex", {**ENV, "OPENAI_BASE_URL": BASE_URL})
     assert SeedStep("codex-config-base-url", "OPENAI_BASE_URL") in plan.seed_steps
     assert plan.set_variables["OPENAI_BASE_URL"] == BASE_URL
 
 def test_claude_api_key_plan_gets_no_codex_config_seed():
     plan = resolve_credential_plan(
         "claude",
-        {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_ANTHROPIC_API_KEY": "sk-ant-dummy-1", "SDF_ANTHROPIC_BASE_URL": BASE_URL},
+        {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "ANTHROPIC_API_KEY": "sk-ant-dummy-1", "ANTHROPIC_BASE_URL": BASE_URL},
     )
     assert all(step.action != "codex-config-base-url" for step in plan.seed_steps)
 
 def test_seed_commands_name_variables_only():
-    injection = prepare_credential_injection(("codex",), {**ENV, "SDF_OPENAI_BASE_URL": BASE_URL})
+    injection = prepare_credential_injection(("codex",), {**ENV, "OPENAI_BASE_URL": BASE_URL})
     joined = "\n".join(injection.seed_commands)
     assert "$OPENAI_API_KEY" in joined and "$OPENAI_BASE_URL" in joined
     assert OPENAI_KEY not in joined and BASE_URL not in joined

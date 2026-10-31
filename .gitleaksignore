@@ -12,3 +12,5 @@ c9e236995d759681fafbeadd65590063c2772d3d:tests/test_openai_compatible_agents.py:
 01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:generic-api-key:9
 01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:generic-api-key:31
 01c2cd895176f2d6f1865a8c75999ed059ee0d64:tests/test_judge_state.py:generic-api-key:32
+acfec58392130109b81f7c7d74ab785b7b77ba87:tests/test_subagents.py:generic-api-key:22
+6727da3d6e66afe96748651ab652580f99ed1c06:tests/test_subagents.py:generic-api-key:22

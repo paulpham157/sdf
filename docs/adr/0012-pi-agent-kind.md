@@ -3,10 +3,14 @@
 Status: accepted
 
 > **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
-> The default base URL and `glm-5.3` are the example OpenAI-compatible
-> endpoint, not a Vultr protocol. Pi's seeded token prices are `0`. The usage
-> ledger estimates `glm-5.3` from `PRICES_PER_MTOK` or `SDF_PRICE_GLM_5_3`
-> and labels that cost `estimated` (ADR 0027).
+> Pi reads `PI_BASE_URL`, `PI_API_KEY` and `PI_MODEL` only. There is no
+> default host; api-key mode fails closed without `PI_BASE_URL` and
+> `PI_API_KEY`. `PI_MODEL` defaults to `glm-5.3`. `SDF_PI_*`,
+> `SDF_PI_API_KEY_ENV` and `VULTR_INFERENCE_API_KEY` are not credentials.
+> The turn wrapper unsets `PI_*` and then restores `PI_API_KEY`. Pi's seeded
+> token prices are `0`. The usage ledger estimates `glm-5.3` from
+> `PRICES_PER_MTOK` or `SDF_PRICE_GLM_5_3` and labels that cost `estimated`
+> (ADR 0027). The table below that names `SDF_PI_*` is historical.
 
 SDF adds `pi` (npm `@mariozechner/pi-coding-agent`, pinned `0.73.1`) as an
 agent kind on par with OpenCode (ADR 0011). Like OpenCode it does not run in a
@@ -27,18 +31,11 @@ project-config layout.
 
 - `api-key` mode only (`SDF_CREDENTIAL_MODE_PI=api-key`); `subscription` is a
   configuration error, and a missing mode fails closed (ADR 0007).
-- The default key variable is `SDF_PI_API_KEY`, following the ADR 0011 rule
-  (`SDF_<AGENT>_API_KEY` for a configurable provider, like
-  `SDF_OPENCODE_API_KEY`). An operator who keeps the Vultr key in
-  `VULTR_INFERENCE_API_KEY` sets `SDF_PI_API_KEY_ENV=VULTR_INFERENCE_API_KEY`;
-  a bare `VULTR_INFERENCE_API_KEY` is never read. `SDF_PI_API_KEY_ENV`
-  *replaces* the default, never adds a fallback; an unset named variable fails closed. The ADR 0007 /
-  0011 name rules apply (`[A-Z][A-Z0-9_]*_API_KEY`, not a provider variable,
-  not an `E2B_`/`DAYTONA_`/`HERDR_`/`SDF_CREDENTIAL_MODE_`/`SDF_CONNECTION_`
-  name); for Pi a `PI_*` name is also refused, because the turn wrapper unsets
-  every `PI_*` variable and Pi would never see the key.
-- `SDF_PI_MODEL` must be a bare model id without `:`; Pi parses `id:level` as a
-  thinking level.
+- The key variable is `PI_API_KEY` (ADR 0034). `VULTR_INFERENCE_API_KEY` is
+  not read. The turn wrapper unsets every `PI_*` variable and then restores
+  `PI_API_KEY`, so the seeded `$PI_API_KEY` reference still resolves.
+- `PI_MODEL` must be a bare model id without `:`; Pi parses `id:level` as a
+  thinking level. Unset, it defaults to `glm-5.3`. `PI_BASE_URL` is required.
 - The `pi-models` seed writes `~/.pi/agent/models.json` (dir `0700`, file
   `0600`) at sandbox creation with one provider `sdf`
   (`api: openai-completions`) whose `apiKey` is the key variable's **name**.

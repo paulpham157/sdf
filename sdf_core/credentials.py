@@ -98,25 +98,12 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-# Example OpenAI-compatible endpoint (ADR 0034). Vultr Serverless Inference is
-# one host that speaks that API; it is not an API family. Override with
-# ``SDF_<AGENT>_BASE_URL`` / ``SDF_OPENAI_BASE_URL`` and a model id.
-EXAMPLE_OPENAI_HOST = "api.vultrinference.com"
-EXAMPLE_OPENAI_BASE_URL = f"https://{EXAMPLE_OPENAI_HOST}/v1"
-EXAMPLE_OPENAI_MODEL = "glm-5.3"
-# Optional example key *name*. A bare value is never read unless
-# ``SDF_<AGENT>_API_KEY_ENV`` names it (ADR 0011). The /run and coordinator
-# DX paths select this name only when no ``SDF_*`` key is set.
-EXAMPLE_API_KEY_ENV = "VULTR_INFERENCE_API_KEY"
-# Official endpoints used when a kind has no example default and no override.
+# Official endpoints used when Claude or Codex leave their base URL unset.
 # Codex speaks the OpenAI Responses API at this host; Claude speaks Messages.
+# Headless OpenAI-compatible kinds have no default host (ADR 0034).
 OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
 OFFICIAL_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 LLM_PROTOCOLS = ("openai", "anthropic")
-# Same example endpoint for OpenCode, Pi, Qwen Code and Goose. Overridable.
-DEFAULT_OPENCODE_BASE_URL = EXAMPLE_OPENAI_BASE_URL
-DEFAULT_PI_BASE_URL = EXAMPLE_OPENAI_BASE_URL
-DEFAULT_OPENAI_COMPATIBLE_BASE_URL = EXAMPLE_OPENAI_BASE_URL
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,20 +119,12 @@ class _AgentSpec:
     # Seed that applies the base URL inside the box, for agents that do not
     # read ``base_url_target`` from the environment.
     base_url_seed: str | None = None
-    # ``SDF_<AGENT>_API_KEY_ENV`` may name a different host variable that holds
-    # the key (ADR-0011).  The key value itself only ever comes from the env.
-    api_key_env_variable: str = ""
-    # When true the sandbox variable has the same name as the (possibly
-    # renamed) host source, because the agent reads it by a configured
-    # reference (OpenCode ``{env:NAME}``) rather than a fixed provider name.
-    api_key_target_follows_source: bool = False
-    # Default base URL when the source is unset (None: provider default).
-    default_base_url: str | None = None
+    # Egress and provenance when ``base_url_source`` is unset. None means the
+    # kind has no default host.
+    official_base_url: str | None = None
+    # api-key mode fails closed when ``base_url_source`` is unset.
+    base_url_required: bool = False
     subscription_supported: bool = True
-    # Key-variable name prefixes this agent's runtime clears before it runs
-    # (Pi's turn wrapper unsets every PI_*), so a renamed key there would
-    # never reach the agent.
-    reserved_key_prefixes: tuple[str, ...] = ()
     # ADR 0034: exactly one LLM transport. ``responses_api`` is a constraint
     # inside ``openai`` (Codex requires Responses, not Chat Completions only).
     protocol: str = "openai"
@@ -157,29 +136,29 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
         "claude": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_CLAUDE",
             connection_variable="SDF_CONNECTION_CLAUDE",
-            api_key_source="SDF_ANTHROPIC_API_KEY",
+            api_key_source="ANTHROPIC_API_KEY",
             api_key_target="ANTHROPIC_API_KEY",
             api_key_seed="claude-approve-api-key",
-            base_url_source="SDF_ANTHROPIC_BASE_URL",
+            base_url_source="ANTHROPIC_BASE_URL",
             base_url_target="ANTHROPIC_BASE_URL",
             subscription_seeds=MappingProxyType({}),
-            api_key_env_variable="SDF_CLAUDE_API_KEY_ENV",
+            official_base_url=OFFICIAL_ANTHROPIC_BASE_URL,
             protocol="anthropic",
         ),
         "codex": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_CODEX",
             connection_variable="SDF_CONNECTION_CODEX",
-            api_key_source="SDF_OPENAI_API_KEY",
+            api_key_source="OPENAI_API_KEY",
             api_key_target="OPENAI_API_KEY",
             api_key_seed="codex-auth-json-api-key",
-            base_url_source="SDF_OPENAI_BASE_URL",
+            base_url_source="OPENAI_BASE_URL",
             base_url_target="OPENAI_BASE_URL",
             subscription_seeds=MappingProxyType({"CODEX_AUTH_JSON": "codex-auth-json"}),
             # Codex (since 0.157, still 0.165) ignores OPENAI_BASE_URL and reads ``openai_base_url``
             # from ~/.codex/config.toml (docs/research/codex-base-url.md). The host must
             # implement the OpenAI Responses API (POST /v1/responses), not Chat Completions only.
             base_url_seed="codex-config-base-url",
-            api_key_env_variable="SDF_CODEX_API_KEY_ENV",
+            official_base_url=OFFICIAL_OPENAI_BASE_URL,
             responses_api=True,
         ),
         # OpenCode talks to any OpenAI-compatible endpoint through a custom
@@ -187,69 +166,58 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
         "opencode": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_OPENCODE",
             connection_variable="SDF_CONNECTION_OPENCODE",
-            api_key_source="SDF_OPENCODE_API_KEY",
-            api_key_target="SDF_OPENCODE_API_KEY",
+            api_key_source="OPENCODE_API_KEY",
+            api_key_target="OPENCODE_API_KEY",
             # Writes ~/.config/opencode/opencode.json (provider, {env:NAME} key
             # reference, base URL, models); the seed is fed by the key's NAME.
             api_key_seed="opencode-config",
-            base_url_source="SDF_OPENCODE_BASE_URL",
-            base_url_target="SDF_OPENCODE_BASE_URL",
+            base_url_source="OPENCODE_BASE_URL",
+            base_url_target="OPENCODE_BASE_URL",
             subscription_seeds=MappingProxyType({}),
-            api_key_env_variable="SDF_OPENCODE_API_KEY_ENV",
-            api_key_target_follows_source=True,
-            default_base_url=DEFAULT_OPENCODE_BASE_URL,
+            base_url_required=True,
             subscription_supported=False,
         ),
         # Pi (ADR-0012): one OpenAI-compatible custom provider in the seeded
-        # ~/.pi/agent/models.json whose ``apiKey`` is the key variable's NAME.
+        # ~/.pi/agent/models.json whose ``apiKey`` is ``$PI_API_KEY``.
         "pi": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_PI",
             connection_variable="SDF_CONNECTION_PI",
-            api_key_source="SDF_PI_API_KEY",
-            api_key_target="SDF_PI_API_KEY",
+            api_key_source="PI_API_KEY",
+            api_key_target="PI_API_KEY",
             api_key_seed="pi-models",
-            base_url_source="SDF_PI_BASE_URL",
-            base_url_target="SDF_PI_BASE_URL",
+            base_url_source="PI_BASE_URL",
+            base_url_target="PI_BASE_URL",
             subscription_seeds=MappingProxyType({}),
-            api_key_env_variable="SDF_PI_API_KEY_ENV",
-            api_key_target_follows_source=True,
-            default_base_url=DEFAULT_PI_BASE_URL,
+            base_url_required=True,
             subscription_supported=False,
-            reserved_key_prefixes=("PI_",),
         ),
         # Qwen Code (ADR-0013): ``--bare --auth-type openai``; the seed records the
         # key variable's NAME and the wrapper exports it as OPENAI_API_KEY per turn.
         "qwen": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_QWEN",
             connection_variable="SDF_CONNECTION_QWEN",
-            api_key_source="SDF_QWEN_API_KEY",
-            api_key_target="SDF_QWEN_API_KEY",
+            api_key_source="QWEN_API_KEY",
+            api_key_target="QWEN_API_KEY",
             api_key_seed="qwen-key-ref",
-            base_url_source="SDF_QWEN_BASE_URL",
-            base_url_target="SDF_QWEN_BASE_URL",
+            base_url_source="QWEN_BASE_URL",
+            base_url_target="QWEN_BASE_URL",
             subscription_seeds=MappingProxyType({}),
-            api_key_env_variable="SDF_QWEN_API_KEY_ENV",
-            api_key_target_follows_source=True,
-            default_base_url=DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+            base_url_required=True,
             subscription_supported=False,
-            reserved_key_prefixes=('QWEN_', 'OPENAI_', 'GEMINI_'),
         ),
         # Goose (ADR-0013): one declarative custom provider (engine openai) in the
         # seeded ~/.config/goose/custom_providers/sdf_openai.json, ``api_key_env`` = NAME.
         "goose": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_GOOSE",
             connection_variable="SDF_CONNECTION_GOOSE",
-            api_key_source="SDF_GOOSE_API_KEY",
-            api_key_target="SDF_GOOSE_API_KEY",
+            api_key_source="GOOSE_API_KEY",
+            api_key_target="GOOSE_API_KEY",
             api_key_seed="goose-provider",
-            base_url_source="SDF_GOOSE_BASE_URL",
-            base_url_target="SDF_GOOSE_BASE_URL",
+            base_url_source="GOOSE_BASE_URL",
+            base_url_target="GOOSE_BASE_URL",
             subscription_seeds=MappingProxyType({}),
-            api_key_env_variable="SDF_GOOSE_API_KEY_ENV",
-            api_key_target_follows_source=True,
-            default_base_url=DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+            base_url_required=True,
             subscription_supported=False,
-            reserved_key_prefixes=('GOOSE_', 'OPENAI_'),
         ),
     }
 )
@@ -272,23 +240,18 @@ def responses_api_required(agent: str) -> bool:
 
 
 def resolved_llm_base_url(agent: str, environ: Mapping[str, str]) -> str:
-    """Base URL the kind will call: explicit override, example default, or official API.
+    """Base URL the kind will call: the allow-listed variable, or the official API.
 
     Does not validate the URL (callers that inject it still use ``_check_base_url``).
-    An unset Codex URL is the official OpenAI API.  ``/run`` writes the example
-    OpenAI-compatible endpoint into ``environ`` only when the key variable is
-    the example name (``VULTR_INFERENCE_API_KEY``).
+    Unset Claude and Codex URLs are the official APIs. Headless kinds
+    (opencode, pi, qwen, goose) have no default; an unset URL is ``\"\"``.
     """
 
     spec = _spec(agent)
     explicit = environ.get(spec.base_url_source, "").strip()
     if explicit:
         return explicit
-    if spec.default_base_url:
-        return spec.default_base_url
-    if spec.protocol == "anthropic":
-        return OFFICIAL_ANTHROPIC_BASE_URL
-    return OFFICIAL_OPENAI_BASE_URL
+    return spec.official_base_url or ""
 
 
 def endpoint_host(url: str) -> str:
@@ -303,8 +266,9 @@ def endpoint_host(url: str) -> str:
 def llm_attempt_provider(agent: str, environ: Mapping[str, str]) -> str:
     """Provenance label for ``attempts.provider``: ``{protocol}:{host}``.
 
-    The host comes from the configured base URL, else the kind's example or
-    official default. It is never a vendor name such as ``vultr``.
+    The host comes from the configured base URL, else the kind's official
+    default. A headless kind with no base URL is ``unspecified``. It is never
+    a vendor name such as ``vultr``.
     """
 
     host = endpoint_host(resolved_llm_base_url(agent, environ)) or "unspecified"
@@ -319,7 +283,7 @@ def inference_allow_hosts(environ: Mapping[str, str], kinds: Iterable[str]) -> l
         host = endpoint_host(resolved_llm_base_url(kind, environ))
         if host and host not in hosts:
             hosts.append(host)
-    return hosts or [EXAMPLE_OPENAI_HOST]
+    return hosts
 
 
 def inference_network(environ: Mapping[str, str], kinds: Iterable[str]) -> dict[str, object]:
@@ -396,11 +360,11 @@ def resolve_credential_plan(
 ) -> CredentialPlan:
     """Resolve the Agent Credential plan for ``agent`` from ``environ``.
 
-    Only ``SDF_*`` variables are read, plus the one key variable an operator
-    explicitly names in ``SDF_<AGENT>_API_KEY_ENV`` (ADR-0011); the shell's
-    provider variables (``ANTHROPIC_API_KEY``, ``OPENAI_BASE_URL``, ...) are
-    ignored and can never be named.  There is no default mode and no fallback
-    from one mode to the other, nor from a named key variable to the default.  A
+    Credential Mode is ``SDF_CREDENTIAL_MODE_<AGENT>``. In api-key mode the
+    key, base URL and model are the allow-listed names for that kind
+    (``ANTHROPIC_*``, ``OPENAI_*``, ``PI_*``, ``QWEN_*``, ``OPENCODE_*``,
+    ``GOOSE_*``). There is no alternate name and no vendor-key fallback.
+    There is no default mode and no fallback from one mode to the other. A
     subscription connection must expire later than ``now`` plus
     ``sandbox_timeout_seconds`` plus :data:`EXPIRY_MARGIN`.
     """
@@ -413,16 +377,20 @@ def resolve_credential_plan(
             f"{spec.mode_variable}=subscription is not supported for {agent}; set it to api-key (there is no fallback)"
         )
     if mode is CredentialMode.API_KEY:
-        source = _api_key_source(spec, environ)
+        source = spec.api_key_source
         key = environ.get(source, "").strip()
         if not key:
             raise CredentialConfigError(
                 f"{spec.mode_variable}=api-key requires {source} to be set"
             )
-        target = source if spec.api_key_target_follows_source else spec.api_key_target
+        target = spec.api_key_target
         variables = {target: key}
         seeds = [SeedStep(spec.api_key_seed, target)]
-        base_url = environ.get(spec.base_url_source, "").strip() or (spec.default_base_url or "")
+        base_url = environ.get(spec.base_url_source, "").strip()
+        if spec.base_url_required and not base_url:
+            raise CredentialConfigError(
+                f"{spec.mode_variable}=api-key requires {spec.base_url_source} to be set"
+            )
         if base_url:
             _check_base_url(spec.base_url_source, base_url)
             variables[spec.base_url_target] = base_url
@@ -430,20 +398,13 @@ def resolve_credential_plan(
                 seeds.append(SeedStep(spec.base_url_seed, spec.base_url_target))
         if agent in _MODEL_SEEDED_AGENTS:
             # Lazy: agent_models imports CredentialConfigError from here.
-            from .agent_models import MODEL_VARIABLES, SMALL_MODEL_VARIABLES, resolve_agent_models
+            from .agent_models import MODEL_VARIABLES, resolve_agent_models
 
             selection = resolve_agent_models(agent, environ)
             assert selection.model is not None
             variables[MODEL_VARIABLES[agent]] = selection.model
-            if agent in SMALL_MODEL_VARIABLES:
-                assert selection.small_model is not None
-                variables[SMALL_MODEL_VARIABLES[agent]] = selection.small_model
         return _plan(agent, mode, None, variables, tuple(seeds))
 
-    if spec.api_key_env_variable and environ.get(spec.api_key_env_variable, "").strip():
-        raise CredentialConfigError(
-            f"{spec.api_key_env_variable} is only allowed with {spec.mode_variable}=api-key, not subscription"
-        )
     if environ.get(spec.base_url_source, "").strip():
         # Not echoed: operators sometimes paste credentials into URLs.
         raise CredentialConfigError(
@@ -474,40 +435,6 @@ def resolve_credential_plan(
         if variable in material.variables
     )
     return _plan(agent, mode, connection_id, material.variables, seeds)
-
-
-# A renamed key variable must look like a key, so it can never select (and, for
-# OpenCode, overwrite in the sandbox) PATH, HOME or similar.
-_KEY_VARIABLE = re.compile(r"[A-Z][A-Z0-9_]*_API_KEY")
-# Sandbox-provider and SDF control variables are never Agent Credentials.
-_RESERVED_KEY_PREFIXES = ("E2B_", "DAYTONA_", "HERDR_", "SDF_CREDENTIAL_MODE_", "SDF_CONNECTION_")
-
-
-def _api_key_source(spec: _AgentSpec, environ: Mapping[str, str]) -> str:
-    """Return the one host variable that holds the key: renamed or default."""
-
-    if not spec.api_key_env_variable:
-        return spec.api_key_source
-    name = environ.get(spec.api_key_env_variable, "").strip()
-    if not name:
-        return spec.api_key_source
-    # A variable NAME is not secret, but the check still names only the knob in
-    # case a key was pasted into it.
-    if not _KEY_VARIABLE.fullmatch(name):
-        raise CredentialConfigError(
-            f"{spec.api_key_env_variable} must name an environment variable ending in _API_KEY"
-        )
-    provider_names = {n for names in CONFLICTING_VARIABLES.values() for n in names}
-    if name in provider_names:
-        raise CredentialConfigError(
-            f"{spec.api_key_env_variable} names a shell provider variable, which SDF always ignores (ADR-0007); "
-            "use a dedicated variable"
-        )
-    if name.startswith(_RESERVED_KEY_PREFIXES + spec.reserved_key_prefixes):
-        raise CredentialConfigError(
-            f"{spec.api_key_env_variable} names a sandbox-provider or SDF control variable, not an Agent Credential"
-        )
-    return name
 
 
 def load_dotenv(

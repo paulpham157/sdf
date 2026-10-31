@@ -1,8 +1,8 @@
 """Live HTTP proof: Objective→Task→POST /tasks/{id}/run→E2B agent→Evidence→/trace (#46, ADR 0023).
 
 Exercises the **public** run endpoint (not ExecutionService directly) with the
-live adapter on Vultr Inference.  Gated on ``SDF_LIVE_FULL_LOOP=1`` (or
-``SDF_LIVE_E2B=1``) plus ``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY``.
+live adapter.  Gated on ``SDF_LIVE_FULL_LOOP=1`` (or
+``SDF_LIVE_E2B=1``) plus ``E2B_API_KEY`` and that agent's allow-listed API key.
 Agents: ``SDF_LIVE_RUN_AGENTS`` (default ``opencode,pi,codex``).
 
 Teardown lists the sandboxes *this test* created — agent boxes tagged
@@ -33,12 +33,20 @@ if os.environ.get("SDF_DOTENV"):
     load_dotenv(os.environ["SDF_DOTENV"], ENV)
 
 _LIVE_FLAG = os.environ.get("SDF_LIVE_FULL_LOOP") == "1" or os.environ.get("SDF_LIVE_E2B") == "1"
-LIVE = _LIVE_FLAG and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get("VULTR_INFERENCE_API_KEY"))
+LIVE = _LIVE_FLAG and bool(ENV.get("E2B_API_KEY"))
 AGENTS = [a.strip() for a in os.environ.get("SDF_LIVE_RUN_AGENTS", "opencode,pi,codex").split(",") if a.strip()]
+_LLM = {
+    "claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL"),
+    "codex": ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL"),
+    "opencode": ("OPENCODE_API_KEY", "OPENCODE_BASE_URL", "OPENCODE_MODEL"),
+    "pi": ("PI_API_KEY", "PI_BASE_URL", "PI_MODEL"),
+    "qwen": ("QWEN_API_KEY", "QWEN_BASE_URL", "QWEN_MODEL"),
+    "goose": ("GOOSE_API_KEY", "GOOSE_BASE_URL", "GOOSE_MODEL"),
+}
 
 pytestmark = pytest.mark.skipif(
     not LIVE,
-    reason="live /run check: set SDF_LIVE_FULL_LOOP=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY",
+    reason="live /run check: set SDF_LIVE_FULL_LOOP=1 with E2B_API_KEY and the agent's API key",
 )
 
 CHECK_ADD = ["add-sum"]  # registered in the fixture's sdf-checks.json (ADR 0025)
@@ -97,7 +105,14 @@ def _apply_live_env(monkeypatch: pytest.MonkeyPatch, agent: str, tmp_path: Path)
     monkeypatch.setenv("SDF_RUN_AGENT", agent)
     monkeypatch.setenv("SDF_FIXTURES_ROOT", str(tmp_path))
     monkeypatch.setenv("E2B_API_KEY", ENV["E2B_API_KEY"])
-    monkeypatch.setenv("VULTR_INFERENCE_API_KEY", ENV["VULTR_INFERENCE_API_KEY"])
+    key_name, base_name, _model_name = _LLM[agent]
+    if not ENV.get(key_name):
+        pytest.skip(f"{key_name} is not set")
+    if agent not in ("claude", "codex") and not ENV.get(base_name):
+        pytest.skip(f"{base_name} is not set")
+    for name in _LLM[agent]:
+        if ENV.get(name):
+            monkeypatch.setenv(name, ENV[name])
     if ENV.get("E2B_DOMAIN"):
         monkeypatch.setenv("E2B_DOMAIN", ENV["E2B_DOMAIN"])
     monkeypatch.delenv("SDF_DOTENV", raising=False)
