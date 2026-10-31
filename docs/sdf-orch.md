@@ -19,11 +19,14 @@ commands below are the single-process deploy example.
 
 ## Tool Proxy fence (`-outcome-db` / `SDF_TOOL_OUTCOME_DB`)
 
-The flag selects where the Tool Proxy idempotency fence keeps terminal
-outcomes (`executed` or `failed`), keyed by `attempt_id` + `action_id`. A
-later delivery of the same pair returns the stored result and does not run
-the action again. That record survives a process restart only when the next
-process opens the same file.
+The flag selects where the Tool Proxy idempotency fence keeps its event
+log, keyed by `attempt_id` + `action_id`
+([ADR 0037](adr/0037-go-tool-proxy-fence-audit-parity.md)). Each delivery
+appends a `policy_decided` row. A claim, an `action_executed` row, and an
+`action_failed` row are each written at most once per action, so a later
+delivery returns the stored terminal result and does not run the action
+again. That record survives a process restart only when the next process
+opens the same file.
 
 | Input | Store | Restart |
 | --- | --- | --- |
@@ -38,7 +41,8 @@ value, and an explicit flag replaces it. Startup logs the choice as
 This file is the Go Tool Proxy fence only. Decision Graph state, Tasks,
 Attempts, and Evidence stay on PostgreSQL (`SDF_DATABASE_URL`,
 [ADR 0001](adr/0001-postgresql-as-sdf-state-source.md)). The fence does not
-share rows with the Python `tool_audits` table.
+share rows with the Python `tool_audits` table. Sharing that table is a
+later decision (ADR 0037), not this file.
 
 An empty path stays `MemoryStore` in the orchestrator, including tests and
 `sdf-orch` with no flag and no env. There is no compiled-in filename.

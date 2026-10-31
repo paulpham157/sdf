@@ -199,7 +199,7 @@ func TestDurableFenceFailedSticks(t *testing.T) {
 func TestNoTTLEvictionDocumented(t *testing.T) {
 	// Python SqlAlchemyAuditSink has no TTL / cleanup for tool_audits rows;
 	// outcomes are append-only. This test documents that the Go SQLite fence
-	// likewise has no eviction API — Lookup still returns after a long wait.
+	// likewise has no eviction API — Lookup still returns the terminal event.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fence.db")
 	store, err := toolproxy.OpenSQLiteStore(path)
@@ -207,11 +207,11 @@ func TestNoTTLEvictionDocumented(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	okClaim, err := store.Claim("a", "ACTION-x")
+	okClaim, err := store.Claim(toolproxy.Observation{AttemptID: "a", ActionID: "ACTION-x"})
 	if err != nil || !okClaim {
 		t.Fatal(err)
 	}
-	ok, err := store.Claim("a", "ACTION-x")
+	ok, err := store.Claim(toolproxy.Observation{AttemptID: "a", ActionID: "ACTION-x"})
 	if err != nil {
 		t.Fatal(err)
 	}
