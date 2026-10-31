@@ -197,7 +197,8 @@ class CoreQueryService:
                 "kind": e.kind, "exit_code": e.exit_code, "mode": e.evidence_mode, "measured_at": _iso(e.measured_at),
                 "evidence_class": e.evidence_class, "verifier_identity": e.verifier_identity,
                 "verifier_role": e.verifier_role, "subject_artifact_sha256": e.subject_artifact_sha256,
-                "oracle_digest": e.oracle_digest, "expires_at": _iso(e.expires_at)}
+                "oracle_digest": e.oracle_digest, "oracle_visibility": e.oracle_visibility,
+                "input_seed": e.input_seed, "expires_at": _iso(e.expires_at)}
 
     @staticmethod
     def _decision(r: DecisionRequestRow) -> dict[str, Any]:

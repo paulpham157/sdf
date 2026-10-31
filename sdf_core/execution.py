@@ -21,7 +21,7 @@ from .decision_gate import check_decision_gate
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
-from .acceptance import AcceptanceError, check_verification_acceptance
+from .acceptance import AcceptanceError, check_hidden_oracle_acceptance, check_verification_acceptance, is_hidden_oracle
 from .evaluator import DeterministicEvaluator, Evidence
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
@@ -77,6 +77,7 @@ class ExecutionService:
         instructions: str,
         commands: list[list[str]],
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
+        oracle_policies: Mapping[tuple[str, int], object] | None = None,
         validation_target: tuple[str, str] | None = None,
         parent_attempt_id: str | None = None,
         model_tier: ModelTier | None = None,
@@ -120,7 +121,8 @@ class ExecutionService:
             self._record_measured_telemetry(attempt, time.monotonic() - started)
             finished = self.finish(
                 attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
-                criterion_checks=criterion_checks, validation_target=validation_target,
+                criterion_checks=criterion_checks, oracle_policies=oracle_policies,
+                validation_target=validation_target,
                 # ADR 0031: Evidence takes the Attempt's mode as stored now (a
                 # live adapter promotes it once its sandbox exists).
                 evidence_mode=attempt.evidence_mode,
@@ -279,6 +281,7 @@ class ExecutionService:
         fixture: Path,
         commands: list[list[str]],
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
+        oracle_policies: Mapping[tuple[str, int], object] | None = None,
         validation_target: tuple[str, str] | None = None,
         evidence_mode: str | None = None,
     ):
@@ -356,6 +359,7 @@ class ExecutionService:
                     after_check=after_check,
                     # The diff artifact is what a PASS claims to have checked (ADR 0034).
                     subject_artifact_sha256=diff.sha256,
+                    oracle_policies=oracle_policies,
                 )
         except Exception:
             self._fail_attempt(task, attempt)
@@ -369,7 +373,14 @@ class ExecutionService:
         )
         if checked != evaluation.evidence:
             evaluation = type(evaluation)(status=_overall(evaluation.status, checked), evidence=checked)
-        evaluation = _enforce_acceptance(evaluation, attempt_agent=attempt.agent, artifact_sha256=diff.sha256)
+        requires_hidden = any(
+            getattr(policy, "visibility", None) == "held_out" or getattr(policy, "randomized", False)
+            for policy in (oracle_policies or {}).values()
+        )
+        evaluation = _enforce_acceptance(
+            evaluation, attempt_agent=attempt.agent, artifact_sha256=diff.sha256,
+            requires_hidden=requires_hidden,
+        )
         for evidence in evaluation.evidence:
             try:
                 evaluator_artifact = self.artifacts.capture_evaluator_output(
@@ -446,6 +457,8 @@ class ExecutionService:
                     environment_digest=evidence.environment_digest,
                     collected_at=evidence.collected_at,
                     expires_at=evidence.expires_at,
+                    oracle_visibility=evidence.oracle_visibility,
+                    input_seed=evidence.input_seed,
                 )
             )
             self.db.add(
@@ -463,7 +476,9 @@ class ExecutionService:
                                    "verifier_identity": evidence.verifier_identity,
                                    "verifier_role": evidence.verifier_role,
                                    "subject_artifact_sha256": evidence.subject_artifact_sha256,
-                                   "oracle_digest": evidence.oracle_digest},
+                                   "oracle_digest": evidence.oracle_digest,
+                                   "oracle_visibility": evidence.oracle_visibility,
+                                   "input_seed": evidence.input_seed},
                 )
             )
             self.db.flush()
@@ -488,7 +503,13 @@ class ExecutionService:
                 relation = "measures"
                 if evidence.status == "FAIL":
                     relation = "contradicts"
-                elif evidence.status == "PASS" and evaluation.status == "PASS":
+                elif (
+                    evidence.status == "PASS"
+                    and evaluation.status == "PASS"
+                    and (not requires_hidden or is_hidden_oracle(evidence))
+                ):
+                    # A visible PASS is recorded. It does not validate a task
+                    # that declared a held-out or randomized oracle (ADR 0035).
                     relation = "validates"
                 self.db.add(
                     DecisionEdgeRow(
@@ -606,12 +627,15 @@ def _drift_checked(evidence: Evidence, after: str, result_tree: str | None) -> E
     )
 
 
-def _enforce_acceptance(evaluation, *, attempt_agent: str, artifact_sha256: str):
+def _enforce_acceptance(evaluation, *, attempt_agent: str, artifact_sha256: str, requires_hidden: bool = False):
     """A PASS verifies only when ADR 0034's independence checks hold.
 
     A failing check stays a failing check. A PASS whose verifier is the
     Attempt's agent, whose subject hash is not this diff, or which has expired
     is recorded as INCONCLUSIVE and cannot validate the task.
+
+    When the task declared a held-out or randomized oracle, a visible PASS is
+    kept as PASS and still does not accept the task (ADR 0035).
     """
 
     from dataclasses import replace
@@ -632,9 +656,25 @@ def _enforce_acceptance(evaluation, *, attempt_agent: str, artifact_sha256: str)
                 )
                 changed = True
         checked.append(item)
+    evidence = tuple(checked)
+    try:
+        check_hidden_oracle_acceptance(
+            evidence, required=requires_hidden, attempt_agent=attempt_agent, artifact_sha256=artifact_sha256,
+        )
+    except AcceptanceError as exc:
+        note = f"[acceptance] {exc}"
+        evidence = tuple(
+            replace(item, stderr=(item.stderr + "\n" if item.stderr else "") + note)
+            if item.status == "PASS" and not is_hidden_oracle(item) else item
+            for item in evidence
+        )
+        changed = True
+        status = _overall(evaluation.status, evidence)
+        if status == "PASS":
+            status = "INCONCLUSIVE"
+        return type(evaluation)(status=status, evidence=evidence)
     if not changed:
         return evaluation
-    evidence = tuple(checked)
     return type(evaluation)(status=_overall(evaluation.status, evidence), evidence=evidence)
 
 

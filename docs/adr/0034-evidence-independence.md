@@ -209,9 +209,10 @@ Attempt's agent, or that it is still current.
      assertion, the test passes. That is the code under test, not a forged
      runner. A subject that patches its own RPC encoder so the worker
      reports the values the test expects is the same thing as hardcoding
-     those answers. That is test overfitting, not evidence forgery. Held-out
-     or property-based oracles are what catch it, and they are tracked
-     separately from this ADR.
+     those answers. That is test overfitting, not evidence forgery.
+     [ADR 0035](0035-held-out-oracles.md) decides that residual: a task that
+     declares a held-out or randomized oracle is not accepted on a visible
+     pass alone.
    - The worker can still write to its private temp directory and to other
      paths outside the frozen tree that the uid can open. It cannot replace
      the sealed tree or the result file.

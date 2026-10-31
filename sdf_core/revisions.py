@@ -73,11 +73,11 @@ def _file_chunks(path: str, size: int):
         raise RevisionBindingError(f"file changed while it was hashed: {path}")
 
 
-def _tree(directory: str) -> bytes | None:
+def _tree(directory: str, skip_names: frozenset[str] = frozenset()) -> bytes | None:
     entries: list[tuple[bytes, bytes]] = []
     with os.scandir(directory) as listing:
         for entry in listing:
-            if entry.name == ".git":
+            if entry.name == ".git" or entry.name in skip_names:
                 continue
             info = entry.stat(follow_symlinks=False)
             name = os.fsencode(entry.name)
@@ -86,7 +86,7 @@ def _tree(directory: str) -> bytes | None:
                 mode, sort_key = b"120000", name
                 oid = _object_id(b"blob", len(target), [target]).digest()
             elif stat.S_ISDIR(info.st_mode):
-                sub = _tree(entry.path)
+                sub = _tree(entry.path, skip_names)
                 if sub is None:
                     continue
                 mode, sort_key, oid = b"40000", name + b"/", sub
@@ -103,13 +103,18 @@ def _tree(directory: str) -> bytes | None:
     return _object_id(b"tree", len(body), [body]).digest()
 
 
-def tree_digest(root: Path) -> str:
-    """The ``TREE_FORMAT`` id of everything under ``root`` (an empty tree for an empty directory)."""
+def tree_digest(root: Path, *, skip_names: frozenset[str] = frozenset()) -> str:
+    """The ``TREE_FORMAT`` id of everything under ``root`` (an empty tree for an empty directory).
+
+    ``skip_names`` is only for the server's held-out oracle directory when
+    comparing a fixture to the workspace copy (ADR 0035). The result tree of
+    an Attempt does not use it, so an agent cannot hide a file by that name.
+    """
 
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
         raise RevisionBindingError(f"revision root must be a real directory: {root}")
-    oid = _tree(os.fspath(root))
+    oid = _tree(os.fspath(root), skip_names)
     return oid.hex() if oid is not None else _object_id(b"tree", 0, []).hexdigest()
 
 
@@ -167,7 +172,12 @@ def close_revision(
         raise RevisionBindingError(f"attempt {attempt.id} has no base revision; refusing unbound artifacts")
     if revision.result_tree_sha256 is not None:
         raise RevisionBindingError(f"attempt {attempt.id} already has a result revision")
-    fixture_tree = tree_digest(fixture)
+    from .oracle import HELD_OUT_DIR
+
+    # The workspace copy omits the held-out directory. Compare the fixture
+    # without it. The result tree below is the workspace as it stands, with
+    # nothing skipped, so a file the agent wrote there still counts.
+    fixture_tree = tree_digest(fixture, skip_names=frozenset({HELD_OUT_DIR}))
     if fixture_tree != revision.base_tree_sha256:
         raise RevisionBindingError(
             f"fixture changed since attempt {attempt.id} began (base {revision.base_tree_sha256[:12]}, "

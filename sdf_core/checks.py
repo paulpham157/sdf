@@ -13,6 +13,14 @@ Both use the same JSON shape::
     {"checks": {"unit-tests": {"argv": ["pytest", "-q", "tests/test_calc.py"], "timeout_seconds": 60},
                 "add-works": ["python3", "-c", "from calc import add; assert add(2, 3) == 5"]}}
 
+A check the agent must not see is not defined there. It lives in
+``.sdf-held-out/sdf-checks.json`` inside the fixture (ADR 0035). That
+directory is never copied into the workspace. Its checks are held-out:
+their files stay under ``.sdf-held-out/``, and a ``python -c`` string is
+refused because the subject can read the oracle process's command line.
+``randomized: true`` (on a visible or a held-out check) makes the evaluator
+draw a seed at verification time.
+
 Every argv is validated when it is loaded: the executable is a bare name from
 the evaluator allowlist (no path), no argument contains NUL, a ``python``
 check uses one of the forms the evaluator can harden (``-c``, ``-m`` or a
@@ -33,7 +41,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .oracle import HELD_OUT_DIR, is_held_out_path
+
 FIXTURE_MANIFEST = "sdf-checks.json"
+HELD_OUT_MANIFEST = f"{HELD_OUT_DIR}/{FIXTURE_MANIFEST}"
+ORACLE_VISIBILITIES = ("visible", "held_out")
 CHECKS_FILE_ENV = "SDF_EVALUATOR_CHECKS_FILE"
 ALLOWED_EXECUTABLES = frozenset({"python", "python3", "pytest", "ruff"})
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -57,11 +69,26 @@ class UnknownCheckError(LookupError):
 
 
 @dataclass(frozen=True)
+class OraclePolicy:
+    """How one mapped check is judged (ADR 0035).
+
+    ``visibility`` is ``visible`` (the agent can read the oracle) or
+    ``held_out`` (server-only). ``randomized`` means the evaluator supplies
+    a seed the subject cannot read, and records it on Evidence afterwards.
+    """
+
+    visibility: str = "visible"
+    randomized: bool = False
+
+
+@dataclass(frozen=True)
 class RegisteredCheck:
     check_id: str
     argv: tuple[str, ...]
     timeout_seconds: float
     source: str
+    visibility: str = "visible"
+    randomized: bool = False
 
 
 def validate_argv(argv: Sequence[Any], *, where: str = "check") -> tuple[str, ...]:
@@ -211,7 +238,7 @@ def python_invocation(argv: Sequence[str]) -> tuple[list[str], str, str, list[st
     raise ValueError("python check needs -c CODE, -m MODULE or a script path")
 
 
-def _parse(data: Any, source: str) -> dict[str, RegisteredCheck]:
+def _parse(data: Any, source: str, *, force_visibility: str | None = None) -> dict[str, RegisteredCheck]:
     if not isinstance(data, Mapping) or not isinstance(data.get("checks"), Mapping):
         raise CheckConfigError(f"{source}: expected an object with a 'checks' mapping")
     checks: dict[str, RegisteredCheck] = {}
@@ -219,10 +246,14 @@ def _parse(data: Any, source: str) -> dict[str, RegisteredCheck]:
         if not isinstance(check_id, str) or not CHECK_ID.fullmatch(check_id):
             raise CheckConfigError(f"{source}: invalid check id {check_id!r}")
         timeout: Any = DEFAULT_TIMEOUT_SECONDS
+        visibility = "visible"
+        randomized = False
         if isinstance(spec, Mapping):
             argv = spec.get("argv")
             timeout = spec.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
-            unknown = set(spec) - {"argv", "timeout_seconds"}
+            visibility = spec.get("visibility", "visible")
+            randomized = spec.get("randomized", False)
+            unknown = set(spec) - {"argv", "timeout_seconds", "visibility", "randomized"}
             if unknown:
                 raise CheckConfigError(f"{source}: check {check_id!r} has unknown keys {sorted(unknown)}")
         else:
@@ -230,9 +261,61 @@ def _parse(data: Any, source: str) -> dict[str, RegisteredCheck]:
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not MIN_TIMEOUT_SECONDS <= timeout <= MAX_TIMEOUT_SECONDS:
             raise CheckConfigError(f"{source}: check {check_id!r} timeout_seconds must be in "
                                    f"[{MIN_TIMEOUT_SECONDS:g}, {MAX_TIMEOUT_SECONDS:g}]")
-        checks[check_id] = RegisteredCheck(check_id, validate_argv(argv, where=f"{source}: check {check_id!r}"),
-                                           float(timeout), source)
+        if visibility not in ORACLE_VISIBILITIES:
+            raise CheckConfigError(
+                f"{source}: check {check_id!r} visibility must be one of {list(ORACLE_VISIBILITIES)}"
+            )
+        if not isinstance(randomized, bool):
+            raise CheckConfigError(f"{source}: check {check_id!r} randomized must be true or false")
+        if force_visibility is not None:
+            if isinstance(spec, Mapping) and "visibility" in spec and visibility != force_visibility:
+                raise CheckConfigError(
+                    f"{source}: check {check_id!r} visibility must be {force_visibility}"
+                )
+            visibility = force_visibility
+        elif source == FIXTURE_MANIFEST and visibility == "held_out":
+            raise CheckConfigError(
+                f"{source}: check {check_id!r} is held-out; define it in {HELD_OUT_MANIFEST} "
+                "(the public manifest is copied into the agent workspace)"
+            )
+        where = f"{source}: check {check_id!r}"
+        parsed = validate_argv(argv, where=where)
+        _check_visibility_targets(parsed, visibility, where)
+        checks[check_id] = RegisteredCheck(check_id, parsed, float(timeout), source, visibility, randomized)
     return checks
+
+
+def _check_visibility_targets(argv: tuple[str, ...], visibility: str, where: str) -> None:
+    """Held-out targets stay under the server directory. Visible targets do not.
+
+    A held-out ``python -c`` string would be on the oracle process command
+    line, which the subject can read. The source has to be a file.
+    """
+
+    targets = check_targets(argv)
+    if visibility == "held_out":
+        name = os.path.basename(argv[0]) if argv else ""
+        if name in {"python", "python3"}:
+            _flags, mode, _target, _rest = python_invocation(argv)
+            if mode == "-c":
+                raise CheckConfigError(
+                    f"{where}: a held-out python check must be a script under {HELD_OUT_DIR}/, not -c "
+                    "(the subject can read the oracle command line)"
+                )
+        if not targets:
+            raise CheckConfigError(
+                f"{where}: a held-out check must name a file under {HELD_OUT_DIR}/"
+            )
+        for target in targets:
+            if not is_held_out_path(target):
+                raise CheckConfigError(f"{where}: held-out target {target} must live under {HELD_OUT_DIR}/")
+        return
+    for target in targets:
+        if is_held_out_path(target):
+            raise CheckConfigError(
+                f"{where}: visible check target {target} is under {HELD_OUT_DIR}/; "
+                f"define it in {HELD_OUT_MANIFEST}"
+            )
 
 
 MAX_REGISTRY_BYTES = 1024 * 1024
@@ -263,13 +346,13 @@ def _read_regular_file(path: Path, source: str) -> bytes:
         os.close(fd)
 
 
-def _load_file(path: Path, source: str) -> dict[str, RegisteredCheck]:
+def _load_file(path: Path, source: str, *, force_visibility: str | None = None) -> dict[str, RegisteredCheck]:
     raw = _read_regular_file(path, source)
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CheckConfigError(f"{source}: cannot read check registry ({type(exc).__name__})") from exc
-    return _parse(data, source)
+    return _parse(data, source, force_visibility=force_visibility)
 
 
 def _refuse_under(path: Path, roots: Sequence[Path], source: str) -> None:
@@ -315,6 +398,16 @@ class CheckRegistry:
                     if check_id in checks:
                         raise CheckConfigError(f"check id {check_id!r} is defined by both {CHECKS_FILE_ENV} and {FIXTURE_MANIFEST}")
                     checks[check_id] = check
+            held_out = Path(fixture) / HELD_OUT_DIR / FIXTURE_MANIFEST
+            if held_out.is_symlink():
+                raise CheckConfigError(f"{HELD_OUT_MANIFEST}: must be a regular file, not a symlink")
+            if os.path.lexists(held_out):
+                for check_id, check in _load_file(held_out, HELD_OUT_MANIFEST, force_visibility="held_out").items():
+                    if check_id in checks:
+                        raise CheckConfigError(
+                            f"check id {check_id!r} is defined by both a public manifest and {HELD_OUT_MANIFEST}"
+                        )
+                    checks[check_id] = check
         return cls(checks)
 
     def ids(self) -> list[str]:
@@ -335,6 +428,20 @@ class CheckRegistry:
         self._slots = {(criterion, position): cid
                        for criterion, ids in criterion_checks.items() for position, cid in enumerate(ids)}
         return {criterion: [list(self._checks[cid].argv) for cid in ids] for criterion, ids in criterion_checks.items()}
+
+    def oracle_policies(self) -> dict[tuple[str, int], OraclePolicy]:
+        """Visibility and seed policy for the checks the last :meth:`resolve` mapped."""
+
+        policies: dict[tuple[str, int], OraclePolicy] = {}
+        for slot, check_id in self._slots.items():
+            check = self._checks[check_id]
+            policies[slot] = OraclePolicy(visibility=check.visibility, randomized=check.randomized)
+        return policies
+
+    def declares_hidden_oracle(self) -> bool:
+        """True when a mapped check is held-out or randomized (ADR 0035)."""
+
+        return any(policy.visibility == "held_out" or policy.randomized for policy in self.oracle_policies().values())
 
     def timeout_for(self, check_id: str) -> float | None:
         check = self._checks.get(check_id)

@@ -76,7 +76,8 @@ def _attempt_entries(db: Session, attempt_ids: list[str]) -> list[dict[str, Any]
         out.append(_entry(ev.created_at, "evidence", ev.kind, attempt_id=ev.attempt_id, status=ev.status,
                           criterion=ev.criterion, exit_code=ev.exit_code, evidence_mode=ev.evidence_mode,
                           evidence_class=ev.evidence_class, verifier_identity=ev.verifier_identity,
-                          subject_artifact_sha256=ev.subject_artifact_sha256))
+                          subject_artifact_sha256=ev.subject_artifact_sha256,
+                          oracle_visibility=ev.oracle_visibility, input_seed=ev.input_seed))
     for u in db.scalars(select(UsageLedgerRow).where(UsageLedgerRow.attempt_id.in_(attempt_ids))):
         out.append(_usage_entry(u))
     for audit in db.scalars(select(AuthAuditRow).where(or_(*[AuthAuditRow.path.contains(i) for i in attempt_ids]))):

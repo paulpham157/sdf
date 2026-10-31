@@ -4,6 +4,7 @@ import ctypes
 import logging
 import os
 import re
+import secrets
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -18,12 +19,20 @@ from .acceptance import (
     VERIFICATION_TTL,
     environment_digest,
 )
-from .checks import ALLOWED_EXECUTABLES, check_targets, is_pytest, python_invocation, pytest_targets
+from .checks import (
+    ALLOWED_EXECUTABLES,
+    OraclePolicy,
+    check_targets,
+    is_pytest,
+    python_invocation,
+    pytest_targets,
+)
 from .containment import ContainmentUnavailable
 from .model import utcnow
 from .oracle import (
     OracleTamper,
     declared_test_count,
+    is_held_out_path,
     materialize,
     PYTEST_SEAL,
     load_result_frame,
@@ -39,6 +48,10 @@ from .oracle import (
 from .sandbox import FixtureSandbox, SandboxViolation
 
 MAX_CHECK_OUTPUT_BYTES = 256 * 1024
+# Held-out stdout and stderr are not stored. Pytest would otherwise reprint
+# the oracle source on failure, which the API and the evaluator artifact would
+# then show to the agent (ADR 0035).
+HELD_OUT_OUTPUT = "[held-out] evaluator output withheld (ADR 0035)"
 _log = logging.getLogger("sdf.evaluator")
 
 # Variables that would let workspace content or the server environment steer
@@ -238,6 +251,9 @@ class Evidence:
     environment_digest: str | None = None
     collected_at: Any = None
     expires_at: Any = None
+    # ADR 0035. NULL on a coverage gap and on Evidence written before the column.
+    oracle_visibility: str | None = None
+    input_seed: str | None = None
 
 
 @dataclass(frozen=True)
@@ -300,6 +316,7 @@ class DeterministicEvaluator:
         reference: Path | None = None,
         after_check: Callable[[Evidence], Evidence] | None = None,
         subject_artifact_sha256: str | None = None,
+        oracle_policies: Mapping[tuple[str, int], OraclePolicy] | None = None,
     ) -> EvaluationResult:
         """Evaluate explicit criterion/check mappings.
 
@@ -360,6 +377,7 @@ class DeterministicEvaluator:
                         position=position,
                         reference=reference,
                         subject_artifact_sha256=subject_artifact_sha256,
+                        oracle_policies=oracle_policies,
                     )
                 ))
 
@@ -382,6 +400,7 @@ class DeterministicEvaluator:
                     index=index + 1,
                     reference=reference,
                     subject_artifact_sha256=subject_artifact_sha256,
+                    oracle_policies=oracle_policies,
                 )
             ))
 
@@ -442,7 +461,8 @@ class DeterministicEvaluator:
 
     def _inconclusive(self, attempt_id: str, index: int, rendered: str, criterion: str | None, reason: str,
                       stdout: str = "", runner: str | None = None, *,
-                      subject_artifact_sha256: str | None = None, oracle_digest: str | None = None) -> Evidence:
+                      subject_artifact_sha256: str | None = None, oracle_digest: str | None = None,
+                      oracle_visibility: str | None = None, input_seed: str | None = None) -> Evidence:
         # A check that did not run is still a verification verdict, not a
         # coverage gap (ADR 0034). It cannot accept an artifact.
         collected = utcnow()
@@ -468,6 +488,8 @@ class DeterministicEvaluator:
             environment_digest=environment_digest(command=rendered, runner=runner, oracle_digest=oracle_digest),
             collected_at=collected,
             expires_at=collected + VERIFICATION_TTL,
+            oracle_visibility=oracle_visibility,
+            input_seed=input_seed,
         )
 
     @staticmethod
@@ -528,15 +550,27 @@ class DeterministicEvaluator:
         position: int = 0,
         reference: Path | None = None,
         subject_artifact_sha256: str | None = None,
+        oracle_policies: Mapping[tuple[str, int], OraclePolicy] | None = None,
     ) -> Evidence:
         argv = tuple(command)
         rendered = " ".join(argv)
         subject = subject_artifact_sha256
+        policy = (oracle_policies or {}).get((criterion or "", position))
+        if policy is None and criterion is not None:
+            policy = (oracle_policies or {}).get((criterion, position))
+        visibility = policy.visibility if policy is not None else "visible"
+        randomized = bool(policy and policy.randomized)
+        seed: str | None = None
 
         def stop(reason: str, stdout: str = "", runner: str | None = None, *, oracle_digest: str | None = None) -> Evidence:
+            note = reason
+            if visibility == "held_out" and not reason.startswith(("[evaluator] ", "[acceptance] ")):
+                note = f"[evaluator] {reason}"
+            out, err = _withhold_output(stdout, note if visibility == "held_out" else reason, visibility)
             return self._inconclusive(
-                attempt_id, index, rendered, criterion, reason, stdout, runner,
+                attempt_id, index, _public_command(argv, visibility), criterion, err, out, runner,
                 subject_artifact_sha256=subject, oracle_digest=oracle_digest,
+                oracle_visibility=visibility, input_seed=seed,
             )
 
         if (
@@ -559,6 +593,8 @@ class DeterministicEvaluator:
             targets = check_targets(argv)
         except ValueError as exc:
             return stop(f"unsupported check form: {exc}")
+        if any(is_held_out_path(target) for target in targets):
+            visibility = "held_out"
         problem = _verify_targets(targets, workspace, reference)
         if problem is not None:
             return stop(problem)
@@ -583,15 +619,24 @@ class DeterministicEvaluator:
             oracle_digest = None
             run_root = workspace
             python_check = _is_python_check(argv)
+            # Drawn here, after the agent has finished, and only then. The
+            # subject worker does not receive SDF_ORACLE_* (ADR 0035).
+            if randomized:
+                seed = secrets.token_hex(32)
             # A server fixture is the oracle. Absolute test paths are already
             # outside the workspace; everything else runs from the sealed copy.
             if reference is not None and not absolute:
                 try:
-                    sealed = materialize(reference, workspace, targets, command=argv)
+                    sealed = materialize(
+                        reference, workspace, targets, command=argv,
+                        visibility=visibility, input_seed=seed,
+                    )
                 except OracleTamper as exc:
                     return stop(exc.reason)
                 oracle_digest = sealed.oracle_digest
                 run_root = sealed.root
+                if sealed.hide_oracle:
+                    visibility = "held_out"
             # Pytest, scripts, and python -c all need a result file the notary
             # writes after the oracle child exits. The child's own exit code
             # is not the verdict.
@@ -606,8 +651,18 @@ class DeterministicEvaluator:
                 child_env["SDF_ORACLE_SEAL"] = PYTEST_SEAL
                 child_env["SDF_ORACLE_REPORT"] = str(report.result_path)
                 child_env["SDF_ORACLE_KIND"] = "pytest" if is_pytest(argv) else "script"
-                oracle_paths = set(sealed.oracle_paths) if sealed is not None else set()
-                child_env["SDF_ORACLE_SUBJECTS"] = subject_module_names(run_root, oracle_paths)
+                if sealed is not None and sealed.hide_oracle:
+                    names_root = sealed.subject_root
+                    oracle_paths: set[str] = set()
+                else:
+                    names_root = run_root
+                    oracle_paths = set(sealed.oracle_paths) if sealed is not None else set()
+                # Every subject worker landlocks itself to this directory.
+                # A visible check's directory does not contain held-out files;
+                # the server fixture, which does, is not in the ruleset.
+                child_env["SDF_ORACLE_HIDE"] = "1"
+                child_env["SDF_ORACLE_SUBJECT_ROOT"] = str(names_root)
+                child_env["SDF_ORACLE_SUBJECTS"] = subject_module_names(names_root, oracle_paths)
             elif report is not None:
                 return stop(
                     "oracle result channel is not sealed for a bare pytest executable",
@@ -616,7 +671,9 @@ class DeterministicEvaluator:
             # A pure python -c check seals no files. The digest still covers
             # the registered argv, so it is not the hash of an empty input.
             if oracle_digest is None:
-                oracle_digest = seal_oracle_digest(argv)
+                oracle_digest = seal_oracle_digest(argv, visibility=visibility, input_seed=seed)
+            if seed:
+                child_env["SDF_ORACLE_SEED"] = seed
             try:
                 sandbox = FixtureSandbox(
                     run_root,
@@ -656,9 +713,10 @@ class DeterministicEvaluator:
                 result_status = "INCONCLUSIVE"
                 stderr = f"{stderr or ''}\noracle files changed while the check ran".lstrip("\n")
             return self._checked(
-                attempt_id=attempt_id, index=index, rendered=rendered, criterion=criterion,
+                attempt_id=attempt_id, index=index, rendered=rendered, command_argv=argv, criterion=criterion,
                 status=result_status, exit_code=completed.returncode, stdout=completed.stdout, stderr=stderr,
                 oracle_digest=oracle_digest, subject_artifact_sha256=subject,
+                oracle_visibility=visibility, input_seed=seed,
             )
         finally:
             if sealed is not None:
@@ -667,9 +725,10 @@ class DeterministicEvaluator:
                 report.cleanup()
 
     def _checked(
-        self, *, attempt_id: str, index: int, rendered: str, criterion: str | None, status: str,
-        exit_code: int | None, stdout: str, stderr: str, oracle_digest: str | None,
-        subject_artifact_sha256: str | None,
+        self, *, attempt_id: str, index: int, rendered: str, command_argv: Sequence[str], criterion: str | None,
+        status: str, exit_code: int | None, stdout: str, stderr: str, oracle_digest: str | None,
+        subject_artifact_sha256: str | None, oracle_visibility: str | None = None,
+        input_seed: str | None = None,
     ) -> Evidence:
         collected = utcnow()
         if status == "PASS":
@@ -678,15 +737,16 @@ class DeterministicEvaluator:
             confidence = 0.2
         else:
             confidence = 0.95
+        out, err = _withhold_output(stdout, stderr, oracle_visibility)
         return Evidence(
             evidence_id=f"EVIDENCE-{attempt_id}-{index}",
             attempt_id=attempt_id,
             kind="evaluation",
             status=status,
-            command=rendered,
+            command=_public_command(command_argv, oracle_visibility),
             exit_code=exit_code,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=out,
+            stderr=err,
             confidence=confidence,
             criterion=criterion,
             runner=self.runner,
@@ -700,6 +760,8 @@ class DeterministicEvaluator:
             environment_digest=environment_digest(command=rendered, runner=self.runner, oracle_digest=oracle_digest),
             collected_at=collected,
             expires_at=collected + VERIFICATION_TTL,
+            oracle_visibility=oracle_visibility,
+            input_seed=input_seed,
         )
 
     def _pytest_interpreter(self, pytest_path: str, workspace: Path, safe_path: str) -> str | None:
@@ -780,6 +842,10 @@ def _verify_targets(targets: Sequence[str], workspace: Path, reference: Path | N
         expected = _read_plain(ref_root, target)
         if expected is None:
             return f"check file {target} is not a regular file in the server fixture"
+        # Held-out files are not in the workspace. Comparing them would either
+        # fail closed on every honest run or accept a workspace substitute.
+        if is_held_out_path(target):
+            continue
         actual = _read_plain(root, target)
         if actual != expected:
             return f"check file {target} differs from the server fixture (the agent changed or replaced it)"
@@ -800,6 +866,38 @@ def _read_plain(root: Path, relative: str) -> bytes | None:
         return current.read_bytes()
     except OSError:
         return None
+
+
+def _public_command(argv: Sequence[str], visibility: str | None) -> str:
+    """The command stored on Evidence. A held-out ``-c`` body is not stored."""
+
+    if visibility != "held_out":
+        return " ".join(argv)
+    rendered: list[str] = []
+    skip = False
+    for part in argv:
+        if skip:
+            rendered.append("<held-out>")
+            skip = False
+            continue
+        rendered.append(part)
+        if part == "-c":
+            skip = True
+    return " ".join(rendered)
+
+
+def _withhold_output(stdout: str, stderr: str, visibility: str | None) -> tuple[str, str]:
+    """Drop oracle text from held-out output. Keep the evaluator's own reason."""
+
+    if visibility != "held_out":
+        return stdout, stderr
+    kept = [
+        line[:300]
+        for line in (stderr or "").splitlines()
+        if line.startswith("[evaluator] ") or line.startswith("[acceptance] ")
+    ]
+    body = HELD_OUT_OUTPUT if not kept else HELD_OUT_OUTPUT + "\n" + "\n".join(kept)
+    return body, body
 
 
 def _backend_name(backend: Any) -> str:
