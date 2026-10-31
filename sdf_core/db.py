@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -86,6 +86,11 @@ class AttemptRow(Base):
     # principal (or an admin) may drive its Tool Proxy actions; NULL (internal
     # or pre-0018 Attempts) means admin-only over HTTP.
     principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    # ADR 0032 (#62): TRUE for every Attempt created after migration 0023 (set
+    # by the ORM guard and, on PostgreSQL, a trigger, whatever the writer
+    # says); NULL only for Attempts that existed before 0023.  Only a NULL
+    # Attempt may have unbound artifacts or Evidence.  Immutable.
+    revision_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -666,6 +671,14 @@ def _enforce_plan_gate(session: Session, flush_context: Any, instances: Any) -> 
 
 
 _REVISION_SET_ONCE = {"base_commit", "base_commit_source", "result_tree_sha256", "finished_at"}
+_BINDING_FIELDS = ("revision_id", "tree_sha256")
+
+
+def _pending_attempt(session: Session, attempt_id: str | None) -> "AttemptRow | None":
+    for item in session.new:
+        if isinstance(item, AttemptRow) and item.id == attempt_id:
+            return item
+    return session.get(AttemptRow, attempt_id) if attempt_id is not None else None
 
 
 def _pending_revision(session: Session, *, attempt_id: str | None = None, revision_id: str | None = None):
@@ -691,6 +704,17 @@ def check_revision_binding(session: Session, row: Any) -> None:
             )
         if row.tree_sha256 is not None:
             raise RevisionBindingError(f"{kind} {row.id} names a tree without a revision")
+        # Unbound rows are allowed only for an Attempt that existed before
+        # migration 0023 (revision_required IS NULL), never because a revision
+        # row happens to be missing.
+        attempt = _pending_attempt(session, row.attempt_id)
+        if attempt is None:
+            raise RevisionBindingError(f"missing revision binding: {kind} {row.id} names unknown attempt {row.attempt_id}")
+        if attempt.revision_required is not None:
+            raise RevisionBindingError(
+                f"missing revision binding: {kind} {row.id}: attempt {row.attempt_id} was created after "
+                "migration 0023 and has no revision"
+            )
         return  # an Attempt from before migration 0023
     if own is None or own.id != row.revision_id:
         other = _pending_revision(session, revision_id=row.revision_id)
@@ -719,7 +743,17 @@ def _guard_attempt_revisions(session: Session, flush_context: Any, instances: An
     for item in session.deleted:
         if isinstance(item, AttemptRevisionRow):
             raise ValueError("attempt revision rows cannot be deleted")
+    for item in session.new:
+        if isinstance(item, AttemptRow):
+            item.revision_required = True  # whatever the caller set (ADR 0032)
     with session.no_autoflush:
+        for item in list(session.dirty):
+            if isinstance(item, (ArtifactRow, EvidenceRow, AttemptRow)) and session.is_modified(item, include_collections=False):
+                state = sa_inspect(item)
+                fields = ("revision_required",) if isinstance(item, AttemptRow) else _BINDING_FIELDS
+                if any(state.attrs[name].history.has_changes() for name in fields):
+                    raise RevisionBindingError(
+                        f"{type(item).__name__} {item.id}: its revision binding is immutable after insert")
         for item in list(session.dirty):
             if not isinstance(item, AttemptRevisionRow) or not session.is_modified(item, include_collections=False):
                 continue

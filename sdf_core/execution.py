@@ -20,7 +20,7 @@ from .db import (
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
-from .evaluator import DeterministicEvaluator
+from .evaluator import DeterministicEvaluator, Evidence
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
 from .policy import ActionRequest, Policy
@@ -35,7 +35,7 @@ from .tools import (
     ToolProxy,
 )
 from .sandbox import FixtureSandbox
-from .revisions import close_revision, record_base_revision
+from .revisions import close_revision, record_base_revision, tree_digest
 
 
 @dataclass(frozen=True)
@@ -328,6 +328,14 @@ class ExecutionService:
             task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
             self.db.commit()
             return attempt
+        result_tree = revision.result_tree_sha256
+
+        def after_check(evidence: Evidence) -> Evidence:
+            # ADR 0032 (#62): a check runs in the Attempt workspace and may
+            # change it; Evidence then no longer describes the result tree,
+            # so a PASS is not kept.  Every later check sees the drift too.
+            return _drift_checked(evidence, _tree_or_none(workspace), result_tree)
+
         try:
             with tracing.span("sdf.evaluate", attempt_id=attempt_id):
                 evaluation = self.evaluator.evaluate(
@@ -338,16 +346,27 @@ class ExecutionService:
                     criterion_checks=criterion_checks,
                     # The check's own files must match the server fixture (ADR 0025).
                     reference=fixture,
+                    after_check=after_check,
                 )
         except Exception:
             self._fail_attempt(task, attempt)
             raise
+        # Also after the whole evaluation, for an evaluator that does not call
+        # ``after_check``: an unobserved row inherits the final tree.
+        final_tree = _tree_or_none(workspace)
+        checked = tuple(
+            item if item.tree_after_sha256 is not None else _drift_checked(item, final_tree, result_tree)
+            for item in evaluation.evidence
+        )
+        if checked != evaluation.evidence:
+            evaluation = type(evaluation)(status=_overall(evaluation.status, checked), evidence=checked)
         for evidence in evaluation.evidence:
             try:
                 evaluator_artifact = self.artifacts.capture_evaluator_output(
                     artifact_id=f"{evidence.evidence_id}-OUTPUT",
                     evidence=evidence,
-                    revision=binding,
+                    revision={**binding, "tree_after_check_sha256": evidence.tree_after_sha256,
+                              "tree_drift": _drifted(evidence, result_tree)},
                 )
             except Exception:
                 self._fail_attempt(task, attempt)
@@ -419,7 +438,7 @@ class ExecutionService:
                     confidence=evidence.confidence,
                     created_at=utcnow(),
                     metadata_json={"criterion": evidence.criterion, "artifact_ref": evaluator_artifact.artifact_id,
-                                   **binding},
+                                   **binding, "tree_drift": _drifted(evidence, result_tree)},
                 )
             )
             self.db.flush()
@@ -527,6 +546,48 @@ class ExecutionService:
 TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,
                                      AttemptState.CANCELLED.value})
 _TIER_RANK = {ModelTier.BASIC: 0, ModelTier.MEDIUM: 1, ModelTier.HIGH: 2}
+
+
+_DRIFT_NOTE = ("[sdf] the workspace tree changed while this check ran ({after} != result tree {result}); "
+               "a PASS is recorded as INCONCLUSIVE because it no longer describes the revision (ADR 0032)")
+
+
+def _tree_or_none(workspace: Path) -> str:
+    """The workspace tree now; an unreadable tree counts as drift (never as the result tree)."""
+
+    try:
+        return tree_digest(workspace)
+    except Exception as exc:  # noqa: BLE001 - recorded as drift, never raised
+        return f"unreadable:{type(exc).__name__}"
+
+
+def _drifted(evidence: Evidence, result_tree: str | None) -> bool:
+    return evidence.tree_after_sha256 is not None and evidence.tree_after_sha256 != result_tree
+
+
+def _drift_checked(evidence: Evidence, after: str, result_tree: str | None) -> Evidence:
+    """Record the tree after the check; a PASS on a drifted tree becomes INCONCLUSIVE (FAIL stays FAIL)."""
+
+    from dataclasses import replace
+
+    if after == result_tree:
+        return replace(evidence, tree_after_sha256=after)
+    note = _DRIFT_NOTE.format(after=after[:20], result=str(result_tree)[:20])
+    return replace(
+        evidence, tree_after_sha256=after,
+        status="INCONCLUSIVE" if evidence.status == "PASS" else evidence.status,
+        confidence=min(evidence.confidence, 0.2) if evidence.status == "PASS" else evidence.confidence,
+        stderr=(evidence.stderr + "\n" if evidence.stderr else "") + note,
+    )
+
+
+def _overall(previous: str, evidence: tuple[Evidence, ...]) -> str:
+    statuses = {item.status for item in evidence}
+    if "FAIL" in statuses:
+        return "FAIL"
+    if "INCONCLUSIVE" in statuses:
+        return "INCONCLUSIVE"
+    return previous
 
 
 def check_retry_parent(db: Session, parent: AttemptRow) -> None:

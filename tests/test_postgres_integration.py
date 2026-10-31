@@ -82,13 +82,29 @@ def test_vertical_slice_runs_against_postgresql(tmp_path: Path, postgres_engine)
         assert db.get(TaskRow, "TASK-PG-001").status == "succeeded"
 
 
+PG_TREE = "a" * 64
+
+
+def _pg_revision(connection, attempt_id: str) -> None:
+    """A post-0023 Attempt with a finished revision (tree ``PG_TREE``), by direct SQL."""
+
+    connection.execute(text(
+        "INSERT INTO attempts (id, task_id, status, dispatch_key, agent, model_tier, cost_usd, created_at, "
+        "evidence_mode) VALUES (:id, 'T', 'completed', :id, 'x', 'basic', 0, now(), 'synthetic')"), {"id": attempt_id})
+    connection.execute(text(
+        "INSERT INTO attempt_revisions (id, attempt_id, repository, tree_format, base_tree_sha256, "
+        "result_tree_sha256, created_at, finished_at) VALUES (:rev, :id, 'fixture:t', 'git-sha256-tree-v1', :tree, "
+        ":tree, now(), now())"), {"rev": f"REV-{attempt_id}", "id": attempt_id, "tree": PG_TREE})
+
+
 def test_alembic_head_created_postgres_schema_and_append_only_triggers(postgres_engine):
     inspector = inspect(postgres_engine)
     assert "alembic_version" in inspector.get_table_names()
     assert {column["name"] for column in inspector.get_columns("evidence")} >= {"criterion", "measured_at"}
     assert {column["name"] for column in inspector.get_columns("tool_audits")} >= {"audit_id", "event"}
     with postgres_engine.begin() as connection:
-        connection.execute(text("INSERT INTO evidence (id, attempt_id, kind, status, command, exit_code, artifact_ref, confidence, criterion, measured_at, evidence_mode, created_at) VALUES ('EVIDENCE-PG-TRIGGER', 'ATTEMPT-PG-TRIGGER', 'evaluation', 'PASS', 'pytest', 0, NULL, 1.0, NULL, now(), 'synthetic', now())"))
+        _pg_revision(connection, "ATTEMPT-PG-TRIGGER")  # ADR 0032: Evidence needs its Attempt's revision
+        connection.execute(text("INSERT INTO evidence (id, attempt_id, kind, status, command, exit_code, artifact_ref, confidence, criterion, measured_at, evidence_mode, created_at, revision_id, tree_sha256) VALUES ('EVIDENCE-PG-TRIGGER', 'ATTEMPT-PG-TRIGGER', 'evaluation', 'PASS', 'pytest', 0, NULL, 1.0, NULL, now(), 'synthetic', now(), 'REV-ATTEMPT-PG-TRIGGER', :tree)"), {"tree": PG_TREE})
         connection.execute(text("INSERT INTO tool_audits (audit_id, attempt_id, action_id, actor, tool, action, resource, context, event, decision, executed, outcome, detail, created_at) VALUES ('AUDIT-PG-TRIGGER', 'ATTEMPT-PG-TRIGGER', 'ACTION-PG-TRIGGER', 'test', 'filesystem', 'read', '.', '{}', 'action_claimed', 'allow', false, 'claimed', 'test', now())"))
     for statement in (
         "UPDATE evidence SET status = 'FAIL' WHERE id = 'EVIDENCE-PG-TRIGGER'",
@@ -355,13 +371,19 @@ def test_routing_decisions_are_append_only_in_postgres(postgres_engine):
 @pytest.mark.parametrize("table", ["evidence", "attempts"])
 def test_evidence_mode_check_constraint_and_migration_0021_on_postgresql(postgres_engine, monkeypatch, table):
     """ADR 0031: only 'synthetic' and 'live' are stored; 0021 never rewrites rows."""
-    sql = {
+    sql = {  # as written before 0023 (no revision binding)
         "evidence": "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, "
                     "created_at) VALUES (:id, 'ATTEMPT-PG-MODE', 'evaluation', 'PASS', 'c', 1.0, :mode, now())",
         "attempts": "INSERT INTO attempts (id, task_id, status, dispatch_key, agent, evidence_mode, created_at) "
                     "VALUES (:id, 'TASK-PG-MODE', 'created', :id, 'pi', :mode, now())",
     }
-    for each in sql.values():
+    at_head = dict(sql, evidence=(
+        "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at, "
+        "revision_id, tree_sha256) VALUES (:id, 'ATTEMPT-PG-MODE', 'evaluation', 'PASS', 'c', 1.0, :mode, now(), "
+        f"'REV-ATTEMPT-PG-MODE', '{PG_TREE}')"))
+    with postgres_engine.begin() as connection:
+        _pg_revision(connection, "ATTEMPT-PG-MODE")
+    for each in at_head.values():
         with postgres_engine.begin() as connection:
             connection.execute(text(each), {"id": "PG-LIVE", "mode": "live"})
         with pytest.raises(DBAPIError, match="evidence_mode"), postgres_engine.begin() as connection:
@@ -376,7 +398,8 @@ def test_evidence_mode_check_constraint_and_migration_0021_on_postgresql(postgre
         with pytest.raises(RuntimeError, match=f"1 {table} row"):
             command.upgrade(config, "head")
         with postgres_engine.connect() as connection:  # nothing was rewritten
-            assert dict(connection.execute(text(f"SELECT id, evidence_mode FROM {table}")).all()) == {
+            assert dict(connection.execute(text(
+                f"SELECT id, evidence_mode FROM {table} WHERE id LIKE 'PG-%'")).all()) == {
                 "PG-LIVE": "live", "PG-ODD": "staging"}
     finally:
         with postgres_engine.begin() as connection:
@@ -491,11 +514,36 @@ def test_revision_bindings_are_fenced_and_0023_round_trips_on_postgresql(postgre
         for params, message in cases:
             with pytest.raises(DBAPIError, match=message), postgres_engine.begin() as connection:
                 connection.execute(text(sql), {"id": "PG-REV-X", "attempt": a.attempt_id, "sha": "0" * 64, **params})
-        with postgres_engine.begin() as connection:  # valid binding; and an unbound legacy Attempt
+        with postgres_engine.begin() as connection:  # valid binding
             connection.execute(text(sql), {"id": "PG-REV-OK", "attempt": a.attempt_id, "sha": "0" * 64,
                                            "rev": a.id, "tree": a.result_tree_sha256})
-            connection.execute(text(sql), {"id": "PG-REV-LEGACY", "attempt": "ATTEMPT-PG-LEGACY", "sha": "0" * 64,
-                                           "rev": None, "tree": None})
+    # SF2: an Attempt inserted after 0023 by direct SQL, claiming to be legacy, is marked anyway,
+    # so it cannot get unbound rows; an unknown Attempt cannot either.
+    attempt_sql = ("INSERT INTO attempts (id, task_id, status, dispatch_key, agent, model_tier, cost_usd, created_at, "
+                   "evidence_mode, revision_required) VALUES (:id, 'T', 'completed', :id, 'x', 'basic', 0, now(), "
+                   "'synthetic', NULL)")
+    with postgres_engine.begin() as connection:
+        connection.execute(text(attempt_sql), {"id": "ATTEMPT-PG-SIDE"})
+        assert connection.execute(text(
+            "SELECT revision_required FROM attempts WHERE id = 'ATTEMPT-PG-SIDE'")).scalar() is True
+    for sql in (artifact, evidence):
+        for attempt_id, message in (("ATTEMPT-PG-SIDE", "created after migration 0023"),
+                                    ("ATTEMPT-PG-GHOST", "unknown attempt")):
+            with pytest.raises(DBAPIError, match=message), postgres_engine.begin() as connection:
+                connection.execute(text(sql), {"id": "PG-REV-X", "attempt": attempt_id, "sha": "0" * 64,
+                                               "rev": None, "tree": None})
+    # SF1: an artifact's binding is immutable after insert; so is the Attempt marker.
+    for statement, message in (
+        (f"UPDATE artifacts SET revision_id = '{b.id}' WHERE id = 'PG-REV-OK'", "immutable after insert"),
+        (f"UPDATE artifacts SET tree_sha256 = '{'e' * 64}' WHERE id = 'PG-REV-OK'", "immutable after insert"),
+        ("UPDATE artifacts SET revision_id = NULL, tree_sha256 = NULL WHERE id = 'PG-REV-OK'",
+         "immutable after insert"),
+        ("UPDATE attempts SET revision_required = NULL WHERE id = 'ATTEMPT-PG-SIDE'", "revision_required is immutable"),
+    ):
+        with pytest.raises(DBAPIError, match=message), postgres_engine.begin() as connection:
+            connection.execute(text(statement))
+    with postgres_engine.begin() as connection:  # other artifact columns are unaffected by the fence
+        connection.execute(text("UPDATE artifacts SET size_bytes = 1 WHERE id = 'PG-REV-OK'"))
     for statement, message in (
         (f"UPDATE attempt_revisions SET base_tree_sha256 = '{'b' * 64}' WHERE id = '{a.id}'", "immutable"),
         (f"UPDATE attempt_revisions SET result_tree_sha256 = '{'c' * 64}' WHERE id = '{a.id}'", "set once"),
@@ -507,10 +555,12 @@ def test_revision_bindings_are_fenced_and_0023_round_trips_on_postgresql(postgre
     def fences():
         with postgres_engine.connect() as connection:
             return {r[0] for r in connection.execute(text(
-                "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal AND tgname LIKE '%revision%'"))}
+                "SELECT tgname FROM pg_trigger WHERE NOT tgisinternal "
+                "AND (tgname LIKE '%revision%' OR tgname LIKE '%binding%')"))}
 
-    assert fences() == {"trg_attempt_revisions_guard", "trg_artifacts_revision_binding",
-                        "trg_evidence_revision_binding"}
+    expected = {"trg_attempt_revisions_guard", "trg_artifacts_revision_binding", "trg_evidence_revision_binding",
+                "trg_artifacts_binding_immutable", "trg_attempts_revision_required"}
+    assert fences() == expected
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     monkeypatch.setenv("SDF_DATABASE_URL", POSTGRES_URL)
     command.downgrade(config, "0022_tool_audit_mode_check")
@@ -519,9 +569,20 @@ def test_revision_bindings_are_fenced_and_0023_round_trips_on_postgresql(postgre
         columns = {c["name"] for c in inspect(postgres_engine).get_columns("evidence")}
         assert "revision_id" not in columns and "attempt_revisions" not in inspect(postgres_engine).get_table_names()
         with postgres_engine.connect() as connection:  # Evidence survived; the append-only trigger still holds
-            assert connection.execute(text("SELECT count(*) FROM evidence")).scalar() >= 4
+            assert connection.execute(text("SELECT count(*) FROM evidence")).scalar() >= 3
+        assert "revision_required" not in {c["name"] for c in inspect(postgres_engine).get_columns("attempts")}
+        with postgres_engine.begin() as connection:  # an Attempt that exists before 0023 runs
+            connection.execute(text(
+                "INSERT INTO attempts (id, task_id, status, dispatch_key, agent, model_tier, cost_usd, created_at, "
+                "evidence_mode) VALUES ('ATTEMPT-PG-LEGACY', 'T', 'completed', 'pg-legacy', 'old', 'basic', 0, now(), "
+                "'synthetic')"))
     finally:
         command.upgrade(config, "head")
-    assert len(fences()) == 3
+    assert fences() == expected
+    with postgres_engine.begin() as connection:  # a genuine legacy Attempt may still be unbound
+        assert connection.execute(text(
+            "SELECT revision_required FROM attempts WHERE id = 'ATTEMPT-PG-LEGACY'")).scalar() is None
+        connection.execute(text(evidence), {"id": "PG-REV-LEGACY", "attempt": "ATTEMPT-PG-LEGACY", "sha": "0" * 64,
+                                            "rev": None, "tree": None})
     with pytest.raises(DBAPIError, match="append-only"), postgres_engine.begin() as connection:
         connection.execute(text("UPDATE evidence SET status = 'FAIL'"))

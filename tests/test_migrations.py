@@ -3,6 +3,7 @@ from alembic.config import Config
 import pytest
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
+from tests.revision_support import bound
 
 
 def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
@@ -28,11 +29,16 @@ def test_evidence_rows_are_append_only_at_session_boundary():
     engine = make_engine()
     Base.metadata.create_all(engine)
     with sessionmaker(engine, expire_on_commit=False)() as db:
+        from sdf_core.db import AttemptRow
+
+        db.add(AttemptRow(id="ATTEMPT-IMMUTABLE-001", task_id="T", status="completed", dispatch_key="imm-1",
+                          agent="test", created_at=utcnow()))
         row = EvidenceRow(
             id="EVIDENCE-IMMUTABLE-001", attempt_id="ATTEMPT-IMMUTABLE-001",
             kind="evaluation", status="PASS", command="pytest", exit_code=0,
             artifact_ref="ARTIFACT-IMMUTABLE-001", confidence=1.0,
             criterion="tests pass", measured_at=utcnow(), created_at=utcnow(),
+            **bound(db, "ATTEMPT-IMMUTABLE-001"),
         )
         db.add(row)
         db.commit()
@@ -62,6 +68,10 @@ def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkey
     command.upgrade(config, "0022_tool_audit_mode_check")
     with engine.begin() as connection:
         connection.execute(text(
+            "INSERT INTO attempts (id, task_id, status, dispatch_key, agent, model_tier, cost_usd, created_at, "
+            "evidence_mode) VALUES ('ATTEMPT-LEGACY', 'T', 'completed', 'legacy', 'old', 'basic', 0, '2026-10-01', "
+            "'synthetic')"))
+        connection.execute(text(
             "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at) "
             "VALUES ('EV-LEGACY', 'ATTEMPT-LEGACY', 'evaluation', 'PASS', 'c', 1.0, 'synthetic', '2026-10-01')"))
         connection.execute(text(
@@ -76,14 +86,34 @@ def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkey
     with engine.connect() as connection:
         assert connection.execute(text("SELECT revision_id, tree_sha256 FROM evidence")).all() == [(None, None)]
         assert connection.execute(text("SELECT revision_id, tree_sha256 FROM artifacts")).all() == [(None, None)]
+        # The durable legacy marker: Attempts that existed before 0023 are NULL.
+        assert connection.execute(text("SELECT id, revision_required FROM attempts")).all() == [
+            ("ATTEMPT-LEGACY", None)]
+    # A genuine legacy Attempt may still get unbound rows; one created after 0023 may not.
+    from sdf_core.db import AttemptRow, EvidenceRow, RevisionBindingError
+    from sdf_core.model import utcnow
+
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(EvidenceRow(id="EV-LEGACY-2", attempt_id="ATTEMPT-LEGACY", kind="evaluation", status="PASS",
+                           command="c", confidence=1.0, created_at=utcnow()))
+        db.commit()
+        db.add(AttemptRow(id="ATTEMPT-NEW", task_id="T", status="completed", dispatch_key="new", agent="x",
+                          created_at=utcnow()))
+        db.commit()
+        db.add(EvidenceRow(id="EV-NEW", attempt_id="ATTEMPT-NEW", kind="evaluation", status="PASS",
+                           command="c", confidence=1.0, created_at=utcnow()))
+        with pytest.raises(RevisionBindingError, match="created after migration 0023"):
+            db.commit()
+        db.rollback()
 
     command.downgrade(config, "0022_tool_audit_mode_check")
     inspector = inspect(engine)
     assert "attempt_revisions" not in inspector.get_table_names()
     assert "revision_id" not in {c["name"] for c in inspector.get_columns("evidence")}
+    assert "revision_required" not in {c["name"] for c in inspector.get_columns("attempts")}
     assert "ck_evidence_evidence_mode" in evidence_ddl()
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT id FROM evidence")).scalars().all() == ["EV-LEGACY"]
+        assert sorted(connection.execute(text("SELECT id FROM evidence")).scalars().all()) == ["EV-LEGACY", "EV-LEGACY-2"]
     command.upgrade(config, "head")
     assert "attempt_revisions" in inspect(engine).get_table_names()
     engine.dispose()

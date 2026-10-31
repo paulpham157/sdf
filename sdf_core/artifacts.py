@@ -44,9 +44,9 @@ class WorkspaceManager:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(source.read_bytes())
                 # Keep the execute bit so the workspace has the fixture's
-                # revision identity (ADR 0032); no other mode bits are copied.
+                # revision identity (ADR 0032); only the owner bit is set.
                 if source.stat().st_mode & 0o100:
-                    target.chmod(target.stat().st_mode | 0o111)
+                    target.chmod(target.stat().st_mode | 0o100)  # owner only
         return destination
 
 

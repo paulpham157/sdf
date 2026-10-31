@@ -1,8 +1,11 @@
 """Attempt revisions and revision-bound artifacts/Evidence (#62, ADR 0032).
 
 Adds ``attempt_revisions`` (one row per Attempt: repository identity, base
-tree, optional base commit, result tree) and nullable ``revision_id`` /
-``tree_sha256`` columns on ``artifacts`` and ``evidence``.
+tree, optional base commit, result tree), nullable ``revision_id`` /
+``tree_sha256`` columns on ``artifacts`` and ``evidence``, and
+``attempts.revision_required``: NULL on every Attempt that exists when this
+migration runs (the durable "legacy" marker), TRUE on every Attempt created
+afterwards.
 
 Existing rows are never rewritten: Evidence is append-only and rows from
 before this revision keep NULL bindings, which the API reports as
@@ -23,10 +26,17 @@ PostgreSQL also gets the database fences that the ORM session guards
 * ``trg_artifacts_revision_binding`` / ``trg_evidence_revision_binding``
   (BEFORE INSERT): a row for an Attempt that has a revision must name that
   revision and its result tree; a row may not name another Attempt's
-  revision or an unknown one. Rows for Attempts without a revision (from
-  before this migration) may stay unbound.
+  revision or an unknown one. Only a row for an existing Attempt with
+  ``revision_required IS NULL`` (it predates this migration) may stay
+  unbound.
+* ``trg_artifacts_binding_immutable`` (BEFORE UPDATE): an artifact's
+  ``revision_id`` / ``tree_sha256`` never change after insert (Evidence is
+  already append-only).
+* ``trg_attempts_revision_required`` (BEFORE INSERT OR UPDATE): a new
+  Attempt is always ``revision_required = TRUE``, whatever the INSERT says;
+  the marker never changes afterwards.
 
-Downgrade drops the fences, the four columns and the table. It discards the
+Downgrade drops the fences, the five columns and the table. It discards the
 recorded revisions.
 """
 
@@ -60,6 +70,9 @@ def upgrade():
     for table in _BOUND:
         op.add_column(table, sa.Column("revision_id", sa.String(120), nullable=True))
         op.add_column(table, sa.Column("tree_sha256", sa.String(64), nullable=True))
+    # No server default: rows that exist now stay NULL (legacy).  New rows get
+    # TRUE from the ORM guard (SQLite, PostgreSQL) and the trigger below.
+    op.add_column("attempts", sa.Column("revision_required", sa.Boolean(), nullable=True))
 
     if op.get_bind().dialect.name != "postgresql":
         return  # SQLite relies on the equivalent session guards in sdf_core.db.
@@ -95,6 +108,8 @@ def upgrade():
             own_id text;
             own_tree text;
             other_attempt text;
+            required boolean;
+            attempt_found boolean;
         BEGIN
             SELECT id, result_tree_sha256 INTO own_id, own_tree FROM attempt_revisions WHERE attempt_id = NEW.attempt_id;
             IF NEW.revision_id IS NULL THEN
@@ -105,7 +120,16 @@ def upgrade():
                 IF NEW.tree_sha256 IS NOT NULL THEN
                     RAISE EXCEPTION 'revision binding: % % names a tree without a revision', TG_TABLE_NAME, NEW.id;
                 END IF;
-                RETURN NEW;
+                SELECT revision_required, true INTO required, attempt_found FROM attempts WHERE id = NEW.attempt_id;
+                IF attempt_found IS NULL THEN
+                    RAISE EXCEPTION 'missing revision binding: % % names unknown attempt %', TG_TABLE_NAME, NEW.id,
+                        NEW.attempt_id;
+                END IF;
+                IF required IS NOT NULL THEN
+                    RAISE EXCEPTION 'missing revision binding: % %: attempt % was created after migration 0023 and has no revision',
+                        TG_TABLE_NAME, NEW.id, NEW.attempt_id;
+                END IF;
+                RETURN NEW;  -- an Attempt from before migration 0023
             END IF;
             IF own_id IS NULL OR own_id <> NEW.revision_id THEN
                 SELECT attempt_id INTO other_attempt FROM attempt_revisions WHERE id = NEW.revision_id;
@@ -128,6 +152,36 @@ def upgrade():
             CREATE TRIGGER trg_{table}_revision_binding BEFORE INSERT ON {table}
             FOR EACH ROW EXECUTE FUNCTION sdf_revision_binding_guard();
         """)
+    op.execute("""
+        CREATE FUNCTION sdf_artifact_binding_immutable() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.revision_id IS DISTINCT FROM OLD.revision_id OR NEW.tree_sha256 IS DISTINCT FROM OLD.tree_sha256 THEN
+                RAISE EXCEPTION 'artifact % revision binding is immutable after insert', OLD.id;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """)
+    op.execute("""
+        CREATE TRIGGER trg_artifacts_binding_immutable BEFORE UPDATE ON artifacts
+        FOR EACH ROW EXECUTE FUNCTION sdf_artifact_binding_immutable();
+    """)
+    op.execute("""
+        CREATE FUNCTION sdf_attempt_revision_required() RETURNS trigger AS $$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                NEW.revision_required := true;
+            ELSIF NEW.revision_required IS DISTINCT FROM OLD.revision_required THEN
+                RAISE EXCEPTION 'attempt % revision_required is immutable', OLD.id;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    """)
+    op.execute("""
+        CREATE TRIGGER trg_attempts_revision_required BEFORE INSERT OR UPDATE ON attempts
+        FOR EACH ROW EXECUTE FUNCTION sdf_attempt_revision_required();
+    """)
 
 
 def downgrade():
@@ -135,11 +189,16 @@ def downgrade():
         for table in _BOUND:
             op.execute(f"DROP TRIGGER IF EXISTS trg_{table}_revision_binding ON {table}")
         op.execute("DROP TRIGGER IF EXISTS trg_attempt_revisions_guard ON attempt_revisions")
+        op.execute("DROP TRIGGER IF EXISTS trg_artifacts_binding_immutable ON artifacts")
+        op.execute("DROP TRIGGER IF EXISTS trg_attempts_revision_required ON attempts")
+        op.execute("DROP FUNCTION IF EXISTS sdf_artifact_binding_immutable()")
+        op.execute("DROP FUNCTION IF EXISTS sdf_attempt_revision_required()")
         op.execute("DROP FUNCTION IF EXISTS sdf_revision_binding_guard()")
         op.execute("DROP FUNCTION IF EXISTS sdf_attempt_revision_guard()")
     for table in _BOUND:
         # Plain DROP COLUMN (SQLite >= 3.35): the columns carry no index or constraint.
         op.drop_column(table, "tree_sha256")
         op.drop_column(table, "revision_id")
+    op.drop_column("attempts", "revision_required")
     op.drop_index("ix_attempt_revisions_attempt_id", table_name="attempt_revisions")
     op.drop_table("attempt_revisions")

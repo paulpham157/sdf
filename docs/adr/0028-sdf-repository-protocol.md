@@ -61,5 +61,10 @@ store.
   2026-10-31: #62 as written ([ADR 0032](0032-attempt-revisions.md)) and #60
   in a narrow scope (a pending *material* agent decision request blocks
   dispatch and consequential mutation until resolved), recorded in its own
-  ADR with that change.
+  ADR with that change (ADR 0033). The maintainer's review decisions of the
+  same day extended #60's scope in two ways:
+  - a request is material when the agent declares it *or* a deterministic
+    rule matches it;
+  - wall time spent waiting on a pending material request does not count
+    toward the run's wall-time cap.
 - No GitHub branch-protection, CI or agent-permission change is made.

@@ -132,7 +132,7 @@ def harden_argv(argv: Sequence[str], *, pytest_python: str | None = None) -> lis
 
     ``argv[0]`` is kept as given (the caller resolves it).  With
     ``pytest_python`` (the interpreter of the resolved ``pytest``), a bare
-    ``pytest`` check runs as ``<python> -I -c BOOTSTRAP -m pytest`` so it gets
+    ``pytest`` check runs as ``<python> -I -B -c BOOTSTRAP -m pytest`` so it gets
     the same ``sys.path`` as ``python -m pytest`` (workspace appended, root
     imports work).  Raises ``ValueError`` for a check form the evaluator
     cannot harden (see :func:`sdf_core.checks.validate_argv`).
@@ -145,10 +145,12 @@ def harden_argv(argv: Sequence[str], *, pytest_python: str | None = None) -> lis
         flags, mode, target, tail = python_invocation(argv)
         if mode == "-m" and target == "pytest":
             tail = [*PYTEST_FLAGS, *tail]
-        return [argv[0], "-I", *flags, "-c", PYTHON_BOOTSTRAP, mode, target, *tail]
+        # -B: -I ignores PYTHONDONTWRITEBYTECODE, and a check must not leave
+        # __pycache__ in the workspace it is judging (ADR 0032 drift check).
+        return [argv[0], "-I", "-B", *flags, "-c", PYTHON_BOOTSTRAP, mode, target, *tail]
     if name == "pytest":
         if pytest_python is not None:
-            return [pytest_python, "-I", "-c", PYTHON_BOOTSTRAP, "-m", "pytest", *PYTEST_FLAGS, *rest]
+            return [pytest_python, "-I", "-B", "-c", PYTHON_BOOTSTRAP, "-m", "pytest", *PYTEST_FLAGS, *rest]
         return [argv[0], *PYTEST_FLAGS, *rest]
     if name == "ruff":
         if rest and not rest[0].startswith("-"):
@@ -178,6 +180,10 @@ class Evidence:
     # Where the check ran: "host", the containment backend's name, or None
     # when nothing ran (coverage/config evidence).
     runner: str | None = None
+    # ADR 0032 (#62): the workspace tree right after this check ran, when the
+    # caller observed it (``after_check``); differs from the revision's result
+    # tree only when the check (or anything else) changed the workspace.
+    tree_after_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -235,8 +241,14 @@ class DeterministicEvaluator:
         criteria: Sequence[str] | None = None,
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
         reference: Path | None = None,
+        after_check: Callable[[Evidence], Evidence] | None = None,
     ) -> EvaluationResult:
         """Evaluate explicit criterion/check mappings.
+
+        ``after_check`` is called with the Evidence of every check that ran,
+        right after it ran, and returns the Evidence to record (ADR 0032:
+        the caller re-hashes the workspace and downgrades a PASS whose tree
+        drifted).  The overall status is computed from what it returns.
 
         ``reference`` is the server fixture the workspace was copied from.  A
         check's own files (pytest test files, a python script) named by a
@@ -280,8 +292,12 @@ class DeterministicEvaluator:
                     confidence=item.confidence,
                     criterion=item.criterion,
                     runner=item.runner,
+                    tree_after_sha256=item.tree_after_sha256,
                 )
             )
+
+        def observed(item: Evidence) -> Evidence:
+            return after_check(item) if after_check is not None else item
 
         covered: set[str] = set()
         for criterion in expected_criteria:
@@ -291,7 +307,7 @@ class DeterministicEvaluator:
                 continue
             covered.add(criterion)
             for position, command in enumerate(mapped_commands):
-                add(
+                add(observed(
                     self._run_one(
                         attempt_id=attempt_id,
                         workspace=workspace,
@@ -301,7 +317,7 @@ class DeterministicEvaluator:
                         position=position,
                         reference=reference,
                     )
-                )
+                ))
 
         # A mapping for a criterion that is not on the Task is not coverage;
         # record it so an accidental extra command cannot certify the task.
@@ -313,7 +329,7 @@ class DeterministicEvaluator:
         # it with a criterion. This makes arbitrary command success unable to
         # validate business intent.
         for command in legacy_commands:
-            add(
+            add(observed(
                 self._run_one(
                     attempt_id=attempt_id,
                     workspace=workspace,
@@ -322,7 +338,7 @@ class DeterministicEvaluator:
                     index=index + 1,
                     reference=reference,
                 )
-            )
+            ))
 
         if not evidence:
             add(

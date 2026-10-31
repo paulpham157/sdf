@@ -28,13 +28,14 @@ validation of the intended outcome.
    `0023_attempt_revisions`). `ExecutionService.begin` writes it right after
    it copies the fixture into the Attempt workspace:
    - `repository`: provider-neutral identity. `fixture:<path under
-     SDF_FIXTURES_ROOT>`, else `path:<absolute real path>`. No GitHub URL or
+     SDF_FIXTURES_ROOT>`, else `path-sha256:<16 hex of the real path digest>` (no host path is exposed). No GitHub URL or
      other forge data is canonical.
    - `base_tree_sha256`: the tree id of the workspace the agent receives.
    - `tree_format`: `git-sha256-tree-v1` (below).
    `ExecutionService.finish` then sets, exactly once and before any artifact
    is written:
-   - `result_tree_sha256`: the tree id of the workspace the evaluator gets;
+   - `result_tree_sha256`: the tree id of the workspace when the evaluator
+     starts (see §4b for checks that change it);
    - `base_commit` / `base_commit_source`: a Git commit an adapter created on
      the host before the agent ran. Today only the E2B adapter does this
      (`e2b-baseline`); every other adapter leaves both `NULL`.
@@ -50,7 +51,7 @@ validation of the intended outcome.
    filters) cannot execute on the host. Anyone can reproduce it with
    `git init --object-format=sha256 && git add -A -f && git write-tree`. A
    test checks this against real Git. Workspace copies now keep the
-   fixture's execute bit so the base tree matches the fixture.
+   fixture's owner-execute bit (owner only) so the base tree matches the fixture.
 
 3. **Every artifact and Evidence row names its revision.** `artifacts` and
    `evidence` get `revision_id` and `tree_sha256` (the result tree the diff
@@ -65,11 +66,34 @@ validation of the intended outcome.
      result tree yet;
    - **cross-Attempt**: another Attempt's revision;
    - **unknown**: a revision that does not exist.
+   Unbound rows are allowed only for an Attempt that existed before 0023.
+   That is decided by a durable marker, not by a missing revision row:
+   - `attempts.revision_required` is `NULL` on every Attempt that existed
+     when 0023 ran;
+   - it is forced to `TRUE` on every Attempt inserted afterwards, by the ORM
+     guard and, on PostgreSQL, by `trg_attempts_revision_required`, whatever
+     the writer says;
+   - it is immutable.
+
+   An Attempt created outside `ExecutionService.begin` after 0023 (for
+   example by `escalation.create_escalated_attempt`, or by direct SQL on
+   PostgreSQL) therefore cannot get unbound artifacts or Evidence. Neither
+   can an unknown Attempt.
+
    Revision rows are never deleted. The base identity is immutable and the
-   result fields are set once. These rules are enforced by the ORM session
-   guards (`sdf_core.db`) and, on PostgreSQL, by the triggers
-   `trg_artifacts_revision_binding`, `trg_evidence_revision_binding` and
-   `trg_attempt_revisions_guard`, so direct SQL is refused too.
+   result fields are set once. An artifact's `revision_id`/`tree_sha256`
+   never change after insert; Evidence is append-only already.
+
+   These rules are enforced by the ORM session guards (`sdf_core.db`) and,
+   on PostgreSQL, by triggers, so direct SQL is refused too:
+   - `trg_artifacts_revision_binding` and `trg_evidence_revision_binding`
+     (insert);
+   - `trg_artifacts_binding_immutable` (update);
+   - `trg_attempt_revisions_guard`;
+   - `trg_attempts_revision_required`.
+
+   On SQLite only the ORM path is fenced: direct SQL there is not, as for
+   the other SQLite guards.
    `ExecutionService.finish` also fails the Attempt, writing no artifacts,
    when:
    - the Attempt has no base revision;
@@ -77,6 +101,24 @@ validation of the intended outcome.
      different change);
    - an adapter-reported result tree (the E2B adapter reports one after the
      pull) differs from the tree SDF computes.
+
+4b. **Drift during evaluation.** Checks run in the Attempt workspace one
+   after another, and a check can change files.
+   - `ExecutionService` hashes the workspace again after every check
+     (`DeterministicEvaluator.evaluate(after_check=...)`), and once more
+     after the whole evaluation for an evaluator that does not call the
+     hook.
+   - If the tree differs from `result_tree_sha256`, a PASS becomes
+     `INCONCLUSIVE` (confidence at most 0.2) with an explanatory stderr
+     note. A FAIL stays FAIL. All later checks see the drift too.
+   - The evaluator-output artifact records `tree_after_check_sha256` and
+     `tree_drift`, as does the Evidence node metadata (`tree_drift`).
+   - So a PASS always describes the recorded result tree. Hardened
+     `python`/`pytest` checks run with `-B`, so bytecode caches no longer
+     count as drift.
+   - A check that writes inside the workspace, for example pytest's
+     `tmp_path` (`TMPDIR` is the workspace), now yields `INCONCLUSIVE`. That
+     is the deliberate, safe choice.
 
 5. **Read surface.** `GET /attempts/{id}/revision` returns the revision, the
    Attempt's `evidence_mode` and a re-check of every binding and stored
@@ -89,7 +131,7 @@ validation of the intended outcome.
 6. **Synthetic and live (ADR 0031).** The tree ids are real digests of the
    server-side workspace bytes in both modes. They are never invented, and
    the mode is reported next to them. A synthetic revision proves which
-   bytes were evaluated, not that a live agent produced them. `base_commit`
+   bytes were evaluated (unchanged, §4b), not that a live agent produced them. `base_commit`
    stays `NULL` unless an adapter really made one. The E2B adapter's dry run
    makes a real local commit, which is recorded while the Attempt stays
    synthetic.
@@ -105,9 +147,10 @@ validation of the intended outcome.
   keeps in-flight upgrades working. Every Attempt started by
   `ExecutionService` after 0023 has a revision, and `finish` refuses one
   without it.
-- `escalation.escalate_attempt` still creates an Attempt row without a
-  workspace or revision. It is never finished through `ExecutionService`, so
-  any rows written for it directly stay unbound.
+- `escalation.create_escalated_attempt` still creates an Attempt row without
+  a workspace or revision. It is never finished through `ExecutionService`.
+  Because of `revision_required`, rows written for it directly are refused
+  rather than accepted unbound.
 - The PostgreSQL insert trigger does one indexed lookup per artifact/Evidence
   row.
 - The revision is recorded, not re-materialised: the API verifies the

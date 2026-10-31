@@ -8,7 +8,10 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import hashlib
+
 import pytest
+from sqlalchemy import insert
 from sqlalchemy.orm import sessionmaker
 
 from sdf_core.adapter import AdapterResult, FakeNativeAdapter
@@ -117,7 +120,8 @@ def test_repository_identity_is_provider_neutral(tmp_path: Path, monkeypatch):
     fixture = _fixture(tmp_path)
     assert repository_identity(fixture) == "fixture:fixture"
     monkeypatch.setenv("SDF_FIXTURES_ROOT", str(tmp_path / "elsewhere"))
-    assert repository_identity(fixture) == f"path:{os.path.realpath(fixture)}"
+    expected = hashlib.sha256(os.fsencode(os.path.realpath(fixture))).hexdigest()[:16]
+    assert repository_identity(fixture) == f"path-sha256:{expected}"  # no host path in the API
 
 
 def test_workspace_copy_keeps_the_execute_bit(tmp_path: Path):
@@ -129,6 +133,7 @@ def test_workspace_copy_keeps_the_execute_bit(tmp_path: Path):
     workspace = WorkspaceManager(tmp_path / "ws").create("ATTEMPT-X", fixture)
     assert os.access(workspace / "run.sh", os.X_OK)
     assert not os.access(workspace / "app.py", os.X_OK)
+    assert (workspace / "run.sh").stat().st_mode & 0o011 == 0  # the owner bit only
     assert tree_digest(workspace) == tree_digest(fixture)
 
 
@@ -143,7 +148,7 @@ def test_run_records_base_and_result_and_binds_every_row(tmp_path: Path):
         assert db.get(TaskRow, "TASK-REV-1").status == "succeeded"
         revision = revision_for_attempt(db, attempt.id)
         assert revision.tree_format == TREE_FORMAT
-        assert revision.repository.startswith(("fixture:", "path:"))
+        assert revision.repository.startswith(("fixture:", "path-sha256:"))
         assert revision.base_tree_sha256 == base
         assert revision.result_tree_sha256 == tree_digest(tmp_path / "workspaces" / attempt.id) != base
         # The fake adapter has no Git baseline: nothing is invented for it.
@@ -156,7 +161,8 @@ def test_run_records_base_and_result_and_binds_every_row(tmp_path: Path):
         for row in (*artifacts, *evidence):
             assert (row.revision_id, row.tree_sha256) == (revision.id, revision.result_tree_sha256)
         output = json.loads(Path(db.get(ArtifactRow, evidence[0].artifact_ref).uri).read_text())
-        assert output["revision"] == {"revision_id": revision.id, "tree_sha256": revision.result_tree_sha256}
+        assert output["revision"] == {"revision_id": revision.id, "tree_sha256": revision.result_tree_sha256,
+                                      "tree_after_check_sha256": revision.result_tree_sha256, "tree_drift": False}
         assert verify_attempt_revision(db, attempt.id) == {
             "attempt_id": attempt.id, "status": "verified", "problems": [], "artifacts": 3, "evidence": 1}
 
@@ -283,6 +289,100 @@ def test_missing_mismatched_cross_attempt_and_unknown_bindings_are_rejected(tmp_
         db.commit()  # the valid binding is accepted
 
 
+def _legacy_attempt(db, attempt_id: str) -> None:
+    """An Attempt as migration 0023 found it: ``revision_required`` NULL (only a
+    pre-0023 row, or direct SQL on SQLite, can look like this)."""
+
+    db.execute(insert(AttemptRow.__table__).values(
+        id=attempt_id, task_id="TASK-LEGACY", status="completed", dispatch_key=f"legacy-{attempt_id}", agent="old",
+        created_at=utcnow(), evidence_mode="synthetic", revision_required=None))
+    db.commit()
+
+
+def test_an_attempt_created_after_0023_outside_begin_cannot_get_unbound_evidence(tmp_path: Path):
+    with _session() as db:
+        # Created through the ORM without begin (and without a revision): the guard
+        # marks it, whatever the caller says, so a missing revision row is not "legacy".
+        db.add(AttemptRow(id="ATTEMPT-SIDE", task_id="T", status="completed", dispatch_key="side", agent="x",
+                          created_at=utcnow(), revision_required=None))
+        db.commit()
+        assert db.get(AttemptRow, "ATTEMPT-SIDE").revision_required is True
+        for make in (_evidence, _artifact):
+            db.add(make("ATTEMPT-SIDE"))
+            with pytest.raises(RevisionBindingError, match="created after migration 0023"):
+                db.flush()
+            db.rollback()
+        # Unknown Attempts are not legacy either.
+        db.add(_evidence("ATTEMPT-GHOST"))
+        with pytest.raises(RevisionBindingError, match="unknown attempt"):
+            db.flush()
+        db.rollback()
+        # A genuine pre-0023 Attempt still may; and nobody can flip the marker.
+        _legacy_attempt(db, "ATTEMPT-OLD")
+        db.add(_evidence("ATTEMPT-OLD"))
+        db.commit()
+        db.get(AttemptRow, "ATTEMPT-OLD").revision_required = True
+        with pytest.raises(RevisionBindingError, match="immutable"):
+            db.flush()
+        db.rollback()
+        db.get(AttemptRow, "ATTEMPT-SIDE").revision_required = None
+        with pytest.raises(RevisionBindingError, match="immutable"):
+            db.flush()
+
+
+def test_an_artifact_binding_cannot_be_rewritten_after_insert(tmp_path: Path):
+    with _session() as db:
+        a, b = _two_finished_attempts(db, tmp_path)
+        artifact = db.query(ArtifactRow).filter_by(attempt_id=a.attempt_id, kind="diff").one()
+        for field, value in (("revision_id", b.id), ("tree_sha256", "f" * 64), ("revision_id", None)):
+            setattr(artifact, field, value)
+            with pytest.raises(RevisionBindingError, match="immutable after insert"):
+                db.flush()
+            db.rollback()
+            artifact = db.query(ArtifactRow).filter_by(attempt_id=a.attempt_id, kind="diff").one()
+        assert (artifact.revision_id, artifact.tree_sha256) == (a.id, a.result_tree_sha256)
+
+
+def test_a_check_that_changes_the_workspace_cannot_pass(tmp_path: Path):
+    fixture = _fixture(tmp_path)
+    checks = {"tests pass": [["python", "-c", "open('dropped.txt', 'w').write('x')"],
+                             ["python", "-c", "print('ok')"]]}
+    with _session() as db:
+        _task(db, "TASK-REV-DRIFT")
+        attempt = _service(db, tmp_path).run(task_id="TASK-REV-DRIFT", dispatch_key="drift-1", fixture=fixture,
+                                             instructions="x", commands=[], criterion_checks=checks)
+        assert db.get(TaskRow, "TASK-REV-DRIFT").status == "inconclusive"
+        revision = revision_for_attempt(db, attempt.id)
+        evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).order_by(EvidenceRow.id).all()
+        # Both checks exited 0, yet neither is a PASS: the tree they leave is not the revision.
+        assert [e.status for e in evidence] == ["INCONCLUSIVE", "INCONCLUSIVE"]
+        for row in evidence:
+            assert (row.revision_id, row.tree_sha256) == (revision.id, revision.result_tree_sha256)
+            output = json.loads(Path(db.get(ArtifactRow, row.artifact_ref).uri).read_text())
+            assert output["revision"]["tree_drift"] is True
+            assert output["revision"]["tree_after_check_sha256"] != revision.result_tree_sha256
+            assert "tree changed while this check ran" in output["stderr"]
+        assert verify_attempt_revision(db, attempt.id)["status"] == "verified"  # the records are consistent
+
+
+def test_an_evaluator_without_the_hook_is_still_drift_checked(tmp_path: Path):
+    from sdf_core.evaluator import DeterministicEvaluator
+
+    class NoHook(DeterministicEvaluator):
+        def evaluate(self, *, after_check=None, **kwargs):  # ignores after_check
+            (kwargs["workspace"] / "late.txt").write_text("x")
+            return super().evaluate(**kwargs)
+
+    fixture = _fixture(tmp_path)
+    with _session() as db:
+        _task(db, "TASK-REV-NOHOOK")
+        service = _service(db, tmp_path)
+        service.evaluator = NoHook()
+        service.run(task_id="TASK-REV-NOHOOK", dispatch_key="nohook-1", fixture=fixture, instructions="x",
+                    commands=[], criterion_checks=CHECK)
+        assert db.get(TaskRow, "TASK-REV-NOHOOK").status == "inconclusive"
+
+
 def test_unfinished_revision_and_legacy_attempts(tmp_path: Path):
     with _session() as db:
         db.add(AttemptRevisionRow(id="REV-OPEN", attempt_id="ATTEMPT-OPEN", repository="path:/x",
@@ -293,6 +393,7 @@ def test_unfinished_revision_and_legacy_attempts(tmp_path: Path):
             db.flush()
         db.rollback()
         # An Attempt from before migration 0023 has no revision; its rows stay unbound.
+        _legacy_attempt(db, "ATTEMPT-LEGACY")
         db.add(_artifact("ATTEMPT-LEGACY"))
         db.commit()
         assert verify_attempt_revision(db, "ATTEMPT-LEGACY", check_files=False)["status"] == "unbound"

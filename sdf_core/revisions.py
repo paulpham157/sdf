@@ -118,15 +118,17 @@ def repository_identity(fixture: Path) -> str:
 
     A fixture under ``SDF_FIXTURES_ROOT`` is ``fixture:<path relative to the
     root>``; any other directory (in-process callers, tests) is
-    ``path:<absolute real path>``.  No forge-specific data is canonical: the
-    immutable revision is the tree id, not a URL.
+    ``path-sha256:<first 16 hex of sha256(absolute real path)>``: stable for
+    the same directory without exposing a host path through the API.  No
+    forge-specific data is canonical: the immutable revision is the tree id,
+    not a URL.
     """
 
     resolved = Path(os.path.realpath(fixture))
     root = fixtures_root()
     if resolved != root and resolved.is_relative_to(root):
         return "fixture:" + resolved.relative_to(root).as_posix()
-    return "path:" + resolved.as_posix()
+    return "path-sha256:" + hashlib.sha256(os.fsencode(resolved)).hexdigest()[:16]
 
 
 def revision_for_attempt(db: Session, attempt_id: str) -> AttemptRevisionRow | None:
