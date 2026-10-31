@@ -126,10 +126,14 @@ def test_absolute_server_test_files_run_and_must_be_outside_the_workspace(tmp_pa
     "import pytest\n\ndef add(a, b):\n    pytest.skip('nope')\n",
 ], ids=["atexit-exit0-after-failure", "exit0-during-collection", "skip-from-imported-code"])
 def test_exit_zero_that_contradicts_the_summary_is_not_a_pass(tmp_path, calc):
-    """Imported agent code can still end pytest with 0; the summary then says so."""
+    """Subject code runs in another process, so it cannot turn pytest's own exit into 0.
+
+    A failing assertion stays FAIL (pytest's exit is 1). ``os._exit`` during
+    import is a collection error. A skip inside the subject is still not a pass.
+    """
     evidence = _run(tmp_path, {"calc.py": calc, "test_calc.py": PASSING_TEST}, ["pytest", "-q", "test_calc.py"])
     assert evidence.status == "FAIL", (evidence.exit_code, evidence.stdout[-300:], evidence.stderr[-300:])
-    assert evidence.exit_code == 0 and "[evaluator]" in evidence.stderr
+    assert "[evaluator]" in evidence.stderr
 
 
 def test_summary_parser():

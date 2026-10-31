@@ -27,6 +27,7 @@ from .oracle import (
     materialize,
     PYTEST_SEAL,
     load_result_frame,
+    subject_module_names,
     prepare_private_report,
     prepare_sealed_report,
     pytest_oracle_verdict,
@@ -262,9 +263,8 @@ class DeterministicEvaluator:
     the server process is made non-dumpable first (:func:`protect_server_process`).
 
     Pytest and any check with a server fixture run from a sealed oracle
-    (ADR 0034). The pass/fail signal is a result frame the plugin writes
-    through a pipe ordinary ``os.write`` cannot use. A subject that only
-    forges files from the environment and exits is not a pass (see ADR 0034).
+    (ADR 0034). Subject modules run in a worker process. Assertions and the
+    result frame stay in the pytest process, which the subject cannot see.
     Script checks still run agent code in the process whose exit status is
     the verdict (ADR 0025).
     """
@@ -603,6 +603,8 @@ class DeterministicEvaluator:
                 # the pytest child is forked, so the subject never sees them.
                 child_env["SDF_ORACLE_SEAL"] = PYTEST_SEAL
                 child_env["SDF_ORACLE_REPORT"] = str(report.result_path)
+                oracle_paths = set(sealed.oracle_paths) if sealed is not None else set()
+                child_env["SDF_ORACLE_SUBJECTS"] = subject_module_names(run_root, oracle_paths)
             elif report is not None:
                 return stop(
                     "oracle result channel is not sealed for a bare pytest executable",

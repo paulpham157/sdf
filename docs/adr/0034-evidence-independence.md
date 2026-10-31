@@ -115,18 +115,29 @@ Attempt's agent, or that it is still current.
    A `PASS` that fails the gate is stored as `INCONCLUSIVE`. The evaluator
    sets `expires_at` to 24 hours after `collected_at`.
 
-6. **What a subject module can still do.** The tests import the code under
-   test in the pytest child, so that child is not a trusted process.
-   - It cannot mint a pass by reading `SDF_ORACLE_TOKEN` / `SDF_ORACLE_MARKER`
-     (those are not set), by writing `junit.xml` or `marker.json`, or by
-     `os.write` on the result pipe. `os._exit(0)` before `pytest_sessionfinish`
-     leaves an empty frame and is `FAIL`.
-   - It can still mint a pass if it calls the plugin's report stub (or
-     `pytest_sessionfinish`) with a forged but well-formed frame. The stub
-     address lives in that process because seccomp has to know it before
-     collection. Finding it means walking `sys.modules` or the process image,
-     not the environment. A `python -c` check that imports the subject and
-     hits `sys.exit(0)` is the same residual ADR 0025 already recorded.
+6. **The pytest verdict process does not execute subject code.** Before
+   collection, the pytest process installs an import hook for every
+   top-level module in the sealed tree that is not an oracle file and not
+   the stdlib or pytest. Those modules load in a fresh interpreter (the
+   subject worker) started with `close_fds` so it does not inherit the
+   result pipe. The test's assertions run in the pytest process on the
+   values the worker returns. `os._exit`, a closure walk, `gc.get_objects`,
+   and `pluginmanager.register` in the subject therefore run where
+   `sdf_oracle_plugin` and the report stub do not exist. Seccomp is still
+   installed in the pytest process and still fails closed when it cannot be
+   installed.
+
+   **What remains.**
+   - Oracle code (the fixture's tests, `conftest.py`, and hashed helpers)
+     shares the pytest process with the reporter. It is byte-checked
+     against the server fixture before the run. Subject code does not.
+   - A subject call returns a value. If that value satisfies the oracle's
+     assertion, the test passes. That is the code under test, not a forged
+     runner.
+   - `python -c` and script checks still run the subject in the process
+     whose exit code is the verdict. `sys.exit(0)` from an imported module
+     can still force that exit to 0. That is the ADR 0025 residual; it is
+     not a pytest verification frame.
 
 ## Consequences
 
@@ -138,7 +149,10 @@ Attempt's agent, or that it is still current.
   missing, reported failures, or reported no passes. A summary that parser
   accepts as N passed was still a pass on main, and so was a helper the
   named test imports, because helpers were not hashed. The token-and-marker
-  forge was a pass only on the first cut of this change.
+  forge was a pass only on the first cut of this change. Calling the report
+  stub from the subject's closure, from `gc`, or from a
+  `pluginmanager.register` hook was a pass at d216e1f; those calls now run
+  in the subject worker, where the stub is not present.
 - Checks that import a project helper must ship that helper in the server
   fixture. A helper that exists only in the workspace is treated as planted.
 - Verification Evidence expires after 24 hours. Accepting it again means

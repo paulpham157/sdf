@@ -93,6 +93,77 @@ def test_helper_that_exists_only_in_the_workspace_is_not_a_pass(tmp_path):
     assert evidence.status == "INCONCLUSIVE"
 
 
+_PASSING_FRAME = (
+    '{"collected":1,"testscollected":1,"passed":1,"failed":0,"skipped":0,"errors":0,"exitstatus":0}'
+)
+_WOULD_FAIL = "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 999\n"
+
+
+def test_subject_closure_cannot_call_the_report_stub(tmp_path):
+    """The closure walk that minted a PASS at d216e1f must not be a pass."""
+
+    forge = (
+        "import json, os, sys, ctypes\n"
+        f"frame = {_PASSING_FRAME!r}.encode()\n"
+        "fn = sys.modules['sdf_oracle_plugin'].pytest_sessionfinish\n"
+        "m = dict(zip(fn.__code__.co_freevars, (c.cell_contents for c in fn.__closure__)))\n"
+        "m['write'](m['fd'], ctypes.create_string_buffer(frame), len(frame))\n"
+        "os._exit(0)\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status == "FAIL", (evidence.status, evidence.stderr[-400:])
+    assert evidence.verifier_identity == EVALUATOR_IDENTITY
+
+
+def test_subject_gc_walk_cannot_call_the_report_stub(tmp_path):
+    forge = (
+        "import gc, json, os, ctypes\n"
+        f"frame = {_PASSING_FRAME!r}.encode()\n"
+        "for obj in gc.get_objects():\n"
+        "    code, closure = getattr(obj, '__code__', None), getattr(obj, '__closure__', None)\n"
+        "    free = getattr(code, 'co_freevars', ())\n"
+        "    if closure and 'write' in free and 'fd' in free:\n"
+        "        cells = dict(zip(free, (c.cell_contents for c in closure)))\n"
+        "        cells['write'](cells['fd'], ctypes.create_string_buffer(frame), len(frame))\n"
+        "        os._exit(0)\n"
+        "os._exit(0)\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status == "FAIL", (evidence.status, evidence.stderr[-400:])
+
+
+def test_subject_pluginmanager_hook_cannot_call_the_report_stub(tmp_path):
+    forge = (
+        "import json, os, sys, ctypes\n"
+        f"frame = {_PASSING_FRAME!r}.encode()\n"
+        "def _emit():\n"
+        "    fn = sys.modules['sdf_oracle_plugin'].pytest_sessionfinish\n"
+        "    m = dict(zip(fn.__code__.co_freevars, (c.cell_contents for c in fn.__closure__)))\n"
+        "    m['write'](m['fd'], ctypes.create_string_buffer(frame), len(frame))\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    _emit()\n"
+        "    os._exit(0)\n"
+        "registered = False\n"
+        "for mod in list(sys.modules.values()):\n"
+        "    pm = getattr(mod, 'pluginmanager', None)\n"
+        "    if pm is not None and hasattr(pm, 'register'):\n"
+        "        try:\n"
+        "            pm.register(sys.modules[__name__], name='sdf-subject-forge')\n"
+        "        except Exception:\n"
+        "            continue\n"
+        "        registered = True\n"
+        "        break\n"
+        "if not registered:\n"
+        "    try:\n"
+        "        _emit()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    os._exit(0)\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status == "FAIL", (evidence.status, evidence.stderr[-400:])
+
+
 def test_subject_cannot_forge_the_evaluator_signal(tmp_path):
     """Import-time forge of the old marker and JUnit files must not be a PASS.
 
@@ -145,11 +216,8 @@ def test_subject_os_write_to_open_fds_cannot_forge_a_pass(tmp_path):
         "        pass\n"
         "os._exit(0)\n"
     )
-    failing = "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 999\n"
-    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": failing}, ["pytest", "-q", "test_calc.py"])
-    assert evidence.status != "PASS"
-    assert evidence.exit_code == 0
-    assert "unexpected early exit" in evidence.stderr
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status == "FAIL", (evidence.status, evidence.exit_code, evidence.stderr[-400:])
 
 
 def test_early_exit_with_a_forged_summary_is_not_a_pass(tmp_path):
@@ -160,9 +228,8 @@ def test_early_exit_with_a_forged_summary_is_not_a_pass(tmp_path):
         {"calc.py": FORGE, "test_calc.py": PASSING_TEST},
         ["pytest", "-q", "test_calc.py"],
     )
-    _not_pass(evidence, "unexpected early exit")
-    assert evidence.status == "FAIL"
-    assert evidence.exit_code == 0
+    assert evidence.status == "FAIL", (evidence.status, evidence.exit_code, evidence.stderr[-400:])
+    assert evidence.verifier_identity == EVALUATOR_IDENTITY
 
 
 def test_modified_test_file_is_not_a_pass(tmp_path):
