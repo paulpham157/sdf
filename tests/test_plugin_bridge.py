@@ -189,8 +189,8 @@ def test_plugin_bridge_with_resolve_credential_plan(plugins_root: Path):
 
 
 def test_missing_plugin_names_searched_path(tmp_path: Path):
-    """When plugin dir doesn't exist, error names the searched path."""
-    from sdf_core.plugin_bridge import find_plugin
+    """When plugin dir doesn't exist, error names every searched path."""
+    from sdf_core.plugin_bridge import PLUGIN_GLOBS, find_plugin
 
     plugins_root = tmp_path / "nonexistent" / "plugins"
     with pytest.raises(CredentialConfigError) as error:
@@ -198,12 +198,14 @@ def test_missing_plugin_names_searched_path(tmp_path: Path):
 
     message = str(error.value)
     assert str(plugins_root) in message
+    for pattern in PLUGIN_GLOBS:
+        assert str(plugins_root / pattern) in message
     _assert_no_secret(message)
 
 
 def test_empty_plugins_root_names_searched_path(tmp_path: Path):
-    """When plugin root exists but is empty, error names the searched path."""
-    from sdf_core.plugin_bridge import find_plugin
+    """When plugin root exists but is empty, error names every searched path."""
+    from sdf_core.plugin_bridge import PLUGIN_GLOBS, find_plugin
 
     plugins_root = tmp_path / "plugins"
     plugins_root.mkdir(parents=True)
@@ -213,6 +215,8 @@ def test_empty_plugins_root_names_searched_path(tmp_path: Path):
 
     message = str(error.value)
     assert str(plugins_root) in message
+    for pattern in PLUGIN_GLOBS:
+        assert str(plugins_root / pattern) in message
     _assert_no_secret(message)
 
 
@@ -379,6 +383,16 @@ def test_stdin_is_devnull(plugins_root: Path, monkeypatch: pytest.MonkeyPatch):
 # --- find_plugin behavior -----------------------------------------------
 
 
+def _checkout(plugin_dir: Path, *, mtime: int | None = None) -> Path:
+    """A plugin directory containing ``src/connections.js``, optionally with a fixed mtime."""
+    src = plugin_dir / "src"
+    src.mkdir(parents=True)
+    (src / "connections.js").write_text("export function readConnections() { return []; }\n")
+    if mtime is not None:
+        os.utime(plugin_dir, (mtime, mtime))
+    return plugin_dir
+
+
 def test_find_plugin_picks_newest_mtime(tmp_path: Path):
     """find_plugin returns the plugin dir with the newest mtime."""
     from sdf_core.plugin_bridge import find_plugin
@@ -425,6 +439,88 @@ def test_find_plugin_ignores_dir_without_connections_js(tmp_path: Path):
 
     result = find_plugin(plugins.parent)
     assert result.name == "e2b-dev.herdr-e2b-002"
+
+
+def test_find_plugin_old_layout_equal_mtime_breaks_ties_by_path(tmp_path: Path):
+    """Equal mtimes on old-layout candidates pick the greater path, not glob order."""
+    from sdf_core.plugin_bridge import find_plugin
+
+    plugins = tmp_path / "plugins" / "github"
+    earlier = _checkout(plugins / "e2b-dev.herdr-e2b-aaa", mtime=1_500_000)
+    later = _checkout(plugins / "e2b-dev.herdr-e2b-zzz", mtime=1_500_000)
+
+    assert find_plugin(plugins.parent) == later
+    assert earlier.name < later.name
+
+
+def test_find_plugin_new_layout_checkout(tmp_path: Path):
+    """herdr >= 0.9.5 installs under github-installations/<id>/<pid>-<gen>/checkout."""
+    from sdf_core.plugin_bridge import find_plugin
+
+    checkout = (
+        tmp_path
+        / "plugins"
+        / "github-installations"
+        / "e2b-dev.herdr-e2b-d2bf3bfd054c"
+        / "910645-0"
+        / "checkout"
+    )
+    _checkout(checkout)
+
+    assert find_plugin(tmp_path / "plugins") == checkout
+
+
+def test_find_plugin_picks_newest_generation_by_mtime(tmp_path: Path):
+    """A later update can be ``<other-pid>-0`` beside an older ``<pid>-9``.
+
+    Generation numbers are not install order, so the newer directory mtime wins
+    even when its generation counter is lower.
+    """
+    from sdf_core.plugin_bridge import find_plugin
+
+    base = tmp_path / "plugins" / "github-installations" / "e2b-dev.herdr-e2b-d2bf3bfd054c"
+    _checkout(base / "100-9" / "checkout", mtime=1_000_000)
+    current = _checkout(base / "200-0" / "checkout", mtime=2_000_000)
+
+    assert find_plugin(tmp_path / "plugins") == current
+
+
+def test_find_plugin_generation_equal_mtime_breaks_ties_by_path(tmp_path: Path):
+    """Equal generation mtimes pick the lexicographically greater checkout path."""
+    from sdf_core.plugin_bridge import find_plugin
+
+    base = tmp_path / "plugins" / "github-installations" / "e2b-dev.herdr-e2b-d2bf3bfd054c"
+    _checkout(base / "100-0" / "checkout", mtime=1_500_000)
+    later = _checkout(base / "100-1" / "checkout", mtime=1_500_000)
+
+    assert find_plugin(tmp_path / "plugins") == later
+
+
+def test_find_plugin_ignores_generation_without_connections_js(tmp_path: Path):
+    """A generation checkout counts only when it contains src/connections.js."""
+    from sdf_core.plugin_bridge import find_plugin
+
+    base = tmp_path / "plugins" / "github-installations" / "e2b-dev.herdr-e2b-d2bf3bfd054c"
+    (base / "100-0" / "checkout").mkdir(parents=True)
+    current = _checkout(base / "200-0" / "checkout")
+
+    assert find_plugin(tmp_path / "plugins") == current
+
+
+def test_find_plugin_pools_old_and_new_layouts_by_mtime(tmp_path: Path):
+    """Old and new layouts are one candidate set; newest mtime wins."""
+    from sdf_core.plugin_bridge import find_plugin
+
+    plugins = tmp_path / "plugins"
+    old = _checkout(plugins / "github" / "e2b-dev.herdr-e2b-legacy", mtime=1_000_000)
+    new = _checkout(
+        plugins / "github-installations" / "e2b-dev.herdr-e2b-d2bf3bfd054c" / "910645-0" / "checkout",
+        mtime=2_000_000,
+    )
+    assert find_plugin(plugins) == new
+
+    os.utime(old, (3_000_000, 3_000_000))
+    assert find_plugin(plugins) == old
 
 
 # --- default_plugins_root -----------------------------------------------
@@ -502,14 +598,17 @@ def test_no_secret_written_to_disk(plugins_root: Path, tmp_path: Path):
         os.chdir(original_cwd)
 
 
-# --- PLUGIN_GLOB and HELPER_PATH -----------------------------------------------
+# --- PLUGIN_GLOBS and HELPER_PATH ----------------------------------------------
 
 
 def test_plugin_glob_constant_exists():
-    """PLUGIN_GLOB constant is defined."""
-    from sdf_core.plugin_bridge import PLUGIN_GLOB
+    """PLUGIN_GLOBS names the herdr >= 0.9.5 layout and the 0.9.1 layout."""
+    from sdf_core.plugin_bridge import PLUGIN_GLOBS
 
-    assert PLUGIN_GLOB == "github/e2b-dev.herdr-e2b-*"
+    assert PLUGIN_GLOBS == (
+        "github-installations/e2b-dev.herdr-e2b-*/*/checkout",
+        "github/e2b-dev.herdr-e2b-*",
+    )
 
 
 def test_helper_path_exists():
