@@ -17,6 +17,7 @@ from .db import (
     ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow, PlanGateError, PlanRow, PlanTaskRow, TaskRow,
     UsageLedgerRow,
 )
+from .decision_gate import check_decision_gate
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
@@ -189,6 +190,8 @@ class ExecutionService:
         if evidence_mode not in EVIDENCE_MODE_VALUES:
             raise ValueError(f"evidence_mode must be one of {list(EVIDENCE_MODE_VALUES)}")
         check_plan_gate(self.db, task_id, require_plan=require_plan_approval)
+        # ADR 0033 (#60): no dispatch while a material decision blocks the Task.
+        check_decision_gate(self.db, task_id)
         existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
         if existing:
             if existing.task_id != task_id:
@@ -289,6 +292,9 @@ class ExecutionService:
             raise ValueError(f"attempt not found: {attempt_id}")
         if attempt.status != AttemptState.RUNNING.value:
             raise ValueError(f"attempt {attempt_id} is not running")
+        # ADR 0033 (#60): no Evidence while a material decision blocks the
+        # Task.  The Attempt stays running and can be finished once resolved.
+        check_decision_gate(self.db, attempt.task_id)
         task = self.db.get(TaskRow, attempt.task_id)
         workspace = self.workspaces.root / attempt_id
         before = fixture

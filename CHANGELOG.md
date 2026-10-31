@@ -148,3 +148,19 @@
     `sandbox_usd_per_s` and `evidence_mode` in `config` with `422`. Set prices
     with `SDF_RUN_PRICE_IN_PER_M`, `SDF_RUN_PRICE_OUT_PER_M` and
     `SDF_RUN_SANDBOX_USD_PER_S`; an invalid value returns `503`.
+
+### Added
+
+- **Material decision gate (#60, narrow scope, ADR 0033).** An agent can mark a decision request as material: `sdf-msg request --material --consequence TEXT` (and the `material`/`consequence` fields of the MCP `request` tool). A material request needs a non-empty consequence and at least two distinct options. While it is pending, it blocks its scope until a human resolves it: the worker's subtask, or the whole run when the lead asks. Blocked means no agent turns, no verification, no Attempt start or finish for the affected plan tasks (`DecisionGateError`), and no run success. Policies no longer resolve material requests, and `POST /decision-requests/{id}/resolve` with a policy outcome is refused for them. Any human outcome, including `rejected`, lifts the gate and the agent is told the result. Each hold is written to the run summary under `material_decisions`. Decision request API responses now include `material`, `consequence`, `authority` and `blocks`. Non-material requests behave exactly as before. There is no schema change: materiality is stored in the append-only agent message metadata (see the next entry for the PostgreSQL fence).
+- **Rule-based materiality and a paused wall clock while held (#60, ADR 0033 amendment).**
+  - A decision request is now also material when a deterministic rule in `sdf_core/materiality.py` matches its question, an option, its consequence, or the new optional `action` field (`sdf-msg request-decision --action TEXT`).
+  - The rule categories cover deleting data, external sends and publishing, spending money or paid resources, credentials and secrets, destructive git (force-push, pushing to main, history rewrites), schema migrations and shared databases, network egress, and merging.
+  - Rules only upgrade a request, never downgrade an agent's declaration.
+  - The message metadata, the API (`materiality_source`: `agent`/`rule`/`null`, `matched_rules`) and the run summary record which rules matched. Non-material API responses now also carry these two fields.
+  - The host tells an agent when its request became material by rule.
+  - While a run only waits on a pending material request (no turn in flight, no host verification), that time no longer counts toward `max_wall_s`. A new run config field, `max_material_hold_s` (default 3600, at most 86400), caps it instead.
+  - Run summary `timings` gains `material_hold_s` and `counted_wall_s`, and each `material_decisions` entry gains `pending_s`.
+- **Material decision requests cannot be downgraded, and sandboxes survive a hold (#60, ADR 0033 §1c/§3c).**
+  - Migration `0024_decision_material_fence` (PostgreSQL trigger `trg_decision_requests_material_fence`; no schema change) and the ORM session guard: a decision request's subject, run, requester, message, question, options and creation time are immutable after insert, and a request whose agent message is material is resolved only by a human, even by a writer that bypasses `PlanService`. Agent messages were already append-only (migration 0014). Downgrade drops the trigger.
+  - Behaviour change: code that rewrites one of those decision request fields now gets an error.
+  - While a material request is pending, the coordinator extends E2B sandbox timeouts (`Sandbox.set_timeout`) so a sandbox lives for the rest of the run's counted wall time plus a margin. If it cannot extend one, it retries; with 60 s or less left, the run fails with "sandbox of … would expire during a material decision hold …" instead of losing the sandbox. The run summary gains `sandbox_keepalive`. Daytona sandboxes (auto-stop off) and local sandboxes have no provider timeout and are left alone.

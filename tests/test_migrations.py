@@ -22,6 +22,15 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
     assert "measured_at" in {column["name"] for column in inspector.get_columns("evidence")}
 
 
+def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert script.get_heads() == ["0024_decision_material_fence"]
+    # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
+    assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
+
+
 def test_evidence_rows_are_append_only_at_session_boundary():
     from sdf_core.db import Base, EvidenceRow, make_engine
     from sdf_core.model import utcnow

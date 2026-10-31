@@ -55,6 +55,7 @@ from .fixtures import resolve_fixture, server_write_roots
 from .observability import classify_error, redact
 from . import tracing
 from .model import AttemptState, TaskState, utcnow
+from .decision_gate import RUN_SCOPE, is_material, pending_material
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
 from .state import transition_attempt, transition_task
 
@@ -88,6 +89,10 @@ class RunConfig:
     price_out_per_m: float = 3.0
     sandbox_usd_per_s: float = 0.000056
     evidence_mode: str = "live"
+    # ADR 0033: time held by a pending material decision does not count toward
+    # max_wall_s; this caps that held time instead (sandboxes stay alive and
+    # still count toward max_cost_usd).
+    max_material_hold_s: float = 3600.0
 
     def as_dict(self) -> dict[str, Any]:
         out = dict(self.__dict__)
@@ -133,6 +138,9 @@ class RunConfig:
             raise ValueError("max_cost_usd must be in (0, 5]")
         if not 0 < config.max_wall_s <= 7200:
             raise ValueError("max_wall_s must be in (0, 7200]")
+        if isinstance(config.max_material_hold_s, bool) or not isinstance(config.max_material_hold_s, (int, float)) \
+                or not 0 < config.max_material_hold_s <= 86400:
+            raise ValueError("max_material_hold_s must be in (0, 86400]")
         if not 1 <= config.max_turns_per_agent <= 30 or not 1 <= config.max_verify_rounds <= 5:
             raise ValueError("turn / verify caps out of range")
         if config.evidence_mode not in EVIDENCE_MODES:
@@ -142,6 +150,14 @@ class RunConfig:
         return config
 
 
+# ADR 0033: while a material decision is pending, a sandbox with a provider
+# timeout (E2B) is kept alive for the rest of the counted wall time plus this
+# margin, extended by STEP beyond that, retried at most every RETRY seconds;
+# the run fails cleanly when one has FAIL_MARGIN seconds left unextended.
+KEEPALIVE_MARGIN_S = 120.0
+KEEPALIVE_STEP_S = 600.0
+KEEPALIVE_RETRY_S = 30.0
+LIFETIME_FAIL_MARGIN_S = 60.0
 SERVER_FIELDS = ("price_in_per_m", "price_out_per_m", "sandbox_usd_per_s", "evidence_mode")
 EVIDENCE_MODES = EVIDENCE_MODE_VALUES  # single definition: sdf_core.impact.EvidenceMode
 # Upper bounds only catch typos; the lower bound (>= 0) keeps the cost cap meaningful.
@@ -189,6 +205,7 @@ Messaging (the sdf MCP tools, or the `sdf-msg` CLI in the shell):
 - send_message / `sdf-msg send <to> <body>`: to a worker id (e.g. worker-1) or "workers".
 - report / `sdf-msg report --status done <summary>`: your final summary to the SDF host.
 - request_decision / `sdf-msg request-decision <question> --option A --option B`: ask the human manager; never assume approval.
+  If the choice is material (materially different outcomes for product, safety or authorization) add `--material --consequence "<what differs>"`: the whole run then waits until a human decides. Requests about deleting data, external sends, spending money, credentials, force-push or pushing to main, schema migrations, network egress or merging are treated as material automatically.
 The SDF host verifies every subtask itself by running its own tests; a worker's report is only a claim.
 """
 LEAD_WAKE = "You have new messages in your SDF inbox. Read them (read_messages) and act on them as the lead, then end your turn."
@@ -200,6 +217,7 @@ Use the `sdf-msg` CLI in your shell for all coordination:
 - `sdf-msg send lead "<text>"` messages the lead; `sdf-msg ask lead "<question>"` asks it something.
 - `sdf-msg report --status done "<what you changed>"` tells the SDF host your subtask is ready; the host then runs its own tests.
 - `sdf-msg request-decision "<question>" --option A --option B` asks the human manager when you need a decision.
+  If the options lead to materially different outcomes (product, safety, authorization), add `--material --consequence "<what differs>"`; your subtask then waits for the human, so do not pick a default yourself. Requests about deleting data, external sends, spending money, credentials, force-push or pushing to main, schema migrations, network egress or merging are treated as material automatically.
 Only edit files your assignment names. Do not edit tests. Keep it minimal.
 """
 WORKER_WAKE = "You have new messages: run `sdf-msg read` now and do what they ask. When your subtask is finished, run `sdf-msg report --status done \"<summary>\"` and stop."
@@ -350,12 +368,22 @@ class Coordinator:
         lead_reported = False
         all_pass_notified = False
         delivered_decisions: set[str] = set()
+        # ADR 0033: what each pending material decision held back (audit, in the run summary).
+        gate_log: dict[str, dict[str, Any]] = {}
         idle_since: float | None = None
         stall_verified: set[str] = set()  # attempts the host verified because agents went quiet
         pool = ThreadPoolExecutor(max_workers=config.max_concurrent_turns, thread_name_prefix=f"{run_id}-turn")
         hub: MessageHub | None = None
         core_log: list[dict[str, Any]] = []
         timings: dict[str, float] = {}
+        # ADR 0033: wall time while the run only waits on a pending material
+        # decision (no turn in flight, no host verification) is not counted.
+        held_s = 0.0
+        held_prev = False
+        keepalive_log: list[dict[str, Any]] = []  # ADR 0033: sandbox lifetime extensions while held
+        keepalive_tried: dict[str, float] = {}
+        prev_gate: list[str] = []
+        last_tick = time.monotonic()
         try:
             # Re-checked at run time (the tree may have changed since approval);
             # a refusal fails the run before any sandbox exists.
@@ -419,7 +447,14 @@ class Coordinator:
             self.db.commit()
 
             while True:
-                elapsed = time.monotonic() - started
+                now = time.monotonic()
+                dt, last_tick = now - last_tick, now
+                if held_prev:
+                    held_s += dt
+                for rid in prev_gate:
+                    if rid in gate_log:
+                        gate_log[rid]["pending_s"] = round(gate_log[rid]["pending_s"] + dt, 3)
+                elapsed = now - started - held_s
                 cost = self._cost(agents, config)
                 self.db.refresh(run)
                 if cancel.is_set() or run.cancel_requested_at is not None:
@@ -428,6 +463,10 @@ class Coordinator:
                 if elapsed > config.max_wall_s:
                     error = f"wall-time cap {config.max_wall_s}s reached"
                     break
+                if held_s > config.max_material_hold_s:
+                    error = f"material decision hold cap {config.max_material_hold_s}s reached"
+                    break
+                host_worked = False  # host verification ran this poll (counts as run time)
                 if cost > config.max_cost_usd:
                     error = f"cost cap ${config.max_cost_usd} reached (${cost:.4f})"
                     break
@@ -467,6 +506,15 @@ class Coordinator:
                                 lead_reported = True
                         if res.decision_request_id:
                             self._apply_policy(res.decision_request_id)
+                            meta = res.message.meta or {}
+                            if meta.get("materiality_source") == "rule":
+                                # The agent did not declare it: say why its work now waits.
+                                note = hub.post_from_host(aid, (
+                                    f"Your decision request {res.decision_request_id} is material by rule "
+                                    f"({', '.join(meta.get('matched_rules') or [])}): your "
+                                    + ("subtask" if ag.spec.role == "worker" else "run")
+                                    + " waits until a human resolves it."))
+                                pending.append((aid, note))
                         self.db.commit()
 
                 # 2b. read-only SDF Core queries (ADR 0022), answered between polls even mid-turn
@@ -488,11 +536,49 @@ class Coordinator:
                     pending.append((req.requested_by, note))
                     self.db.commit()
 
+                # 3b. material decision gate (ADR 0033): recomputed every poll, after
+                # resolutions were delivered, so a resolved request lifts at once.
+                gate = pending_material(self.db, run_id=run_id)
+                blocked_scopes = {g.scope for g in gate}
+                run_blocked = RUN_SCOPE in blocked_scopes
+                blocked_agents = {g.requested_by for g in gate} | {
+                    s.worker for s in subtasks.values() if run_blocked or s.key in blocked_scopes}
+                if run_blocked:
+                    blocked_agents |= set(agents)
+                if gate:
+                    # ADR 0033: the wall clock may pause, the provider's sandbox
+                    # timeout does not.  Keep every sandbox alive for the rest of
+                    # the run's counted wall time, or fail cleanly before it expires.
+                    expiry = self._keep_alive(agents, max(0.0, config.max_wall_s - elapsed) + KEEPALIVE_MARGIN_S,
+                                              keepalive_log, keepalive_tried, round(now - started, 1))
+                    if expiry is not None:
+                        error = expiry
+                        break
+
+                def hold(kind: str, scope: str | None = None) -> None:
+                    for g in gate:
+                        if scope is None or g.scope in (RUN_SCOPE, scope):
+                            entry = gate_log.setdefault(g.request_id, {
+                                "request_id": g.request_id, "requested_by": g.requested_by, "scope": g.scope,
+                                "consequence": g.consequence, "options": list(g.options),
+                                "materiality_source": g.source, "matched_rules": list(g.matched_rules),
+                                "held": [], "pending_s": 0.0})
+                            if kind not in entry["held"]:
+                                entry["held"].append(kind)
+                                self.log(f"material decision {g.request_id} holds {kind}")
+
+                for g in gate:
+                    hold("pending", g.scope)
+
                 # 4. host verification (workers idle only)
                 for sub in subtasks.values():
                     worker = agents[sub.worker]
+                    if sub.verify_requested and (run_blocked or sub.key in blocked_scopes):
+                        hold(f"verification:{sub.key}", sub.key)
+                        continue  # stays requested; runs once a human resolves the decision
                     if sub.verify_requested and worker.future is None and sub.verdict != "PASS":
                         sub.verify_requested = False
+                        host_worked = True
                         with tracing.span("sdf.verify", attempt_id=sub.attempt_id, agent__id=sub.worker) as vspan:
                             pending.extend(self._verify(run_id, hub, sub, worker, lead_id, fixture, config))
                             tracing.set_attributes(vspan, verdict=sub.verdict)
@@ -520,6 +606,9 @@ class Coordinator:
                         break
                     if not ag.wake or ag.future is not None:
                         continue
+                    if aid in blocked_agents:
+                        hold(f"turn:{aid}", ag.subtask_key or RUN_SCOPE)
+                        continue  # keeps its wake flag; no new turn until the decision is resolved
                     ag.wake = False
                     try:
                         has_mail = ag.sandbox.inbox_count() > 0
@@ -543,9 +632,17 @@ class Coordinator:
                 active = any(ag.future is not None for ag in agents.values()) or pending or any(
                     ag.wake for ag in agents.values()) or any(s.verify_requested for s in subtasks.values())
                 verdicts_done = all(s.verdict == "PASS" for s in subtasks.values())
+                # The next interval is "held" only if a material decision is pending
+                # and nothing else is happening: no turn in flight, no verification.
+                held_prev = bool(gate) and not host_worked and not any(
+                    ag.future is not None for ag in agents.values())
+                prev_gate = [g.request_id for g in gate]
                 if verdicts_done and (lead_reported or not active):
-                    outcome = "succeeded"
-                    break
+                    if gate:
+                        hold("completion")  # never succeed past a pending material decision
+                    else:
+                        outcome = "succeeded"
+                        break
                 exhausted = [s for s in subtasks.values() if s.verdict in ("FAIL", "INCONCLUSIVE")
                              and s.rounds >= config.max_verify_rounds]
                 if exhausted and not active and all(
@@ -589,10 +686,55 @@ class Coordinator:
                     tracing.set_attributes(cspan, cleanup_error=f"{len(still_running)} sandbox(es) still running")
                     tracing.mark_error("cleanup_failed", cspan)
             _CANCEL_EVENTS.pop(run_id, None)
+        timings["material_hold_s"] = round(held_s, 1)
+        timings["counted_wall_s"] = round(time.monotonic() - started - held_s, 1)
         return self._finalize(run_id, agents, subtasks, config, outcome, error, violations, timings,
-                              time.monotonic() - started, closed, still_running, core_log)
+                              time.monotonic() - started, closed, still_running, core_log, gate_log,
+                              keepalive_log)
 
     # -- helpers --------------------------------------------------------------
+    def _keep_alive(self, agents: dict[str, "_Agent"], needed_s: float, log: list[dict[str, Any]],
+                    tried: dict[str, float], at_s: float) -> str | None:
+        """Extend provider sandbox timeouts during a material hold (ADR 0033).
+
+        A sandbox that reports a provider lifetime (``lifetime_left_s``, E2B)
+        shorter than ``needed_s`` is extended to ``needed_s`` plus a step.  A
+        sandbox without one (local fakes; Daytona, created with auto-stop
+        off) needs nothing.  When an extension is unsupported or fails, it is
+        retried; once the sandbox has at most ``LIFETIME_FAIL_MARGIN_S`` left,
+        the run fails with a clear reason instead of losing the sandbox
+        mid-hold.
+        """
+
+        now = time.monotonic()
+        for aid, ag in agents.items():
+            left_fn = getattr(ag.sandbox, "lifetime_left_s", None)
+            left = left_fn() if callable(left_fn) else None
+            if left is None or left >= needed_s:
+                continue
+            extend = getattr(ag.sandbox, "extend_lifetime", None)
+            problem = "the sandbox does not support it"
+            if callable(extend):
+                if now - tried.get(aid, float("-inf")) < KEEPALIVE_RETRY_S:
+                    problem = "the last extension failed"
+                else:
+                    tried[aid] = now
+                    target = int(math.ceil(needed_s + KEEPALIVE_STEP_S))
+                    try:
+                        extend(target)
+                    except Exception as exc:  # noqa: BLE001 - recorded, retried, then a clean failure
+                        problem = _safe(f"{type(exc).__name__}: {redact(str(exc))}", 300)
+                        log.append({"agent": aid, "at_s": at_s, "left_s": round(left, 1), "error": problem})
+                    else:
+                        log.append({"agent": aid, "at_s": at_s, "left_s": round(left, 1),
+                                    "extended_to_s": target})
+                        self.log(f"{aid} sandbox lifetime extended to {target}s during a material hold")
+                        continue
+            if left <= LIFETIME_FAIL_MARGIN_S:
+                return (f"sandbox of {aid} would expire during a material decision hold ({left:.0f}s left) "
+                        f"and its lifetime could not be extended: {problem}")
+        return None
+
     def _plan_fixture(self, plan: PlanRow) -> Path:
         """The Plan's fixture, confined to ``SDF_FIXTURES_ROOT`` like ``POST /plans``.
 
@@ -708,6 +850,8 @@ class Coordinator:
 
     def _apply_policy(self, request_id: str) -> None:
         request = self.db.get(DecisionRequestRow, request_id)
+        if is_material(self.db, request):
+            return  # ADR 0033: only a human resolves a material decision
         decision = self.policy.decide(request)
         if decision is not None:
             resolve_request(self.db, request_id, outcome=decision.outcome, resolved_by=decision.policy_name,
@@ -793,7 +937,9 @@ class Coordinator:
     def _finalize(self, run_id: str, agents: dict[str, _Agent], subtasks: dict[str, _Subtask], config: RunConfig,
                   outcome: str, error: str | None, violations: list[dict[str, Any]], timings: dict[str, float],
                   wall_s: float, closed: list[str], still_running: set[str],
-                  core_log: list[dict[str, Any]] | None = None) -> AgentRunRow:
+                  core_log: list[dict[str, Any]] | None = None,
+                  gate_log: dict[str, dict[str, Any]] | None = None,
+                  keepalive_log: list[dict[str, Any]] | None = None) -> AgentRunRow:
         run = self.db.get(AgentRunRow, run_id)
         # Evidence is the only success criterion.
         if outcome == "succeeded" and not all(s.verdict == "PASS" for s in subtasks.values()):
@@ -830,6 +976,13 @@ class Coordinator:
             # Left pending on purpose: only a human (or an explicit policy) resolves a request.
             "pending_decision_requests": list(self.db.scalars(select(DecisionRequestRow.id).where(
                 DecisionRequestRow.run_id == run_id, DecisionRequestRow.status == "pending"))),
+            # ADR 0033: each material decision, what it held back, and how it ended.
+            "material_decisions": [
+                {**entry, "status": getattr(self.db.get(DecisionRequestRow, rid), "status", None)}
+                for rid, entry in (gate_log or {}).items()
+            ],
+            # ADR 0033: provider sandbox timeouts extended (or not) during material holds.
+            "sandbox_keepalive": (keepalive_log or [])[:100],
         }
         self.db.commit()
         self.log(f"run {run_id} {outcome}" + (f": {error}" if error else ""))

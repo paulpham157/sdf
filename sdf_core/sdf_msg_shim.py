@@ -16,12 +16,18 @@ CLI::
     sdf-msg ask <to> <question|->        # a question to another agent
     sdf-msg read [--wait SECONDS]
     sdf-msg report [--status done|failed|progress] <body|->
-    sdf-msg request-decision [--option X ...] <question|->
+    sdf-msg request-decision [--option X ...] [--material --consequence TEXT] [--action TEXT] <question|->
     sdf-msg mcp                          # the same tools over stdio MCP
 
 A ``report`` is a *claim*; the SDF host verifies work itself with tests.
 A ``request-decision`` waits for a human (or a configured policy); the answer
 arrives in your inbox as a ``decision`` message.  Nothing is auto-approved.
+``--material`` (with ``--consequence`` and at least two options) marks a choice
+you must not make yourself: your work waits until a human resolves it.  The
+host also treats a request as material when deterministic rules match it
+(deleting data, external sends, spending, credentials, destructive git,
+schema migrations, network egress, merging); ``--action`` names the
+operation you are asking about.
 """
 from __future__ import annotations
 
@@ -115,7 +121,12 @@ TOOLS = [
      "description": "Ask a human for a decision. It stays pending until a human (or policy) resolves it; "
                     "the answer arrives later as a 'decision' message. Nothing is auto-approved.",
      "inputSchema": {"type": "object", "properties": {
-         "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}},
+         "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}},
+         "material": {"type": "boolean", "description": "true when the options have materially different "
+                      "product, safety or authorization outcomes; your work then waits for a human"},
+         "consequence": {"type": "string", "description": "required when material: what differs between the options"},
+         "action": {"type": "string", "description": "optional: the operation you are asking about, e.g. "
+                    "'git push --force origin main'; the host may classify the request as material from it"}},
          "required": ["question"]}},
 ]
 
@@ -135,7 +146,21 @@ def call(name: str, a: dict) -> str:
         return f"report queued {put('manager', 'report', a['body'], status=status)[:8]} (a claim; the host verifies)"
     if name == "request_decision":
         options = [str(o) for o in (a.get("options") or [])][:10]
-        rid = put("manager", "decision_request", a["question"], options=options)
+        extra = {}
+        if a.get("material"):
+            consequence = str(a.get("consequence") or "").strip()
+            if not consequence:
+                raise ValueError("a material decision needs --consequence")
+            if len(set(options)) < 2:
+                raise ValueError("a material decision needs at least two --option values")
+            extra = {"material": True, "consequence": consequence}
+        elif str(a.get("consequence") or "").strip():
+            extra = {"consequence": str(a["consequence"]).strip()}
+        if str(a.get("action") or "").strip():
+            extra["action"] = str(a["action"]).strip()[:200]
+        rid = put("manager", "decision_request", a["question"], options=options, **extra)
+        if extra.get("material"):
+            return f"material decision request queued {rid[:8]}; your work waits until a human resolves it"
         return f"decision request queued {rid[:8]}; it stays pending until a human resolves it"
     raise ValueError(f"unknown tool {name}")
 
@@ -214,7 +239,13 @@ def main(argv: list[str]) -> int:
             print(call("report", {"body": _body(rest), "status": statuses[0] if statuses else "done"}))
         elif cmd == "request-decision":
             options, rest = _opts(rest, "--option")
-            print(call("request_decision", {"question": _body(rest), "options": options}))
+            consequences, rest = _opts(rest, "--consequence")
+            actions, rest = _opts(rest, "--action")
+            material = "--material" in rest
+            rest = [part for part in rest if part != "--material"]
+            print(call("request_decision", {"question": _body(rest), "options": options, "material": material,
+                                            "consequence": consequences[0] if consequences else "",
+                                            "action": actions[0] if actions else ""}))
         else:
             print(f"unknown command {cmd}; run sdf-msg --help", file=sys.stderr)
             return 2

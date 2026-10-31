@@ -41,6 +41,7 @@ from .qualification import qualify_agents, routing_record, verified_loop_complet
 from .credentials import AGENT_KINDS
 from .events import events_for_attempts, kind_counts as event_kind_counts, normalized as normalized_event, summarize as summarize_events
 from .policy import ActionRequest, AllowlistPolicy, AuditEvent
+from .decision_gate import material_payload
 from .revisions import revision_for_attempt, revision_payload, verify_attempt_revision
 from .tools import AttemptBinding
 from .containment import MacOSSandboxBackend
@@ -1282,7 +1283,7 @@ def list_decision_requests(status_filter: str | None = None, run_id: str | None 
         query = query.where(DecisionRequestRow.status == status_filter)
     if run_id:
         query = query.where(DecisionRequestRow.run_id == run_id)
-    return [decision_request_payload(r) for r in db.scalars(query).all()]
+    return [{**decision_request_payload(r), **material_payload(db, r)} for r in db.scalars(query).all()]
 
 
 @app.post("/decision-requests/{request_id}/resolve")
@@ -1304,4 +1305,4 @@ def resolve_decision_request(request_id: str, payload: ResolveDecisionRequest, d
     except ValueError as exc:
         db.rollback()
         raise _gate(exc) from exc
-    return decision_request_payload(request)
+    return {**decision_request_payload(request), **material_payload(db, request)}
