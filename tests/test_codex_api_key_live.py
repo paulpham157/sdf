@@ -4,7 +4,7 @@ The wiring test is gated on SDF_LIVE_E2B=1 plus E2B_API_KEY and uses a DUMMY
 OpenAI key generated per run: auth.json must be in API-key auth mode, the base
 URL must land in config.toml, Codex must reach its prompt with no login
 screen, and the key must never appear in pane scrollback.  The live Attempt
-additionally needs SDF_OPENAI_API_KEY.  The repo-root .env (or the file named
+additionally needs OPENAI_API_KEY.  The repo-root .env (or the file named
 by SDF_DOTENV) is loaded for E2B_API_KEY; values are never printed, only
 names and SHA-256 digests.  Teardown always kills the sandbox.
 """
@@ -54,7 +54,7 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 def _environ(**credential: str) -> dict[str, str]:
-    # Only E2B and SDF_* names: the host shell's provider variables never pass.
+    # E2B, Credential Mode, and the allow-listed Codex key / base URL.
     return {
         "E2B_API_KEY": ENV["E2B_API_KEY"],
         **({"E2B_DOMAIN": ENV["E2B_DOMAIN"]} if ENV.get("E2B_DOMAIN") else {}),
@@ -108,7 +108,7 @@ _AUTH_SHAPE = (
 
 def test_dummy_key_seeds_api_key_auth_and_codex_starts_without_login(codex_box):
     dummy = "sk-dummy-" + secrets.token_hex(24)
-    runtime, transport, injection = codex_box(_environ(SDF_OPENAI_API_KEY=dummy, SDF_OPENAI_BASE_URL=BASE_URL))
+    runtime, transport, injection = codex_box(_environ(OPENAI_API_KEY=dummy, OPENAI_BASE_URL=BASE_URL))
     assert dummy not in repr(injection) and all(dummy not in c for c in injection.seed_commands)
 
     shape, mode = _box(runtime, transport, _AUTH_SHAPE).strip().splitlines()
@@ -130,14 +130,14 @@ def test_dummy_key_seeds_api_key_auth_and_codex_starts_without_login(codex_box):
         assert dummy not in text and dummy[-20:] not in text, "dummy key leaked into pane scrollback"
 
 @pytest.mark.skipif(
-    not ENV.get("SDF_OPENAI_API_KEY"),
-    reason="live Codex Attempt needs a real OpenAI key: set SDF_OPENAI_API_KEY to run",
+    not ENV.get("OPENAI_API_KEY"),
+    reason="live Codex Attempt needs a real OpenAI key: set OPENAI_API_KEY to run",
 )
 def test_live_attempt_with_a_real_openai_key(codex_box):
-    key = ENV["SDF_OPENAI_API_KEY"]
-    credential = {"SDF_OPENAI_API_KEY": key}
-    if ENV.get("SDF_OPENAI_BASE_URL"):
-        credential["SDF_OPENAI_BASE_URL"] = ENV["SDF_OPENAI_BASE_URL"]
+    key = ENV["OPENAI_API_KEY"]
+    credential = {"OPENAI_API_KEY": key}
+    if ENV.get("OPENAI_BASE_URL"):
+        credential["OPENAI_BASE_URL"] = ENV["OPENAI_BASE_URL"]
     runtime, _, _ = codex_box(_environ(**credential))
 
     session = runtime.start(attempt_id="ATTEMPT-LIVE-CODEX-REAL", agent="codex")

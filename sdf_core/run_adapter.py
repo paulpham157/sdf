@@ -8,19 +8,14 @@
 
   - agent ``SDF_RUN_AGENT`` (default ``codex``), any of
     :data:`~sdf_core.credentials.AGENT_KINDS`; credentials come from main's
-    per-agent configuration (``SDF_CREDENTIAL_MODE_<AGENT>``,
-    ``SDF_<AGENT>_API_KEY_ENV``, ``SDF_<AGENT>_BASE_URL`` / ``SDF_OPENAI_BASE_URL``
-    / ``SDF_ANTHROPIC_BASE_URL``, ``SDF_<AGENT>_MODEL``) via
+    per-agent configuration (``SDF_CREDENTIAL_MODE_<AGENT>`` plus that kind's
+    allow-listed ``*_API_KEY`` / ``*_BASE_URL`` / ``*_MODEL``) via
     :func:`~sdf_core.credential_injection.create_credentialed_transport`
-    (ADR-0007).  Headless OpenAI-family kinds keep their example base URL.
-    ``/run`` Codex gets that example URL only when the resolved key variable
-    is ``VULTR_INFERENCE_API_KEY``; any other key with no base URL stays on
-    the official OpenAI Responses API, so the key is not sent to a host the
-    operator did not name (ADR 0034).  Claude uses the official Anthropic
-    Messages API unless ``SDF_ANTHROPIC_BASE_URL`` is set, and the example
-    key is not attached unless that base URL is set.  The example key
-    *name* is used only when no ``SDF_*`` key is set; it does not select a
-    protocol;
+    (ADR-0007).  Claude with no ``ANTHROPIC_BASE_URL`` uses the official
+    Anthropic Messages API.  Codex with no ``OPENAI_BASE_URL`` uses the
+    official OpenAI Responses API.  Headless kinds (opencode, pi, qwen,
+    goose) require their base URL and key; there is no default host
+    (ADR 0034);
   - provider ``SDF_SANDBOX_PROVIDER`` = ``e2b`` (template
     ``SDF_E2B_AGENTS_TEMPLATE`` / :data:`~sdf_core.agent_sandbox.DEFAULT_TEMPLATE`)
     or ``daytona`` (``SDF_DAYTONA_SNAPSHOT``);
@@ -28,7 +23,7 @@
     for opencode/pi/qwen/goose, so the turn guard (ADR-0019), the sub-agent
     ban (ADR-0020) and project trust (ADR-0021) apply unchanged;
   - egress: E2B sandboxes allow the host of the kind's resolved base URL
-    (example OpenAI-compatible host when that is the default), everything
+    (official API when Claude or Codex leave it unset), everything
     else denied, no public inbound traffic, plus any extra hosts in
     ``SDF_RUN_EGRESS_ALLOW``.  Daytona cannot apply that lock at creation, so it
     is refused unless ``SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS=1``;
@@ -51,14 +46,11 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .adapter import AdapterResult, FakeNativeAdapter, NativeAdapter, RuntimeAgentAdapter
-from .agent_models import model_agent_args, resolve_agent_models
+from .agent_models import MODEL_VARIABLES, model_agent_args, resolve_agent_models
 from .agent_sandbox import DEFAULT_TEMPLATE
 from .credential_injection import create_credentialed_transport, resolve_sandbox_provider as _main_provider
 from .credentials import (
     AGENT_KINDS,
-    EXAMPLE_API_KEY_ENV,
-    EXAMPLE_OPENAI_BASE_URL,
-    EXAMPLE_OPENAI_MODEL,
     CredentialConfigError,
     _AGENTS,
     endpoint_host,
@@ -123,35 +115,14 @@ def _int(environ: Mapping[str, str], name: str, default: int) -> int:
     return value
 
 
-def _codex_model_alias(environ: Mapping[str, str]) -> dict[str, str]:
-    """``SDF_HERDR_CODEX_MODEL`` is a deprecated alias of ``SDF_CODEX_MODEL``."""
-
-    legacy = (environ.get("SDF_HERDR_CODEX_MODEL") or "").strip()
-    if not legacy:
-        return {}
-    log.warning("deprecated_setting", extra={"setting": "SDF_HERDR_CODEX_MODEL", "use": "SDF_CODEX_MODEL"})
-    if (environ.get("SDF_CODEX_MODEL") or "").strip():
-        return {}
-    return {"SDF_CODEX_MODEL": legacy}
-
-
 def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     """The host environment the run path hands main's credential resolution.
 
-    Only agent configuration (``SDF_*`` minus server settings), the key
-    variable the agent's ``SDF_<AGENT>_API_KEY_ENV`` names, and the sandbox
-    provider's own variables pass; ``SDF_DOTENV`` and server secrets never do.
-    Headless OpenAI-family kinds with an unset base URL get their example
-    default (the credential plan would apply it anyway).  Codex gets the
-    example URL and ``glm-5.3`` only when the resolved key variable is
-    :data:`~sdf_core.credentials.EXAMPLE_API_KEY_ENV`.  Any other Codex key
-    leaves ``SDF_OPENAI_BASE_URL`` unset, which resolves to the official
-    OpenAI API — the same host :func:`~sdf_core.credentials.resolved_llm_base_url`
-    reports — and is never pointed at the example host.  Claude is left unset
-    so the official Anthropic Messages API is used, and the example key name
-    is not selected for Claude unless ``SDF_ANTHROPIC_BASE_URL`` is set
-    (ADR 0034).  Otherwise Claude requires ``SDF_ANTHROPIC_API_KEY`` or
-    another configured Claude key.
+    Agent configuration (``SDF_*`` minus server settings), that kind's
+    allow-listed key / base URL / model, and the sandbox provider's own
+    variables pass. ``SDF_DOTENV`` and server secrets never do. Unset Claude
+    and Codex base URLs stay unset and resolve to the official APIs. Headless
+    kinds are not given a default host (ADR 0034).
     """
 
     spec = _AGENTS[agent]
@@ -160,48 +131,18 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
         if value and name.startswith("SDF_") and not name.startswith(_NEVER_FORWARD)
     }
     env |= {name: environ[name] for name in _PASSTHROUGH if environ.get(name)}
-    env |= _codex_model_alias(environ)
+    for name in (spec.api_key_source, spec.base_url_source, MODEL_VARIABLES[agent]):
+        if environ.get(name):
+            env[name] = environ[name]
     env.setdefault(spec.mode_variable, "api-key")
-    explicit_base = (env.get(spec.base_url_source) or "").strip()
-    # The example key is an OpenAI-compatible credential. Do not select it for
-    # Claude unless the operator set a Claude-compatible base URL; otherwise
-    # it would be sent to api.anthropic.com.
-    allow_example_key = spec.protocol != "anthropic" or bool(explicit_base)
-    if env[spec.mode_variable] == "api-key" and not env.get(spec.api_key_source):
-        if spec.api_key_env_variable and allow_example_key:
-            env.setdefault(spec.api_key_env_variable, EXAMPLE_API_KEY_ENV)
-    key_variable = env.get(spec.api_key_env_variable) if spec.api_key_env_variable else None
-    if spec.protocol == "anthropic" and not explicit_base and key_variable == EXAMPLE_API_KEY_ENV:
-        env.pop(spec.api_key_env_variable, None)
-        key_variable = None
-    if key_variable and environ.get(key_variable):
-        env[key_variable] = environ[key_variable]
-    # api-key mode only: a base URL in subscription mode is a configuration
-    # error (ADR 0007).  Claude stays on the official Messages API.
-    # Codex has no kind default.  Filling the example host for every key
-    # would send SDF_OPENAI_API_KEY / an arbitrary *_API_KEY_ENV to a host
-    # the operator did not configure.  Do that only for the example key name,
-    # matching pre-PR behavior.  Other unset Codex URLs stay unset and resolve
-    # to the official OpenAI API (same as resolved_llm_base_url).
-    if (
-        env[spec.mode_variable] == "api-key"
-        and spec.protocol == "openai"
-        and not (env.get(spec.base_url_source) or "").strip()
-    ):
-        if spec.default_base_url:
-            env[spec.base_url_source] = spec.default_base_url
-        elif key_variable == EXAMPLE_API_KEY_ENV:
-            env[spec.base_url_source] = EXAMPLE_OPENAI_BASE_URL
-            if agent == "codex" and not (env.get("SDF_CODEX_MODEL") or "").strip():
-                env["SDF_CODEX_MODEL"] = EXAMPLE_OPENAI_MODEL
     return env
 
 
 def run_network(environ: Mapping[str, str], *, agent: str | None = None) -> dict[str, Any]:
     """E2B egress for /run: the kind's resolved LLM host plus ``SDF_RUN_EGRESS_ALLOW``.
 
-    With no agent, hosts come from whichever kinds have a base URL set, or the
-    example OpenAI-compatible host when none do.
+    With no agent, hosts come from whichever kinds have a base URL set, or
+    opencode (which has none until ``OPENCODE_BASE_URL`` is set).
     """
 
     if agent:
@@ -443,7 +384,7 @@ class LiveRunAdapter:
                 # Codex's hosted web_search tool is a Responses-API feature that
                 # many OpenAI-compatible hosts reject (400 Unsupported tool type),
                 # including the example endpoint.  Official api.openai.com keeps it.
-                host = endpoint_host(self.run_env.get("SDF_OPENAI_BASE_URL", ""))
+                host = endpoint_host(self.run_env.get("OPENAI_BASE_URL", ""))
                 if host and host != "api.openai.com":
                     agent_args["codex"] = (*agent_args.get("codex", ()), "-c", 'web_search="disabled"')
             return HerdrRuntime(transport=transport, timeout_ms=self.timeout_ms, agent_args=agent_args)

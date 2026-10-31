@@ -127,15 +127,18 @@ def build_wrapper(
     ancestor_entries: Sequence[str] = (),
     key_ref_file: str | None = None,
     command_tail: str = '"$@"',
+    preserve: Sequence[str] = (),
 ) -> str:
     """The ``sh -c`` turn wrapper.
 
     Positional args: workspace, turn seconds, stdout file, stderr file, prompt
-    file, model (empty: ``$SDF_<AGENT>_MODEL``), prompt, then the agent argv;
-    the base URL is ``$SDF_<AGENT>_BASE_URL``.  ``command_tail`` is the
+    file, model (empty: ``$<AGENT>_MODEL``), prompt, then the agent argv;
+    the base URL is ``$<AGENT>_BASE_URL``.  ``command_tail`` is the
     shell words that run the agent (it may use ``$model`` / ``$url``).  Every
     piece is a fixed literal from this module; nothing operator-controlled is
-    spliced into the script.
+    spliced into the script.  ``preserve`` names are snapshotted before the
+    prefix purge and restored after it, so an allow-listed key such as
+    ``GOOSE_API_KEY`` still reaches the agent.
     """
 
     if not re.fullmatch(r"[a-z]+", agent):
@@ -155,14 +158,32 @@ def build_wrapper(
     def leave(code: int) -> str:
         return f"{{ echo {marker}{code}; exit 0; }}"
 
+    for name in preserve:
+        if not _NAME.fullmatch(name):
+            raise ValueError("bad variable name")
     pattern = "\\|".join(prefix for prefix in unset_prefixes)
     parts = [
-        f'dir=$1; secs=$2; out=$3; err=$4; pf=$5; model=${{6:-$SDF_{upper}_MODEL}}; url=$SDF_{upper}_BASE_URL; '
+        f'dir=$1; secs=$2; out=$3; err=$4; pf=$5; model=${{6:-${upper}_MODEL}}; url=${upper}_BASE_URL; '
         'prompt=$7; shift 7; ',
-        f'for v in $(env | sed -n "s/^\\(\\({pattern}\\)[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; ',
     ]
+    # Snapshot before the purge. Qwen's key name is often ``QWEN_API_KEY``,
+    # which the purge would otherwise erase before the wrapper could read it.
+    for name in preserve:
+        parts.append(f'_keep_{name}=${{{name}-}}; ')
+    if key_ref_file is not None:
+        if not re.fullmatch(r"[a-z0-9-]+", key_ref_file):
+            raise ValueError("bad key ref file")
+        parts.append(
+            f'kn=$(cat "$HOME/.config/sdf/{key_ref_file}" 2>/dev/null); '
+            f'case "$kn" in ""|[!A-Z]*|*[!A-Z0-9_]*) {leave(NO_KEY_EXIT)};; esac; '
+            # Safe: ``kn`` is validated as an identifier above.
+            'eval "k=\\${$kn:-}"; '
+        )
+    parts.append(f'for v in $(env | sed -n "s/^\\(\\({pattern}\\)[A-Za-z0-9_]*\\)=.*/\\1/p"); do unset "$v"; done; ')
     if unset_names:
         parts.append(f"unset {' '.join(unset_names)}; ")
+    for name in preserve:
+        parts.append(f'if [ -n "$_keep_{name}" ]; then export {name}="$_keep_{name}"; fi; unset _keep_{name}; ')
     if exports:
         parts.append(f"export {' '.join(exports)}; ")
     parts.append(f'cd "$dir" || {leave(NO_WORKSPACE_EXIT)}; ')
@@ -180,13 +201,7 @@ def build_wrapper(
         )
     parts.append(f'[ -n "$model" ] && [ -n "$url" ] || {leave(NO_ENDPOINT_EXIT)}; ')
     if key_ref_file is not None:
-        if not re.fullmatch(r"[a-z0-9-]+", key_ref_file):
-            raise ValueError("bad key ref file")
         parts.append(
-            f'kn=$(cat "$HOME/.config/sdf/{key_ref_file}" 2>/dev/null); '
-            f'case "$kn" in ""|[!A-Z]*|*[!A-Z0-9_]*) {leave(NO_KEY_EXIT)};; esac; '
-            # Safe: ``kn`` is validated as an identifier above.
-            'eval "k=\\${$kn:-}"; '
             f'[ -n "$k" ] || {leave(NO_KEY_EXIT)}; '
             'export OPENAI_API_KEY="$k"; unset k kn; '
         )
@@ -429,7 +444,7 @@ class HeadlessAgentRuntime:
         if rc == NO_WORKSPACE_EXIT:
             raise self.ERROR("the staged Attempt workspace is missing in the sandbox")
         if rc == NO_ENDPOINT_EXIT:
-            raise self.ERROR(f"no {label} endpoint: SDF_{upper}_MODEL or SDF_{upper}_BASE_URL is not set in the sandbox")
+            raise self.ERROR(f"no {label} endpoint: {upper}_MODEL or {upper}_BASE_URL is not set in the sandbox")
         if rc == NO_KEY_EXIT:
             raise self.ERROR(f"no {label} key: the seeded key variable is missing or empty in the sandbox")
         if rc is None:

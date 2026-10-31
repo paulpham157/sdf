@@ -18,7 +18,6 @@ from sdf_core import opencode_runtime as ocr
 from sdf_core.agent_models import agent_model_args, model_agent_args, resolve_agent_models
 from sdf_core.credential_injection import prepare_credential_injection
 from sdf_core.credentials import (
-    DEFAULT_OPENCODE_BASE_URL,
     CredentialConfigError,
     CredentialMode,
     resolve_credential_plan,
@@ -28,123 +27,95 @@ from sdf_core.opencode_runtime import OpenCodeHeadlessRuntime, OpenCodeRuntimeEr
 from sdf_core.runtime import CredentialMetadata, RuntimeStatus
 
 KEY = "vk-test-0123456789abcdef-secret"
-VULTR = {
+BASE = "https://llm.example.com/v1"
+OPENCODE = {
     "SDF_CREDENTIAL_MODE_OPENCODE": "api-key",
-    "SDF_OPENCODE_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
-    "VULTR_INFERENCE_API_KEY": KEY,
+    "OPENCODE_API_KEY": KEY,
+    "OPENCODE_BASE_URL": BASE,
 }
 
 
 # --- credential plan ------------------------------------------------------
 
-def test_opencode_default_key_variable_and_vultr_defaults():
-    plan = resolve_credential_plan("opencode", {"SDF_CREDENTIAL_MODE_OPENCODE": "api-key", "SDF_OPENCODE_API_KEY": KEY})
+def test_opencode_requires_base_url_and_defaults_the_model():
+    plan = resolve_credential_plan("opencode", OPENCODE)
     assert plan.mode is CredentialMode.API_KEY
     assert dict(plan.set_variables) == {
-        "SDF_OPENCODE_API_KEY": KEY,
-        "SDF_OPENCODE_BASE_URL": DEFAULT_OPENCODE_BASE_URL,
-        "SDF_OPENCODE_MODEL": "vultr/glm-5.3",
-        "SDF_OPENCODE_SMALL_MODEL": "vultr/glm-5.3-flash",
+        "OPENCODE_API_KEY": KEY,
+        "OPENCODE_BASE_URL": BASE,
+        "OPENCODE_MODEL": "vultr/glm-5.3",
     }
-    assert DEFAULT_OPENCODE_BASE_URL == "https://api.vultrinference.com/v1"
-    assert [(s.action, s.variable) for s in plan.seed_steps] == [("opencode-config", "SDF_OPENCODE_API_KEY")]
+    assert [(s.action, s.variable) for s in plan.seed_steps] == [("opencode-config", "OPENCODE_API_KEY")]
     assert set(plan.strip_variables) >= {
         "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_PERMISSION"
     }
+    with pytest.raises(CredentialConfigError, match="requires OPENCODE_BASE_URL"):
+        resolve_credential_plan("opencode", {"SDF_CREDENTIAL_MODE_OPENCODE": "api-key", "OPENCODE_API_KEY": KEY})
 
 
-def test_opencode_named_key_variable_keeps_its_name_in_the_sandbox():
-    plan = resolve_credential_plan("opencode", {**VULTR, "SDF_OPENCODE_API_KEY": "other-default-key-value"})
-    assert plan.set_variables["VULTR_INFERENCE_API_KEY"] == KEY
-    # The named variable replaces the default; the default is not also injected.
-    assert "SDF_OPENCODE_API_KEY" not in plan.set_variables
-    assert plan.seed_steps[0].variable == "VULTR_INFERENCE_API_KEY"
-
-
-def test_named_key_variable_unset_fails_closed_without_fallback():
-    env = {**VULTR, "SDF_OPENCODE_API_KEY": "default-key-value-present"}
-    del env["VULTR_INFERENCE_API_KEY"]
-    with pytest.raises(CredentialConfigError, match="requires VULTR_INFERENCE_API_KEY") as err:
-        resolve_credential_plan("opencode", env)
-    assert "default-key-value-present" not in str(err.value)
-
-
-@pytest.mark.parametrize("name", ["PATH", "lower_api_key", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "E2B_API_KEY",
-                                  "DAYTONA_API_KEY", "SDF_CONNECTION_CODEX_API_KEY", KEY])
-def test_named_key_variable_must_be_a_dedicated_key_name(name):
-    env = {**VULTR, "SDF_OPENCODE_API_KEY_ENV": name, name: "value-of-the-named-var"}
-    with pytest.raises(CredentialConfigError) as err:
-        resolve_credential_plan("opencode", env)
-    assert KEY not in str(err.value) and "value-of-the-named-var" not in str(err.value)
+def test_vendor_key_name_is_not_an_opencode_credential():
+    with pytest.raises(CredentialConfigError, match="requires OPENCODE_API_KEY") as err:
+        resolve_credential_plan("opencode", {
+            "SDF_CREDENTIAL_MODE_OPENCODE": "api-key",
+            "OPENCODE_BASE_URL": BASE,
+            "VULTR_INFERENCE_API_KEY": KEY,
+        })
+    assert KEY not in str(err.value)
 
 
 def test_opencode_subscription_mode_is_rejected_not_fallen_back():
     with pytest.raises(CredentialConfigError, match="subscription is not supported for opencode"):
-        resolve_credential_plan("opencode", {"SDF_CREDENTIAL_MODE_OPENCODE": "subscription", "SDF_OPENCODE_API_KEY": KEY})
+        resolve_credential_plan("opencode", {"SDF_CREDENTIAL_MODE_OPENCODE": "subscription", "OPENCODE_API_KEY": KEY})
 
 
 def test_opencode_without_mode_fails_closed():
     with pytest.raises(CredentialConfigError, match="SDF_CREDENTIAL_MODE_OPENCODE"):
-        resolve_credential_plan("opencode", {"SDF_OPENCODE_API_KEY": KEY})
+        resolve_credential_plan("opencode", {"OPENCODE_API_KEY": KEY})
 
 
-@pytest.mark.parametrize(("agent", "knob", "target"), [
-    ("codex", "SDF_CODEX_API_KEY_ENV", "OPENAI_API_KEY"),
-    ("claude", "SDF_CLAUDE_API_KEY_ENV", "ANTHROPIC_API_KEY"),
-])
-def test_codex_and_claude_key_can_come_from_a_named_variable(agent, knob, target):
-    env = {f"SDF_CREDENTIAL_MODE_{agent.upper()}": "api-key", knob: "GATEWAY_API_KEY", "GATEWAY_API_KEY": KEY}
-    plan = resolve_credential_plan(agent, env)
-    # The agent still reads its provider's fixed variable inside the box.
-    assert plan.set_variables[target] == KEY
-    assert "GATEWAY_API_KEY" not in plan.set_variables
+def test_codex_and_claude_ignore_a_differently_named_key():
+    for agent, target in (("codex", "OPENAI_API_KEY"), ("claude", "ANTHROPIC_API_KEY")):
+        env = {f"SDF_CREDENTIAL_MODE_{agent.upper()}": "api-key", "GATEWAY_API_KEY": KEY}
+        with pytest.raises(CredentialConfigError, match=f"requires {target}"):
+            resolve_credential_plan(agent, env)
 
 
-def test_named_key_variable_is_an_error_in_subscription_mode():
-    env = {"SDF_CREDENTIAL_MODE_CODEX": "subscription", "SDF_CONNECTION_CODEX": "c1", "SDF_CODEX_API_KEY_ENV": "X_API_KEY"}
-    with pytest.raises(CredentialConfigError, match="SDF_CODEX_API_KEY_ENV is only allowed"):
-        resolve_credential_plan("codex", env, read_connection=lambda *_: pytest.fail("must not read"))
-
-
-def test_opencode_custom_provider_base_url_and_models():
-    env = {**VULTR, "SDF_OPENCODE_BASE_URL": "https://llm.example.com/v1",
-           "SDF_OPENCODE_MODEL": "gw/big-1", "SDF_OPENCODE_SMALL_MODEL": "gw/small-1"}
+def test_opencode_custom_provider_base_url_and_model():
+    env = {**OPENCODE, "OPENCODE_MODEL": "gw/big-1"}
     plan = resolve_credential_plan("opencode", env)
-    assert plan.set_variables["SDF_OPENCODE_BASE_URL"] == "https://llm.example.com/v1"
-    assert plan.set_variables["SDF_OPENCODE_MODEL"] == "gw/big-1"
-    assert plan.set_variables["SDF_OPENCODE_SMALL_MODEL"] == "gw/small-1"
+    assert plan.set_variables["OPENCODE_BASE_URL"] == BASE
+    assert plan.set_variables["OPENCODE_MODEL"] == "gw/big-1"
+    assert "OPENCODE_SMALL_MODEL" not in plan.set_variables
 
 
-@pytest.mark.parametrize("url", ["http://api.vultrinference.com/v1", "https://127.0.0.1/v1", "https://localhost/v1"])
+@pytest.mark.parametrize("url", ["http://llm.example.com/v1", "https://127.0.0.1/v1", "https://localhost/v1"])
 def test_opencode_base_url_follows_adr_0007_rules(url):
     with pytest.raises(CredentialConfigError):
-        resolve_credential_plan("opencode", {**VULTR, "SDF_OPENCODE_BASE_URL": url})
+        resolve_credential_plan("opencode", {**OPENCODE, "OPENCODE_BASE_URL": url})
 
 
-@pytest.mark.parametrize(("model", "small", "match"), [
-    ("glm-5.3", None, "SDF_OPENCODE_MODEL must be"),
-    ("vultr/glm-5.3", "other/glm-5.3-flash", "same provider"),
-    ("vultr/glm 5.3", None, "not a valid model"),
+@pytest.mark.parametrize(("model", "match"), [
+    ("glm-5.3", "OPENCODE_MODEL must be"),
+    ("vultr/glm 5.3", "not a valid model"),
 ])
-def test_opencode_model_validation(model, small, match):
-    env = {**VULTR, "SDF_OPENCODE_MODEL": model, **({"SDF_OPENCODE_SMALL_MODEL": small} if small else {})}
+def test_opencode_model_validation(model, match):
     with pytest.raises(CredentialConfigError, match=match):
-        resolve_credential_plan("opencode", env)
+        resolve_credential_plan("opencode", {**OPENCODE, "OPENCODE_MODEL": model})
 
 
 def test_injection_strips_conflicting_opencode_config_and_guards_values():
     injection = prepare_credential_injection(
-        ["opencode"], VULTR, base_envs={"OPENCODE_CONFIG": "/tmp/other.json", "KEEP": "1"}
+        ["opencode"], OPENCODE, base_envs={"OPENCODE_CONFIG": "/tmp/other.json", "KEEP": "1"}
     )
     assert "OPENCODE_CONFIG" not in injection.envs and injection.envs["KEEP"] == "1"
     assert all(KEY not in command for command in injection.seed_commands)
     assert KEY not in repr(injection)
-    assert "VULTR_INFERENCE_API_KEY" in injection.credential_variables
+    assert "OPENCODE_API_KEY" in injection.credential_variables
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the seed script")
 def test_opencode_config_seed_references_the_key_by_name_only(tmp_path):
-    injection = prepare_credential_injection(["opencode"], {**VULTR, "SDF_OPENCODE_MODEL": "vultr/glm-5.3"})
+    injection = prepare_credential_injection(["opencode"], {**OPENCODE, "OPENCODE_MODEL": "vultr/glm-5.3"})
     env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"], **injection.envs}
     for command in injection.seed_commands:
         subprocess.run(["bash", "-c", command], env=env, check=True)
@@ -154,7 +125,7 @@ def test_opencode_config_seed_references_the_key_by_name_only(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     config = json.loads(text)
     # OpenCode 2 (V2 config, ADR-0018).
-    assert config["model"] == "vultr/glm-5.3" and config["agents"] == {"title": {"model": "vultr/glm-5.3-flash"}}
+    assert config["model"] == "vultr/glm-5.3" and config["agents"] == {"title": {"model": "vultr/glm-5.3"}}
     assert config["update"] == "disable" and config["share"] == "disabled"
     # Headless runs must not act without the ADR-0008 claim: everything asks
     # (rejected in ``run`` unless ``--auto``) except plain reads.
@@ -170,34 +141,33 @@ def test_opencode_config_seed_references_the_key_by_name_only(tmp_path):
     assert not any(effect == "allow" and action in ("*", "edit", "shell", "bash") for action, _, effect in rules)
     provider = config["providers"]["vultr"]
     assert provider["package"] == "aisdk:@ai-sdk/openai-compatible"
-    assert provider["settings"] == {"baseURL": DEFAULT_OPENCODE_BASE_URL, "apiKey": "{env:VULTR_INFERENCE_API_KEY}"}
-    assert set(provider["models"]) == {"glm-5.3", "glm-5.3-flash"}
+    assert provider["settings"] == {"baseURL": BASE, "apiKey": "{env:OPENCODE_API_KEY}"}
+    assert set(provider["models"]) == {"glm-5.3"}
     assert "provider" not in config and "permission" not in config
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the seed script")
 def test_opencode_config_seed_uses_custom_provider_id(tmp_path):
-    env_in = {**VULTR, "SDF_OPENCODE_BASE_URL": "https://llm.example.com/v1",
-              "SDF_OPENCODE_MODEL": "gw/big-1", "SDF_OPENCODE_SMALL_MODEL": "gw/small-1"}
+    env_in = {**OPENCODE, "OPENCODE_MODEL": "gw/big-1"}
     injection = prepare_credential_injection(["opencode"], env_in)
     env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"], **injection.envs}
     subprocess.run(["bash", "-c", injection.seed_commands[0]], env=env, check=True)
     config = json.loads((tmp_path / ".config" / "opencode" / "opencode.json").read_text())
     assert set(config["providers"]) == {"gw"}
     assert config["providers"]["gw"]["settings"]["baseURL"] == "https://llm.example.com/v1"
-    assert config["model"] == "gw/big-1" and config["agents"]["title"]["model"] == "gw/small-1"
+    assert config["model"] == "gw/big-1" and config["agents"]["title"]["model"] == "gw/big-1"
 
 
 # --- model selection ----------------------------------------------------------
 
 def test_model_overrides_per_agent_kind():
-    env = {"SDF_CLAUDE_MODEL": "claude-sonnet-x", "SDF_CODEX_MODEL": "gpt-x"}
+    env = {"ANTHROPIC_MODEL": "claude-sonnet-x", "OPENAI_MODEL": "gpt-x"}
     assert agent_model_args("claude", env) == ("--model", "claude-sonnet-x")
     assert agent_model_args("codex", env) == ("-m", "gpt-x")
     assert agent_model_args("codex", {}) == ()
     assert agent_model_args("unknown-kind", env) == ()
     assert agent_model_args("opencode", {}) == ("--model", "vultr/glm-5.3")
-    assert model_agent_args(["claude", "codex", "unknown-kind"], {"SDF_CODEX_MODEL": "gpt-x"}) == {"codex": ("-m", "gpt-x")}
+    assert model_agent_args(["claude", "codex", "unknown-kind"], {"OPENAI_MODEL": "gpt-x"}) == {"codex": ("-m", "gpt-x")}
     assert resolve_agent_models("opencode", {}).provider_id == "vultr"
 
 
@@ -618,7 +588,7 @@ def test_model_override_reaches_the_herdr_agent_start_argv(tmp_path):
         seen.append(list(command))
         return fake(command, timeout_ms)
 
-    runtime = HerdrRuntime(runner=runner, agent_args=model_agent_args(["codex"], {"SDF_CODEX_MODEL": "gpt-x"}))
+    runtime = HerdrRuntime(runner=runner, agent_args=model_agent_args(["codex"], {"OPENAI_MODEL": "gpt-x"}))
     runtime.bind_workspace("ATTEMPT-M", tmp_path)
     runtime.start(attempt_id="ATTEMPT-M", agent="codex")
     start = next(c for c in seen if c[1:3] == ["agent", "start"])

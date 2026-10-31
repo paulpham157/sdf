@@ -2,7 +2,7 @@
 
 Gated on SDF_LIVE_E2B=1 plus E2B_API_KEY.  The wiring test uses a DUMMY key
 generated per run; the Attempt test is gated additionally on
-SDF_ANTHROPIC_API_KEY (read from the environment or, via SDF_DOTENV, from the
+ANTHROPIC_API_KEY (read from the environment or, via SDF_DOTENV, from the
 operator's git-ignored ``.env``).  Keys are compared by SHA-256 only and the
 scrollback of every Herdr pane is checked programmatically for the key and
 its approved tail, so no value is printed.  Teardown always kills the sandbox.
@@ -45,7 +45,7 @@ def _setting(name: str) -> str:
 
 E2B_KEY = _setting("E2B_API_KEY")
 LIVE = os.environ.get("SDF_LIVE_E2B") == "1" and bool(E2B_KEY)
-ANTHROPIC_KEY = _setting("SDF_ANTHROPIC_API_KEY")
+ANTHROPIC_KEY = _setting("ANTHROPIC_API_KEY")
 
 pytestmark = pytest.mark.skipif(not LIVE, reason="live E2B check: set SDF_LIVE_E2B=1 and E2B_API_KEY to run")
 
@@ -57,9 +57,9 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 def _environ(key: str) -> dict[str, str]:
-    """A clean environment: never the host shell's ANTHROPIC_* proxy variables."""
+    """Sandbox environ for this attempt: E2B plus the Claude key passed in."""
 
-    environ = {"E2B_API_KEY": E2B_KEY, "SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_ANTHROPIC_API_KEY": key}
+    environ = {"E2B_API_KEY": E2B_KEY, "SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "ANTHROPIC_API_KEY": key}
     if _setting("E2B_DOMAIN"):
         environ["E2B_DOMAIN"] = _setting("E2B_DOMAIN")
     return environ
@@ -200,7 +200,7 @@ PROMPT = (
 )
 CHECK = [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]]
 
-@pytest.mark.skipif(not ANTHROPIC_KEY, reason="live Claude Attempt: set SDF_ANTHROPIC_API_KEY (operator .env via SDF_DOTENV) to run")
+@pytest.mark.skipif(not ANTHROPIC_KEY, reason="live Claude Attempt: set ANTHROPIC_API_KEY (operator .env via SDF_DOTENV) to run")
 def test_live_claude_attempt_on_an_operator_key_answers_and_records_evidence(tmp_path: Path):
     """ExecutionService evaluates the interactive Attempt with no test-side driver (#16)."""
 

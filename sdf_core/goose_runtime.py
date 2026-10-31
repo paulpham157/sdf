@@ -49,6 +49,8 @@ _WRAPPER_ARGS: dict[str, Any] = dict(
     agent=AGENT_KIND,
     unset_prefixes=("GOOSE_", "OPENAI_"),
     unset_names=("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"),
+    # The purge clears GOOSE_*; the seeded provider still reads GOOSE_API_KEY.
+    preserve=("GOOSE_API_KEY",),
     exports=(
         "GOOSE_DISABLE_KEYRING=1",
         "GOOSE_DISABLE_SESSION_NAMING=true",
