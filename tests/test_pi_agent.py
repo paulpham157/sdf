@@ -149,7 +149,8 @@ def test_pi_models_seed_references_the_key_by_name_only(tmp_path):
     assert provider["apiKey"] == "$SDF_PI_API_KEY"
     [model] = provider["models"]
     assert model["id"] == "glm-5.3"
-    assert model["cost"] == {"input": 0.75, "output": 3, "cacheRead": 0, "cacheWrite": 0}
+    # Zero so Pi does not report an SDF-seeded price as the provider's cost.
+    assert model["cost"] == {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the seed script")

@@ -8,7 +8,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from sdf_core.agent_sandbox import DEFAULT_NETWORK, AgentSpec, E2BAgentSandbox
+from sdf_core.agent_sandbox import DEFAULT_NETWORK, AgentSandbox, AgentSpec, E2BAgentSandbox
+from sdf_core import usage
 from sdf_core.credentials import (
     AGENT_KINDS,
     LLM_PROTOCOLS,
@@ -137,6 +138,42 @@ def test_subscription_mode_does_not_get_the_example_base_url():
     assert "SDF_OPENAI_BASE_URL" not in env
     assert "SDF_CODEX_MODEL" not in env
     assert run_network(env, agent="codex")["allow_out"] == ["api.openai.com"]
+
+
+def test_pi_seed_does_not_make_the_example_price_look_reported(db):
+    """ADR 0027: an SDF price table is an estimate. A cost the agent reported stays reported."""
+
+    estimated = usage.record_turn(
+        db, attempt_id="A-PRICE", agent="pi", turn=1, session_id="s", sandbox_id="sb",
+        sandbox_provider="e2b", status="completed", error_class=None,
+        usage=usage.TurnUsage(input_tokens=1_000_000, output_tokens=1_000_000, cost_usd=None, model="glm-5.3"),
+    )
+    assert estimated.source == "reported" and estimated.cost_source == "estimated"
+    assert estimated.cost_usd == pytest.approx(0.75 + 3.0)
+    overridden = usage.record_turn(
+        db, attempt_id="A-PRICE", agent="pi", turn=2, session_id="s", sandbox_id="sb",
+        sandbox_provider="e2b", status="completed", error_class=None,
+        environ={"SDF_PRICE_GLM_5_3": "1,2"},
+        usage=usage.TurnUsage(input_tokens=1_000_000, output_tokens=1_000_000, cost_usd=0, model="glm-5.3"),
+    )
+    assert overridden.cost_source == "estimated" and overridden.cost_usd == pytest.approx(1 + 2)
+    reported = usage.record_turn(
+        db, attempt_id="A-PRICE", agent="pi", turn=3, session_id="s", sandbox_id="sb",
+        sandbox_provider="e2b", status="completed", error_class=None,
+        environ={"SDF_PRICE_GLM_5_3": "9,9"},
+        usage=usage.TurnUsage(input_tokens=10, output_tokens=10, cost_usd=0.42, model="glm-5.3"),
+    )
+    assert reported.cost_source == "reported" and reported.cost_usd == pytest.approx(0.42)
+
+
+def test_sandbox_protocol_requires_credential_environ():
+    assert "credential_environ" in AgentSandbox.__protocol_attrs__
+
+    class _Missing:
+        pass
+
+    with pytest.raises(AttributeError):
+        llm_attempt_provider("pi", _Missing().credential_environ)  # type: ignore[attr-defined]
 
 
 def test_sandbox_egress_follows_configured_host():

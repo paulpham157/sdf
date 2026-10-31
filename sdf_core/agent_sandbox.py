@@ -60,6 +60,10 @@ class TurnResult:
 
 class AgentSandbox(Protocol):
     spec: AgentSpec
+    # ADR 0034: base-URL variables for this sandbox (name → value). Required.
+    # Attempt provenance reads it directly; a missing attribute is an error,
+    # not a silent fall-through to the example host. Not logged.
+    credential_environ: Mapping[str, str]
 
     @property
     def sandbox_id(self) -> str | None: ...

@@ -161,8 +161,12 @@
   `https://api.anthropic.com`. `/run` Codex is given the example OpenAI-compatible
   URL only when the resolved key variable is `VULTR_INFERENCE_API_KEY`;
   `SDF_OPENAI_API_KEY` or any other key name, with no base URL, stays on
-  `https://api.openai.com/v1` (the same host the coordinator records). See the
-  ADR for the migration notes.
+  `https://api.openai.com/v1` (the same host the coordinator records). Pi's
+  seeded model prices are `0`; the ledger estimates `glm-5.3` from
+  `PRICES_PER_MTOK` or `SDF_PRICE_GLM_5_3` and marks that cost `estimated`.
+  Every agent sandbox declares `credential_environ`; a missing attribute is
+  an error, not a silent example-host default. See the ADR for the migration
+  notes.
 - **Material decision gate (#60, narrow scope, ADR 0033).** An agent can mark a decision request as material: `sdf-msg request --material --consequence TEXT` (and the `material`/`consequence` fields of the MCP `request` tool). A material request needs a non-empty consequence and at least two distinct options. While it is pending, it blocks its scope until a human resolves it: the worker's subtask, or the whole run when the lead asks. Blocked means no agent turns, no verification, no Attempt start or finish for the affected plan tasks (`DecisionGateError`), and no run success. Policies no longer resolve material requests, and `POST /decision-requests/{id}/resolve` with a policy outcome is refused for them. Any human outcome, including `rejected`, lifts the gate and the agent is told the result. Each hold is written to the run summary under `material_decisions`. Decision request API responses now include `material`, `consequence`, `authority` and `blocks`. Non-material requests behave exactly as before. There is no schema change: materiality is stored in the append-only agent message metadata (see the next entry for the PostgreSQL fence).
 - **Rule-based materiality and a paused wall clock while held (#60, ADR 0033 amendment).**
   - A decision request is now also material when a deterministic rule in `sdf_core/materiality.py` matches its question, an option, its consequence, or the new optional `action` field (`sdf-msg request-decision --action TEXT`).

@@ -74,10 +74,16 @@ named `VULTR_INFERENCE_API_KEY`.
    (ADR 0027 adapter identity) and appends the same label:
    `e2b:openai:api.vultrinference.com`. The string `vultr` alone is not a
    provider value.
-7. **Example model price is not a host invoice.** `glm-5.3` keeps the
-   example per-million price `(0.75, 3.00)` in the usage ledger and in Pi's
-   seeded cost, for that model id on any host. Any other model is `0` in
-   Pi's seed and is priced on the ledger only via `SDF_PRICE_<MODEL>`.
+7. **Example model price is a ledger estimate, not a reported provider cost.**
+   `glm-5.3` keeps `(0.75, 3.00)` USD per million tokens in
+   `PRICES_PER_MTOK`. `SDF_PRICE_<MODEL>` overrides that. Pi's seeded
+   `models.json` prices are `0`, so Pi does not report an SDF-chosen dollar
+   amount. `usage.record_turn` then estimates from the price table
+   (`cost_source=estimated`, ADR 0027). A cost the agent actually reported
+   stays `reported`.
+8. **Every sandbox declares `credential_environ`.** The coordinator reads that
+   attribute. A sandbox that omits it fails; it does not inherit the example
+   host. An empty mapping means no explicit base URL.
 
 Credential Mode (`subscription` | `api-key`), one credential per sandbox,
 seeds that store key *names*, the Tool Proxy, Attempt lifecycle and Evidence

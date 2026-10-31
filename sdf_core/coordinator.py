@@ -768,15 +768,15 @@ class Coordinator:
             AgentRunMemberRow.run_id == run_id, AgentRunMemberRow.agent_id == agent_id))
 
     def _begin_attempt(self, run_id: str, sub: _Subtask, fixture: Path, spec: AgentSpec, parent: str | None,
-                       *, evidence_mode: str, sandbox: AgentSandbox | None = None) -> None:
+                       *, evidence_mode: str, sandbox: AgentSandbox) -> None:
         sub.rounds += 1
-        # ADR 0034: record the configured LLM host and protocol family.
-        # A sandbox without credential_environ (in-process fakes) uses the kind's default.
-        environ = getattr(sandbox, "credential_environ", None) if sandbox is not None else None
+        # ADR 0034: the sandbox must declare credential_environ. An empty mapping
+        # means "no explicit base URL" (the kind's documented default). A missing
+        # attribute raises; it does not silently pick the example host.
         begun = self.service.begin(
             evidence_mode=evidence_mode,
             task_id=sub.task_id, dispatch_key=f"{run_id}:{sub.key}:{sub.rounds}", fixture=fixture,
-            parent_attempt_id=parent, provider=llm_attempt_provider(spec.kind, environ or {}),
+            parent_attempt_id=parent, provider=llm_attempt_provider(spec.kind, sandbox.credential_environ),
             agent=f"{spec.kind}:{spec.agent_id}",
             escalation_reason="host verification failed; worker asked to fix" if parent else None,
             require_plan_approval=True,
