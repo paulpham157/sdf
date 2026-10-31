@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/paulpham157/sdf/go/internal/metrics"
 )
 
 // Executor runs one already-authorized action. Must honour ctx cancellation.
@@ -19,6 +21,7 @@ type Executor func(ctx context.Context, req ActionRequest) (any, error)
 type Proxy struct {
 	exec  Executor
 	store OutcomeStore
+	reg   *metrics.Registry
 
 	mu     sync.Mutex
 	scopes map[string]SandboxScope // attempt_id → scope
@@ -36,8 +39,18 @@ func NewProxy(exec Executor, store OutcomeStore) *Proxy {
 	return &Proxy{
 		exec:   exec,
 		store:  store,
+		reg:    metrics.Default,
 		scopes: make(map[string]SandboxScope),
 	}
+}
+
+// SetMetrics selects where Tool Proxy counters are recorded.
+// Nil selects metrics.Default. Call it before Execute.
+func (p *Proxy) SetMetrics(reg *metrics.Registry) {
+	if reg == nil {
+		reg = metrics.Default
+	}
+	p.reg = reg
 }
 
 // Store returns the durable outcome fence.
@@ -75,6 +88,7 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 			if err := p.appendDecision(req, res.ActionID, req.Actor, principal, "deny", reason, res.Policy); err != nil {
 				return Result{}, err
 			}
+			p.noteDeny()
 			return res, ErrDenied
 		}
 	}
@@ -95,6 +109,7 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		if err := p.appendDecision(req, res.ActionID, req.Actor, principal, "deny", reason, res.Policy); err != nil {
 			return Result{}, err
 		}
+		p.noteDeny()
 		return res, ErrDenied
 	}
 
@@ -116,6 +131,7 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		if err := p.appendDecision(req, actionID, derived, principal, "deny", reason, policy); err != nil {
 			return Result{}, err
 		}
+		p.noteDeny()
 		return res, ErrDenied
 	}
 
@@ -157,11 +173,7 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	if stored, found, err := p.store.Lookup(req.AttemptID, actionID); err != nil {
 		return Result{}, err
 	} else if found {
-		res := resultFromStored(stored, true)
-		if stored.Status == StatusFailed {
-			return res, ErrFailed
-		}
-		return res, nil
+		return p.replay(stored)
 	}
 
 	okClaim, err := p.store.Claim(Observation{
@@ -184,11 +196,10 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		if stored, found, err := p.store.Lookup(req.AttemptID, actionID); err != nil {
 			return Result{}, err
 		} else if found {
-			res := resultFromStored(stored, true)
-			if stored.Status == StatusFailed {
-				return res, ErrFailed
-			}
-			return res, nil
+			return p.replay(stored)
+		}
+		if p.reg != nil {
+			p.reg.IncToolClaimStuck()
 		}
 		return Result{
 			AttemptID: req.AttemptID,
@@ -265,6 +276,9 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	}); err != nil {
 		return res, err
 	}
+	if p.reg != nil {
+		p.reg.IncToolExecuted()
+	}
 	return res, nil
 }
 
@@ -282,6 +296,23 @@ func (p *Proxy) appendDecision(req ActionRequest, actionID, actor, principal, ef
 		Policy:    policy,
 		CreatedAt: time.Now().UTC(),
 	})
+}
+
+func (p *Proxy) noteDeny() {
+	if p.reg != nil {
+		p.reg.IncToolPolicyDeny()
+	}
+}
+
+func (p *Proxy) replay(stored StoredOutcome) (Result, error) {
+	if p.reg != nil {
+		p.reg.IncToolReplay()
+	}
+	res := resultFromStored(stored, true)
+	if stored.Status == StatusFailed {
+		return res, ErrFailed
+	}
+	return res, nil
 }
 
 func resultFromStored(o StoredOutcome, replay bool) Result {
