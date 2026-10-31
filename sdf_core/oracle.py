@@ -50,6 +50,9 @@ MAX_FILES = 2_000
 REPORT_DIR_NAME = ".sdf-oracle"
 PLUGIN_MODULE = "sdf_oracle_plugin"
 RESULT_NAME = "result.json"
+# SHA-256 of zero bytes. A python -c check with no sealed files used to store
+# this and look as if an oracle had been hashed. Acceptance rejects it.
+EMPTY_ORACLE_DIGEST = hashlib.sha256(b"").hexdigest()
 
 # Runs inside the check, before the oracle imports the code under test. The
 # process the sandbox spawned is the notary: it forks the oracle child (pytest,
@@ -684,7 +687,34 @@ class OracleReport:
             shutil.rmtree(self.directory, ignore_errors=True)
 
 
-def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> SealedOracle:
+def seal_oracle_digest(command: Sequence[str], files: Sequence[tuple[str, str]] = ()) -> str:
+    """SHA-256 of the registered check text plus the sealed oracle files.
+
+    Encoding, UTF-8, documented so two evaluators hash the same check the
+    same way. This is not the hash of an empty byte string
+    (:data:`EMPTY_ORACLE_DIGEST`); a check with no files still covers its argv.
+
+    ``sdf-oracle-v1\\n``
+    ``argv <N>\\n`` where ``N`` is the UTF-8 length of the argv blob
+    ``<arg0>\\0<arg1>\\0...`` (the argv blob itself; an argument may contain
+    newlines, so the length is what frames it)
+    ``\\n``
+    then one line per sealed file, paths sorted, ``file\\0<relative>\\0<sha256>\\n``.
+    ``<sha256>`` is the hex digest of that file's bytes. Subject files are
+    not included.
+    """
+
+    argv_blob = "\0".join(command)
+    header = f"sdf-oracle-v1\nargv {len(argv_blob.encode())}\n"
+    body = header + argv_blob + "\n"
+    for relative, file_hash in sorted(files):
+        body += f"file\0{relative}\0{file_hash}\n"
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def materialize(
+    fixture: Path, workspace: Path, targets: Sequence[str], *, command: Sequence[str] = (),
+) -> SealedOracle:
     """Build the sealed tree. Raises :class:`OracleTamper` instead of running."""
 
     fixture = Path(fixture)
@@ -711,12 +741,12 @@ def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> Seale
         workspace_root = workspace.resolve()
         if root.resolve() == workspace_root or root.resolve().is_relative_to(workspace_root):
             raise OracleTamper("sealed oracle would lie inside the agent workspace")
-        digest_lines: list[str] = []
+        file_hashes: list[tuple[str, str]] = []
         for relative in oracle_paths:
             data = _read_plain(fixture, relative)
             assert data is not None
             _place(root, relative, data, readonly=True)
-            digest_lines.append(f"{relative}\0{hashlib.sha256(data).hexdigest()}")
+            file_hashes.append((relative, hashlib.sha256(data).hexdigest()))
         copied = 0
         for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
             dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
@@ -736,7 +766,7 @@ def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> Seale
                 if copied + len(oracle_paths) > MAX_FILES:
                     raise OracleTamper("workspace is too large to seal")
                 _place(root, relative, path.read_bytes(), readonly=False)
-        digest = hashlib.sha256("\n".join(digest_lines).encode()).hexdigest()
+        digest = seal_oracle_digest(command, file_hashes)
         return SealedOracle(root=root, oracle_paths=oracle_paths, oracle_digest=digest, fixture=fixture)
     except Exception:
         shutil.rmtree(root, ignore_errors=True)

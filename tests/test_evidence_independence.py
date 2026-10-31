@@ -29,6 +29,7 @@ from sdf_core.api import SessionLocal
 from sdf_core.db import ArtifactRow, AttemptRow, EvidenceRow
 from sdf_core.evaluator import DeterministicEvaluator, Evidence
 from sdf_core.model import utcnow
+from sdf_core.oracle import EMPTY_ORACLE_DIGEST
 from tests.auth_support import admin_client
 from tests.check_support import write_checks
 from tests.revision_support import bound
@@ -483,6 +484,52 @@ def test_verification_with_independent_verifier_and_matching_artifact_is_accepte
 def test_acceptance_gate_rejects_independence_failures(overrides, agent, needle):
     with pytest.raises(AcceptanceError, match=needle):
         check_verification_acceptance(_row(**overrides), attempt_agent=agent, artifact_sha256="a" * 64)
+
+
+def test_python_c_oracle_digest_covers_the_check_text_and_sealed_files(tmp_path):
+    """A python -c check with no oracle files must not hash an empty input.
+
+    The digest covers the registered argv, so a different -c string is a
+    different digest. A sealed script's bytes are part of the same digest.
+    """
+
+    calc = "def add(a, b):\n    return a + b\n"
+    code = "from calc import add; assert add(2, 3) == 5"
+    other = "from calc import add; assert add(2, 3) == 5  # same result"
+    first = _run(tmp_path, {"calc.py": calc}, ["python3", "-c", code])
+    second = _run(tmp_path, {"calc.py": calc}, ["python3", "-c", other])
+    again = _run(tmp_path, {"calc.py": calc}, ["python3", "-c", code])
+    assert first.status == "PASS", (first.stdout[-300:], first.stderr[-300:])
+    assert second.status == "PASS", (second.stderr[-300:])
+    assert first.oracle_digest and len(first.oracle_digest) == 64
+    assert first.oracle_digest != EMPTY_ORACLE_DIGEST
+    assert first.oracle_digest == again.oracle_digest
+    assert first.oracle_digest != second.oracle_digest
+    script = "from calc import add\nassert add(2, 3) == 5\n"
+    edited = "from calc import add\nassert add(2, 3) == 5  # sealed\n"
+    files = {"calc.py": calc, "checks/run.py": script}
+    edited_files = {"calc.py": calc, "checks/run.py": edited}
+    sealed = _run(tmp_path, files, ["python3", "checks/run.py"], server=files)
+    sealed_edit = _run(tmp_path, edited_files, ["python3", "checks/run.py"], server=edited_files)
+    assert sealed.status == "PASS" and sealed_edit.status == "PASS"
+    assert sealed.oracle_digest != first.oracle_digest
+    assert sealed.oracle_digest != sealed_edit.oracle_digest
+    assert sealed.oracle_digest != EMPTY_ORACLE_DIGEST
+
+
+def test_acceptance_denies_a_missing_or_empty_oracle_digest():
+    with pytest.raises(AcceptanceError, match="missing"):
+        check_verification_acceptance(
+            _row(oracle_digest=None), attempt_agent="native", artifact_sha256="a" * 64,
+        )
+    with pytest.raises(AcceptanceError, match="missing"):
+        check_verification_acceptance(
+            _row(oracle_digest=""), attempt_agent="native", artifact_sha256="a" * 64,
+        )
+    with pytest.raises(AcceptanceError, match="empty digest"):
+        check_verification_acceptance(
+            _row(oracle_digest=EMPTY_ORACLE_DIGEST), attempt_agent="native", artifact_sha256="a" * 64,
+        )
 
 
 def test_run_records_verification_bound_to_the_diff_artifact(tmp_path):
