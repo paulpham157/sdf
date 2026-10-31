@@ -8,9 +8,11 @@ The oracle is the fixture's test entrypoints, ``conftest.py``, support modules
 and data files next to those tests. They are copied to a directory outside the
 workspace, byte-checked against the fixture, and that directory is the check's
 cwd. The code under test is copied from the workspace only when it is not part
-of the oracle. Pass/fail for pytest comes from a result frame the plugin
-writes through a pipe the subject cannot see. A seccomp filter on Linux
-x86_64 rejects ordinary writes to that pipe.
+of the oracle. Pass/fail for pytest is decided in a process that does not execute the
+code under test. That code runs in a worker; the oracle evaluates assertions
+on the values it returns. A seccomp filter on Linux x86_64 still rejects
+ordinary writes to the result pipe, and fails closed when it cannot be
+installed.
 """
 
 from __future__ import annotations
@@ -119,10 +121,229 @@ def _seccomp(fd, lo):
         raise OSError("seccomp filter failed")
     return ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t)(lo)
 
-def _plugin(fd, write):
+_WORKER = r"""
+import importlib, json, os, socket, struct, sys
+sys.path.append(os.getcwd())
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=int(sys.argv[1]))
+refs = {}
+seq = 1
+
+def read_exact(n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+def read_msg():
+    hdr = read_exact(4)
+    if not hdr:
+        return None
+    n = struct.unpack(">I", hdr)[0]
+    if n > 1000000:
+        return None
+    body = read_exact(n)
+    if body is None:
+        return None
+    return json.loads(body.decode())
+
+def write_msg(obj):
+    body = json.dumps(obj).encode()
+    sock.sendall(struct.pack(">I", len(body)) + body)
+
+def store(obj):
+    global seq
+    refs[seq] = obj
+    seq += 1
+    return seq - 1
+
+def simple(obj):
+    if isinstance(obj, bool) or obj is None or isinstance(obj, (int, str)):
+        return True
+    if isinstance(obj, float):
+        return obj == obj and obj not in (float("inf"), float("-inf"))
+    return False
+
+def encode(obj):
+    if simple(obj):
+        return {"kind": "value", "value": obj}
+    if isinstance(obj, (list, tuple)) and all(simple(item) for item in obj):
+        return {"kind": "value", "value": list(obj)}
+    if isinstance(obj, dict) and all(isinstance(k, str) and simple(v) for k, v in obj.items()):
+        return {"kind": "value", "value": obj}
+    return {"kind": "ref", "ref": store(obj)}
+
+def decode(obj):
+    if isinstance(obj, dict) and "$ref" in obj:
+        return refs[obj["$ref"]]
+    if isinstance(obj, list):
+        return [decode(item) for item in obj]
+    if isinstance(obj, dict):
+        return {key: decode(value) for key, value in obj.items()}
+    return obj
+
+while True:
+    msg = read_msg()
+    if msg is None:
+        break
+    try:
+        op = msg.get("op")
+        if op == "import":
+            resp = {"id": msg.get("id"), "ok": True, **encode(importlib.import_module(msg["name"]))}
+        elif op == "getattr":
+            resp = {"id": msg.get("id"), "ok": True, **encode(getattr(refs[msg["ref"]], msg["name"]))}
+        elif op == "call":
+            fn = refs[msg["ref"]]
+            value = fn(*decode(msg.get("args") or []), **decode(msg.get("kwargs") or {}))
+            resp = {"id": msg.get("id"), "ok": True, **encode(value)}
+        else:
+            resp = {"id": msg.get("id"), "ok": False, "exc": "RuntimeError", "msg": "bad op"}
+    except BaseException as exc:
+        resp = {"id": msg.get("id"), "ok": False, "exc": type(exc).__name__, "msg": str(exc)[:500]}
+    try:
+        write_msg(resp)
+    except Exception:
+        break
+"""
+
+class _RPC:
+    def __init__(self, sock, proc):
+        self.sock = sock
+        self.proc = proc
+        self.n = 0
+    def request(self, payload):
+        import json, struct
+        self.n += 1
+        payload = dict(payload, id=self.n)
+        body = json.dumps(payload).encode()
+        self.sock.sendall(struct.pack(">I", len(body)) + body)
+        hdr = self._exact(4)
+        if hdr is None:
+            raise ImportError("subject worker exited")
+        size = struct.unpack(">I", hdr)[0]
+        data = self._exact(size)
+        if data is None:
+            raise ImportError("subject worker exited")
+        return json.loads(data.decode())
+    def _exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        if self.proc.poll() is None:
+            self.proc.kill()
+
+def _unwrap(rpc, resp):
+    if not resp or not resp.get("ok"):
+        exc = (resp or {}).get("exc") or "RuntimeError"
+        msg = (resp or {}).get("msg") or "subject worker failed"
+        if exc == "Skipped":
+            import pytest
+            pytest.skip(msg)
+        if exc in {"SystemExit", "KeyboardInterrupt"}:
+            raise RuntimeError("subject process exited: " + msg)
+        builtin = getattr(__import__("builtins"), exc, None)
+        if isinstance(builtin, type) and issubclass(builtin, BaseException):
+            raise builtin(msg)
+        raise RuntimeError(exc + ": " + msg)
+    if resp.get("kind") == "value":
+        return resp.get("value")
+    return _Handle(rpc, resp["ref"])
+
+class _Handle:
+    def __init__(self, rpc, ref):
+        object.__setattr__(self, "_rpc", rpc)
+        object.__setattr__(self, "_ref", ref)
+    def __call__(self, *args, **kwargs):
+        return _unwrap(self._rpc, self._rpc.request({
+            "op": "call", "ref": self._ref, "args": _encode_args(args), "kwargs": _encode_kwargs(kwargs),
+        }))
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return _unwrap(self._rpc, self._rpc.request({"op": "getattr", "ref": self._ref, "name": name}))
+
+def _encode_args(args):
+    return [_encode_one(item) for item in args]
+
+def _encode_kwargs(kwargs):
+    return {key: _encode_one(value) for key, value in kwargs.items()}
+
+def _encode_one(value):
+    if isinstance(value, _Handle):
+        return {"$ref": value._ref}
+    if isinstance(value, tuple):
+        return [_encode_one(item) for item in value]
+    if isinstance(value, list):
+        return [_encode_one(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _encode_one(item) for key, item in value.items()}
+    return value
+
+def _install_hook(rpc, names):
+    import importlib.machinery
+    names = set(names)
+    class _Loader:
+        def __init__(self, fullname):
+            self.fullname = fullname
+        def create_module(self, spec):
+            return None
+        def exec_module(self, module):
+            resp = rpc.request({"op": "import", "name": self.fullname})
+            if not resp or not resp.get("ok"):
+                _unwrap(rpc, resp)
+            ref = resp["ref"]
+            def __getattr__(self, name, _ref=ref):
+                if name.startswith("__"):
+                    raise AttributeError(name)
+                return _unwrap(rpc, rpc.request({"op": "getattr", "ref": _ref, "name": name}))
+            module.__class__ = type("ProxyModule", (type(module),), {"__getattr__": __getattr__})
+    class _Finder:
+        def find_spec(self, fullname, path, target=None):
+            top = fullname.split(".", 1)[0]
+            if top not in names:
+                return None
+            return importlib.machinery.ModuleSpec(fullname, _Loader(fullname))
+    sys.meta_path.insert(0, _Finder())
+
+def _start_worker(result_fd):
+    import socket, subprocess
+    parent, child = socket.socketpair()
+    child.set_inheritable(True)
+    try:
+        os.set_inheritable(result_fd, False)
+    except OSError:
+        pass
+    env = {key: value for key, value in os.environ.items() if not key.startswith("SDF_ORACLE_")}
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-B", "-c", _WORKER, str(child.fileno())],
+        pass_fds=(child.fileno(),),
+        close_fds=True,
+        cwd=os.getcwd(),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    child.close()
+    return _RPC(parent, proc)
+
+def _plugin(fd, write, rpc):
     import json, types
     mod = types.ModuleType("sdf_oracle_plugin")
     def pytest_sessionfinish(session, exitstatus):
+        if rpc is not None:
+            rpc.close()
         reporter = session.config.pluginmanager.get_plugin("terminalreporter")
         stats = getattr(reporter, "stats", {}) if reporter is not None else {}
         def count(key):
@@ -147,12 +368,18 @@ def _notary():
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
+        subjects = [item for item in os.environ.pop("SDF_ORACLE_SUBJECTS", "").split(",") if item]
+        rpc = _start_worker(write_fd) if subjects else None
         try:
             stub = _stub()
             write = _seccomp(write_fd, stub)
         except OSError:
+            if rpc is not None:
+                rpc.close()
             os._exit(86)
-        _plugin(write_fd, write)
+        _plugin(write_fd, write, rpc)
+        if subjects:
+            _install_hook(rpc, subjects)
         return
     os.close(write_fd)
     chunks, size = [], 0
@@ -204,6 +431,35 @@ class SealedOracle:
 
     def cleanup(self) -> None:
         shutil.rmtree(self.root, ignore_errors=True)
+
+
+# Top-level modules the pytest process must not import. They run in the subject
+# worker. pytest itself and the stdlib are never proxied, even if a workspace
+# file shadows them (that shadow stays on disk and is not loaded here).
+_NOT_SUBJECT = frozenset({"pytest", "_pytest", "py", "pluggy", "conftest", "sdf_oracle_plugin"})
+
+
+def subject_module_names(root: Path, oracle_paths: set[str]) -> str:
+    """Comma-separated top-level module names under ``root`` that are not oracle files."""
+
+    names: set[str] = set()
+    if not root.is_dir():
+        return ""
+    stdlib = getattr(sys, "stdlib_module_names", frozenset())
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and not name.startswith(".")]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            relative = Path(dirpath, name).relative_to(root).as_posix()
+            if relative in oracle_paths or relative.startswith(REPORT_DIR_NAME + "/"):
+                continue
+            top = relative.split("/", 1)[0]
+            module = top[:-3] if top.endswith(".py") else top
+            if not module.isidentifier() or module in _NOT_SUBJECT or module in stdlib:
+                continue
+            names.add(module)
+    return ",".join(sorted(names))
 
 
 @dataclass(frozen=True)
