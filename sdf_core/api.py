@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import (
+    AttemptRevisionRow,
     AttemptRow,
     Base,
     DecisionEdgeRow,
@@ -41,6 +42,7 @@ from .credentials import AGENT_KINDS
 from .events import events_for_attempts, kind_counts as event_kind_counts, normalized as normalized_event, summarize as summarize_events
 from .policy import ActionRequest, AllowlistPolicy, AuditEvent
 from .decision_gate import material_payload
+from .revisions import revision_for_attempt, revision_payload, verify_attempt_revision
 from .tools import AttemptBinding
 from .containment import MacOSSandboxBackend
 from .checks import CheckConfigError, CheckRegistry, UnknownCheckError
@@ -452,6 +454,11 @@ class EvidenceResponse(BaseModel):
     artifact_ref: str | None
     confidence: float
     criterion: str | None = None
+    # ADR 0032 (#62): the Attempt revision and result tree this Evidence checked
+    # (null for Evidence written before migration 0023).
+    revision_id: str | None = None
+    tree_sha256: str | None = None
+    evidence_mode: str | None = None
 
 
 def node_payload(node: GraphNodeRow) -> dict[str, Any]:
@@ -624,10 +631,17 @@ def get_task_trace(task_id: str, db: Session = Depends(get_db)):
     attempt_ids = db.scalars(select(AttemptRow.id).where(AttemptRow.task_id == task_id)).all()
     # Grouped by Attempt; within one, the contract's deterministic merge order.
     runtime_events = sorted(events_for_attempts(db, attempt_ids), key=lambda row: row.attempt_id)
+    attempts = {row.id: row for row in db.scalars(select(AttemptRow).where(AttemptRow.task_id == task_id))}
     return {
         "nodes": [node_payload(n) for n in ordered_nodes],
         "edges": [edge_payload(e) for e in edges],
         "runtime_events": [normalized_event(event) for event in runtime_events],
+        # ADR 0032 (#62): which snapshot each Attempt started from and produced.
+        "revisions": [
+            revision_payload(row, attempts.get(row.attempt_id))
+            for row in db.scalars(select(AttemptRevisionRow).where(AttemptRevisionRow.attempt_id.in_(list(attempts)))
+                                  .order_by(AttemptRevisionRow.attempt_id))
+        ],
     }
 
 
@@ -647,6 +661,25 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
         "artifact_ref": evidence.artifact_ref,
         "confidence": evidence.confidence,
         "criterion": criterion,
+        "revision_id": evidence.revision_id,
+        "tree_sha256": evidence.tree_sha256,
+        "evidence_mode": evidence.evidence_mode,
+    }
+
+
+@app.get("/attempts/{attempt_id}/revision")
+def get_attempt_revision(attempt_id: str, db: Session = Depends(get_db)):
+    """The repository snapshot an Attempt started from and produced, and a
+    re-check of its artifact/Evidence bindings (ADR 0032). Not acceptance Evidence."""
+
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    return {
+        "attempt_id": attempt_id,
+        "revision": revision_payload(revision_for_attempt(db, attempt_id), attempt),
+        "verification": verify_attempt_revision(db, attempt_id),
+        "acceptance_evidence": False,
     }
 
 

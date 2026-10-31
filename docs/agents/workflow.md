@@ -20,7 +20,7 @@ Separate what the project has **decided** from what the code **happens to do**.
 | --- | --- | --- |
 | Normative authority | Accepted ADRs in `docs/adr/`; `CONTEXT.md` (vocabulary); `docs/roadmap.md` (active phases and gates); explicit maintainer decisions recorded on a GitHub issue (for example "Accepted by maintainer on …"); the issue's own acceptance criteria | Defines required behaviour, boundaries and policy. Cite it. |
 | Observed implementation | Code, tests, default values, configuration, CI files, existing patterns | Shows what the system does today. It is evidence, not policy. |
-| Unaccepted material | Proposed ADRs, research notes in `docs/research/`, triage notes, open proposal issues (e.g. #60, #62), agent Claims | Context only. Never treat as approval. |
+| Unaccepted material | Proposed ADRs, research notes in `docs/research/`, triage notes, open proposal issues that no ADR or recorded maintainer decision has accepted (#60 and #62 were accepted on 2026-10-31, see ADR 0028), agent Claims | Context only. Never treat as approval. |
 
 Rules:
 

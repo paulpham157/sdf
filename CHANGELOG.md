@@ -4,6 +4,49 @@
 
 ### Breaking API changes
 
+- **Artifacts and Evidence are bound to immutable Attempt revisions (#62, ADR 0032).**
+  - Migration `0023_attempt_revisions` adds `attempt_revisions` and nullable
+    `revision_id` / `tree_sha256` on `artifacts` and `evidence`. Existing rows
+    stay `NULL` (`unbound`); nothing is backfilled or rewritten.
+  - Every Attempt started by `ExecutionService` records its repository
+    identity and base tree. The E2B adapter also records its
+    "sdf attempt baseline" commit. `finish` records the result tree before
+    any artifact. Tree ids are Git SHA-256-format tree ids of the full
+    workspace (`.git` excluded, ignore rules not applied).
+  - Behaviour change: `finish` fails the Attempt, writing no artifacts, when
+    it has no base revision, when the fixture changed after `begin`, or when
+    an adapter-reported result tree does not match.
+  - A new artifact/Evidence row with a missing, mismatched, cross-Attempt or
+    unknown revision binding is refused by the ORM guards and, on
+    PostgreSQL, by insert triggers. Revision rows cannot be deleted, their
+    base is immutable and results are set once. An artifact's binding cannot
+    be changed after insert (ORM guard and PostgreSQL `BEFORE UPDATE`
+    trigger).
+  - New column `attempts.revision_required`. It is `NULL` on Attempts that
+    existed before 0023 (the durable legacy marker) and forced to `TRUE` on
+    every later Attempt (ORM guard; PostgreSQL trigger, whatever the INSERT
+    says). It is immutable. Only a `NULL` Attempt may have unbound
+    artifacts or Evidence; an unknown Attempt may not. Behaviour change:
+    code or tests that write Evidence for an Attempt without a revision
+    must now give it one.
+  - Behaviour change: after each check the workspace is hashed again. If it
+    differs from the revision's result tree, a PASS from that check is
+    recorded as `INCONCLUSIVE`. The note is added to its stderr, and
+    `tree_after_check_sha256` / `tree_drift` are added to the
+    evaluator-output artifact and node metadata. A FAIL stays FAIL. To keep
+    ordinary checks from drifting, hardened `python`/`pytest` checks now run
+    with `-B`: `-I` ignored `PYTHONDONTWRITEBYTECODE`, so `__pycache__`
+    used to be written into the workspace. A check that writes elsewhere in
+    the workspace (for example pytest's `tmp_path`, because `TMPDIR` is the
+    workspace) is now `INCONCLUSIVE`.
+  - New `GET /attempts/{id}/revision` returns the revision and a binding and
+    artifact-digest check. `GET /tasks/{id}/trace` adds `revisions`;
+    `GET /evidence/{id}` adds `revision_id`, `tree_sha256` and
+    `evidence_mode`. Evaluator-output artifacts include the revision.
+  - Attempt workspaces now keep the fixture's owner-execute bit (owner
+    only).
+  - The `repository` identity of a directory outside `SDF_FIXTURES_ROOT` is
+    `path-sha256:<16 hex>` instead of the absolute host path.
 - **Fixture confinement and error hardening (CodeQL triage).**
   - `POST /plans` now stores the resolved, confined absolute `fixture_dir`.
     Before, it validated the path against `SDF_FIXTURES_ROOT` but stored the

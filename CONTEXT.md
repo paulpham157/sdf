@@ -42,6 +42,10 @@ _Avoid_: task, retry
 A captured immutable output of an Attempt, such as a diff, test log, build result or release package.
 _Avoid_: evidence, output
 
+**Attempt Revision**:
+The immutable record of which repository snapshot an Attempt started from (base tree) and produced (result tree), to which its Artifacts and Evidence are bound (ADR 0032). A PASS holds for that result tree only.
+_Avoid_: version, commit (a Git commit is only an optional name for the base)
+
 **Evidence**:
 A recorded observation from an Artifact or evaluator that supports, weakens or contradicts an Assumption or Decision.
 _Avoid_: agent opinion, status flag
