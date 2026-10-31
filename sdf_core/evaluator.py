@@ -27,11 +27,14 @@ from .oracle import (
     materialize,
     PYTEST_SEAL,
     load_result_frame,
+    load_script_result,
+    seal_oracle_digest,
     subject_module_names,
     prepare_private_report,
     prepare_sealed_report,
     pytest_oracle_verdict,
     retarget_pytest,
+    script_oracle_verdict,
 )
 from .sandbox import FixtureSandbox, SandboxViolation
 
@@ -66,15 +69,17 @@ RUFF_FLAGS = ("--isolated", "--no-cache")
 # process. A script check also gets its own directory appended (before the
 # cwd), as plain python would put it first: sibling helpers import, but a
 # sibling ``json.py`` cannot replace the stdlib one.
+# The sandbox process is the notary for pytest and for script / python -c.
+# It forks the oracle child and writes the result file only after that child
+# exits. The child returns here. Subject imports are proxied to the worker.
+# A script or python -c check records a completion frame only after its own
+# code returns (or SystemExit 0). No frame means the parent does not pass it.
 PYTHON_BOOTSTRAP = (
     "import importlib.machinery, os, runpy, sys\n"
     "_m, _t = sys.argv[1], sys.argv[2]\n"
     "sys.argv = ['-c' if _m == '-c' else _t, *sys.argv[3:]]\n"
-    # Pop the seal before any project import. For pytest the notary (this
-    # process) forks the child and only then writes the result file; the
-    # child returns here and execs pytest. The notary does not return.
     "_seal = os.environ.pop('SDF_ORACLE_SEAL', '')\n"
-    "if _m == '-m' and _t == 'pytest' and _seal:\n"
+    "if _seal:\n"
     "    exec(compile(_seal, '<seal>', 'exec'), {'__name__': 'sdf_seal'})\n"
     "_trusted = list(sys.path)\n"
     "if _m == 'path':\n"
@@ -88,12 +93,25 @@ PYTHON_BOOTSTRAP = (
     "            return spec\n"
     "    return _orig(fullname, path, target)\n"
     "importlib.machinery.PathFinder.find_spec = classmethod(_find_spec)\n"
-    "if _m == '-c':\n"
-    "    exec(compile(_t, '<string>', 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})\n"
-    "elif _m == '-m':\n"
-    "    runpy.run_module(_t, run_name='__main__', alter_sys=True)\n"
+    "def _run():\n"
+    "    if _m == '-c':\n"
+    "        exec(compile(_t, '<string>', 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})\n"
+    "    elif _m == '-m':\n"
+    "        runpy.run_module(_t, run_name='__main__', alter_sys=True)\n"
+    "    else:\n"
+    "        runpy.run_path(_t, run_name='__main__')\n"
+    "if _m == '-m' and _t == 'pytest':\n"
+    "    _run()\n"
     "else:\n"
-    "    runpy.run_path(_t, run_name='__main__')\n"
+    "    try:\n"
+    "        _run()\n"
+    "    except SystemExit as _exc:\n"
+    "        if _exc.code not in (None, 0):\n"
+    "            raise\n"
+    "    _note = getattr(sys.modules.get('sdf_oracle_plugin'), 'note_completed', None)\n"
+    "    if _note is None:\n"
+    "        raise SystemExit(86)\n"
+    "    _note(0)\n"
 )
 PR_SET_DUMPABLE = 4
 
@@ -262,11 +280,10 @@ class DeterministicEvaluator:
     ``conftest.py`` and plugins; ruff ignores workspace config.  On the host
     the server process is made non-dumpable first (:func:`protect_server_process`).
 
-    Pytest and any check with a server fixture run from a sealed oracle
-    (ADR 0037). Subject modules run in a worker process. Assertions and the
-    result frame stay in the pytest process, which the subject cannot see.
-    Script checks still run agent code in the process whose exit status is
-    the verdict (ADR 0025).
+    Pytest, script, and ``python -c`` checks run from a sealed oracle when a
+    server fixture is available (ADR 0037). Subject modules run in a worker
+    process. Assertions and the completion frame stay in a child the subject
+    cannot reach; the notary writes that frame only after the child exits.
     """
 
     def __init__(
@@ -582,27 +599,30 @@ class DeterministicEvaluator:
             absolute = [target for target in targets if os.path.isabs(target)]
             oracle_digest = None
             run_root = workspace
+            python_check = _is_python_check(argv)
             # A server fixture is the oracle. Absolute test paths are already
             # outside the workspace; everything else runs from the sealed copy.
             if reference is not None and not absolute:
                 try:
-                    sealed = materialize(reference, workspace, targets)
+                    sealed = materialize(reference, workspace, targets, command=argv)
                 except OracleTamper as exc:
                     return stop(exc.reason)
                 oracle_digest = sealed.oracle_digest
                 run_root = sealed.root
-                if is_pytest(argv):
-                    report = prepare_sealed_report(sealed)
-            elif is_pytest(argv):
-                report = prepare_private_report()
-            if report is not None:
+            # Pytest, scripts, and python -c all need a result file the notary
+            # writes after the oracle child exits. The child's own exit code
+            # is not the verdict.
+            if python_check or is_pytest(argv):
+                report = prepare_sealed_report(sealed) if sealed is not None else prepare_private_report()
+            if report is not None and is_pytest(argv):
                 process_argv = retarget_pytest(process_argv, sealed=sealed is not None)
             child_env = _check_env(safe_path)
             if report is not None and os.path.basename(process_argv[0]) not in {"pytest"}:
-                # The bootstrap (python -c) is the notary. It pops these before
-                # the pytest child is forked, so the subject never sees them.
+                # The bootstrap is the notary. It pops these before the oracle
+                # child is forked, so the subject never sees them.
                 child_env["SDF_ORACLE_SEAL"] = PYTEST_SEAL
                 child_env["SDF_ORACLE_REPORT"] = str(report.result_path)
+                child_env["SDF_ORACLE_KIND"] = "pytest" if is_pytest(argv) else "script"
                 oracle_paths = set(sealed.oracle_paths) if sealed is not None else set()
                 child_env["SDF_ORACLE_SUBJECTS"] = subject_module_names(run_root, oracle_paths)
             elif report is not None:
@@ -610,6 +630,10 @@ class DeterministicEvaluator:
                     "oracle result channel is not sealed for a bare pytest executable",
                     oracle_digest=oracle_digest,
                 )
+            # A pure python -c check seals no files. The digest still covers
+            # the registered argv, so it is not the hash of an empty input.
+            if oracle_digest is None:
+                oracle_digest = seal_oracle_digest(argv)
             try:
                 sandbox = FixtureSandbox(
                     run_root,
@@ -637,6 +661,23 @@ class DeterministicEvaluator:
                     exit_code=completed.returncode,
                     frame=load_result_frame(report.result_path),
                     declared=declared,
+                    oracle_changed=bool(sealed and sealed.changed()),
+                )
+                if reason:
+                    stderr = f"{stderr or ''}\n[evaluator] {reason}".lstrip("\n")
+            elif (
+                self.containment_backend is None
+                and report is not None
+                and python_check
+                and not is_pytest(argv)
+            ):
+                # The notary writes the frame on this host. A containment
+                # backend runs that process inside the sandbox and reports
+                # the exit code; the frame is not on the host, and a non-git
+                # workspace is not pulled.
+                result_status, reason = script_oracle_verdict(
+                    exit_code=completed.returncode,
+                    frame=load_script_result(report.result_path),
                     oracle_changed=bool(sealed and sealed.changed()),
                 )
                 if reason:
@@ -730,6 +771,12 @@ class DeterministicEvaluator:
         if isinstance(value, bytes):
             return value.decode(errors="replace")
         return value
+
+
+def _is_python_check(argv: Sequence[str]) -> bool:
+    """True for ``python`` / ``python3`` checks, including ``python -m pytest``."""
+
+    return bool(argv) and os.path.basename(argv[0]) in {"python", "python3"}
 
 
 def _pytest_node_ids(argv: Sequence[str]) -> list[str]:
