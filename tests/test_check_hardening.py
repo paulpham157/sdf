@@ -24,7 +24,7 @@ from sdf_core.evaluator import CLEARED_ENV, DeterministicEvaluator, _check_env
 from sdf_core.plans import task_id_for
 from tests.agent_comm_support import fake_factory, lead_behavior, make_fixture, plan_dict, worker_behavior
 from tests.auth_support import admin_client, client_as
-from tests.check_support import write_checks
+from tests.check_support import ADD_SUM_CHECK, write_checks
 
 PYVER = f"python{sys.version_info.major}.{sys.version_info.minor}"
 client = admin_client()
@@ -95,6 +95,46 @@ def test_workspace_cannot_forge_a_pass(tmp_path, case):
     files, argv = FORGERIES[case]
     evidence = _run(tmp_path, files, argv)
     assert evidence.status == "FAIL", (case, evidence.status, evidence.stdout[-300:], evidence.stderr[-300:])
+
+
+def test_agent_code_cannot_shadow_stdlib_by_moving_the_workspace_first(tmp_path):
+    """Importing the code under test used to let it put the workspace at sys.path[0].
+
+    A later import then loaded a planted stdlib name (``fractions.py`` calling
+    ``os._exit(0)``) and the check's failing ``SystemExit`` never ran.
+    """
+
+    files = {
+        "calc.py": "import os, sys\nsys.path.insert(0, os.getcwd())\ndef add(a, b):\n    return a - b\n",
+        "fractions.py": "import os\nos._exit(0)\n",
+    }
+    evidence = _run(tmp_path, files, ["python3", "-c", "from calc import add; import fractions; raise SystemExit(1)"])
+    assert evidence.status == "FAIL", (evidence.status, evidence.stdout[-300:], evidence.stderr[-300:])
+    # The code under test and a workspace-only helper stay importable.
+    ok = _run(
+        tmp_path,
+        {"calc.py": "def add(a, b):\n    return a + b\n", "helper.py": "VALUE = 1\n"},
+        ["python3", "-c", "from calc import add\nimport helper\nassert add(2, 3) == 5 and helper.VALUE == 1"],
+    )
+    assert ok.status == "PASS", (ok.stdout[-300:], ok.stderr[-300:])
+
+
+def test_add_sum_check_is_not_satisfied_by_one_hardcoded_case(tmp_path):
+    """The full-loop add-sum check. ``return a - b`` is the should-fail fixture."""
+
+    argv = ["python3", "-c", ADD_SUM_CHECK]
+    failing = {
+        "subtract": "def add(a, b):\n    return a - b\n",
+        "docstring-only": '"""Calculator."""\ndef add(a, b):\n    return a - b\n',
+        "constant": "def add(a, b):\n    return 5\n",
+        "one-pair": "def add(a, b):\n    return 5 if (a, b) == (2, 3) else a - b\n",
+        "eq-object": "class T:\n    def __eq__(self, other):\n        return True\ndef add(a, b):\n    return T()\n",
+    }
+    for name, body in failing.items():
+        evidence = _run(tmp_path, {"calc.py": body}, argv)
+        assert evidence.status == "FAIL", (name, evidence.status, evidence.stderr[-300:])
+    passed = _run(tmp_path, {"calc.py": "def add(a, b):\n    return a + b\n"}, argv)
+    assert passed.status == "PASS", (passed.stdout[-300:], passed.stderr[-300:])
 
 
 def test_workspace_ruff_config_cannot_exclude_everything(tmp_path):

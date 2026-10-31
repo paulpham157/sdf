@@ -37,18 +37,31 @@ PYTEST_FLAGS = ("--noconftest", "-c", os.devnull, "--rootdir", "/", "-p", "no:ca
                 "--import-mode=append")
 RUFF_FLAGS = ("--isolated", "--no-cache")
 # Run a python check with -I (no PYTHON* env, no user site, no cwd/script dir
-# first on sys.path); the workspace is *appended* so the code under test is
-# importable but cannot shadow the stdlib or an installed package (pytest, ...).
-# A script check also gets its own directory appended (before the cwd), as
-# plain python would put it first: sibling helpers import, but a sibling
-# ``json.py`` cannot replace the stdlib one.
+# first on sys.path). The pre-workspace path is snapshotted, then the workspace
+# is *appended* so the code under test is importable. A path finder resolves a
+# top-level name on that snapshot whenever the name exists there, so agent code
+# that inserts the workspace at sys.path[0] still cannot shadow the stdlib or
+# an installed package (pytest, ...). Replacing the finder is the same inherent
+# limit as os._exit(0) (ADR 0025): the imported module already controls the
+# process. A script check also gets its own directory appended (before the
+# cwd), as plain python would put it first: sibling helpers import, but a
+# sibling ``json.py`` cannot replace the stdlib one.
 PYTHON_BOOTSTRAP = (
-    "import sys, os, runpy\n"
+    "import importlib.machinery, os, runpy, sys\n"
     "_m, _t = sys.argv[1], sys.argv[2]\n"
     "sys.argv = ['-c' if _m == '-c' else _t, *sys.argv[3:]]\n"
+    "_trusted = list(sys.path)\n"
     "if _m == 'path':\n"
     "    sys.path.append(os.path.dirname(os.path.abspath(_t)))\n"
     "sys.path.append(os.getcwd())\n"
+    "_orig = importlib.machinery.PathFinder.find_spec\n"
+    "def _find_spec(cls, fullname, path=None, target=None):\n"
+    "    if path is None:\n"
+    "        spec = _orig(fullname, _trusted, target)\n"
+    "        if spec is not None:\n"
+    "            return spec\n"
+    "    return _orig(fullname, path, target)\n"
+    "importlib.machinery.PathFinder.find_spec = classmethod(_find_spec)\n"
     "if _m == '-c':\n"
     "    exec(compile(_t, '<string>', 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})\n"
     "elif _m == '-m':\n"
@@ -180,6 +193,9 @@ class Evidence:
     # Where the check ran: "host", the containment backend's name, or None
     # when nothing ran (coverage/config evidence).
     runner: str | None = None
+    # The check was measured, but killing its containment box failed. The
+    # verdict stays PASS/FAIL; this is the cleanup error, not a new one.
+    cleanup_error: str | None = None
     # ADR 0032 (#62): the workspace tree right after this check ran, when the
     # caller observed it (``after_check``); differs from the revision's result
     # tree only when the check (or anything else) changed the workspace.
@@ -205,7 +221,8 @@ class DeterministicEvaluator:
     no backend it does not run at all (INCONCLUSIVE).
 
     The argv is hardened (:func:`harden_argv`): python runs isolated with the
-    workspace appended to ``sys.path``; pytest ignores workspace config,
+    workspace appended to ``sys.path`` and top-level imports preferring the
+    pre-workspace path; pytest ignores workspace config,
     ``conftest.py`` and plugins; ruff ignores workspace config.  On the host
     the server process is made non-dumpable first (:func:`protect_server_process`).
     What remains is inherent: a check that imports agent code runs agent code,
@@ -292,6 +309,7 @@ class DeterministicEvaluator:
                     confidence=item.confidence,
                     criterion=item.criterion,
                     runner=item.runner,
+                    cleanup_error=item.cleanup_error,
                     tree_after_sha256=item.tree_after_sha256,
                 )
             )
@@ -523,13 +541,18 @@ class DeterministicEvaluator:
             completed = sandbox.run(process_argv, env=_check_env(safe_path))
         except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
             return self._inconclusive(attempt_id, index, rendered, criterion,
-                                      f"check could not run: {type(exc).__name__}: {exc}"[:500])
+                                      f"check could not run: {type(exc).__name__}: {exc}"[:500],
+                                      runner=self.runner)
         if completed.timed_out:
             return self._inconclusive(attempt_id, index, rendered, criterion,
                                       (completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout,
                                       runner=self.runner)
         result_status = "PASS" if completed.returncode == 0 else "FAIL"
         stderr = completed.stderr
+        cleanup_error = completed.cleanup_error
+        if cleanup_error:
+            _log.warning("evaluator_cleanup_failed", extra={"runner": self.runner, "error": cleanup_error[-500:]})
+            stderr = f"{stderr or ''}\n[evaluator] cleanup failed: {cleanup_error}".lstrip("\n")
         if result_status == "PASS" and is_pytest(argv):
             verdict = pytest_verdict(completed.stdout or "", bool(getattr(completed, "output_truncated", False)))
             if verdict is not None:
@@ -547,6 +570,7 @@ class DeterministicEvaluator:
             confidence=1.0 if result_status == "PASS" else 0.95,
             criterion=criterion,
             runner=self.runner,
+            cleanup_error=cleanup_error,
         )
 
     def _pytest_interpreter(self, pytest_path: str, workspace: Path, safe_path: str) -> str | None:

@@ -100,6 +100,7 @@ class ArtifactStore:
                 "stderr": evidence.stderr,
                 "confidence": evidence.confidence,
                 "runner": evidence.runner,
+                "cleanup_error": evidence.cleanup_error,
                 # ADR 0032 (#62): the Attempt revision and tree this check ran against.
                 **({"revision": dict(revision)} if revision is not None else {}),
             },
