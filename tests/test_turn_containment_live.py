@@ -2,7 +2,7 @@
 
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_CONTAINMENT``
 (``1`` = all six kinds, or a comma-separated subset) plus ``E2B_API_KEY`` and
-``VULTR_INFERENCE_API_KEY`` (env / repo ``.env``; presence only, values never
+that kind's allow-listed API key (env / repo ``.env``; presence only, values never
 printed).  Template: ``SDF_E2B_VULTR_TEMPLATE`` (prebuilt agents image, default
 ``sdf-herdr-agents``) for every kind; ``SDF_LIVE_CONTAINMENT_SCENARIOS`` picks ``timeout,sigkill,cancel``.
 
@@ -44,7 +44,7 @@ ENV = V.ENV
 _SEL = ENV.get("SDF_LIVE_CONTAINMENT", "")
 KINDS = ("pi", "qwen", "goose", "opencode", "codex", "claude") if _SEL == "1" else tuple(k for k in _SEL.split(",") if k)
 SCENARIOS = tuple(ENV.get("SDF_LIVE_CONTAINMENT_SCENARIOS", "timeout,sigkill,cancel").split(","))
-LIVE = ENV.get("SDF_LIVE_E2B") == "1" and bool(KINDS) and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get(V.KEY_VAR))
+LIVE = ENV.get("SDF_LIVE_E2B") == "1" and bool(KINDS) and bool(ENV.get("E2B_API_KEY"))
 pytestmark = pytest.mark.skipif(not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_LIVE_CONTAINMENT=1 with E2B/Vultr keys")
 TEMPLATE = V.PREBUILT_TEMPLATE or V.DEFAULT_TEMPLATE
 REPORT_DIR = Path("/tmp/sdf-live-reports")
@@ -83,16 +83,23 @@ echo "CGROUPS $(find /sys/fs/cgroup/sdf-turns -mindepth 1 -maxdepth 1 -type d 2>
 
 
 def _environ(kind: str) -> dict[str, str]:
-    e = {"E2B_API_KEY": ENV["E2B_API_KEY"], V.KEY_VAR: ENV[V.KEY_VAR]}
-    k = V.KEY_VAR
+    key_name = V.KEY_NAMES[kind]
+    if not ENV.get(key_name):
+        pytest.skip(f"{key_name} is not set")
+    e = {"E2B_API_KEY": ENV["E2B_API_KEY"], key_name: ENV[key_name]}
+    upper = kind.upper()
     if kind == "codex":
-        e |= {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_CODEX_API_KEY_ENV": k,
-              "SDF_OPENAI_BASE_URL": f"https://{V.INFERENCE_HOST}/v1", "SDF_CODEX_MODEL": V.MODEL}
+        e |= {"SDF_CREDENTIAL_MODE_CODEX": "api-key",
+              "OPENAI_BASE_URL": f"https://{V.INFERENCE_HOST}/v1", "OPENAI_MODEL": V.MODEL}
     elif kind == "claude":
-        e |= {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_CLAUDE_API_KEY_ENV": k,
-              "SDF_ANTHROPIC_BASE_URL": f"https://{V.INFERENCE_HOST}", "SDF_CLAUDE_MODEL": V.MODEL}
+        e |= {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
+              "ANTHROPIC_BASE_URL": f"https://{V.INFERENCE_HOST}", "ANTHROPIC_MODEL": V.MODEL}
     else:
-        e |= {f"SDF_CREDENTIAL_MODE_{kind.upper()}": "api-key", f"SDF_{kind.upper()}_API_KEY_ENV": k}
+        e |= {
+            f"SDF_CREDENTIAL_MODE_{upper}": "api-key",
+            f"{upper}_BASE_URL": f"https://{V.INFERENCE_HOST}/v1",
+            f"{upper}_MODEL": V.MODEL,
+        }
     return e
 
 

@@ -40,7 +40,7 @@ def _assert_no_secret(message: str) -> None:
     [("claude", "SDF_CREDENTIAL_MODE_CLAUDE"), ("codex", "SDF_CREDENTIAL_MODE_CODEX")],
 )
 def test_missing_mode_names_the_variable(agent, variable):
-    env = {"SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC, "SDF_OPENAI_API_KEY": DUMMY_OPENAI, **SHELL_SECRETS}
+    env = {"ANTHROPIC_API_KEY": DUMMY_ANTHROPIC, "OPENAI_API_KEY": DUMMY_OPENAI, **SHELL_SECRETS}
     with pytest.raises(CredentialConfigError) as error:
         resolve_credential_plan(agent, env)
     assert variable in str(error.value)
@@ -49,7 +49,7 @@ def test_missing_mode_names_the_variable(agent, variable):
 
 @pytest.mark.parametrize("value", ["", "  ", "API-KEY-typo", "oauth", DUMMY_ANTHROPIC])
 def test_unknown_mode_names_the_variable_not_the_value(value):
-    env = {"SDF_CREDENTIAL_MODE_CLAUDE": value, "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    env = {"SDF_CREDENTIAL_MODE_CLAUDE": value, "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
     with pytest.raises(CredentialConfigError) as error:
         resolve_credential_plan("claude", env)
     message = str(error.value)
@@ -59,7 +59,7 @@ def test_unknown_mode_names_the_variable_not_the_value(value):
 
 
 def test_mode_of_other_agent_is_not_a_fallback():
-    env = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    env = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
     with pytest.raises(CredentialConfigError, match="SDF_CREDENTIAL_MODE_CLAUDE"):
         resolve_credential_plan("claude", env)
 
@@ -73,7 +73,7 @@ def test_unknown_agent_kind_is_rejected():
 
 
 def test_claude_api_key_plan_sets_anthropic_key_and_strips_conflicts():
-    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
     plan = resolve_credential_plan("claude", env)
     assert plan.agent == "claude"
     assert plan.mode is CredentialMode.API_KEY
@@ -84,7 +84,7 @@ def test_claude_api_key_plan_sets_anthropic_key_and_strips_conflicts():
 
 
 def test_codex_api_key_plan_sets_openai_key_and_strips_conflicts():
-    env = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_OPENAI_API_KEY": DUMMY_OPENAI}
+    env = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "OPENAI_API_KEY": DUMMY_OPENAI}
     plan = resolve_credential_plan("codex", env)
     assert plan.mode is CredentialMode.API_KEY
     assert dict(plan.set_variables) == {"OPENAI_API_KEY": DUMMY_OPENAI}
@@ -92,13 +92,13 @@ def test_codex_api_key_plan_sets_openai_key_and_strips_conflicts():
 
 
 def test_set_and_strip_never_overlap():
-    for agent, key_var, key in (("claude", "SDF_ANTHROPIC_API_KEY", DUMMY_ANTHROPIC), ("codex", "SDF_OPENAI_API_KEY", DUMMY_OPENAI)):
+    for agent, key_var, key in (("claude", "ANTHROPIC_API_KEY", DUMMY_ANTHROPIC), ("codex", "OPENAI_API_KEY", DUMMY_OPENAI)):
         plan = resolve_credential_plan(agent, {f"SDF_CREDENTIAL_MODE_{agent.upper()}": "api-key", key_var: key})
         assert not set(plan.set_variables) & set(plan.strip_variables)
 
 
 def test_seed_steps_reference_variable_names_only():
-    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
     plan = resolve_credential_plan("claude", env)
     assert plan.seed_steps
     for step in plan.seed_steps:
@@ -107,45 +107,45 @@ def test_seed_steps_reference_variable_names_only():
 
 
 @pytest.mark.parametrize(
-    ("agent", "variable"), [("claude", "SDF_ANTHROPIC_API_KEY"), ("codex", "SDF_OPENAI_API_KEY")]
+    ("agent", "variable"), [("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY")]
 )
-def test_missing_api_key_names_the_sdf_variable(agent, variable):
-    env = {f"SDF_CREDENTIAL_MODE_{agent.upper()}": "api-key", **SHELL_SECRETS}
+def test_missing_api_key_names_the_variable(agent, variable):
+    env = {f"SDF_CREDENTIAL_MODE_{agent.upper()}": "api-key", "VULTR_INFERENCE_API_KEY": "not-a-credential"}
     with pytest.raises(CredentialConfigError) as error:
         resolve_credential_plan(agent, env)
     assert variable in str(error.value)
-    _assert_no_secret(str(error.value))
+    assert "not-a-credential" not in str(error.value)
 
 
 def test_blank_api_key_is_missing():
-    env = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_OPENAI_API_KEY": "   "}
-    with pytest.raises(CredentialConfigError, match="SDF_OPENAI_API_KEY"):
+    env = {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "OPENAI_API_KEY": "   "}
+    with pytest.raises(CredentialConfigError, match="OPENAI_API_KEY"):
         resolve_credential_plan("codex", env)
 
 
-# --- Shell provider variables never reach a plan ------------------------------
+# --- Only the allow-listed name for this kind is a credential -----------------
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_shell_provider_variables_never_reach_a_plan(agent):
+def test_other_key_names_are_not_this_kinds_credential(agent):
     env = {
         "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
         "SDF_CREDENTIAL_MODE_CODEX": "api-key",
-        "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC,
-        "SDF_OPENAI_API_KEY": DUMMY_OPENAI,
-        **SHELL_SECRETS,
+        "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC,
+        "OPENAI_API_KEY": DUMMY_OPENAI,
+        "VULTR_INFERENCE_API_KEY": "vultr-not-used",
     }
     plan = resolve_credential_plan(agent, env)
-    rendered = repr(plan)
-    for value in SHELL_SECRETS.values():
-        assert value not in plan.set_variables.values()
-        assert value not in rendered
-    assert "ANTHROPIC_BASE_URL" not in plan.set_variables
-    assert "OPENAI_BASE_URL" not in plan.set_variables
+    assert "vultr-not-used" not in plan.set_variables.values()
+    assert "vultr-not-used" not in repr(plan)
+    if agent == "claude":
+        assert plan.set_variables == {"ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    else:
+        assert plan.set_variables == {"OPENAI_API_KEY": DUMMY_OPENAI}
 
 
 def test_plan_repr_redacts_secret_values():
-    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
     plan = resolve_credential_plan("claude", env)
     assert DUMMY_ANTHROPIC not in repr(plan)
     assert DUMMY_ANTHROPIC not in str(plan)
@@ -153,7 +153,7 @@ def test_plan_repr_redacts_secret_values():
 
 
 def test_plan_is_immutable():
-    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
+    env = {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC}
     plan = resolve_credential_plan("claude", env)
     with pytest.raises(TypeError):
         plan.set_variables["ANTHROPIC_API_KEY"] = "other"  # type: ignore[index]
@@ -163,7 +163,7 @@ def test_plan_is_immutable():
 
 
 def test_subscription_requires_connection_name():
-    env = {"SDF_CREDENTIAL_MODE_CODEX": "subscription", "SDF_OPENAI_API_KEY": DUMMY_OPENAI}
+    env = {"SDF_CREDENTIAL_MODE_CODEX": "subscription", "OPENAI_API_KEY": DUMMY_OPENAI}
     with pytest.raises(CredentialConfigError, match="SDF_CONNECTION_CODEX") as error:
         resolve_credential_plan("codex", env, read_connection=lambda agent, cid: pytest.fail("not reached"))
     _assert_no_secret(str(error.value))
@@ -173,7 +173,7 @@ def test_subscription_never_falls_back_to_api_key():
     env = {
         "SDF_CREDENTIAL_MODE_CLAUDE": "subscription",
         "SDF_CONNECTION_CLAUDE": "claude-work",
-        "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC,
+        "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC,
     }
     with pytest.raises(CredentialConfigError, match="claude-work") as error:
         resolve_credential_plan("claude", env)  # no connection reader available
@@ -191,8 +191,7 @@ def test_subscription_plan_uses_connection_material_only():
     env = {
         "SDF_CREDENTIAL_MODE_CLAUDE": "subscription",
         "SDF_CONNECTION_CLAUDE": "claude-work",
-        "SDF_ANTHROPIC_API_KEY": DUMMY_ANTHROPIC,
-        **SHELL_SECRETS,
+        "ANTHROPIC_API_KEY": DUMMY_ANTHROPIC,
     }
     plan = resolve_credential_plan("claude", env, read_connection=reader)
     assert seen == [("claude", "claude-work")]
@@ -223,38 +222,38 @@ def test_dotenv_loads_without_overriding_real_environment(tmp_path: Path):
         "\n"
         "SDF_CREDENTIAL_MODE_CLAUDE=api-key\n"
         "export SDF_CREDENTIAL_MODE_CODEX=subscription\n"
-        'SDF_ANTHROPIC_API_KEY="from-dotenv-dummy"\n'
-        "SDF_OPENAI_API_KEY='quoted-dummy'\n"
+        'ANTHROPIC_API_KEY="from-dotenv-dummy"\n'
+        "OPENAI_API_KEY='quoted-dummy'\n"
         "SDF_CONNECTION_CODEX=codex-personal # trailing comment\n"
         "not a valid line\n"
     )
-    environ = {"SDF_ANTHROPIC_API_KEY": "real-env-wins-dummy", "SDF_CREDENTIAL_MODE_CODEX": ""}
+    environ = {"ANTHROPIC_API_KEY": "real-env-wins-dummy", "SDF_CREDENTIAL_MODE_CODEX": ""}
     loaded = load_dotenv(dotenv, environ)
-    assert environ["SDF_ANTHROPIC_API_KEY"] == "real-env-wins-dummy"
+    assert environ["ANTHROPIC_API_KEY"] == "real-env-wins-dummy"
     assert environ["SDF_CREDENTIAL_MODE_CODEX"] == ""  # present-but-empty still wins
     assert environ["SDF_CREDENTIAL_MODE_CLAUDE"] == "api-key"
-    assert environ["SDF_OPENAI_API_KEY"] == "quoted-dummy"
+    assert environ["OPENAI_API_KEY"] == "quoted-dummy"
     assert environ["SDF_CONNECTION_CODEX"] == "codex-personal"
-    assert set(loaded) == {"SDF_CREDENTIAL_MODE_CLAUDE", "SDF_OPENAI_API_KEY", "SDF_CONNECTION_CODEX"}
+    assert set(loaded) == {"SDF_CREDENTIAL_MODE_CLAUDE", "OPENAI_API_KEY", "SDF_CONNECTION_CODEX"}
 
 
-@pytest.mark.parametrize("line", ['SDF_ANTHROPIC_API_KEY="sk-dummy-value"garbage', "SDF_ANTHROPIC_API_KEY='sk-dummy-value"])
+@pytest.mark.parametrize("line", ['ANTHROPIC_API_KEY="sk-dummy-value"garbage', "ANTHROPIC_API_KEY='sk-dummy-value"])
 def test_dotenv_malformed_quoted_value_names_variable_not_value(tmp_path: Path, line):
     dotenv = tmp_path / ".env"
     dotenv.write_text(f"# header\n{line}\n")
     with pytest.raises(CredentialConfigError) as error:
         load_dotenv(dotenv, {})
     message = str(error.value)
-    assert "SDF_ANTHROPIC_API_KEY" in message and ":2:" in message
+    assert "ANTHROPIC_API_KEY" in message and ":2:" in message
     assert "sk-dummy-value" not in message
 
 
 def test_dotenv_quoted_value_with_trailing_comment(tmp_path: Path):
     dotenv = tmp_path / ".env"
-    dotenv.write_text('SDF_OPENAI_API_KEY="dummy # not a comment"  # comment\n')
+    dotenv.write_text('OPENAI_API_KEY="dummy # not a comment"  # comment\n')
     environ: dict[str, str] = {}
     load_dotenv(dotenv, environ)
-    assert environ == {"SDF_OPENAI_API_KEY": "dummy # not a comment"}
+    assert environ == {"OPENAI_API_KEY": "dummy # not a comment"}
 
 
 def test_dotenv_missing_file_is_a_noop(tmp_path: Path):
@@ -297,10 +296,10 @@ def test_env_example_lists_every_variable_name_without_values():
         "SDF_CREDENTIAL_MODE_CODEX",
         "SDF_CONNECTION_CLAUDE",
         "SDF_CONNECTION_CODEX",
-        "SDF_ANTHROPIC_API_KEY",
-        "SDF_OPENAI_API_KEY",
-        "SDF_ANTHROPIC_BASE_URL",
-        "SDF_OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_BASE_URL",
     }
     assert required <= set(entries)
     for name in required:
@@ -393,8 +392,8 @@ def test_expiry_check_refuses_claude_with_its_own_connect_command():
 @pytest.mark.parametrize(
     ("agent", "variable", "connection_variable"),
     [
-        ("claude", "SDF_ANTHROPIC_BASE_URL", "SDF_CONNECTION_CLAUDE"),
-        ("codex", "SDF_OPENAI_BASE_URL", "SDF_CONNECTION_CODEX"),
+        ("claude", "ANTHROPIC_BASE_URL", "SDF_CONNECTION_CLAUDE"),
+        ("codex", "OPENAI_BASE_URL", "SDF_CONNECTION_CODEX"),
     ],
 )
 def test_base_url_is_rejected_in_subscription_mode(agent, variable, connection_variable):

@@ -9,7 +9,8 @@ accepts the pull request. It amends the Vultr-as-default wording in
 [ADR 0023](0023-run-observability.md) and
 [ADR 0024](0024-otel-tracing.md). Credential Mode, the Tool Proxy, sandbox
 credential scope, the Attempt lifecycle and Evidence provenance are unchanged
-(ADR 0007, ADR 0026, ADR 0002).
+(ADR 0007, ADR 0026, ADR 0002). The api-key variable names in ADR 0007 are
+amended to the allow-list below; Credential Mode itself is not.
 
 ## Context
 
@@ -39,34 +40,34 @@ named `VULTR_INFERENCE_API_KEY`.
    host is not enough for `codex`. The other OpenAI-family kinds keep the
    OpenAI-compatible surface they already use (`@ai-sdk/openai-compatible`,
    Pi `openai-completions`, Qwen `--auth-type openai`, Goose engine `openai`).
-3. **A host is an endpoint, not a protocol.** Base URL, key variable name and
-   model stay the ADR 0007 / ADR 0011 knobs: `SDF_*_BASE_URL` (or
-   `SDF_OPENAI_BASE_URL` / `SDF_ANTHROPIC_BASE_URL`), `SDF_*_API_KEY` or
-   `SDF_*_API_KEY_ENV`, and `SDF_*_MODEL`. Any `*_API_KEY` name that passes
-   the existing name rules works. `VULTR_INFERENCE_API_KEY` is only an
-   example name, used by the `/run` and coordinator DX paths when no `SDF_*`
-   key is set. It does not select an API.
-4. **Example defaults stay.** Unset OpenAI-family base URLs on the `/run`
-   path, and the headless kinds' `default_base_url`, remain the example
-   OpenAI-compatible endpoint (`https://api.vultrinference.com/v1`, model
-   `glm-5.3`; OpenCode `vultr/glm-5.3` and `vultr/glm-5.3-flash`). The
-   `vultr/` prefix is OpenCode's seeded provider id, not an API family.
-   Removing those defaults would fail closed; this ADR does not.
-   `claude` with no `SDF_ANTHROPIC_BASE_URL` uses `https://api.anthropic.com`
-   and Claude Code's own model. The example key `VULTR_INFERENCE_API_KEY` is
-   not selected for Claude, and is not injected, unless
-   `SDF_ANTHROPIC_BASE_URL` is set. With no Claude key, credential resolution
-   fails closed on `SDF_ANTHROPIC_API_KEY`.
-   Codex with no `SDF_OPENAI_BASE_URL` stays the official OpenAI API
-   (`https://api.openai.com/v1`), on `/run` and in the coordinator. `/run`
-   fills the example endpoint only when the resolved key variable is
-   `VULTR_INFERENCE_API_KEY` (including the nothing-configured case, which
-   selects that name because no `SDF_*` key is set). A different key
-   (`SDF_OPENAI_API_KEY` or another `*_API_KEY_ENV`) is not sent to the
-   example host.
+3. **A host is an endpoint, not a protocol.** Each kind reads one allow-listed
+   triple and no other name for the same values:
+
+   | Kind | Base URL | Key | Model |
+   | --- | --- | --- | --- |
+   | `claude` | `ANTHROPIC_BASE_URL` | `ANTHROPIC_API_KEY` | `ANTHROPIC_MODEL` |
+   | `codex` | `OPENAI_BASE_URL` | `OPENAI_API_KEY` | `OPENAI_MODEL` |
+   | `pi` | `PI_BASE_URL` | `PI_API_KEY` | `PI_MODEL` |
+   | `qwen` | `QWEN_BASE_URL` | `QWEN_API_KEY` | `QWEN_MODEL` |
+   | `opencode` | `OPENCODE_BASE_URL` | `OPENCODE_API_KEY` | `OPENCODE_MODEL` |
+   | `goose` | `GOOSE_BASE_URL` | `GOOSE_API_KEY` | `GOOSE_MODEL` |
+
+   `SDF_*_API_KEY`, `SDF_*_BASE_URL`, `SDF_*_MODEL` and `*_API_KEY_ENV` are
+   not credentials. `VULTR_INFERENCE_API_KEY` is not read.
+4. **Defaults are the official APIs, or none.** `claude` with no
+   `ANTHROPIC_BASE_URL` uses `https://api.anthropic.com` and Claude Code's
+   own model (`ANTHROPIC_MODEL` optional). Codex with no `OPENAI_BASE_URL`
+   uses `https://api.openai.com/v1` (Responses); `OPENAI_MODEL` is optional.
+   `opencode`, `pi`, `qwen` and `goose` have no default host: api-key mode
+   fails closed unless that kind's `*_BASE_URL` and `*_API_KEY` are set.
+   Their model defaults stay a bare `glm-5.3`, except OpenCode, which still
+   needs a `<local provider id>/<model>` and defaults to `vultr/glm-5.3`.
+   That prefix is the seeded provider id, not a host, and the title model
+   uses the same id.
 5. **Egress follows the resolved host.** An E2B sandbox allows the hostname
-   of each kind's resolved base URL (explicit, else example, else official)
-   and denies everything else. `SDF_RUN_EGRESS_ALLOW` still adds hosts.
+   of each kind's resolved base URL (explicit, else the official API for
+   Claude and Codex) and denies everything else. A headless kind with no
+   base URL contributes no host. `SDF_RUN_EGRESS_ALLOW` still adds hosts.
    Subscription modes that need further vendor hosts still list them there
    (ADR 0023). Daytona's unrestricted-egress opt-in is unchanged.
 6. **Attempt provenance names the host and the family.** The coordinator
@@ -74,7 +75,7 @@ named `VULTR_INFERENCE_API_KEY`.
    `openai:llm.example.com`), taken from the sandbox's configured base URL.
    It does not write `vultr`. `/run` keeps the sandbox provider as a prefix
    (ADR 0027 adapter identity) and appends the same label:
-   `e2b:openai:api.vultrinference.com`. The string `vultr` alone is not a
+   `e2b:openai:llm.example.com`. The string `vultr` alone is not a
    provider value.
 7. **Example model price is a ledger estimate, not a reported provider cost.**
    `glm-5.3` keeps `(0.75, 3.00)` USD per million tokens in
@@ -93,23 +94,34 @@ provenance are not given a new abstraction.
 
 ## Migration
 
-- `/run` Codex with `SDF_OPENAI_API_KEY` or any key variable other than
-  `VULTR_INFERENCE_API_KEY`, and no `SDF_OPENAI_BASE_URL`, calls
-  `https://api.openai.com/v1` (Responses). Set `SDF_OPENAI_BASE_URL` to use
-  another host, and `SDF_CODEX_MODEL` to a model that host serves. The
-  example URL is filled only for the example key name.
-- Claude on `/run` needs `SDF_ANTHROPIC_API_KEY` (or another Claude key
-  variable). `VULTR_INFERENCE_API_KEY` alone is not used. To send that
-  example key to a Claude-compatible proxy, including Vultr's
-  Anthropic-compatible endpoint, set `SDF_ANTHROPIC_BASE_URL` (Vultr's is
-  `https://api.vultrinference.com`, no `/v1`) and
-  `SDF_CLAUDE_API_KEY_ENV=VULTR_INFERENCE_API_KEY`. Unset base URL means
-  `https://api.anthropic.com` and does not carry the example key.
-- If both `SDF_<AGENT>_API_KEY` and `VULTR_INFERENCE_API_KEY` are set and
-  `SDF_<AGENT>_API_KEY_ENV` is unset, the `SDF_*` key is used. Name the
-  example variable explicitly to keep the old coordinator fallback.
-- Live gates `SDF_LIVE_VULTR_AGENTS` and `SDF_E2B_VULTR_TEMPLATE` are
-  unchanged. They exercise the example endpoint; they are not a protocol.
+| Old | New |
+| --- | --- |
+| `SDF_ANTHROPIC_API_KEY`, `SDF_CLAUDE_API_KEY_ENV` | `ANTHROPIC_API_KEY` |
+| `SDF_ANTHROPIC_BASE_URL` | `ANTHROPIC_BASE_URL` |
+| `SDF_CLAUDE_MODEL` | `ANTHROPIC_MODEL` |
+| `SDF_OPENAI_API_KEY`, `SDF_CODEX_API_KEY_ENV` | `OPENAI_API_KEY` |
+| `SDF_OPENAI_BASE_URL` | `OPENAI_BASE_URL` |
+| `SDF_CODEX_MODEL`, `SDF_HERDR_CODEX_MODEL` | `OPENAI_MODEL` |
+| `SDF_PI_API_KEY`, `SDF_PI_API_KEY_ENV` | `PI_API_KEY` |
+| `SDF_PI_BASE_URL` | `PI_BASE_URL` |
+| `SDF_PI_MODEL` | `PI_MODEL` |
+| `SDF_QWEN_API_KEY`, `SDF_QWEN_API_KEY_ENV` | `QWEN_API_KEY` |
+| `SDF_QWEN_BASE_URL` | `QWEN_BASE_URL` |
+| `SDF_QWEN_MODEL` | `QWEN_MODEL` |
+| `SDF_OPENCODE_API_KEY`, `SDF_OPENCODE_API_KEY_ENV` | `OPENCODE_API_KEY` |
+| `SDF_OPENCODE_BASE_URL` | `OPENCODE_BASE_URL` |
+| `SDF_OPENCODE_MODEL` | `OPENCODE_MODEL` |
+| `SDF_OPENCODE_SMALL_MODEL` | removed; the title model is `OPENCODE_MODEL` |
+| `SDF_GOOSE_API_KEY`, `SDF_GOOSE_API_KEY_ENV` | `GOOSE_API_KEY` |
+| `SDF_GOOSE_BASE_URL` | `GOOSE_BASE_URL` |
+| `SDF_GOOSE_MODEL` | `GOOSE_MODEL` |
+| `VULTR_INFERENCE_API_KEY` | not read |
+
+- Headless kinds no longer default to `https://api.vultrinference.com/v1`.
+  Set `*_BASE_URL` and `*_API_KEY` or credential resolution fails closed.
+- Live gates `SDF_LIVE_VULTR_AGENTS` and `SDF_E2B_VULTR_TEMPLATE` keep their
+  names. They are not a protocol. Each kind uses its allow-listed key and
+  base URL.
 
 ## Consequences
 

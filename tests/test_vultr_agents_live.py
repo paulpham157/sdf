@@ -2,7 +2,7 @@
 same Vultr Serverless Inference endpoint and model as OpenCode (glm-5.3).
 
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_VULTR_AGENTS=1``
-plus ``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY`` (env or the repo-root
+plus ``E2B_API_KEY`` and that kind's allow-listed API key (env or the repo-root
 ``.env``, loaded into a private mapping).  ``SDF_LIVE_VULTR_AGENTS`` may also
 name a comma-separated subset (``codex,claude,pi,qwen,goose``); ``1``
 keeps the original three.
@@ -12,18 +12,16 @@ criterion checks -> Evidence) on the toy ``calc.py`` add bug.
 
 Wiring (no proxy):
 
-* codex - native: SDF api-key mode, ``SDF_OPENAI_BASE_URL`` (Vultr serves the
+* codex - native: SDF api-key mode, ``OPENAI_BASE_URL`` (Vultr serves the
   Responses API), ``-m glm-5.3``; Herdr pane.
-* claude - native: SDF api-key mode, ``SDF_ANTHROPIC_BASE_URL`` (Vultr serves
+* claude - native: SDF api-key mode, ``ANTHROPIC_BASE_URL`` (Vultr serves
   Anthropic ``/v1/messages``), ``--model glm-5.3``; Herdr pane.
-* pi - the ``pi`` agent kind (ADR 0012): SDF api-key mode with
-  ``SDF_PI_API_KEY_ENV=VULTR_INFERENCE_API_KEY`` and the default Vultr base URL
-  / ``glm-5.3``; the ``pi-models``
+* pi - the ``pi`` agent kind (ADR 0012): SDF api-key mode with ``PI_API_KEY``,
+  ``PI_BASE_URL`` and ``PI_MODEL=glm-5.3``; the ``pi-models``
   seed writes ``~/.pi/agent/models.json`` naming the key variable, and
   ``sdf_core.pi_runtime.PiHeadlessRuntime`` runs ``pi -p --mode json`` turns.
 * qwen / goose - the ADR-0013 kinds (Aider removed, ADR 0016): SDF api-key mode with
-  ``SDF_<KIND>_API_KEY_ENV=VULTR_INFERENCE_API_KEY`` and the default Vultr base
-  URL / ``glm-5.3``; their seeds record the key's NAME and the headless runtimes
+  ``QWEN_*`` / ``GOOSE_*`` key, base URL and model; their seeds record the key's NAME and the headless runtimes
   in ``sdf_core.{qwen,goose}_runtime`` run one CLI process per turn.
   Not in the published template yet: on the ``codex`` base the factory installs
   Node 22 + Qwen Code (npm) or the sha256-checked Goose musl tarball before
@@ -78,12 +76,15 @@ from tests.test_herdr_e2b_execution import POSITIVE
 
 ENV = dict(os.environ)
 load_dotenv(environ=ENV)
-KEY_VAR = "VULTR_INFERENCE_API_KEY"
+KEY_NAMES = {
+    "codex": "OPENAI_API_KEY", "claude": "ANTHROPIC_API_KEY", "pi": "PI_API_KEY",
+    "qwen": "QWEN_API_KEY", "goose": "GOOSE_API_KEY", "opencode": "OPENCODE_API_KEY",
+}
 _SELECTED = ENV.get("SDF_LIVE_VULTR_AGENTS", "")
 AGENTS = ("codex", "claude", "pi") if _SELECTED == "1" else tuple(a for a in _SELECTED.split(",") if a)
-LIVE = ENV.get("SDF_LIVE_E2B") == "1" and bool(AGENTS) and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get(KEY_VAR))
+LIVE = ENV.get("SDF_LIVE_E2B") == "1" and bool(AGENTS) and bool(ENV.get("E2B_API_KEY"))
 pytestmark = pytest.mark.skipif(
-    not LIVE, reason="live check: set SDF_LIVE_E2B=1 SDF_LIVE_VULTR_AGENTS=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY"
+    not LIVE, reason="live check: set SDF_LIVE_E2B=1 SDF_LIVE_VULTR_AGENTS=1 with E2B_API_KEY and the kind's API key"
 )
 
 # Prebuilt agents image by default; a bare base only when explicitly requested.
@@ -295,25 +296,28 @@ EGRESS_PROBE = (
 def test_live_agent_on_vultr_attempt_in_e2b(agent: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     if agent not in AGENTS:
         pytest.skip(f"{agent} not selected in SDF_LIVE_VULTR_AGENTS")
+    key_name = KEY_NAMES[agent]
+    if not ENV.get(key_name):
+        pytest.skip(f"{key_name} is not set")
     factory = BootstrapFactory(agent)
     monkeypatch.setattr(e2b_transport_module, "_PRODUCTION_SANDBOX_FACTORY", factory)
     network = {"allow_out": [INFERENCE_HOST], "deny_out": ["0.0.0.0/0"]}
-    secrets = {name: ENV[name] for name in ("E2B_API_KEY", KEY_VAR)}
-    environ = {"E2B_API_KEY": ENV["E2B_API_KEY"], KEY_VAR: ENV[KEY_VAR]}
+    secrets = {name: ENV[name] for name in ("E2B_API_KEY", key_name)}
+    environ = {"E2B_API_KEY": ENV["E2B_API_KEY"], key_name: ENV[key_name]}
     injection = None
+    upper = agent.upper()
     if agent == "codex":
-        environ |= {"SDF_CREDENTIAL_MODE_CODEX": "api-key", "SDF_CODEX_API_KEY_ENV": KEY_VAR,
-                    "SDF_OPENAI_BASE_URL": f"https://{INFERENCE_HOST}/v1", "SDF_CODEX_MODEL": MODEL}
+        environ |= {"SDF_CREDENTIAL_MODE_CODEX": "api-key",
+                    "OPENAI_BASE_URL": f"https://{INFERENCE_HOST}/v1", "OPENAI_MODEL": MODEL}
     elif agent == "claude":
-        environ |= {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key", "SDF_CLAUDE_API_KEY_ENV": KEY_VAR,
-                    "SDF_ANTHROPIC_BASE_URL": f"https://{INFERENCE_HOST}", "SDF_CLAUDE_MODEL": MODEL}
-    elif agent == "pi":
-        # Default base URL and model (Vultr, glm-5.3); the key is named explicitly
-        # because the default variable is SDF_PI_API_KEY.
-        environ |= {"SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY_ENV": KEY_VAR}
-    elif agent in ("qwen", "goose"):
-        upper = agent.upper()
-        environ |= {f"SDF_CREDENTIAL_MODE_{upper}": "api-key", f"SDF_{upper}_API_KEY_ENV": KEY_VAR}
+        environ |= {"SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
+                    "ANTHROPIC_BASE_URL": f"https://{INFERENCE_HOST}", "ANTHROPIC_MODEL": MODEL}
+    else:
+        environ |= {
+            f"SDF_CREDENTIAL_MODE_{upper}": "api-key",
+            f"{upper}_BASE_URL": f"https://{INFERENCE_HOST}/v1",
+            f"{upper}_MODEL": MODEL,
+        }
     transport, injection = create_credentialed_transport(
         agents=(agent,), environ=environ, template=BASE_TEMPLATE, timeout_seconds=900, network=network
     )

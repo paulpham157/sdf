@@ -24,17 +24,16 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from .core_mcp import CORE_DIR, CORE_SHIM_PATH, REQ_DIR, RESP_DIR, registration_script
-from .credentials import EXAMPLE_API_KEY_ENV, EXAMPLE_OPENAI_HOST, _AGENTS, inference_network
+from .agent_models import MODEL_VARIABLES
+from .credentials import _AGENTS, inference_network
 
 SHIM_SOURCE = Path(__file__).with_name("sdf_msg_shim.py")
 CORE_SHIM_SOURCE = Path(__file__).with_name("sdf_core_shim.py")
 MAILBOX = "/home/user/.sdf-msg"
 OUTBOX, INBOX = f"{MAILBOX}/outbox", f"{MAILBOX}/inbox"
 SHIM_PATH = "/usr/local/bin/sdf-msg"
-# Example OpenAI-compatible host (ADR 0034). Not a protocol; egress follows
-# each kind's configured base URL, and this host is only the example default.
-VULTR_HOST = EXAMPLE_OPENAI_HOST
 DEFAULT_TEMPLATE = "sdf-herdr-agents"
+# No host until a kind's base URL is set. Headless kinds require one (ADR 0034).
 DEFAULT_NETWORK = inference_network({}, ("opencode",))
 SUPPORTED_KINDS = ("opencode", "pi")
 # E2BAgentSandbox can also host a single Goose agent (sdf-core over its
@@ -138,7 +137,7 @@ class E2BAgentSandbox:
         self._sandbox_timeout_s = sandbox_timeout_s
         self._turn_timeout_s = turn_timeout_s
         # Explicit ``network`` wins (live tests). Otherwise lock egress to the
-        # host of this kind's configured or example base URL (ADR 0034).
+        # host of this kind's configured base URL, or its official API (ADR 0034).
         self._network = dict(inference_network(self._environ, (spec.kind,)) if network is None else network)
         # Base URL only, so attempts.provider can name the host. Not logged.
         base_var = _AGENTS[spec.kind].base_url_source
@@ -328,12 +327,9 @@ def running_sandbox_ids(api_key: str) -> set[str]:
 def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]:
     """The minimal host-side mapping the credentialed transport reads.
 
-    Only variable *names* are configured here; values are passed through from
-    the operator environment and never logged.  An unset ``SDF_<KIND>_API_KEY``
-    and unset ``SDF_<KIND>_API_KEY_ENV`` select the example key name
-    ``VULTR_INFERENCE_API_KEY`` (ADR 0034), except Claude, which does not
-    receive that name unless ``SDF_ANTHROPIC_BASE_URL`` is set.  That name is
-    not a protocol: any ``*_API_KEY`` name works, and egress follows the base URL.
+    Values are passed through from the operator environment and never logged.
+    Each kind contributes its Credential Mode and its allow-listed key, base
+    URL and model. Nothing else is selected as a key.
     """
 
     out: dict[str, str] = {}
@@ -344,30 +340,7 @@ def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]
         upper = kind.upper()
         spec = _AGENTS[kind]
         out[f"SDF_CREDENTIAL_MODE_{upper}"] = environ.get(f"SDF_CREDENTIAL_MODE_{upper}", "api-key")
-        named = environ.get(spec.api_key_env_variable, "").strip()
-        base_set = bool(environ.get(spec.base_url_source, "").strip())
-        # Same rule as /run: the example key is not a Claude credential unless
-        # a Claude-compatible base URL is set.
-        block_example_key = spec.protocol == "anthropic" and not base_set and (
-            not named or named == EXAMPLE_API_KEY_ENV
-        )
-        if named and not (block_example_key and named == EXAMPLE_API_KEY_ENV):
-            key_env = named
-        elif environ.get(spec.api_key_source, "").strip():
-            key_env = ""
-            out[spec.api_key_source] = environ[spec.api_key_source]
-        elif block_example_key:
-            key_env = ""
-        else:
-            key_env = EXAMPLE_API_KEY_ENV
-        if key_env:
-            out[spec.api_key_env_variable] = key_env
-            if environ.get(key_env):
-                out[key_env] = environ[key_env]
-        for suffix in ("BASE_URL", "MODEL", "SMALL_MODEL"):
-            if suffix == "SMALL_MODEL" and kind != "opencode":
-                continue
-            name = f"SDF_{upper}_{suffix}"
+        for name in (spec.api_key_source, spec.base_url_source, MODEL_VARIABLES[kind]):
             if environ.get(name):
                 out[name] = environ[name]
     # ADR-0017: passed through as set; an empty value means "no extensions".

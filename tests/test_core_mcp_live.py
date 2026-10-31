@@ -25,17 +25,22 @@ from sqlalchemy.orm import sessionmaker
 from sdf_core.agent_sandbox import DEFAULT_TEMPLATE, AgentSpec, E2BAgentSandbox, agent_environ, running_sandbox_ids
 from sdf_core.coordinator import Coordinator, RunConfig
 from sdf_core.core_mcp import REQ_DIR, CoreQueryService, scope_for
-from sdf_core.credentials import load_dotenv
+from sdf_core.credentials import _AGENTS, load_dotenv
 from sdf_core.db import AgentRunMemberRow, Base, PlanRow, make_engine
 from sdf_core.plans import PlanSpec, decide_plan, propose_plan
 from tests.agent_comm_support import make_fixture, plan_dict
 
 ENV = dict(os.environ)
 load_dotenv(environ=ENV)
-LIVE = (ENV.get("SDF_LIVE_E2B") == "1" and ENV.get("SDF_LIVE_CORE_MCP") == "1"
-        and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get("VULTR_INFERENCE_API_KEY")))
-pytestmark = pytest.mark.skipif(not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_LIVE_CORE_MCP=1 with E2B/Vultr keys")
+
 KIND = ENV.get("SDF_LIVE_CORE_KIND", "pi")
+_SPEC = _AGENTS[KIND]
+LIVE = (ENV.get("SDF_LIVE_E2B") == "1" and ENV.get("SDF_LIVE_CORE_MCP") == "1"
+        and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get(_SPEC.api_key_source))
+        and (not _SPEC.base_url_required or bool(ENV.get(_SPEC.base_url_source))))
+pytestmark = pytest.mark.skipif(
+    not LIVE, reason="live: set SDF_LIVE_E2B=1 SDF_LIVE_CORE_MCP=1 with E2B_API_KEY and the kind's API key and base URL"
+)
 TEMPLATE = ENV.get("SDF_E2B_AGENT_TEMPLATE", DEFAULT_TEMPLATE)
 REPORT_DIR = Path("/tmp/sdf-live-reports")
 # "mcp" forces the sdfcore MCP server (OpenCode registered / Goose --with-extension) instead of the CLI.

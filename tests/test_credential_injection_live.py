@@ -41,9 +41,9 @@ def test_dummy_credentials_are_injected_by_name_and_conflicts_are_absent():
         "E2B_API_KEY": os.environ["E2B_API_KEY"],
         **({"E2B_DOMAIN": os.environ["E2B_DOMAIN"]} if os.environ.get("E2B_DOMAIN") else {}),
         "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
-        "SDF_ANTHROPIC_API_KEY": claude_key,
+        "ANTHROPIC_API_KEY": claude_key,
         "SDF_CREDENTIAL_MODE_CODEX": "api-key",
-        "SDF_OPENAI_API_KEY": openai_key,
+        "OPENAI_API_KEY": openai_key,
     }
     transport, injection = create_credentialed_transport(
         template=TEMPLATE,

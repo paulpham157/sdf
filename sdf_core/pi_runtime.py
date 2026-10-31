@@ -26,7 +26,9 @@ Hardening, because the Attempt workspace is untrusted content:
 * Extension, skill, prompt-template and theme discovery and built-in MCP
   (``--no-mcp``) are disabled by flag.
 * Every ``PI_*`` (and pi-lens ``PILENS_*``) variable is unset per turn
-  (``PI_CODING_AGENT_DIR`` would move models.json/settings/extensions); ``PI_OFFLINE``, ``PI_SKIP_VERSION_CHECK``
+  (``PI_CODING_AGENT_DIR`` would move models.json/settings/extensions), then
+  the injected ``PI_API_KEY`` is restored so the seeded ``$PI_API_KEY``
+  reference still resolves. ``PI_OFFLINE``, ``PI_SKIP_VERSION_CHECK``
   and ``PI_TELEMETRY=0`` are then set so Pi makes no calls besides inference,
   and ``PI_LENS_DISABLE_{TOOL_INSTALL,LSP_INSTALL,TOOL_REFRESH}=1`` so pi-lens
   never downloads or installs a linter, language server or rule pack.
@@ -169,7 +171,7 @@ _VERSION = re.compile(r"(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)")
 PROJECT_CONFIG_DIR = ".pi"
 
 # ``sh -c`` wrapper.  Positional args: workspace, turn seconds, stdout file,
-# stderr file, session dir, model (empty: ``$SDF_PI_MODEL``), prompt, then the
+# stderr file, session dir, model (empty: ``$PI_MODEL``), prompt, then the
 # Pi argv.  It always exits 0 with an explicit exit marker so a failed turn is
 # reported by this runtime, not swallowed by the transport.  Only the
 # ``message_end`` / ``tool_execution_end`` events are printed: ``--mode json``
@@ -239,9 +241,11 @@ _UNREF_PRELOAD = (
 
 def _wrapper(refuse_project: bool) -> str:
     return (
-        'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$SDF_PI_MODEL}; prompt=$7; shift 7; '
+        'dir=$1; secs=$2; out=$3; err=$4; sess=$5; model=${6:-$PI_MODEL}; prompt=$7; shift 7; '
+        'pi_key=${PI_API_KEY-}; '
         + _PURGE_PI_ENV +
         'export PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PI_TELEMETRY=0 ' + _PI_LENS_ENV + '; '
+        'if [ -n "$pi_key" ]; then export PI_API_KEY="$pi_key"; fi; unset pi_key; '
         'cd "$dir" || { echo ' + _EXIT_MARKER + str(_NO_WORKSPACE_EXIT) + '; exit 0; }; '
         + (_PROJECT_REFUSAL if refuse_project else '') +
         '[ -n "$model" ] || { echo ' + _EXIT_MARKER + str(_NO_MODEL_EXIT) + '; exit 0; }; '
@@ -423,7 +427,7 @@ class PiHeadlessRuntime:
         self._control_timeout_ms = control_timeout_ms
         self.expected_version = expected_version
         self._binary = binary
-        # None: the sandbox's SDF_PI_MODEL (the one the seed registered).
+        # None: the sandbox's PI_MODEL (the one the seed registered).
         self._model = model
         if credentials is None:
             credentials = getattr(transport, "credential_metadata", None)
@@ -626,7 +630,7 @@ class PiHeadlessRuntime:
         if rc == _NO_WORKSPACE_EXIT:
             raise PiRuntimeError("the staged Attempt workspace is missing in the sandbox")
         if rc == _NO_MODEL_EXIT:
-            raise PiRuntimeError("no Pi model: SDF_PI_MODEL is not set in the sandbox")
+            raise PiRuntimeError("no Pi model: PI_MODEL is not set in the sandbox")
         if rc is None:
             raise PiRuntimeError("Pi turn ended without an exit marker")
         detail = "; ".join(errors) or (lines[-1] if lines else "")
