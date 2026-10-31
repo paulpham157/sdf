@@ -148,8 +148,8 @@ def pytest_verdict(stdout: str, truncated: bool = False) -> tuple[str, str] | No
     """Parse a pytest summary. Not the accepting signal (ADR 0036).
 
     Kept so a caller can still read a summary. The evaluator decides pytest
-    from its own JUnit report and completion marker, because this text is
-    under the control of any module the check imports.
+    from the notary's result frame, because this text is under the control
+    of any module the check imports.
     """
 
     counts = pytest_summary(stdout)
