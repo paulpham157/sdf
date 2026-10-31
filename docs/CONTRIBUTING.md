@@ -15,13 +15,20 @@ uv run pytest
 ```
 
 Use PostgreSQL for persistence work. SQLite is reserved for isolated tests and
-local demonstrations:
+local demonstrations of the Python graph store:
 
 ```bash
 docker compose -f docker-compose.test.yml up -d postgres
 export SDF_DATABASE_URL='postgresql+psycopg://postgres:postgres@localhost:55432/sdf_core'
 uv run alembic upgrade head
 ```
+
+The Go orchestrator (`go/cmd/sdf-orch`) is a separate process. Its tests and
+an unset `-outcome-db` / `SDF_TOOL_OUTCOME_DB` keep the Tool Proxy fence in
+memory. A real single-process run sets that variable to a file under a data
+directory that persists across restarts (`/var/lib/sdf/tool-outcomes.db`;
+create the parent directory first; one process per file). See
+[sdf-orch.md](sdf-orch.md).
 
 Keep changes small and commit one coherent slice at a time. Do not commit
 `.env`, API keys, endpoint tokens, provider credentials, generated graph output,
