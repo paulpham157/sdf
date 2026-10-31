@@ -716,7 +716,10 @@ class Coordinator:
             problem = "the sandbox does not support it"
             if callable(extend):
                 if now - tried.get(aid, float("-inf")) < KEEPALIVE_RETRY_S:
-                    problem = "the last extension failed"
+                    last = next((e for e in reversed(log) if e.get("agent") == aid), {})
+                    problem = last.get("error") or (
+                        f"the provider capped its lifetime at {last['granted_s']:.0f}s" if last.get("capped")
+                        else "the last extension failed")
                 else:
                     tried[aid] = now
                     target = int(math.ceil(needed_s + KEEPALIVE_STEP_S))
@@ -726,10 +729,18 @@ class Coordinator:
                         problem = _safe(f"{type(exc).__name__}: {redact(str(exc))}", 300)
                         log.append({"agent": aid, "at_s": at_s, "left_s": round(left, 1), "error": problem})
                     else:
-                        log.append({"agent": aid, "at_s": at_s, "left_s": round(left, 1),
-                                    "extended_to_s": target})
-                        self.log(f"{aid} sandbox lifetime extended to {target}s during a material hold")
-                        continue
+                        # E2B caps the lifetime at the account maximum without an
+                        # error: trust what the sandbox now reports, not the request.
+                        after = left_fn()
+                        entry = {"agent": aid, "at_s": at_s, "left_s": round(left, 1), "extended_to_s": target}
+                        if after is not None and after < needed_s:
+                            problem = f"the provider capped its lifetime at {after:.0f}s"
+                            log.append({**entry, "granted_s": round(after, 1), "capped": True})
+                            left = after
+                        else:
+                            log.append(entry)
+                            self.log(f"{aid} sandbox lifetime extended to {target}s during a material hold")
+                            continue
             if left <= LIFETIME_FAIL_MARGIN_S:
                 return (f"sandbox of {aid} would expire during a material decision hold ({left:.0f}s left) "
                         f"and its lifetime could not be extended: {problem}")

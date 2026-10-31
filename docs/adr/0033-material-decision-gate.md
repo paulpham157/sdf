@@ -137,6 +137,12 @@ narrow part of it on 2026-10-31 (recorded in ADR 0028).
      counted wall time plus 120 s is extended to that plus 600 s. The
      extension uses E2B's `Sandbox.set_timeout` (e2b 2.51.0), which resets
      the timeout from now, up to the account's maximum sandbox lifetime.
+   - E2B does not refuse a timeout past the account maximum: it silently
+     caps the end time (seen in the live test of 2026-10-31: a 200 000 s
+     request ended at `started_at` + 24 h). So the end time is read back with
+     `get_info`, and the coordinator trusts what the provider granted, not
+     what it asked for. A capped extension is recorded (`capped`,
+     `granted_s`) and is treated like a failed one.
    - If the extension fails (for example past that maximum), it is retried
      at most every 30 s. Once a sandbox has 60 s or less left, the run fails
      with "sandbox of … would expire during a material decision hold …" and
