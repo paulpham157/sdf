@@ -213,7 +213,9 @@ func OpenSQLiteStore(path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	// One writer; claims are serialised on this connection.
+	// One connection in this process serialises claims. locking_mode stays
+	// the SQLite default (normal). There is no flock. A second process on
+	// this file is unsupported; see docs/sdf-orch.md.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		_ = db.Close()

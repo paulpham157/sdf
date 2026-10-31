@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/paulpham157/sdf/go/internal/bus"
+	"github.com/paulpham157/sdf/go/internal/metrics"
 	"github.com/paulpham157/sdf/go/internal/queue"
 	"github.com/paulpham157/sdf/go/internal/toolproxy"
 )
@@ -78,6 +79,10 @@ type Config struct {
 	// (tests and processes that do not need restart survival). A non-empty
 	// path opens toolproxy.OpenSQLiteStore and the Orchestrator closes it.
 	OutcomeDBPath string
+	// Metrics receives queue depth and, when ToolProxy is nil, Tool Proxy
+	// counters. Nil uses metrics.Default. An explicit ToolProxy keeps the
+	// registry it was built with.
+	Metrics *metrics.Registry
 }
 
 // New builds an Orchestrator. Runner defaults to a no-op that waits on ctx.
@@ -103,6 +108,10 @@ func New(cfg Config) (*Orchestrator, error) {
 			return ctx.Err()
 		}
 	}
+	reg := cfg.Metrics
+	if reg == nil {
+		reg = metrics.Default
+	}
 	var owned toolproxy.OutcomeStore
 	if cfg.ToolProxy == nil {
 		if cfg.OutcomeDBPath != "" {
@@ -115,6 +124,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		} else {
 			cfg.ToolProxy = toolproxy.NewProxy(nil, nil)
 		}
+		cfg.ToolProxy.SetMetrics(reg)
 	}
 
 	root, cancel := context.WithCancel(context.Background())
@@ -129,7 +139,7 @@ func New(cfg Config) (*Orchestrator, error) {
 		root:    root,
 		cancel:  cancel,
 	}
-	o.queue = queue.New(cfg.QueueCapacity, cfg.Workers, o.handleTask, nil)
+	o.queue = queue.New(cfg.QueueCapacity, cfg.Workers, o.handleTask, reg)
 	return o, nil
 }
 

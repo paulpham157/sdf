@@ -3,7 +3,8 @@
 `sdf-orch` (`go/cmd/sdf-orch`, [ADR 0035](adr/0035-port-orchestration-core-to-go.md))
 is the Go orchestration process: API gateway, in-process message bus, task
 queue, and Attempt dispatcher. It listens on `-addr` (default `:8080`) and
-exposes `/healthz` and `/metrics`.
+exposes `/healthz` and `/metrics` (goroutine count, queue depth, and
+Tool Proxy counters).
 
 Build and run it from the Go module:
 
@@ -74,10 +75,47 @@ at an empty ephemeral disk (`tmpfs`, a container writable layer that is
 thrown away on restart).
 
 One process may open the file. Two `sdf-orch` processes (or any second
-writer) on the same file are unsupported: the store uses a single connection
-in one process and does not coordinate writers. Stop the process, then start
-one new process on the same path.
+writer) on the same file are unsupported. The store keeps a single SQLite
+connection in that process (`SetMaxOpenConns(1)`) and does not take an OS
+file lock or set SQLite `locking_mode=EXCLUSIVE`. A second open of the same
+path succeeds while the first connection is still open. That success is
+not a multi-writer mode: this process does not coordinate another writer.
+Stop the process, then start one new process on the same path.
+`TestConcurrentMultiProcessWritersUnsupported` records the limit:
+`locking_mode` stays `normal`, a second open is not rejected, and reopen
+after close still works.
 
 A crash after a claim is recorded and before the terminal outcome leaves
 that action claimed. A later delivery does not execute it; it needs a new
-action id. Rows stay until the file is removed. There is no TTL.
+action id. Each such delivery increments `tool_claim_stuck_total` on
+`/metrics`. Rows stay until the file is removed. There is no TTL.
+
+## Tool Proxy counters (`GET /metrics`)
+
+`/metrics` is the same JSON document as goroutine count and queue depth.
+The Tool Proxy fields are counters for this process. They start at zero,
+increase by one per event, and reset when the process exits. They are not
+rows in the fence file. A restart therefore drops the numbers to zero
+while claimed and terminal rows in the file stay. Compare two scrapes and
+alert on the increase.
+
+| Field | When it increases |
+| --- | --- |
+| `tool_executed_total` | The executor ran and the `action_executed` row was stored. This is a successful first execution. A replay does not increase it. An executor error does not increase it. |
+| `tool_replay_total` | A delivery returned a stored terminal outcome (`executed` or `failed`) and did not run the executor. |
+| `tool_claim_stuck_total` | A delivery found the action already claimed and not yet terminal, and did not run the executor. That is the crash-after-claim path, and the same path when another delivery still holds the claim. |
+| `tool_policy_deny_total` | The proxy denied the delivery (actor, principal, credential scope, allowlist, missing sandbox scope, or a reserved `sdf_*` context key). |
+
+Replay rate is not a separate field. Over one scrape window:
+
+```text
+delta(tool_replay_total) / delta(tool_executed_total + tool_replay_total)
+```
+
+Suggestions:
+
+- **Claim stuck rising.** `tool_claim_stuck_total` increased. A short increase can be two deliveries overlapping while the first still holds the claim; those losers do not execute. An increase that continues after the executor should have finished means a claim was left open (the process died after claim, before the terminal row). Further deliveries of that action id keep the counter rising and still do not execute. Issue a new action id, or remove the fence file if the claim is abandoned.
+- **Replay ratio anomaly.** A ratio near 1 while `tool_executed_total` stays flat is a retry storm against finished actions. A ratio near 0 while clients are retrying the same action means those calls are not hitting this fence (new action ids, or the file was replaced). Judge the shift against the usual retry pattern. There is no fixed good ratio.
+- **Policy deny rising.** `tool_policy_deny_total` climbing on its own points at a bad principal, a claimed actor that does not match the sandbox, or an allowlist miss.
+
+The counters are process-local. Two processes on one file would each report their own totals, which is another reason a single process owns the file.
