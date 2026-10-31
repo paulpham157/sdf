@@ -489,6 +489,48 @@ def test_run_records_verification_bound_to_the_diff_artifact(tmp_path):
         assert viewed["verifier_identity"] == EVALUATOR_IDENTITY
 
 
+def test_script_and_python_c_passes_are_accepted(tmp_path):
+    """An honest script and python -c check accept the diff with independence fields set."""
+
+    fixture = tmp_path / "fixture"
+    (fixture / "checks").mkdir(parents=True)
+    (fixture / "calc.py").write_text(CALC, encoding="utf-8")
+    (fixture / "checks" / "run.py").write_text("from calc import add\nassert add(2, 3) == 5\n", encoding="utf-8")
+    write_checks(fixture, {
+        "expr": ["python3", "-c", "from calc import add; assert add(2, 3) == 5"],
+        "script": ["python3", "checks/run.py"],
+    })
+    task_id = f"TASK-IND-C-{uuid.uuid4().hex[:8]}"
+    assert client.post("/tasks", json={"id": task_id, "title": "t", "idempotency_key": task_id,
+                                       "acceptance_criteria": ["adds", "scripted"]}).status_code == 201
+    response = client.post(f"/tasks/{task_id}/run", json={
+        "fixture_dir": str(fixture),
+        "criterion_checks": {"adds": ["expr"], "scripted": ["script"]},
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["task_status"] == "succeeded", body
+    with SessionLocal() as db:
+        attempt = db.get(AttemptRow, body["attempt_id"])
+        rows = list(db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt.id)))
+        assert {row.command for row in rows} == {
+            "python3 -c from calc import add; assert add(2, 3) == 5",
+            "python3 checks/run.py",
+        }
+        diff = db.scalars(select(ArtifactRow).where(
+            ArtifactRow.attempt_id == attempt.id, ArtifactRow.kind == "diff")).one()
+        for row in rows:
+            assert row.status == "PASS", (row.command, row.status)
+            assert row.evidence_class == "verification"
+            assert row.verifier_identity == EVALUATOR_IDENTITY
+            assert row.verifier_role == EVALUATOR_ROLE
+            assert row.producer_role == EVALUATOR_ROLE
+            assert row.subject_artifact_sha256 == diff.sha256
+            assert row.oracle_digest and row.environment_digest
+            assert row.collected_at is not None and row.expires_at is not None
+            check_verification_acceptance(row, attempt_agent=attempt.agent, artifact_sha256=diff.sha256)
+
+
 # --- migration ----------------------------------------------------------------
 
 

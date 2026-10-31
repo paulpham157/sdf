@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -20,7 +21,9 @@ from sdf_core import api
 from sdf_core.api import SessionLocal, app
 from sdf_core.checks import CheckConfigError, CheckRegistry, check_targets, validate_argv
 from sdf_core.db import ArtifactRow, AttemptRow, EvidenceRow
+from sdf_core.acceptance import EVALUATOR_IDENTITY, check_verification_acceptance
 from sdf_core.evaluator import CLEARED_ENV, DeterministicEvaluator, _check_env
+from sdf_core.oracle import script_oracle_verdict
 from sdf_core.plans import task_id_for
 from tests.agent_comm_support import fake_factory, lead_behavior, make_fixture, plan_dict, worker_behavior
 from tests.auth_support import admin_client, client_as
@@ -45,7 +48,8 @@ def _write(root: Path, files: dict[str, str]) -> Path:
     return root
 
 
-def _run(tmp_path: Path, files: dict[str, str], argv: list[str], *, server: dict[str, str] | None = None, **kwargs):
+def _run(tmp_path: Path, files: dict[str, str], argv: list[str], *, server: dict[str, str] | None = None,
+         subject_artifact_sha256: str | None = None, **kwargs):
     """Run ``argv`` in a workspace holding ``files``.
 
     The server fixture holds ``server`` (default: the files the check names,
@@ -61,8 +65,10 @@ def _run(tmp_path: Path, files: dict[str, str], argv: list[str], *, server: dict
             named = set()
         server = {name: content for name, content in files.items() if name in named}
     reference = _write(tmp_path / f"fixture-{tag}", server)
-    return DeterministicEvaluator(**kwargs)._run_one(command=argv, workspace=ws, attempt_id="A", index=1,
-                                                     criterion="c", reference=reference)
+    return DeterministicEvaluator(**kwargs)._run_one(
+        command=argv, workspace=ws, attempt_id="A", index=1, criterion="c", reference=reference,
+        subject_artifact_sha256=subject_artifact_sha256,
+    )
 
 
 FAILING_TEST = "def test_x():\n    assert False\n"
@@ -121,11 +127,107 @@ def test_hardened_checks_still_import_the_code_under_test(tmp_path, argv):
     assert evidence.runner == "host"
 
 
-@pytest.mark.xfail(strict=True, reason="inherent (ADR 0025): a check that imports agent code runs agent code")
+_SCRIPT = "from calc import add\nassert add(2, 3) == 5\n"
+_PYTHON_C = ["python3", "-c", "from calc import add; assert add(2, 3) == 5"]
+_SCRIPT_ARGV = ["python3", "checks/run.py"]
+
+
+def _subject_check(tmp_path: Path, calc: str, form: str):
+    """Run ``calc`` under a python -c check or a script check. The script is the oracle."""
+
+    if form == "python -c":
+        return _run(tmp_path, {"calc.py": calc}, _PYTHON_C)
+    files = {"calc.py": calc, "checks/run.py": _SCRIPT}
+    return _run(tmp_path, files, _SCRIPT_ARGV, server={"checks/run.py": _SCRIPT})
+
+
 def test_imported_agent_code_can_still_end_the_check_with_status_zero(tmp_path):
-    evidence = _run(tmp_path, {"calc.py": "import sys; sys.exit(0)\n"},
-                    ["python3", "-c", "from calc import add; assert add(2, 3) == 5"])
-    assert evidence.status == "FAIL"
+    """ADR 0025 residual: an import-time sys.exit(0) must not be a pass.
+
+    The subject runs in the worker. Its SystemExit is not the check's exit.
+    """
+
+    calc = "import sys\nsys.exit(0)\n"
+    for form in ("python -c", "script"):
+        evidence = _subject_check(tmp_path, calc, form)
+        assert evidence.status == "FAIL", (form, evidence.status, evidence.exit_code, evidence.stderr[-500:])
+        assert "subject process exited" in evidence.stderr
+        assert evidence.verifier_identity == EVALUATOR_IDENTITY
+
+
+@pytest.mark.parametrize("form", ["python -c", "script"])
+def test_subject_os_exit_zero_cannot_decide_the_check(tmp_path, form):
+    evidence = _subject_check(tmp_path, "import os\nos._exit(0)\n", form)
+    assert evidence.status == "FAIL", (form, evidence.status, evidence.exit_code, evidence.stderr[-500:])
+    assert "subject worker exited" in evidence.stderr
+
+
+@pytest.mark.parametrize("sig", [signal.SIGKILL, signal.SIGTERM], ids=["SIGKILL", "SIGTERM"])
+@pytest.mark.parametrize("form", ["python -c", "script"])
+def test_subject_signal_of_the_check_is_not_a_pass(tmp_path, form, sig):
+    calc = f"import os, signal\nos.kill(os.getppid(), {int(sig)})\nos._exit(0)\n"
+    evidence = _subject_check(tmp_path, calc, form)
+    assert evidence.status == "FAIL", (form, sig, evidence.status, evidence.exit_code, evidence.stderr[-500:])
+    assert f"signal {int(sig)}" in evidence.stderr
+
+
+@pytest.mark.parametrize("form", ["python -c", "script"])
+def test_subject_fake_success_line_cannot_decide_the_check(tmp_path, form):
+    calc = (
+        "import os\n"
+        "print('FAKE_PASS', flush=True)\n"
+        "print('===== 1 passed in 0.01s =====', flush=True)\n"
+        "os._exit(0)\n"
+    )
+    evidence = _subject_check(tmp_path, calc, form)
+    assert evidence.status == "FAIL", (form, evidence.status, evidence.stdout, evidence.stderr[-500:])
+    assert "FAKE_PASS" not in evidence.stdout
+    assert "1 passed" not in evidence.stdout
+    assert "subject worker exited" in evidence.stderr
+
+
+@pytest.mark.parametrize("form", ["python -c", "script"])
+def test_subject_exit_before_assertions_is_not_a_pass(tmp_path, form):
+    calc = "import os\ndef add(a, b):\n    os._exit(0)\n    return a + b\n"
+    evidence = _subject_check(tmp_path, calc, form)
+    assert evidence.status == "FAIL", (form, evidence.status, evidence.exit_code, evidence.stderr[-500:])
+    assert "subject worker exited" in evidence.stderr
+
+
+def test_script_oracle_verdict_ignores_exit_code_signal_and_a_missing_frame():
+    assert script_oracle_verdict(exit_code=0, frame={"completed": 1, "exitstatus": 0}, oracle_changed=False) == ("PASS", "")
+    status, reason = script_oracle_verdict(exit_code=0, frame=None, oracle_changed=False)
+    assert status == "FAIL" and "unexpected early exit" in reason
+    status, reason = script_oracle_verdict(exit_code=86, frame=None, oracle_changed=False)
+    assert status == "FAIL" and "without an evaluator result" in reason
+    status, reason = script_oracle_verdict(
+        exit_code=-9, frame={"completed": 1, "exitstatus": 0}, oracle_changed=False,
+    )
+    assert status == "FAIL" and "signal 9" in reason
+    status, reason = script_oracle_verdict(exit_code=1, frame={"completed": 1, "exitstatus": 0}, oracle_changed=False)
+    assert status == "INCONCLUSIVE" and "disagrees" in reason
+
+
+def test_honest_script_and_python_c_checks_are_accepted(tmp_path):
+    calc = "def add(a, b):\n    return a + b\n"
+    subject = "c" * 64
+    cases = (
+        ("python -c", _PYTHON_C, {"calc.py": calc}),
+        ("script", _SCRIPT_ARGV, {"calc.py": calc, "checks/run.py": _SCRIPT}),
+    )
+    for form, argv, files in cases:
+        evidence = _run(tmp_path, files, argv, server=files, subject_artifact_sha256=subject)
+        assert evidence.status == "PASS", (form, evidence.stdout[-400:], evidence.stderr[-400:])
+        assert evidence.evidence_class == "verification"
+        assert evidence.verifier_identity == EVALUATOR_IDENTITY
+        assert evidence.verifier_role == "evaluator"
+        assert evidence.producer_identity == EVALUATOR_IDENTITY
+        assert evidence.producer_role == "evaluator"
+        assert evidence.subject_artifact_sha256 == subject
+        assert evidence.oracle_digest and len(evidence.oracle_digest) == 64
+        assert evidence.environment_digest and len(evidence.environment_digest) == 64
+        assert evidence.collected_at is not None and evidence.expires_at > evidence.collected_at
+        check_verification_acceptance(evidence, attempt_agent="native", artifact_sha256=subject)
 
 
 def test_steering_variables_are_not_passed_to_checks(tmp_path, monkeypatch):

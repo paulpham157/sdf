@@ -168,6 +168,31 @@ Attempt's agent, or that it is still current.
    pytest check a non-pass. Dumpable plus the worker filter does not need
    extra privileges, and both fail closed when they cannot be applied.
 
+8. **Script and `python -c` verdicts use the same notary and worker.** The
+   sandbox process is the notary for these checks too. It forks an oracle
+   child, which runs the registered `-c` code, the script, or a non-pytest
+   `-m` module. The same import hook applies: top-level subject modules
+   load in the worker, not in the child. After that code returns, or
+   raises `SystemExit` with code 0 or `None`, the child writes one
+   completion frame (`completed` 1, `exitstatus` 0) through the same
+   seccomp stub. Any other exception, a non-zero `SystemExit`, or
+   `os._exit` writes no frame. The notary stores the frame only after
+   the child has been reaped. If the child died on a signal, the notary
+   exits on that signal.
+
+   The parent accepts `PASS` only when the frame says the oracle
+   completed, the frame's exit status is 0, and the notary's exit code
+   is 0. Exit 0 with no frame is `FAIL` (unexpected early exit). A
+   signal is `FAIL` even if a frame was also written. A frame that
+   disagrees with a non-zero exit code is `INCONCLUSIVE`. Stdout is not
+   an input.    If seccomp or `prctl` cannot be applied, the child exits
+   86 before the check code runs, there is no completion frame, and the
+   verdict is not a pass. The script child freezes only the result file
+   and its directory, not the whole cwd: the check can create a file
+   there, and that write is not the Attempt workspace. Pytest still
+   freezes the whole tree. A worker that replaces an oracle file makes
+   the post-run byte check fail, and the verdict is `INCONCLUSIVE`.
+
    **What remains.**
    - Oracle code (the fixture's tests, `conftest.py`, and hashed helpers)
      shares the pytest process with the reporter. It is byte-checked
@@ -182,10 +207,25 @@ Attempt's agent, or that it is still current.
    - The worker can still write to its private temp directory and to other
      paths outside the frozen tree that the uid can open. It cannot replace
      the sealed tree or the result file.
-   - `python -c` and script checks still run the subject in the process
-     whose exit code is the verdict. `sys.exit(0)` from an imported module
-     can still force that exit to 0. That is the ADR 0025 residual; it is
-     not a pytest verification frame.
+   - Script and `python -c` checks use the same notary and the same subject
+     worker (decision 8). An imported `sys.exit(0)` or `os._exit(0)`, a
+     signal delivered to the oracle child, and a success line printed by
+     the subject do not complete the frame and are not a pass.
+   - The registered check text (the `-c` string, or the sealed script)
+     still shares the oracle process with the completion stub. A check
+     that executes subject source in that process — `exec` of a workspace
+     file, `importlib` loaded from a path, or `runpy` of a subject file —
+     runs that source where the stub exists. That text is the registered
+     argv or a fixture file that was byte-checked before the run. It is
+     the same residual as oracle test code sharing the pytest process.
+     The script cwd stays writable so the check can create files; only
+     the result directory is mode `0555`. A worker that replaces an
+     oracle file there makes the byte check fail (`INCONCLUSIVE`), and
+     it still cannot `chmod` the result file. The worker can still
+     `kill` the oracle child's pid. The notary records the signal and
+     the verdict is not a pass. `kill` stays allowed: the interpreter
+     uses it, and a denied `kill` would fail closed into a non-pass for
+     every check.
 
 ## Consequences
 
@@ -204,7 +244,12 @@ Attempt's agent, or that it is still current.
   `ptrace` of the pytest process, opening `/proc/<ppid>/fd`, `io_uring_setup`, a response
   longer than 1_000_000 bytes, a response that is not a JSON object, and a
   write into the sealed tree are not passes. The worker can still write a
-  file under the temp directory it was given.
+  file under the temp directory it was given. On a script or `python -c`
+  check, a subject that calls `sys.exit(0)` or `os._exit(0)`, sends
+  `SIGKILL` or `SIGTERM` to the oracle child, prints a passing line, or
+  exits before the check's own assertions run is not a pass. An honest
+  script or `python -c` check that returns after its assertions still is,
+  and it carries the same independence fields as a pytest verification.
 - Checks that import a project helper must ship that helper in the server
   fixture. A helper that exists only in the workspace is treated as planted.
 - Verification Evidence expires after 24 hours. Accepting it again means
