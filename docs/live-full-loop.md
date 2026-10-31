@@ -62,7 +62,7 @@ agent or sandbox.
 Live HTTP proof gate: `SDF_LIVE_FULL_LOOP=1` **or** `SDF_LIVE_E2B=1`, plus
 `E2B_API_KEY` and `VULTR_INFERENCE_API_KEY`; choose agents with
 `SDF_LIVE_RUN_AGENTS` (default `opencode,pi,codex`). The test kills only
-sandboxes tagged with its own `sdf_attempt_id` before asserting none leaked.
+sandboxes tagged with its own `sdf_attempt_id`, and evaluator boxes `e2b-box` created for that Attempt (`app=herdr-e2b`, `herdrWorktreeKey` prefixed with the Attempt id), before asserting none leaked.
 
 ```bash
 # deterministic suite (no live keys)

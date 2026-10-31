@@ -193,6 +193,9 @@ class Evidence:
     # Where the check ran: "host", the containment backend's name, or None
     # when nothing ran (coverage/config evidence).
     runner: str | None = None
+    # The check was measured, but killing its containment box failed. The
+    # verdict stays PASS/FAIL; this is the cleanup error, not a new one.
+    cleanup_error: str | None = None
     # ADR 0032 (#62): the workspace tree right after this check ran, when the
     # caller observed it (``after_check``); differs from the revision's result
     # tree only when the check (or anything else) changed the workspace.
@@ -306,6 +309,7 @@ class DeterministicEvaluator:
                     confidence=item.confidence,
                     criterion=item.criterion,
                     runner=item.runner,
+                    cleanup_error=item.cleanup_error,
                     tree_after_sha256=item.tree_after_sha256,
                 )
             )
@@ -545,6 +549,10 @@ class DeterministicEvaluator:
                                       runner=self.runner)
         result_status = "PASS" if completed.returncode == 0 else "FAIL"
         stderr = completed.stderr
+        cleanup_error = completed.cleanup_error
+        if cleanup_error:
+            _log.warning("evaluator_cleanup_failed", extra={"runner": self.runner, "error": cleanup_error[-500:]})
+            stderr = f"{stderr or ''}\n[evaluator] cleanup failed: {cleanup_error}".lstrip("\n")
         if result_status == "PASS" and is_pytest(argv):
             verdict = pytest_verdict(completed.stdout or "", bool(getattr(completed, "output_truncated", False)))
             if verdict is not None:
@@ -562,6 +570,7 @@ class DeterministicEvaluator:
             confidence=1.0 if result_status == "PASS" else 0.95,
             criterion=criterion,
             runner=self.runner,
+            cleanup_error=cleanup_error,
         )
 
     def _pytest_interpreter(self, pytest_path: str, workspace: Path, safe_path: str) -> str | None:

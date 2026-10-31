@@ -25,6 +25,13 @@
   ...}`; that exit code is the check result. A check that could not be
   measured stays `INCONCLUSIVE` and records the backend it attempted.
   `SDF_SANDBOX_ROOT` is not forwarded into the box.
+- A failed `e2b-box kill` after a measured check no longer discards the
+  verdict. Kill is retried; the cleanup error is recorded on the Evidence
+  (`cleanup_error`) and logged. Transient connection errors on sync and exec
+  are retried a few times, but exec is not retried once it returned measured
+  JSON. A sync failure reports stdout, stderr, and the box log's `FAILED:`
+  line. The live full-loop leak check also matches evaluator boxes keyed by
+  `herdrWorktreeKey`.
 
 ### Breaking API changes
 

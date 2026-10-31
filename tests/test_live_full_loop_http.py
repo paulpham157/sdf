@@ -5,8 +5,10 @@ live adapter on Vultr Inference.  Gated on ``SDF_LIVE_FULL_LOOP=1`` (or
 ``SDF_LIVE_E2B=1``) plus ``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY``.
 Agents: ``SDF_LIVE_RUN_AGENTS`` (default ``opencode,pi,codex``).
 
-Teardown lists only the sandboxes *this test* created (E2B metadata
-``sdf_attempt_id``), kills them, and only then asserts nothing leaked.
+Teardown lists the sandboxes *this test* created — agent boxes tagged
+``sdf_attempt_id``, and evaluator boxes from ``e2b-box`` (``app=herdr-e2b``
+and a ``herdrWorktreeKey`` of ``<attempt id>-<hash>``) — kills them, and only
+then asserts nothing leaked.
 Secrets are never printed.
 """
 
@@ -19,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from sdf_core.api import SessionLocal
+from sdf_core.e2b_containment import attempt_owns_sandbox, tracked_evaluator_boxes
 from tests.check_support import ADD_SUM_CHECK, write_checks
 from sdf_core.credentials import load_dotenv
 from sdf_core.db import ArtifactRow, AttemptRow, EvidenceRow, RuntimeEventRow, UsageLedgerRow
@@ -41,13 +44,26 @@ pytestmark = pytest.mark.skipif(
 CHECK_ADD = ["add-sum"]  # registered in the fixture's sdf-checks.json (ADR 0025)
 
 
-def _sandboxes_for(attempt_id: str) -> set[str]:
+def _listed(metadata: dict[str, str]) -> list:
     from e2b import Sandbox, SandboxQuery
 
-    paginator = Sandbox.list(query=SandboxQuery(metadata={"sdf_attempt_id": attempt_id}), api_key=ENV["E2B_API_KEY"])
-    ids: set[str] = set()
+    paginator = Sandbox.list(query=SandboxQuery(metadata=metadata), api_key=ENV["E2B_API_KEY"])
+    found = []
     while paginator.has_next:
-        ids.update(item.sandbox_id for item in paginator.next_items())
+        found.extend(paginator.next_items())
+    return found
+
+
+def _sandboxes_for(attempt_id: str) -> set[str]:
+    """Agent boxes tagged for this Attempt, plus evaluator boxes e2b-box created for its workspace."""
+
+    ids = {item.sandbox_id for item in _listed({"sdf_attempt_id": attempt_id})}
+    for item in _listed({"app": "herdr-e2b"}):
+        if attempt_owns_sandbox(getattr(item, "metadata", {}) or {}, attempt_id, sandbox_id=item.sandbox_id):
+            ids.add(item.sandbox_id)
+    for sandbox_id, key in tracked_evaluator_boxes().items():
+        if attempt_owns_sandbox({"app": "herdr-e2b", "herdrWorktreeKey": key}, attempt_id, sandbox_id=sandbox_id):
+            ids.add(sandbox_id)
     return ids
 
 
