@@ -90,6 +90,17 @@ cp .env.example .env
 scripts/e2b-env.sh e2b-box doctor
 ```
 
+`e2b-box` is provided by the herdr-e2b plugin (id `e2b-dev.herdr-e2b`, v0.5.0).
+Install it only for subscription Credential Mode or for the `e2b-box` commands
+in this section. Api-key mode does not use the plugin.
+
+```bash
+herdr plugin install --yes --ref v0.5.0 e2b-dev/herdr-e2b-sandbox
+```
+
+The GitHub repository is `e2b-dev/herdr-e2b-sandbox`. Passing the plugin id as
+`e2b-dev/herdr-e2b` fails with "Repository not found".
+
 `E2B_DOMAIN` is a bare cluster domain such as `e2b.dev` or `e2b.app`; the SDK
 adds the `api.` prefix. Do not set it to `api.e2b.app`.
 

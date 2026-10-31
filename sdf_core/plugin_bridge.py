@@ -24,7 +24,13 @@ from pathlib import Path
 
 from sdf_core.credentials import ConnectionMaterial, CredentialConfigError
 
-PLUGIN_GLOB = "github/e2b-dev.herdr-e2b-*"
+# Herdr 0.9.5+ writes each install to
+# ``github-installations/<id>-<hash>/<pid>-<generation>/checkout``.
+# Herdr 0.9.1 wrote one checkout to ``github/<id>-<hash>``.
+PLUGIN_GLOBS = (
+    "github-installations/e2b-dev.herdr-e2b-*/*/checkout",
+    "github/e2b-dev.herdr-e2b-*",
+)
 CONNECTIONS_MODULE = Path("src") / "connections.js"
 HELPER_PATH = Path(__file__).with_name("plugin_bridge_helper.mjs")
 
@@ -44,13 +50,30 @@ def default_plugins_root(environ: Mapping[str, str] | None = None) -> Path:
 
 
 def find_plugin(plugins_root: Path) -> Path:
-    """The installed herdr-e2b plugin directory; the newest one if several."""
-    candidates = [path for path in Path(plugins_root).glob(PLUGIN_GLOB) if (path / CONNECTIONS_MODULE).is_file()]
+    """The installed herdr-e2b directory that contains ``src/connections.js``.
+
+    Both layouts in :data:`PLUGIN_GLOBS` are searched. ``herdr plugin update``
+    leaves older generation directories in place, and more than one old-layout
+    directory can match. The match with the newest directory mtime wins — the
+    same rule already used when several ``github/e2b-dev.herdr-e2b-*``
+    directories exist. A generation directory is named ``<pid>-<n>`` (the
+    installing process id, then a counter local to that process), so that
+    number is not install order and is not compared. Equal mtimes select the
+    lexicographically greater path, so the result does not depend on glob order.
+    """
+    root = Path(plugins_root)
+    candidates = [
+        path
+        for pattern in PLUGIN_GLOBS
+        for path in root.glob(pattern)
+        if (path / CONNECTIONS_MODULE).is_file()
+    ]
     if not candidates:
+        searched = ", ".join(str(root / pattern) for pattern in PLUGIN_GLOBS)
         raise CredentialConfigError(
-            f"herdr-e2b plugin not found: searched {Path(plugins_root) / PLUGIN_GLOB} for {CONNECTIONS_MODULE}"
+            f"herdr-e2b plugin not found: searched {searched} for {CONNECTIONS_MODULE}"
         )
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    return max(candidates, key=lambda path: (path.stat().st_mtime, str(path)))
 
 
 class PluginConnectionBridge:
