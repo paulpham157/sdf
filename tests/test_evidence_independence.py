@@ -182,6 +182,26 @@ def test_worker_cannot_ptrace_the_pytest_process(tmp_path):
     assert "ptrace denied" in (evidence.stdout + evidence.stderr)
 
 
+def test_worker_cannot_use_io_uring(tmp_path):
+    """io_uring_setup in the subject worker is denied, and a failing oracle stays a non-pass."""
+
+    forge = (
+        "import ctypes, os\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "libc.syscall.restype = ctypes.c_long\n"
+        "params = ctypes.create_string_buffer(256)\n"
+        "rc = libc.syscall(425, 8, ctypes.addressof(params))\n"  # io_uring_setup
+        "err = ctypes.get_errno()\n"
+        "if rc >= 0:\n"
+        "    os.close(rc)\n"
+        "    os._exit(0)\n"
+        "raise PermissionError(f'io_uring denied {err}')\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status != "PASS"
+    assert "io_uring denied" in (evidence.stdout + evidence.stderr)
+
+
 def test_worker_cannot_open_pytest_process_fds(tmp_path):
     forge = (
         "import os\n"

@@ -138,7 +138,8 @@ Attempt's agent, or that it is still current.
      and there is no result frame.
    - Before it reads any request, the worker installs its own seccomp
      filter. The filter denies `ptrace`, `process_vm_readv`,
-     `process_vm_writev`, `pidfd_open`, `pidfd_getfd`, and the `chmod`
+     `process_vm_writev`, `io_uring_setup`, `io_uring_enter`,
+     `io_uring_register`, `pidfd_open`, `pidfd_getfd`, and the `chmod`
      family (`chmod`, `fchmod`, `fchmodat`, `fchmodat2`), and it sets
      `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE` 0, and `PR_SET_PDEATHSIG`
      to `SIGKILL`. If the platform is not Linux x86_64, or `prctl` or
@@ -200,7 +201,7 @@ Attempt's agent, or that it is still current.
   stub from the subject's closure, from `gc`, or from a
   `pluginmanager.register` hook was a pass at d216e1f; those calls now run
   in the subject worker, where the stub is not present. From that worker,
-  `ptrace` of the pytest process, opening `/proc/<ppid>/fd`, a response
+  `ptrace` of the pytest process, opening `/proc/<ppid>/fd`, `io_uring_setup`, a response
   longer than 1_000_000 bytes, a response that is not a JSON object, and a
   write into the sealed tree are not passes. The worker can still write a
   file under the temp directory it was given.

@@ -14,8 +14,8 @@ on the values it returns. A seccomp filter on Linux x86_64 still rejects
 ordinary writes to the result pipe, and fails closed when it cannot be
 installed. The pytest process and the notary set ``PR_SET_DUMPABLE`` to 0
 so the worker cannot ptrace them or open ``/proc/<pid>/fd``. The worker
-itself is denied ``ptrace``, ``process_vm_*``, ``pidfd_getfd`` and
-``chmod``, and that filter fails closed too. Responses from the worker are
+itself is denied ``ptrace``, ``process_vm_*``, ``pidfd_getfd``,
+``io_uring``, and ``chmod``, and that filter fails closed too. Responses from the worker are
 capped at 1 MiB. The sealed tree is mode ``0555``/``0444`` for the run;
 the worker's temp directory is not.
 """
@@ -133,7 +133,7 @@ import importlib, json, os, socket, struct, sys
 sys.path.append(os.getcwd())
 
 def _deny_cross_process():
-    # Fail closed: no ptrace, no process_vm, no pidfd_getfd, no chmod.
+    # Fail closed: no ptrace, no process_vm, no pidfd_getfd, no io_uring, no chmod.
     if sys.platform != "linux" or os.uname().machine not in {"x86_64", "amd64"}:
         os._exit(86)
     import ctypes
@@ -145,8 +145,9 @@ def _deny_cross_process():
         _fields_ = [("len", c_us), ("filter", ctypes.POINTER(_F))]
     LD, JEQ, RET = 0x20, 0x15, 0x06
     ALLOW, KILL, EPERM, ARCH = 0x7FFF0000, 0, 0x00050001, 0xC000003E
-    # ptrace, chmod, fchmod, fchmodat, process_vm_readv/writev, pidfd_open, pidfd_getfd, fchmodat2
-    denied = (101, 90, 91, 268, 310, 311, 434, 438, 452)
+    # ptrace, chmod, fchmod, fchmodat, process_vm_readv/writev,
+    # io_uring_setup/enter/register, pidfd_open, pidfd_getfd, fchmodat2
+    denied = (101, 90, 91, 268, 310, 311, 425, 426, 427, 434, 438, 452)
     ins = []
     def emit(code, jt=0, jf=0, k=0):
         ins.append(_F(code, jt, jf, k & 0xFFFFFFFF)); return len(ins) - 1
