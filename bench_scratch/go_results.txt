@@ -1,0 +1,20 @@
+=== RUN   TestBackpressure_MillionsStableGoroutinesAndRAM
+    adr0035_test.go:270: BENCH go_bus_backpressure
+    adr0035_test.go:271: messages=2000000
+    adr0035_test.go:272: capacity=64
+    adr0035_test.go:273: producers=4
+    adr0035_test.go:274: elapsed_sec=0.759043
+    adr0035_test.go:275: throughput_msgs_per_sec=2634896.91
+    adr0035_test.go:276: goroutines_before=4
+    adr0035_test.go:277: peak_goroutines=8
+    adr0035_test.go:278: goroutines_after=2
+    adr0035_test.go:279: peak_queue_depth=64
+    adr0035_test.go:280: heap_alloc_before_bytes=297616
+    adr0035_test.go:281: heap_alloc_after_bytes=273464
+    adr0035_test.go:282: heap_sys_before_bytes=7962624
+    adr0035_test.go:283: heap_sys_after_bytes=7864320
+    adr0035_test.go:285: rss_before_bytes=33480704
+    adr0035_test.go:286: rss_max_bytes=33480704
+--- PASS: TestBackpressure_MillionsStableGoroutinesAndRAM (0.76s)
+PASS
+ok  	github.com/paulpham157/sdf/go/internal/orchestrator	0.766s
