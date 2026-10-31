@@ -53,8 +53,10 @@ named `VULTR_INFERENCE_API_KEY`.
    `vultr/` prefix is OpenCode's seeded provider id, not an API family.
    Removing those defaults would fail closed; this ADR does not.
    `claude` with no `SDF_ANTHROPIC_BASE_URL` uses `https://api.anthropic.com`
-   and Claude Code's own model. It is not pointed at the example host just
-   because the key variable is `VULTR_INFERENCE_API_KEY`.
+   and Claude Code's own model. The example key `VULTR_INFERENCE_API_KEY` is
+   not selected for Claude, and is not injected, unless
+   `SDF_ANTHROPIC_BASE_URL` is set. With no Claude key, credential resolution
+   fails closed on `SDF_ANTHROPIC_API_KEY`.
    Codex with no `SDF_OPENAI_BASE_URL` stays the official OpenAI API
    (`https://api.openai.com/v1`), on `/run` and in the coordinator. `/run`
    fills the example endpoint only when the resolved key variable is
@@ -96,10 +98,13 @@ provenance are not given a new abstraction.
   `https://api.openai.com/v1` (Responses). Set `SDF_OPENAI_BASE_URL` to use
   another host, and `SDF_CODEX_MODEL` to a model that host serves. The
   example URL is filled only for the example key name.
-- To keep Claude on a Claude-compatible proxy, including Vultr's
+- Claude on `/run` needs `SDF_ANTHROPIC_API_KEY` (or another Claude key
+  variable). `VULTR_INFERENCE_API_KEY` alone is not used. To send that
+  example key to a Claude-compatible proxy, including Vultr's
   Anthropic-compatible endpoint, set `SDF_ANTHROPIC_BASE_URL` (Vultr's is
-  `https://api.vultrinference.com`, no `/v1`) and `SDF_CLAUDE_MODEL`. Unset
-  now means `https://api.anthropic.com`.
+  `https://api.vultrinference.com`, no `/v1`) and
+  `SDF_CLAUDE_API_KEY_ENV=VULTR_INFERENCE_API_KEY`. Unset base URL means
+  `https://api.anthropic.com` and does not carry the example key.
 - If both `SDF_<AGENT>_API_KEY` and `VULTR_INFERENCE_API_KEY` are set and
   `SDF_<AGENT>_API_KEY_ENV` is unset, the `SDF_*` key is used. Name the
   example variable explicitly to keep the old coordinator fallback.

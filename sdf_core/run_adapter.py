@@ -17,7 +17,8 @@
     is ``VULTR_INFERENCE_API_KEY``; any other key with no base URL stays on
     the official OpenAI Responses API, so the key is not sent to a host the
     operator did not name (ADR 0034).  Claude uses the official Anthropic
-    Messages API unless ``SDF_ANTHROPIC_BASE_URL`` is set.  The example key
+    Messages API unless ``SDF_ANTHROPIC_BASE_URL`` is set, and the example
+    key is not attached unless that base URL is set.  The example key
     *name* is used only when no ``SDF_*`` key is set; it does not select a
     protocol;
   - provider ``SDF_SANDBOX_PROVIDER`` = ``e2b`` (template
@@ -147,7 +148,10 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     leaves ``SDF_OPENAI_BASE_URL`` unset, which resolves to the official
     OpenAI API — the same host :func:`~sdf_core.credentials.resolved_llm_base_url`
     reports — and is never pointed at the example host.  Claude is left unset
-    so the official Anthropic Messages API is used (ADR 0034).
+    so the official Anthropic Messages API is used, and the example key name
+    is not selected for Claude unless ``SDF_ANTHROPIC_BASE_URL`` is set
+    (ADR 0034).  Otherwise Claude requires ``SDF_ANTHROPIC_API_KEY`` or
+    another configured Claude key.
     """
 
     spec = _AGENTS[agent]
@@ -158,10 +162,18 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     env |= {name: environ[name] for name in _PASSTHROUGH if environ.get(name)}
     env |= _codex_model_alias(environ)
     env.setdefault(spec.mode_variable, "api-key")
+    explicit_base = (env.get(spec.base_url_source) or "").strip()
+    # The example key is an OpenAI-compatible credential. Do not select it for
+    # Claude unless the operator set a Claude-compatible base URL; otherwise
+    # it would be sent to api.anthropic.com.
+    allow_example_key = spec.protocol != "anthropic" or bool(explicit_base)
     if env[spec.mode_variable] == "api-key" and not env.get(spec.api_key_source):
-        if spec.api_key_env_variable:
+        if spec.api_key_env_variable and allow_example_key:
             env.setdefault(spec.api_key_env_variable, EXAMPLE_API_KEY_ENV)
     key_variable = env.get(spec.api_key_env_variable) if spec.api_key_env_variable else None
+    if spec.protocol == "anthropic" and not explicit_base and key_variable == EXAMPLE_API_KEY_ENV:
+        env.pop(spec.api_key_env_variable, None)
+        key_variable = None
     if key_variable and environ.get(key_variable):
         env[key_variable] = environ[key_variable]
     # api-key mode only: a base URL in subscription mode is a configuration

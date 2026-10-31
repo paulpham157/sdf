@@ -9,7 +9,8 @@ Status: accepted (branch `core/live-full-loop`, PR #53, pending review)
 > Codex key with no base URL stays on `api.openai.com`. E2B egress allows that
 > one resolved host (Claude with no base URL: `api.anthropic.com`), plus
 > `SDF_RUN_EGRESS_ALLOW`. The sandbox does not reach only Vultr, and a
-> non-example key is not given the example host.
+> non-example key is not given the example host. Claude does not receive
+> `VULTR_INFERENCE_API_KEY` unless `SDF_ANTHROPIC_BASE_URL` is set.
 
 ## Context
 

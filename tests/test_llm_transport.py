@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from sdf_core.agent_sandbox import DEFAULT_NETWORK, AgentSandbox, AgentSpec, E2BAgentSandbox
+from sdf_core.agent_sandbox import DEFAULT_NETWORK, AgentSpec, E2BAgentSandbox
 from sdf_core import usage
 from sdf_core.credentials import (
     AGENT_KINDS,
@@ -130,6 +130,45 @@ def test_codex_non_example_key_is_not_sent_to_the_example_host():
         assert "gateway-unit-test-value" not in str(allow)
 
 
+def test_claude_example_key_is_not_sent_to_anthropic():
+    """The example OpenAI key is not injected as ANTHROPIC_API_KEY without a Claude base URL."""
+
+    only_example = run_environ("claude", {"VULTR_INFERENCE_API_KEY": "example-key-name-only"})
+    assert "VULTR_INFERENCE_API_KEY" not in only_example
+    assert "SDF_CLAUDE_API_KEY_ENV" not in only_example
+    assert "SDF_ANTHROPIC_BASE_URL" not in only_example
+    assert "example-key-name-only" not in repr(only_example)
+    assert run_network(only_example, agent="claude")["allow_out"] == ["api.anthropic.com"]
+    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_API_KEY"):
+        resolve_credential_plan("claude", only_example)
+
+    named_without_url = run_environ("claude", {
+        "SDF_CLAUDE_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
+        "VULTR_INFERENCE_API_KEY": "example-key-name-only",
+    })
+    assert "VULTR_INFERENCE_API_KEY" not in named_without_url
+    assert "SDF_CLAUDE_API_KEY_ENV" not in named_without_url
+
+    proxied = run_environ("claude", {
+        "SDF_CLAUDE_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
+        "VULTR_INFERENCE_API_KEY": "example-key-name-only",
+        "SDF_ANTHROPIC_BASE_URL": "https://api.vultrinference.com",
+    })
+    assert proxied["SDF_CLAUDE_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
+    assert proxied["SDF_ANTHROPIC_BASE_URL"] == "https://api.vultrinference.com"
+    plan = resolve_credential_plan("claude", proxied)
+    assert plan.set_variables["ANTHROPIC_BASE_URL"] == "https://api.vultrinference.com"
+    assert set(plan.set_variables) == {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
+
+    own_key = run_environ("claude", {"SDF_ANTHROPIC_API_KEY": "anthropic-unit-test-value"})
+    assert "VULTR_INFERENCE_API_KEY" not in own_key
+    assert "SDF_CLAUDE_API_KEY_ENV" not in own_key
+    assert "SDF_ANTHROPIC_BASE_URL" not in own_key
+    plan = resolve_credential_plan("claude", own_key)
+    assert "ANTHROPIC_BASE_URL" not in plan.set_variables
+    assert set(plan.set_variables) == {"ANTHROPIC_API_KEY"}
+
+
 def test_subscription_mode_does_not_get_the_example_base_url():
     env = run_environ("codex", {
         "SDF_CREDENTIAL_MODE_CODEX": "subscription",
@@ -166,14 +205,26 @@ def test_pi_seed_does_not_make_the_example_price_look_reported(db):
     assert reported.cost_source == "reported" and reported.cost_usd == pytest.approx(0.42)
 
 
-def test_sandbox_protocol_requires_credential_environ():
-    assert "credential_environ" in AgentSandbox.__protocol_attrs__
+def test_begin_attempt_raises_when_credential_environ_is_missing(db, tmp_path: Path):
+    """The production call reads the attribute. A sandbox that omits it raises on 3.11+."""
+
+    from sdf_core.coordinator import Coordinator, _Subtask
+
+    coordinator = Coordinator(
+        db, factory=lambda _spec: None, workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art",
+    )
+    sub = _Subtask(key="add", spec={}, task_id="T-MISSING", worker="worker-1")
 
     class _Missing:
-        pass
+        spec = AgentSpec("worker-1", "worker", "pi")
 
     with pytest.raises(AttributeError):
-        llm_attempt_provider("pi", _Missing().credential_environ)  # type: ignore[attr-defined]
+        coordinator._begin_attempt(
+            "RUN-MISSING", sub, tmp_path, _Missing.spec, None,
+            evidence_mode="synthetic", sandbox=_Missing(),  # type: ignore[arg-type]
+        )
+    assert sub.attempt_id is None
+    assert db.scalars(select(AttemptRow)).all() == []
 
 
 def test_sandbox_egress_follows_configured_host():

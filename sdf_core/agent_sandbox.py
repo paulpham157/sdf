@@ -331,8 +331,9 @@ def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]
     Only variable *names* are configured here; values are passed through from
     the operator environment and never logged.  An unset ``SDF_<KIND>_API_KEY``
     and unset ``SDF_<KIND>_API_KEY_ENV`` select the example key name
-    ``VULTR_INFERENCE_API_KEY`` (ADR 0034).  That name is not a protocol: any
-    ``*_API_KEY`` name works, and egress follows the base URL.
+    ``VULTR_INFERENCE_API_KEY`` (ADR 0034), except Claude, which does not
+    receive that name unless ``SDF_ANTHROPIC_BASE_URL`` is set.  That name is
+    not a protocol: any ``*_API_KEY`` name works, and egress follows the base URL.
     """
 
     out: dict[str, str] = {}
@@ -344,11 +345,19 @@ def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]
         spec = _AGENTS[kind]
         out[f"SDF_CREDENTIAL_MODE_{upper}"] = environ.get(f"SDF_CREDENTIAL_MODE_{upper}", "api-key")
         named = environ.get(spec.api_key_env_variable, "").strip()
-        if named:
+        base_set = bool(environ.get(spec.base_url_source, "").strip())
+        # Same rule as /run: the example key is not a Claude credential unless
+        # a Claude-compatible base URL is set.
+        block_example_key = spec.protocol == "anthropic" and not base_set and (
+            not named or named == EXAMPLE_API_KEY_ENV
+        )
+        if named and not (block_example_key and named == EXAMPLE_API_KEY_ENV):
             key_env = named
         elif environ.get(spec.api_key_source, "").strip():
             key_env = ""
             out[spec.api_key_source] = environ[spec.api_key_source]
+        elif block_example_key:
+            key_env = ""
         else:
             key_env = EXAMPLE_API_KEY_ENV
         if key_env:

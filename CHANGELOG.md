@@ -161,7 +161,11 @@
   `https://api.anthropic.com`. `/run` Codex is given the example OpenAI-compatible
   URL only when the resolved key variable is `VULTR_INFERENCE_API_KEY`;
   `SDF_OPENAI_API_KEY` or any other key name, with no base URL, stays on
-  `https://api.openai.com/v1` (the same host the coordinator records). Pi's
+  `https://api.openai.com/v1` (the same host the coordinator records).
+  `/run` Claude does not take `VULTR_INFERENCE_API_KEY` unless
+  `SDF_ANTHROPIC_BASE_URL` is set; otherwise it requires `SDF_ANTHROPIC_API_KEY`
+  (or another configured Claude key) and is not given the example key for
+  `api.anthropic.com`. Pi's
   seeded model prices are `0`; the ledger estimates `glm-5.3` from
   `PRICES_PER_MTOK` or `SDF_PRICE_GLM_5_3` and marks that cost `estimated`.
   Every agent sandbox declares `credential_environ`; a missing attribute is

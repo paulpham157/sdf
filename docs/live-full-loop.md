@@ -16,7 +16,9 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
   another `*_API_KEY_ENV`, with no base URL, stays on `https://api.openai.com/v1`.
   That example host is not a protocol
   ([ADR 0034](adr/0034-openai-or-claude-compatible-llm-transport.md)).
-  `claude` with no base URL uses `https://api.anthropic.com`. `codex` requires
+  `claude` with no base URL uses `https://api.anthropic.com` and
+  `SDF_ANTHROPIC_API_KEY`. The example key is not injected for Claude unless
+  `SDF_ANTHROPIC_BASE_URL` is set. `codex` requires
   the OpenAI Responses API, not Chat Completions only.
 - **Egress:** E2B sandboxes allow the hostname of the resolved base URL and
   deny every other outbound host, with no public inbound traffic. Add hosts
