@@ -389,6 +389,16 @@ def configured_containment() -> tuple[object | None, bool]:
 
 
 EVALUATOR_MODES = ("off", "prefer", "require")
+# Host checks run as the server user. These variables are the provider
+# credentials a same-uid process can still read from another process's
+# ``/proc/*/environ`` (ADR 0025). Names only; values are never logged.
+PROVIDER_KEY_ENVS = ("E2B_API_KEY", "VULTR_INFERENCE_API_KEY", "DAYTONA_API_KEY")
+
+
+def provider_key_names() -> list[str]:
+    """Provider key variables set in this process, in ``PROVIDER_KEY_ENVS`` order."""
+
+    return [name for name in PROVIDER_KEY_ENVS if (os.getenv(name) or "").strip()]
 
 
 def evaluator_mode(*, live: bool) -> str:
@@ -418,9 +428,17 @@ def configured_evaluator(registry: CheckRegistry | None = None, *, live: bool = 
     mode = evaluator_mode(live=live)
     backend = configured_containment()[0] if mode in {"prefer", "require"} else None
     if backend is None and mode != "require" and live:
-        _log.warning("evaluator_runs_on_host", extra={
-            "mode": mode, "reason": "no promoted containment backend" if mode == "prefer" else "mode off",
-        })
+        # ADR 0025 allows an explicit ``off``/``prefer``. It is not refused
+        # when provider keys are present; the warning names those variables
+        # (never their values) because host mode can read them from another
+        # same-uid process.
+        reason = "no promoted containment backend" if mode == "prefer" else "mode off"
+        extra: dict[str, Any] = {"mode": mode, "reason": reason}
+        keys = provider_key_names()
+        if keys:
+            extra["provider_keys"] = keys
+            extra["reason"] = reason + "; provider key variables are set in this process"
+        _log.warning("evaluator_runs_on_host", extra=extra)
     return DeterministicEvaluator(
         containment_backend=backend,
         require_containment=mode == "require",

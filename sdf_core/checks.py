@@ -11,7 +11,12 @@ argv behind each id comes from a source only the server operator controls:
 Both use the same JSON shape::
 
     {"checks": {"unit-tests": {"argv": ["pytest", "-q", "tests/test_calc.py"], "timeout_seconds": 60},
-                "add-works": ["python3", "-c", "from calc import add; assert add(2, 3) == 5"]}}
+                "add-works": ["python3", "-c", "from calc import add; assert all(type(add(a, b)) is int and add(a, b) == a + b for a, b in ((2, 3), (-1, 1), (0, 0), (40, -15))]"]}}
+
+A check must not be satisfiable by hard-coding a single input. One literal
+assertion (``add(2, 3) == 5``) passes an implementation that returns ``5``
+for that pair only. Use several inputs, including negatives and zero, or a
+property that one hard-coded return value does not satisfy.
 
 Every argv is validated when it is loaded: the executable is a bare name from
 the evaluator allowlist (no path), no argument contains NUL, a ``python``

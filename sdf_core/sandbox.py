@@ -48,6 +48,8 @@ class ProcessResult:
     output_truncated: bool
     cleanup_completed: bool
     duration_seconds: float
+    # Set when the command was measured but tearing the containment box down failed.
+    cleanup_error: str | None = None
 
     @property
     def exit_code(self) -> int | None:
@@ -257,6 +259,7 @@ class FixtureSandbox:
             )
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
+            cleanup_error = getattr(completed, "cleanup_error", None)
             return ProcessResult(
                 command=args,
                 cwd=run_cwd,
@@ -266,7 +269,8 @@ class FixtureSandbox:
                 stderr=stderr[:output_limit],
                 timed_out=False,
                 output_truncated=len(stdout.encode()) > output_limit or len(stderr.encode()) > output_limit,
-                cleanup_completed=True,
+                cleanup_completed=not cleanup_error,
+                cleanup_error=cleanup_error if isinstance(cleanup_error, str) and cleanup_error else None,
                 duration_seconds=time.monotonic() - started_at,
             )
 

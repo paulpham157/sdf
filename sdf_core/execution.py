@@ -399,7 +399,7 @@ class ExecutionService:
                     confidence=evidence.confidence,
                     created_at=utcnow(),
                     metadata_json={"evidence_id": evidence.evidence_id, "criterion": evidence.criterion,
-                                   "runner": evidence.runner, **binding},
+                                   "runner": evidence.runner, "cleanup_error": evidence.cleanup_error, **binding},
                 )
             )
             self.db.flush()
