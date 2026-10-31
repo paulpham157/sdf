@@ -70,7 +70,7 @@ _CODEX_SESSION_AUTH = (
 # custom provider whose ``apiKey`` is the literal reference ``{env:NAME}`` (NAME
 # is argv[1]), so OpenCode reads the key from its own environment and the value
 # is never written to disk.  Base URL and models come from the plan's
-# ``SDF_OPENCODE_*`` sandbox variables.  The provider id is the model prefix;
+# ``OPENCODE_*`` sandbox variables.  The provider id is the model prefix;
 # the small model titles sessions (``agents.title``).  OpenCode 2 permissions
 # are ordered ``{action, resource, effect}`` rules (last match wins): every
 # action defaults to ``ask`` (headless runs auto-reject asks; ``opencode run
@@ -81,7 +81,7 @@ _CODEX_SESSION_AUTH = (
 # the sub-agent tools (ADR-0020, ``subagents.OPENCODE_DENIED_ACTIONS``).
 _OPENCODE_CONFIG = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/opencode",f=d+"/opencode.json",v=process.argv[1];'
-    'if(!e[v]){process.exit(0)}const u=e.SDF_OPENCODE_BASE_URL||"",m=e.SDF_OPENCODE_MODEL||"",s=e.SDF_OPENCODE_SMALL_MODEL||m;'
+    'if(!e[v]){process.exit(0)}const u=e.OPENCODE_BASE_URL||"",m=e.OPENCODE_MODEL||"",s=m;'
     'const i=m.indexOf("/");if(!u||i<1){console.error("opencode-config: base URL or model missing");process.exit(1)}'
     'const p=m.slice(0,i),models={};for(const x of [m,s]){if(!x.startsWith(p+"/")){console.error("opencode-config: small model provider differs");process.exit(1)}models[x.slice(i+1)]={capabilities:{tools:true}}}'
     'const r=(a,x,y)=>({action:a,resource:x,effect:y}),permissions=[r("*","*","ask"),r("read","*","allow"),r("glob","*","allow"),'
@@ -98,7 +98,7 @@ _OPENCODE_CONFIG = (
 # reference ``$NAME`` (NAME is argv[1]).  Pi 1.x resolves ``$NAME`` from its
 # environment (a bare name would be sent as the literal key), so the key
 # value is never written to disk.  Base URL and
-# model come from the plan's ``SDF_PI_*`` sandbox variables.  Token prices in
+# model come from the plan's ``PI_*`` sandbox variables.  Token prices in
 # the seed are zero (ADR 0027): a non-zero price here would make Pi report an
 # SDF-chosen dollar amount, and the ledger would store it as ``reported`` and
 # skip ``SDF_PRICE_<MODEL>``.  The ledger estimates from
@@ -106,7 +106,7 @@ _OPENCODE_CONFIG = (
 # override.  The model id is still checked so a missing model fails the seed.
 _PI_MODELS = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.pi/agent",f=d+"/models.json",v=process.argv[1];'
-    'if(!e[v]){process.exit(0)}const u=e.SDF_PI_BASE_URL||"",m=e.SDF_PI_MODEL||"";'
+    'if(!e[v]){process.exit(0)}const u=e.PI_BASE_URL||"",m=e.PI_MODEL||"";'
     'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("pi-models: base URL, model or key name missing");process.exit(1)}'
     'const c={providers:{sdf:{baseUrl:u,api:"openai-completions",apiKey:"$"+v,models:[{id:m,name:m,reasoning:true,'
     'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}]}}};'
@@ -125,7 +125,7 @@ def _key_ref(agent: str) -> str:
     upper = agent.upper()
     return (
         f'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/sdf",f=d+"/{agent}-api-key-name",v=process.argv[1];'
-        f'if(!e[v]){{process.exit(0)}}if(!e.SDF_{upper}_BASE_URL||!e.SDF_{upper}_MODEL||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v))'
+        f'if(!e[v]){{process.exit(0)}}if(!e.{upper}_BASE_URL||!e.{upper}_MODEL||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v))'
         f'{{console.error("{agent}-key-ref: base URL, model or key name missing");process.exit(1)}}'
         'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,v+"\\n",{mode:0o600});fs.chmodSync(f,0o600)'
     )
@@ -135,10 +135,10 @@ def _key_ref(agent: str) -> str:
 # ~/.config/goose/custom_providers/sdf_openai.json: engine ``openai`` with
 # ``api_key_env`` = the key variable's NAME (argv[1]); Goose 1.56 reads the key
 # from that variable at run time, so the value is never written to disk.  Base
-# URL and model come from the plan's ``SDF_GOOSE_*`` sandbox variables.
+# URL and model come from the plan's ``GOOSE_*`` sandbox variables.
 _GOOSE_PROVIDER = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.config/goose/custom_providers",f=d+"/sdf_openai.json",v=process.argv[1];'
-    'if(!e[v]){process.exit(0)}const u=e.SDF_GOOSE_BASE_URL||"",m=e.SDF_GOOSE_MODEL||"";'
+    'if(!e[v]){process.exit(0)}const u=e.GOOSE_BASE_URL||"",m=e.GOOSE_MODEL||"";'
     'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("goose-provider: base URL, model or key name missing");process.exit(1)}'
     'const c={name:"sdf_openai",engine:"openai",display_name:"SDF OpenAI-compatible",description:"SDF seeded provider",'
     'api_key_env:v,base_url:u,models:[{name:m,context_limit:200000}],supports_streaming:true,requires_auth:true};'

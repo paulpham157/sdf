@@ -175,11 +175,10 @@ a private mapping). A green unit suite without that gate is not live evidence.
   Skipped without the gates.
 - A live agents loop on the example OpenAI-compatible endpoint
   (`SDF_LIVE_E2B=1` + `SDF_LIVE_VULTR_AGENTS=1` or a subset such as `pi` +
-  `E2B_API_KEY` + `VULTR_INFERENCE_API_KEY`) must record the same, plus the
+  `E2B_API_KEY` + that kind's allow-listed API key and base URL) must record the same, plus the
   served model (Pi: `served_models == ["glm-5.3"]`). Those gate names are
-  historical; the endpoint is OpenAI-compatible, not a Vultr protocol
-  (ADR 0034). Codex on that host must be a Responses API. The test maps the
-  key through `SDF_<AGENT>_API_KEY_ENV`. It uses the prebuilt
+  historical; the endpoint is whatever `*_BASE_URL` names, not a Vultr protocol
+  (ADR 0034). Codex on a non-OpenAI host must be a Responses API. The test uses the prebuilt
   `SDF_E2B_VULTR_TEMPLATE` (default `sdf-herdr-agents`); only an explicit
   `SDF_E2B_VULTR_BASE_TEMPLATE` (e.g. E2B's public `codex`, Node 20, too old
   for Pi 1.x) bootstraps a bare base. Skipped without the gates.

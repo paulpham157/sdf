@@ -77,7 +77,8 @@ _TRUSTED_FORCED_ENV = {"OPENCODE_CONFIG_CONTENT": USER_CONFIG_SENTINEL, **_BASE_
 # ``python3 -c`` turn driver (ADR-0018).  OpenCode 2 connects MCP servers when
 # a server first boots a directory, so a one-shot ``run --standalone`` never
 # offers MCP tools (agent-comm needs them).  The driver therefore:
-#   1. drops inherited ``OPENCODE_*`` and forces ``_FORCED_ENV``; cd workspace;
+#   1. drops inherited ``OPENCODE_*`` (keeps the injected ``OPENCODE_API_KEY``)
+#      and forces ``_FORCED_ENV``; cd workspace;
 #   2. starts a private ``opencode serve`` on a free 127.0.0.1 port with a
 #      random per-turn password (env only, never printed);
 #   3. waits until the server answers ``/api/mcp`` for the workspace and every
@@ -98,9 +99,12 @@ import base64, json, os, secrets, signal, socket, subprocess, sys, time, urllib.
 M = sys.argv[1]; wd, secs, grace, err = sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
 srv_wait, mcp_wait = int(sys.argv[6]), int(sys.argv[7]); forced = json.loads(sys.argv[8])
 prompt, argv = sys.argv[9], sys.argv[10:]
+_sdf_key = os.environ.get("OPENCODE_API_KEY", "")
 for k in [k for k in os.environ if k.startswith("OPENCODE_")]:
     del os.environ[k]
 os.environ.update(forced)
+if _sdf_key:
+    os.environ["OPENCODE_API_KEY"] = _sdf_key
 def done(rc, tail=""):
     print(M + str(rc)); tail and print(tail[-2000:]); sys.stdout.flush()
 def user_config():

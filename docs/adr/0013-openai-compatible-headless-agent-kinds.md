@@ -4,9 +4,11 @@ Status: accepted; the Aider parts are superseded by
 [ADR 0016](0016-remove-aider-and-cursor-agent-kinds.md) (2026-10-28).
 
 > **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
-> Qwen Code and Goose stay OpenAI-compatible kinds. Their default base URL
-> is the example OpenAI-compatible endpoint, not a required Vultr API.
-> `VULTR_INFERENCE_API_KEY` remains only an example key-variable name.
+> Qwen Code and Goose stay OpenAI-compatible kinds. They read `QWEN_BASE_URL`
+> / `QWEN_API_KEY` / `QWEN_MODEL` and `GOOSE_BASE_URL` / `GOOSE_API_KEY` /
+> `GOOSE_MODEL`. There is no default host. `VULTR_INFERENCE_API_KEY`,
+> `SDF_*` key/URL/model names and `*_API_KEY_ENV` are not credentials.
+> The table below that names `SDF_QWEN_*` / `SDF_GOOSE_*` is historical.
 
 > **Superseded in part (ADR 0016).** Aider was removed as an agent kind:
 > `sdf_core.aider_runtime`, its credential spec, seed, model defaults, tests
@@ -52,14 +54,12 @@ provider prefix). All three are Apache-2.0, so bundling them in the
 - `api-key` mode only (`SDF_CREDENTIAL_MODE_{QWEN,GOOSE,AIDER}=api-key`);
   `subscription` is a configuration error and a missing mode fails closed
   (ADR 0007).
-- Default key variables `SDF_QWEN_API_KEY`, `SDF_GOOSE_API_KEY`,
-  `SDF_AIDER_API_KEY` (ADR 0011 rule). `SDF_<AGENT>_API_KEY_ENV` *replaces*
-  the default with another name (e.g. `VULTR_INFERENCE_API_KEY`); it never adds
-  a fallback, and an unset named variable fails closed. The ADR 0007 / 0011
-  name rules apply, plus per-kind reserved prefixes, because the turn wrapper
-  unsets them and the agent would never see the key: `QWEN_`/`OPENAI_`/
-  `GEMINI_` (qwen), `GOOSE_`/`OPENAI_` (goose), `AIDER_`/`OPENAI_`/`LITELLM_`
-  (aider).
+- Qwen reads `QWEN_API_KEY` and Goose reads `GOOSE_API_KEY` (ADR 0034).
+  `VULTR_INFERENCE_API_KEY` and `*_API_KEY_ENV` are not read. The turn wrapper
+  snapshots the key before it unsets `QWEN_`/`OPENAI_`/`GEMINI_` (qwen) or
+  `GOOSE_`/`OPENAI_` (goose): Qwen re-exports it as `OPENAI_API_KEY` for that
+  turn, and Goose keeps `GOOSE_API_KEY` for the seeded provider. (Aider's
+  `AIDER_`/`OPENAI_`/`LITELLM_` rule left with ADR 0016.)
 - Seeds record only the key variable's **name** (mode `0600`):
   `qwen-key-ref` and `aider-key-ref` write a name file that the wrapper reads
   and validates (`[A-Z][A-Z0-9_]*_API_KEY`) before exporting

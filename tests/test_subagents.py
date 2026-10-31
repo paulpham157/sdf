@@ -17,8 +17,11 @@ from sdf_core.herdr_runtime import _agent_start_args
 from sdf_core.pi_runtime import PI_EXTENSIONS, UNAVAILABLE_PI_EXTENSIONS, resolve_pi_extensions
 from sdf_core.qwen_runtime import QwenHeadlessRuntime
 
-VULTR = {"SDF_CREDENTIAL_MODE_OPENCODE": "api-key", "SDF_OPENCODE_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
-         "VULTR_INFERENCE_API_KEY": "vk-test-0123456789abcdef-secret"}
+VULTR = {
+    "SDF_CREDENTIAL_MODE_OPENCODE": "api-key",
+    "OPENCODE_API_KEY": "vk-test-0123456789abcdef-secret",
+    "OPENCODE_BASE_URL": "https://llm.example.com/v1",
+}
 
 
 @pytest.mark.parametrize("dangerous", [False, True])
@@ -82,7 +85,7 @@ def test_pi_extension_allowlist_has_no_subagent_extension():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the seed script")
 def test_opencode_user_config_denies_the_subagent_tool_last(tmp_path):
-    injection = prepare_credential_injection(["opencode"], {**VULTR, "SDF_OPENCODE_MODEL": "vultr/glm-5.3"})
+    injection = prepare_credential_injection(["opencode"], {**VULTR, "OPENCODE_MODEL": "vultr/glm-5.3"})
     env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"], **injection.envs}
     for command in injection.seed_commands:
         subprocess.run(["bash", "-c", command], env=env, check=True)

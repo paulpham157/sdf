@@ -3,14 +3,12 @@
 Status: accepted (branch `core/live-full-loop`, PR #53, pending review)
 
 > **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
-> "Defaults to Vultr Inference" means the example OpenAI-compatible endpoint
-> (base URL + model), not a Vultr protocol. For `/run` Codex that fill happens
-> only when the resolved key variable is `VULTR_INFERENCE_API_KEY`. Any other
-> Codex key with no base URL stays on `api.openai.com`. E2B egress allows that
-> one resolved host (Claude with no base URL: `api.anthropic.com`), plus
-> `SDF_RUN_EGRESS_ALLOW`. The sandbox does not reach only Vultr, and a
-> non-example key is not given the example host. Claude does not receive
-> `VULTR_INFERENCE_API_KEY` unless `SDF_ANTHROPIC_BASE_URL` is set.
+> `/run` reads the allow-listed key, base URL and model for the selected
+> kind. Claude with no base URL uses `api.anthropic.com`. Codex with no base
+> URL uses `api.openai.com`. Headless kinds have no default host.
+> `VULTR_INFERENCE_API_KEY` is not a credential. E2B egress allows the
+> resolved host, plus `SDF_RUN_EGRESS_ALLOW`. `SDF_HERDR_CODEX_MODEL` is not
+> read; the model variable is `OPENAI_MODEL`.
 
 ## Context
 
@@ -27,15 +25,14 @@ failed, and there was no one place to see what happened in a run.
    agent's ADR-0007 configuration and runs `HerdrRuntime` (codex, claude) or
    the headless runtimes (opencode, pi, qwen, goose) behind
    `RuntimeController`, so the turn guard, the sub-agent ban and project trust
-   (ADR 0019-0021) apply unchanged. All six kinds are supported; with nothing
-   configured an agent defaults to Vultr Inference (`VULTR_INFERENCE_API_KEY`,
-   `glm-5.3`). Only agent configuration reaches credential resolution:
+   (ADR 0019-0021) apply unchanged. All six kinds are supported. Credentials
+   are the allow-listed names in ADR 0034; `VULTR_INFERENCE_API_KEY` is not
+   read. Only agent configuration reaches credential resolution:
    `SDF_DOTENV`, `SDF_AUTH_*`, `SDF_DATABASE_URL` and server `SDF_RUN_*`
-   settings never do. `SDF_HERDR_CODEX_MODEL` is a deprecated alias of
-   `SDF_CODEX_MODEL`; the default template is `agent_sandbox.DEFAULT_TEMPLATE`.
-2. **Egress posture.** E2B sandboxes are created with
-   `agent_sandbox.DEFAULT_NETWORK`: outbound only to the Vultr Inference host,
-   everything else denied, no public inbound traffic. `SDF_RUN_EGRESS_ALLOW`
+   settings never do. The default template is `agent_sandbox.DEFAULT_TEMPLATE`.
+2. **Egress posture.** E2B sandboxes allow the hostname of the kind's resolved
+   base URL (official API when Claude or Codex leave it unset) and deny
+   everything else, with no public inbound traffic. `SDF_RUN_EGRESS_ALLOW`
    adds named hosts (an open CIDR is refused). Daytona cannot apply that lock
    at creation, so `/run` refuses it unless the operator sets
    `SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS=1`, which accepts open egress.

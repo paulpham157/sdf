@@ -37,12 +37,9 @@ CODEX_SESSION = '{"auth_mode":"chatgpt","tokens":{"access_token":"dummy-bearer-2
 API_KEY_ENV = {
     **ENV,
     "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
-    "SDF_ANTHROPIC_API_KEY": CLAUDE_KEY,
+    "ANTHROPIC_API_KEY": CLAUDE_KEY,
     "SDF_CREDENTIAL_MODE_CODEX": "api-key",
-    "SDF_OPENAI_API_KEY": OPENAI_KEY,
-    # Host shell provider variables that must never be forwarded.
-    "ANTHROPIC_API_KEY": "host-proxy-key",
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
+    "OPENAI_API_KEY": OPENAI_KEY,
 }
 
 SUBSCRIPTION_ENV = {
@@ -160,9 +157,9 @@ def test_prepared_injection_guards_every_plan_variable():
 
 def test_configuration_error_is_raised_before_any_sandbox_is_created():
     factory = FakeFactory()
-    environ = {**ENV, "SDF_CREDENTIAL_MODE_CLAUDE": "api-key"}  # no SDF_ANTHROPIC_API_KEY
+    environ = {**ENV, "SDF_CREDENTIAL_MODE_CLAUDE": "api-key"}  # no ANTHROPIC_API_KEY
 
-    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_API_KEY"):
+    with pytest.raises(CredentialConfigError, match="ANTHROPIC_API_KEY"):
         create_credentialed_transport(
             template="herdr-claude", agents=("claude",), environ=environ, sandbox_factory=factory
         )
@@ -550,7 +547,7 @@ def _run_in_box(command, home, **variables):
     subprocess.run(["sh", "-c", command], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True)
 
 def test_injection_seeds_an_agent_pane_environment_by_variable_name_only():
-    injection = prepare_credential_injection(("claude",), {**API_KEY_ENV, "SDF_ANTHROPIC_BASE_URL": "https://gw.example.com"})
+    injection = prepare_credential_injection(("claude",), {**API_KEY_ENV, "ANTHROPIC_BASE_URL": "https://gw.example.com"})
 
     pane_seed = injection.seed_commands[-1]
     assert "agent-env.sh" in pane_seed
@@ -818,7 +815,7 @@ def test_create_credentialed_transport_selects_daytona_via_env():
         **DAYTONA_ENV,
         "SDF_SANDBOX_PROVIDER": "daytona",
         "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
-        "SDF_ANTHROPIC_API_KEY": CLAUDE_KEY,
+        "ANTHROPIC_API_KEY": CLAUDE_KEY,
     }
     transport, injection = create_credentialed_transport(
         snapshot="sdf-herdr-agents",
@@ -838,7 +835,7 @@ def test_create_credentialed_transport_selects_daytona_via_env():
 def test_daytona_credential_failure_is_raised_before_any_sandbox_is_created():
     factory = DaytonaFakeFactory()
     environ = {**DAYTONA_ENV, "SDF_SANDBOX_PROVIDER": "daytona", "SDF_CREDENTIAL_MODE_CLAUDE": "api-key"}
-    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_API_KEY"):
+    with pytest.raises(CredentialConfigError, match="ANTHROPIC_API_KEY"):
         create_credentialed_transport(
             snapshot="sdf-herdr-agents", agents=("claude",), environ=environ, sandbox_factory=factory
         )
@@ -853,7 +850,7 @@ def test_daytona_seed_failure_kills_the_sandbox_and_reports_no_value():
         **DAYTONA_ENV,
         "SDF_SANDBOX_PROVIDER": "daytona",
         "SDF_CREDENTIAL_MODE_CLAUDE": "api-key",
-        "SDF_ANTHROPIC_API_KEY": CLAUDE_KEY,
+        "ANTHROPIC_API_KEY": CLAUDE_KEY,
     }
     transport, _ = create_credentialed_transport(
         snapshot="sdf-herdr-agents", agents=("claude",), environ=environ, sandbox_factory=factory
