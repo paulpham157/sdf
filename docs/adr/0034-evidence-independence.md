@@ -79,24 +79,28 @@ Attempt's agent, or that it is still current.
      so a planted workspace `conftest.py` is not loaded. `-c /dev/null` and
      plugin autoload stay off (ADR 0025).
 
-4. **Pytest's verdict is the evaluator's report, not stdout.** The child is
-   given an evaluator-owned plugin and writes JUnit XML plus a completion
-   marker (a per-run token, counts, exit status) under the sealed tree. The
-   parent accepts `PASS` only when all of these hold:
-   - the marker token matches, so `os._exit` before `pytest_sessionfinish`
-     cannot pass;
-   - the JUnit file parses, contains no DTD, and its counts match the marker;
-   - the exit code is 0 and the marker's exit status is 0;
-   - at least one test passed;
-   - the number of JUnit cases is at least the number of test functions the
-     oracle declares;
-   - the sealed oracle bytes still match the fixture after the process exits.
+4. **Pytest's verdict is a result frame the parent reads, not stdout and not
+   a file the child was told to write.** The process the sandbox starts is a
+   notary. It forks the pytest child and writes the result file only after
+   that child has exited. The child is not given `SDF_ORACLE_TOKEN`,
+   `SDF_ORACLE_MARKER`, or the result path.
+   - The plugin's `pytest_sessionfinish` writes one JSON frame (counts and
+     exit status) through a pipe, using a small `write` stub mapped for that
+     purpose.
+   - On Linux x86_64 the child installs a seccomp filter before pytest
+     imports anything: `write` and the other write-family syscalls to that
+     pipe succeed only when the instruction pointer is in the stub. `os.write`
+     and a forged JUnit file do not.
+   - The parent accepts `PASS` only when the frame's counts agree, the exit
+     code and the frame's exit status are both 0, at least one test passed,
+     the count is at least the number of test functions the oracle declares,
+     and the sealed oracle bytes still match the fixture.
 
    Zero collected tests, and tests that were only skipped, are `FAIL`. A
-   missing report after exit 0 is `FAIL` (unexpected early exit). Disagreement
-   between the marker, the JUnit file and the exit code is `INCONCLUSIVE`.
-   None of these is a pass. The stdout summary parser remains in the tree and
-   is not the accepting signal.
+   missing frame after exit 0 is `FAIL` (unexpected early exit). A frame whose
+   counts disagree is `INCONCLUSIVE`. None of these is a pass. The stdout
+   summary parser remains in the tree and is not the accepting signal. A bare
+   `pytest` executable, which does not run this bootstrap, is `INCONCLUSIVE`.
 
 5. **Acceptance gate** (`check_verification_acceptance`), applied in
    `ExecutionService.finish` before a `validates` edge or a succeeded Task:
@@ -112,18 +116,27 @@ Attempt's agent, or that it is still current.
    sets `expires_at` to 24 hours after `collected_at`.
 
 6. **What a subject module can still do.** The tests import the code under
-   test in the pytest process. That module can read `SDF_ORACLE_TOKEN` and
-   write a matching marker and JUnit file, then exit 0. The seal stops
-   helpers, conftest and fixture data from doing this. It does not stop the
-   subject itself. A `python -c` check that imports the subject and hits
-   `sys.exit(0)` is the same residual ADR 0025 already recorded; this ADR
-   does not pretend otherwise.
+   test in the pytest child, so that child is not a trusted process.
+   - It cannot mint a pass by reading `SDF_ORACLE_TOKEN` / `SDF_ORACLE_MARKER`
+     (those are not set), by writing `junit.xml` or `marker.json`, or by
+     `os.write` on the result pipe. `os._exit(0)` before `pytest_sessionfinish`
+     leaves an empty frame and is `FAIL`.
+   - It can still mint a pass if it calls the plugin's report stub (or
+     `pytest_sessionfinish`) with a forged but well-formed frame. The stub
+     address lives in that process because seccomp has to know it before
+     collection. Finding it means walking `sys.modules` or the process image,
+     not the environment. A `python -c` check that imports the subject and
+     hits `sys.exit(0)` is the same residual ADR 0025 already recorded.
 
 ## Consequences
 
-- A planted conftest, a replaced helper, a forged pytest summary plus
-  `os._exit(0)`, a modified oracle file, a run that collects nothing, and a
-  run whose tests are all skipped cannot accept an Attempt.
+- A planted conftest, a replaced helper, a helper that exists only in the
+  workspace, a subject that writes the old marker and JUnit paths and
+  `os._exit(0)`, a libc write of a passing frame, a modified oracle file, a
+  run that collects nothing, and a run whose tests are all skipped cannot
+  accept an Attempt. The stdout-summary cases were already `FAIL` under ADR
+  0025; the new hole this seal closes is the subject forging the result
+  channel, and helpers that ADR 0025 did not hash.
 - Checks that import a project helper must ship that helper in the server
   fixture. A helper that exists only in the workspace is treated as planted.
 - Verification Evidence expires after 24 hours. Accepting it again means
