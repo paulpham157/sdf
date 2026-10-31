@@ -53,7 +53,7 @@ Attempt's agent, or that it is still current.
    | `producer_identity`, `producer_role` | who wrote the row |
    | `verifier_identity`, `verifier_role` | who decided the verdict |
    | `subject_artifact_sha256` | sha256 of the artifact the verdict is about |
-   | `oracle_digest` | sha256 of the sealed oracle manifest (path and file hash, sorted) |
+   | `oracle_digest` | sha256 of the registered argv plus each sealed oracle file (path and file hash, sorted). Not the hash of an empty input |
    | `environment_digest` | sha256 of command, runner, oracle digest, Python and platform |
    | `collected_at` | when the evaluator read the verdict |
    | `expires_at` | when the verdict stops being acceptable |
@@ -109,6 +109,14 @@ Attempt's agent, or that it is still current.
      not the Attempt's `agent` (the evaluator writes `sdf-evaluator` /
      `evaluator`);
    - `subject_artifact_sha256` equals the diff artifact being accepted;
+   - `oracle_digest` is present and is not the SHA-256 of empty input
+     (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`).
+     The digest is `sdf-oracle-v1`, a length-prefixed NUL-joined argv (the
+     registered check text, including a `python -c` string), then one
+     `file`, path, and file-hash record per sealed oracle file. A pure
+     `python -c` check has no sealed files and still hashes its argv, so
+     two different `-c` strings do not share a digest. NULL and the empty
+     digest cannot accept;
    - `expires_at` is in the future. NULL or past means the verdict requires
      re-validation and cannot accept.
 

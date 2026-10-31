@@ -410,6 +410,29 @@ def _api_key_source(spec: _AgentSpec, environ: Mapping[str, str]) -> str:
     return name
 
 
+def _live_gate_opted_in() -> bool:
+    """True when a live test has set its own ``SDF_LIVE_*=1`` flag."""
+
+    return any(name.startswith("SDF_LIVE_") and value == "1" for name, value in os.environ.items())
+
+
+def _hermetic_skips_dotenv(dotenv: Path) -> bool:
+    """The hermetic suite does not read the repo-root ``.env``.
+
+    A test that points ``REPO_ROOT`` at a fixture directory still loads that
+    file: that is how the server's lifespan is tested. A live gate
+    (``SDF_LIVE_*=1``) still reads the real file.
+    """
+
+    if os.environ.get("SDF_TEST_HERMETIC") != "1" or _live_gate_opted_in():
+        return False
+    repo_dotenv = Path(__file__).resolve().parents[1] / ".env"
+    try:
+        return dotenv.resolve() == repo_dotenv.resolve()
+    except OSError:
+        return False
+
+
 def load_dotenv(
     path: Path | str | None = None,
     environ: MutableMapping[str, str] | None = None,
@@ -418,9 +441,17 @@ def load_dotenv(
 
     Variables already present in ``environ`` (even empty) win.  A missing
     file is a no-op.  Returns the names that were loaded, never the values.
+
+    The hermetic suite sets ``SDF_TEST_HERMETIC=1`` and then does not read the
+    repo-root file, so a developer ``.env`` cannot steer those tests. An
+    explicit ``path``, or a ``REPO_ROOT`` pointed at a fixture, is still
+    loaded. A live gate (``SDF_LIVE_*=1``) still loads the default file;
+    those tests opt in and take keys from ``.env``.
     """
     target = os.environ if environ is None else environ
     dotenv = Path(path) if path is not None else REPO_ROOT / ".env"
+    if path is None and _hermetic_skips_dotenv(dotenv):
+        return ()
     if not dotenv.is_file():
         return ()
     loaded: list[str] = []

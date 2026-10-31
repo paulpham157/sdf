@@ -28,6 +28,7 @@ from .oracle import (
     PYTEST_SEAL,
     load_result_frame,
     load_script_result,
+    seal_oracle_digest,
     subject_module_names,
     prepare_private_report,
     prepare_sealed_report,
@@ -586,7 +587,7 @@ class DeterministicEvaluator:
             # outside the workspace; everything else runs from the sealed copy.
             if reference is not None and not absolute:
                 try:
-                    sealed = materialize(reference, workspace, targets)
+                    sealed = materialize(reference, workspace, targets, command=argv)
                 except OracleTamper as exc:
                     return stop(exc.reason)
                 oracle_digest = sealed.oracle_digest
@@ -612,6 +613,10 @@ class DeterministicEvaluator:
                     "oracle result channel is not sealed for a bare pytest executable",
                     oracle_digest=oracle_digest,
                 )
+            # A pure python -c check seals no files. The digest still covers
+            # the registered argv, so it is not the hash of an empty input.
+            if oracle_digest is None:
+                oracle_digest = seal_oracle_digest(argv)
             try:
                 sandbox = FixtureSandbox(
                     run_root,
