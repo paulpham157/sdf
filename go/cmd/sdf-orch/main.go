@@ -23,7 +23,7 @@ func main() {
 	// Flag default is the env value, so -outcome-db wins when both are set.
 	// Empty keeps MemoryStore (same as tests). A path opens OpenSQLiteStore.
 	outcomeDB := flag.String("outcome-db", os.Getenv("SDF_TOOL_OUTCOME_DB"),
-		"SQLite file for the Tool Proxy idempotency fence (env SDF_TOOL_OUTCOME_DB). Empty uses an in-process MemoryStore")
+		"SQLite file for the Tool Proxy idempotency fence (env SDF_TOOL_OUTCOME_DB). Empty uses an in-process MemoryStore (no restart survival). Parent directory must exist. One process per file. See docs/sdf-orch.md")
 	flag.Parse()
 
 	orch, err := orchestrator.New(orchestrator.Config{

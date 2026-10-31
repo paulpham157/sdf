@@ -111,6 +111,22 @@ runs) over OTLP to any backend (Jaeger, Tempo, Langfuse, LangSmith...) via the
 standard `OTEL_*` variables. Off by default; span attributes never carry
 secrets, prompts or code, and nothing runs inside sandboxes.
 
+### Go orchestrator (`sdf-orch`)
+
+The Go process in `go/cmd/sdf-orch` ([ADR 0035](docs/adr/0035-port-orchestration-core-to-go.md))
+is separate from the Python API above. With no `-outcome-db` and no
+`SDF_TOOL_OUTCOME_DB`, the Tool Proxy idempotency fence stays in memory and
+is discarded on exit. A single-process deploy that must keep tool outcomes
+across restarts sets that path to a file under a durable data directory
+(parent directory created first; one process per file). Operator notes:
+[docs/sdf-orch.md](docs/sdf-orch.md).
+
+```bash
+mkdir -p /var/lib/sdf
+export SDF_TOOL_OUTCOME_DB=/var/lib/sdf/tool-outcomes.db
+cd go && go run ./cmd/sdf-orch
+```
+
 ### API authentication ([ADR 0015](docs/adr/0015-api-authentication.md))
 
 Every route except `GET /healthz` needs `Authorization: Bearer <token>`; the
@@ -151,6 +167,7 @@ An agent reporting completion is not success. A Task has an **Accepted Outcome**
 ## Project layout
 
 - `sdf_core/` — domain model, execution services, policy, runtime, and API.
+- `go/` — Go orchestration core (`sdf-orch`). Durable fence path: [docs/sdf-orch.md](docs/sdf-orch.md).
 - `tests/` — deterministic unit and integration tests.
 - `alembic/` — database migrations.
 - `CONTEXT.md` — canonical domain vocabulary.
