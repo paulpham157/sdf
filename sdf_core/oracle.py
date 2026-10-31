@@ -12,7 +12,12 @@ of the oracle. Pass/fail for pytest is decided in a process that does not execut
 code under test. That code runs in a worker; the oracle evaluates assertions
 on the values it returns. A seccomp filter on Linux x86_64 still rejects
 ordinary writes to the result pipe, and fails closed when it cannot be
-installed.
+installed. The pytest process and the notary set ``PR_SET_DUMPABLE`` to 0
+so the worker cannot ptrace them or open ``/proc/<pid>/fd``. The worker
+itself is denied ``ptrace``, ``process_vm_*``, ``pidfd_getfd`` and
+``chmod``, and that filter fails closed too. Responses from the worker are
+capped at 1 MiB. The sealed tree is mode ``0555``/``0444`` for the run;
+the worker's temp directory is not.
 """
 
 from __future__ import annotations
@@ -49,6 +54,8 @@ RESULT_NAME = "result.json"
 # only after that child has exited does it write the result file. The child
 # never sees SDF_ORACLE_REPORT. A seccomp filter lets the result pipe be
 # written only from a stub mapped for the plugin, not from libc (os.write).
+# The notary holds the result fd across the run. The worker cannot ptrace
+# the pytest process, open its /proc fd directory, or chmod the sealed tree.
 PYTEST_SEAL = r'''
 import ctypes, os, sys
 
@@ -124,6 +131,50 @@ def _seccomp(fd, lo):
 _WORKER = r"""
 import importlib, json, os, socket, struct, sys
 sys.path.append(os.getcwd())
+
+def _deny_cross_process():
+    # Fail closed: no ptrace, no process_vm, no pidfd_getfd, no chmod.
+    if sys.platform != "linux" or os.uname().machine not in {"x86_64", "amd64"}:
+        os._exit(86)
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    c_u16, c_u8, c_u32, c_us = ctypes.c_uint16, ctypes.c_uint8, ctypes.c_uint32, ctypes.c_ushort
+    class _F(ctypes.Structure):
+        _fields_ = [("code", c_u16), ("jt", c_u8), ("jf", c_u8), ("k", c_u32)]
+    class _P(ctypes.Structure):
+        _fields_ = [("len", c_us), ("filter", ctypes.POINTER(_F))]
+    LD, JEQ, RET = 0x20, 0x15, 0x06
+    ALLOW, KILL, EPERM, ARCH = 0x7FFF0000, 0, 0x00050001, 0xC000003E
+    # ptrace, chmod, fchmod, fchmodat, process_vm_readv/writev, pidfd_open, pidfd_getfd, fchmodat2
+    denied = (101, 90, 91, 268, 310, 311, 434, 438, 452)
+    ins = []
+    def emit(code, jt=0, jf=0, k=0):
+        ins.append(_F(code, jt, jf, k & 0xFFFFFFFF)); return len(ins) - 1
+    emit(LD, k=4)
+    arch = emit(JEQ, k=ARCH)
+    kill = emit(RET, k=KILL)
+    ins[arch].jt = (kill + 1) - (arch + 1)
+    emit(LD, k=0)
+    jeqs = [emit(JEQ, k=nr) for nr in denied]
+    allow = emit(RET, k=ALLOW)
+    deny = emit(RET, k=EPERM)
+    for i in jeqs:
+        ins[i].jt = deny - (i + 1)
+        ins[i].jf = 0
+    # PDEATHSIG so this process dies with pytest; then no_new_privs, dumpable, seccomp.
+    if (
+        libc.prctl(1, 9, 0, 0, 0) != 0
+        or libc.prctl(38, 1, 0, 0, 0) != 0
+        or libc.prctl(4, 0, 0, 0, 0) != 0
+    ):
+        os._exit(86)
+    arr = (_F * len(ins))(*ins)
+    prog = _P(len(ins), arr)
+    libc.syscall.restype = ctypes.c_long
+    if libc.syscall(317, 1, 0, ctypes.byref(prog)) != 0:
+        os._exit(86)
+
+_deny_cross_process()
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=int(sys.argv[1]))
 refs = {}
 seq = 1
@@ -223,10 +274,21 @@ class _RPC:
         if hdr is None:
             raise ImportError("subject worker exited")
         size = struct.unpack(">I", hdr)[0]
+        if size > 1000000:
+            self.close()
+            raise ImportError("subject response exceeds 1000000 bytes")
         data = self._exact(size)
         if data is None:
             raise ImportError("subject worker exited")
-        return json.loads(data.decode())
+        try:
+            parsed = json.loads(data.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            self.close()
+            raise ImportError("malformed subject response")
+        if not isinstance(parsed, dict):
+            self.close()
+            raise ImportError("malformed subject response")
+        return parsed
     def _exact(self, n):
         buf = b""
         while len(buf) < n:
@@ -242,6 +304,14 @@ class _RPC:
             pass
         if self.proc.poll() is None:
             self.proc.kill()
+        try:
+            self.proc.wait(timeout=5)
+        except Exception:
+            pass
+        tmp = getattr(self, "tmp", None)
+        if tmp:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
 
 def _unwrap(rpc, resp):
     if not resp or not resp.get("ok"):
@@ -316,15 +386,53 @@ def _install_hook(rpc, names):
             return importlib.machinery.ModuleSpec(fullname, _Loader(fullname))
     sys.meta_path.insert(0, _Finder())
 
+def _freeze_sealed_tree(root):
+    """Files and directories the worker shares are not writable by it.
+
+    chmod is denied in the worker, so it cannot undo this. A private temp
+    directory is given to the worker for legitimate tempfile use. Any chmod
+    failure propagates: the caller exits rather than run with a writable tree.
+    """
+    for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if not os.path.islink(path):
+                os.chmod(path, 0o444)
+        os.chmod(dirpath, 0o555)
+
+def _seal_report_path(report):
+    """Freeze what the worker must not replace. The notary already holds the fd.
+
+    A result file inside the cwd means this is the sealed tree: freeze all of
+    it. A private report (absolute tests) is only its own directory, so the
+    workspace the check was pointed at stays writable.
+    """
+    if not report:
+        os._exit(86)
+    cwd = os.path.realpath(os.getcwd())
+    real = os.path.realpath(report)
+    if real == cwd or real.startswith(cwd + os.sep):
+        _freeze_sealed_tree(cwd)
+        return
+    if os.path.islink(report) or not os.path.isfile(report):
+        os._exit(86)
+    os.chmod(report, 0o444)
+    directory = os.path.dirname(report)
+    if not directory or os.path.islink(directory) or not os.path.isdir(directory):
+        os._exit(86)
+    os.chmod(directory, 0o555)
+
 def _start_worker(result_fd):
-    import socket, subprocess
+    import socket, subprocess, tempfile
     parent, child = socket.socketpair()
     child.set_inheritable(True)
     try:
         os.set_inheritable(result_fd, False)
     except OSError:
         pass
+    worker_tmp = tempfile.mkdtemp(prefix="sdf-subject-", dir="/tmp")
     env = {key: value for key, value in os.environ.items() if not key.startswith("SDF_ORACLE_")}
+    env["TMPDIR"] = env["TMP"] = env["TEMP"] = worker_tmp
     proc = subprocess.Popen(
         [sys.executable, "-I", "-B", "-c", _WORKER, str(child.fileno())],
         pass_fds=(child.fileno(),),
@@ -336,7 +444,9 @@ def _start_worker(result_fd):
         stderr=subprocess.DEVNULL,
     )
     child.close()
-    return _RPC(parent, proc)
+    rpc = _RPC(parent, proc)
+    rpc.tmp = worker_tmp
+    return rpc
 
 def _plugin(fd, write, rpc):
     import json, types
@@ -362,14 +472,42 @@ def _plugin(fd, write, rpc):
     mod.pytest_sessionfinish = pytest_sessionfinish
     sys.modules["sdf_oracle_plugin"] = mod
 
+def _undumpable():
+    libc = ctypes.CDLL(None, use_errno=True)
+    # Same-uid peers cannot ptrace or open /proc/<pid>/fd when this is 0.
+    if libc.prctl(4, 0, 0, 0, 0) != 0:
+        os._exit(86)
+
 def _notary():
     report = os.environ.pop("SDF_ORACLE_REPORT", "")
+    _undumpable()
+    # Open the result before the worker exists. Writes later use this fd, so
+    # the directory can stay mode 0555 for the whole run (no chmod window).
+    report_fd = -1
+    if report:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            report_fd = os.open(report, flags, 0o600)
+            os.set_inheritable(report_fd, False)
+        except OSError:
+            os._exit(86)
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid == 0:
         os.close(read_fd)
+        if report_fd >= 0:
+            os.close(report_fd)
+        _undumpable()
         subjects = [item for item in os.environ.pop("SDF_ORACLE_SUBJECTS", "").split(",") if item]
-        rpc = _start_worker(write_fd) if subjects else None
+        rpc = None
+        if subjects:
+            try:
+                _seal_report_path(report)
+            except OSError:
+                os._exit(86)
+            rpc = _start_worker(write_fd)
         try:
             stub = _stub()
             write = _seccomp(write_fd, stub)
@@ -390,18 +528,46 @@ def _notary():
         chunks.append(buf)
         size += len(buf)
     data = b"".join(chunks)
-    if report:
+    _pid, status = os.waitpid(pid, 0)
+    if report_fd >= 0:
         try:
-            out = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            os.write(out, data)
-            os.close(out)
+            view = memoryview(data)
+            while view:
+                n = os.write(report_fd, view)
+                if n <= 0:
+                    break
+                view = view[n:]
+            os.close(report_fd)
         except OSError:
             pass
-    _pid, status = os.waitpid(pid, 0)
     os._exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 
 _notary()
 '''
+
+
+def _thaw_tree(root: Path) -> None:
+    """Undo the worker-time freeze so the evaluator can delete the tree.
+
+    The notary writes the result through an fd it opened before the freeze,
+    so the tree stays mode 0555/0444 until the check has been read.
+    """
+
+    if not root.exists():
+        return
+    for dirpath, _dirnames, filenames in os.walk(root, topdown=False):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path):
+                continue
+            try:
+                os.chmod(path, 0o644)
+            except OSError:
+                pass
+        try:
+            os.chmod(dirpath, 0o755)
+        except OSError:
+            pass
 
 
 class OracleTamper(Exception):
@@ -430,6 +596,7 @@ class SealedOracle:
         return False
 
     def cleanup(self) -> None:
+        _thaw_tree(self.root)
         shutil.rmtree(self.root, ignore_errors=True)
 
 
@@ -470,9 +637,8 @@ class OracleReport:
     result_path: Path
 
     def cleanup(self) -> None:
-        if self.directory.exists() and self.directory.name == REPORT_DIR_NAME:
-            shutil.rmtree(self.directory, ignore_errors=True)
-        elif self.directory.exists():
+        if self.directory.exists():
+            _thaw_tree(self.directory)
             shutil.rmtree(self.directory, ignore_errors=True)
 
 
