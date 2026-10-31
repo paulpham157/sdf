@@ -3,6 +3,8 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -15,7 +17,7 @@ func TestOrchestratorWiresToolProxy(t *testing.T) {
 		return map[string]any{"resource": req.Resource}, nil
 	}, nil)
 	started := make(chan struct{})
-	o := orchestrator.New(orchestrator.Config{
+	o, err := orchestrator.New(orchestrator.Config{
 		Workers:        1,
 		DefaultTimeout: time.Second,
 		ToolProxy:      proxy,
@@ -25,9 +27,12 @@ func TestOrchestratorWiresToolProxy(t *testing.T) {
 			return ctx.Err()
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer o.Close()
 
-	err := o.Start(context.Background(), orchestrator.Attempt{
+	err = o.Start(context.Background(), orchestrator.Attempt{
 		ID:                 "att-orch-1",
 		IdempotencyKey:     "key-1",
 		AgentID:            "codex",
@@ -69,9 +74,122 @@ func TestOrchestratorWiresToolProxy(t *testing.T) {
 }
 
 func TestOrchestratorDefaultToolProxy(t *testing.T) {
-	o := orchestrator.New(orchestrator.Config{Workers: 1})
+	o, err := orchestrator.New(orchestrator.Config{Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer o.Close()
 	if o.ToolProxy() == nil {
 		t.Fatal("expected default ToolProxy")
+	}
+	if _, ok := o.ToolProxy().Store().(*toolproxy.MemoryStore); !ok {
+		t.Fatalf("empty OutcomeDBPath: store type %T, want MemoryStore", o.ToolProxy().Store())
+	}
+}
+
+func TestExplicitToolProxyIgnoresOutcomeDBPath(t *testing.T) {
+	proxy := toolproxy.NewProxy(nil, nil)
+	o, err := orchestrator.New(orchestrator.Config{
+		Workers:       1,
+		ToolProxy:     proxy,
+		OutcomeDBPath: filepath.Join(t.TempDir(), "missing", "fence.db"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.Close()
+	if o.ToolProxy() != proxy {
+		t.Fatal("explicit ToolProxy should win over OutcomeDBPath")
+	}
+}
+
+func TestOutcomeDBPathOpenError(t *testing.T) {
+	_, err := orchestrator.New(orchestrator.Config{
+		OutcomeDBPath: filepath.Join(t.TempDir(), "missing", "fence.db"),
+	})
+	if err == nil {
+		t.Fatal("expected OpenSQLiteStore error for a missing parent directory")
+	}
+}
+
+// TestOutcomeDBPathReplaysStoredResult proves the production knob: a set
+// OutcomeDBPath uses SQLite, and the same attempt_id+action_id returns the
+// stored result (Replay) instead of executing again, including after the
+// process that wrote the row is closed and a new Orchestrator opens the file.
+func TestOutcomeDBPathReplaysStoredResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fence.db")
+	req := toolproxy.ActionRequest{
+		Tool:     "filesystem",
+		Action:   "read",
+		Resource: "/workspace/a.go",
+	}
+	attempt := orchestrator.Attempt{
+		ID:             "att-dur",
+		IdempotencyKey: "key-dur",
+		AgentID:        "codex",
+		OwnerPrincipal: "alice",
+		SandboxID:      "sbx-dur",
+		AllowedTools:   []string{"filesystem"},
+		Timeout:        time.Second,
+	}
+
+	o1, err := orchestrator.New(orchestrator.Config{
+		Workers:       1,
+		OutcomeDBPath: path,
+		Runner: func(ctx context.Context, _ string, _ []byte) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := o1.ToolProxy().Store().(*toolproxy.SQLiteStore); !ok {
+		t.Fatalf("store type %T, want SQLiteStore", o1.ToolProxy().Store())
+	}
+	if err := o1.Start(context.Background(), attempt); err != nil {
+		t.Fatal(err)
+	}
+	first, err := o1.CallTool(context.Background(), attempt.ID, req, "agent:codex", "alice")
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if first.Replay || first.Status != toolproxy.StatusExecuted || first.ActionID == "" {
+		t.Fatalf("first=%+v", first)
+	}
+	second, err := o1.CallTool(context.Background(), attempt.ID, req, "agent:codex", "alice")
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !second.Replay || second.ActionID != first.ActionID || second.Status != toolproxy.StatusExecuted {
+		t.Fatalf("second=%+v first=%+v", second, first)
+	}
+	if !reflect.DeepEqual(second.Value, first.Value) {
+		t.Fatalf("stored value %#v, first %#v", second.Value, first.Value)
+	}
+	o1.Close()
+
+	o2, err := orchestrator.New(orchestrator.Config{
+		Workers:       1,
+		OutcomeDBPath: path,
+		Runner: func(ctx context.Context, _ string, _ []byte) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o2.Close()
+	if err := o2.Start(context.Background(), attempt); err != nil {
+		t.Fatal(err)
+	}
+	third, err := o2.CallTool(context.Background(), attempt.ID, req, "agent:codex", "alice")
+	if err != nil {
+		t.Fatalf("after restart: %v", err)
+	}
+	if !third.Replay || third.ActionID != first.ActionID || third.Status != toolproxy.StatusExecuted {
+		t.Fatalf("after restart=%+v", third)
+	}
+	if !reflect.DeepEqual(third.Value, first.Value) {
+		t.Fatalf("value after restart %#v, first %#v", third.Value, first.Value)
 	}
 }

@@ -16,7 +16,7 @@ import (
 
 func TestAttemptsIdempotencyConflict(t *testing.T) {
 	block := make(chan struct{})
-	orch := orchestrator.New(orchestrator.Config{
+	orch, err := orchestrator.New(orchestrator.Config{
 		Workers: 1,
 		Runner: func(ctx context.Context, _ string, _ []byte) error {
 			select {
@@ -28,6 +28,9 @@ func TestAttemptsIdempotencyConflict(t *testing.T) {
 		},
 		DefaultTimeout: 5 * time.Second,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { close(block); orch.Close() }()
 
 	s := gateway.New(orch, metrics.Default)
