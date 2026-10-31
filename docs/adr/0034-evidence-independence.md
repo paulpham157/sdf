@@ -134,9 +134,11 @@ Attempt's agent, or that it is still current.
   workspace, a subject that writes the old marker and JUnit paths and
   `os._exit(0)`, a libc write of a passing frame, a modified oracle file, a
   run that collects nothing, and a run whose tests are all skipped cannot
-  accept an Attempt. The stdout-summary cases were already `FAIL` under ADR
-  0025; the new hole this seal closes is the subject forging the result
-  channel, and helpers that ADR 0025 did not hash.
+  accept an Attempt. ADR 0025 already rejected exit 0 when the summary was
+  missing, reported failures, or reported no passes. A summary that parser
+  accepts as N passed was still a pass on main, and so was a helper the
+  named test imports, because helpers were not hashed. The token-and-marker
+  forge was a pass only on the first cut of this change.
 - Checks that import a project helper must ship that helper in the server
   fixture. A helper that exists only in the workspace is treated as planted.
 - Verification Evidence expires after 24 hours. Accepting it again means
