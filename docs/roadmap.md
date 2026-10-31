@@ -58,8 +58,8 @@ tests. The persistent Herdr transport can select Daytona beside E2B via
 `SDF_SANDBOX_PROVIDER` (default `e2b`); Daytona unit coverage uses fakes, and
 live Daytona smoke is gated on `SDF_LIVE_DAYTONA=1`. Public process actions can
 select an explicit E2B containment backend (`SDF_CONTAINMENT_BACKEND=e2b`),
-which syncs, executes, pulls, and kills a disposable box; Daytona containment
-is not yet offered. The structured SDF `network.request` action is explicitly
+which syncs, executes, and kills a disposable box without pulling the
+workspace back; Daytona containment is not yet offered. The structured SDF `network.request` action is explicitly
 disabled in E2B containment mode while the coding agent retains E2B network
 egress. The live E2B process path has also verified an HTTPS request to the E2B
 endpoint; this is provider egress evidence, not a general outbound allowlist.
