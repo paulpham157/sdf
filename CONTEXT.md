@@ -50,6 +50,14 @@ _Avoid_: version, commit (a Git commit is only an optional name for the base)
 A recorded observation from an Artifact or evaluator that supports, weakens or contradicts an Assumption or Decision.
 _Avoid_: agent opinion, status flag
 
+**Evidence class**:
+Which kind of observation an Evidence row is: execution (the Attempt ran), verification (an Evaluator verdict) or outcome (a business result). A coverage gap is not verification. The row's `kind` stays a separate label (ADR 0034).
+_Avoid_: kind, status
+
+**Verification Evidence**:
+Evidence an Evaluator records from a sealed oracle. It names its verifier, the artifact bytes it checked, the oracle and environment digests, and when it expires. The Attempt's agent is never the verifier, and expired verification cannot accept an artifact (ADR 0034).
+_Avoid_: test log, agent report
+
 **Evaluator**:
 The deterministic or policy-controlled checker that turns an Attempt's outputs into Evidence; an agent cannot self-certify its own result.
 _Avoid_: reviewer, judge

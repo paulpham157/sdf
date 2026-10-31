@@ -1,0 +1,177 @@
+# ADR 0034: verification evidence is independent of the agent workspace
+
+Status: proposed (implemented with this change; awaiting maintainer acceptance).
+Narrows the residual stated in [ADR 0025](0025-server-registered-checks.md).
+Does not change Evidence append-only rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md))
+or revision binding ([ADR 0032](0032-attempt-revisions.md)).
+
+## Context
+
+ADR 0025 stopped the workspace from choosing the interpreter, the pytest
+configuration and the named test file. Two holes remained, and both are
+visible in the code that landed with that ADR:
+
+1. **The oracle was not sealed.** `_verify_targets` hashes only the pytest
+   files and python scripts named in the check. A module those files import
+   (`helper.py`, a planted `conftest.py` the test imports, fixture data next
+   to the tests) is taken from the agent-writable workspace. ADR 0025 names
+   this residual explicitly.
+2. **The verdict was the child's stdout.** `pytest_verdict` accepts exit 0
+   when the output contains a summary with at least one passed test. A helper
+   can print `1 passed in 0.01s` and call `os._exit(0)` before pytest writes
+   anything. That is a pass. JUnit was rejected in ADR 0025 because a same-uid
+   process can rewrite a file; stdout is easier to forge than a report the
+   evaluator reads back itself.
+
+Evidence rows made the same gap durable. `kind=evaluation` is used both for a
+real check and for a coverage gap ("no deterministic check mapped"). A row
+does not name its producer or verifier, does not bind the artifact bytes it
+claims to have checked, and does not say when it was collected or when it
+expires. An evaluator cannot show that the verdict is independent of the
+Attempt's agent, or that it is still current.
+
+## Decision
+
+1. **Three Evidence classes**, stored separately from `kind` (which stays
+   `evaluation` for existing readers):
+   - `execution` — the Attempt ran (reserved; not written by this change).
+   - `verification` — an Evaluator verdict about a check.
+   - `outcome` — a business result (reserved; outcome metrics stay on their
+     own table).
+
+   A coverage gap, an unmapped criterion and a run with no commands are not
+   verification. Their `evidence_class` stays NULL. Only `verification` can
+   accept an artifact.
+
+2. **Schema** (migration `0025_evidence_independence`). All of the following
+   are nullable. Rows written before this migration are not rewritten and are
+   not backfilled:
+
+   | Column | Meaning |
+   | --- | --- |
+   | `evidence_class` | `execution`, `verification` or `outcome`; NULL if none was recorded |
+   | `producer_identity`, `producer_role` | who wrote the row |
+   | `verifier_identity`, `verifier_role` | who decided the verdict |
+   | `subject_artifact_sha256` | sha256 of the artifact the verdict is about |
+   | `oracle_digest` | sha256 of the sealed oracle manifest (path and file hash, sorted) |
+   | `environment_digest` | sha256 of command, runner, oracle digest, Python and platform |
+   | `collected_at` | when the evaluator read the verdict |
+   | `expires_at` | when the verdict stops being acceptable |
+
+   PostgreSQL checks `evidence_class` when it is not NULL
+   (`ck_evidence_evidence_class`). SQLite uses the same rule in the ORM
+   session guard. NULL stays legal so old rows insert and read.
+
+3. **The check runs from a sealed oracle**, outside the workspace:
+   - Oracle files are the named test or script, every `conftest.py` in the
+     fixture, support modules (`helper` / `helpers`, anything under
+     `tests/`, `test/`, `checks/` or `fixtures/`) imported by those files,
+     and non-Python files in those directories.
+   - Each oracle file must be a regular file in the server fixture and
+     byte-identical in the workspace. A difference, a symlink, a deletion,
+     or a support module that exists only in the workspace is
+     `INCONCLUSIVE` and the check does not run.
+   - The code under test (a module such as `calc.py` that the tests import
+     and that is not support) is copied from the workspace. Workspace
+     `conftest.py`, pytest/ruff config and files under support directories
+     are not.
+   - The sealed directory is the child cwd. `--confcutdir` is that directory,
+     so a planted workspace `conftest.py` is not loaded. `-c /dev/null` and
+     plugin autoload stay off (ADR 0025).
+
+4. **Pytest's verdict is the evaluator's report, not stdout.** The child is
+   given an evaluator-owned plugin and writes JUnit XML plus a completion
+   marker (a per-run token, counts, exit status) under the sealed tree. The
+   parent accepts `PASS` only when all of these hold:
+   - the marker token matches, so `os._exit` before `pytest_sessionfinish`
+     cannot pass;
+   - the JUnit file parses, contains no DTD, and its counts match the marker;
+   - the exit code is 0 and the marker's exit status is 0;
+   - at least one test passed;
+   - the number of JUnit cases is at least the number of test functions the
+     oracle declares;
+   - the sealed oracle bytes still match the fixture after the process exits.
+
+   Zero collected tests, and tests that were only skipped, are `FAIL`. A
+   missing report after exit 0 is `FAIL` (unexpected early exit). Disagreement
+   between the marker, the JUnit file and the exit code is `INCONCLUSIVE`.
+   None of these is a pass. The stdout summary parser remains in the tree and
+   is not the accepting signal.
+
+5. **Acceptance gate** (`check_verification_acceptance`), applied in
+   `ExecutionService.finish` before a `validates` edge or a succeeded Task:
+   - the row's class is `verification`;
+   - `verifier_role` is not `agent`, and `verifier_identity` is set and is
+     not the Attempt's `agent` (the evaluator writes `sdf-evaluator` /
+     `evaluator`);
+   - `subject_artifact_sha256` equals the diff artifact being accepted;
+   - `expires_at` is in the future. NULL or past means the verdict requires
+     re-validation and cannot accept.
+
+   A `PASS` that fails the gate is stored as `INCONCLUSIVE`. The evaluator
+   sets `expires_at` to 24 hours after `collected_at`.
+
+6. **What a subject module can still do.** The tests import the code under
+   test in the pytest process. That module can read `SDF_ORACLE_TOKEN` and
+   write a matching marker and JUnit file, then exit 0. The seal stops
+   helpers, conftest and fixture data from doing this. It does not stop the
+   subject itself. A `python -c` check that imports the subject and hits
+   `sys.exit(0)` is the same residual ADR 0025 already recorded; this ADR
+   does not pretend otherwise.
+
+## Consequences
+
+- A planted conftest, a replaced helper, a forged pytest summary plus
+  `os._exit(0)`, a modified oracle file, a run that collects nothing, and a
+  run whose tests are all skipped cannot accept an Attempt.
+- Checks that import a project helper must ship that helper in the server
+  fixture. A helper that exists only in the workspace is treated as planted.
+- Verification Evidence expires after 24 hours. Accepting it again means
+  running the check again.
+- Evidence written before migration 0025 has NULL independence fields and
+  cannot accept an artifact through the gate. `kind` and the scorecard's
+  reading of historical `PASS` rows are unchanged.
+- A check's cwd is the sealed tree, not the Attempt workspace. A write such
+  as `open("dropped.txt")` does not move the revision, so it does not trip
+  the ADR 0032 drift hook. That hook still downgrades a PASS when the
+  workspace itself changes during evaluation.
+- Absolute test paths that already live outside the workspace are not copied.
+  They keep `--noconftest` and write the report to a private directory.
+- Containment still works: the report paths are relative to the sealed root,
+  which is what a backend syncs and pulls. A report that does not come back
+  is not a pass.
+
+## Example
+
+Before, a passing check and a coverage gap were the same shape:
+
+```json
+{"id": "EVIDENCE-ATTEMPT-1", "kind": "evaluation", "status": "PASS",
+ "command": "pytest -q tests/test_calc.py", "exit_code": 0, "criterion": "adds"}
+```
+
+```json
+{"id": "EVIDENCE-ATTEMPT-2", "kind": "evaluation", "status": "INCONCLUSIVE",
+ "command": "<missing check>", "criterion": "handles empty input"}
+```
+
+After, only the check is verification, and it is bound to the diff it checked:
+
+```json
+{"id": "EVIDENCE-ATTEMPT-1", "kind": "evaluation", "status": "PASS",
+ "evidence_class": "verification",
+ "producer_identity": "sdf-evaluator", "producer_role": "evaluator",
+ "verifier_identity": "sdf-evaluator", "verifier_role": "evaluator",
+ "subject_artifact_sha256": "<diff artifact sha256>",
+ "oracle_digest": "<sha256 of sealed oracle manifest>",
+ "environment_digest": "<sha256 of command, runner, oracle, interpreter>",
+ "collected_at": "2026-10-31T12:00:00+00:00",
+ "expires_at": "2026-11-01T12:00:00+00:00",
+ "command": "pytest -q tests/test_calc.py", "exit_code": 0, "criterion": "adds"}
+```
+
+```json
+{"id": "EVIDENCE-ATTEMPT-2", "kind": "evaluation", "status": "INCONCLUSIVE",
+ "evidence_class": null, "command": "<missing check>",
+ "criterion": "handles empty input"}
+```

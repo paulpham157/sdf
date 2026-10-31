@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+from .acceptance import EVIDENCE_CLASS_SQL, EVIDENCE_CLASSES
 from .impact import EVIDENCE_MODE_VALUES
 
 
@@ -165,7 +166,10 @@ class AttemptRevisionRow(Base):
 
 class EvidenceRow(Base):
     __tablename__ = "evidence"
-    __table_args__ = (CheckConstraint(EVIDENCE_MODE_SQL, name="ck_evidence_evidence_mode"),)
+    __table_args__ = (
+        CheckConstraint(EVIDENCE_MODE_SQL, name="ck_evidence_evidence_mode"),
+        CheckConstraint(EVIDENCE_CLASS_SQL, name="ck_evidence_evidence_class"),
+    )
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     attempt_id: Mapped[str] = mapped_column(String(120), index=True)
     kind: Mapped[str] = mapped_column(String(40))
@@ -181,6 +185,19 @@ class EvidenceRow(Base):
     # ADR 0032 (#62): the revision and result tree the evaluator checked.
     revision_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ADR 0034: independence. Nullable so Evidence written before migration 0025
+    # stays valid. kind=evaluation is unchanged; evidence_class separates a real
+    # check (verification) from a coverage gap (NULL) and from execution/outcome.
+    evidence_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    producer_identity: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    producer_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    verifier_identity: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    verifier_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    subject_artifact_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    oracle_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    environment_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 RUNTIME_EVENT_PROVENANCE_SQL = (
@@ -526,6 +543,11 @@ def _reject_evidence_mutation(session: Session, flush_context: Any, instances: A
     for item in session.deleted:
         if isinstance(item, EvidenceRow):
             raise ValueError("Evidence rows are append-only and cannot be deleted")
+    for item in session.new:
+        if isinstance(item, EvidenceRow) and item.evidence_class is not None and item.evidence_class not in EVIDENCE_CLASSES:
+            raise ValueError(
+                f"evidence_class must be one of {list(EVIDENCE_CLASSES)} (ADR 0034), not {item.evidence_class!r}"
+            )
     for item in session.dirty:
         if isinstance(item, EvidenceRow) and session.is_modified(item, include_collections=False):
             raise ValueError("Evidence rows are append-only and cannot be updated")
