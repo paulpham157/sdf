@@ -11,10 +11,13 @@ Supported overrides, per agent kind:
   Claude Code's own default.
 * ``codex`` - ``SDF_CODEX_MODEL`` -> ``codex -m <model>``; unset keeps Codex's
   own default.
-* ``opencode`` - ``SDF_OPENCODE_MODEL`` (``provider/model``, default
-  ``vultr/glm-5.3``) and ``SDF_OPENCODE_SMALL_MODEL`` (same provider, default
-  ``vultr/glm-5.3-flash``).  Both are written into the seeded OpenCode config
-  (``model`` / ``small_model``); ``--model`` selects the main model per run.
+* ``opencode`` - ``SDF_OPENCODE_MODEL`` (``<local provider id>/<model>``,
+  example default ``vultr/glm-5.3``) and ``SDF_OPENCODE_SMALL_MODEL`` (same
+  provider id, example default ``vultr/glm-5.3-flash``).  The ``vultr/``
+  prefix is the seeded OpenCode provider id for the example OpenAI-compatible
+  endpoint, not an API family (ADR 0034).  Both are written into the seeded
+  OpenCode config (``model`` / ``small_model``); ``--model`` selects the main
+  model per run.
 * ``pi`` - ``SDF_PI_MODEL`` (a bare model id, default ``glm-5.3``), written
   into the seeded ``~/.pi/agent/models.json`` and selected per turn with
   ``pi --provider sdf --model <id>`` (ADR-0012).
@@ -41,14 +44,17 @@ MODEL_VARIABLES: Mapping[str, str] = MappingProxyType(
      "qwen": "SDF_QWEN_MODEL", "goose": "SDF_GOOSE_MODEL"}
 )
 SMALL_MODEL_VARIABLES: Mapping[str, str] = MappingProxyType({"opencode": "SDF_OPENCODE_SMALL_MODEL"})
-# Vultr Serverless Inference is the example/default OpenCode provider only;
-# every part of it is overridable (base URL in credentials.py).
+# Example model ids for the example OpenAI-compatible endpoint (ADR 0034).
+# OpenCode's ``vultr/`` prefix is a local provider id in its seeded config,
+# not an API family. Every part is overridable (base URL in credentials.py).
+EXAMPLE_OPENCODE_MODEL = "vultr/glm-5.3"
+EXAMPLE_OPENCODE_SMALL_MODEL = "vultr/glm-5.3-flash"
 DEFAULT_MODELS: Mapping[str, str] = MappingProxyType(
-    {"opencode": "vultr/glm-5.3", "pi": "glm-5.3", "qwen": "glm-5.3", "goose": "glm-5.3"}
+    {"opencode": EXAMPLE_OPENCODE_MODEL, "pi": "glm-5.3", "qwen": "glm-5.3", "goose": "glm-5.3"}
 )
 # Kinds whose model id is a bare id on an OpenAI-compatible endpoint (ADR-0012/0013).
 BARE_MODEL_AGENTS = frozenset({"pi", "qwen", "goose"})
-DEFAULT_SMALL_MODELS: Mapping[str, str] = MappingProxyType({"opencode": "vultr/glm-5.3-flash"})
+DEFAULT_SMALL_MODELS: Mapping[str, str] = MappingProxyType({"opencode": EXAMPLE_OPENCODE_SMALL_MODEL})
 # The flag each CLI documents for model selection.
 _MODEL_FLAGS: Mapping[str, str] = MappingProxyType(
     {"claude": "--model", "codex": "-m", "opencode": "--model", "pi": "--model",

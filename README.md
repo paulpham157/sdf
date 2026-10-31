@@ -46,15 +46,17 @@ needs an explicit Credential Mode, `subscription` or `api-key`
 
 OpenCode 2 (`opencode`, `@opencode/cli` pinned `2.2.0`) is a headless agent kind
 (`sdf_core.opencode_runtime.OpenCodeHeadlessRuntime`) that uses any
-OpenAI-compatible endpoint; Vultr Serverless Inference with `vultr/glm-5.3` is
-only the default. Base URL, key variable name and model are configurable per
+OpenAI-compatible endpoint. The example default is Vultr Serverless Inference
+with local provider id `vultr/glm-5.3`; that id is not an API family
+([ADR 0034](docs/adr/0034-openai-or-claude-compatible-llm-transport.md)).
+Base URL, key variable name and model are configurable per
 agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md));
 each turn runs `opencode run --server` against a private, password-protected
 loopback `opencode serve` ([ADR 0018](docs/adr/0018-opencode-2-and-pi-1-upgrade.md)).
 
 Pi (`pi`, `@earendil-works/pi-coding-agent` pinned `1.4.0`) is a second headless agent kind
 (`sdf_core.pi_runtime.PiHeadlessRuntime`, `pi -p --mode json`) with the same
-Vultr defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
+example OpenAI-compatible defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 
@@ -64,13 +66,17 @@ when the turn ends, times out, or is cancelled
 ([ADR 0019](docs/adr/0019-per-turn-process-containment.md)).
 
 Qwen Code (`qwen`, `0.26.2`) and Goose (`goose`, `1.56.0`) are further
-headless kinds for any OpenAI-compatible endpoint (same Vultr defaults; keys
+headless kinds for any OpenAI-compatible endpoint (same example defaults; keys
 `SDF_QWEN_API_KEY`, `SDF_GOOSE_API_KEY` or a name in `SDF_<AGENT>_API_KEY_ENV`).
 They refuse workspaces carrying their project config and run read-only outside
 a fresh E2B sandbox ([ADR 0013](docs/adr/0013-openai-compatible-headless-agent-kinds.md)).
 
 The supported agent kinds are `codex`, `claude`, `opencode`, `pi`, `qwen` and
-`goose`. Aider and the Cursor Agent CLI were removed
+`goose`. Each kind uses one LLM transport: OpenAI-compatible HTTP, or the
+Claude Messages API. `codex` needs a host that implements the OpenAI Responses
+API, not Chat Completions only
+([ADR 0034](docs/adr/0034-openai-or-claude-compatible-llm-transport.md)).
+Aider and the Cursor Agent CLI were removed
 ([ADR 0016](docs/adr/0016-remove-aider-and-cursor-agent-kinds.md)).
 CLI-internal sub-agents are disabled for every kind by host-controlled flags
 and user config ([ADR 0020](docs/adr/0020-no-subagents.md)).
@@ -85,7 +91,8 @@ Multi-agent runs ([ADR 0014](docs/adr/0014-plan-gate-and-agent-messaging.md)):
 `POST /plans` proposes a plan, a human approves it with `POST /plans/{id}/approve`
 (no Attempt or run starts before that; 409), then `POST /plans/{id}/runs` runs a
 lead (default OpenCode) and one worker per subtask (default Pi), one E2B sandbox
-each on Vultr `glm-5.3`, with `SDF_AGENT_SANDBOX=e2b` (lead and worker kinds:
+each on the configured OpenAI-compatible endpoint (example default `glm-5.3`),
+with `SDF_AGENT_SANDBOX=e2b` (lead and worker kinds:
 `opencode` or `pi` only for now). Agents talk only through
 the host's append-only message hub with the in-sandbox `sdf-msg` CLI / MCP
 server; a worker's "done" is a claim, and the run succeeds only when the host's

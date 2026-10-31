@@ -38,6 +38,7 @@ from .adapter import AdapterResult
 from .agent_messaging import ENVELOPE_NAME, MAX_ENVELOPE_BYTES, EnvelopeError, Member, MessageHub, delivery_payload
 from .core_mcp import AGENT_HINT, MAX_REQUEST_BYTES, REQUEST_NAME, CoreQueryService, response_payload, scope_for
 from .agent_sandbox import SUPPORTED_KINDS, AgentSandbox, AgentSandboxFactory, AgentSpec
+from .credentials import llm_attempt_provider
 from .db import (
     AgentRunMemberRow,
     AgentRunRow,
@@ -401,8 +402,9 @@ class Coordinator:
             # they start synthetic and take the factory's mode only once their
             # worker's sandbox has started (ADR 0031).
             for sub in subtasks.values():
-                self._begin_attempt(run_id, sub, fixture, agents[sub.worker].spec, parent=None,
-                                    evidence_mode=EvidenceMode.SYNTHETIC.value)
+                worker_agent = agents[sub.worker]
+                self._begin_attempt(run_id, sub, fixture, worker_agent.spec, parent=None,
+                                    evidence_mode=EvidenceMode.SYNTHETIC.value, sandbox=worker_agent.sandbox)
             lead_ws = self.workspace_root / f"{run_id}-lead"
             lead_ws.mkdir(parents=True, exist_ok=True)
             (lead_ws / "README.md").write_text("Lead workspace: coordinate via sdf messaging; no code here.\n")
@@ -766,12 +768,16 @@ class Coordinator:
             AgentRunMemberRow.run_id == run_id, AgentRunMemberRow.agent_id == agent_id))
 
     def _begin_attempt(self, run_id: str, sub: _Subtask, fixture: Path, spec: AgentSpec, parent: str | None,
-                       *, evidence_mode: str) -> None:
+                       *, evidence_mode: str, sandbox: AgentSandbox | None = None) -> None:
         sub.rounds += 1
+        # ADR 0034: record the configured LLM host and protocol family.
+        # A sandbox without credential_environ (in-process fakes) uses the kind's default.
+        environ = getattr(sandbox, "credential_environ", None) if sandbox is not None else None
         begun = self.service.begin(
             evidence_mode=evidence_mode,
             task_id=sub.task_id, dispatch_key=f"{run_id}:{sub.key}:{sub.rounds}", fixture=fixture,
-            parent_attempt_id=parent, provider="vultr", agent=f"{spec.kind}:{spec.agent_id}",
+            parent_attempt_id=parent, provider=llm_attempt_provider(spec.kind, environ or {}),
+            agent=f"{spec.kind}:{spec.agent_id}",
             escalation_reason="host verification failed; worker asked to fix" if parent else None,
             require_plan_approval=True,
             # ADR 0026: the run's starter owns its Attempts' Tool Proxy calls.
@@ -910,7 +916,7 @@ class Coordinator:
         if sub.verdict != "PASS" and sub.rounds < config.max_verify_rounds:
             # A retry runs in the worker's already-started sandbox.
             self._begin_attempt(run_id, sub, fixture, worker.spec, parent=attempt_id,
-                                evidence_mode=config.evidence_mode)
+                                evidence_mode=config.evidence_mode, sandbox=worker.sandbox)
             hub.attempt_for[sub.worker] = sub.attempt_id
             text += f" Failing: {failed}. Fix it and report done again (new attempt {sub.attempt_id})."
             sub.verdict = None  # the retry attempt is unverified until the host checks it again

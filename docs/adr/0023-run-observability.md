@@ -2,6 +2,14 @@
 
 Status: accepted (branch `core/live-full-loop`, PR #53, pending review)
 
+> **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
+> "Defaults to Vultr Inference" means the example OpenAI-compatible endpoint
+> (base URL + model), applied for every key-variable name, not a Vultr
+> protocol and not only when the key is named `VULTR_INFERENCE_API_KEY`.
+> E2B egress allows the resolved LLM host (Claude with no base URL:
+> `api.anthropic.com`), plus `SDF_RUN_EGRESS_ALLOW`. The sandbox does not
+> reach only Vultr.
+
 ## Context
 
 PR #53 let the public `POST /tasks/{id}/run` drive a real agent in a sandbox.
@@ -86,6 +94,8 @@ failed, and there was no one place to see what happened in a run.
 ## Consequences
 
 - The `/run` sandbox reaches only Vultr unless an operator widens it.
+  *Amended by ADR 0034: it reaches the resolved LLM host, which is the example
+  OpenAI-compatible host only when that is the endpoint in use.*
 - A leaked sandbox is never silent, and costs are visible per Attempt and per
   turn. Codex and Claude token counts depend on their session-file formats, and
   a format change shows up as `missing`, not as zero.

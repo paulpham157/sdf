@@ -72,7 +72,8 @@ Langfuse, Grafana Tempo, Jaeger, Honeycomb...).
    (`0.66b0` with SDK `1.45.x`) because they are beta and track the SDK.
 6. **Nothing inside sandboxes.** Tracing runs only in SDF Core on the
    master. No collector, exporter, env var or endpoint is sent to a sandbox;
-   sandbox egress stays Vultr-only (ADR 0023).
+   sandbox egress stays the configured LLM host (ADR 0023, amended by ADR 0034),
+   not a Vultr-only allowlist.
 
 ## Consequences
 

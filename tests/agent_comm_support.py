@@ -76,6 +76,8 @@ class FakeAgentSandbox:
         self.turns = 0
         self._sandbox_id: str | None = None
         self.closed = False
+        # ADR 0034: optional base-URL mapping the coordinator reads for attempts.provider.
+        self.credential_environ: dict[str, str] = {}
 
     @property
     def sandbox_id(self) -> str | None:

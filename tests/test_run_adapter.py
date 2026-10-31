@@ -59,13 +59,21 @@ def test_resolve_sandbox_provider():
 
 
 @pytest.mark.parametrize("agent", AGENT_KINDS)
-def test_all_six_kinds_build_with_vultr_defaults(agent):
+def test_all_six_kinds_build_with_example_defaults(agent):
+    from sdf_core.credentials import protocol_of
+
     adapter = configured_run_adapter(_db(), environ={**LIVE, "SDF_RUN_AGENT": agent})
     assert isinstance(adapter, LiveRunAdapter)
     assert adapter.agent == agent and adapter.image == DEFAULT_TEMPLATE
-    assert adapter.network["allow_out"] == list(DEFAULT_NETWORK["allow_out"])
     assert adapter.network["deny_out"] == list(DEFAULT_NETWORK["deny_out"])
-    assert adapter.model  # Vultr default model resolved for every kind
+    if protocol_of(agent) == "openai":
+        # Example OpenAI-compatible host, not a Vultr protocol.
+        assert adapter.network["allow_out"] == list(DEFAULT_NETWORK["allow_out"])
+        assert adapter.model
+    else:
+        # Claude stays on the official Messages API unless a base URL is set.
+        assert adapter.network["allow_out"] == ["api.anthropic.com"]
+        assert adapter.model is None
 
 
 def test_run_environ_is_agent_config_only():

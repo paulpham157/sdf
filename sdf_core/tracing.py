@@ -29,7 +29,8 @@ through :func:`sdf_core.observability.redact` by a wrapping exporter, and
 exceptions are recorded as their class name only.
 
 Tracing runs only in SDF Core on the master: nothing is installed in, sent to,
-or proxied through sandboxes, whose egress stays as configured (Vultr-only).
+or proxied through sandboxes, whose egress stays the configured LLM host
+(ADR 0034), not a vendor-wide allowlist.
 """
 
 from __future__ import annotations

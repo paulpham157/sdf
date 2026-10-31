@@ -93,6 +93,23 @@ PostgreSQL is the deployed source of truth for graph state, Tasks, Attempts, tra
 
 Objectives may declare a metric, baseline, target, source, owner, and measurement window. Local evaluator results are Evidence, not proof of production impact; impact requires a measured Objective outcome against its baseline.
 
+## LLM transport
+
+Each agent kind calls a model over exactly one HTTP API family
+([ADR 0034](adr/0034-openai-or-claude-compatible-llm-transport.md)):
+
+- **OpenAI-compatible** (`openai`): `codex`, `opencode`, `pi`, `qwen`, `goose`.
+  `codex` requires the OpenAI Responses API (`POST /v1/responses`). A host
+  that implements only Chat Completions cannot serve Codex. The other four
+  kinds use their existing OpenAI-compatible clients.
+- **Claude / Anthropic Messages** (`anthropic`): `claude`.
+
+A provider host is a base URL plus a key plus a model. Vultr Serverless
+Inference (`https://api.vultrinference.com/v1`, model `glm-5.3`) is the
+example OpenAI-compatible endpoint, not a third protocol. Credential Mode
+stays `subscription` or `api-key` (ADR 0007). Egress and `attempts.provider`
+follow the configured host (`{protocol}:{host}`).
+
 ## Protocol status
 
-ACP and A2A are historical research topics, not active Core dependencies. A future protocol integration requires a concrete interoperability requirement and a new architecture decision. See [ADR-0004](adr/0004-internal-runtime-and-enforced-tool-policy.md) and [the active roadmap](roadmap.md).
+ACP and A2A are historical research topics, not active Core dependencies. A future protocol integration requires a concrete interoperability requirement and a new architecture decision. See [ADR-0004](adr/0004-internal-runtime-and-enforced-tool-policy.md) and [the active roadmap](roadmap.md). The LLM transports above are HTTP APIs the existing agent CLIs already speak; they are not ACP or A2A.

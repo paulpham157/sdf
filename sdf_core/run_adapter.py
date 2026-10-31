@@ -12,17 +12,19 @@
     ``SDF_<AGENT>_API_KEY_ENV``, ``SDF_<AGENT>_BASE_URL`` / ``SDF_OPENAI_BASE_URL``
     / ``SDF_ANTHROPIC_BASE_URL``, ``SDF_<AGENT>_MODEL``) via
     :func:`~sdf_core.credential_injection.create_credentialed_transport`
-    (ADR-0007).  With nothing configured the agent defaults to Vultr
-    Inference (``VULTR_INFERENCE_API_KEY``, glm-5.3);
+    (ADR-0007).  With no base URL set, an OpenAI-family kind uses the example
+    OpenAI-compatible endpoint (ADR 0034); Claude uses the official Anthropic
+    Messages API.  The example key *name* ``VULTR_INFERENCE_API_KEY`` is used
+    only when no ``SDF_*`` key is set, and it does not select a protocol;
   - provider ``SDF_SANDBOX_PROVIDER`` = ``e2b`` (template
     ``SDF_E2B_AGENTS_TEMPLATE`` / :data:`~sdf_core.agent_sandbox.DEFAULT_TEMPLATE`)
     or ``daytona`` (``SDF_DAYTONA_SNAPSHOT``);
   - runtimes: :class:`HerdrRuntime` for codex/claude and the headless runtimes
     for opencode/pi/qwen/goose, so the turn guard (ADR-0019), the sub-agent
     ban (ADR-0020) and project trust (ADR-0021) apply unchanged;
-  - egress: E2B sandboxes are created with
-    :data:`~sdf_core.agent_sandbox.DEFAULT_NETWORK` (Vultr only, everything
-    else denied, no public inbound traffic) plus any extra hosts in
+  - egress: E2B sandboxes allow the host of the kind's resolved base URL
+    (example OpenAI-compatible host when that is the default), everything
+    else denied, no public inbound traffic, plus any extra hosts in
     ``SDF_RUN_EGRESS_ALLOW``.  Daytona cannot apply that lock at creation, so it
     is refused unless ``SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS=1``;
   - teardown: the sandbox is always killed; a failed kill is retried by id and,
@@ -45,9 +47,19 @@ from sqlalchemy.orm import Session
 
 from .adapter import AdapterResult, FakeNativeAdapter, NativeAdapter, RuntimeAgentAdapter
 from .agent_models import model_agent_args, resolve_agent_models
-from .agent_sandbox import DEFAULT_NETWORK, DEFAULT_TEMPLATE, VULTR_HOST
+from .agent_sandbox import DEFAULT_TEMPLATE
 from .credential_injection import create_credentialed_transport, resolve_sandbox_provider as _main_provider
-from .credentials import AGENT_KINDS, CredentialConfigError, _AGENTS
+from .credentials import (
+    AGENT_KINDS,
+    EXAMPLE_API_KEY_ENV,
+    EXAMPLE_OPENAI_BASE_URL,
+    EXAMPLE_OPENAI_MODEL,
+    CredentialConfigError,
+    _AGENTS,
+    endpoint_host,
+    inference_network,
+    llm_attempt_provider,
+)
 from .herdr_runtime import HerdrRuntime
 from .observability import classify_error, get_logger, log_context
 from .plugin_bridge import PluginConnectionBridge
@@ -66,10 +78,6 @@ _DEFAULT_TIMEOUT_MS = 240_000
 _DEFAULT_TURN_TIMEOUT_S = 420
 _DEFAULT_SANDBOX_TIMEOUT_S = 900
 _DEFAULT_MAX_CONCURRENT = 2
-VULTR_KEY_VARIABLE = "VULTR_INFERENCE_API_KEY"
-VULTR_OPENAI_BASE_URL = f"https://{VULTR_HOST}/v1"
-VULTR_ANTHROPIC_BASE_URL = f"https://{VULTR_HOST}"
-VULTR_MODEL = "glm-5.3"
 KILL_RETRIES = 3
 # Host variables the run path may read besides ``SDF_*`` agent configuration.
 _PASSTHROUGH = ("E2B_API_KEY", "E2B_DOMAIN", "DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET",
@@ -128,7 +136,9 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     Only agent configuration (``SDF_*`` minus server settings), the key
     variable the agent's ``SDF_<AGENT>_API_KEY_ENV`` names, and the sandbox
     provider's own variables pass; ``SDF_DOTENV`` and server secrets never do.
-    Unset agent settings default to Vultr Inference when its key is present.
+    An unset OpenAI-family base URL becomes the example OpenAI-compatible
+    endpoint.  That fill does not depend on the key variable's name.  Claude
+    is left unset so the official Anthropic Messages API is used (ADR 0034).
     """
 
     spec = _AGENTS[agent]
@@ -141,24 +151,38 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     env.setdefault(spec.mode_variable, "api-key")
     if env[spec.mode_variable] == "api-key" and not env.get(spec.api_key_source):
         if spec.api_key_env_variable:
-            env.setdefault(spec.api_key_env_variable, VULTR_KEY_VARIABLE)
+            env.setdefault(spec.api_key_env_variable, EXAMPLE_API_KEY_ENV)
     key_variable = env.get(spec.api_key_env_variable) if spec.api_key_env_variable else None
     if key_variable and environ.get(key_variable):
         env[key_variable] = environ[key_variable]
-    if key_variable == VULTR_KEY_VARIABLE:
-        if agent == "codex":
-            env.setdefault("SDF_OPENAI_BASE_URL", VULTR_OPENAI_BASE_URL)
-            env.setdefault("SDF_CODEX_MODEL", VULTR_MODEL)
-        elif agent == "claude":
-            env.setdefault("SDF_ANTHROPIC_BASE_URL", VULTR_ANTHROPIC_BASE_URL)
-            env.setdefault("SDF_CLAUDE_MODEL", VULTR_MODEL)
+    # Example OpenAI-compatible endpoint for every key name, not only the
+    # example key variable.  api-key mode only: a base URL in subscription
+    # mode is a configuration error (ADR 0007).  Claude stays on the official
+    # Messages API.
+    if (
+        env[spec.mode_variable] == "api-key"
+        and spec.protocol == "openai"
+        and not (env.get(spec.base_url_source) or "").strip()
+    ):
+        env[spec.base_url_source] = spec.default_base_url or EXAMPLE_OPENAI_BASE_URL
+        if agent == "codex" and not (env.get("SDF_CODEX_MODEL") or "").strip():
+            env["SDF_CODEX_MODEL"] = EXAMPLE_OPENAI_MODEL
     return env
 
 
-def run_network(environ: Mapping[str, str]) -> dict[str, Any]:
-    """E2B egress for /run: :data:`DEFAULT_NETWORK` plus ``SDF_RUN_EGRESS_ALLOW``."""
+def run_network(environ: Mapping[str, str], *, agent: str | None = None) -> dict[str, Any]:
+    """E2B egress for /run: the kind's resolved LLM host plus ``SDF_RUN_EGRESS_ALLOW``.
 
-    network = {k: (list(v) if isinstance(v, (list, tuple)) else v) for k, v in DEFAULT_NETWORK.items()}
+    With no agent, hosts come from whichever kinds have a base URL set, or the
+    example OpenAI-compatible host when none do.
+    """
+
+    if agent:
+        kinds: tuple[str, ...] = (agent,)
+    else:
+        configured = tuple(kind for kind in AGENT_KINDS if (environ.get(_AGENTS[kind].base_url_source) or "").strip())
+        kinds = configured or ("opencode",)
+    network = {k: (list(v) if isinstance(v, (list, tuple)) else v) for k, v in inference_network(environ, kinds).items()}
     extra = [h.strip() for h in (environ.get("SDF_RUN_EGRESS_ALLOW") or "").split(",") if h.strip()]
     for host in extra:
         if "/" in host and host.split("/")[-1] == "0":
@@ -366,7 +390,7 @@ class LiveRunAdapter:
         self.turn_timeout_s = turn_timeout_s
         self.sandbox_timeout_s = sandbox_timeout_s
         self.max_concurrent = max_concurrent
-        self.network = run_network(environ) if provider == "e2b" else None
+        self.network = run_network(self.run_env, agent=agent) if provider == "e2b" else None
         self._transport_factory = transport_factory or create_credentialed_transport
         self._kill_by_id = kill_by_id or self._default_kill_by_id
         # Outcome of the last run(), for the caller (execution service).
@@ -388,9 +412,13 @@ class LiveRunAdapter:
     def _runtime(self, transport: Any) -> Any:
         if self.agent in HERDR_KINDS:
             agent_args = model_agent_args((self.agent,), self.run_env)
-            if self.agent == "codex" and self.run_env.get("SDF_OPENAI_BASE_URL"):
-                # Vultr's Responses API rejects Codex's hosted web_search tool.
-                agent_args["codex"] = (*agent_args.get("codex", ()), "-c", 'web_search="disabled"')
+            if self.agent == "codex":
+                # Codex's hosted web_search tool is a Responses-API feature that
+                # many OpenAI-compatible hosts reject (400 Unsupported tool type),
+                # including the example endpoint.  Official api.openai.com keeps it.
+                host = endpoint_host(self.run_env.get("SDF_OPENAI_BASE_URL", ""))
+                if host and host != "api.openai.com":
+                    agent_args["codex"] = (*agent_args.get("codex", ()), "-c", 'web_search="disabled"')
             return HerdrRuntime(transport=transport, timeout_ms=self.timeout_ms, agent_args=agent_args)
         kwargs = {"transport": transport, "turn_timeout_s": self.turn_timeout_s, "model": self.model}
         if self.agent == "opencode":
@@ -540,7 +568,7 @@ class LiveRunAdapter:
                     "input_tokens": metered.tokens[0] if "reported" in metered.usage_sources else None,
                     "output_tokens": metered.tokens[1] if "reported" in metered.usage_sources else None,
                     "cost_usd": round(metered.cost + sandbox_cost, 8),
-                    "provider": f"{self.provider}:{self.model or self.agent}",
+                    "provider": f"{self.provider}:{llm_attempt_provider(self.agent, self.run_env)}"[:120],
                     "usage_source": "reported" if "reported" in metered.usage_sources else "missing",
                     "cleanup_error": cleanup_error,
                 }

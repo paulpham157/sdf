@@ -2,6 +2,11 @@
 
 Status: accepted
 
+> **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
+> The default base URL and `glm-5.3` are the example OpenAI-compatible
+> endpoint, not a Vultr protocol. Pi's seeded token price follows the model
+> id `glm-5.3` on any host; other models stay zero in that seed.
+
 SDF adds `pi` (npm `@mariozechner/pi-coding-agent`, pinned `0.73.1`) as an
 agent kind on par with OpenCode (ADR 0011). Like OpenCode it does not run in a
 Herdr pane: `sdf_core.pi_runtime.PiHeadlessRuntime` runs one

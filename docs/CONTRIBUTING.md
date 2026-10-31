@@ -162,13 +162,16 @@ a private mapping). A green unit suite without that gate is not live evidence.
   `E2B_API_KEY` + the configured OpenCode key) must record Task → Attempt →
   Evidence, token/cost totals, the egress allowlist and sandbox cleanup.
   Skipped without the gates.
-- A live Vultr agents loop (`SDF_LIVE_E2B=1` + `SDF_LIVE_VULTR_AGENTS=1` or
-  a subset such as `pi` + `E2B_API_KEY` + `VULTR_INFERENCE_API_KEY`) must
-  record the same, plus the served model (Pi: `served_models == ["glm-5.3"]`).
-  The test maps that host variable through `SDF_<AGENT>_API_KEY_ENV`.
-  It uses the prebuilt `SDF_E2B_VULTR_TEMPLATE` (default `sdf-herdr-agents`);
-  only an explicit `SDF_E2B_VULTR_BASE_TEMPLATE` (e.g. E2B's public `codex`,
-  Node 20, too old for Pi 1.x) bootstraps a bare base. Skipped without the gates.
+- A live agents loop on the example OpenAI-compatible endpoint
+  (`SDF_LIVE_E2B=1` + `SDF_LIVE_VULTR_AGENTS=1` or a subset such as `pi` +
+  `E2B_API_KEY` + `VULTR_INFERENCE_API_KEY`) must record the same, plus the
+  served model (Pi: `served_models == ["glm-5.3"]`). Those gate names are
+  historical; the endpoint is OpenAI-compatible, not a Vultr protocol
+  (ADR 0034). Codex on that host must be a Responses API. The test maps the
+  key through `SDF_<AGENT>_API_KEY_ENV`. It uses the prebuilt
+  `SDF_E2B_VULTR_TEMPLATE` (default `sdf-herdr-agents`); only an explicit
+  `SDF_E2B_VULTR_BASE_TEMPLATE` (e.g. E2B's public `codex`, Node 20, too old
+  for Pi 1.x) bootstraps a bare base. Skipped without the gates.
 - A remote Herdr milestone requires authenticated SDF → HTTPS bridge → Herdr
   evidence, including start, input, output, cancellation, termination,
   reconnect, and no duplicate execution.

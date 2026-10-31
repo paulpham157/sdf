@@ -1,5 +1,10 @@
 # Codex, Claude Code, Pi, Qwen Code and Goose on Vultr Serverless Inference (glm-5.3)
 
+> **Historical example endpoint, not a protocol ([ADR 0034](../adr/0034-openai-or-claude-compatible-llm-transport.md)).**
+> Vultr Serverless Inference is one OpenAI-compatible host (and, for Claude, one
+> Messages-compatible host when `SDF_ANTHROPIC_BASE_URL` points at it). Codex
+> on that host needs the Responses API.
+
 Live check: `tests/test_vultr_agents_live.py` (gated on `SDF_LIVE_E2B=1`,
 `SDF_LIVE_VULTR_AGENTS=1|codex,claude,pi,qwen,goose`, `E2B_API_KEY`,
 `VULTR_INFERENCE_API_KEY`). Same endpoint and model as the OpenCode check.

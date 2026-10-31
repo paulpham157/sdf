@@ -3,6 +3,11 @@
 Status: accepted; the Aider parts are superseded by
 [ADR 0016](0016-remove-aider-and-cursor-agent-kinds.md) (2026-10-28).
 
+> **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
+> Qwen Code and Goose stay OpenAI-compatible kinds. Their default base URL
+> is the example OpenAI-compatible endpoint, not a required Vultr API.
+> `VULTR_INFERENCE_API_KEY` remains only an example key-variable name.
+
 > **Superseded in part (ADR 0016).** Aider was removed as an agent kind:
 > `sdf_core.aider_runtime`, its credential spec, seed, model defaults, tests
 > and its Dockerfile venv are gone. Everything below about Aider is kept as the

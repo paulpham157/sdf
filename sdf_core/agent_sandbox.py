@@ -24,15 +24,18 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
 from .core_mcp import CORE_DIR, CORE_SHIM_PATH, REQ_DIR, RESP_DIR, registration_script
+from .credentials import EXAMPLE_API_KEY_ENV, EXAMPLE_OPENAI_HOST, _AGENTS, inference_network
 
 SHIM_SOURCE = Path(__file__).with_name("sdf_msg_shim.py")
 CORE_SHIM_SOURCE = Path(__file__).with_name("sdf_core_shim.py")
 MAILBOX = "/home/user/.sdf-msg"
 OUTBOX, INBOX = f"{MAILBOX}/outbox", f"{MAILBOX}/inbox"
 SHIM_PATH = "/usr/local/bin/sdf-msg"
-VULTR_HOST = "api.vultrinference.com"
+# Example OpenAI-compatible host (ADR 0034). Not a protocol; egress follows
+# each kind's configured base URL, and this host is only the example default.
+VULTR_HOST = EXAMPLE_OPENAI_HOST
 DEFAULT_TEMPLATE = "sdf-herdr-agents"
-DEFAULT_NETWORK = {"allow_out": [VULTR_HOST], "deny_out": ["0.0.0.0/0"], "allow_public_traffic": False}
+DEFAULT_NETWORK = inference_network({}, ("opencode",))
 SUPPORTED_KINDS = ("opencode", "pi")
 # E2BAgentSandbox can also host a single Goose agent (sdf-core over its
 # stdio MCP extension, ADR 0022); the coordinator roles stay SUPPORTED_KINDS.
@@ -130,7 +133,12 @@ class E2BAgentSandbox:
         self._template = template
         self._sandbox_timeout_s = sandbox_timeout_s
         self._turn_timeout_s = turn_timeout_s
-        self._network = dict(network or DEFAULT_NETWORK)
+        # Explicit ``network`` wins (live tests). Otherwise lock egress to the
+        # host of this kind's configured or example base URL (ADR 0034).
+        self._network = dict(inference_network(self._environ, (spec.kind,)) if network is None else network)
+        # Base URL only, so attempts.provider can name the host. Not logged.
+        base_var = _AGENTS[spec.kind].base_url_source
+        self.credential_environ = {base_var: self._environ[base_var]} if self._environ.get(base_var) else {}
         self._mcp = mcp_for_opencode and spec.kind == "opencode"
         self._core = core_access
         self._transport: Any = None
@@ -317,9 +325,10 @@ def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]
     """The minimal host-side mapping the credentialed transport reads.
 
     Only variable *names* are configured here; values are passed through from
-    the operator environment and never logged.  Defaults follow the per-agent
-    overrides (ADR 0011/0012): OpenCode and Pi on Vultr glm-5.3 with the key in
-    ``VULTR_INFERENCE_API_KEY`` unless ``SDF_*_API_KEY_ENV`` says otherwise.
+    the operator environment and never logged.  An unset ``SDF_<KIND>_API_KEY``
+    and unset ``SDF_<KIND>_API_KEY_ENV`` select the example key name
+    ``VULTR_INFERENCE_API_KEY`` (ADR 0034).  That name is not a protocol: any
+    ``*_API_KEY`` name works, and egress follows the base URL.
     """
 
     out: dict[str, str] = {}
@@ -328,12 +337,23 @@ def agent_environ(environ: Mapping[str, str], kinds: set[str]) -> dict[str, str]
             out[name] = environ[name]
     for kind in kinds:
         upper = kind.upper()
+        spec = _AGENTS[kind]
         out[f"SDF_CREDENTIAL_MODE_{upper}"] = environ.get(f"SDF_CREDENTIAL_MODE_{upper}", "api-key")
-        key_env = environ.get(f"SDF_{upper}_API_KEY_ENV", "VULTR_INFERENCE_API_KEY")
-        out[f"SDF_{upper}_API_KEY_ENV"] = key_env
-        if environ.get(key_env):
-            out[key_env] = environ[key_env]
-        for suffix in ("BASE_URL", "MODEL"):
+        named = environ.get(spec.api_key_env_variable, "").strip()
+        if named:
+            key_env = named
+        elif environ.get(spec.api_key_source, "").strip():
+            key_env = ""
+            out[spec.api_key_source] = environ[spec.api_key_source]
+        else:
+            key_env = EXAMPLE_API_KEY_ENV
+        if key_env:
+            out[spec.api_key_env_variable] = key_env
+            if environ.get(key_env):
+                out[key_env] = environ[key_env]
+        for suffix in ("BASE_URL", "MODEL", "SMALL_MODEL"):
+            if suffix == "SMALL_MODEL" and kind != "opencode":
+                continue
             name = f"SDF_{upper}_{suffix}"
             if environ.get(name):
                 out[name] = environ[name]

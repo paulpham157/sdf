@@ -99,15 +99,16 @@ _OPENCODE_CONFIG = (
 # environment (a bare name would be sent as the literal key), so the key
 # value is never written to disk.  Base URL and
 # model come from the plan's ``SDF_PI_*`` sandbox variables.  Token prices are
-# filled in only for the default Vultr glm-5.3 (USD per 1M tokens); any other
-# model reports tokens with a zero cost.  URL and model are matched by escaped
-# regexes because a seed command may not contain a plan variable's value
-# (``SDF_PI_BASE_URL`` / ``SDF_PI_MODEL``).
+# the example estimate for model id ``glm-5.3`` (USD per 1M tokens) on any
+# host; any other model reports tokens with a zero cost.  The SDF usage ledger
+# remains authoritative (``SDF_PRICE_<MODEL>``).  The model is matched by an
+# escaped regex because a seed command may not contain a plan variable's value
+# (``SDF_PI_MODEL``).  The host is not part of the price (ADR 0034).
 _PI_MODELS = (
     'const fs=require("fs"),e=process.env,d=e.HOME+"/.pi/agent",f=d+"/models.json",v=process.argv[1];'
     'if(!e[v]){process.exit(0)}const u=e.SDF_PI_BASE_URL||"",m=e.SDF_PI_MODEL||"";'
     'if(!u||!m||!/^[A-Z][A-Z0-9_]*_API_KEY$/.test(v)){console.error("pi-models: base URL, model or key name missing");process.exit(1)}'
-    'const price=/^https:\\/\\/api\\.vultrinference\\.com\\/v1\\/*$/.test(u)&&/^glm-5\\.3$/.test(m)?[0.75,3]:[0,0];'
+    'const price=/^glm-5\\.3$/.test(m)?[0.75,3]:[0,0];'
     'const c={providers:{sdf:{baseUrl:u,api:"openai-completions",apiKey:"$"+v,models:[{id:m,name:m,reasoning:true,'
     'input:["text"],contextWindow:200000,maxTokens:32000,cost:{input:price[0],output:price[1],cacheRead:0,cacheWrite:0}}]}}};'
     'fs.mkdirSync(d,{recursive:true,mode:0o700});fs.writeFileSync(f,JSON.stringify(c,null,2)+"\\n",{mode:0o600});fs.chmodSync(f,0o600);'
