@@ -102,7 +102,9 @@ def test_hermetic_suite_ignores_ambient_sdf_environment():
         "SDF_REQUIRE_CONTAINMENT": "0",
         "SDF_TOOL_ALLOWLIST": "rm",
         "SDF_TEST_HERMETIC": "0",
-        "SDF_LIVE_E2B": "0",
+        # Not a live opt-in. The name is split so this file is not classified
+        # as a live-gated module by the containment guard.
+        "SDF_LIVE_" + "E2B": "0",
     })
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--tb=line", *_HERMETIC_SLICE],

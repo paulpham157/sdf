@@ -665,7 +665,16 @@ class DeterministicEvaluator:
                 )
                 if reason:
                     stderr = f"{stderr or ''}\n[evaluator] {reason}".lstrip("\n")
-            elif report is not None and python_check and not is_pytest(argv):
+            elif (
+                self.containment_backend is None
+                and report is not None
+                and python_check
+                and not is_pytest(argv)
+            ):
+                # The notary writes the frame on this host. A containment
+                # backend runs that process inside the sandbox and reports
+                # the exit code; the frame is not on the host, and a non-git
+                # workspace is not pulled.
                 result_status, reason = script_oracle_verdict(
                     exit_code=completed.returncode,
                     frame=load_script_result(report.result_path),

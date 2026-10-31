@@ -198,11 +198,14 @@ Attempt's agent, or that it is still current.
    is 0. Exit 0 with no frame is `FAIL` (unexpected early exit). A
    signal is `FAIL` even if a frame was also written. A frame that
    disagrees with a non-zero exit code is `INCONCLUSIVE`. Stdout is not
-   an input.    If seccomp or `prctl` cannot be applied, the child exits
+   an input. If seccomp or `prctl` cannot be applied, the child exits
    86 before the check code runs, there is no completion frame, and the
-   verdict is not a pass. The script child freezes only the result file
-   and its directory, not the whole cwd: the check can create a file
-   there, and that write is not the Attempt workspace. Pytest still
+   verdict is not a pass. A containment backend runs that notary inside
+   the sandbox and the host uses the exit code it reports; the frame stays
+   in the sandbox, and a non-git workspace is not pulled. The script child
+   freezes only the result file and its directory, not the whole cwd: the
+   check can create a file there, and that write is not the Attempt
+   workspace. Pytest still
    freezes the whole tree. A worker that replaces an oracle file makes
    the post-run byte check fail, and the verdict is `INCONCLUSIVE`.
 
