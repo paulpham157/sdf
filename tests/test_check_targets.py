@@ -147,7 +147,7 @@ def test_summary_parser():
 
 def test_script_check_imports_a_sibling_helper(tmp_path):
     # The helper is part of the oracle, so it has to live in the server fixture
-    # (ADR 0034). The code under test (calc.py) may differ; here it does not.
+    # (ADR 0036). The code under test (calc.py) may differ; here it does not.
     files = {"calc.py": CALC, "checks/helper.py": "def expected():\n    return 5\n",
              "checks/run.py": "from helper import expected\nfrom calc import add\nassert add(2, 3) == expected()\n"}
     evidence = _run(tmp_path, files, ["python3", "checks/run.py"], server=files)

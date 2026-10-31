@@ -101,7 +101,7 @@ class ArtifactStore:
                 "confidence": evidence.confidence,
                 "runner": evidence.runner,
                 "cleanup_error": evidence.cleanup_error,
-                # ADR 0034: who verified this, against which oracle and artifact.
+                # ADR 0036: who verified this, against which oracle and artifact.
                 "evidence_class": evidence.evidence_class,
                 "producer_identity": evidence.producer_identity,
                 "producer_role": evidence.producer_role,

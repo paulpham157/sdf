@@ -1,6 +1,8 @@
-# ADR 0034: verification evidence is independent of the agent workspace
+# ADR 0036: verification evidence is independent of the agent workspace
 
 Status: proposed (implemented with this change; awaiting maintainer acceptance).
+Numbered 0036 because main already has ADR 0034 (LLM transport) and ADR 0035
+(Go orchestration).
 Narrows the residual stated in [ADR 0025](0025-server-registered-checks.md).
 Does not change Evidence append-only rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md))
 or revision binding ([ADR 0032](0032-attempt-revisions.md)).
@@ -71,10 +73,11 @@ Attempt's agent, or that it is still current.
      byte-identical in the workspace. A difference, a symlink, a deletion,
      or a support module that exists only in the workspace is
      `INCONCLUSIVE` and the check does not run.
-   - The code under test (a module such as `calc.py` that the tests import
-     and that is not support) is copied from the workspace. Workspace
-     `conftest.py`, pytest/ruff config and files under support directories
-     are not.
+   - The code under test is copied from the workspace. That includes a
+     module such as `calc.py`, and a `helper.py` the oracle does not import.
+     A helper the oracle does import is an oracle file, so the fixture copy
+     is what runs. Workspace `conftest.py`, pytest/ruff config and files
+     under support directories are not copied.
    - The sealed directory is the child cwd. `--confcutdir` is that directory,
      so a planted workspace `conftest.py` is not loaded. `-c /dev/null` and
      plugin autoload stay off (ADR 0025).

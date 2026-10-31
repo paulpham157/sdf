@@ -145,7 +145,7 @@ def pytest_summary(stdout: str) -> dict[str, int] | None:
 
 
 def pytest_verdict(stdout: str, truncated: bool = False) -> tuple[str, str] | None:
-    """Parse a pytest summary. Not the accepting signal (ADR 0034).
+    """Parse a pytest summary. Not the accepting signal (ADR 0036).
 
     Kept so a caller can still read a summary. The evaluator decides pytest
     from its own JUnit report and completion marker, because this text is
@@ -224,7 +224,7 @@ class Evidence:
     # caller observed it (``after_check``); differs from the revision's result
     # tree only when the check (or anything else) changed the workspace.
     tree_after_sha256: str | None = None
-    # ADR 0034: independence of a real check. Coverage gaps leave these unset
+    # ADR 0036: independence of a real check. Coverage gaps leave these unset
     # so kind=evaluation is not treated as verification.
     evidence_class: str | None = None
     producer_identity: str | None = None
@@ -263,7 +263,7 @@ class DeterministicEvaluator:
     the server process is made non-dumpable first (:func:`protect_server_process`).
 
     Pytest and any check with a server fixture run from a sealed oracle
-    (ADR 0034). Subject modules run in a worker process. Assertions and the
+    (ADR 0036). Subject modules run in a worker process. Assertions and the
     result frame stay in the pytest process, which the subject cannot see.
     Script checks still run agent code in the process whose exit status is
     the verdict (ADR 0025).
@@ -444,7 +444,7 @@ class DeterministicEvaluator:
                       stdout: str = "", runner: str | None = None, *,
                       subject_artifact_sha256: str | None = None, oracle_digest: str | None = None) -> Evidence:
         # A check that did not run is still a verification verdict, not a
-        # coverage gap (ADR 0034). It cannot accept an artifact.
+        # coverage gap (ADR 0036). It cannot accept an artifact.
         collected = utcnow()
         return Evidence(
             evidence_id=f"EVIDENCE-{attempt_id}-{index}",
@@ -620,7 +620,11 @@ class DeterministicEvaluator:
                 )
                 completed = sandbox.run(process_argv, env=child_env)
             except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
-                return stop(f"check could not run: {type(exc).__name__}: {exc}"[:500], oracle_digest=oracle_digest)
+                return stop(
+                    f"check could not run: {type(exc).__name__}: {exc}"[:500],
+                    runner=self.runner,
+                    oracle_digest=oracle_digest,
+                )
             if completed.timed_out:
                 return stop((completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout,
                             self.runner, oracle_digest=oracle_digest)

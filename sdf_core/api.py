@@ -477,7 +477,7 @@ class EvidenceResponse(BaseModel):
     revision_id: str | None = None
     tree_sha256: str | None = None
     evidence_mode: str | None = None
-    # ADR 0034. Null on Evidence written before migration 0025.
+    # ADR 0036. Null on Evidence written before migration 0025.
     evidence_class: str | None = None
     producer_identity: str | None = None
     producer_role: str | None = None

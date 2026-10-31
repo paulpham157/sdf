@@ -1,4 +1,4 @@
-"""Sealed evaluator oracle (ADR 0034).
+"""Sealed evaluator oracle (ADR 0036).
 
 Pytest used to run inside the agent-writable workspace and accept a PASS from
 stdout. A helper the test imported was not covered by the fixture hash (ADR
@@ -962,9 +962,21 @@ def _is_support(relative: str) -> bool:
 
 
 def _skip_workspace_file(relative: str, name: str) -> bool:
+    """Drop check machinery from the subject copy. Keep a workspace ``helper.py``.
+
+    A helper the oracle imports is already an oracle path, so the caller does
+    not copy the workspace bytes over the fixture. A helper the oracle does
+    not import is code under test: a ``python -c`` check can import it, and
+    main's path finder still has to be able to load it. Config, ``conftest``,
+    test modules and files under test directories are the check itself.
+    """
+
     if name in CONFIG_NAMES:
         return True
-    return _is_support(relative)
+    path = PurePosixPath(relative)
+    if path.name == "conftest.py" or path.stem.startswith("test_"):
+        return True
+    return any(part in SUPPORT_DIRS for part in path.parts[:-1])
 
 
 def _resolve_module(root: Path, importer: str, name: str) -> str | None:
