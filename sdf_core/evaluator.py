@@ -37,18 +37,31 @@ PYTEST_FLAGS = ("--noconftest", "-c", os.devnull, "--rootdir", "/", "-p", "no:ca
                 "--import-mode=append")
 RUFF_FLAGS = ("--isolated", "--no-cache")
 # Run a python check with -I (no PYTHON* env, no user site, no cwd/script dir
-# first on sys.path); the workspace is *appended* so the code under test is
-# importable but cannot shadow the stdlib or an installed package (pytest, ...).
-# A script check also gets its own directory appended (before the cwd), as
-# plain python would put it first: sibling helpers import, but a sibling
-# ``json.py`` cannot replace the stdlib one.
+# first on sys.path). The pre-workspace path is snapshotted, then the workspace
+# is *appended* so the code under test is importable. A path finder resolves a
+# top-level name on that snapshot whenever the name exists there, so agent code
+# that inserts the workspace at sys.path[0] still cannot shadow the stdlib or
+# an installed package (pytest, ...). Replacing the finder is the same inherent
+# limit as os._exit(0) (ADR 0025): the imported module already controls the
+# process. A script check also gets its own directory appended (before the
+# cwd), as plain python would put it first: sibling helpers import, but a
+# sibling ``json.py`` cannot replace the stdlib one.
 PYTHON_BOOTSTRAP = (
-    "import sys, os, runpy\n"
+    "import importlib.machinery, os, runpy, sys\n"
     "_m, _t = sys.argv[1], sys.argv[2]\n"
     "sys.argv = ['-c' if _m == '-c' else _t, *sys.argv[3:]]\n"
+    "_trusted = list(sys.path)\n"
     "if _m == 'path':\n"
     "    sys.path.append(os.path.dirname(os.path.abspath(_t)))\n"
     "sys.path.append(os.getcwd())\n"
+    "_orig = importlib.machinery.PathFinder.find_spec\n"
+    "def _find_spec(cls, fullname, path=None, target=None):\n"
+    "    if path is None:\n"
+    "        spec = _orig(fullname, _trusted, target)\n"
+    "        if spec is not None:\n"
+    "            return spec\n"
+    "    return _orig(fullname, path, target)\n"
+    "importlib.machinery.PathFinder.find_spec = classmethod(_find_spec)\n"
     "if _m == '-c':\n"
     "    exec(compile(_t, '<string>', 'exec'), {'__name__': '__main__', '__builtins__': __builtins__})\n"
     "elif _m == '-m':\n"
@@ -205,7 +218,8 @@ class DeterministicEvaluator:
     no backend it does not run at all (INCONCLUSIVE).
 
     The argv is hardened (:func:`harden_argv`): python runs isolated with the
-    workspace appended to ``sys.path``; pytest ignores workspace config,
+    workspace appended to ``sys.path`` and top-level imports preferring the
+    pre-workspace path; pytest ignores workspace config,
     ``conftest.py`` and plugins; ruff ignores workspace config.  On the host
     the server process is made non-dumpable first (:func:`protect_server_process`).
     What remains is inherent: a check that imports agent code runs agent code,

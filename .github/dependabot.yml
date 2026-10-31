@@ -1,0 +1,11 @@
+# Action SHAs and uv.lock. Dependabot opens update PRs; it does not change pins by itself.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly

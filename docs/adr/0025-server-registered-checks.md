@@ -64,7 +64,12 @@ could be self-forged (`python -c pass` for every criterion).
        `fractions.py` still cannot shadow anything. The code under test stays
        importable, but a workspace `fractions.py`, `pytest.py`,
        `sitecustomize.py` or user-site `.pth` cannot shadow the stdlib or an
-       installed package. Only `-c`, `-m`, a script path and the harmless flags
+       installed package. The bootstrap also installs a path finder that
+       resolves a top-level name on that pre-workspace path whenever the name
+       exists there, so agent code that moves the workspace to the front of
+       `sys.path` before a later import still cannot shadow those modules.
+       Replacing the finder is the same inherent limit as `os._exit(0)`
+       (below). Only `-c`, `-m`, a script path and the harmless flags
        `-B -u -O -OO -b -bb -q -W <arg>` are accepted (validated at load time);
      - `pytest` (bare or `python -m pytest`) gets `--noconftest -c /dev/null
        --rootdir / -p no:cacheprovider --import-mode=append` and
@@ -148,6 +153,10 @@ could be self-forged (`python -c pass` for every criterion).
   changing the interpreter, the test runner and its configuration; it cannot
   make imported code honest. Prefer checks whose verdict does not depend on
   code the agent wrote besides the function under test, and use containment.
+  A check that asserts one literal input (for example `add(2, 3) == 5`) can
+  be satisfied by hard-coding that case. Registered checks need several
+  inputs, including negatives and zero, or a property that one hard-coded
+  return value does not satisfy.
 - With `off` (or `prefer` without a backend), checks still run on the host
   with the server user's filesystem privileges: a check can read any file the
   server user can (e.g. a host `.env`, the database file) and print it into

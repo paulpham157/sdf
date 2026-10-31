@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Security
+
+- Live-gated pytest (`SDF_LIVE_E2B`, `SDF_LIVE_FULL_LOOP`, `SDF_LIVE_VULTR_AGENTS`)
+  no longer inherits the hermetic `SDF_EVALUATOR_CONTAINMENT=off`. Those tests
+  force `require` and the promoted E2B containment backend, so evaluator checks
+  are not host processes that can read another same-uid `/proc/*/environ`.
+  Hermetic tests stay on the host and do not need Docker. Explicit `off` on a
+  deployment is still accepted (ADR 0025) and the `evaluator_runs_on_host`
+  warning names provider key variables that are set, not their values.
+- Python checks resolve top-level imports on the pre-workspace `sys.path`
+  snapshot, so agent code that moves the workspace to the front of `sys.path`
+  cannot shadow the stdlib or an installed package.
+- The full-loop `add-sum` check asserts a range of inputs (negatives, zero,
+  larger values) and an `int` result. A single `add(2, 3) == 5` is not enough.
+- GitHub Actions are pinned to commit SHAs. `.github/dependabot.yml` watches
+  `github-actions` and `uv`.
+
 ### Breaking API changes
 
 - **Artifacts and Evidence are bound to immutable Attempt revisions (#62, ADR 0032).**

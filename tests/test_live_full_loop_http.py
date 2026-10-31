@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from sdf_core.api import SessionLocal
-from tests.check_support import write_checks
+from tests.check_support import ADD_SUM_CHECK, write_checks
 from sdf_core.credentials import load_dotenv
 from sdf_core.db import ArtifactRow, AttemptRow, EvidenceRow, RuntimeEventRow, UsageLedgerRow
 from tests.auth_support import admin_client
@@ -90,7 +90,7 @@ def _fixture(tmp_path: Path) -> Path:
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
-    write_checks(fixture, {"add-sum": ["python3", "-c", "from calc import add; assert add(2, 3) == 5"]})
+    write_checks(fixture, {"add-sum": ["python3", "-c", ADD_SUM_CHECK]})
     return fixture
 
 
