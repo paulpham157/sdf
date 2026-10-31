@@ -101,6 +101,17 @@ class ArtifactStore:
                 "confidence": evidence.confidence,
                 "runner": evidence.runner,
                 "cleanup_error": evidence.cleanup_error,
+                # ADR 0037: who verified this, against which oracle and artifact.
+                "evidence_class": evidence.evidence_class,
+                "producer_identity": evidence.producer_identity,
+                "producer_role": evidence.producer_role,
+                "verifier_identity": evidence.verifier_identity,
+                "verifier_role": evidence.verifier_role,
+                "subject_artifact_sha256": evidence.subject_artifact_sha256,
+                "oracle_digest": evidence.oracle_digest,
+                "environment_digest": evidence.environment_digest,
+                "collected_at": evidence.collected_at.isoformat() if evidence.collected_at else None,
+                "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
                 # ADR 0032 (#62): the Attempt revision and tree this check ran against.
                 **({"revision": dict(revision)} if revision is not None else {}),
             },

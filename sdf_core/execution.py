@@ -21,6 +21,7 @@ from .decision_gate import check_decision_gate
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
+from .acceptance import AcceptanceError, check_verification_acceptance
 from .evaluator import DeterministicEvaluator, Evidence
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
@@ -353,6 +354,8 @@ class ExecutionService:
                     # The check's own files must match the server fixture (ADR 0025).
                     reference=fixture,
                     after_check=after_check,
+                    # The diff artifact is what a PASS claims to have checked (ADR 0037).
+                    subject_artifact_sha256=diff.sha256,
                 )
         except Exception:
             self._fail_attempt(task, attempt)
@@ -366,6 +369,7 @@ class ExecutionService:
         )
         if checked != evaluation.evidence:
             evaluation = type(evaluation)(status=_overall(evaluation.status, checked), evidence=checked)
+        evaluation = _enforce_acceptance(evaluation, attempt_agent=attempt.agent, artifact_sha256=diff.sha256)
         for evidence in evaluation.evidence:
             try:
                 evaluator_artifact = self.artifacts.capture_evaluator_output(
@@ -432,6 +436,16 @@ class ExecutionService:
                     created_at=utcnow(),
                     **({"evidence_mode": evidence_mode} if evidence_mode else {}),
                     **binding,
+                    evidence_class=evidence.evidence_class,
+                    producer_identity=evidence.producer_identity,
+                    producer_role=evidence.producer_role,
+                    verifier_identity=evidence.verifier_identity,
+                    verifier_role=evidence.verifier_role,
+                    subject_artifact_sha256=evidence.subject_artifact_sha256,
+                    oracle_digest=evidence.oracle_digest,
+                    environment_digest=evidence.environment_digest,
+                    collected_at=evidence.collected_at,
+                    expires_at=evidence.expires_at,
                 )
             )
             self.db.add(
@@ -444,7 +458,12 @@ class ExecutionService:
                     confidence=evidence.confidence,
                     created_at=utcnow(),
                     metadata_json={"criterion": evidence.criterion, "artifact_ref": evaluator_artifact.artifact_id,
-                                   **binding, "tree_drift": _drifted(evidence, result_tree)},
+                                   **binding, "tree_drift": _drifted(evidence, result_tree),
+                                   "evidence_class": evidence.evidence_class,
+                                   "verifier_identity": evidence.verifier_identity,
+                                   "verifier_role": evidence.verifier_role,
+                                   "subject_artifact_sha256": evidence.subject_artifact_sha256,
+                                   "oracle_digest": evidence.oracle_digest},
                 )
             )
             self.db.flush()
@@ -585,6 +604,38 @@ def _drift_checked(evidence: Evidence, after: str, result_tree: str | None) -> E
         confidence=min(evidence.confidence, 0.2) if evidence.status == "PASS" else evidence.confidence,
         stderr=(evidence.stderr + "\n" if evidence.stderr else "") + note,
     )
+
+
+def _enforce_acceptance(evaluation, *, attempt_agent: str, artifact_sha256: str):
+    """A PASS verifies only when ADR 0037's independence checks hold.
+
+    A failing check stays a failing check. A PASS whose verifier is the
+    Attempt's agent, whose subject hash is not this diff, or which has expired
+    is recorded as INCONCLUSIVE and cannot validate the task.
+    """
+
+    from dataclasses import replace
+
+    checked = []
+    changed = False
+    for item in evaluation.evidence:
+        if item.evidence_class == "verification" and item.status == "PASS":
+            try:
+                check_verification_acceptance(
+                    item, attempt_agent=attempt_agent, artifact_sha256=artifact_sha256,
+                )
+            except AcceptanceError as exc:
+                note = f"[acceptance] {exc}"
+                item = replace(
+                    item, status="INCONCLUSIVE", confidence=min(item.confidence, 0.2),
+                    stderr=(item.stderr + "\n" if item.stderr else "") + note,
+                )
+                changed = True
+        checked.append(item)
+    if not changed:
+        return evaluation
+    evidence = tuple(checked)
+    return type(evaluation)(status=_overall(evaluation.status, evidence), evidence=evidence)
 
 
 def _overall(previous: str, evidence: tuple[Evidence, ...]) -> str:

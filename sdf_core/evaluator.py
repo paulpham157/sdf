@@ -7,12 +7,32 @@ import re
 import stat
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .checks import ALLOWED_EXECUTABLES, check_targets, is_pytest, python_invocation
+from .acceptance import (
+    EVALUATOR_IDENTITY,
+    EVALUATOR_ROLE,
+    EVIDENCE_CLASS_VERIFICATION,
+    VERIFICATION_TTL,
+    environment_digest,
+)
+from .checks import ALLOWED_EXECUTABLES, check_targets, is_pytest, python_invocation, pytest_targets
 from .containment import ContainmentUnavailable
+from .model import utcnow
+from .oracle import (
+    OracleTamper,
+    declared_test_count,
+    materialize,
+    PYTEST_SEAL,
+    load_result_frame,
+    subject_module_names,
+    prepare_private_report,
+    prepare_sealed_report,
+    pytest_oracle_verdict,
+    retarget_pytest,
+)
 from .sandbox import FixtureSandbox, SandboxViolation
 
 MAX_CHECK_OUTPUT_BYTES = 256 * 1024
@@ -50,6 +70,12 @@ PYTHON_BOOTSTRAP = (
     "import importlib.machinery, os, runpy, sys\n"
     "_m, _t = sys.argv[1], sys.argv[2]\n"
     "sys.argv = ['-c' if _m == '-c' else _t, *sys.argv[3:]]\n"
+    # Pop the seal before any project import. For pytest the notary (this
+    # process) forks the child and only then writes the result file; the
+    # child returns here and execs pytest. The notary does not return.
+    "_seal = os.environ.pop('SDF_ORACLE_SEAL', '')\n"
+    "if _m == '-m' and _t == 'pytest' and _seal:\n"
+    "    exec(compile(_seal, '<seal>', 'exec'), {'__name__': 'sdf_seal'})\n"
     "_trusted = list(sys.path)\n"
     "if _m == 'path':\n"
     "    sys.path.append(os.path.dirname(os.path.abspath(_t)))\n"
@@ -119,13 +145,11 @@ def pytest_summary(stdout: str) -> dict[str, int] | None:
 
 
 def pytest_verdict(stdout: str, truncated: bool = False) -> tuple[str, str] | None:
-    """Why an exit-0 pytest run is not a PASS: ``(status, reason)``, or ``None`` if it is one.
+    """Parse a pytest summary. Not the accepting signal (ADR 0037).
 
-    Defense in depth (ADR 0025): code the test imports can end pytest with
-    status 0 (``os._exit(0)``, an ``atexit`` hook, a plugin); the summary then
-    reports failures or is missing.  A PASS needs a summary with at least one
-    passed test and no failures or errors.  This can only turn a PASS into
-    FAIL/INCONCLUSIVE, so printing a fake summary gains nothing.
+    Kept so a caller can still read a summary. The evaluator decides pytest
+    from the notary's result frame, because this text is under the control
+    of any module the check imports.
     """
 
     counts = pytest_summary(stdout)
@@ -200,6 +224,18 @@ class Evidence:
     # caller observed it (``after_check``); differs from the revision's result
     # tree only when the check (or anything else) changed the workspace.
     tree_after_sha256: str | None = None
+    # ADR 0037: independence of a real check. Coverage gaps leave these unset
+    # so kind=evaluation is not treated as verification.
+    evidence_class: str | None = None
+    producer_identity: str | None = None
+    producer_role: str | None = None
+    verifier_identity: str | None = None
+    verifier_role: str | None = None
+    subject_artifact_sha256: str | None = None
+    oracle_digest: str | None = None
+    environment_digest: str | None = None
+    collected_at: Any = None
+    expires_at: Any = None
 
 
 @dataclass(frozen=True)
@@ -225,8 +261,12 @@ class DeterministicEvaluator:
     pre-workspace path; pytest ignores workspace config,
     ``conftest.py`` and plugins; ruff ignores workspace config.  On the host
     the server process is made non-dumpable first (:func:`protect_server_process`).
-    What remains is inherent: a check that imports agent code runs agent code,
-    which can end the process with status 0 (see ADR 0025).
+
+    Pytest and any check with a server fixture run from a sealed oracle
+    (ADR 0037). Subject modules run in a worker process. Assertions and the
+    result frame stay in the pytest process, which the subject cannot see.
+    Script checks still run agent code in the process whose exit status is
+    the verdict (ADR 0025).
     """
 
     def __init__(
@@ -259,6 +299,7 @@ class DeterministicEvaluator:
         criterion_checks: Mapping[str, Sequence[Sequence[str]]] | None = None,
         reference: Path | None = None,
         after_check: Callable[[Evidence], Evidence] | None = None,
+        subject_artifact_sha256: str | None = None,
     ) -> EvaluationResult:
         """Evaluate explicit criterion/check mappings.
 
@@ -296,23 +337,7 @@ class DeterministicEvaluator:
         def add(item: Evidence) -> None:
             nonlocal index
             index += 1
-            evidence.append(
-                Evidence(
-                    evidence_id=f"EVIDENCE-{attempt_id}-{index}",
-                    attempt_id=item.attempt_id,
-                    kind=item.kind,
-                    status=item.status,
-                    command=item.command,
-                    exit_code=item.exit_code,
-                    stdout=item.stdout,
-                    stderr=item.stderr,
-                    confidence=item.confidence,
-                    criterion=item.criterion,
-                    runner=item.runner,
-                    cleanup_error=item.cleanup_error,
-                    tree_after_sha256=item.tree_after_sha256,
-                )
-            )
+            evidence.append(replace(item, evidence_id=f"EVIDENCE-{attempt_id}-{index}"))
 
         def observed(item: Evidence) -> Evidence:
             return after_check(item) if after_check is not None else item
@@ -334,6 +359,7 @@ class DeterministicEvaluator:
                         index=index + 1,
                         position=position,
                         reference=reference,
+                        subject_artifact_sha256=subject_artifact_sha256,
                     )
                 ))
 
@@ -355,6 +381,7 @@ class DeterministicEvaluator:
                     criterion=None,
                     index=index + 1,
                     reference=reference,
+                    subject_artifact_sha256=subject_artifact_sha256,
                 )
             ))
 
@@ -414,7 +441,11 @@ class DeterministicEvaluator:
         )
 
     def _inconclusive(self, attempt_id: str, index: int, rendered: str, criterion: str | None, reason: str,
-                      stdout: str = "", runner: str | None = None) -> Evidence:
+                      stdout: str = "", runner: str | None = None, *,
+                      subject_artifact_sha256: str | None = None, oracle_digest: str | None = None) -> Evidence:
+        # A check that did not run is still a verification verdict, not a
+        # coverage gap (ADR 0037). It cannot accept an artifact.
+        collected = utcnow()
         return Evidence(
             evidence_id=f"EVIDENCE-{attempt_id}-{index}",
             attempt_id=attempt_id,
@@ -427,6 +458,16 @@ class DeterministicEvaluator:
             confidence=0.2,
             criterion=criterion,
             runner=runner,
+            evidence_class=EVIDENCE_CLASS_VERIFICATION,
+            producer_identity=EVALUATOR_IDENTITY,
+            producer_role=EVALUATOR_ROLE,
+            verifier_identity=EVALUATOR_IDENTITY,
+            verifier_role=EVALUATOR_ROLE,
+            subject_artifact_sha256=subject_artifact_sha256,
+            oracle_digest=oracle_digest,
+            environment_digest=environment_digest(command=rendered, runner=runner, oracle_digest=oracle_digest),
+            collected_at=collected,
+            expires_at=collected + VERIFICATION_TTL,
         )
 
     @staticmethod
@@ -486,9 +527,18 @@ class DeterministicEvaluator:
         index: int,
         position: int = 0,
         reference: Path | None = None,
+        subject_artifact_sha256: str | None = None,
     ) -> Evidence:
         argv = tuple(command)
         rendered = " ".join(argv)
+        subject = subject_artifact_sha256
+
+        def stop(reason: str, stdout: str = "", runner: str | None = None, *, oracle_digest: str | None = None) -> Evidence:
+            return self._inconclusive(
+                attempt_id, index, rendered, criterion, reason, stdout, runner,
+                subject_artifact_sha256=subject, oracle_digest=oracle_digest,
+            )
+
         if (
             not argv
             or not all(isinstance(part, str) for part in argv)
@@ -496,10 +546,9 @@ class DeterministicEvaluator:
             or "\\" in argv[0]
             or argv[0] not in self.allowed_executables
         ):
-            return self._inconclusive(attempt_id, index, rendered, criterion,
-                                      "executable is not allowlisted (bare name required)")
+            return stop("executable is not allowlisted (bare name required)")
         if any("\x00" in part for part in argv):
-            return self._inconclusive(attempt_id, index, rendered, criterion, "argument contains a NUL byte")
+            return stop("argument contains a NUL byte")
         timeout = self.timeout_seconds
         if self.timeout_for is not None:
             timeout = self.timeout_for(criterion, position) or timeout
@@ -509,68 +558,143 @@ class DeterministicEvaluator:
             process_argv = harden_argv(argv)
             targets = check_targets(argv)
         except ValueError as exc:
-            return self._inconclusive(attempt_id, index, rendered, criterion, f"unsupported check form: {exc}")
+            return stop(f"unsupported check form: {exc}")
         problem = _verify_targets(targets, workspace, reference)
         if problem is not None:
-            return self._inconclusive(attempt_id, index, rendered, criterion, problem)
+            return stop(problem)
         if self.containment_backend is None:
             if self.require_containment:
-                return self._inconclusive(attempt_id, index, rendered, criterion,
-                                          "evaluator containment is required but no backend is configured")
+                return stop("evaluator containment is required but no backend is configured")
             executable = self._resolve_executable(argv[0], workspace, safe_path)
             if executable is None:
-                return self._inconclusive(attempt_id, index, rendered, criterion,
-                                          "executable not found outside the workspace")
+                return stop("executable not found outside the workspace")
             if os.path.basename(argv[0]) == "pytest":
                 interpreter = self._pytest_interpreter(executable, workspace, safe_path)
                 if interpreter is None:
-                    return self._inconclusive(attempt_id, index, rendered, criterion,
-                                              "cannot find the python interpreter of the pytest executable")
+                    return stop("cannot find the python interpreter of the pytest executable")
                 process_argv = harden_argv(argv, pytest_python=interpreter)
             else:
                 process_argv[0] = executable
             _protect_or_warn()
+        sealed = None
+        report = None
         try:
-            sandbox = FixtureSandbox(
-                workspace,
-                timeout_seconds=timeout,
-                max_output_bytes=self.max_output_bytes,
-                containment_backend=self.containment_backend,
-                require_containment=self.require_containment,
+            absolute = [target for target in targets if os.path.isabs(target)]
+            oracle_digest = None
+            run_root = workspace
+            # A server fixture is the oracle. Absolute test paths are already
+            # outside the workspace; everything else runs from the sealed copy.
+            if reference is not None and not absolute:
+                try:
+                    sealed = materialize(reference, workspace, targets)
+                except OracleTamper as exc:
+                    return stop(exc.reason)
+                oracle_digest = sealed.oracle_digest
+                run_root = sealed.root
+                if is_pytest(argv):
+                    report = prepare_sealed_report(sealed)
+            elif is_pytest(argv):
+                report = prepare_private_report()
+            if report is not None:
+                process_argv = retarget_pytest(process_argv, sealed=sealed is not None)
+            child_env = _check_env(safe_path)
+            if report is not None and os.path.basename(process_argv[0]) not in {"pytest"}:
+                # The bootstrap (python -c) is the notary. It pops these before
+                # the pytest child is forked, so the subject never sees them.
+                child_env["SDF_ORACLE_SEAL"] = PYTEST_SEAL
+                child_env["SDF_ORACLE_REPORT"] = str(report.result_path)
+                oracle_paths = set(sealed.oracle_paths) if sealed is not None else set()
+                child_env["SDF_ORACLE_SUBJECTS"] = subject_module_names(run_root, oracle_paths)
+            elif report is not None:
+                return stop(
+                    "oracle result channel is not sealed for a bare pytest executable",
+                    oracle_digest=oracle_digest,
+                )
+            try:
+                sandbox = FixtureSandbox(
+                    run_root,
+                    timeout_seconds=timeout,
+                    max_output_bytes=self.max_output_bytes,
+                    containment_backend=self.containment_backend,
+                    require_containment=self.require_containment,
+                )
+                completed = sandbox.run(process_argv, env=child_env)
+            except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
+                return stop(
+                    f"check could not run: {type(exc).__name__}: {exc}"[:500],
+                    runner=self.runner,
+                    oracle_digest=oracle_digest,
+                )
+            if completed.timed_out:
+                return stop((completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout,
+                            self.runner, oracle_digest=oracle_digest)
+            result_status = "PASS" if completed.returncode == 0 else "FAIL"
+            stderr = completed.stderr
+            if is_pytest(argv) and report is not None:
+                node_ids = _pytest_node_ids(argv)
+                declared = declared_test_count(run_root if sealed is None else sealed.root, node_ids)
+                result_status, reason = pytest_oracle_verdict(
+                    exit_code=completed.returncode,
+                    frame=load_result_frame(report.result_path),
+                    declared=declared,
+                    oracle_changed=bool(sealed and sealed.changed()),
+                )
+                if reason:
+                    stderr = f"{stderr or ''}\n[evaluator] {reason}".lstrip("\n")
+            elif sealed is not None and sealed.changed():
+                result_status = "INCONCLUSIVE"
+                stderr = f"{stderr or ''}\noracle files changed while the check ran".lstrip("\n")
+            cleanup_error = completed.cleanup_error
+            if cleanup_error:
+                _log.warning("evaluator_cleanup_failed", extra={"runner": self.runner, "error": cleanup_error[-500:]})
+                stderr = f"{stderr or ''}\n[evaluator] cleanup failed: {cleanup_error}".lstrip("\n")
+            return self._checked(
+                attempt_id=attempt_id, index=index, rendered=rendered, criterion=criterion,
+                status=result_status, exit_code=completed.returncode, stdout=completed.stdout, stderr=stderr,
+                oracle_digest=oracle_digest, subject_artifact_sha256=subject,
+                cleanup_error=cleanup_error,
             )
-            completed = sandbox.run(process_argv, env=_check_env(safe_path))
-        except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
-            return self._inconclusive(attempt_id, index, rendered, criterion,
-                                      f"check could not run: {type(exc).__name__}: {exc}"[:500],
-                                      runner=self.runner)
-        if completed.timed_out:
-            return self._inconclusive(attempt_id, index, rendered, criterion,
-                                      (completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout,
-                                      runner=self.runner)
-        result_status = "PASS" if completed.returncode == 0 else "FAIL"
-        stderr = completed.stderr
-        cleanup_error = completed.cleanup_error
-        if cleanup_error:
-            _log.warning("evaluator_cleanup_failed", extra={"runner": self.runner, "error": cleanup_error[-500:]})
-            stderr = f"{stderr or ''}\n[evaluator] cleanup failed: {cleanup_error}".lstrip("\n")
-        if result_status == "PASS" and is_pytest(argv):
-            verdict = pytest_verdict(completed.stdout or "", bool(getattr(completed, "output_truncated", False)))
-            if verdict is not None:
-                result_status, reason = verdict
-                stderr = f"{stderr or ''}\n[evaluator] {reason}".lstrip("\n")
+        finally:
+            if sealed is not None:
+                sealed.cleanup()
+            elif report is not None:
+                report.cleanup()
+
+    def _checked(
+        self, *, attempt_id: str, index: int, rendered: str, criterion: str | None, status: str,
+        exit_code: int | None, stdout: str, stderr: str, oracle_digest: str | None,
+        subject_artifact_sha256: str | None, cleanup_error: str | None = None,
+    ) -> Evidence:
+        collected = utcnow()
+        if status == "PASS":
+            confidence = 1.0
+        elif status == "INCONCLUSIVE":
+            confidence = 0.2
+        else:
+            confidence = 0.95
         return Evidence(
             evidence_id=f"EVIDENCE-{attempt_id}-{index}",
             attempt_id=attempt_id,
             kind="evaluation",
-            status=result_status,
+            status=status,
             command=rendered,
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
+            exit_code=exit_code,
+            stdout=stdout,
             stderr=stderr,
-            confidence=1.0 if result_status == "PASS" else 0.95,
+            confidence=confidence,
             criterion=criterion,
             runner=self.runner,
             cleanup_error=cleanup_error,
+            evidence_class=EVIDENCE_CLASS_VERIFICATION,
+            producer_identity=EVALUATOR_IDENTITY,
+            producer_role=EVALUATOR_ROLE,
+            verifier_identity=EVALUATOR_IDENTITY,
+            verifier_role=EVALUATOR_ROLE,
+            subject_artifact_sha256=subject_artifact_sha256,
+            oracle_digest=oracle_digest,
+            environment_digest=environment_digest(command=rendered, runner=self.runner, oracle_digest=oracle_digest),
+            collected_at=collected,
+            expires_at=collected + VERIFICATION_TTL,
         )
 
     def _pytest_interpreter(self, pytest_path: str, workspace: Path, safe_path: str) -> str | None:
@@ -606,6 +730,19 @@ class DeterministicEvaluator:
         if isinstance(value, bytes):
             return value.decode(errors="replace")
         return value
+
+
+def _pytest_node_ids(argv: Sequence[str]) -> list[str]:
+    """Node ids a pytest check named, used as the oracle's expected test count."""
+
+    name = os.path.basename(argv[0]) if argv else ""
+    if name == "pytest":
+        return pytest_targets(list(argv[1:]))
+    if name in {"python", "python3"}:
+        _, mode, target, rest = python_invocation(argv)
+        if mode == "-m" and target == "pytest":
+            return pytest_targets(rest)
+    return []
 
 
 def _verify_targets(targets: Sequence[str], workspace: Path, reference: Path | None) -> str | None:
