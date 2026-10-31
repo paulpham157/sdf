@@ -164,6 +164,121 @@ def test_subject_pluginmanager_hook_cannot_call_the_report_stub(tmp_path):
     assert evidence.status == "FAIL", (evidence.status, evidence.stderr[-400:])
 
 
+def test_worker_cannot_ptrace_the_pytest_process(tmp_path):
+    """Same-uid ptrace from the subject worker to its pytest parent is denied."""
+
+    forge = (
+        "import ctypes, os\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "ppid = os.getppid()\n"
+        "rc = libc.ptrace(16, ppid, None, None)\n"  # PTRACE_ATTACH
+        "err = ctypes.get_errno()\n"
+        "if rc == 0:\n"
+        "    os._exit(0)\n"
+        "raise PermissionError(f'ptrace denied {err}')\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status != "PASS"
+    assert "ptrace denied" in (evidence.stdout + evidence.stderr)
+
+
+def test_worker_cannot_open_pytest_process_fds(tmp_path):
+    forge = (
+        "import os\n"
+        "ppid = os.getppid()\n"
+        "try:\n"
+        "    os.listdir(f'/proc/{ppid}/fd')\n"
+        "except OSError as exc:\n"
+        "    raise PermissionError(f'proc fd denied {exc.errno}') from exc\n"
+        "os._exit(0)\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status != "PASS"
+    assert "proc fd denied" in (evidence.stdout + evidence.stderr)
+
+
+def test_oversized_subject_response_is_not_a_pass(tmp_path):
+    """A length prefix above the 1 MiB cap is a non-pass, not a huge read."""
+
+    forge = (
+        "import os, struct\n"
+        "hdr = struct.pack('>I', 2000000)\n"
+        "sent = False\n"
+        "for name in os.listdir('/proc/self/fd'):\n"
+        "    fd = int(name)\n"
+        "    if fd < 3:\n"
+        "        continue\n"
+        "    try:\n"
+        "        target = os.readlink(f'/proc/self/fd/{fd}')\n"
+        "    except OSError:\n"
+        "        continue\n"
+        "    if target.startswith('socket:'):\n"
+        "        os.write(fd, hdr)\n"
+        "        sent = True\n"
+        "if not sent:\n"
+        "    raise RuntimeError('no rpc socket')\n"
+        "def add(a, b):\n"
+        "    return 999\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    text = evidence.stdout + evidence.stderr
+    assert evidence.status != "PASS", (evidence.status, text[-500:])
+    assert "exceeds 1000000" in text
+
+
+def test_malformed_subject_response_is_not_a_pass(tmp_path):
+    forge = (
+        "import os, struct\n"
+        "payload = struct.pack('>I', 4) + b'nope'\n"
+        "sent = False\n"
+        "for name in os.listdir('/proc/self/fd'):\n"
+        "    fd = int(name)\n"
+        "    if fd < 3:\n"
+        "        continue\n"
+        "    try:\n"
+        "        target = os.readlink(f'/proc/self/fd/{fd}')\n"
+        "    except OSError:\n"
+        "        continue\n"
+        "    if target.startswith('socket:'):\n"
+        "        os.write(fd, payload)\n"
+        "        sent = True\n"
+        "if not sent:\n"
+        "    raise RuntimeError('no rpc socket')\n"
+        "def add(a, b):\n"
+        "    return 999\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    text = evidence.stdout + evidence.stderr
+    assert evidence.status != "PASS", (evidence.status, text[-500:])
+    assert "malformed subject response" in text
+
+
+def test_worker_cannot_write_the_sealed_tree_but_can_write_temp(tmp_path):
+    forge = (
+        "import os, tempfile\n"
+        "try:\n"
+        "    open('planted-by-subject.txt', 'w').write('nope')\n"
+        "except OSError:\n"
+        "    denied = True\n"
+        "else:\n"
+        "    denied = False\n"
+        "try:\n"
+        "    path = os.path.join(tempfile.gettempdir(), 'sdf-subject-temp-ok')\n"
+        "    open(path, 'w').write('ok')\n"
+        "except OSError as exc:\n"
+        "    raise RuntimeError('temp write failed: ' + str(exc))\n"
+        "if not denied:\n"
+        "    raise RuntimeError('sealed tree was writable')\n"
+        "def add(a, b):\n"
+        "    return a + b\n"
+    )
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": _WOULD_FAIL}, ["pytest", "-q", "test_calc.py"])
+    text = evidence.stdout + evidence.stderr
+    assert evidence.status == "FAIL", (evidence.status, text[-500:])
+    assert "sealed tree was writable" not in text
+    assert "temp write failed" not in text
+
+
 def test_subject_cannot_forge_the_evaluator_signal(tmp_path):
     """Import-time forge of the old marker and JUnit files must not be a PASS.
 

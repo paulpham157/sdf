@@ -120,12 +120,52 @@ Attempt's agent, or that it is still current.
    top-level module in the sealed tree that is not an oracle file and not
    the stdlib or pytest. Those modules load in a fresh interpreter (the
    subject worker) started with `close_fds` so it does not inherit the
-   result pipe. The test's assertions run in the pytest process on the
-   values the worker returns. `os._exit`, a closure walk, `gc.get_objects`,
-   and `pluginmanager.register` in the subject therefore run where
-   `sdf_oracle_plugin` and the report stub do not exist. Seccomp is still
-   installed in the pytest process and still fails closed when it cannot be
-   installed.
+   result pipe or the result file. The test's assertions run in the pytest
+   process on the values the worker returns. `os._exit`, a closure walk,
+   `gc.get_objects`, and `pluginmanager.register` in the subject therefore
+   run where `sdf_oracle_plugin` and the report stub do not exist. Seccomp
+   is still installed in the pytest process and still fails closed when it
+   cannot be installed.
+
+7. **The worker cannot reach the pytest process or the result file.** The
+   worker is the same uid as pytest. `close_fds` only stops inheritance, so
+   without the steps below a worker can `ptrace` the pytest process and
+   open `/proc/<pid>/fd`.
+   - The notary calls `PR_SET_DUMPABLE` 0 before it forks, and the pytest
+     child calls it again before it starts the worker. A same-uid peer
+     then cannot `ptrace` that process or open `/proc/<pid>/fd` (the kernel
+     returns `EPERM` / `EACCES`). If `prctl` fails, that process exits 86
+     and there is no result frame.
+   - Before it reads any request, the worker installs its own seccomp
+     filter. The filter denies `ptrace`, `process_vm_readv`,
+     `process_vm_writev`, `pidfd_open`, `pidfd_getfd`, and the `chmod`
+     family (`chmod`, `fchmod`, `fchmodat`, `fchmodat2`), and it sets
+     `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE` 0, and `PR_SET_PDEATHSIG`
+     to `SIGKILL`. If the platform is not Linux x86_64, or `prctl` or
+     seccomp fails, the worker exits 86 before subject code runs. The
+     import then fails and the verdict is not a pass.
+   - The parent caps a worker response at 1_000_000 bytes, the same cap the
+     worker applies to requests. A larger length, a body that is not UTF-8
+     JSON, or a JSON value that is not an object closes the socket and
+     raises `ImportError`. That is a pytest error, so it is not a pass.
+   - The notary opens the result file before the fork and writes it through
+     that fd after the child has been reaped. The child closes the fd
+     before it starts the worker. When the result path is inside the
+     check cwd (the sealed tree), every file in that tree is mode `0444`
+     and every directory is mode `0555` before the worker exists. A
+     private report outside the cwd (absolute test paths) freezes only
+     its own file and directory, not the workspace. The worker's `TMPDIR`
+     is a fresh directory under `/tmp`, so `tempfile` still works. A
+     failed `chmod` exits 86. The worker cannot undo the modes because
+     `chmod` is denied. The evaluator restores the modes only when it
+     deletes the tree, after it has read the result.
+
+   A separate uid or user namespace is not what this uses. Mapping the
+   host uid inside a user namespace would still own the files, and
+   `setuid` to an unprivileged account needs `CAP_SETUID`, which a host
+   check does not have. Treating that failure as fatal would make every
+   pytest check a non-pass. Dumpable plus the worker filter does not need
+   extra privileges, and both fail closed when they cannot be applied.
 
    **What remains.**
    - Oracle code (the fixture's tests, `conftest.py`, and hashed helpers)
@@ -133,7 +173,14 @@ Attempt's agent, or that it is still current.
      against the server fixture before the run. Subject code does not.
    - A subject call returns a value. If that value satisfies the oracle's
      assertion, the test passes. That is the code under test, not a forged
-     runner.
+     runner. A subject that patches its own RPC encoder so the worker
+     reports the values the test expects is the same thing as hardcoding
+     those answers. That is test overfitting, not evidence forgery. Held-out
+     or property-based oracles are what catch it, and they are tracked
+     separately from this ADR.
+   - The worker can still write to its private temp directory and to other
+     paths outside the frozen tree that the uid can open. It cannot replace
+     the sealed tree or the result file.
    - `python -c` and script checks still run the subject in the process
      whose exit code is the verdict. `sys.exit(0)` from an imported module
      can still force that exit to 0. That is the ADR 0025 residual; it is
@@ -152,7 +199,11 @@ Attempt's agent, or that it is still current.
   forge was a pass only on the first cut of this change. Calling the report
   stub from the subject's closure, from `gc`, or from a
   `pluginmanager.register` hook was a pass at d216e1f; those calls now run
-  in the subject worker, where the stub is not present.
+  in the subject worker, where the stub is not present. From that worker,
+  `ptrace` of the pytest process, opening `/proc/<ppid>/fd`, a response
+  longer than 1_000_000 bytes, a response that is not a JSON object, and a
+  write into the sealed tree are not passes. The worker can still write a
+  file under the temp directory it was given.
 - Checks that import a project helper must ship that helper in the server
   fixture. A helper that exists only in the workspace is treated as planted.
 - Verification Evidence expires after 24 hours. Accepting it again means
