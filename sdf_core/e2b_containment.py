@@ -28,8 +28,34 @@ from .containment import ContainmentProbe, ContainmentUnavailable
 E2BRunner = Callable[[Sequence[str], Path, int, Mapping[str, str]], str]
 
 
+# Host paths. The box has its own home, temp and PATH; SDF_SANDBOX_ROOT is the
+# host workspace and must not be visible inside the command.
+_REMOTE_ENV_SKIP = frozenset({"HOME", "TMPDIR", "TMP", "TEMP", "PATH", "SDF_SANDBOX_ROOT"})
+
+
+def _measured_ok(stdout: str) -> bool:
+    """True when ``stdout`` is a JSON object with ``ok: true``.
+
+    ``e2b-box exec`` exits 1 when the remote command fails, and still prints
+    that object with the command's ``exitCode``. Malformed output and
+    ``ok: false`` are not a measurement.
+    """
+
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("ok") is True
+
+
 class E2BContainmentBackend:
-    """Run a command inside the checkout's tracked E2B box."""
+    """Run a command inside a disposable E2B box.
+
+    The workspace is synced out and the box is killed afterwards. It is not
+    pulled back: ``e2b-box pull`` refuses a directory that is not a git
+    checkout unless ``--force``, and a pull would copy whatever the command
+    wrote (including agent code the check imported) onto the host workspace.
+    """
 
     name = "e2b-box"
     # E2B Cloud network egress is intentionally available to the coding agent:
@@ -82,6 +108,8 @@ class E2BContainmentBackend:
         ``allow_network`` controls SDF's capability signal inside the command;
         E2B Cloud egress remains available to the agent. It is deliberately
         not used as evidence of network denial.
+
+        The sequence is sync, exec, kill. There is no pull.
         """
 
         probe = self.probe()
@@ -107,12 +135,10 @@ class E2BContainmentBackend:
         }
         if self._environ.get("E2B_DOMAIN"):
             cli_env["E2B_DOMAIN"] = self._environ["E2B_DOMAIN"]
-        synced = False
         primary_error: Exception | None = None
         result: subprocess.CompletedProcess[str] | None = None
         try:
             self._runner((self.executable, "-t", self.template, "sync"), root, timeout_ms, cli_env)
-            synced = True
             raw = self._runner((self.executable, "exec", "--timeout-ms", str(timeout_ms), remote), root, timeout_ms, cli_env)
             try:
                 payload = json.loads(raw)
@@ -122,7 +148,7 @@ class E2BContainmentBackend:
                 detail = payload.get("error", "command was not measured") if isinstance(payload, dict) else "invalid result"
                 raise ContainmentUnavailable(f"e2b-box could not measure process: {detail}")
             exit_code = payload.get("exitCode")
-            if not isinstance(exit_code, int):
+            if type(exit_code) is not int:
                 raise ContainmentUnavailable("e2b-box exec returned no exit code")
             result = subprocess.CompletedProcess(
                 tuple(str(part) for part in command),
@@ -133,12 +159,6 @@ class E2BContainmentBackend:
         except Exception as exc:
             primary_error = exc
         finally:
-            if synced:
-                try:
-                    self._runner((self.executable, "pull"), root, timeout_ms, cli_env)
-                except Exception as exc:
-                    if primary_error is None:
-                        primary_error = exc
             try:
                 self._runner((self.executable, "kill"), root, timeout_ms, cli_env)
             except Exception as exc:
@@ -156,7 +176,7 @@ class E2BContainmentBackend:
         assignments = []
         for key, value in env.items():
             key = str(key)
-            if key in {"HOME", "TMPDIR", "TMP", "TEMP", "PATH"}:
+            if key in _REMOTE_ENV_SKIP:
                 continue
             if not key or "=" in key or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for char in key):
                 continue
@@ -190,6 +210,7 @@ class E2BContainmentBackend:
                 process.kill()
             process.wait()
             raise ContainmentUnavailable("e2b-box command timed out")
-        if process.returncode != 0:
-            raise ContainmentUnavailable(f"e2b-box command failed: {stderr[-1000:]}")
+        if process.returncode != 0 and not _measured_ok(stdout):
+            detail = (stderr or stdout or "")[-1000:]
+            raise ContainmentUnavailable(f"e2b-box command failed: {detail}")
         return stdout

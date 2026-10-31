@@ -12,6 +12,7 @@ Secrets are never printed.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -150,6 +151,11 @@ def test_live_full_loop_via_public_run_endpoint(tmp_path: Path, monkeypatch: pyt
         ledger = db.query(UsageLedgerRow).filter_by(attempt_id=attempt_id).all()
         attempt = db.get(AttemptRow, attempt_id)
         assert [(row.criterion, row.status) for row in evidence] == [(criterion, case["expected_evidence"])]
+        outputs = [row for row in artifacts if row.kind == "evaluator_output"]
+        assert outputs, "evaluator output artifact missing"
+        for artifact in outputs:
+            payload = json.loads(Path(artifact.uri.removeprefix("file://")).read_text(encoding="utf-8"))
+            assert payload["runner"] == "e2b-box"
         # ADR 0031: a real sandbox run records live Evidence (and a live Attempt).
         assert {row.evidence_mode for row in evidence} == {"live"} and attempt.evidence_mode == "live"
         log_ids = {a.id for a in artifacts if a.id.endswith("-LOG")}

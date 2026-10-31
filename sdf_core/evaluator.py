@@ -537,7 +537,8 @@ class DeterministicEvaluator:
             completed = sandbox.run(process_argv, env=_check_env(safe_path))
         except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
             return self._inconclusive(attempt_id, index, rendered, criterion,
-                                      f"check could not run: {type(exc).__name__}: {exc}"[:500])
+                                      f"check could not run: {type(exc).__name__}: {exc}"[:500],
+                                      runner=self.runner)
         if completed.timed_out:
             return self._inconclusive(attempt_id, index, rendered, criterion,
                                       (completed.stderr or "") + f"\ntimeout after {timeout:g}s", completed.stdout,

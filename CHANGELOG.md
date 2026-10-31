@@ -18,6 +18,13 @@
   larger values) and an `int` result. A single `add(2, 3) == 5` is not enough.
 - GitHub Actions are pinned to commit SHAs. `.github/dependabot.yml` watches
   `github-actions` and `uv`.
+- Evaluator checks that run in `e2b-box` are not pulled back onto the host.
+  `pull` refuses a non-git Attempt workspace unless `--force`, and it would
+  copy files the check wrote into the host workspace. `e2b-box exec` exits 1
+  when the remote command fails while still printing `{"ok": true, "exitCode":
+  ...}`; that exit code is the check result. A check that could not be
+  measured stays `INCONCLUSIVE` and records the backend it attempted.
+  `SDF_SANDBOX_ROOT` is not forwarded into the box.
 
 ### Breaking API changes
 
