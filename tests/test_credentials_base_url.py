@@ -16,8 +16,8 @@ DUMMY_ANTHROPIC = "sk-ant-dummy-0123456789abcdef"
 DUMMY_OPENAI = "sk-openai-dummy-fedcba9876543210"
 
 AGENTS = {
-    "claude": ("SDF_ANTHROPIC_API_KEY", DUMMY_ANTHROPIC, "SDF_ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"),
-    "codex": ("SDF_OPENAI_API_KEY", DUMMY_OPENAI, "SDF_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+    "claude": ("ANTHROPIC_API_KEY", DUMMY_ANTHROPIC, "ANTHROPIC_BASE_URL", "ANTHROPIC_BASE_URL"),
+    "codex": ("OPENAI_API_KEY", DUMMY_OPENAI, "OPENAI_BASE_URL", "OPENAI_BASE_URL"),
 }
 
 
@@ -124,11 +124,11 @@ def test_unreachable_or_insecure_base_url_is_rejected_naming_the_variable(agent,
 )
 def test_rejection_explains_why(url, reason):
     with pytest.raises(CredentialConfigError, match=reason):
-        resolve_credential_plan("claude", _env("claude", SDF_ANTHROPIC_BASE_URL=url))
+        resolve_credential_plan("claude", _env("claude", ANTHROPIC_BASE_URL=url))
 
 
 def test_172_outside_private_range_is_public():
-    plan = resolve_credential_plan("claude", _env("claude", SDF_ANTHROPIC_BASE_URL="https://172.32.0.1/v1"))
+    plan = resolve_credential_plan("claude", _env("claude", ANTHROPIC_BASE_URL="https://172.32.0.1/v1"))
     assert plan.set_variables["ANTHROPIC_BASE_URL"] == "https://172.32.0.1/v1"
 
 
@@ -140,24 +140,26 @@ def test_hostnames_are_not_resolved(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", _no_dns)
     monkeypatch.setattr(socket, "gethostbyname", _no_dns)
-    plan = resolve_credential_plan("codex", _env("codex", SDF_OPENAI_BASE_URL="https://api.example.com/v1"))
+    plan = resolve_credential_plan("codex", _env("codex", OPENAI_BASE_URL="https://api.example.com/v1"))
     assert plan.set_variables["OPENAI_BASE_URL"] == "https://api.example.com/v1"
 
 
-# --- Base URL is an api-key-mode feature; shell variables never reach a plan --
+# --- Base URL is an api-key-mode feature of this kind only --------------------
 
 
 @pytest.mark.parametrize("agent", AGENTS)
-def test_shell_base_url_never_reaches_a_plan(agent):
-    _, _, _, target = AGENTS[agent]
-    env = _env(agent, ANTHROPIC_BASE_URL="https://shell.example.com", OPENAI_BASE_URL="https://shell.example.com")
+def test_only_this_kinds_base_url_is_applied(agent):
+    _, _, source, target = AGENTS[agent]
+    own = "https://own.example.com/v1"
+    other_name = "OPENAI_BASE_URL" if source == "ANTHROPIC_BASE_URL" else "ANTHROPIC_BASE_URL"
+    env = _env(agent, **{source: own, other_name: "https://other.example.com"})
     plan = resolve_credential_plan(agent, env)
-    assert target not in plan.set_variables
-    assert "https://shell.example.com" not in repr(plan)
+    assert plan.set_variables[target] == own
+    assert "https://other.example.com" not in plan.set_variables.values()
 
 
 def test_other_agents_base_url_does_not_apply():
-    plan = resolve_credential_plan("claude", _env("claude", SDF_OPENAI_BASE_URL="https://api.example.com"))
+    plan = resolve_credential_plan("claude", _env("claude", OPENAI_BASE_URL="https://api.example.com"))
     assert "ANTHROPIC_BASE_URL" not in plan.set_variables
     assert "OPENAI_BASE_URL" not in plan.set_variables
 
@@ -167,13 +169,13 @@ def test_base_url_never_reaches_a_subscription_plan():
     env = {
         "SDF_CREDENTIAL_MODE_CLAUDE": "subscription",
         "SDF_CONNECTION_CLAUDE": "work",
-        "SDF_ANTHROPIC_BASE_URL": "https://api.example.com",
+        "ANTHROPIC_BASE_URL": "https://api.example.com",
     }
     material = ConnectionMaterial({"CLAUDE_CODE_OAUTH_TOKEN": "oauth-dummy"})
-    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_BASE_URL"):
+    with pytest.raises(CredentialConfigError, match="ANTHROPIC_BASE_URL"):
         resolve_credential_plan("claude", env, read_connection=lambda agent, cid: material)
     # Without a base URL the plan still strips the provider's base URL name.
-    del env["SDF_ANTHROPIC_BASE_URL"]
+    del env["ANTHROPIC_BASE_URL"]
     plan = resolve_credential_plan("claude", env, read_connection=lambda agent, cid: material)
     assert "ANTHROPIC_BASE_URL" not in plan.set_variables
     assert "ANTHROPIC_BASE_URL" in plan.strip_variables

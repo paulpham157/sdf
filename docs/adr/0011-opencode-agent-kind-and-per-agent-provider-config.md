@@ -3,10 +3,12 @@
 Status: accepted
 
 > **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
-> Vultr Serverless Inference is an example OpenAI-compatible endpoint (base
-> URL, model id, and OpenCode's local provider id `vultr/`), not an API
-> family. Egress and `attempts.provider` follow the configured host.
-> `codex` requires the OpenAI Responses API, not Chat Completions only.
+> LLM URL, key and model are the allow-listed names in that ADR
+> (`OPENCODE_BASE_URL`, `OPENCODE_API_KEY`, `OPENCODE_MODEL`, and the same
+> pattern for the other kinds). `SDF_*` key/URL/model names, `*_API_KEY_ENV`
+> and `VULTR_INFERENCE_API_KEY` are not credentials. OpenCode has no default
+> host. `codex` requires the OpenAI Responses API, not Chat Completions only.
+> The tables below that name `SDF_*` or a Vultr default are historical.
 
 SDF adds `opencode` as an agent kind that talks to any OpenAI-compatible
 endpoint, with Vultr Serverless Inference (`https://api.vultrinference.com/v1`,
@@ -36,17 +38,9 @@ rules (explicit `api-key` mode, no fallback, key only via the environment):
 
 - `opencode` supports only `api-key` mode; `SDF_CREDENTIAL_MODE_OPENCODE=subscription`
   is a configuration error, never a silent switch.
-- Every agent kind's default key variable is an `SDF_*` name:
-  `SDF_<PROVIDER>_API_KEY` for the native CLIs (`SDF_ANTHROPIC_API_KEY`,
-  `SDF_OPENAI_API_KEY`) and `SDF_<AGENT>_API_KEY` for agents with a configurable
-  provider (`SDF_OPENCODE_API_KEY`, `SDF_PI_API_KEY` in ADR 0012). A provider's
-  own variable (e.g. `VULTR_INFERENCE_API_KEY`) is read only when an
-  `SDF_<AGENT>_API_KEY_ENV` names it.
-- A `*_API_KEY_ENV` name is read instead of the default variable, never in
-  addition to it: an unset named variable fails closed. The name must end in
-  `_API_KEY` and may not be a shell provider variable (`OPENAI_API_KEY`, ...),
-  nor an `E2B_`, `DAYTONA_`, `HERDR_`, `SDF_CREDENTIAL_MODE_` or `SDF_CONNECTION_`
-  variable. Naming a key variable in `subscription` mode is an error.
+- Each kind's key, base URL and model are the allow-listed names in ADR 0034
+  (`ANTHROPIC_*`, `OPENAI_*`, `OPENCODE_*`, and the same pattern for Pi, Qwen
+  and Goose). `VULTR_INFERENCE_API_KEY` and `*_API_KEY_ENV` are not read.
 - The OpenCode config is seeded at sandbox creation with one custom
   `@ai-sdk/openai-compatible` provider whose `apiKey` is the literal
   `{env:NAME}`; the key value is never written to a file or command line.

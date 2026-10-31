@@ -67,7 +67,7 @@ def _secrets(material_value: str) -> dict[str, str]:
     for name, value in tokens.items():
         if isinstance(value, str) and len(value) >= 12:
             secrets[f"CODEX_AUTH_JSON.tokens.{name}"] = value
-    for name in ("E2B_API_KEY", "SDF_ANTHROPIC_API_KEY", "SDF_OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+    for name in ("E2B_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         if len(ENV.get(name, "")) >= 12:
             secrets[name] = ENV[name]
     return secrets

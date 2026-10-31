@@ -48,9 +48,16 @@ It is hermetic: no secrets, no `SDF_LIVE_*` flags, no provider keys.
 - `pip-audit (uv.lock)`: audits the exact hashed set from `uv export --locked
   --all-groups`; any known vulnerability fails. Fix by upgrading the package
   (`uv lock --upgrade-package <name>`), not by ignoring the advisory.
-- `gitleaks (full history)`: pinned, checksum-verified binary, `--redact`.
-  `.gitleaksignore` holds fingerprints of verified dummy test fixtures only;
-  never paste a value there. Locally: `gitleaks git . --redact`.
+- `gitleaks (full history)`: pinned, checksum-verified gitleaks 8.30.1,
+  `--redact`. A pull request scans that PR's commits (`base..head`). A push
+  to `main` scans the ancestry of the pushed commit. The weekly schedule
+  scans every branch in a separate job, `gitleaks (all branches, scheduled)`,
+  which reports findings and does not gate merges. The pull-request job keeps
+  the name `gitleaks (full history)` because the `main` ruleset requires that
+  check. `.gitleaksignore` holds fingerprints of verified dummy test fixtures
+  only; never paste a value there. `gitleaks git . --redact` with no
+  `--log-opts` scans every local ref; pass an explicit `--log-opts` range to
+  match the pull-request job.
 
 Keep `uv.lock` in sync (`uv lock`); CI fails on a stale lock. A green CI run
 proves only these hermetic contracts. Live tests are skipped there and remain
@@ -89,6 +96,17 @@ use the wrapper so the local `.env` is loaded:
 cp .env.example .env
 scripts/e2b-env.sh e2b-box doctor
 ```
+
+`e2b-box` is provided by the herdr-e2b plugin (id `e2b-dev.herdr-e2b`, v0.5.0).
+Install it only for subscription Credential Mode or for the `e2b-box` commands
+in this section. Api-key mode does not use the plugin.
+
+```bash
+herdr plugin install --yes --ref v0.5.0 e2b-dev/herdr-e2b-sandbox
+```
+
+The GitHub repository is `e2b-dev/herdr-e2b-sandbox`. Passing the plugin id as
+`e2b-dev/herdr-e2b` fails with "Repository not found".
 
 `E2B_DOMAIN` is a bare cluster domain such as `e2b.dev` or `e2b.app`; the SDK
 adds the `api.` prefix. Do not set it to `api.e2b.app`.
@@ -164,11 +182,10 @@ a private mapping). A green unit suite without that gate is not live evidence.
   Skipped without the gates.
 - A live agents loop on the example OpenAI-compatible endpoint
   (`SDF_LIVE_E2B=1` + `SDF_LIVE_VULTR_AGENTS=1` or a subset such as `pi` +
-  `E2B_API_KEY` + `VULTR_INFERENCE_API_KEY`) must record the same, plus the
+  `E2B_API_KEY` + that kind's allow-listed API key and base URL) must record the same, plus the
   served model (Pi: `served_models == ["glm-5.3"]`). Those gate names are
-  historical; the endpoint is OpenAI-compatible, not a Vultr protocol
-  (ADR 0034). Codex on that host must be a Responses API. The test maps the
-  key through `SDF_<AGENT>_API_KEY_ENV`. It uses the prebuilt
+  historical; the endpoint is whatever `*_BASE_URL` names, not a Vultr protocol
+  (ADR 0034). Codex on a non-OpenAI host must be a Responses API. The test uses the prebuilt
   `SDF_E2B_VULTR_TEMPLATE` (default `sdf-herdr-agents`); only an explicit
   `SDF_E2B_VULTR_BASE_TEMPLATE` (e.g. E2B's public `codex`, Node 20, too old
   for Pi 1.x) bootstraps a bare base. Skipped without the gates.

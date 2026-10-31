@@ -1,0 +1,15 @@
+BENCH python_bus_backpressure
+messages=2000000
+capacity=64
+producers=4
+consumed=2000000
+elapsed_sec=4.359688
+throughput_msgs_per_sec=458748.40
+threads_before=3
+peak_threads=7
+threads_after=1
+peak_queue_depth=64
+rss_before_bytes=10129408
+rss_after_bytes=10129408
+rss_max_bytes=10129408
+pid=183576

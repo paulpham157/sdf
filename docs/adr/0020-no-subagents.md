@@ -32,7 +32,7 @@ All mechanisms live in `sdf_core/subagents.py` and are applied on every turn.
 ### Known limitation: Codex v2 catalog models
 
 With an OpenAI catalog model that has `multi_agent_version: v2` (the default
-when `SDF_CODEX_MODEL` is unset), Codex 0.165.0 still *advertises* the
+when `OPENAI_MODEL` is unset), Codex 0.165.0 still *advertises* the
 `collaboration` tools even when both features are disabled (upstream
 openai/codex#50880). The thread cap of 1 makes every spawn fail, so no
 sub-agent runs, but the model may waste a tool call on it. With non-catalog

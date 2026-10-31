@@ -46,17 +46,17 @@ needs an explicit Credential Mode, `subscription` or `api-key`
 
 OpenCode 2 (`opencode`, `@opencode/cli` pinned `2.2.0`) is a headless agent kind
 (`sdf_core.opencode_runtime.OpenCodeHeadlessRuntime`) that uses any
-OpenAI-compatible endpoint. The example default is Vultr Serverless Inference
-with local provider id `vultr/glm-5.3`; that id is not an API family
-([ADR 0034](docs/adr/0034-openai-or-claude-compatible-llm-transport.md)).
-Base URL, key variable name and model are configurable per
-agent kind ([ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md));
+OpenAI-compatible endpoint. Set `OPENCODE_BASE_URL`, `OPENCODE_API_KEY` and
+optionally `OPENCODE_MODEL` (`<local provider id>/<model>`, default
+`vultr/glm-5.3`; that prefix is the seeded provider id, not a host)
+([ADR 0034](docs/adr/0034-openai-or-claude-compatible-llm-transport.md),
+[ADR 0011](docs/adr/0011-opencode-agent-kind-and-per-agent-provider-config.md));
 each turn runs `opencode run --server` against a private, password-protected
 loopback `opencode serve` ([ADR 0018](docs/adr/0018-opencode-2-and-pi-1-upgrade.md)).
 
 Pi (`pi`, `@earendil-works/pi-coding-agent` pinned `1.4.0`) is a second headless agent kind
-(`sdf_core.pi_runtime.PiHeadlessRuntime`, `pi -p --mode json`) with the same
-example OpenAI-compatible defaults (key in `SDF_PI_API_KEY`, `glm-5.3`); it refuses a workspace
+(`sdf_core.pi_runtime.PiHeadlessRuntime`, `pi -p --mode json`). Set
+`PI_BASE_URL`, `PI_API_KEY` and optionally `PI_MODEL` (default `glm-5.3`). It refuses a workspace
 containing `.pi/` and gets write tools only in a fresh E2B sandbox
 ([ADR 0012](docs/adr/0012-pi-agent-kind.md)).
 
@@ -66,8 +66,9 @@ when the turn ends, times out, or is cancelled
 ([ADR 0019](docs/adr/0019-per-turn-process-containment.md)).
 
 Qwen Code (`qwen`, `0.26.2`) and Goose (`goose`, `1.56.0`) are further
-headless kinds for any OpenAI-compatible endpoint (same example defaults; keys
-`SDF_QWEN_API_KEY`, `SDF_GOOSE_API_KEY` or a name in `SDF_<AGENT>_API_KEY_ENV`).
+headless kinds for any OpenAI-compatible endpoint (`QWEN_BASE_URL` /
+`QWEN_API_KEY` / `QWEN_MODEL`, and `GOOSE_BASE_URL` / `GOOSE_API_KEY` /
+`GOOSE_MODEL`).
 They refuse workspaces carrying their project config and run read-only outside
 a fresh E2B sandbox ([ADR 0013](docs/adr/0013-openai-compatible-headless-agent-kinds.md)).
 

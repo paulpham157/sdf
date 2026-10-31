@@ -35,6 +35,18 @@
 
 ### Breaking API changes
 
+- **LLM credentials use one allow-listed name per value (ADR 0034).**
+  Claude reads `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`.
+  Codex reads `OPENAI_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_MODEL`.
+  Pi, Qwen, OpenCode and Goose read `PI_*`, `QWEN_*`, `OPENCODE_*` and
+  `GOOSE_*` the same way. `SDF_*_API_KEY`, `SDF_*_BASE_URL`, `SDF_*_MODEL`,
+  `*_API_KEY_ENV` and `VULTR_INFERENCE_API_KEY` are not read.
+  Unset Claude and Codex base URLs stay the official APIs. Headless kinds
+  have no default host and fail closed without `*_BASE_URL` and `*_API_KEY`.
+  OpenCode's title model is the same id as `OPENCODE_MODEL` (default
+  `vultr/glm-5.3`, a local provider prefix). `SDF_HERDR_CODEX_MODEL` is no
+  longer an alias.
+
 - **Artifacts and Evidence are bound to immutable Attempt revisions (#62, ADR 0032).**
   - Migration `0023_attempt_revisions` adds `attempt_revisions` and nullable
     `revision_id` / `tree_sha256` on `artifacts` and `evidence`. Existing rows

@@ -5,11 +5,19 @@ on:
   push:
     branches: [main]
   schedule:
-    # Weekly, Monday 03:17 UTC: picks up newly published advisories on main.
+    # Weekly, Monday 03:17 UTC: picks up newly published advisories on main
+    # and runs the all-branch gitleaks backstop (that job does not gate PRs).
     - cron: "17 3 * * 1"
 
 permissions:
   contents: read
+
+# Both gitleaks jobs install this exact binary. A custom --log-opts replaces
+# gitleaks' defaults, so scoped scans repeat --full-history and
+# --diff-filter=tuxdb themselves (see sources/git.go in v8.30.1).
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
@@ -49,13 +57,149 @@ jobs:
         # Fails on any known vulnerability; audits the exact locked, hashed set without resolving.
         run: uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/requirements.txt" --require-hashes --disable-pip --progress-spinner off
 
+  # Job name is the ruleset check context on main ("gitleaks (full history)").
+  # Pull requests and pushes scan one line of history; the scheduled job below
+  # is the all-branch backstop and must stay a different check name.
   gitleaks:
     name: gitleaks (full history)
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      GITLEAKS_VERSION: 8.30.1
-      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # fetch-depth 0 would download every branch. Depth 1 plus the
+          # unshallow in the scan step fetches this event's commit and its
+          # ancestors, and no other ref.
+          fetch-depth: 1
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan this pull request or main
+        # --redact keeps any finding's value out of the log; .gitleaksignore
+        # lists verified test-fixture fingerprints only.
+        env:
+          GITLEAKS_EVENT: ${{ github.event_name }}
+          GITLEAKS_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITLEAKS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITLEAKS_PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          is_sha() {
+            [[ "$1" =~ ^[0-9a-fA-F]{40}$ || "$1" =~ ^[0-9a-fA-F]{64}$ ]]
+          }
+
+          if ! is_sha "${GITHUB_SHA}"; then
+            echo "::error::gitleaks: github.sha is not a commit id; refusing to scan"
+            exit 1
+          fi
+          if [[ "$(git rev-parse --is-shallow-repository)" != "true" ]]; then
+            echo "::error::gitleaks: checkout is not shallow, so other branches may already be present; refusing to scan"
+            exit 1
+          fi
+          # Pass the commit id as the refspec. A bare `git fetch --unshallow origin`
+          # uses the remote's default refspec (+refs/heads/*) and downloads every branch.
+          git fetch --no-tags --unshallow origin "${GITHUB_SHA}"
+          if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+            echo "::error::gitleaks: history is still shallow; refusing to scan"
+            exit 1
+          fi
+
+          ensure_commit() {
+            local label="$1"
+            local sha="$2"
+            if ! is_sha "${sha}"; then
+              echo "::error::gitleaks: ${label} is missing or not a commit SHA; refusing to scan"
+              exit 1
+            fi
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              if ! git fetch --no-tags origin "${sha}"; then
+                echo "::error::gitleaks: ${label} ${sha} could not be fetched; refusing to scan"
+                exit 1
+              fi
+            fi
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              echo "::error::gitleaks: ${label} ${sha} is not in this checkout; refusing to scan"
+              exit 1
+            fi
+          }
+
+          # Branch and tag refs are what `git log --all` walks. Keep them off
+          # this job so a dropped --log-opts cannot see another branch.
+          # Run this after every fetch: `git fetch origin <sha>` must not
+          # create refs/remotes/origin/* for other branches.
+          refuse_extra_refs() {
+            local unexpected=""
+            case "${GITLEAKS_EVENT}" in
+              pull_request)
+                unexpected="$(git for-each-ref --format='%(refname)' refs/tags refs/remotes/origin)"
+                ;;
+              push)
+                if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+                  echo "::error::gitleaks: push scan only supports refs/heads/main (got ${GITHUB_REF}); refusing to scan"
+                  exit 1
+                fi
+                unexpected="$(git for-each-ref --format='%(refname)' refs/tags refs/remotes/origin | grep -vx 'refs/remotes/origin/main' || true)"
+                ;;
+              *)
+                echo "::error::gitleaks: gating scan does not run for event ${GITLEAKS_EVENT}; refusing to scan"
+                exit 1
+                ;;
+            esac
+            if [[ -n "${unexpected}" ]]; then
+              echo "::error::gitleaks: checkout has branch or tag refs outside this event; refusing to scan"
+              echo "${unexpected}"
+              exit 1
+            fi
+          }
+
+          log_opts=""
+          range_count=""
+          case "${GITLEAKS_EVENT}" in
+            pull_request)
+              ensure_commit "pull request base" "${GITLEAKS_BASE_SHA}"
+              ensure_commit "pull request head" "${GITLEAKS_HEAD_SHA}"
+              # Two dots: commits reachable from the PR head and not from the
+              # base tip recorded on the event. Three dots would also walk
+              # commits that are only on the base. No --first-parent, so a
+              # merge keeps the commits on every parent. --full-history matches
+              # gitleaks' default walk (a custom --log-opts drops it).
+              log_opts="--full-history --diff-filter=tuxdb ${GITLEAKS_BASE_SHA}..${GITLEAKS_HEAD_SHA}"
+              range_count="$(git rev-list --count "${GITLEAKS_BASE_SHA}..${GITLEAKS_HEAD_SHA}")"
+              ;;
+            push)
+              ensure_commit "pushed main commit" "${GITLEAKS_PUSH_SHA}"
+              log_opts="--full-history --diff-filter=tuxdb ${GITLEAKS_PUSH_SHA}"
+              range_count="$(git rev-list --count "${GITLEAKS_PUSH_SHA}")"
+              ;;
+          esac
+          refuse_extra_refs
+
+          if [[ -z "${log_opts}" || "${range_count}" == "" ]]; then
+            echo "::error::gitleaks: empty scan range; refusing to scan"
+            exit 1
+          fi
+          case " ${log_opts} " in
+            *" --all "*)
+              echo "::error::gitleaks: gating scan must not pass --all"
+              exit 1
+              ;;
+          esac
+
+          echo "gitleaks event=${GITLEAKS_EVENT} commits=${range_count} log-opts=${log_opts}"
+          "$RUNNER_TEMP/gitleaks" git . --redact --no-banner --exit-code 1 --log-opts="${log_opts}"
+
+  # Not a required check. Findings fail this scheduled run so they show up in
+  # Actions; they do not fail the pull-request check above.
+  gitleaks-all-branches:
+    name: gitleaks (all branches, scheduled)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,7 +210,25 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
-      - name: Scan full git history
-        # --redact keeps any finding's value out of the log; .gitleaksignore
-        # lists verified test-fixture fingerprints only.
-        run: '"$RUNNER_TEMP/gitleaks" git . --redact --no-banner --exit-code 1'
+      - name: Scan every fetched branch
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+            echo "::error::gitleaks: scheduled scan requires a full clone; refusing to scan"
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::error::gitleaks: scheduled scan did not fetch origin/main; refusing to scan"
+            exit 1
+          fi
+          branch_count="$(git for-each-ref --format='%(refname)' refs/remotes/origin | wc -l)"
+          branch_count="${branch_count//[[:space:]]/}"
+          if [[ "${branch_count}" -lt 1 ]]; then
+            echo "::error::gitleaks: scheduled scan fetched no remote branches; refusing to scan"
+            exit 1
+          fi
+          echo "gitleaks scheduled scan of ${branch_count} remote branches (--all)"
+          # Same flags gitleaks uses when --log-opts is omitted, written out so
+          # this backstop cannot silently change if the default changes.
+          "$RUNNER_TEMP/gitleaks" git . --redact --no-banner --exit-code 1 \
+            --log-opts="--full-history --all --diff-filter=tuxdb"
