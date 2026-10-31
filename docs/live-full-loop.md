@@ -8,13 +8,23 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 - The **public** HTTP run path selects a real sandboxed agent when
   `SDF_RUN_ADAPTER=live` (alias `herdr`): codex, claude (Herdr) or opencode,
   pi, qwen, goose (headless), built from main's per-agent configuration (ADR 0023).
-- With no other configuration every agent runs on Vultr Inference
-  (`VULTR_INFERENCE_API_KEY`, model `glm-5.3`).
-- **Egress:** E2B sandboxes use `agent_sandbox.DEFAULT_NETWORK`, so they reach
-  only the Vultr Inference host, with all other egress denied and no public
-  inbound traffic. Add hosts with `SDF_RUN_EGRESS_ALLOW` (subscription modes
-  need their vendor hosts). Daytona cannot lock egress at creation and is refused
-  unless `SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS=1`.
+- With no other configuration the headless OpenAI-family agents (`opencode`,
+  `pi`, `qwen`, `goose`) use the example OpenAI-compatible endpoint
+  (`https://api.vultrinference.com/v1`, model `glm-5.3`). `/run` Codex uses
+  that endpoint only when its key variable is `VULTR_INFERENCE_API_KEY`
+  (the name selected when no `SDF_*` key is set). `SDF_OPENAI_API_KEY` or
+  another `*_API_KEY_ENV`, with no base URL, stays on `https://api.openai.com/v1`.
+  That example host is not a protocol
+  ([ADR 0034](adr/0034-openai-or-claude-compatible-llm-transport.md)).
+  `claude` with no base URL uses `https://api.anthropic.com` and
+  `SDF_ANTHROPIC_API_KEY`. The example key is not injected for Claude unless
+  `SDF_ANTHROPIC_BASE_URL` is set. `codex` requires
+  the OpenAI Responses API, not Chat Completions only.
+- **Egress:** E2B sandboxes allow the hostname of the resolved base URL and
+  deny every other outbound host, with no public inbound traffic. Add hosts
+  with `SDF_RUN_EGRESS_ALLOW` (subscription modes that need further vendor
+  hosts still list them there). Daytona cannot lock egress at creation and is
+  refused unless `SDF_RUN_DAYTONA_UNRESTRICTED_EGRESS=1`.
 - Evidence is Attempt-bound and evaluator-derived (not agent self-report).
   The request names **check ids** only (`"criterion_checks": {"<criterion>":
   ["<id>"]}`); argv comes from the server registry (ADR 0025), and checks run
@@ -43,7 +53,7 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_RUN_AGENT` | `codex` (default), `claude`, `opencode`, `pi`, `qwen`, `goose` |
 | `SDF_SANDBOX_PROVIDER` | `e2b` (default) or `daytona` (needs `SDF_DAYTONA_SNAPSHOT` + opt-in above) |
 | `SDF_E2B_AGENTS_TEMPLATE` | E2B template (default `agent_sandbox.DEFAULT_TEMPLATE`) |
-| `SDF_CREDENTIAL_MODE_<AGENT>` etc. | Per-agent configuration as on main (ADR 0007); defaults to Vultr |
+| `SDF_CREDENTIAL_MODE_<AGENT>` etc. | Per-agent configuration as on main (ADR 0007). OpenAI-family kinds default to the example OpenAI-compatible endpoint; Claude defaults to the official Messages API (ADR 0034) |
 | `SDF_CODEX_MODEL` | Codex model (`SDF_HERDR_CODEX_MODEL` is a deprecated alias) |
 | `SDF_RUN_EGRESS_ALLOW` | Extra egress hosts, comma-separated |
 | `SDF_FIXTURES_ROOT` | Root that `fixture_dir` must resolve into (default `./fixtures`) |
@@ -60,7 +70,8 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 agent or sandbox.
 
 Live HTTP proof gate: `SDF_LIVE_FULL_LOOP=1` **or** `SDF_LIVE_E2B=1`, plus
-`E2B_API_KEY` and `VULTR_INFERENCE_API_KEY`; choose agents with
+`E2B_API_KEY` and a model key (the example gate still looks for
+`VULTR_INFERENCE_API_KEY`); choose agents with
 `SDF_LIVE_RUN_AGENTS` (default `opencode,pi,codex`). The test kills only
 sandboxes tagged with its own `sdf_attempt_id` before asserting none leaked.
 

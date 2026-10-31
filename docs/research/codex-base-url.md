@@ -1,5 +1,9 @@
 # Codex base URL and API-key auth (ticket #12)
 
+> **ADR 0034.** Codex is the OpenAI-compatible transport and requires the
+> Responses API (`POST /v1/responses`). A Chat Completions-only host is not
+> sufficient. The base URL is still `openai_base_url` in `~/.codex/config.toml`.
+
 Question: does the Codex CLI pinned in `sdf-herdr-agents` take its OpenAI base
 URL from an environment variable or from a config key, and what does an
 API-key `~/.codex/auth.json` look like?

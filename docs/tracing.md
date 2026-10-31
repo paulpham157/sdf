@@ -92,5 +92,6 @@ log line or run to the trace.
   Exceptions record the class name only; a 4xx `HTTPException` is not an
   error span. Add a new key to the allow-list only for ids, enums or numbers.
 - **Tracing never runs in sandboxes.** No exporter, collector or OTEL env var
-  is passed to an agent sandbox; sandbox egress stays Vultr-only.
+  is passed to an agent sandbox; sandbox egress stays the configured LLM host
+  (ADR 0034), not a vendor-wide allowlist.
 - Bind local collectors to `127.0.0.1`.

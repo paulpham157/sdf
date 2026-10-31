@@ -2,6 +2,12 @@
 
 Status: accepted
 
+> **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
+> Vultr Serverless Inference is an example OpenAI-compatible endpoint (base
+> URL, model id, and OpenCode's local provider id `vultr/`), not an API
+> family. Egress and `attempts.provider` follow the configured host.
+> `codex` requires the OpenAI Responses API, not Chat Completions only.
+
 SDF adds `opencode` as an agent kind that talks to any OpenAI-compatible
 endpoint, with Vultr Serverless Inference (`https://api.vultrinference.com/v1`,
 `vultr/glm-5.3`, small model `vultr/glm-5.3-flash`) only as the default. Unlike

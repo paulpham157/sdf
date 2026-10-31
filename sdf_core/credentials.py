@@ -15,7 +15,7 @@ import ipaddress
 import os
 import re
 import socket
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
@@ -98,12 +98,25 @@ CONFLICTING_VARIABLES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-# Vultr Serverless Inference is the example/default OpenCode provider only.
-DEFAULT_OPENCODE_BASE_URL = "https://api.vultrinference.com/v1"
-# Same default endpoint for Pi (ADR-0012); overridable with SDF_PI_BASE_URL.
-DEFAULT_PI_BASE_URL = DEFAULT_OPENCODE_BASE_URL
-# Same default endpoint for Qwen Code and Goose (ADR-0013).
-DEFAULT_OPENAI_COMPATIBLE_BASE_URL = DEFAULT_OPENCODE_BASE_URL
+# Example OpenAI-compatible endpoint (ADR 0034). Vultr Serverless Inference is
+# one host that speaks that API; it is not an API family. Override with
+# ``SDF_<AGENT>_BASE_URL`` / ``SDF_OPENAI_BASE_URL`` and a model id.
+EXAMPLE_OPENAI_HOST = "api.vultrinference.com"
+EXAMPLE_OPENAI_BASE_URL = f"https://{EXAMPLE_OPENAI_HOST}/v1"
+EXAMPLE_OPENAI_MODEL = "glm-5.3"
+# Optional example key *name*. A bare value is never read unless
+# ``SDF_<AGENT>_API_KEY_ENV`` names it (ADR 0011). The /run and coordinator
+# DX paths select this name only when no ``SDF_*`` key is set.
+EXAMPLE_API_KEY_ENV = "VULTR_INFERENCE_API_KEY"
+# Official endpoints used when a kind has no example default and no override.
+# Codex speaks the OpenAI Responses API at this host; Claude speaks Messages.
+OFFICIAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
+OFFICIAL_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+LLM_PROTOCOLS = ("openai", "anthropic")
+# Same example endpoint for OpenCode, Pi, Qwen Code and Goose. Overridable.
+DEFAULT_OPENCODE_BASE_URL = EXAMPLE_OPENAI_BASE_URL
+DEFAULT_PI_BASE_URL = EXAMPLE_OPENAI_BASE_URL
+DEFAULT_OPENAI_COMPATIBLE_BASE_URL = EXAMPLE_OPENAI_BASE_URL
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +146,10 @@ class _AgentSpec:
     # (Pi's turn wrapper unsets every PI_*), so a renamed key there would
     # never reach the agent.
     reserved_key_prefixes: tuple[str, ...] = ()
+    # ADR 0034: exactly one LLM transport. ``responses_api`` is a constraint
+    # inside ``openai`` (Codex requires Responses, not Chat Completions only).
+    protocol: str = "openai"
+    responses_api: bool = False
 
 
 _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
@@ -147,6 +164,7 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             base_url_target="ANTHROPIC_BASE_URL",
             subscription_seeds=MappingProxyType({}),
             api_key_env_variable="SDF_CLAUDE_API_KEY_ENV",
+            protocol="anthropic",
         ),
         "codex": _AgentSpec(
             mode_variable="SDF_CREDENTIAL_MODE_CODEX",
@@ -158,9 +176,11 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
             base_url_target="OPENAI_BASE_URL",
             subscription_seeds=MappingProxyType({"CODEX_AUTH_JSON": "codex-auth-json"}),
             # Codex (since 0.157, still 0.165) ignores OPENAI_BASE_URL and reads ``openai_base_url``
-            # from ~/.codex/config.toml (docs/research/codex-base-url.md).
+            # from ~/.codex/config.toml (docs/research/codex-base-url.md). The host must
+            # implement the OpenAI Responses API (POST /v1/responses), not Chat Completions only.
             base_url_seed="codex-config-base-url",
             api_key_env_variable="SDF_CODEX_API_KEY_ENV",
+            responses_api=True,
         ),
         # OpenCode talks to any OpenAI-compatible endpoint through a custom
         # provider in its config; there is no SDF subscription path for it.
@@ -237,6 +257,86 @@ _AGENTS: Mapping[str, _AgentSpec] = MappingProxyType(
 AGENT_KINDS: tuple[str, ...] = tuple(_AGENTS)
 # Kinds whose plan carries the resolved model as a sandbox variable.
 _MODEL_SEEDED_AGENTS = frozenset({"opencode", "pi", "qwen", "goose"})
+
+
+def protocol_of(agent: str) -> str:
+    """The one LLM transport family for ``agent`` (ADR 0034): ``openai`` or ``anthropic``."""
+
+    return _spec(agent).protocol
+
+
+def responses_api_required(agent: str) -> bool:
+    """True when ``agent`` requires the OpenAI Responses API, not Chat Completions only."""
+
+    return _spec(agent).responses_api
+
+
+def resolved_llm_base_url(agent: str, environ: Mapping[str, str]) -> str:
+    """Base URL the kind will call: explicit override, example default, or official API.
+
+    Does not validate the URL (callers that inject it still use ``_check_base_url``).
+    An unset Codex URL is the official OpenAI API.  ``/run`` writes the example
+    OpenAI-compatible endpoint into ``environ`` only when the key variable is
+    the example name (``VULTR_INFERENCE_API_KEY``).
+    """
+
+    spec = _spec(agent)
+    explicit = environ.get(spec.base_url_source, "").strip()
+    if explicit:
+        return explicit
+    if spec.default_base_url:
+        return spec.default_base_url
+    if spec.protocol == "anthropic":
+        return OFFICIAL_ANTHROPIC_BASE_URL
+    return OFFICIAL_OPENAI_BASE_URL
+
+
+def endpoint_host(url: str) -> str:
+    """Hostname of a base URL, or ``\"\"`` when it has none. Never echoes the URL."""
+
+    try:
+        return (urlsplit(url).hostname or "").rstrip(".").lower()
+    except ValueError:
+        return ""
+
+
+def llm_attempt_provider(agent: str, environ: Mapping[str, str]) -> str:
+    """Provenance label for ``attempts.provider``: ``{protocol}:{host}``.
+
+    The host comes from the configured base URL, else the kind's example or
+    official default. It is never a vendor name such as ``vultr``.
+    """
+
+    host = endpoint_host(resolved_llm_base_url(agent, environ)) or "unspecified"
+    return f"{protocol_of(agent)}:{host}"[:120]
+
+
+def inference_allow_hosts(environ: Mapping[str, str], kinds: Iterable[str]) -> list[str]:
+    """Egress hosts for the given kinds' resolved LLM endpoints, in order."""
+
+    hosts: list[str] = []
+    for kind in kinds:
+        host = endpoint_host(resolved_llm_base_url(kind, environ))
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts or [EXAMPLE_OPENAI_HOST]
+
+
+def inference_network(environ: Mapping[str, str], kinds: Iterable[str]) -> dict[str, object]:
+    """E2B network lock: the resolved LLM host(s), everything else denied."""
+
+    return {
+        "allow_out": inference_allow_hosts(environ, kinds),
+        "deny_out": ["0.0.0.0/0"],
+        "allow_public_traffic": False,
+    }
+
+
+def _spec(agent: str) -> _AgentSpec:
+    spec = _AGENTS.get(agent)
+    if spec is None:
+        raise CredentialConfigError(f"unknown agent kind {agent!r}; expected one of: {', '.join(_AGENTS)}")
+    return spec
 
 
 @dataclass(frozen=True, slots=True)

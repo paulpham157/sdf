@@ -158,6 +158,10 @@ _Avoid_: auth method, fallback
 The per-agent-kind base URL, key variable name and model(s) an `api-key` Agent Credential uses; the key itself only ever comes from the environment.
 _Avoid_: hard-coded provider, plaintext key
 
+**LLM Transport**:
+The one HTTP API family an agent kind uses to call a model: `openai` (an OpenAI-compatible API; Codex requires the Responses API, not Chat Completions alone) or `anthropic` (the Claude Messages API). A host such as the example Vultr endpoint is a base URL on one of those families, not a third transport (ADR 0034).
+_Avoid_: vendor protocol, Vultr API
+
 **Project Agent Config**:
 Agent configuration an Attempt workspace carries (`.claude/`, `.codex/config.toml`, `opencode.json`, `.opencode/`, `.pi/`, `.qwen/`, `.goose/`, `.env`); untrusted, so it is ignored (Claude, OpenCode), outranked by pinned invocation overrides (Codex approval/sandbox policy) or the workspace is refused (Pi, Qwen Code, Goose).
 _Avoid_: repo settings, trusted config

@@ -27,8 +27,10 @@ from sqlalchemy.orm import Session
 from .db import UsageLedgerRow
 from .model import utcnow
 
-# USD per million tokens (input, output).  Operators override or add with
-# ``SDF_PRICE_<MODEL>=<in>,<out>`` (model upper-cased, non-alnum -> ``_``).
+# USD per million tokens (input, output) for the example model id ``glm-5.3``.
+# This is not a vendor invoice and not tied to a host: any other model is
+# priced only through ``SDF_PRICE_<MODEL>=<in>,<out>`` (model upper-cased,
+# non-alnum -> ``_``).  ADR 0034.
 PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     "glm-5.3": (0.75, 3.00),
 }
