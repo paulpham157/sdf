@@ -67,7 +67,7 @@ A pending question recorded in the Decision Graph, raised for a plan approval or
 _Avoid_: prompt, confirmation
 
 **Material Decision Request**:
-A Decision Request an agent marks material, with the consequence of deciding wrongly and at least two options. Until a human resolves it, it holds dispatch, turns, verification, Attempt start/finish and run completion for its scope: the worker's subtask, or the whole Agent Run when the lead asks. No policy resolves it (ADR 0033).
+A Decision Request the agent marks material (with the consequence and at least two options), or one that a deterministic materiality rule matches (deleting data, external sends, spending, credentials, destructive git, shared-schema migrations, network egress, merging). Until a human resolves it, it holds dispatch, turns, verification, Attempt start/finish and run completion for its scope: the worker's subtask, or the whole Agent Run when the lead asks. No policy resolves it. Time spent only waiting for the human does not count toward the run's wall-time cap (ADR 0033).
 _Avoid_: blocking question, urgent request
 
 **Agent Run**:

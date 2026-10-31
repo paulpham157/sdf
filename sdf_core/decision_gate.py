@@ -11,13 +11,16 @@ consequential work for the affected scope:
 * the **lead**'s request blocks the whole run (every subtask, every turn);
 * a run cannot finish ``succeeded`` while any material request is pending.
 
-A request without ``material: true`` is ordinary uncertainty: it is recorded
-and answered as before and blocks nothing.  Materiality is declared by the
-agent in the envelope and stored in the append-only ``agent_messages.meta``
-(never inferred from the question text), so the gate's input is immutable
-and auditable.  Only a human may resolve a material request; any human
-outcome (approved, answered, rejected) lifts the block, and the outcome is
-delivered to the agent as before.
+A request is material when the agent declares it (``material: true``) or
+when a deterministic rule in :mod:`sdf_core.materiality` matches its text;
+rules only upgrade, never downgrade.  A request that is neither is ordinary
+uncertainty: recorded and answered as before, blocking nothing.  The
+classification (``material``, ``materiality_source`` ``agent``/``rule``,
+``matched_rules``) is stored once, at ingest, in the append-only
+``agent_messages.meta``, so the gate's input is immutable and auditable.
+Only a human may resolve a material request; any human outcome (approved,
+answered, rejected) lifts the block, and the outcome is delivered to the
+agent as before.
 """
 
 from __future__ import annotations
@@ -47,6 +50,8 @@ class MaterialRequest:
     scope: str
     consequence: str
     options: tuple[str, ...]
+    source: str = "agent"  # "agent" (declared) or "rule" (sdf_core.materiality)
+    matched_rules: tuple[str, ...] = ()
 
 
 def material_meta(db: Session, request: DecisionRequestRow) -> dict[str, Any] | None:
@@ -92,6 +97,7 @@ def pending_material(db: Session, *, run_id: str | None = None, run_ids: list[st
         found.append(MaterialRequest(
             request.id, request.run_id or "", request.requested_by, _scope(db, request),
             str(meta.get("consequence") or ""), tuple(meta.get("options") or ()),
+            str(meta.get("materiality_source") or "agent"), tuple(meta.get("matched_rules") or ()),
         ))
     return found
 
@@ -120,9 +126,11 @@ def material_payload(db: Session, request: DecisionRequestRow) -> dict[str, Any]
 
     meta = material_meta(db, request)
     if meta is None:
-        return {"material": False}
+        return {"material": False, "materiality_source": None, "matched_rules": []}
     return {
         "material": True,
+        "materiality_source": meta.get("materiality_source") or "agent",
+        "matched_rules": list(meta.get("matched_rules") or []),
         "consequence": meta.get("consequence"),
         "authority": "human",
         "blocks": _scope(db, request) if request.status == "pending" else None,

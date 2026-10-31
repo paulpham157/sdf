@@ -27,6 +27,7 @@ from tests.auth_support import client_as
 
 QUESTION = "Should deleted accounts keep their invoices?"
 CONSEQUENCE = "Keeping them retains personal data; deleting them breaks tax reporting."
+BENIGN = "Should the new helper be called add or plus?"  # matches no materiality rule
 
 
 @pytest.fixture()
@@ -72,7 +73,8 @@ def _coordinator(db, tmp_path, behaviors, policy=None):
     ), running, created
 
 
-def asks_then_works(*, material: bool, asked_at: dict | None = None):
+def asks_then_works(*, material: bool, asked_at: dict | None = None, question: str = QUESTION,
+                    linger_s: float = 0.0):
     """Asks a question, then (wrongly) goes ahead anyway: fixes the code and reports done in the same turn."""
 
     def behave(fake, prompt, turn):
@@ -82,7 +84,7 @@ def asks_then_works(*, material: bool, asked_at: dict | None = None):
             if asked_at is not None:
                 asked_at[fake.spec.agent_id] = turn
             key = message["body"].split("subtask ", 1)[1].split(".", 1)[0]
-            args = ["request-decision", QUESTION, "--option", "keep", "--option", "delete"]
+            args = ["request-decision", question, "--option", "keep", "--option", "delete"]
             if material:
                 args += ["--material", "--consequence", CONSEQUENCE]
             out = fake.msg(*args)
@@ -90,14 +92,17 @@ def asks_then_works(*, material: bool, asked_at: dict | None = None):
             name, content = FIXES[key]
             (fake.ws / name).write_text(content)
             fake.msg("report", "--status", "done", f"Subtask {key} done.")
+            time.sleep(linger_s)  # still inside its turn: the run is working, not held
     return behave
 
 
-def _config(wall: float = 60) -> RunConfig:
-    return RunConfig(poll_interval_s=0.01, stall_s=0.3, max_wall_s=wall, evidence_mode="synthetic")
+def _config(wall: float = 60, hold: float = 3600) -> RunConfig:
+    return RunConfig(poll_interval_s=0.01, stall_s=0.3, max_wall_s=wall, max_material_hold_s=hold,
+                     evidence_mode="synthetic")
 
 
-def _resolve_when_pending(engine, plan_id: str, outcome: str, resolution: str = "", seen: dict | None = None):
+def _resolve_when_pending(engine, plan_id: str, outcome: str, resolution: str = "", seen: dict | None = None,
+                          wait_s: float = 0.3):
     """From another session (like the API): wait for a pending material request, then resolve it as a human."""
 
     def work():
@@ -108,7 +113,7 @@ def _resolve_when_pending(engine, plan_id: str, outcome: str, resolution: str = 
                 runs = list(other.scalars(select(AgentRunRow.id).where(AgentRunRow.plan_id == plan_id)))
                 gate = pending_material(other, run_ids=runs)
                 if gate:
-                    time.sleep(0.3)  # several coordinator polls while blocked
+                    time.sleep(wait_s)  # several coordinator polls while blocked
                     if seen is not None:
                         seen["add_evidence_after_wait"] = list(other.scalars(select(EvidenceRow.criterion)))
                     resolve_request(other, gate[0].request_id, outcome=outcome, resolved_by="hung",
@@ -153,9 +158,9 @@ def test_pending_material_request_blocks_its_subtask_and_never_completes(db, fix
     coordinator, running, created = _coordinator(db, tmp_path, {
         "lead": lead_behavior_with_ping, "worker-2": worker2,
         "worker-1": asks_then_works(material=True, asked_at=asked_at)})
-    run = coordinator.execute(coordinator.create_run(plan.id, _config(wall=2.5)).id)
-    # Nobody decided: the run waited for the human until the wall cap; it never succeeded.
-    assert run.status == "failed" and "wall" in run.error
+    run = coordinator.execute(coordinator.create_run(plan.id, _config(wall=60, hold=1.5)).id)
+    # Nobody decided: the run waited for the human until the hold cap; it never succeeded.
+    assert run.status == "failed" and "material decision hold cap" in run.error, run.error
     subs = run.summary["subtasks"]
     assert subs["mul"]["verdict"] == "PASS"  # the other subtask was not blocked
     assert subs["add"]["verdict"] is None and subs["add"]["attempts"] == []  # never verified
@@ -196,7 +201,7 @@ def test_pending_material_request_blocks_its_subtask_and_never_completes(db, fix
 def test_non_material_request_does_not_block(db, fixture, tmp_path):
     plan = _approved(db, fixture, "PLAN-G2")
     coordinator, running, _ = _coordinator(db, tmp_path, {
-        "lead": lead_behavior, "worker": worker_behavior(), "worker-1": asks_then_works(material=False)})
+        "lead": lead_behavior, "worker": worker_behavior(), "worker-1": asks_then_works(material=False, question=BENIGN)})
     run = coordinator.execute(coordinator.create_run(plan.id, _config()).id)
     assert run.status == "succeeded", run.error
     request = db.scalar(select(DecisionRequestRow).where(DecisionRequestRow.run_id == run.id))
@@ -260,8 +265,8 @@ def test_lead_material_request_holds_the_whole_run_and_completion(engine, db, fi
                 fake.msg("report", "--status", "done", "All verified.")
 
     coordinator, running, _ = _coordinator(db, tmp_path, {"lead": lead, "worker": worker_behavior()})
-    run = coordinator.execute(coordinator.create_run(plan.id, _config(wall=2)).id)
-    assert run.status == "failed" and "wall" in run.error  # all PASS, yet no success while pending
+    run = coordinator.execute(coordinator.create_run(plan.id, _config(hold=1.5)).id)
+    assert run.status == "failed" and "hold cap" in run.error, run.error  # all PASS, yet no success while pending
     [entry] = run.summary["material_decisions"]
     assert entry["scope"] == "run" and "completion" in entry["held"]
     for key in ("add", "mul"):
@@ -315,10 +320,10 @@ def test_material_envelope_validation_and_policy_cannot_resolve(db, fixture):
     db.commit()
     request = db.get(DecisionRequestRow, res.decision_request_id)
     assert res.message.meta == {"options": ["keep", "delete"], "material": True, "consequence": CONSEQUENCE,
-                                "authority": "human"}
+                                "authority": "human", "materiality_source": "agent", "matched_rules": []}
     assert [g.scope for g in pending_material(db, run_id=request.run_id)] == ["add"]
     # A configured policy never resolves a material decision (it could only pick a default for the agent).
-    policy = RuleDecisionPolicy([("invoices", "answered", "keep them")])
+    policy = RuleDecisionPolicy([("invoices", "answered", "keep them"), ("helper", "answered", "x")])
     assert policy.decide(request) is not None  # the rule matches the text...
     with pytest.raises(PlanGateError, match="only by a human"):
         resolve_request(db, request.id, outcome="answered", resolved_by="rules", resolver_kind="policy",
@@ -326,7 +331,7 @@ def test_material_envelope_validation_and_policy_cannot_resolve(db, fixture):
     db.rollback()
     assert db.get(DecisionRequestRow, request.id).status == "pending"
     # A non-material request from the other worker blocks nothing and may still be policy-answered.
-    res2 = hub.ingest("worker-2", _env(3, options=["x", "y"]), sandbox_id="sbx-w2")
+    res2 = hub.ingest("worker-2", _env(3, body=BENIGN, options=["x", "y"]), sandbox_id="sbx-w2")
     resolve_request(db, res2.decision_request_id, outcome="answered", resolved_by="rules", resolver_kind="policy",
                     resolution="x")
     db.commit()
@@ -377,14 +382,94 @@ def test_api_reports_materiality_scope_and_human_resolution(tmp_path):
         hub = MessageHub(db, run_id, {"worker-1": Member("worker-1", "worker", "add", "sbx-w1")})
         hub.ingest("worker-1", _env(7, options=["keep", "delete"], material=True, consequence=CONSEQUENCE),
                    sandbox_id="sbx-w1")
+        hub.ingest("worker-1", _env(8, body="May I force-push to main?", options=["yes", "no"]), sandbox_id="sbx-w1")
+        hub.ingest("worker-1", _env(9, body=BENIGN, options=["add", "plus"]), sandbox_id="sbx-w1")
         db.commit()
     finally:
         db.close()
-    [listed] = operator.get("/decision-requests", params={"run_id": run_id}).json()
+    listed, by_rule, plain = operator.get("/decision-requests", params={"run_id": run_id}).json()
+    assert (by_rule["material"], by_rule["materiality_source"], by_rule["matched_rules"], by_rule["blocks"]) == (
+        True, "rule", ["git.destructive"], "add")
+    assert (plain["material"], plain["materiality_source"], plain["matched_rules"]) == (False, None, [])
     assert (listed["material"], listed["consequence"], listed["authority"], listed["blocks"]) == (
         True, CONSEQUENCE, "human", "add")
+    assert (listed["materiality_source"], listed["matched_rules"]) == ("agent", [])
     resolved = approver.post(f"/decision-requests/{listed['id']}/resolve",
                              json={"outcome": "answered", "resolution": "keep them"})
     assert resolved.status_code == 200
     assert (resolved.json()["status"], resolved.json()["material"], resolved.json()["blocks"]) == (
         "answered", True, None)
+
+
+# --- wall time while held (ADR 0033) ------------------------------------------------------
+
+
+def test_a_long_wait_for_the_human_does_not_count_toward_the_wall_cap(engine, db, fixture, tmp_path):
+    plan = _approved(db, fixture, "PLAN-GW1")
+    coordinator, running, _ = _coordinator(db, tmp_path, {
+        "lead": lead_behavior, "worker": worker_behavior(), "worker-1": asks_then_works(material=True)})
+    # The human takes 2.5 s; the run's wall cap is 2 s.  Held time is not run time.
+    resolver = _resolve_when_pending(engine, plan.id, "approved", "keep them", wait_s=2.5)
+    run = coordinator.execute(coordinator.create_run(plan.id, _config(wall=2)).id)
+    resolver.join()
+    assert run.status == "succeeded", run.error
+    timings = run.summary["timings"]
+    assert timings["material_hold_s"] >= 1.5
+    assert timings["wall_s"] > 2 >= timings["counted_wall_s"]
+    assert abs(timings["wall_s"] - timings["material_hold_s"] - timings["counted_wall_s"]) < 0.3
+    [entry] = run.summary["material_decisions"]
+    assert entry["pending_s"] >= 2 and entry["status"] == "approved"
+    assert running == set()
+
+
+def test_time_outside_a_hold_still_counts_toward_the_wall_cap(db, fixture, tmp_path):
+    # No material request: a slow turn alone exceeds the cap.
+    plan = _approved(db, fixture, "PLAN-GW2")
+    coordinator, running, _ = _coordinator(db, tmp_path, {
+        "lead": lead_behavior, "worker": worker_behavior(),
+        "worker-1": asks_then_works(material=False, question=BENIGN, linger_s=2.0)})
+    run = coordinator.execute(coordinator.create_run(plan.id, _config(wall=1)).id)
+    assert run.status == "failed" and "wall-time cap" in run.error, run.error
+    assert run.summary["timings"]["material_hold_s"] == 0
+
+
+def test_a_turn_still_running_while_a_request_is_pending_counts_toward_the_wall_cap(db, fixture, tmp_path):
+    # The worker asks a material question and keeps working inside the same turn:
+    # the run is not idle-waiting for the human, so that time counts.
+    plan = _approved(db, fixture, "PLAN-GW3")
+    coordinator, running, _ = _coordinator(db, tmp_path, {
+        "lead": lead_behavior, "worker": worker_behavior(),
+        "worker-1": asks_then_works(material=True, linger_s=2.0)})
+    run = coordinator.execute(coordinator.create_run(plan.id, _config(wall=1, hold=60)).id)
+    assert run.status == "failed" and "wall-time cap" in run.error, run.error
+    assert run.summary["timings"]["material_hold_s"] < 1
+
+
+def test_material_hold_cap_is_validated():
+    for bad in (0, -1, 86401, True, "10"):
+        with pytest.raises(ValueError, match="max_material_hold_s"):
+            RunConfig.from_dict({"max_material_hold_s": bad})
+    assert RunConfig.from_dict({"max_material_hold_s": 86400}).max_material_hold_s == 86400
+
+
+# --- rule-based materiality (sdf_core.materiality) ---------------------------------------
+
+
+def test_a_rule_matched_request_holds_its_subtask_and_the_agent_is_told(engine, db, fixture, tmp_path):
+    plan = _approved(db, fixture, "PLAN-GR1")
+    coordinator, running, created = _coordinator(db, tmp_path, {
+        "lead": lead_behavior, "worker": worker_behavior(),
+        # Not declared material, but it asks to force-push.
+        "worker-1": asks_then_works(material=False, question="May I force-push the fix to main?")})
+    seen: dict = {}
+    resolver = _resolve_when_pending(engine, plan.id, "answered", "open a PR instead", seen)
+    run = coordinator.execute(coordinator.create_run(plan.id, _config()).id)
+    resolver.join()
+    assert run.status == "succeeded", run.error
+    assert not ADD_CRITERIA & set(seen["add_evidence_after_wait"])  # held until the human answered
+    [entry] = run.summary["material_decisions"]
+    assert entry["materiality_source"] == "rule" and entry["matched_rules"] == ["git.destructive"]
+    assert "verification:add" in entry["held"] and entry["status"] == "answered"
+    notes = [m.body for m in db.scalars(select(AgentMessageRow).where(
+        AgentMessageRow.run_id == run.id, AgentMessageRow.to_agent == "worker-1", AgentMessageRow.from_agent == "sdf"))]
+    assert any("material by rule (git.destructive)" in n for n in notes)

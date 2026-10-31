@@ -89,6 +89,10 @@ class RunConfig:
     price_out_per_m: float = 3.0
     sandbox_usd_per_s: float = 0.000056
     evidence_mode: str = "live"
+    # ADR 0033: time held by a pending material decision does not count toward
+    # max_wall_s; this caps that held time instead (sandboxes stay alive and
+    # still count toward max_cost_usd).
+    max_material_hold_s: float = 3600.0
 
     def as_dict(self) -> dict[str, Any]:
         out = dict(self.__dict__)
@@ -134,6 +138,9 @@ class RunConfig:
             raise ValueError("max_cost_usd must be in (0, 5]")
         if not 0 < config.max_wall_s <= 7200:
             raise ValueError("max_wall_s must be in (0, 7200]")
+        if isinstance(config.max_material_hold_s, bool) or not isinstance(config.max_material_hold_s, (int, float)) \
+                or not 0 < config.max_material_hold_s <= 86400:
+            raise ValueError("max_material_hold_s must be in (0, 86400]")
         if not 1 <= config.max_turns_per_agent <= 30 or not 1 <= config.max_verify_rounds <= 5:
             raise ValueError("turn / verify caps out of range")
         if config.evidence_mode not in EVIDENCE_MODES:
@@ -190,7 +197,7 @@ Messaging (the sdf MCP tools, or the `sdf-msg` CLI in the shell):
 - send_message / `sdf-msg send <to> <body>`: to a worker id (e.g. worker-1) or "workers".
 - report / `sdf-msg report --status done <summary>`: your final summary to the SDF host.
 - request_decision / `sdf-msg request-decision <question> --option A --option B`: ask the human manager; never assume approval.
-  If the choice is material (materially different outcomes for product, safety or authorization) add `--material --consequence "<what differs>"`: the whole run then waits until a human decides.
+  If the choice is material (materially different outcomes for product, safety or authorization) add `--material --consequence "<what differs>"`: the whole run then waits until a human decides. Requests about deleting data, external sends, spending money, credentials, force-push or pushing to main, schema migrations, network egress or merging are treated as material automatically.
 The SDF host verifies every subtask itself by running its own tests; a worker's report is only a claim.
 """
 LEAD_WAKE = "You have new messages in your SDF inbox. Read them (read_messages) and act on them as the lead, then end your turn."
@@ -202,7 +209,7 @@ Use the `sdf-msg` CLI in your shell for all coordination:
 - `sdf-msg send lead "<text>"` messages the lead; `sdf-msg ask lead "<question>"` asks it something.
 - `sdf-msg report --status done "<what you changed>"` tells the SDF host your subtask is ready; the host then runs its own tests.
 - `sdf-msg request-decision "<question>" --option A --option B` asks the human manager when you need a decision.
-  If the options lead to materially different outcomes (product, safety, authorization), add `--material --consequence "<what differs>"`; your subtask then waits for the human, so do not pick a default yourself.
+  If the options lead to materially different outcomes (product, safety, authorization), add `--material --consequence "<what differs>"`; your subtask then waits for the human, so do not pick a default yourself. Requests about deleting data, external sends, spending money, credentials, force-push or pushing to main, schema migrations, network egress or merging are treated as material automatically.
 Only edit files your assignment names. Do not edit tests. Keep it minimal.
 """
 WORKER_WAKE = "You have new messages: run `sdf-msg read` now and do what they ask. When your subtask is finished, run `sdf-msg report --status done \"<summary>\"` and stop."
@@ -361,6 +368,12 @@ class Coordinator:
         hub: MessageHub | None = None
         core_log: list[dict[str, Any]] = []
         timings: dict[str, float] = {}
+        # ADR 0033: wall time while the run only waits on a pending material
+        # decision (no turn in flight, no host verification) is not counted.
+        held_s = 0.0
+        held_prev = False
+        prev_gate: list[str] = []
+        last_tick = time.monotonic()
         try:
             # Re-checked at run time (the tree may have changed since approval);
             # a refusal fails the run before any sandbox exists.
@@ -424,7 +437,14 @@ class Coordinator:
             self.db.commit()
 
             while True:
-                elapsed = time.monotonic() - started
+                now = time.monotonic()
+                dt, last_tick = now - last_tick, now
+                if held_prev:
+                    held_s += dt
+                for rid in prev_gate:
+                    if rid in gate_log:
+                        gate_log[rid]["pending_s"] = round(gate_log[rid]["pending_s"] + dt, 3)
+                elapsed = now - started - held_s
                 cost = self._cost(agents, config)
                 self.db.refresh(run)
                 if cancel.is_set() or run.cancel_requested_at is not None:
@@ -433,6 +453,10 @@ class Coordinator:
                 if elapsed > config.max_wall_s:
                     error = f"wall-time cap {config.max_wall_s}s reached"
                     break
+                if held_s > config.max_material_hold_s:
+                    error = f"material decision hold cap {config.max_material_hold_s}s reached"
+                    break
+                host_worked = False  # host verification ran this poll (counts as run time)
                 if cost > config.max_cost_usd:
                     error = f"cost cap ${config.max_cost_usd} reached (${cost:.4f})"
                     break
@@ -472,6 +496,15 @@ class Coordinator:
                                 lead_reported = True
                         if res.decision_request_id:
                             self._apply_policy(res.decision_request_id)
+                            meta = res.message.meta or {}
+                            if meta.get("materiality_source") == "rule":
+                                # The agent did not declare it: say why its work now waits.
+                                note = hub.post_from_host(aid, (
+                                    f"Your decision request {res.decision_request_id} is material by rule "
+                                    f"({', '.join(meta.get('matched_rules') or [])}): your "
+                                    + ("subtask" if ag.spec.role == "worker" else "run")
+                                    + " waits until a human resolves it."))
+                                pending.append((aid, note))
                         self.db.commit()
 
                 # 2b. read-only SDF Core queries (ADR 0022), answered between polls even mid-turn
@@ -508,7 +541,9 @@ class Coordinator:
                         if scope is None or g.scope in (RUN_SCOPE, scope):
                             entry = gate_log.setdefault(g.request_id, {
                                 "request_id": g.request_id, "requested_by": g.requested_by, "scope": g.scope,
-                                "consequence": g.consequence, "options": list(g.options), "held": []})
+                                "consequence": g.consequence, "options": list(g.options),
+                                "materiality_source": g.source, "matched_rules": list(g.matched_rules),
+                                "held": [], "pending_s": 0.0})
                             if kind not in entry["held"]:
                                 entry["held"].append(kind)
                                 self.log(f"material decision {g.request_id} holds {kind}")
@@ -524,6 +559,7 @@ class Coordinator:
                         continue  # stays requested; runs once a human resolves the decision
                     if sub.verify_requested and worker.future is None and sub.verdict != "PASS":
                         sub.verify_requested = False
+                        host_worked = True
                         with tracing.span("sdf.verify", attempt_id=sub.attempt_id, agent__id=sub.worker) as vspan:
                             pending.extend(self._verify(run_id, hub, sub, worker, lead_id, fixture, config))
                             tracing.set_attributes(vspan, verdict=sub.verdict)
@@ -577,6 +613,11 @@ class Coordinator:
                 active = any(ag.future is not None for ag in agents.values()) or pending or any(
                     ag.wake for ag in agents.values()) or any(s.verify_requested for s in subtasks.values())
                 verdicts_done = all(s.verdict == "PASS" for s in subtasks.values())
+                # The next interval is "held" only if a material decision is pending
+                # and nothing else is happening: no turn in flight, no verification.
+                held_prev = bool(gate) and not host_worked and not any(
+                    ag.future is not None for ag in agents.values())
+                prev_gate = [g.request_id for g in gate]
                 if verdicts_done and (lead_reported or not active):
                     if gate:
                         hold("completion")  # never succeed past a pending material decision
@@ -626,6 +667,8 @@ class Coordinator:
                     tracing.set_attributes(cspan, cleanup_error=f"{len(still_running)} sandbox(es) still running")
                     tracing.mark_error("cleanup_failed", cspan)
             _CANCEL_EVENTS.pop(run_id, None)
+        timings["material_hold_s"] = round(held_s, 1)
+        timings["counted_wall_s"] = round(time.monotonic() - started - held_s, 1)
         return self._finalize(run_id, agents, subtasks, config, outcome, error, violations, timings,
                               time.monotonic() - started, closed, still_running, core_log, gate_log)
 

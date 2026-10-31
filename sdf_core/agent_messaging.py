@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .db import AgentClaimRow, AgentMessageRow
+from .materiality import DEFAULT_RULES, MaterialityRule, matched_rules
 from .model import utcnow
 from .plans import open_agent_request
 
@@ -37,6 +38,7 @@ MAX_MESSAGES_PER_AGENT = 200
 MAX_OPTIONS = 10
 MAX_OPTION_CHARS = 200
 MAX_CONSEQUENCE_CHARS = 1000
+MAX_ACTION_CHARS = 200
 ENVELOPE_NAME = re.compile(r"[0-9a-f]{32}\.json")
 AGENT_KINDS = frozenset({"message", "question", "report", "decision_request"})
 HOST = "sdf"
@@ -88,7 +90,8 @@ def delivery_payload(message: AgentMessageRow) -> bytes:
 
 class MessageHub:
     def __init__(self, db: Session, run_id: str, members: dict[str, Member], *,
-                 max_body_chars: int = MAX_BODY_CHARS, max_messages_per_agent: int = MAX_MESSAGES_PER_AGENT) -> None:
+                 max_body_chars: int = MAX_BODY_CHARS, max_messages_per_agent: int = MAX_MESSAGES_PER_AGENT,
+                 materiality_rules: tuple[MaterialityRule, ...] = DEFAULT_RULES) -> None:
         for agent_id in members:
             if not _ID.fullmatch(agent_id) or agent_id in (HOST, MANAGER, "lead", "worker"):
                 raise ValueError(f"invalid member id {agent_id!r}")
@@ -97,6 +100,7 @@ class MessageHub:
         self.members = dict(members)
         self.max_body_chars = max_body_chars
         self.max_messages_per_agent = max_messages_per_agent
+        self.materiality_rules = tuple(materiality_rules)
         self._counts: dict[str, int] = {}
         self.attempt_for: dict[str, str] = {}  # agent_id -> current Attempt id (workers)
 
@@ -169,19 +173,39 @@ class MessageHub:
             options = [sanitize_body(str(o), MAX_OPTION_CHARS)[0] for o in raw_options[:MAX_OPTIONS] if str(o).strip()]
             meta["options"] = options
             # ADR 0033 (#60): a material request blocks its scope until a human
-            # resolves it.  Materiality is declared, never inferred from text.
-            material = envelope.get("material", False)
-            if not isinstance(material, bool):
+            # resolves it.  It is material when the agent declares it or when a
+            # deterministic rule (sdf_core.materiality) matches; rules only
+            # ever upgrade, never downgrade, an agent's declaration.
+            declared = envelope.get("material", False)
+            if not isinstance(declared, bool):
                 raise EnvelopeError("material must be true or false")
-            if material:
-                consequence = envelope.get("consequence")
-                if not isinstance(consequence, str) or not consequence.strip():
+            consequence = envelope.get("consequence")
+            if consequence is not None and not isinstance(consequence, str):
+                raise EnvelopeError("consequence must be a string")
+            action = envelope.get("action")
+            if action is not None and not isinstance(action, str):
+                raise EnvelopeError("action must be a string")
+            if declared:
+                if not consequence or not consequence.strip():
                     raise EnvelopeError("a material decision request needs a consequence")
                 if len(set(options)) < 2:
                     raise EnvelopeError("a material decision request needs at least two distinct options")
+            # Rules see the full text the agent sent (not the truncated copies),
+            # so nothing past a length limit escapes classification.
+            matched = matched_rules(
+                [str(envelope.get("body") or ""), *(str(o) for o in raw_options), consequence, action],
+                self.materiality_rules)
+            if action:
+                meta["action"] = sanitize_body(action, MAX_ACTION_CHARS)[0]
+            meta["matched_rules"] = matched
+            if declared or matched:
                 meta["material"] = True
-                meta["consequence"] = sanitize_body(consequence, MAX_CONSEQUENCE_CHARS)[0]
+                meta["materiality_source"] = "agent" if declared else "rule"
+                meta["consequence"] = sanitize_body(consequence, MAX_CONSEQUENCE_CHARS)[0] if consequence and \
+                    consequence.strip() else "matched materiality rules: " + ", ".join(matched)
                 meta["authority"] = "human"
+            else:
+                meta["material"] = False
         message = self._persist(
             envelope_id=envelope_id, from_agent=sender, from_role=member.role, to_agent=to_agent, to_role=to_role,
             kind=kind, body=body, truncated=truncated, attempt_id=attempt_id, source_sandbox_id=sandbox_id,
