@@ -75,6 +75,11 @@ class AgentSandbox(Protocol):
     def collect(self, destination: Path) -> None: ...
     def usage(self) -> dict[str, Any]: ...
     def alive_seconds(self) -> float: ...
+    # ADR 0033 (optional): provider-side lifetime, kept up during a material
+    # decision hold.  Without them (local fakes; Daytona, whose sandboxes are
+    # created with auto-stop disabled) the sandbox has no provider timeout.
+    # def lifetime_left_s(self) -> float | None: ...  # None = no provider timeout
+    # def extend_lifetime(self, seconds: int) -> None: ...  # raises on failure
     def close(self) -> None: ...
 
 
@@ -134,6 +139,9 @@ class E2BAgentSandbox:
         self._binding = spec.agent_id.replace("-", "_").upper()
         self._born: float | None = None
         self._died: float | None = None
+        # ADR 0033: when the provider ends the sandbox (monotonic), if it has
+        # a timeout.  Set conservatively before the sandbox is created.
+        self._expires: float | None = None
         self._lock = threading.Lock()
         self._sandbox_id: str | None = None
 
@@ -175,6 +183,8 @@ class E2BAgentSandbox:
                 transport=self._transport, turn_timeout_s=self._turn_timeout_s, model=self.spec.model,
                 extensions=pi_extensions)
         self._born = time.monotonic()
+        if callable(getattr(self._transport, "extend_lifetime", None)):
+            self._expires = self._born + self._sandbox_timeout_s  # E2B: timeout from creation
         # Creates the sandbox (egress locked at creation), seeds credentials.
         self._runtime.bind_workspace(self._binding, workspace)
         self._sandbox_id = self._transport.sandbox_id
@@ -253,6 +263,22 @@ class E2BAgentSandbox:
         if self._born is None:
             return 0.0
         return (self._died or time.monotonic()) - self._born
+
+    def lifetime_left_s(self) -> float | None:
+        """Seconds until the provider's sandbox timeout (E2B); ``None`` when there is none (Daytona)."""
+
+        if self._expires is None or self._died is not None:
+            return None
+        return max(0.0, self._expires - time.monotonic())
+
+    def extend_lifetime(self, seconds: int) -> None:
+        """Reset the provider timeout to ``seconds`` from now (E2B ``set_timeout``); raises on failure."""
+
+        if self._expires is None or self._died is not None:
+            raise RuntimeError("this sandbox has no provider lifetime to extend")
+        asked = time.monotonic()
+        self._transport.extend_lifetime(int(seconds))
+        self._expires = asked + int(seconds)
 
     def close(self) -> None:
         with self._lock:

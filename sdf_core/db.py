@@ -601,6 +601,20 @@ def _reject_agent_message_mutation(session: Session, flush_context: Any, instanc
 _PLAN_MUTABLE = {"status", "decided_at"}
 
 
+# ADR 0033 (#60): fields that identify what a decision request asks and which
+# agent message (with its append-only materiality meta) it came from.
+_DECISION_REQUEST_IDENTITY = frozenset({
+    "id", "subject_kind", "subject_id", "run_id", "requested_by", "message_id", "question", "options", "created_at",
+})
+
+
+def _links_material(session: Session, request: "DecisionRequestRow") -> bool:
+    if request.subject_kind != "agent_request" or not request.message_id:
+        return False
+    message = session.get(AgentMessageRow, request.message_id)
+    return message is not None and (message.meta or {}).get("material") is True
+
+
 @event.listens_for(Session, "before_flush")
 def _guard_plans_and_decisions(session: Session, flush_context: Any, instances: Any) -> None:
     """Plan content is immutable; status moves once, proposed -> approved|rejected,
@@ -617,10 +631,19 @@ def _guard_plans_and_decisions(session: Session, flush_context: Any, instances: 
             if isinstance(item, PlanTaskRow) and session.is_modified(item, include_collections=False):
                 raise ValueError("plan task membership is immutable")
             if isinstance(item, DecisionRequestRow) and session.is_modified(item, include_collections=False):
-                history = sa_inspect(item).attrs.status.history
+                state = sa_inspect(item)
+                history = state.attrs.status.history
                 before = (history.deleted or history.unchanged or [None])[0]
                 if before is not None and before != "pending":
                     raise ValueError("a resolved decision request is final")
+                changed = {attr.key for attr in state.attrs if attr.history.has_changes()}
+                if changed & _DECISION_REQUEST_IDENTITY:
+                    # ADR 0033 (#60): the link to the asking message carries
+                    # materiality; re-pointing it would downgrade the gate.
+                    raise ValueError("a decision request's subject, message and question are immutable: "
+                                     + ", ".join(sorted(changed & _DECISION_REQUEST_IDENTITY)))
+                if item.status != "pending" and item.resolver_kind != "human" and _links_material(session, item):
+                    raise ValueError("only a human resolves a material decision request (ADR 0033)")
             if not isinstance(item, PlanRow) or not session.is_modified(item, include_collections=False):
                 continue
             state = sa_inspect(item)

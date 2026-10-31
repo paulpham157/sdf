@@ -150,6 +150,14 @@ class RunConfig:
         return config
 
 
+# ADR 0033: while a material decision is pending, a sandbox with a provider
+# timeout (E2B) is kept alive for the rest of the counted wall time plus this
+# margin, extended by STEP beyond that, retried at most every RETRY seconds;
+# the run fails cleanly when one has FAIL_MARGIN seconds left unextended.
+KEEPALIVE_MARGIN_S = 120.0
+KEEPALIVE_STEP_S = 600.0
+KEEPALIVE_RETRY_S = 30.0
+LIFETIME_FAIL_MARGIN_S = 60.0
 SERVER_FIELDS = ("price_in_per_m", "price_out_per_m", "sandbox_usd_per_s", "evidence_mode")
 EVIDENCE_MODES = EVIDENCE_MODE_VALUES  # single definition: sdf_core.impact.EvidenceMode
 # Upper bounds only catch typos; the lower bound (>= 0) keeps the cost cap meaningful.
@@ -372,6 +380,8 @@ class Coordinator:
         # decision (no turn in flight, no host verification) is not counted.
         held_s = 0.0
         held_prev = False
+        keepalive_log: list[dict[str, Any]] = []  # ADR 0033: sandbox lifetime extensions while held
+        keepalive_tried: dict[str, float] = {}
         prev_gate: list[str] = []
         last_tick = time.monotonic()
         try:
@@ -535,6 +545,15 @@ class Coordinator:
                     s.worker for s in subtasks.values() if run_blocked or s.key in blocked_scopes}
                 if run_blocked:
                     blocked_agents |= set(agents)
+                if gate:
+                    # ADR 0033: the wall clock may pause, the provider's sandbox
+                    # timeout does not.  Keep every sandbox alive for the rest of
+                    # the run's counted wall time, or fail cleanly before it expires.
+                    expiry = self._keep_alive(agents, max(0.0, config.max_wall_s - elapsed) + KEEPALIVE_MARGIN_S,
+                                              keepalive_log, keepalive_tried, round(now - started, 1))
+                    if expiry is not None:
+                        error = expiry
+                        break
 
                 def hold(kind: str, scope: str | None = None) -> None:
                     for g in gate:
@@ -670,9 +689,52 @@ class Coordinator:
         timings["material_hold_s"] = round(held_s, 1)
         timings["counted_wall_s"] = round(time.monotonic() - started - held_s, 1)
         return self._finalize(run_id, agents, subtasks, config, outcome, error, violations, timings,
-                              time.monotonic() - started, closed, still_running, core_log, gate_log)
+                              time.monotonic() - started, closed, still_running, core_log, gate_log,
+                              keepalive_log)
 
     # -- helpers --------------------------------------------------------------
+    def _keep_alive(self, agents: dict[str, "_Agent"], needed_s: float, log: list[dict[str, Any]],
+                    tried: dict[str, float], at_s: float) -> str | None:
+        """Extend provider sandbox timeouts during a material hold (ADR 0033).
+
+        A sandbox that reports a provider lifetime (``lifetime_left_s``, E2B)
+        shorter than ``needed_s`` is extended to ``needed_s`` plus a step.  A
+        sandbox without one (local fakes; Daytona, created with auto-stop
+        off) needs nothing.  When an extension is unsupported or fails, it is
+        retried; once the sandbox has at most ``LIFETIME_FAIL_MARGIN_S`` left,
+        the run fails with a clear reason instead of losing the sandbox
+        mid-hold.
+        """
+
+        now = time.monotonic()
+        for aid, ag in agents.items():
+            left_fn = getattr(ag.sandbox, "lifetime_left_s", None)
+            left = left_fn() if callable(left_fn) else None
+            if left is None or left >= needed_s:
+                continue
+            extend = getattr(ag.sandbox, "extend_lifetime", None)
+            problem = "the sandbox does not support it"
+            if callable(extend):
+                if now - tried.get(aid, float("-inf")) < KEEPALIVE_RETRY_S:
+                    problem = "the last extension failed"
+                else:
+                    tried[aid] = now
+                    target = int(math.ceil(needed_s + KEEPALIVE_STEP_S))
+                    try:
+                        extend(target)
+                    except Exception as exc:  # noqa: BLE001 - recorded, retried, then a clean failure
+                        problem = _safe(f"{type(exc).__name__}: {redact(str(exc))}", 300)
+                        log.append({"agent": aid, "at_s": at_s, "left_s": round(left, 1), "error": problem})
+                    else:
+                        log.append({"agent": aid, "at_s": at_s, "left_s": round(left, 1),
+                                    "extended_to_s": target})
+                        self.log(f"{aid} sandbox lifetime extended to {target}s during a material hold")
+                        continue
+            if left <= LIFETIME_FAIL_MARGIN_S:
+                return (f"sandbox of {aid} would expire during a material decision hold ({left:.0f}s left) "
+                        f"and its lifetime could not be extended: {problem}")
+        return None
+
     def _plan_fixture(self, plan: PlanRow) -> Path:
         """The Plan's fixture, confined to ``SDF_FIXTURES_ROOT`` like ``POST /plans``.
 
@@ -876,7 +938,8 @@ class Coordinator:
                   outcome: str, error: str | None, violations: list[dict[str, Any]], timings: dict[str, float],
                   wall_s: float, closed: list[str], still_running: set[str],
                   core_log: list[dict[str, Any]] | None = None,
-                  gate_log: dict[str, dict[str, Any]] | None = None) -> AgentRunRow:
+                  gate_log: dict[str, dict[str, Any]] | None = None,
+                  keepalive_log: list[dict[str, Any]] | None = None) -> AgentRunRow:
         run = self.db.get(AgentRunRow, run_id)
         # Evidence is the only success criterion.
         if outcome == "succeeded" and not all(s.verdict == "PASS" for s in subtasks.values()):
@@ -918,6 +981,8 @@ class Coordinator:
                 {**entry, "status": getattr(self.db.get(DecisionRequestRow, rid), "status", None)}
                 for rid, entry in (gate_log or {}).items()
             ],
+            # ADR 0033: provider sandbox timeouts extended (or not) during material holds.
+            "sandbox_keepalive": (keepalive_log or [])[:100],
         }
         self.db.commit()
         self.log(f"run {run_id} {outcome}" + (f": {error}" if error else ""))

@@ -340,6 +340,38 @@ def test_material_envelope_validation_and_policy_cannot_resolve(db, fixture):
         check_decision_gate(db, task_id_for(plan.id, "add"))
 
 
+def test_a_material_request_cannot_be_downgraded_through_the_orm(db, fixture):
+    """SF1 (#81 review): the request's link to its material message is immutable, and only a human resolves it."""
+
+    plan, hub = _hub(db, fixture)
+    res = hub.ingest("worker-1", _env(4, options=["keep", "delete"], material=True, consequence=CONSEQUENCE),
+                     sandbox_id="sbx-w1")
+    benign = hub.ingest("worker-2", _env(5, body=BENIGN, options=["x", "y"]), sandbox_id="sbx-w2")
+    db.commit()
+    request = db.get(DecisionRequestRow, res.decision_request_id)
+    for field, value in (("message_id", benign.message.id), ("subject_kind", "plan"),
+                         ("requested_by", "worker-2"), ("question", "changed?"), ("options", ["x", "y"])):
+        setattr(request, field, value)
+        with pytest.raises(ValueError, match="immutable"):
+            db.flush()
+        db.rollback()
+    message = db.get(AgentMessageRow, res.message.id)
+    message.meta = {**message.meta, "material": False}
+    with pytest.raises(ValueError, match="append-only"):
+        db.flush()
+    db.rollback()
+    request = db.get(DecisionRequestRow, res.decision_request_id)
+    request.status, request.resolver_kind, request.resolved_by = "answered", "policy", "rules"  # bypasses PlanService
+    with pytest.raises(ValueError, match="only a human"):
+        db.flush()
+    db.rollback()
+    assert is_material(db, db.get(DecisionRequestRow, res.decision_request_id))
+    resolve_request(db, res.decision_request_id, outcome="answered", resolved_by="hung", resolver_kind="human",
+                    resolution="keep")
+    db.commit()
+    assert db.get(DecisionRequestRow, res.decision_request_id).status == "answered"
+
+
 def test_shim_writes_a_material_envelope_and_refuses_an_incomplete_one(tmp_path):
     import os
     import subprocess

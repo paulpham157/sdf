@@ -3,6 +3,9 @@
 Status: accepted 2026-10-31 (maintainer decision on #60, narrow scope; refines ADR 0014).
 Amended 2026-10-31 by the maintainer's review decisions: rule-based materiality
 (§1b) and a paused wall clock while held (§3b); rejection semantics unchanged.
+Amended again 2026-10-31 by the maintainer's approval of the review fixes: the
+materiality record is fenced in PostgreSQL (§1c, migration 0024) and provider
+sandbox timeouts are extended during a hold (§3c).
 
 ## Context
 
@@ -33,7 +36,8 @@ narrow part of it on 2026-10-31 (recorded in ADR 0028).
      characters) and at least two distinct options.
    - Materiality, the consequence and `authority: human` are stored in the
      append-only `AgentMessageRow.meta` of the asking message, so they cannot
-     be changed after the fact. **No schema change or migration is needed.**
+     be changed after the fact (§1c). There is no schema change; migration
+     0024 only adds a PostgreSQL trigger.
 
 1b. **Deterministic rules can also make a request material** (`sdf_core/materiality.py`).
    - A request is material if the agent declares it **or** any rule matches.
@@ -74,6 +78,22 @@ narrow part of it on 2026-10-31 (recorded in ADR 0028).
    - The host tells the agent when its undeclared request became material by
      rule, and why its work now waits.
 
+1c. **The materiality record cannot be downgraded.**
+   - `agent_messages` is append-only: no UPDATE or DELETE, in the ORM session
+     guard and, on PostgreSQL, `trg_agent_messages_append_only` (migration
+     0014). So a message's `material` / `materiality_source` /
+     `matched_rules` stay as recorded.
+   - A decision request's identity never changes after insert: `subject_kind`,
+     `subject_id`, `run_id`, `requested_by`, `message_id`, `question`,
+     `options` and `created_at`. A request therefore cannot be re-pointed at a
+     non-material message.
+   - A request whose message is material is resolved only with
+     `resolver_kind = 'human'`, also by a writer that bypasses
+     `PlanService.resolve_request`.
+   - Both rules are in the ORM session guard (SQLite and PostgreSQL) and, on
+     PostgreSQL, in `trg_decision_requests_material_fence` (BEFORE UPDATE,
+     migration `0024_decision_material_fence`). Downgrade drops the trigger.
+
 2. **Scope.**
    - A worker's material request blocks that worker's subtask.
    - A lead's material request (or one from an unknown sender) blocks the
@@ -107,6 +127,26 @@ narrow part of it on 2026-10-31 (recorded in ADR 0028).
      toward `max_cost_usd`.
    - Stall detection was already suspended while any decision request is
      pending, and still is.
+
+3c. **Sandboxes are kept alive while held** (`Coordinator._keep_alive`).
+   - The wall clock pauses during a hold, but a provider-side sandbox timeout
+     does not. E2B sandboxes are created with `sandbox_timeout_s` (default
+     1800 s) and would otherwise be killed by E2B during a long hold.
+   - While a material request is pending, every sandbox that reports a
+     provider lifetime (`lifetime_left_s`) shorter than the run's remaining
+     counted wall time plus 120 s is extended to that plus 600 s. The
+     extension uses E2B's `Sandbox.set_timeout` (e2b 2.51.0), which resets
+     the timeout from now, up to the account's maximum sandbox lifetime.
+   - If the extension fails (for example past that maximum), it is retried
+     at most every 30 s. Once a sandbox has 60 s or less left, the run fails
+     with "sandbox of … would expire during a material decision hold …" and
+     is cleaned up normally. The run does not lose a sandbox mid-hold without
+     saying so.
+   - Every extension and every failure is recorded in the run summary under
+     `sandbox_keepalive`.
+   - Daytona sandboxes are created with auto-stop disabled, so they report no
+     provider lifetime and nothing is extended. Local and test sandboxes that
+     do not implement the optional methods are left alone in the same way.
    - Audit: the run summary's `timings` gains `material_hold_s` and
      `counted_wall_s` (`wall_s` stays the total). Each `material_decisions`
      entry records `pending_s`, `materiality_source` and `matched_rules`.
@@ -133,18 +173,24 @@ narrow part of it on 2026-10-31 (recorded in ADR 0028).
 - An agent that neither declares a consequential question material nor uses
   any of the rule vocabulary is not gated. The rules are a floor, not a
   guarantee.
-- The rules are English-only. Their false positives cost a human answer.
+- The rules are English-only. Paraphrase, another language or cross-script
+  look-alike characters can avoid them. Their false positives cost a human
+  answer.
 
 ### Deferred (not part of the narrow scope)
 
-- **No database trigger.** The gate is enforced in the ORM and the services
-  (coordinator, `ExecutionService`, `PlanService`), not by a PostgreSQL
-  trigger.
+- **The gate itself has no database trigger.** Holding turns, verification,
+  Attempt start/finish and run success is enforced in the coordinator,
+  `ExecutionService` and `PlanService`. A writer that inserts Attempts or
+  Evidence directly is not stopped by the gate. Only the materiality record
+  and human-only resolution are fenced in the database (§1c).
 - **No preemption.** A turn that is already running when the request is
-  created is not interrupted. Its result is held at verification, Attempt
-  finish and completion.
-- **Sandbox lifetime while held.** A provider-side sandbox timeout (for
-  example E2B's) is not extended during a long hold. A sandbox that expires
-  then fails the run.
+  created is not interrupted, and the agent can keep changing its workspace
+  until that turn ends. Its messages are still relayed. Its result is held at
+  verification, Attempt finish and completion. A human reviewing the request
+  may therefore find the workspace already changed.
+- **Sandbox cost while held.** A kept-alive sandbox keeps costing money and
+  counts toward `max_cost_usd`. A long hold can therefore end the run on the
+  cost cap.
 - **Not adopted from #60:** the broader authority model, delegated approvers,
   and LLM-based or policy-chosen materiality.

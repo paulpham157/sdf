@@ -586,3 +586,76 @@ def test_revision_bindings_are_fenced_and_0023_round_trips_on_postgresql(postgre
                                             "rev": None, "tree": None})
     with pytest.raises(DBAPIError, match="append-only"), postgres_engine.begin() as connection:
         connection.execute(text("UPDATE evidence SET status = 'FAIL'"))
+
+
+def test_material_decision_requests_are_fenced_and_0024_round_trips_on_postgresql(postgres_engine, tmp_path,
+                                                                                  monkeypatch):
+    """#60 / ADR 0033 (migration 0024): a material request cannot be downgraded by direct SQL."""
+
+    import json
+
+    from sdf_core.agent_messaging import Member, MessageHub
+    from sdf_core.db import AgentRunMemberRow, AgentRunRow
+    from sdf_core.plans import PlanSpec, decide_plan, propose_plan
+    from tests.agent_comm_support import make_fixture, plan_dict
+
+    db = _session(postgres_engine)
+    try:
+        plan = propose_plan(db, PlanSpec(**plan_dict(make_fixture(tmp_path), "PLAN-PG-MAT")))
+        db.commit()
+        decide_plan(db, plan.id, approve=True, decided_by="hung")
+        db.add(AgentRunRow(id="RUN-PG-MAT", plan_id=plan.id, status="running", config={}, started_at=utcnow()))
+        db.flush()
+        db.add(AgentRunMemberRow(run_id="RUN-PG-MAT", agent_id="worker-1", role="worker", agent_kind="pi",
+                                 subtask_key="add", status="ready", turns=0))
+        db.commit()
+        hub = MessageHub(db, "RUN-PG-MAT", {"worker-1": Member("worker-1", "worker", "add", "sbx-w")})
+
+        def envelope(n, **fields):
+            return json.dumps({"id": f"{n:032x}", "kind": "decision_request", "body": "Keep invoices?",
+                               "options": ["keep", "delete"], **fields}).encode()
+
+        material = hub.ingest("worker-1", envelope(1, material=True, consequence="tax vs privacy"), sandbox_id="sbx-w")
+        benign = hub.ingest("worker-1", envelope(2), sandbox_id="sbx-w")
+        db.commit()
+        mat_id, msg_id, benign_msg = material.decision_request_id, material.message.id, benign.message.id
+    finally:
+        db.close()
+
+    refused = (
+        ("UPDATE decision_requests SET message_id = :other WHERE id = :id", "immutable"),
+        ("UPDATE decision_requests SET subject_kind = 'plan' WHERE id = :id", "immutable"),
+        ("UPDATE decision_requests SET options = '[\"keep\", \"other\"]' WHERE id = :id", "immutable"),
+        ("UPDATE decision_requests SET status = 'answered', resolver_kind = 'policy', resolved_by = 'rules', "
+         "resolved_at = now() WHERE id = :id", "only a human"),
+        ("UPDATE agent_messages SET meta = '{\"material\": false}' WHERE id = :msg", "append-only"),
+        ("DELETE FROM agent_messages WHERE id = :msg", "append-only"),
+    )
+    params = {"id": mat_id, "msg": msg_id, "other": benign_msg}
+    for statement, message in refused:
+        with pytest.raises(DBAPIError, match=message), postgres_engine.begin() as connection:
+            connection.execute(text(statement), params)
+    with postgres_engine.begin() as connection:  # a non-material request may still be policy-answered
+        connection.execute(text(
+            "UPDATE decision_requests SET status = 'answered', resolver_kind = 'policy', resolved_by = 'rules', "
+            "resolved_at = now() WHERE id = (SELECT id FROM decision_requests WHERE message_id = :m)"),
+            {"m": benign_msg})
+
+    def fences():
+        with postgres_engine.connect() as connection:
+            return set(connection.execute(text(
+                "SELECT tgname FROM pg_trigger WHERE tgname = 'trg_decision_requests_material_fence'")).scalars())
+
+    assert fences() == {"trg_decision_requests_material_fence"}
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    monkeypatch.setenv("SDF_DATABASE_URL", POSTGRES_URL)
+    command.downgrade(config, "0023_attempt_revisions")
+    try:
+        assert fences() == set()
+    finally:
+        command.upgrade(config, "head")
+    assert fences() == {"trg_decision_requests_material_fence"}
+    with postgres_engine.begin() as connection:  # a human may resolve it
+        connection.execute(text(
+            "UPDATE decision_requests SET status = 'answered', resolver_kind = 'human', resolved_by = 'hung', "
+            "resolution = 'keep', resolved_at = now() WHERE id = :id"), {"id": mat_id})
