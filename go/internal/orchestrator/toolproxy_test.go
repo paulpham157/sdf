@@ -13,7 +13,7 @@ import (
 func TestOrchestratorWiresToolProxy(t *testing.T) {
 	proxy := toolproxy.NewProxy(func(ctx context.Context, req toolproxy.ActionRequest) (any, error) {
 		return map[string]any{"resource": req.Resource}, nil
-	})
+	}, nil)
 	started := make(chan struct{})
 	o := orchestrator.New(orchestrator.Config{
 		Workers:        1,
