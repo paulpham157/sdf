@@ -1001,7 +1001,20 @@ class Coordinator:
 
 
 def _files(root: Path) -> dict[str, Path]:
-    return {p.relative_to(root).as_posix(): p for p in root.rglob("*") if p.is_file() and not p.is_symlink()}
+    from .oracle import HELD_OUT_DIR
+
+    found = {}
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        # The server's held-out tree is not the fixture the agent started from.
+        # Files the agent wrote under that name are kept: this filter is only
+        # applied to the fixture side (see _apply_scoped).
+        if HELD_OUT_DIR in relative.split("/"):
+            continue
+        found[relative] = path
+    return found
 
 
 def _within(rel: str, prefixes: list[str]) -> bool:
@@ -1020,8 +1033,17 @@ def _apply_scoped(fixture: Path, collected: Path, workspace: Path, allowed: list
 
     if workspace.exists():
         shutil.rmtree(workspace)
-    shutil.copytree(fixture, workspace)
-    base, theirs = _files(fixture), _files(collected)
+    from .oracle import HELD_OUT_DIR
+
+    shutil.copytree(fixture, workspace, ignore=lambda _directory, names: {HELD_OUT_DIR} & set(names))
+    base = _files(fixture)
+    # The collected tree is the agent's. A file they wrote under the held-out
+    # name is a real change and must not disappear into the skipped directory.
+    theirs = {
+        path.relative_to(collected).as_posix(): path
+        for path in collected.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
     changed, ignored = [], []
     for rel in sorted(set(base) | set(theirs)):
         before = base[rel].read_bytes() if rel in base else None

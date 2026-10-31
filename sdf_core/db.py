@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
-from .acceptance import EVIDENCE_CLASS_SQL, EVIDENCE_CLASSES
+from .acceptance import EVIDENCE_CLASS_SQL, EVIDENCE_CLASSES, ORACLE_VISIBILITIES, ORACLE_VISIBILITY_SQL
 from .impact import EVIDENCE_MODE_VALUES
 
 
@@ -169,6 +169,7 @@ class EvidenceRow(Base):
     __table_args__ = (
         CheckConstraint(EVIDENCE_MODE_SQL, name="ck_evidence_evidence_mode"),
         CheckConstraint(EVIDENCE_CLASS_SQL, name="ck_evidence_evidence_class"),
+        CheckConstraint(ORACLE_VISIBILITY_SQL, name="ck_evidence_oracle_visibility"),
     )
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     attempt_id: Mapped[str] = mapped_column(String(120), index=True)
@@ -198,6 +199,11 @@ class EvidenceRow(Base):
     environment_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ADR 0035. Nullable so Evidence written before migration 0026 stays valid.
+    # oracle_visibility is visible or held_out. input_seed is the server seed
+    # recorded after a randomized check, never a value the subject could read.
+    oracle_visibility: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    input_seed: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
 RUNTIME_EVENT_PROVENANCE_SQL = (
@@ -547,6 +553,10 @@ def _reject_evidence_mutation(session: Session, flush_context: Any, instances: A
         if isinstance(item, EvidenceRow) and item.evidence_class is not None and item.evidence_class not in EVIDENCE_CLASSES:
             raise ValueError(
                 f"evidence_class must be one of {list(EVIDENCE_CLASSES)} (ADR 0034), not {item.evidence_class!r}"
+            )
+        if isinstance(item, EvidenceRow) and item.oracle_visibility is not None and item.oracle_visibility not in ORACLE_VISIBILITIES:
+            raise ValueError(
+                f"oracle_visibility must be one of {list(ORACLE_VISIBILITIES)} (ADR 0035), not {item.oracle_visibility!r}"
             )
     for item in session.dirty:
         if isinstance(item, EvidenceRow) and session.is_modified(item, include_collections=False):

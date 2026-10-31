@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .evaluator import Evidence
+from .oracle import HELD_OUT_DIR
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,9 @@ class WorkspaceManager:
         destination.mkdir(parents=True)
         for source in sources:
             relative = source.relative_to(fixture)
+            # ADR 0035: held-out oracle files stay on the server.
+            if HELD_OUT_DIR in relative.parts:
+                continue
             target = destination / relative
             if source.is_dir():
                 target.mkdir(parents=True, exist_ok=True)
@@ -68,6 +72,10 @@ class ArtifactStore:
     def capture_diff(self, *, artifact_id: str, before: Path, after: Path, files: Iterable[str]) -> Artifact:
         chunks: list[str] = []
         for relative in files:
+            if HELD_OUT_DIR in Path(relative).parts:
+                # The fixture side is the hidden oracle. Do not copy it into the diff.
+                chunks.append(f"Held-out oracle {relative} is not included in this diff\n")
+                continue
             old, new = _text_lines(before / relative), _text_lines(after / relative)
             if old is None or new is None:
                 # A binary file (e.g. an agent's ``__pycache__``) is named, not decoded.
@@ -111,6 +119,8 @@ class ArtifactStore:
                 "environment_digest": evidence.environment_digest,
                 "collected_at": evidence.collected_at.isoformat() if evidence.collected_at else None,
                 "expires_at": evidence.expires_at.isoformat() if evidence.expires_at else None,
+                "oracle_visibility": evidence.oracle_visibility,
+                "input_seed": evidence.input_seed,
                 # ADR 0032 (#62): the Attempt revision and tree this check ran against.
                 **({"revision": dict(revision)} if revision is not None else {}),
             },

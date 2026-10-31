@@ -20,6 +20,12 @@ itself is denied ``ptrace``, ``process_vm_*``, ``pidfd_getfd``,
 ``io_uring``, and ``chmod``, and that filter fails closed too. Responses from the worker are
 capped at 1 MiB. The sealed tree is mode ``0555``/``0444`` for the run;
 the worker's temp directory is not.
+
+Held-out oracle files (ADR 0035) live under ``.sdf-held-out/`` in the server
+fixture and are not copied into the workspace. A check that uses them puts
+subject files under ``.sdf-subject/`` and the worker landlocks its reads to
+that directory. A randomized check's seed is an oracle-process environment
+variable; the worker does not receive it.
 """
 
 from __future__ import annotations
@@ -50,6 +56,11 @@ MAX_FILES = 2_000
 REPORT_DIR_NAME = ".sdf-oracle"
 PLUGIN_MODULE = "sdf_oracle_plugin"
 RESULT_NAME = "result.json"
+# Server-only oracle files. Never copied into the agent workspace (ADR 0035).
+HELD_OUT_DIR = ".sdf-held-out"
+# Subject files for a held-out check live here, not next to the oracle files,
+# so the worker's landlock ruleset can allow one and not the other.
+SUBJECT_DIR = ".sdf-subject"
 # SHA-256 of zero bytes. A python -c check with no sealed files used to store
 # this and look as if an oracle had been hashed. Acceptance rejects it.
 EMPTY_ORACLE_DIGEST = hashlib.sha256(b"").hexdigest()
@@ -182,6 +193,55 @@ def _deny_cross_process():
     if libc.syscall(317, 1, 0, ctypes.byref(prog)) != 0:
         os._exit(86)
 
+def _hide_oracle_files():
+    # Held-out bytes live in the sealed tree. This process may read only the
+    # subject directory, its temp dir, and the interpreter. Fail closed.
+    if len(sys.argv) < 3 or not sys.argv[2]:
+        return
+    if sys.platform != "linux" or os.uname().machine not in {"x86_64", "amd64"}:
+        os._exit(86)
+    import ctypes
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:
+        os._exit(86)
+    subject = os.path.realpath(sys.argv[2])
+    if subject in {"/", "/tmp", "/usr", "/etc", "/dev", "/lib", "/lib64", "/usr/lib"}:
+        os._exit(86)
+    read_file, read_dir = 1 << 2, 1 << 3
+    access = read_file | read_dir
+    class _A(ctypes.Structure):
+        _fields_ = [("handled_access_fs", ctypes.c_uint64)]
+    class _R(ctypes.Structure):
+        _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int)]
+    libc.syscall.restype = ctypes.c_long
+    attr = _A(access)
+    ruleset = libc.syscall(444, ctypes.byref(attr), ctypes.sizeof(attr), 0)
+    if ruleset < 0:
+        os._exit(86)
+    import sysconfig
+    paths = [subject, os.environ.get("TMPDIR") or "", sys.prefix]
+    paths.extend(sysconfig.get_paths().get(name) or "" for name in ("stdlib", "platstdlib", "purelib", "platlib"))
+    # Shared libraries the interpreter already maps, not the whole of /usr.
+    paths.extend(["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/dev", "/etc", "/proc/self"])
+    seen = set()
+    for path in paths:
+        if not path or path in seen or not os.path.isdir(path):
+            continue
+        seen.add(path)
+        try:
+            pfd = os.open(path, os.O_PATH | getattr(os, "O_CLOEXEC", 0))
+        except OSError:
+            os._exit(86)
+        rule = _R(access, pfd)
+        if libc.syscall(445, ruleset, 1, ctypes.byref(rule), 0) != 0:
+            os.close(pfd)
+            os._exit(86)
+        os.close(pfd)
+    if libc.syscall(446, ruleset, 0) != 0:
+        os._exit(86)
+    os.close(ruleset)
+
+_hide_oracle_files()
 _deny_cross_process()
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=int(sys.argv[1]))
 refs = {}
@@ -432,7 +492,7 @@ def _seal_report_path(report, whole_tree=True):
         os._exit(86)
     os.chmod(directory, 0o555)
 
-def _start_worker(result_fd):
+def _start_worker(result_fd, subject_root="", hide=False):
     import socket, subprocess, tempfile
     parent, child = socket.socketpair()
     child.set_inheritable(True)
@@ -441,13 +501,22 @@ def _start_worker(result_fd):
     except OSError:
         pass
     worker_tmp = tempfile.mkdtemp(prefix="sdf-subject-", dir="/tmp")
-    env = {key: value for key, value in os.environ.items() if not key.startswith("SDF_ORACLE_")}
+    # SDF_ORACLE_* (the seed, the seal, the report path) stays in the oracle
+    # process. HOME is the sealed tree; a held-out worker must not be told that.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("SDF_ORACLE_") and not (hide and key == "SDF_SANDBOX_ROOT")}
     env["TMPDIR"] = env["TMP"] = env["TEMP"] = worker_tmp
+    cwd = subject_root or os.getcwd()
+    if hide:
+        env["HOME"] = cwd
+    argv = [sys.executable, "-I", "-B", "-c", _WORKER, str(child.fileno())]
+    if hide:
+        argv.append(cwd)
     proc = subprocess.Popen(
-        [sys.executable, "-I", "-B", "-c", _WORKER, str(child.fileno())],
+        argv,
         pass_fds=(child.fileno(),),
         close_fds=True,
-        cwd=os.getcwd(),
+        cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -528,6 +597,8 @@ def _notary():
             os.close(report_fd)
         _undumpable()
         subjects = [item for item in os.environ.pop("SDF_ORACLE_SUBJECTS", "").split(",") if item]
+        subject_root = os.environ.pop("SDF_ORACLE_SUBJECT_ROOT", "")
+        hide = os.environ.pop("SDF_ORACLE_HIDE", "") == "1"
         rpc = None
         if subjects:
             try:
@@ -535,7 +606,7 @@ def _notary():
                 _seal_report_path(report, whole_tree=(kind != "script"))
             except OSError:
                 os._exit(86)
-            rpc = _start_worker(write_fd)
+            rpc = _start_worker(write_fd, subject_root, hide)
         try:
             stub = _stub()
             write = _seccomp(write_fd, stub)
@@ -628,6 +699,10 @@ class SealedOracle:
     oracle_paths: tuple[str, ...]
     oracle_digest: str
     fixture: Path
+    # Where the subject worker's cwd is. For a held-out check this is a
+    # subdirectory that does not contain the oracle files.
+    subject_root: Path
+    hide_oracle: bool = False
 
     def changed(self) -> bool:
         """True when a sealed oracle file no longer matches the fixture."""
@@ -684,26 +759,51 @@ class OracleReport:
             shutil.rmtree(self.directory, ignore_errors=True)
 
 
-def seal_oracle_digest(command: Sequence[str], files: Sequence[tuple[str, str]] = ()) -> str:
-    """SHA-256 of the registered check text plus the sealed oracle files.
+def is_held_out_path(relative: str) -> bool:
+    """True when ``relative`` is the held-out directory or a file inside it."""
+
+    return HELD_OUT_DIR in PurePosixPath(relative).parts
+
+
+def seal_oracle_digest(
+    command: Sequence[str],
+    files: Sequence[tuple[str, str]] = (),
+    *,
+    visibility: str = "visible",
+    input_seed: str | None = None,
+) -> str:
+    """SHA-256 of the registered check text, its visibility, and any seed.
 
     Encoding, UTF-8, documented so two evaluators hash the same check the
     same way. This is not the hash of an empty byte string
     (:data:`EMPTY_ORACLE_DIGEST`); a check with no files still covers its argv.
 
-    ``sdf-oracle-v1\\n``
+    ``sdf-oracle-v2\\n``
+    ``visibility <visible|held_out>\\n``
+    ``seed <N>\\n`` where ``N`` is the UTF-8 length of the seed (0 when none)
+    ``<seed>\\n``
     ``argv <N>\\n`` where ``N`` is the UTF-8 length of the argv blob
     ``<arg0>\\0<arg1>\\0...`` (the argv blob itself; an argument may contain
     newlines, so the length is what frames it)
     ``\\n``
     then one line per sealed file, paths sorted, ``file\\0<relative>\\0<sha256>\\n``.
     ``<sha256>`` is the hex digest of that file's bytes. Subject files are
-    not included.
+    not included. A different visibility or seed is a different oracle.
     """
 
+    if visibility not in {"visible", "held_out"}:
+        raise ValueError(f"oracle visibility must be visible or held_out, not {visibility!r}")
+    seed = input_seed or ""
     argv_blob = "\0".join(command)
-    header = f"sdf-oracle-v1\nargv {len(argv_blob.encode())}\n"
-    body = header + argv_blob + "\n"
+    seed_bytes = seed.encode()
+    argv_bytes = argv_blob.encode()
+    body = (
+        f"sdf-oracle-v2\nvisibility {visibility}\nseed {len(seed_bytes)}\n"
+        + seed
+        + f"\nargv {len(argv_bytes)}\n"
+        + argv_blob
+        + "\n"
+    )
     for relative, file_hash in sorted(files):
         body += f"file\0{relative}\0{file_hash}\n"
     return hashlib.sha256(body.encode()).hexdigest()
@@ -711,8 +811,15 @@ def seal_oracle_digest(command: Sequence[str], files: Sequence[tuple[str, str]] 
 
 def materialize(
     fixture: Path, workspace: Path, targets: Sequence[str], *, command: Sequence[str] = (),
+    visibility: str = "visible", input_seed: str | None = None,
 ) -> SealedOracle:
-    """Build the sealed tree. Raises :class:`OracleTamper` instead of running."""
+    """Build the sealed tree. Raises :class:`OracleTamper` instead of running.
+
+    A held-out file is taken from the server fixture only. It is not required
+    to exist in the workspace, and the workspace copy is not consulted. When
+    any oracle file is held out, subject files are placed under
+    :data:`SUBJECT_DIR` so the worker can be confined away from the oracle.
+    """
 
     fixture = Path(fixture)
     workspace = Path(workspace)
@@ -720,10 +827,13 @@ def materialize(
     if planted:
         name = planted[0]
         raise OracleTamper(f"oracle import {name} is not in the server fixture (the agent added it)")
+    hide = visibility == "held_out" or any(is_held_out_path(relative) for relative in oracle_paths)
     for relative in oracle_paths:
         expected = _read_plain(fixture, relative)
         if expected is None:
             raise OracleTamper(f"oracle file {relative} is not a regular file in the server fixture")
+        if is_held_out_path(relative):
+            continue
         actual = _read_plain(workspace, relative)
         if actual is None:
             raise OracleTamper(
@@ -736,21 +846,27 @@ def materialize(
     root = Path(tempfile.mkdtemp(prefix="sdf-oracle-"))
     try:
         workspace_root = workspace.resolve()
-        if root.resolve() == workspace_root or root.resolve().is_relative_to(workspace_root):
+        resolved_root = root.resolve()
+        if resolved_root == workspace_root or resolved_root.is_relative_to(workspace_root):
             raise OracleTamper("sealed oracle would lie inside the agent workspace")
+        if hide and _landlock_would_expose(resolved_root):
+            raise OracleTamper("sealed oracle would lie on a path the subject worker is allowed to read")
         file_hashes: list[tuple[str, str]] = []
         for relative in oracle_paths:
             data = _read_plain(fixture, relative)
             assert data is not None
             _place(root, relative, data, readonly=True)
             file_hashes.append((relative, hashlib.sha256(data).hexdigest()))
+        subject_root = root / SUBJECT_DIR if hide else root
+        if hide:
+            subject_root.mkdir(mode=0o755, exist_ok=True)
         copied = 0
         for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
-            dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+            dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and name != HELD_OUT_DIR]
             for name in filenames:
                 path = Path(dirpath) / name
                 relative = path.relative_to(workspace).as_posix()
-                if relative in oracle_paths or _skip_workspace_file(relative, name):
+                if is_held_out_path(relative) or relative in oracle_paths or _skip_workspace_file(relative, name):
                     continue
                 if path.is_symlink():
                     raise OracleTamper(f"subject file {relative} is a symlink")
@@ -762,12 +878,51 @@ def materialize(
                 copied += 1
                 if copied + len(oracle_paths) > MAX_FILES:
                     raise OracleTamper("workspace is too large to seal")
-                _place(root, relative, path.read_bytes(), readonly=False)
-        digest = seal_oracle_digest(command, file_hashes)
-        return SealedOracle(root=root, oracle_paths=oracle_paths, oracle_digest=digest, fixture=fixture)
+                placed = f"{SUBJECT_DIR}/{relative}" if hide else relative
+                _place(root, placed, path.read_bytes(), readonly=False)
+        digest = seal_oracle_digest(command, file_hashes, visibility="held_out" if hide else visibility, input_seed=input_seed)
+        return SealedOracle(
+            root=root, oracle_paths=oracle_paths, oracle_digest=digest, fixture=fixture,
+            subject_root=subject_root, hide_oracle=hide,
+        )
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise
+
+
+def _landlock_would_expose(root: Path) -> bool:
+    """True when ``root`` sits on a path the held-out worker is allowed to read."""
+
+    allowed = [Path("/usr"), Path("/lib"), Path("/lib64"), Path("/etc"), Path("/dev"), Path(sys.prefix)]
+    base = getattr(sys, "base_prefix", None)
+    if base:
+        allowed.append(Path(base))
+    for prefix in allowed:
+        try:
+            resolved = prefix.resolve()
+        except OSError:
+            continue
+        if root == resolved or root.is_relative_to(resolved):
+            return True
+    return False
+
+
+def _add_held_out_conftests(fixture: Path, oracle: set[str]) -> None:
+    """Conftest files above a held-out target, stopping at the held-out root."""
+
+    for relative in [path for path in oracle if is_held_out_path(path)]:
+        parent = PurePosixPath(relative).parent
+        while True:
+            candidate = "conftest.py" if str(parent) in ("", ".") else f"{parent.as_posix()}/conftest.py"
+            if is_held_out_path(candidate):
+                raw_path = fixture.joinpath(*PurePosixPath(candidate).parts)
+                if raw_path.is_symlink():
+                    raise OracleTamper(f"oracle file {candidate} is not a regular file")
+                if _read_plain(fixture, candidate) is not None:
+                    oracle.add(candidate)
+            if str(parent) in ("", ".") or parent.name == HELD_OUT_DIR:
+                break
+            parent = parent.parent
 
 
 def discover_oracle(
@@ -781,7 +936,10 @@ def discover_oracle(
             oracle.add(PurePosixPath(target).as_posix())
     if fixture.is_dir():
         for dirpath, dirnames, filenames in os.walk(fixture, followlinks=False):
-            dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+            # Held-out conftest files are sealed only for a check that names
+            # a held-out target. A visible check must not copy them into the
+            # tree the subject can read.
+            dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS and name != HELD_OUT_DIR]
             for name in filenames:
                 if name != "conftest.py":
                     continue
@@ -789,6 +947,7 @@ def discover_oracle(
                 if path.is_symlink() or not path.is_file():
                     raise OracleTamper(f"oracle file {path.relative_to(fixture).as_posix()} is not a regular file")
                 oracle.add(path.relative_to(fixture).as_posix())
+    _add_held_out_conftests(fixture, oracle)
     planted: list[str] = []
     queue = [path for path in sorted(oracle) if path.endswith(".py")]
     seen: set[str] = set()
@@ -1120,9 +1279,10 @@ def _add_data_files(fixture: Path, oracle: set[str]) -> None:
         if parent in ("", "."):
             continue
         parts = PurePosixPath(parent).parts
-        if any(part in SUPPORT_DIRS for part in parts):
+        markers = SUPPORT_DIRS | {HELD_OUT_DIR}
+        if any(part in markers for part in parts):
             # Seal from the outermost support directory so nested data is included.
-            top = next(index for index, part in enumerate(parts) if part in SUPPORT_DIRS)
+            top = next(index for index, part in enumerate(parts) if part in markers)
             roots.add(PurePosixPath(*parts[: top + 1]).as_posix())
     for directory in sorted(roots):
         folder = fixture.joinpath(*PurePosixPath(directory).parts)

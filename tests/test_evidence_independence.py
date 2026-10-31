@@ -574,6 +574,8 @@ def test_script_and_python_c_passes_are_accepted(tmp_path):
             assert row.producer_role == EVALUATOR_ROLE
             assert row.subject_artifact_sha256 == diff.sha256
             assert row.oracle_digest and row.environment_digest
+            assert row.oracle_visibility == "visible"
+            assert row.input_seed is None
             assert row.collected_at is not None and row.expires_at is not None
             check_verification_acceptance(row, attempt_agent=attempt.agent, artifact_sha256=diff.sha256)
 

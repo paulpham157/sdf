@@ -470,6 +470,9 @@ class EvidenceResponse(BaseModel):
     environment_digest: str | None = None
     collected_at: datetime | None = None
     expires_at: datetime | None = None
+    # ADR 0035. Null on Evidence written before migration 0026.
+    oracle_visibility: str | None = None
+    input_seed: str | None = None
 
 
 def node_payload(node: GraphNodeRow) -> dict[str, Any]:
@@ -685,6 +688,8 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
         "environment_digest": evidence.environment_digest,
         "collected_at": evidence.collected_at,
         "expires_at": evidence.expires_at,
+        "oracle_visibility": evidence.oracle_visibility,
+        "input_seed": evidence.input_seed,
     }
 
 
@@ -906,6 +911,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     instructions=payload.instructions,
                     commands=[],
                     criterion_checks=checks,
+                    oracle_policies=registry.oracle_policies() if registry is not None else None,
                     validation_target=target,
                     parent_attempt_id=payload.parent_attempt_id,
                     model_tier=payload.model_tier,

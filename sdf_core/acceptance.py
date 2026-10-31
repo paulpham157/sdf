@@ -1,8 +1,13 @@
-"""Acceptance gate for Verification Evidence (ADR 0034).
+"""Acceptance gate for Verification Evidence (ADR 0034, ADR 0035).
 
 An agent reporting completion is not success. A PASS may accept an artifact
 only when the Evidence is verification produced by someone other than the
 Attempt's agent, bound to that artifact's bytes, and not expired.
+
+Passing the examples the agent could see is not enough when the Task
+declares a held-out or randomized oracle. That Task needs a passing,
+unexpired, artifact-bound row from one of those oracles. A Task that
+declares neither keeps the rule above and no extra one.
 """
 
 from __future__ import annotations
@@ -20,6 +25,13 @@ EVIDENCE_CLASS_VERIFICATION = "verification"
 EVIDENCE_CLASS_SQL = (
     "evidence_class IS NULL OR evidence_class IN ("
     + ", ".join(f"'{value}'" for value in EVIDENCE_CLASSES)
+    + ")"
+)
+# ADR 0035. NULL is a row written before the column existed.
+ORACLE_VISIBILITIES = ("visible", "held_out")
+ORACLE_VISIBILITY_SQL = (
+    "oracle_visibility IS NULL OR oracle_visibility IN ("
+    + ", ".join(f"'{value}'" for value in ORACLE_VISIBILITIES)
     + ")"
 )
 
@@ -107,6 +119,49 @@ def check_verification_acceptance(
             f"verification evidence {evidence_id} expired at {_aware(expires_at).isoformat()} "
             "and requires re-validation"
         )
+
+
+def is_hidden_oracle(evidence: Any) -> bool:
+    """True when this row is a held-out oracle or carries a randomized seed."""
+
+    if _field(evidence, "oracle_visibility") == "held_out":
+        return True
+    seed = _field(evidence, "input_seed")
+    return isinstance(seed, str) and seed != ""
+
+
+def check_hidden_oracle_acceptance(
+    rows: Any,
+    *,
+    required: bool,
+    attempt_agent: str,
+    artifact_sha256: str,
+    now: datetime | None = None,
+) -> None:
+    """When the task declared a held-out or randomized oracle, require one.
+
+    A visible PASS is still a recorded observation. It does not accept the
+    artifact on its own. Tasks that declare neither kind of oracle are
+    unchanged: ``required`` is false and this returns.
+
+    Raises :class:`AcceptanceError` naming the rule when no row qualifies.
+    """
+
+    if not required:
+        return
+    for row in rows:
+        if _field(row, "status") != "PASS" or not is_hidden_oracle(row):
+            continue
+        try:
+            check_verification_acceptance(
+                row, attempt_agent=attempt_agent, artifact_sha256=artifact_sha256, now=now,
+            )
+        except AcceptanceError:
+            continue
+        return
+    raise AcceptanceError(
+        "task declares a held-out or randomized oracle; a visible-only pass cannot accept the artifact"
+    )
 
 
 def environment_digest(*, command: str, runner: str | None, oracle_digest: str | None) -> str:
