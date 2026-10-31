@@ -344,7 +344,7 @@ def test_an_artifact_binding_cannot_be_rewritten_after_insert(tmp_path: Path):
 
 
 def test_a_check_write_stays_out_of_the_attempt_workspace(tmp_path: Path):
-    """A check's cwd is the sealed oracle, so a cwd write cannot move the revision (ADR 0036).
+    """A check's cwd is the sealed oracle, so a cwd write cannot move the revision (ADR 0037).
 
     The same command used to land ``dropped.txt`` in the Attempt workspace and
     force INCONCLUSIVE (ADR 0032). The drift hook still downgrades a PASS when

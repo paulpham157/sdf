@@ -1,4 +1,4 @@
-"""Sealed evaluator oracle (ADR 0036).
+"""Sealed evaluator oracle (ADR 0037).
 
 Pytest used to run inside the agent-writable workspace and accept a PASS from
 stdout. A helper the test imported was not covered by the fixture hash (ADR
@@ -551,7 +551,10 @@ def _thaw_tree(root: Path) -> None:
     """Undo the worker-time freeze so the evaluator can delete the tree.
 
     The notary writes the result through an fd it opened before the freeze,
-    so the tree stays mode 0555/0444 until the check has been read.
+    so the tree stays mode 0555/0444 until the check has been read. Cleanup
+    then sets owner-only modes. Restoring the pre-freeze modes would put
+    world-readable 0644 files and 0755 directories back, and the owner write
+    bit on 0700 directories is what ``rmtree`` needs.
     """
 
     if not root.exists():
@@ -562,11 +565,11 @@ def _thaw_tree(root: Path) -> None:
             if os.path.islink(path):
                 continue
             try:
-                os.chmod(path, 0o644)
+                os.chmod(path, 0o600)
             except OSError:
                 pass
         try:
-            os.chmod(dirpath, 0o755)
+            os.chmod(dirpath, 0o700)
         except OSError:
             pass
 

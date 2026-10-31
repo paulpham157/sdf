@@ -185,7 +185,7 @@ class EvidenceRow(Base):
     # ADR 0032 (#62): the revision and result tree the evaluator checked.
     revision_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # ADR 0036: independence. Nullable so Evidence written before migration 0025
+    # ADR 0037: independence. Nullable so Evidence written before migration 0025
     # stays valid. kind=evaluation is unchanged; evidence_class separates a real
     # check (verification) from a coverage gap (NULL) and from execution/outcome.
     evidence_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -546,7 +546,7 @@ def _reject_evidence_mutation(session: Session, flush_context: Any, instances: A
     for item in session.new:
         if isinstance(item, EvidenceRow) and item.evidence_class is not None and item.evidence_class not in EVIDENCE_CLASSES:
             raise ValueError(
-                f"evidence_class must be one of {list(EVIDENCE_CLASSES)} (ADR 0036), not {item.evidence_class!r}"
+                f"evidence_class must be one of {list(EVIDENCE_CLASSES)} (ADR 0037), not {item.evidence_class!r}"
             )
     for item in session.dirty:
         if isinstance(item, EvidenceRow) and session.is_modified(item, include_collections=False):

@@ -1,4 +1,4 @@
-"""Evidence independence columns (ADR 0036).
+"""Evidence independence columns (ADR 0037).
 
 Adds nullable columns on ``evidence`` so a row can say what class it is
 (``execution``, ``verification`` or ``outcome``), who produced and verified it,

@@ -1,4 +1,4 @@
-"""ADR 0036: a workspace file cannot forge verification, and a PASS is bound.
+"""ADR 0037: a workspace file cannot forge verification, and a PASS is bound.
 
 Adversarial cases are checks the agent can plant in its workspace. None of
 them may come back PASS. The acceptance gate is tested in both directions:
@@ -273,6 +273,39 @@ def test_malformed_subject_response_is_not_a_pass(tmp_path):
     assert "malformed subject response" in text
 
 
+def test_thaw_uses_owner_only_modes_and_freeze_stays_read_only(tmp_path):
+    """Cleanup must not restore world-readable modes. The worker freeze stays 0444/0555."""
+
+    from sdf_core.oracle import PYTEST_SEAL, _thaw_tree
+
+    assert "os.chmod(path, 0o444)" in PYTEST_SEAL
+    assert "os.chmod(dirpath, 0o555)" in PYTEST_SEAL
+
+    root = tmp_path / "sealed"
+    nested = root / "sub"
+    nested.mkdir(parents=True)
+    oracle = nested / "test_calc.py"
+    subject = root / "calc.py"
+    oracle.write_text("def test_ok():\n    pass\n", encoding="utf-8")
+    subject.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    # Modes materialize would have set before the worker-time freeze.
+    oracle.chmod(0o444)
+    subject.chmod(0o644)
+    nested.chmod(0o755)
+    root.chmod(0o755)
+    for path in (oracle, subject):
+        path.chmod(0o444)
+    for path in (nested, root):
+        path.chmod(0o555)
+
+    _thaw_tree(root)
+
+    for path in (oracle, subject, nested, root):
+        mode = path.stat().st_mode & 0o777
+        assert mode & 0o077 == 0, oct(mode)
+        assert mode == (0o700 if path.is_dir() else 0o600)
+
+
 def test_worker_cannot_write_the_sealed_tree_but_can_write_temp(tmp_path):
     forge = (
         "import os, tempfile\n"
@@ -302,7 +335,7 @@ def test_worker_cannot_write_the_sealed_tree_but_can_write_temp(tmp_path):
 def test_subject_cannot_forge_the_evaluator_signal(tmp_path):
     """Import-time forge of the old marker and JUnit files must not be a PASS.
 
-    On the first cut of ADR 0036 this was a PASS: calc.py read
+    On the first cut of ADR 0037 this was a PASS: calc.py read
     SDF_ORACLE_TOKEN and SDF_ORACLE_MARKER, wrote a matching pair, and
     os._exit(0), while the fixture test asserts ``add(2, 3) == 999``. The
     same shape is a FAIL under ADR 0025's stdout check. The seal has to

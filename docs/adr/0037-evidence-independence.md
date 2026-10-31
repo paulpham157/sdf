@@ -1,8 +1,8 @@
-# ADR 0036: verification evidence is independent of the agent workspace
+# ADR 0037: verification evidence is independent of the agent workspace
 
 Status: proposed (implemented with this change; awaiting maintainer acceptance).
-Numbered 0036 because main already has ADR 0034 (LLM transport) and ADR 0035
-(Go orchestration).
+Numbered 0037 because main already has ADR 0034 (LLM transport), ADR 0035
+(Go orchestration), and ADR 0036 (path-filtered Go CI).
 Narrows the residual stated in [ADR 0025](0025-server-registered-checks.md).
 Does not change Evidence append-only rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md))
 or revision binding ([ADR 0032](0032-attempt-revisions.md)).
@@ -161,8 +161,10 @@ Attempt's agent, or that it is still current.
      its own file and directory, not the workspace. The worker's `TMPDIR`
      is a fresh directory under `/tmp`, so `tempfile` still works. A
      failed `chmod` exits 86. The worker cannot undo the modes because
-     `chmod` is denied. The evaluator restores the modes only when it
-     deletes the tree, after it has read the result.
+     `chmod` is denied. After the result has been read, cleanup sets
+     owner-only modes (`0600` files, `0700` directories) so the tree can
+     be deleted. It does not restore the world-readable modes the files
+     had before the freeze.
 
    A separate uid or user namespace is not what this uses. Mapping the
    host uid inside a user namespace would still own the files, and
