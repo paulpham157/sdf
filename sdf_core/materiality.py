@@ -18,6 +18,7 @@ tuple to :class:`~sdf_core.agent_messaging.MessageHub`); ids must be unique.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -100,6 +101,15 @@ def _check_unique(rules: Sequence[MaterialityRule]) -> None:
 _check_unique(DEFAULT_RULES)
 
 
+def _fold(text: str) -> str:
+    """NFKC-normalise and drop invisible format characters (zero-width spaces,
+    joiners, bidi controls), so ``force\u200b-push`` or full-width letters
+    cannot slip past a rule.  Cross-script look-alikes are not mapped."""
+
+    folded = unicodedata.normalize("NFKC", str(text))
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+
+
 def matched_rules(texts: Iterable[str | None], rules: Sequence[MaterialityRule] = DEFAULT_RULES) -> list[str]:
     """Ids of every rule matching any one of ``texts``, in rule order.
 
@@ -108,5 +118,5 @@ def matched_rules(texts: Iterable[str | None], rules: Sequence[MaterialityRule] 
     """
 
     _check_unique(rules)
-    items = [t for t in texts if t]
+    items = [_fold(t) for t in texts if t]
     return [rule.id for rule in rules if any(rule.matches(t) for t in items)]

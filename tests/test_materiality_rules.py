@@ -68,6 +68,12 @@ def test_rules_see_options_consequence_and_action_and_are_case_insensitive():
     assert matched_rules(["ok?"] + ["SEND AN EMAIL TO CUSTOMERS"]) == ["external.send"]
 
 
+def test_invisible_characters_and_full_width_letters_do_not_evade_the_rules():
+    assert matched_rules(["May I force\u200b-push?"]) == ["git.destructive"]
+    assert matched_rules(["\uff46\uff4f\uff52\uff43\uff45-push to main?"]) == ["git.destructive"]
+    assert matched_rules(["drop\u2060 the users ta\u200dble"]) == ["data.delete"]
+
+
 def test_rules_are_extendable_and_ids_must_be_unique():
     extra = MaterialityRule("custom.deploy", "deploys", "deploys to production",
                             (re.compile(r"\bdeploy\b", re.IGNORECASE),))

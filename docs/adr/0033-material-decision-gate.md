@@ -44,7 +44,9 @@ narrow part of it on 2026-10-31 (recorded in ADR 0028).
      the consequence and an optional declared `action`
      (`sdf-msg request-decision --action TEXT`, at most 200 characters
      stored). Matching uses the full text the agent sent, not the truncated
-     stored copy.
+     stored copy, after NFKC normalisation with invisible format characters
+     (zero-width, bidi) removed. Cross-script look-alikes (for example a
+     Cyrillic "о") are not mapped.
    - Default rules (`DEFAULT_RULES`), with id and category:
 
      | Rule id | Category |
