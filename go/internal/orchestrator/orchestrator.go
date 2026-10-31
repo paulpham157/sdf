@@ -1,5 +1,6 @@
 // Package orchestrator dispatches Attempts to agents in sandboxes (ADR 0035).
 // Each Attempt runs under a context with timeout; cancel stops its goroutine tree.
+// Agent tool calls must go through the Tool Proxy (ADR 0026), never direct.
 package orchestrator
 
 import (
@@ -11,10 +12,14 @@ import (
 
 	"github.com/paulpham157/sdf/go/internal/bus"
 	"github.com/paulpham157/sdf/go/internal/queue"
+	"github.com/paulpham157/sdf/go/internal/toolproxy"
 )
 
 // ErrDuplicateAttempt is returned when the same idempotency key is started twice.
 var ErrDuplicateAttempt = errors.New("orchestrator: duplicate idempotency key")
+
+// ErrNoToolProxy is returned when CallTool is used without a configured Proxy.
+var ErrNoToolProxy = errors.New("orchestrator: tool proxy not configured")
 
 // SandboxRunner is the sandbox side of an Attempt (injected for tests).
 // It must return when ctx is cancelled.
@@ -22,11 +27,15 @@ type SandboxRunner func(ctx context.Context, attemptID string, payload []byte) e
 
 // Attempt is one dispatch into a sandbox.
 type Attempt struct {
-	ID             string
-	IdempotencyKey string
-	AgentID        string
-	Payload        []byte
-	Timeout        time.Duration
+	ID                  string
+	IdempotencyKey      string
+	AgentID             string
+	Payload             []byte
+	Timeout             time.Duration
+	OwnerPrincipal      string
+	SandboxID           string
+	AllowedCredentials  []string
+	AllowedTools        []string
 }
 
 type attemptMeta struct {
@@ -37,10 +46,12 @@ type attemptMeta struct {
 
 // Orchestrator owns Attempt lifecycle: enqueue via the task queue, run under
 // a timeout context, stream on the bus, and honour cancellation.
+// Tool calls from agents flow through tools (*toolproxy.Proxy).
 type Orchestrator struct {
 	bus     *bus.Bus
 	queue   *queue.Queue
 	runner  SandboxRunner
+	tools   *toolproxy.Proxy
 	timeout time.Duration
 
 	mu      sync.Mutex
@@ -59,9 +70,11 @@ type Config struct {
 	Workers        int
 	DefaultTimeout time.Duration
 	Runner         SandboxRunner
+	ToolProxy      *toolproxy.Proxy
 }
 
 // New builds an Orchestrator. Runner defaults to a no-op that waits on ctx.
+// ToolProxy defaults to an in-process proxy with a no-op executor.
 func New(cfg Config) *Orchestrator {
 	if cfg.BusCapacity < 1 {
 		cfg.BusCapacity = 64
@@ -81,11 +94,15 @@ func New(cfg Config) *Orchestrator {
 			return ctx.Err()
 		}
 	}
+	if cfg.ToolProxy == nil {
+		cfg.ToolProxy = toolproxy.NewProxy(nil)
+	}
 
 	root, cancel := context.WithCancel(context.Background())
 	o := &Orchestrator{
 		bus:     bus.New(cfg.BusCapacity),
 		runner:  cfg.Runner,
+		tools:   cfg.ToolProxy,
 		timeout: cfg.DefaultTimeout,
 		started: make(map[string]struct{}),
 		meta:    make(map[string]attemptMeta),
@@ -102,10 +119,14 @@ func (o *Orchestrator) Bus() *bus.Bus { return o.bus }
 // Queue returns the task queue.
 func (o *Orchestrator) Queue() *queue.Queue { return o.queue }
 
+// ToolProxy returns the wired Tool Proxy.
+func (o *Orchestrator) ToolProxy() *toolproxy.Proxy { return o.tools }
+
 // Executions returns how many Attempts actually began running (post-idempotency).
 func (o *Orchestrator) Executions() int64 { return o.execs.Load() }
 
 // Start enqueues an Attempt. Duplicate IdempotencyKey does not run twice.
+// Registers the Attempt's sandbox credential scope with the Tool Proxy.
 func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 	if a.IdempotencyKey == "" {
 		return errors.New("orchestrator: idempotency key required")
@@ -113,6 +134,10 @@ func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 	timeout := a.Timeout
 	if timeout <= 0 {
 		timeout = o.timeout
+	}
+	sandboxID := a.SandboxID
+	if sandboxID == "" {
+		sandboxID = a.ID
 	}
 
 	o.mu.Lock()
@@ -127,6 +152,17 @@ func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 		timeout:   timeout,
 	}
 	o.mu.Unlock()
+
+	if o.tools != nil {
+		o.tools.RegisterScope(toolproxy.SandboxScope{
+			SandboxID:          sandboxID,
+			AttemptID:          a.ID,
+			AgentID:            a.AgentID,
+			OwnerPrincipal:     a.OwnerPrincipal,
+			AllowedCredentials: append([]string(nil), a.AllowedCredentials...),
+			AllowedTools:       append([]string(nil), a.AllowedTools...),
+		})
+	}
 
 	t := queue.Task{
 		ID:             a.ID,
@@ -146,6 +182,17 @@ func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 		return err
 	}
 	return nil
+}
+
+// CallTool sends one structured tool call through the Tool Proxy for an Attempt.
+// Agents must use this instead of invoking tools or reading credentials directly.
+// claimedActor empty skips the claim check; principal empty skips owner check.
+func (o *Orchestrator) CallTool(ctx context.Context, attemptID string, req toolproxy.ActionRequest, claimedActor, principal string) (toolproxy.Result, error) {
+	if o.tools == nil {
+		return toolproxy.Result{}, ErrNoToolProxy
+	}
+	req.AttemptID = attemptID
+	return o.tools.Execute(ctx, req, claimedActor, principal)
 }
 
 func (o *Orchestrator) loadMeta(key string) (attemptMeta, bool) {
