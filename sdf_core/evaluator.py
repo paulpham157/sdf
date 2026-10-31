@@ -25,6 +25,8 @@ from .oracle import (
     OracleTamper,
     declared_test_count,
     materialize,
+    PYTEST_SEAL,
+    load_result_frame,
     prepare_private_report,
     prepare_sealed_report,
     pytest_oracle_verdict,
@@ -61,11 +63,14 @@ RUFF_FLAGS = ("--isolated", "--no-cache")
 # ``json.py`` cannot replace the stdlib one.
 PYTHON_BOOTSTRAP = (
     "import sys, os, runpy\n"
-    "_plugin = os.environ.get('SDF_ORACLE_PLUGIN_DIR')\n"
-    "if _plugin:\n"
-    "    sys.path.append(os.path.abspath(_plugin))\n"
     "_m, _t = sys.argv[1], sys.argv[2]\n"
     "sys.argv = ['-c' if _m == '-c' else _t, *sys.argv[3:]]\n"
+    # Pop the seal before any project import. For pytest the notary (this
+    # process) forks the child and only then writes the result file; the
+    # child returns here and execs pytest. The notary does not return.
+    "_seal = os.environ.pop('SDF_ORACLE_SEAL', '')\n"
+    "if _m == '-m' and _t == 'pytest' and _seal:\n"
+    "    exec(compile(_seal, '<seal>', 'exec'), {'__name__': 'sdf_seal'})\n"
     "if _m == 'path':\n"
     "    sys.path.append(os.path.dirname(os.path.abspath(_t)))\n"
     "sys.path.append(os.getcwd())\n"
@@ -240,11 +245,9 @@ class DeterministicEvaluator:
     made non-dumpable first (:func:`protect_server_process`).
 
     Pytest and any check with a server fixture run from a sealed oracle
-    (ADR 0034): test entrypoints, conftest, helpers and fixture data are
-    hash-checked copies, and the pass/fail signal is a JUnit report the
-    evaluator reads itself.  A printed summary or ``os._exit(0)`` is not a
-    pass.  The code under test is still imported, so a subject module that
-    forges that report remains outside what the seal can stop (see ADR 0034).
+    (ADR 0034). The pass/fail signal is a result frame the plugin writes
+    through a pipe ordinary ``os.write`` cannot use. A subject that only
+    forges files from the environment and exits is not a pass (see ADR 0034).
     """
 
     def __init__(
@@ -574,15 +577,18 @@ class DeterministicEvaluator:
             elif is_pytest(argv):
                 report = prepare_private_report()
             if report is not None:
-                process_argv = retarget_pytest(process_argv, junit=report.junit_arg, sealed=sealed is not None)
+                process_argv = retarget_pytest(process_argv, sealed=sealed is not None)
             child_env = _check_env(safe_path)
-            if report is not None:
-                child_env["SDF_ORACLE_TOKEN"] = report.token
-                child_env["SDF_ORACLE_MARKER"] = report.marker_arg
-                child_env["SDF_ORACLE_PLUGIN_DIR"] = report.plugin_dir_arg
-                if os.path.basename(process_argv[0]) == "pytest":
-                    # Bare pytest (containment) does not run the isolated bootstrap.
-                    child_env["PYTHONPATH"] = report.plugin_dir_arg
+            if report is not None and os.path.basename(process_argv[0]) not in {"pytest"}:
+                # The bootstrap (python -c) is the notary. It pops these before
+                # the pytest child is forked, so the subject never sees them.
+                child_env["SDF_ORACLE_SEAL"] = PYTEST_SEAL
+                child_env["SDF_ORACLE_REPORT"] = str(report.result_path)
+            elif report is not None:
+                return stop(
+                    "oracle result channel is not sealed for a bare pytest executable",
+                    oracle_digest=oracle_digest,
+                )
             try:
                 sandbox = FixtureSandbox(
                     run_root,
@@ -603,7 +609,9 @@ class DeterministicEvaluator:
                 node_ids = _pytest_node_ids(argv)
                 declared = declared_test_count(run_root if sealed is None else sealed.root, node_ids)
                 result_status, reason = pytest_oracle_verdict(
-                    exit_code=completed.returncode, report=report, declared=declared,
+                    exit_code=completed.returncode,
+                    frame=load_result_frame(report.result_path),
+                    declared=declared,
                     oracle_changed=bool(sealed and sealed.changed()),
                 )
                 if reason:

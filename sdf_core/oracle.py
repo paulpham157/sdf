@@ -8,22 +8,20 @@ The oracle is the fixture's test entrypoints, ``conftest.py``, support modules
 and data files next to those tests. They are copied to a directory outside the
 workspace, byte-checked against the fixture, and that directory is the check's
 cwd. The code under test is copied from the workspace only when it is not part
-of the oracle. Pass/fail for pytest comes from a JUnit report and a completion
-marker the evaluator's own plugin writes, checked against the exit code and
-the number of tests the oracle declares.
+of the oracle. Pass/fail for pytest comes from a result frame the plugin
+writes through a pipe the subject cannot see. A seccomp filter on Linux
+x86_64 rejects ordinary writes to that pipe.
 """
 
 from __future__ import annotations
 
 import ast
 import hashlib
-import hmac
 import json
 import os
 import shutil
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -40,39 +38,142 @@ SKIP_DIRS = frozenset({".git", "__pycache__", ".pytest_cache", ".sdf-oracle", ".
 THIRD_PARTY = frozenset({"pytest", "_pytest", "sdf_core"})
 MAX_FILE_BYTES = 2_000_000
 MAX_FILES = 2_000
-MAX_JUNIT_BYTES = 2_000_000
 REPORT_DIR_NAME = ".sdf-oracle"
 PLUGIN_MODULE = "sdf_oracle_plugin"
+RESULT_NAME = "result.json"
 
-# Loaded by the evaluator (-p), never from the workspace. It records a
-# completion marker only from pytest_sessionfinish, which os._exit skips.
-PLUGIN_SOURCE = '''\
-"""Evaluator-owned pytest plugin (ADR 0034). Do not import from a check."""
+# Runs inside the check, before pytest imports the code under test. The
+# process the sandbox spawned is the notary: it forks the pytest child, and
+# only after that child has exited does it write the result file. The child
+# never sees SDF_ORACLE_REPORT. A seccomp filter lets the result pipe be
+# written only from a stub mapped for the plugin, not from libc (os.write).
+PYTEST_SEAL = r'''
+import ctypes, os, sys
 
+_WRITE_NR = (1, 18, 20, 44, 46, 278, 296, 307, 328)
+_STUB = bytes.fromhex("48c7c0010000000f05c3")
 
-def pytest_sessionfinish(session, exitstatus):
-    import json
-    import os
-    from pathlib import Path
+def _stub():
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.mmap.restype = ctypes.c_void_p
+    libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+    for _ in range(8):
+        mem = libc.mmap(None, 4096, 7, 0x22, -1, 0)
+        if mem and (mem >> 32) == ((mem + 4096) >> 32):
+            ctypes.memmove(mem, _STUB, len(_STUB))
+            return mem
+    raise OSError("oracle stub unavailable")
 
-    marker = os.environ.get("SDF_ORACLE_MARKER")
-    if not marker:
+def _seccomp(fd, lo):
+    if sys.platform != "linux" or os.uname().machine not in {"x86_64", "amd64"}:
+        raise OSError("oracle channel is sealed only on linux x86_64")
+    c_u16, c_u8, c_u32, c_us = ctypes.c_uint16, ctypes.c_uint8, ctypes.c_uint32, ctypes.c_ushort
+    class _F(ctypes.Structure):
+        _fields_ = [("code", c_u16), ("jt", c_u8), ("jf", c_u8), ("k", c_u32)]
+    class _P(ctypes.Structure):
+        _fields_ = [("len", c_us), ("filter", ctypes.POINTER(_F))]
+    LD, JEQ, JGE, RET = 0x20, 0x15, 0x35, 0x06
+    ALLOW, KILL, EPERM, ARCH = 0x7FFF0000, 0, 0x00050001, 0xC000003E
+    hi = lo + 16
+    ins = []
+    def emit(code, jt=0, jf=0, k=0):
+        ins.append(_F(code, jt, jf, k & 0xFFFFFFFF)); return len(ins) - 1
+    def rel(a, b):
+        return b - (a + 1)
+    emit(LD, k=4)
+    arch = emit(JEQ, k=ARCH)
+    kill = emit(RET, k=KILL)
+    ins[arch].jt = rel(arch, kill + 1)
+    emit(LD, k=0)
+    jeqs = [emit(JEQ, k=nr) for nr in _WRITE_NR]
+    emit(RET, k=ALLOW)
+    handler = len(ins)
+    for i in jeqs:
+        ins[i].jt = rel(i, handler)
+    emit(LD, k=16)
+    fdj = emit(JEQ, k=fd & 0xFFFFFFFF)
+    allow_fd = emit(RET, k=ALLOW)
+    ins[fdj].jt, ins[fdj].jf = rel(fdj, allow_fd + 1), rel(fdj, allow_fd)
+    emit(LD, k=20)
+    hj = emit(JEQ, k=0)
+    allow_h = emit(RET, k=ALLOW)
+    ins[hj].jt, ins[hj].jf = rel(hj, allow_h + 1), rel(hj, allow_h)
+    emit(LD, k=12)
+    rh = emit(JEQ, k=(lo >> 32) & 0xFFFFFFFF)
+    emit(LD, k=8)
+    rl = emit(JGE, k=lo & 0xFFFFFFFF)
+    emit(LD, k=8)
+    rhi = emit(JGE, k=hi & 0xFFFFFFFF)
+    allow = emit(RET, k=ALLOW)
+    deny = emit(RET, k=EPERM)
+    ins[rh].jt, ins[rh].jf = 0, rel(rh, deny)
+    ins[rl].jt, ins[rl].jf = 0, rel(rl, deny)
+    ins[rhi].jt, ins[rhi].jf = rel(rhi, deny), 0
+    libc = ctypes.CDLL(None, use_errno=True)
+    arr = (_F * len(ins))(*ins)
+    prog = _P(len(ins), arr)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:
+        raise OSError("prctl no_new_privs failed")
+    libc.syscall.restype = ctypes.c_long
+    if libc.syscall(317, 1, 0, ctypes.byref(prog)) != 0:
+        raise OSError("seccomp filter failed")
+    return ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t)(lo)
+
+def _plugin(fd, write):
+    import json, types
+    mod = types.ModuleType("sdf_oracle_plugin")
+    def pytest_sessionfinish(session, exitstatus):
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        stats = getattr(reporter, "stats", {}) if reporter is not None else {}
+        def count(key):
+            return len(stats.get(key) or ())
+        passed, failed = count("passed"), count("failed")
+        skipped, errors = count("skipped"), count("error")
+        total = passed + failed + skipped + errors
+        payload = json.dumps({
+            "collected": total,
+            "testscollected": int(getattr(session, "testscollected", 0) or 0),
+            "passed": passed, "failed": failed, "skipped": skipped, "errors": errors,
+            "exitstatus": int(exitstatus),
+        }).encode()
+        buf = ctypes.create_string_buffer(payload)
+        write(fd, buf, len(payload))
+    mod.pytest_sessionfinish = pytest_sessionfinish
+    sys.modules["sdf_oracle_plugin"] = mod
+
+def _notary():
+    report = os.environ.pop("SDF_ORACLE_REPORT", "")
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        try:
+            stub = _stub()
+            write = _seccomp(write_fd, stub)
+        except OSError:
+            os._exit(86)
+        _plugin(write_fd, write)
         return
-    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
-    stats = getattr(reporter, "stats", {}) if reporter is not None else {}
+    os.close(write_fd)
+    chunks, size = [], 0
+    while size <= 100000:
+        buf = os.read(read_fd, 65536)
+        if not buf:
+            break
+        chunks.append(buf)
+        size += len(buf)
+    data = b"".join(chunks)
+    if report:
+        try:
+            out = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            os.write(out, data)
+            os.close(out)
+        except OSError:
+            pass
+    _pid, status = os.waitpid(pid, 0)
+    os._exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 
-    def count(key):
-        return len(stats.get(key) or ())
-
-    Path(marker).write_text(json.dumps({
-        "token": os.environ.get("SDF_ORACLE_TOKEN", ""),
-        "collected": int(getattr(session, "testscollected", 0) or 0),
-        "passed": count("passed"),
-        "failed": count("failed"),
-        "skipped": count("skipped"),
-        "errors": count("error"),
-        "exitstatus": int(exitstatus),
-    }), encoding="utf-8")
+_notary()
 '''
 
 
@@ -107,36 +208,16 @@ class SealedOracle:
 
 @dataclass(frozen=True)
 class OracleReport:
-    """Where the evaluator, not the agent, reads the check's result."""
+    """Directory the notary writes the result frame into, after the child exits."""
 
     directory: Path
-    junit_arg: str
-    marker_arg: str
-    plugin_dir_arg: str
-    token: str
-
-    @property
-    def junit_path(self) -> Path:
-        return self.directory / "junit.xml"
-
-    @property
-    def marker_path(self) -> Path:
-        return self.directory / "marker.json"
+    result_path: Path
 
     def cleanup(self) -> None:
         if self.directory.exists() and self.directory.name == REPORT_DIR_NAME:
             shutil.rmtree(self.directory, ignore_errors=True)
         elif self.directory.exists():
             shutil.rmtree(self.directory, ignore_errors=True)
-
-
-@dataclass(frozen=True)
-class JunitReport:
-    tests: int
-    passed: int
-    failed: int
-    errors: int
-    skipped: int
 
 
 def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> SealedOracle:
@@ -278,21 +359,11 @@ def declared_test_count(root: Path, node_ids: Sequence[str]) -> int:
 
 
 def prepare_sealed_report(sealed: SealedOracle) -> OracleReport:
-    """Report files inside the sealed tree, addressed relatively for the child."""
-
-    import secrets
+    """Directory inside the sealed tree where the notary drops the result frame."""
 
     directory = sealed.root / REPORT_DIR_NAME
     directory.mkdir(mode=0o755)
-    (directory / f"{PLUGIN_MODULE}.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
-    os.chmod(directory / f"{PLUGIN_MODULE}.py", 0o644)
-    return OracleReport(
-        directory=directory,
-        junit_arg=f"{REPORT_DIR_NAME}/junit.xml",
-        marker_arg=f"{REPORT_DIR_NAME}/marker.json",
-        plugin_dir_arg=REPORT_DIR_NAME,
-        token=secrets.token_hex(16),
-    )
+    return OracleReport(directory=directory, result_path=directory / RESULT_NAME)
 
 
 def prepare_private_report() -> OracleReport:
@@ -302,24 +373,19 @@ def prepare_private_report() -> OracleReport:
     changing the argv. The report still lives somewhere the workspace is not.
     """
 
-    import secrets
-
     directory = Path(tempfile.mkdtemp(prefix="sdf-oracle-report-"))
-    (directory / f"{PLUGIN_MODULE}.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
-    return OracleReport(
-        directory=directory,
-        junit_arg=str(directory / "junit.xml"),
-        marker_arg=str(directory / "marker.json"),
-        plugin_dir_arg=str(directory),
-        token=secrets.token_hex(16),
-    )
+    return OracleReport(directory=directory, result_path=directory / RESULT_NAME)
 
 
-def retarget_pytest(argv: Sequence[str], *, junit: str, sealed: bool) -> list[str]:
-    """Point pytest at the evaluator's report. A sealed run also drops workspace discovery."""
+def retarget_pytest(argv: Sequence[str], *, sealed: bool) -> list[str]:
+    """Load the in-memory oracle plugin. A sealed run also drops workspace discovery.
+
+    There is no ``--junitxml`` path. The child is not told where the result
+    file will be written; the notary writes it after the child has exited.
+    """
 
     if not sealed:
-        return [*argv, "--junitxml", junit, "-p", PLUGIN_MODULE]
+        return [*argv, "-p", PLUGIN_MODULE]
     out: list[str] = []
     index = 0
     while index < len(argv):
@@ -332,7 +398,7 @@ def retarget_pytest(argv: Sequence[str], *, junit: str, sealed: bool) -> list[st
             continue
         out.append(part)
         index += 1
-    extra = ["--rootdir", ".", "--confcutdir", ".", "--junitxml", junit, "-p", PLUGIN_MODULE]
+    extra = ["--rootdir", ".", "--confcutdir", ".", "-p", PLUGIN_MODULE]
     for index, part in enumerate(out):
         if part == "pytest" or os.path.basename(part) == "pytest":
             return [*out[: index + 1], *extra, *out[index + 1 :]]
@@ -342,53 +408,46 @@ def retarget_pytest(argv: Sequence[str], *, junit: str, sealed: bool) -> list[st
 def pytest_oracle_verdict(
     *,
     exit_code: int | None,
-    report: OracleReport,
+    frame: dict[str, int] | None,
     declared: int,
     oracle_changed: bool,
 ) -> tuple[str, str]:
-    """``(status, reason)`` from the evaluator's own report. Never from stdout.
+    """``(status, reason)`` from the notary's result frame. Never from stdout.
 
-    A missing marker or report after exit 0 is an unexpected early exit
-    (``os._exit``, a forged summary). Zero collected tests and tests that were
-    only skipped are failures. Disagreement between the marker, the JUnit
-    report and the exit code is inconclusive — not a pass.
+    A missing frame after exit 0 is an unexpected early exit (``os._exit``
+    before the plugin's stub ran). Zero collected tests and tests that were
+    only skipped are failures. A frame the counts cannot support is
+    inconclusive — not a pass.
     """
 
     if oracle_changed:
         return "INCONCLUSIVE", "oracle files changed while the check ran"
-    marker = _read_marker(report)
-    junit = _read_junit(report)
-    if marker is None:
+    if frame is None:
         if exit_code == 0:
-            return "FAIL", "pytest exited 0 without an evaluator completion marker (unexpected early exit)"
-        return "FAIL", "pytest ended without an evaluator completion marker"
-    if junit is None:
-        if exit_code == 0:
-            return "FAIL", "pytest exited 0 without a junit report (unexpected early exit)"
-        return "FAIL", "pytest ended without a junit report"
-    accounted = marker["passed"] + marker["failed"] + marker["skipped"] + marker["errors"]
-    if marker["collected"] == 0 or junit.tests == 0:
-        return "FAIL", "pytest collected zero tests"
-    if declared and junit.tests < declared:
-        return "FAIL", f"junit reported {junit.tests} tests but the oracle declares {declared}"
-    if accounted != junit.tests or marker["collected"] < junit.tests:
-        return "INCONCLUSIVE", "junit report does not match the evaluator completion marker"
-    if junit.failed or junit.errors or marker["failed"] or marker["errors"]:
+            return "FAIL", "pytest exited 0 without an evaluator result (unexpected early exit)"
+        return "FAIL", "pytest ended without an evaluator result"
+    if frame["failed"] or frame["errors"]:
         return "FAIL", "pytest reported failing tests"
-    if junit.passed == 0:
-        return "FAIL", f"pytest exited with no test passed (skipped={junit.skipped}); skipped tests are not a run"
-    if exit_code != 0 or marker["exitstatus"] != 0:
-        return "INCONCLUSIVE", (
-            f"pytest exit code {exit_code} disagrees with a passing junit report "
-            f"(marker exit {marker['exitstatus']})"
+    if frame["testscollected"] == 0 or frame["collected"] == 0:
+        return "FAIL", "pytest collected zero tests"
+    if frame["collected"] != frame["testscollected"]:
+        return "INCONCLUSIVE", "evaluator result counts do not agree"
+    if declared and frame["collected"] < declared:
+        return "FAIL", f"pytest reported {frame['collected']} tests but the oracle declares {declared}"
+    if frame["passed"] == 0:
+        return "FAIL", (
+            f"pytest exited with no test passed (skipped={frame['skipped']}); skipped tests are not a run"
         )
-    if junit.passed != marker["passed"]:
-        return "INCONCLUSIVE", "junit passed-count does not match the evaluator completion marker"
+    if exit_code != 0 or frame["exitstatus"] != 0:
+        return "INCONCLUSIVE", (
+            f"pytest exit code {exit_code} disagrees with a passing result (frame exit {frame['exitstatus']})"
+        )
     return "PASS", ""
 
 
-def _read_marker(report: OracleReport) -> dict[str, int | str] | None:
-    path = report.marker_path
+def load_result_frame(path: Path) -> dict[str, int] | None:
+    """The notary's result file, or ``None`` when it is missing or not a frame."""
+
     try:
         if not path.is_file() or path.is_symlink() or path.stat().st_size > 100_000:
             return None
@@ -397,56 +456,15 @@ def _read_marker(report: OracleReport) -> dict[str, int | str] | None:
         return None
     if not isinstance(payload, dict):
         return None
-    token = payload.get("token")
-    if not isinstance(token, str) or len(token) != len(report.token) or not hmac.compare_digest(token, report.token):
-        return None
-    parsed: dict[str, int | str] = {"token": token}
-    for key in ("collected", "passed", "failed", "skipped", "errors", "exitstatus"):
+    parsed: dict[str, int] = {}
+    for key in ("collected", "testscollected", "passed", "failed", "skipped", "errors", "exitstatus"):
         value = payload.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return None
         parsed[key] = value
+    if parsed["passed"] + parsed["failed"] + parsed["skipped"] + parsed["errors"] != parsed["collected"]:
+        return None
     return parsed
-
-
-def _read_junit(report: OracleReport) -> JunitReport | None:
-    path = report.junit_path
-    try:
-        if not path.is_file() or path.is_symlink():
-            return None
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if not data or len(data) > MAX_JUNIT_BYTES:
-        return None
-    folded = data.upper()
-    if b"<!DOCTYPE" in folded or b"<!ENTITY" in folded:
-        return None
-    try:
-        root = ET.fromstring(data)
-    except ET.ParseError:
-        return None
-    suites = list(root) if root.tag == "testsuites" else [root] if root.tag == "testsuite" else []
-    if not suites:
-        return None
-    tests = passed = failed = errors = skipped = 0
-    for suite in suites:
-        if suite.tag != "testsuite":
-            continue
-        for case in suite.findall("testcase"):
-            tests += 1
-            children = {child.tag for child in list(case)}
-            if "failure" in children:
-                failed += 1
-            elif "error" in children:
-                errors += 1
-            elif "skipped" in children:
-                skipped += 1
-            else:
-                passed += 1
-    if tests != passed + failed + errors + skipped:
-        return None
-    return JunitReport(tests=tests, passed=passed, failed=failed, errors=errors, skipped=skipped)
 
 
 def _import_names(tree: ast.AST) -> list[tuple[str, bool]]:

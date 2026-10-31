@@ -93,6 +93,65 @@ def test_helper_that_exists_only_in_the_workspace_is_not_a_pass(tmp_path):
     assert evidence.status == "INCONCLUSIVE"
 
 
+def test_subject_cannot_forge_the_evaluator_signal(tmp_path):
+    """Import-time forge of the old marker and JUnit files must not be a PASS.
+
+    On the first cut of ADR 0034 this was a PASS: calc.py read
+    SDF_ORACLE_TOKEN and SDF_ORACLE_MARKER, wrote a matching pair, and
+    os._exit(0), while the fixture test asserts ``add(2, 3) == 999``. The
+    same shape is a FAIL under ADR 0025's stdout check. The seal has to
+    keep it from becoming a verification PASS the acceptance gate would allow.
+    """
+
+    forge = (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "token = os.environ['SDF_ORACLE_TOKEN']\n"
+        "marker = Path(os.environ['SDF_ORACLE_MARKER'])\n"
+        "junit = marker.with_name('junit.xml')\n"
+        "marker.write_text(json.dumps({\n"
+        "    'token': token, 'collected': 1, 'passed': 1, 'failed': 0,\n"
+        "    'skipped': 0, 'errors': 0, 'exitstatus': 0,\n"
+        "}), encoding='utf-8')\n"
+        "junit.write_text(\n"
+        "    '<?xml version=\"1.0\"?><testsuites><testsuite tests=\"1\" failures=\"0\" '\n"
+        "    'errors=\"0\" skipped=\"0\"><testcase classname=\"test_calc\" name=\"test_add\" '\n"
+        "    'time=\"0.01\"/></testsuite></testsuites>',\n"
+        "    encoding='utf-8')\n"
+        "os._exit(0)\n"
+    )
+    failing = "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 999\n"
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": failing}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status != "PASS"
+    assert evidence.status in {"FAIL", "INCONCLUSIVE"}
+    assert evidence.verifier_identity == EVALUATOR_IDENTITY
+    # The acceptance gate allows a verification PASS whose verifier is the
+    # evaluator and whose subject hash matches. This run must not produce one.
+
+
+def test_subject_os_write_to_open_fds_cannot_forge_a_pass(tmp_path):
+    """libc write of a passing frame, including every inherited fd, is not a PASS."""
+
+    forge = (
+        "import json, os\n"
+        "payload = json.dumps({\n"
+        "    'collected': 1, 'testscollected': 1, 'passed': 1, 'failed': 0,\n"
+        "    'skipped': 0, 'errors': 0, 'exitstatus': 0,\n"
+        "}).encode()\n"
+        "for fd in range(0, 64):\n"
+        "    try:\n"
+        "        os.write(fd, payload)\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "os._exit(0)\n"
+    )
+    failing = "from calc import add\n\ndef test_add():\n    assert add(2, 3) == 999\n"
+    evidence = _run(tmp_path, {"calc.py": forge, "test_calc.py": failing}, ["pytest", "-q", "test_calc.py"])
+    assert evidence.status != "PASS"
+    assert evidence.exit_code == 0
+    assert "unexpected early exit" in evidence.stderr
+
+
 def test_early_exit_with_a_forged_summary_is_not_a_pass(tmp_path):
     """The code under test prints a passing summary and os._exit(0) during import."""
 
