@@ -48,9 +48,16 @@ It is hermetic: no secrets, no `SDF_LIVE_*` flags, no provider keys.
 - `pip-audit (uv.lock)`: audits the exact hashed set from `uv export --locked
   --all-groups`; any known vulnerability fails. Fix by upgrading the package
   (`uv lock --upgrade-package <name>`), not by ignoring the advisory.
-- `gitleaks (full history)`: pinned, checksum-verified binary, `--redact`.
-  `.gitleaksignore` holds fingerprints of verified dummy test fixtures only;
-  never paste a value there. Locally: `gitleaks git . --redact`.
+- `gitleaks (full history)`: pinned, checksum-verified gitleaks 8.30.1,
+  `--redact`. A pull request scans that PR's commits (`base..head`). A push
+  to `main` scans the ancestry of the pushed commit. The weekly schedule
+  scans every branch in a separate job, `gitleaks (all branches, scheduled)`,
+  which reports findings and does not gate merges. The pull-request job keeps
+  the name `gitleaks (full history)` because the `main` ruleset requires that
+  check. `.gitleaksignore` holds fingerprints of verified dummy test fixtures
+  only; never paste a value there. `gitleaks git . --redact` with no
+  `--log-opts` scans every local ref; pass an explicit `--log-opts` range to
+  match the pull-request job.
 
 Keep `uv.lock` in sync (`uv lock`); CI fails on a stale lock. A green CI run
 proves only these hermetic contracts. Live tests are skipped there and remain
