@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -139,8 +140,15 @@ func New(cfg Config) (*Orchestrator, error) {
 		root:    root,
 		cancel:  cancel,
 	}
+	// The orchestrator is the Attempt record the fence reads at insert
+	// (ADR 0038). Installed before workers run.
+	o.tools.SetEvidenceModeSource(o.readEvidenceMode)
 	o.queue = queue.New(cfg.QueueCapacity, cfg.Workers, o.handleTask, reg)
 	return o, nil
+}
+
+func (o *Orchestrator) readEvidenceMode(attemptID string) (string, bool, error) {
+	return o.tools.Store().AttemptEvidenceMode(attemptID)
 }
 
 // Bus returns the in-process message bus.
@@ -155,11 +163,17 @@ func (o *Orchestrator) ToolProxy() *toolproxy.Proxy { return o.tools }
 // Executions returns how many Attempts actually began running (post-idempotency).
 func (o *Orchestrator) Executions() int64 { return o.execs.Load() }
 
-// Start enqueues an Attempt. Duplicate IdempotencyKey does not run twice.
-// Registers the Attempt's sandbox credential scope with the Tool Proxy.
+// Start enqueues an Attempt. Duplicate IdempotencyKey does not run twice
+// and does not change a stored evidence mode. Registers the Attempt's
+// sandbox credential scope with the Tool Proxy. The Attempt is recorded
+// synthetic until ConfirmLive (ADR 0031, ADR 0038). SandboxID is only the
+// credential-scope id.
 func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 	if a.IdempotencyKey == "" {
 		return errors.New("orchestrator: idempotency key required")
+	}
+	if strings.TrimSpace(a.ID) == "" {
+		return errors.New("orchestrator: attempt id required")
 	}
 	timeout := a.Timeout
 	if timeout <= 0 {
@@ -183,16 +197,20 @@ func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 	}
 	o.mu.Unlock()
 
-	if o.tools != nil {
-		o.tools.RegisterScope(toolproxy.SandboxScope{
-			SandboxID:          sandboxID,
-			AttemptID:          a.ID,
-			AgentID:            a.AgentID,
-			OwnerPrincipal:     a.OwnerPrincipal,
-			AllowedCredentials: append([]string(nil), a.AllowedCredentials...),
-			AllowedTools:       append([]string(nil), a.AllowedTools...),
-		})
+	created, err := o.tools.Store().EnsureAttempt(a.ID)
+	if err != nil {
+		o.abandonStart(a.IdempotencyKey, a.ID, false)
+		return err
 	}
+
+	o.tools.RegisterScope(toolproxy.SandboxScope{
+		SandboxID:          sandboxID,
+		AttemptID:          a.ID,
+		AgentID:            a.AgentID,
+		OwnerPrincipal:     a.OwnerPrincipal,
+		AllowedCredentials: append([]string(nil), a.AllowedCredentials...),
+		AllowedTools:       append([]string(nil), a.AllowedTools...),
+	})
 
 	t := queue.Task{
 		ID:             a.ID,
@@ -200,18 +218,64 @@ func (o *Orchestrator) Start(ctx context.Context, a Attempt) error {
 		Payload:        append([]byte(nil), a.Payload...),
 		MaxAttempts:    1,
 	}
-	err := o.queue.Enqueue(ctx, t)
+	err = o.queue.Enqueue(ctx, t)
 	if err != nil {
-		o.mu.Lock()
-		delete(o.started, a.IdempotencyKey)
-		delete(o.meta, a.IdempotencyKey)
-		o.mu.Unlock()
+		o.abandonStart(a.IdempotencyKey, a.ID, created)
 		if errors.Is(err, queue.ErrDuplicateKey) {
 			return ErrDuplicateAttempt
 		}
 		return err
 	}
 	return nil
+}
+
+// abandonStart removes the idempotency reservation. When forgetMode is set
+// and no other in-flight start still names attemptID, the synthetic Attempt
+// record and its scope are removed so a start that never queued cannot be
+// promoted to live.
+func (o *Orchestrator) abandonStart(key, attemptID string, forgetMode bool) {
+	o.mu.Lock()
+	delete(o.started, key)
+	delete(o.meta, key)
+	still := false
+	for _, m := range o.meta {
+		if m.attemptID == attemptID {
+			still = true
+			break
+		}
+	}
+	o.mu.Unlock()
+	if !forgetMode || still {
+		return
+	}
+	if err := o.tools.Store().ForgetSyntheticAttempt(attemptID); err == nil {
+		o.tools.DropScope(attemptID)
+	}
+}
+
+// ConfirmLive promotes an Attempt from synthetic to live once a real sandbox
+// exists (ADR 0031, ADR 0038). sandboxID must be non-empty after trimming.
+// An unknown Attempt is not recorded. The promotion is one-way. On SQLite
+// the update commits before return. The Attempt's credential-scope SandboxID
+// does not promote.
+func (o *Orchestrator) ConfirmLive(attemptID, sandboxID string) (bool, error) {
+	if strings.TrimSpace(sandboxID) == "" || strings.TrimSpace(attemptID) == "" {
+		return false, nil
+	}
+	return o.tools.Store().PromoteAttempt(attemptID)
+}
+
+// EvidenceMode reports the stored mode for an Attempt this process started.
+// An unknown Attempt is synthetic and is not recorded (ADR 0031).
+func (o *Orchestrator) EvidenceMode(attemptID string) (string, error) {
+	mode, ok, err := o.tools.Store().AttemptEvidenceMode(attemptID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return toolproxy.EvidenceModeSynthetic, nil
+	}
+	return toolproxy.StampEvidenceMode(mode), nil
 }
 
 // CallTool sends one structured tool call through the Tool Proxy for an Attempt.

@@ -7,6 +7,11 @@ accepted when a maintainer accepts the implementing pull request. It does
 not change Credential Mode, Attempt lifecycle, or Evidence provenance
 (ADR 0002, ADR 0007, ADR 0026).
 
+[ADR 0038](0038-go-attempt-evidence-mode.md) later stores `evidence_mode`
+on this local fence, copied from the Go Attempt record at insert time.
+The Consequences bullet that described the column as absent is the #109
+rule. A shared PostgreSQL `tool_audits` writer is still not decided here.
+
 ## Context
 
 [ADR 0026](0026-tool-proxy-actor-binding.md) (proposed) defines the Python
@@ -59,9 +64,11 @@ Go process to write Python `tool_audits`.
   `tool_audits`. Empty `OutcomeDBPath` stays `MemoryStore`.
 - Restart replay still returns the executor value from `value_json` on
   the terminal event. That remains a Go-only deviation from Python.
-- `evidence_mode` is not a column. The Go Attempt does not carry ADR
-  0031's mode; storing `synthetic` for every row would mislabel a live
-  attempt.
+- `evidence_mode` on each event is [ADR 0038](0038-go-attempt-evidence-mode.md).
+  This ADR left the column off: the Go Attempt did not store a mode, and
+  a hardcoded `synthetic` would mislabel a live attempt. ADR 0038 stores
+  the mode on the Attempt and copies it onto rows at insert. It still
+  does not write PostgreSQL `tool_audits`.
 - The action context document is not copied onto the row. It already
   feeds `action_id`.
 - There is no admin bypass. A principal that does not own the Attempt is
