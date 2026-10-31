@@ -95,7 +95,7 @@ func New(cfg Config) *Orchestrator {
 		}
 	}
 	if cfg.ToolProxy == nil {
-		cfg.ToolProxy = toolproxy.NewProxy(nil)
+		cfg.ToolProxy = toolproxy.NewProxy(nil, nil)
 	}
 
 	root, cancel := context.WithCancel(context.Background())

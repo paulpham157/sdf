@@ -26,7 +26,7 @@ func TestSuccessfulRoundTrip(t *testing.T) {
 	p := toolproxy.NewProxy(func(ctx context.Context, req toolproxy.ActionRequest) (any, error) {
 		calls.Add(1)
 		return map[string]any{"path": req.Resource, "bytes": 12}, nil
-	})
+	}, nil)
 	p.RegisterScope(scope("att-1"))
 
 	req := toolproxy.ActionRequest{
@@ -58,7 +58,7 @@ func TestSuccessfulRoundTrip(t *testing.T) {
 }
 
 func TestCredentialScopeDenial(t *testing.T) {
-	p := toolproxy.NewProxy(nil)
+	p := toolproxy.NewProxy(nil, nil)
 	p.RegisterScope(scope("att-2"))
 
 	req := toolproxy.ActionRequest{
@@ -77,7 +77,7 @@ func TestCredentialScopeDenial(t *testing.T) {
 }
 
 func TestCredentialScopeAllowsListed(t *testing.T) {
-	p := toolproxy.NewProxy(nil)
+	p := toolproxy.NewProxy(nil, nil)
 	p.RegisterScope(scope("att-2b"))
 	req := toolproxy.ActionRequest{
 		AttemptID: "att-2b",
@@ -102,7 +102,7 @@ func TestSandboxTimeout(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			return "late", nil
 		}
-	})
+	}, nil)
 	p.RegisterScope(scope("att-3"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
@@ -131,7 +131,7 @@ func TestIdempotencySameActionKey(t *testing.T) {
 	p := toolproxy.NewProxy(func(ctx context.Context, req toolproxy.ActionRequest) (any, error) {
 		n := calls.Add(1)
 		return map[string]any{"n": n}, nil
-	})
+	}, nil)
 	p.RegisterScope(scope("att-4"))
 
 	req := toolproxy.ActionRequest{
@@ -164,7 +164,7 @@ func TestIdempotencySameActionKey(t *testing.T) {
 }
 
 func TestActorMismatchDenied(t *testing.T) {
-	p := toolproxy.NewProxy(nil)
+	p := toolproxy.NewProxy(nil, nil)
 	p.RegisterScope(scope("att-5"))
 	req := toolproxy.ActionRequest{
 		AttemptID: "att-5",

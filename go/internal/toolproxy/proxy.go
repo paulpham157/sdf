@@ -12,29 +12,33 @@ import (
 type Executor func(ctx context.Context, req ActionRequest) (any, error)
 
 // Proxy is an in-process Tool Proxy matching sdf_core.tools.ToolProxy:
-// binding → credential scope → allowlist → idempotency fence → executor.
+// binding → credential scope → allowlist → durable idempotency fence → executor.
 type Proxy struct {
-	exec Executor
+	exec  Executor
+	store OutcomeStore
 
 	mu     sync.Mutex
 	scopes map[string]SandboxScope // attempt_id → scope
-	// durable outcomes: attempt_id\0action_id → status (executed|failed)
-	outcomes map[string]string
-	results  map[string]Result // cached value for replay
 }
 
-// NewProxy builds a Proxy. exec may be nil (returns nil value on allow).
-func NewProxy(exec Executor) *Proxy {
+// NewProxy builds a Proxy. exec may be nil (returns a trivial ok value on allow).
+// store may be nil (defaults to MemoryStore). Prefer OpenSQLiteStore for durability.
+func NewProxy(exec Executor, store OutcomeStore) *Proxy {
 	if exec == nil {
 		exec = func(context.Context, ActionRequest) (any, error) { return map[string]any{"ok": true}, nil }
 	}
+	if store == nil {
+		store = NewMemoryStore()
+	}
 	return &Proxy{
-		exec:     exec,
-		scopes:   make(map[string]SandboxScope),
-		outcomes: make(map[string]string),
-		results:  make(map[string]Result),
+		exec:   exec,
+		store:  store,
+		scopes: make(map[string]SandboxScope),
 	}
 }
+
+// Store returns the durable outcome fence.
+func (p *Proxy) Store() OutcomeStore { return p.store }
 
 // RegisterScope binds an Attempt to its sandbox credential fence.
 func (p *Proxy) RegisterScope(scope SandboxScope) {
@@ -145,45 +149,75 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		}
 	}
 
-	fenceKey := req.AttemptID + "\x00" + actionID
-	p.mu.Lock()
-	if st, ok := p.outcomes[fenceKey]; ok {
-		cached := p.results[fenceKey]
-		cached.Replay = true
-		p.mu.Unlock()
-		if st == StatusExecuted {
-			return cached, nil
+	// Durable fence (ADR 0026): look up terminal outcome before claiming.
+	if stored, found, err := p.store.Lookup(req.AttemptID, actionID); err != nil {
+		return Result{}, err
+	} else if found {
+		res := resultFromStored(stored, true)
+		if stored.Status == StatusFailed {
+			return res, ErrFailed
 		}
-		return cached, ErrFailed
+		return res, nil
 	}
-	p.mu.Unlock()
 
-	val, err := p.exec(ctx, req)
+	okClaim, err := p.store.Claim(req.AttemptID, actionID)
 	if err != nil {
-		if ctx.Err() != nil {
-			res := Result{
-				AttemptID: req.AttemptID,
-				ActionID:  actionID,
-				Actor:     derived,
-				Status:    StatusFailed,
-				Effect:    "allow",
-				Reason:    "sandbox cancelled or timed out",
-				Policy:    PolicySandboxTimeout,
-				Error:     ctx.Err().Error(),
+		return Result{}, err
+	}
+	if !okClaim {
+		// Lost the race: another delivery claimed or completed. Re-lookup.
+		if stored, found, err := p.store.Lookup(req.AttemptID, actionID); err != nil {
+			return Result{}, err
+		} else if found {
+			res := resultFromStored(stored, true)
+			if stored.Status == StatusFailed {
+				return res, ErrFailed
 			}
-			p.storeOutcome(fenceKey, res)
-			return res, fmt.Errorf("%w: %v", ErrFailed, ctx.Err())
+			return res, nil
 		}
-		res := Result{
+		return Result{
 			AttemptID: req.AttemptID,
 			ActionID:  actionID,
 			Actor:     derived,
 			Status:    StatusFailed,
 			Effect:    "allow",
-			Reason:    "executor error",
-			Error:     err.Error(),
+			Reason:    "action is already claimed by another delivery; issue a new action identity to retry",
+			Policy:    PolicyAllowlist,
+			Error:     "action is already claimed by another delivery; issue a new action identity to retry",
+		}, ErrFailed
+	}
+
+	val, err := p.exec(ctx, req)
+	if err != nil {
+		failStatus := StatusFailed
+		policy := ""
+		reason := "executor error"
+		errMsg := err.Error()
+		if ctx.Err() != nil {
+			policy = PolicySandboxTimeout
+			reason = "sandbox cancelled or timed out"
+			errMsg = ctx.Err().Error()
 		}
-		p.storeOutcome(fenceKey, res)
+		res := Result{
+			AttemptID: req.AttemptID,
+			ActionID:  actionID,
+			Actor:     derived,
+			Status:    failStatus,
+			Effect:    "allow",
+			Reason:    reason,
+			Policy:    policy,
+			Error:     errMsg,
+		}
+		_ = p.store.Complete(StoredOutcome{
+			AttemptID: req.AttemptID,
+			ActionID:  actionID,
+			Status:    StatusFailed,
+			Actor:     derived,
+			Reason:    reason,
+			Policy:    policy,
+			Error:     errMsg,
+			CreatedAt: time.Now().UTC(),
+		})
 		return res, fmt.Errorf("%w: %v", ErrFailed, err)
 	}
 	res := Result{
@@ -196,15 +230,34 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		Policy:    PolicyAllowlist,
 		Value:     val,
 	}
-	p.storeOutcome(fenceKey, res)
+	if err := p.store.Complete(StoredOutcome{
+		AttemptID: req.AttemptID,
+		ActionID:  actionID,
+		Status:    StatusExecuted,
+		Actor:     derived,
+		Reason:    res.Reason,
+		Policy:    res.Policy,
+		Value:     val,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
-func (p *Proxy) storeOutcome(key string, res Result) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.outcomes[key] = res.Status
-	p.results[key] = res
+func resultFromStored(o StoredOutcome, replay bool) Result {
+	return Result{
+		AttemptID: o.AttemptID,
+		ActionID:  o.ActionID,
+		Actor:     o.Actor,
+		Status:    o.Status,
+		Effect:    "allow",
+		Reason:    o.Reason,
+		Policy:    o.Policy,
+		Value:     o.Value,
+		Error:     o.Error,
+		Replay:    replay,
+	}
 }
 
 // CallTimeout is a helper deadline for sandbox tool calls.
