@@ -79,7 +79,7 @@ class AgentSandbox(Protocol):
     # decision hold.  Without them (local fakes; Daytona, whose sandboxes are
     # created with auto-stop disabled) the sandbox has no provider timeout.
     # def lifetime_left_s(self) -> float | None: ...  # None = no provider timeout
-    # def extend_lifetime(self, seconds: int) -> None: ...  # raises on failure
+    # def extend_lifetime(self, seconds: int) -> float | None: ...  # seconds granted; raises on failure
     def close(self) -> None: ...
 
 
@@ -271,14 +271,20 @@ class E2BAgentSandbox:
             return None
         return max(0.0, self._expires - time.monotonic())
 
-    def extend_lifetime(self, seconds: int) -> None:
-        """Reset the provider timeout to ``seconds`` from now (E2B ``set_timeout``); raises on failure."""
+    def extend_lifetime(self, seconds: int) -> float:
+        """Reset the provider timeout to ``seconds`` from now (E2B ``set_timeout``); raises on failure.
+
+        Returns the seconds the provider actually granted: E2B caps the end
+        time at the account's maximum sandbox lifetime without an error.
+        """
 
         if self._expires is None or self._died is not None:
             raise RuntimeError("this sandbox has no provider lifetime to extend")
         asked = time.monotonic()
-        self._transport.extend_lifetime(int(seconds))
-        self._expires = asked + int(seconds)
+        granted = self._transport.extend_lifetime(int(seconds))
+        lifetime = float(int(seconds)) if granted is None else min(float(granted), float(int(seconds)))
+        self._expires = asked + lifetime
+        return lifetime
 
     def close(self) -> None:
         with self._lock:

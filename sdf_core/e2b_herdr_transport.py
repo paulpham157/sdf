@@ -24,6 +24,7 @@ import shlex
 import shutil
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
@@ -140,12 +141,18 @@ class E2BHerdrTransport:
             raise ValueError("sandbox command must not be empty")
         return self._exec(shlex.join(argv), timeout_ms)
 
-    def extend_lifetime(self, seconds: int) -> None:
+    def extend_lifetime(self, seconds: int) -> float | None:
         """Reset the provider-side timeout of the existing sandbox to ``seconds`` from now.
 
         E2B's ``Sandbox.set_timeout`` can extend or reduce it, up to the
         account's maximum sandbox lifetime (ADR 0033: kept alive during a
         material decision hold).  Never creates a sandbox.
+
+        E2B does not refuse a timeout past that maximum: it silently caps the
+        sandbox's end time (seen live: a 200 000 s request ended at
+        ``started_at`` + 24 h).  So the end time is read back with
+        ``get_info`` and the seconds actually granted are returned (``None``
+        when it cannot be read).
         """
 
         if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds <= 0:
@@ -154,11 +161,19 @@ class E2BHerdrTransport:
             if self._sandbox_id is None:
                 raise HerdrRuntimeError("E2B sandbox lifetime cannot be extended: no sandbox")
             try:
-                self._ensure_sandbox().set_timeout(seconds, request_timeout=self.request_timeout_seconds)
+                sandbox = self._ensure_sandbox()
+                sandbox.set_timeout(seconds, request_timeout=self.request_timeout_seconds)
             except HerdrRuntimeError:
                 raise
             except Exception as exc:
                 raise HerdrRuntimeError(f"E2B sandbox lifetime extension failed: {exc}") from exc
+            try:
+                end_at = sandbox.get_info(request_timeout=self.request_timeout_seconds).end_at
+                if end_at.tzinfo is None:
+                    end_at = end_at.replace(tzinfo=timezone.utc)
+                return max(0.0, (end_at - datetime.now(timezone.utc)).total_seconds())
+            except Exception:  # noqa: BLE001 - the extension itself succeeded
+                return None
 
     def close(self, timeout_ms: int = 30_000) -> None:
         """Kill the persistent sandbox and forget its provider identity."""

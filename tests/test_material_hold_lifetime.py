@@ -75,7 +75,7 @@ def test_a_failed_extension_is_retried_and_fails_the_run_only_near_expiry():
     broken.expires = time.monotonic() + 30  # under LIFETIME_FAIL_MARGIN_S
     error = coordinator._keep_alive(_agents(w=broken), 1000.0, log, tried, 2.0)
     assert error is not None and error.startswith("sandbox of w would expire during a material decision hold")
-    assert "the last extension failed" in error
+    assert "limit" in error  # the provider's own reason, not a generic one
     unsupported = SimpleNamespace(lifetime_left_s=lambda: 10.0)
     error = coordinator._keep_alive(_agents(u=unsupported), 1000.0, [], {}, 0.0)
     assert error is not None and "does not support it" in error
@@ -200,3 +200,76 @@ def test_the_daytona_transport_has_no_provider_lifetime_to_extend():
     from sdf_core.daytona_herdr_transport import DaytonaHerdrTransport
 
     assert not hasattr(DaytonaHerdrTransport, "extend_lifetime")
+
+
+class _Capped(_Lifetime):
+    """E2B-like: a timeout past the account maximum is accepted but capped, without an error."""
+
+    def __init__(self, left: float, cap_s: float):
+        super().__init__(left)
+        self.cap_s = cap_s
+
+    def extend_lifetime(self, seconds: int):
+        self.calls.append(seconds)
+        granted = min(seconds, self.cap_s)
+        self.expires = time.monotonic() + granted
+        return granted
+
+
+def test_a_silently_capped_extension_is_not_trusted_and_fails_cleanly_near_the_cap():
+    """Live finding (E2B, 2026-10-31): set_timeout(200000) succeeded but end_at = started_at + 24 h."""
+
+    coordinator = _bare_coordinator()
+    coordinator.log = lambda message: None
+    capped = _Capped(500, cap_s=300)
+    log: list = []
+    tried: dict = {}
+    assert coordinator._keep_alive(_agents(w=capped), 1000.0, log, tried, 1.0) is None  # 300 s left: not yet
+    assert log[-1]["capped"] is True and log[-1]["granted_s"] == pytest.approx(300, abs=1)
+    assert coordinator._keep_alive(_agents(w=capped), 1000.0, log, tried, 1.1) is None  # rate-limited retry
+    assert len(capped.calls) == 1
+    capped.expires = time.monotonic() + 40  # the cap is near; the next extension is capped too
+    tried.clear()
+    capped.cap_s = 40
+    error = coordinator._keep_alive(_agents(w=capped), 1000.0, log, tried, 2.0)
+    assert error is not None and error.startswith("sandbox of w would expire during a material decision hold")
+    assert "capped its lifetime at" in error
+    # An extension that grants enough is still a plain success.
+    roomy = _Capped(100, cap_s=86_400)
+    log2: list = []
+    assert coordinator._keep_alive(_agents(r=roomy), 1000.0, log2, {}, 0.0) is None
+    assert "capped" not in log2[-1] and log2[-1]["extended_to_s"] == 1600
+
+
+def test_e2b_sandbox_uses_the_lifetime_the_provider_granted():
+    sandbox = E2BAgentSandbox(AgentSpec("worker-1", "worker", "pi", None), environ={}, sandbox_timeout_s=1800)
+    sandbox._born = time.monotonic()
+    sandbox._expires = sandbox._born + 1800
+    sandbox._transport = SimpleNamespace(extend_lifetime=lambda seconds: 50.0)  # capped by the provider
+    assert sandbox.extend_lifetime(3000) == 50.0 and sandbox.lifetime_left_s() <= 50
+    sandbox._transport = SimpleNamespace(extend_lifetime=lambda seconds: None)  # end time unreadable
+    assert sandbox.extend_lifetime(3000) == 3000.0 and 2990 < sandbox.lifetime_left_s() <= 3000
+
+
+def test_e2b_transport_reads_back_the_capped_end_time():
+    from datetime import datetime, timedelta, timezone
+
+    class Capping(_FakeE2BSandbox):
+        def set_timeout(self, timeout, **opts):
+            self.timeouts.append(timeout)
+
+        def get_info(self, **opts):
+            return SimpleNamespace(end_at=datetime.now(timezone.utc) + timedelta(seconds=3600))
+
+    capping = Capping()
+    transport = E2BHerdrTransport(template="t", environ={"E2B_API_KEY": "test-not-a-key"}, sandbox_id="sbx-3",
+                                  sandbox_connector=lambda sandbox_id, **opts: capping)
+    assert transport.extend_lifetime(200_000) == pytest.approx(3600, abs=5)
+
+    class Unreadable(_FakeE2BSandbox):
+        def get_info(self, **opts):
+            raise RuntimeError("info unavailable")
+
+    transport = E2BHerdrTransport(template="t", environ={"E2B_API_KEY": "test-not-a-key"}, sandbox_id="sbx-4",
+                                  sandbox_connector=lambda sandbox_id, **opts: Unreadable())
+    assert transport.extend_lifetime(600) is None
