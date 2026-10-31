@@ -19,9 +19,10 @@ type Executor func(ctx context.Context, req ActionRequest) (any, error)
 // Every decision appends policy_decided, including denials and replays.
 // action_claimed / action_executed / action_failed stay one per action.
 type Proxy struct {
-	exec  Executor
-	store OutcomeStore
-	reg   *metrics.Registry
+	exec    Executor
+	store   OutcomeStore
+	reg     *metrics.Registry
+	modeSrc EvidenceModeSource
 
 	mu     sync.Mutex
 	scopes map[string]SandboxScope // attempt_id → scope
@@ -56,11 +57,44 @@ func (p *Proxy) SetMetrics(reg *metrics.Registry) {
 // Store returns the durable outcome fence.
 func (p *Proxy) Store() OutcomeStore { return p.store }
 
+// SetEvidenceModeSource selects how each observation learns the Attempt's
+// mode (ADR 0038). Nil stamps synthetic, the unknown-Attempt rule. Call it
+// before Execute.
+func (p *Proxy) SetEvidenceModeSource(src EvidenceModeSource) {
+	p.mu.Lock()
+	p.modeSrc = src
+	p.mu.Unlock()
+}
+
 // RegisterScope binds an Attempt to its sandbox credential fence.
 func (p *Proxy) RegisterScope(scope SandboxScope) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.scopes[scope.AttemptID] = scope
+}
+
+// DropScope removes a sandbox scope registered for attemptID.
+func (p *Proxy) DropScope(attemptID string) {
+	p.mu.Lock()
+	delete(p.scopes, attemptID)
+	p.mu.Unlock()
+}
+
+func (p *Proxy) stamp(attemptID string) (string, error) {
+	p.mu.Lock()
+	src := p.modeSrc
+	p.mu.Unlock()
+	if src == nil {
+		return EvidenceModeSynthetic, nil
+	}
+	mode, ok, err := src(attemptID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return EvidenceModeSynthetic, nil
+	}
+	return StampEvidenceMode(mode), nil
 }
 
 // Execute runs the Tool Proxy path. claimedActor is optional (ADR 0026);
@@ -77,19 +111,20 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	for k := range req.Context {
 		if strings.HasPrefix(strings.ToLower(k), "sdf_") {
 			reason := fmt.Sprintf("reserved context key %q", k)
-			res := Result{
-				AttemptID: req.AttemptID,
-				ActionID:  req.ActionID(),
-				Status:    StatusDenied,
-				Effect:    "deny",
-				Reason:    reason,
-				Policy:    "context-reserved",
-			}
-			if err := p.appendDecision(req, res.ActionID, req.Actor, principal, "deny", reason, res.Policy); err != nil {
+			mode, err := p.appendDecision(req, req.ActionID(), req.Actor, principal, "deny", reason, "context-reserved")
+			if err != nil {
 				return Result{}, err
 			}
 			p.noteDeny()
-			return res, ErrDenied
+			return Result{
+				AttemptID:    req.AttemptID,
+				ActionID:     req.ActionID(),
+				Status:       StatusDenied,
+				Effect:       "deny",
+				Reason:       reason,
+				Policy:       "context-reserved",
+				EvidenceMode: mode,
+			}, ErrDenied
 		}
 	}
 
@@ -98,19 +133,20 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	p.mu.Unlock()
 	if !ok {
 		reason := "attempt has no registered sandbox scope"
-		res := Result{
-			AttemptID: req.AttemptID,
-			ActionID:  req.ActionID(),
-			Status:    StatusDenied,
-			Effect:    "deny",
-			Reason:    reason,
-			Policy:    PolicyAttemptBinding,
-		}
-		if err := p.appendDecision(req, res.ActionID, req.Actor, principal, "deny", reason, res.Policy); err != nil {
+		mode, err := p.appendDecision(req, req.ActionID(), req.Actor, principal, "deny", reason, PolicyAttemptBinding)
+		if err != nil {
 			return Result{}, err
 		}
 		p.noteDeny()
-		return res, ErrDenied
+		return Result{
+			AttemptID:    req.AttemptID,
+			ActionID:     req.ActionID(),
+			Status:       StatusDenied,
+			Effect:       "deny",
+			Reason:       reason,
+			Policy:       PolicyAttemptBinding,
+			EvidenceMode: mode,
+		}, ErrDenied
 	}
 
 	// Server-derived actor always wins.
@@ -119,20 +155,21 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	actionID := req.ActionID()
 
 	deny := func(reason, policy string) (Result, error) {
-		res := Result{
-			AttemptID: req.AttemptID,
-			ActionID:  actionID,
-			Actor:     derived,
-			Status:    StatusDenied,
-			Effect:    "deny",
-			Reason:    reason,
-			Policy:    policy,
-		}
-		if err := p.appendDecision(req, actionID, derived, principal, "deny", reason, policy); err != nil {
+		mode, err := p.appendDecision(req, actionID, derived, principal, "deny", reason, policy)
+		if err != nil {
 			return Result{}, err
 		}
 		p.noteDeny()
-		return res, ErrDenied
+		return Result{
+			AttemptID:    req.AttemptID,
+			ActionID:     actionID,
+			Actor:        derived,
+			Status:       StatusDenied,
+			Effect:       "deny",
+			Reason:       reason,
+			Policy:       policy,
+			EvidenceMode: mode,
+		}, ErrDenied
 	}
 
 	if claimedActor != "" && claimedActor != derived {
@@ -164,8 +201,10 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 
 	// ADR 0026: record this delivery's decision before the fence, including
 	// when the terminal outcome is replayed and the executor does not run.
+	// The mode on that row is what Result reports (ADR 0031 §9).
 	const allowReason = "action passed tool proxy checks"
-	if err := p.appendDecision(req, actionID, derived, principal, "allow", allowReason, PolicyAllowlist); err != nil {
+	decisionMode, err := p.appendDecision(req, actionID, derived, principal, "allow", allowReason, PolicyAllowlist)
+	if err != nil {
 		return Result{}, err
 	}
 
@@ -173,20 +212,27 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	if stored, found, err := p.store.Lookup(req.AttemptID, actionID); err != nil {
 		return Result{}, err
 	} else if found {
-		return p.replay(stored)
+		res, rerr := p.replay(stored)
+		res.EvidenceMode = decisionMode
+		return res, rerr
 	}
 
+	claimMode, err := p.stamp(req.AttemptID)
+	if err != nil {
+		return Result{}, err
+	}
 	okClaim, err := p.store.Claim(Observation{
-		AttemptID: req.AttemptID,
-		ActionID:  actionID,
-		Actor:     derived,
-		Principal: principal,
-		Tool:      req.Tool,
-		Action:    req.Action,
-		Resource:  req.Resource,
-		Decision:  "allow",
-		Reason:    "executor claim acquired",
-		Policy:    PolicyAllowlist,
+		AttemptID:    req.AttemptID,
+		ActionID:     actionID,
+		Actor:        derived,
+		Principal:    principal,
+		EvidenceMode: claimMode,
+		Tool:         req.Tool,
+		Action:       req.Action,
+		Resource:     req.Resource,
+		Decision:     "allow",
+		Reason:       "executor claim acquired",
+		Policy:       PolicyAllowlist,
 	})
 	if err != nil {
 		return Result{}, err
@@ -196,20 +242,23 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		if stored, found, err := p.store.Lookup(req.AttemptID, actionID); err != nil {
 			return Result{}, err
 		} else if found {
-			return p.replay(stored)
+			res, rerr := p.replay(stored)
+			res.EvidenceMode = decisionMode
+			return res, rerr
 		}
 		if p.reg != nil {
 			p.reg.IncToolClaimStuck()
 		}
 		return Result{
-			AttemptID: req.AttemptID,
-			ActionID:  actionID,
-			Actor:     derived,
-			Status:    StatusFailed,
-			Effect:    "allow",
-			Reason:    "action is already claimed by another delivery; issue a new action identity to retry",
-			Policy:    PolicyAllowlist,
-			Error:     "action is already claimed by another delivery; issue a new action identity to retry",
+			AttemptID:    req.AttemptID,
+			ActionID:     actionID,
+			Actor:        derived,
+			Status:       StatusFailed,
+			Effect:       "allow",
+			Reason:       "action is already claimed by another delivery; issue a new action identity to retry",
+			Policy:       PolicyAllowlist,
+			Error:        "action is already claimed by another delivery; issue a new action identity to retry",
+			EvidenceMode: decisionMode,
 		}, ErrFailed
 	}
 
@@ -224,55 +273,67 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 			reason = "sandbox cancelled or timed out"
 			errMsg = ctx.Err().Error()
 		}
+		failMode, merr := p.stamp(req.AttemptID)
+		if merr != nil {
+			return Result{}, merr
+		}
 		res := Result{
-			AttemptID: req.AttemptID,
-			ActionID:  actionID,
-			Actor:     derived,
-			Status:    failStatus,
-			Effect:    "allow",
-			Reason:    reason,
-			Policy:    policy,
-			Error:     errMsg,
+			AttemptID:    req.AttemptID,
+			ActionID:     actionID,
+			Actor:        derived,
+			Status:       failStatus,
+			Effect:       "allow",
+			Reason:       reason,
+			Policy:       policy,
+			Error:        errMsg,
+			EvidenceMode: decisionMode,
 		}
 		_ = p.store.Complete(StoredOutcome{
-			AttemptID: req.AttemptID,
-			ActionID:  actionID,
-			Status:    StatusFailed,
-			Actor:     derived,
-			Principal: principal,
-			Tool:      req.Tool,
-			Action:    req.Action,
-			Resource:  req.Resource,
-			Reason:    reason,
-			Policy:    policy,
-			Error:     errMsg,
-			CreatedAt: time.Now().UTC(),
+			AttemptID:    req.AttemptID,
+			ActionID:     actionID,
+			Status:       StatusFailed,
+			Actor:        derived,
+			Principal:    principal,
+			Tool:         req.Tool,
+			Action:       req.Action,
+			Resource:     req.Resource,
+			Reason:       reason,
+			Policy:       policy,
+			Error:        errMsg,
+			EvidenceMode: failMode,
+			CreatedAt:    time.Now().UTC(),
 		})
 		return res, fmt.Errorf("%w: %v", ErrFailed, err)
 	}
+	execMode, merr := p.stamp(req.AttemptID)
+	if merr != nil {
+		return Result{}, merr
+	}
 	res := Result{
-		AttemptID: req.AttemptID,
-		ActionID:  actionID,
-		Actor:     derived,
-		Status:    StatusExecuted,
-		Effect:    "allow",
-		Reason:    "executor completed",
-		Policy:    PolicyAllowlist,
-		Value:     val,
+		AttemptID:    req.AttemptID,
+		ActionID:     actionID,
+		Actor:        derived,
+		Status:       StatusExecuted,
+		Effect:       "allow",
+		Reason:       "executor completed",
+		Policy:       PolicyAllowlist,
+		Value:        val,
+		EvidenceMode: decisionMode,
 	}
 	if err := p.store.Complete(StoredOutcome{
-		AttemptID: req.AttemptID,
-		ActionID:  actionID,
-		Status:    StatusExecuted,
-		Actor:     derived,
-		Principal: principal,
-		Tool:      req.Tool,
-		Action:    req.Action,
-		Resource:  req.Resource,
-		Reason:    res.Reason,
-		Policy:    res.Policy,
-		Value:     val,
-		CreatedAt: time.Now().UTC(),
+		AttemptID:    req.AttemptID,
+		ActionID:     actionID,
+		Status:       StatusExecuted,
+		Actor:        derived,
+		Principal:    principal,
+		Tool:         req.Tool,
+		Action:       req.Action,
+		Resource:     req.Resource,
+		Reason:       res.Reason,
+		Policy:       res.Policy,
+		Value:        val,
+		EvidenceMode: execMode,
+		CreatedAt:    time.Now().UTC(),
 	}); err != nil {
 		return res, err
 	}
@@ -282,20 +343,29 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	return res, nil
 }
 
-func (p *Proxy) appendDecision(req ActionRequest, actionID, actor, principal, effect, reason, policy string) error {
-	return p.store.AppendPolicy(Observation{
-		AttemptID: req.AttemptID,
-		ActionID:  actionID,
-		Actor:     actor,
-		Principal: principal,
-		Tool:      req.Tool,
-		Action:    req.Action,
-		Resource:  req.Resource,
-		Decision:  effect,
-		Reason:    reason,
-		Policy:    policy,
-		CreatedAt: time.Now().UTC(),
+func (p *Proxy) appendDecision(req ActionRequest, actionID, actor, principal, effect, reason, policy string) (string, error) {
+	mode, err := p.stamp(req.AttemptID)
+	if err != nil {
+		return "", err
+	}
+	err = p.store.AppendPolicy(Observation{
+		AttemptID:    req.AttemptID,
+		ActionID:     actionID,
+		Actor:        actor,
+		Principal:    principal,
+		EvidenceMode: mode,
+		Tool:         req.Tool,
+		Action:       req.Action,
+		Resource:     req.Resource,
+		Decision:     effect,
+		Reason:       reason,
+		Policy:       policy,
+		CreatedAt:    time.Now().UTC(),
 	})
+	if err != nil {
+		return "", err
+	}
+	return mode, nil
 }
 
 func (p *Proxy) noteDeny() {

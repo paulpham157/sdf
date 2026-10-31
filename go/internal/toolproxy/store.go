@@ -28,42 +28,45 @@ const (
 // Observation is one append-only Tool Proxy audit row.
 // Value is set only on action_executed so a Go process can replay Result.Value.
 // Python tool_audits omit the executor return value; that deviation is recorded
-// in ADR 0037.
+// in ADR 0037. EvidenceMode is copied from the Attempt at insert (ADR 0031,
+// ADR 0038) and is not rewritten when the Attempt is promoted later.
 type Observation struct {
-	AuditID   string
-	AttemptID string
-	ActionID  string
-	Event     string
-	Actor     string
-	Principal string
-	Tool      string
-	Action    string
-	Resource  string
-	Decision  string // allow | deny
-	Reason    string
-	Policy    string
-	Value     any
-	Error     string
-	CreatedAt time.Time
+	AuditID      string
+	AttemptID    string
+	ActionID     string
+	Event        string
+	Actor        string
+	Principal    string
+	EvidenceMode string
+	Tool         string
+	Action       string
+	Resource     string
+	Decision     string // allow | deny
+	Reason       string
+	Policy       string
+	Value        any
+	Error        string
+	CreatedAt    time.Time
 }
 
 // StoredOutcome is the terminal execution observation for one action
 // (action_executed or action_failed). Lookup replays this; it is not a
 // policy_decided row.
 type StoredOutcome struct {
-	AttemptID string
-	ActionID  string
-	Status    string // executed | failed
-	Actor     string
-	Principal string
-	Tool      string
-	Action    string
-	Resource  string
-	Reason    string
-	Policy    string
-	Value     any
-	Error     string
-	CreatedAt time.Time
+	AttemptID    string
+	ActionID     string
+	Status       string // executed | failed
+	Actor        string
+	Principal    string
+	Tool         string
+	Action       string
+	Resource     string
+	Reason       string
+	Policy       string
+	Value        any
+	Error        string
+	EvidenceMode string
+	CreatedAt    time.Time
 }
 
 // OutcomeStore is the durable idempotency fence keyed by attempt_id + action_id.
@@ -86,6 +89,20 @@ type OutcomeStore interface {
 	AppendPolicy(o Observation) error
 	// Observations returns events for one action, oldest first.
 	Observations(attemptID, actionID string) ([]Observation, error)
+	// EnsureAttempt records attemptID as synthetic when it is not already
+	// recorded. A live Attempt stays live. created is false when the row
+	// already existed.
+	EnsureAttempt(attemptID string) (created bool, err error)
+	// PromoteAttempt moves a recorded Attempt from synthetic to live.
+	// An unknown or already-live Attempt returns promoted=false and does
+	// not insert a row.
+	PromoteAttempt(attemptID string) (promoted bool, err error)
+	// ForgetSyntheticAttempt removes a synthetic Attempt record. A live
+	// record is left in place.
+	ForgetSyntheticAttempt(attemptID string) error
+	// AttemptEvidenceMode returns the stored mode. ok is false when no
+	// Attempt record exists.
+	AttemptEvidenceMode(attemptID string) (mode string, ok bool, err error)
 	Close() error
 }
 
@@ -94,6 +111,7 @@ type MemoryStore struct {
 	mu     sync.Mutex
 	byID   map[string]struct{}
 	events map[string][]Observation
+	modes  map[string]string
 }
 
 // NewMemoryStore builds an in-process OutcomeStore.
@@ -101,6 +119,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		byID:   make(map[string]struct{}),
 		events: make(map[string][]Observation),
+		modes:  make(map[string]string),
 	}
 }
 
@@ -118,6 +137,11 @@ func (s *MemoryStore) Claim(o Observation) (bool, error) {
 	if err := requireIDs(o.AttemptID, o.ActionID); err != nil {
 		return false, err
 	}
+	mode, err := normalizeWriteMode(o.EvidenceMode)
+	if err != nil {
+		return false, err
+	}
+	o.EvidenceMode = mode
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := fenceKey(o.AttemptID, o.ActionID)
@@ -146,6 +170,11 @@ func (s *MemoryStore) Complete(o StoredOutcome) error {
 	if err := requireIDs(o.AttemptID, o.ActionID); err != nil {
 		return err
 	}
+	mode, err := normalizeWriteMode(o.EvidenceMode)
+	if err != nil {
+		return err
+	}
+	o.EvidenceMode = mode
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	k := fenceKey(o.AttemptID, o.ActionID)
@@ -167,6 +196,11 @@ func (s *MemoryStore) AppendPolicy(o Observation) error {
 	if err := requireIDs(o.AttemptID, o.ActionID); err != nil {
 		return err
 	}
+	mode, err := normalizeWriteMode(o.EvidenceMode)
+	if err != nil {
+		return err
+	}
+	o.EvidenceMode = mode
 	o.Event = EventPolicyDecided
 	o.Value = nil
 	if o.AuditID == "" {
@@ -196,6 +230,52 @@ func (s *MemoryStore) Observations(attemptID, actionID string) ([]Observation, e
 }
 
 func (s *MemoryStore) Close() error { return nil }
+
+func (s *MemoryStore) EnsureAttempt(attemptID string) (bool, error) {
+	if strings.TrimSpace(attemptID) == "" {
+		return false, fmt.Errorf("toolproxy: attempt_id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.modes[attemptID]; ok {
+		return false, nil
+	}
+	s.modes[attemptID] = EvidenceModeSynthetic
+	return true, nil
+}
+
+func (s *MemoryStore) PromoteAttempt(attemptID string) (bool, error) {
+	if strings.TrimSpace(attemptID) == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mode, ok := s.modes[attemptID]
+	if !ok || mode == EvidenceModeLive {
+		return false, nil
+	}
+	if mode != EvidenceModeSynthetic {
+		return false, fmt.Errorf("toolproxy: ADR 0031: evidence_mode %q is not synthetic or live", mode)
+	}
+	s.modes[attemptID] = EvidenceModeLive
+	return true, nil
+}
+
+func (s *MemoryStore) ForgetSyntheticAttempt(attemptID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.modes[attemptID] == EvidenceModeSynthetic {
+		delete(s.modes, attemptID)
+	}
+	return nil
+}
+
+func (s *MemoryStore) AttemptEvidenceMode(attemptID string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mode, ok := s.modes[attemptID]
+	return mode, ok, nil
+}
 
 // SQLiteStore persists the event log with modernc.org/sqlite (no CGO).
 // Execution events use a partial unique index (ADR 0026: WHERE event <> 'policy_decided').
@@ -238,21 +318,26 @@ func (s *SQLiteStore) migrate() error {
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS tool_outcome_events (
-  event_id    TEXT PRIMARY KEY,
-  attempt_id  TEXT NOT NULL,
-  action_id   TEXT NOT NULL,
-  event       TEXT NOT NULL CHECK (event IN ('policy_decided', 'action_claimed', 'action_executed', 'action_failed')),
-  actor       TEXT NOT NULL DEFAULT '',
-  principal   TEXT NOT NULL DEFAULT '',
-  tool        TEXT NOT NULL DEFAULT '',
-  action      TEXT NOT NULL DEFAULT '',
-  resource    TEXT NOT NULL DEFAULT '',
-  decision    TEXT NOT NULL DEFAULT '',
-  reason      TEXT NOT NULL DEFAULT '',
-  policy      TEXT NOT NULL DEFAULT '',
-  value_json  TEXT,
-  error       TEXT NOT NULL DEFAULT '',
-  created_at  TEXT NOT NULL
+  event_id      TEXT PRIMARY KEY,
+  attempt_id    TEXT NOT NULL,
+  action_id     TEXT NOT NULL,
+  event         TEXT NOT NULL CHECK (event IN ('policy_decided', 'action_claimed', 'action_executed', 'action_failed')),
+  actor         TEXT NOT NULL DEFAULT '',
+  principal     TEXT NOT NULL DEFAULT '',
+  tool          TEXT NOT NULL DEFAULT '',
+  action        TEXT NOT NULL DEFAULT '',
+  resource      TEXT NOT NULL DEFAULT '',
+  decision      TEXT NOT NULL DEFAULT '',
+  reason        TEXT NOT NULL DEFAULT '',
+  policy        TEXT NOT NULL DEFAULT '',
+  value_json    TEXT,
+  error         TEXT NOT NULL DEFAULT '',
+  created_at    TEXT NOT NULL,
+  evidence_mode TEXT NOT NULL DEFAULT 'synthetic' CHECK (evidence_mode IN ('synthetic', 'live'))
+)`,
+		`CREATE TABLE IF NOT EXISTS attempt_evidence_modes (
+  attempt_id    TEXT PRIMARY KEY,
+  evidence_mode TEXT NOT NULL CHECK (evidence_mode IN ('synthetic', 'live'))
 )`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_tool_outcome_execution_event
   ON tool_outcome_events (attempt_id, action_id, event)
@@ -268,10 +353,47 @@ func (s *SQLiteStore) migrate() error {
 			return err
 		}
 	}
+	if err := ensureEvidenceModeColumn(tx); err != nil {
+		return err
+	}
 	if err := migrateLegacyOutcomes(tx); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ensureEvidenceModeColumn adds ADR 0038's column to a fence file created
+// before it existed. Existing rows keep the default synthetic; they are not
+// reclassified as live.
+func ensureEvidenceModeColumn(tx *sql.Tx) error {
+	rows, err := tx.Query(`PRAGMA table_info(tool_outcome_events)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var has bool
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "evidence_mode" {
+			has = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	_, err = tx.Exec(`ALTER TABLE tool_outcome_events ADD COLUMN evidence_mode TEXT NOT NULL DEFAULT 'synthetic' CHECK (evidence_mode IN ('synthetic', 'live'))`)
+	return err
 }
 
 func migrateLegacyOutcomes(tx *sql.Tx) error {
@@ -483,13 +605,61 @@ func (s *SQLiteStore) Close() error {
 	return err
 }
 
-const observationColumns = `event_id, attempt_id, action_id, event, actor, principal, tool, action, resource, decision, reason, policy, value_json, error, created_at`
+func (s *SQLiteStore) EnsureAttempt(attemptID string) (bool, error) {
+	if strings.TrimSpace(attemptID) == "" {
+		return false, fmt.Errorf("toolproxy: attempt_id is required")
+	}
+	res, err := s.db.Exec(`
+INSERT INTO attempt_evidence_modes (attempt_id, evidence_mode) VALUES (?, ?)
+ON CONFLICT(attempt_id) DO NOTHING`, attemptID, EvidenceModeSynthetic)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *SQLiteStore) PromoteAttempt(attemptID string) (bool, error) {
+	if strings.TrimSpace(attemptID) == "" {
+		return false, nil
+	}
+	res, err := s.db.Exec(`
+UPDATE attempt_evidence_modes SET evidence_mode = ?
+WHERE attempt_id = ? AND evidence_mode = ?`, EvidenceModeLive, attemptID, EvidenceModeSynthetic)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *SQLiteStore) ForgetSyntheticAttempt(attemptID string) error {
+	_, err := s.db.Exec(`
+DELETE FROM attempt_evidence_modes WHERE attempt_id = ? AND evidence_mode = ?`,
+		attemptID, EvidenceModeSynthetic)
+	return err
+}
+
+func (s *SQLiteStore) AttemptEvidenceMode(attemptID string) (string, bool, error) {
+	var mode string
+	err := s.db.QueryRow(`
+SELECT evidence_mode FROM attempt_evidence_modes WHERE attempt_id = ?`, attemptID).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return mode, true, nil
+}
+
+const observationColumns = `event_id, attempt_id, action_id, event, actor, principal, tool, action, resource, decision, reason, policy, value_json, error, created_at, evidence_mode`
 
 const insertEventSQL = `
 INSERT INTO tool_outcome_events (
   event_id, attempt_id, action_id, event, actor, principal, tool, action, resource,
-  decision, reason, policy, value_json, error, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  decision, reason, policy, value_json, error, created_at, evidence_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 type queryRower interface {
 	QueryRow(query string, args ...any) *sql.Row
@@ -516,6 +686,10 @@ WHERE attempt_id = ? AND action_id = ? AND event IN (?, ?)`,
 }
 
 func insertEvent(ex execer, o Observation) error {
+	mode, err := normalizeWriteMode(o.EvidenceMode)
+	if err != nil {
+		return err
+	}
 	var value any
 	if o.Value != nil && (o.Event == EventActionExecuted || o.Event == EventActionFailed) {
 		b, err := json.Marshal(o.Value)
@@ -524,9 +698,9 @@ func insertEvent(ex execer, o Observation) error {
 		}
 		value = string(b)
 	}
-	_, err := ex.Exec(insertEventSQL,
+	_, err = ex.Exec(insertEventSQL,
 		o.AuditID, o.AttemptID, o.ActionID, o.Event, o.Actor, o.Principal, o.Tool, o.Action, o.Resource,
-		o.Decision, o.Reason, o.Policy, value, o.Error, formatTime(o.CreatedAt))
+		o.Decision, o.Reason, o.Policy, value, o.Error, formatTime(o.CreatedAt), mode)
 	return err
 }
 
@@ -540,7 +714,7 @@ func scanObservation(sc scanner) (Observation, error) {
 	var created string
 	err := sc.Scan(
 		&o.AuditID, &o.AttemptID, &o.ActionID, &o.Event, &o.Actor, &o.Principal, &o.Tool, &o.Action, &o.Resource,
-		&o.Decision, &o.Reason, &o.Policy, &valueJSON, &o.Error, &created,
+		&o.Decision, &o.Reason, &o.Policy, &valueJSON, &o.Error, &created, &o.EvidenceMode,
 	)
 	if err != nil {
 		return Observation{}, err
@@ -558,19 +732,20 @@ func outcomeFromObservation(o Observation) StoredOutcome {
 		status = StatusExecuted
 	}
 	return StoredOutcome{
-		AttemptID: o.AttemptID,
-		ActionID:  o.ActionID,
-		Status:    status,
-		Actor:     o.Actor,
-		Principal: o.Principal,
-		Tool:      o.Tool,
-		Action:    o.Action,
-		Resource:  o.Resource,
-		Reason:    o.Reason,
-		Policy:    o.Policy,
-		Value:     o.Value,
-		Error:     o.Error,
-		CreatedAt: o.CreatedAt,
+		AttemptID:    o.AttemptID,
+		ActionID:     o.ActionID,
+		Status:       status,
+		Actor:        o.Actor,
+		Principal:    o.Principal,
+		Tool:         o.Tool,
+		Action:       o.Action,
+		Resource:     o.Resource,
+		Reason:       o.Reason,
+		Policy:       o.Policy,
+		Value:        o.Value,
+		Error:        o.Error,
+		EvidenceMode: o.EvidenceMode,
+		CreatedAt:    o.CreatedAt,
 	}
 }
 
@@ -579,20 +754,21 @@ func observationFromOutcome(o StoredOutcome) Observation {
 		o.CreatedAt = time.Now().UTC()
 	}
 	return Observation{
-		AttemptID: o.AttemptID,
-		ActionID:  o.ActionID,
-		Event:     eventForStatus(o.Status),
-		Actor:     o.Actor,
-		Principal: o.Principal,
-		Tool:      o.Tool,
-		Action:    o.Action,
-		Resource:  o.Resource,
-		Decision:  "allow",
-		Reason:    o.Reason,
-		Policy:    o.Policy,
-		Value:     o.Value,
-		Error:     o.Error,
-		CreatedAt: o.CreatedAt.UTC(),
+		AttemptID:    o.AttemptID,
+		ActionID:     o.ActionID,
+		Event:        eventForStatus(o.Status),
+		Actor:        o.Actor,
+		Principal:    o.Principal,
+		Tool:         o.Tool,
+		Action:       o.Action,
+		Resource:     o.Resource,
+		Decision:     "allow",
+		Reason:       o.Reason,
+		Policy:       o.Policy,
+		Value:        o.Value,
+		Error:        o.Error,
+		EvidenceMode: o.EvidenceMode,
+		CreatedAt:    o.CreatedAt.UTC(),
 	}
 }
 

@@ -401,6 +401,15 @@ VALUES ('att-old', 'ACTION-claimed', 'claimed', '', '', '', NULL, '', '2026-10-3
 	if !reflect.DeepEqual(events, []string{toolproxy.EventActionClaimed, toolproxy.EventActionExecuted}) {
 		t.Fatalf("migrated events = %v", events)
 	}
+	migrated, err := store.Observations("att-old", "ACTION-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range migrated {
+		if ev.EvidenceMode != toolproxy.EvidenceModeSynthetic {
+			t.Fatalf("legacy row %s mode = %q; history must stay synthetic", ev.Event, ev.EvidenceMode)
+		}
+	}
 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

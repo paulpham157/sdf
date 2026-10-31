@@ -45,6 +45,28 @@ Attempts, and Evidence stay on PostgreSQL (`SDF_DATABASE_URL`,
 share rows with the Python `tool_audits` table. Sharing that table is a
 later decision (ADR 0037), not this file.
 
+## Evidence mode
+
+An Attempt this process starts is `synthetic` until the sandbox side
+reports a real sandbox id through `ConfirmLive`
+([ADR 0031](adr/0031-live-evidence-mode-for-run.md),
+[ADR 0038](adr/0038-go-attempt-evidence-mode.md)). `POST /v1/attempts`
+rejects a body field `evidence_mode` with `422`. The accept response
+reports the stored mode, which is `synthetic` until that report.
+
+Tool Proxy events copy the Attempt's mode when the row is inserted. A
+later promotion does not change rows already written. The Tool Proxy
+result reports the mode of the `policy_decided` row for that delivery.
+
+The Attempt mode is a row in the same SQLite file as the fence when
+`-outcome-db` is set, and it dies with the process when the fence is
+in memory. It is not PostgreSQL `attempts.evidence_mode` and not
+`tool_audits`. The placeholder runner in `sdf-orch` never reports a
+sandbox id, so those Attempts stay `synthetic`.
+
+A credential-scope sandbox id on the start request is not proof a
+sandbox existed, and it does not promote the Attempt.
+
 An empty path stays `MemoryStore` in the orchestrator, including tests and
 `sdf-orch` with no flag and no env. There is no compiled-in filename.
 

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +50,55 @@ func TestAttemptsIdempotencyConflict(t *testing.T) {
 	s.Handler().ServeHTTP(rr2, httptest.NewRequest(http.MethodPost, "/v1/attempts", bytes.NewReader(body)))
 	if rr2.Code != http.StatusConflict {
 		t.Fatalf("second: want 409, got %d %s", rr2.Code, rr2.Body.String())
+	}
+}
+
+func TestAttemptStartReportsSyntheticAndRejectsCallerMode(t *testing.T) {
+	var runs atomic.Int64
+	orch, err := orchestrator.New(orchestrator.Config{
+		Workers:        1,
+		DefaultTimeout: time.Second,
+		Runner: func(context.Context, string, []byte) error {
+			runs.Add(1)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer orch.Close()
+	s := gateway.New(orch, metrics.Default)
+
+	for _, body := range []string{
+		`{"id":"a-live","idempotency_key":"k-live","agent_id":"ag","payload":"p","evidence_mode":"live"}`,
+		`{"id":"a-syn","idempotency_key":"k-syn","agent_id":"ag","payload":"p","evidence_mode":"synthetic"}`,
+		`{"id":"a-null","idempotency_key":"k-null","agent_id":"ag","payload":"p","evidence_mode":null}`,
+	} {
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/attempts", strings.NewReader(body)))
+		if rr.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("body %s: status %d %s", body, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "ADR 0031") {
+			t.Fatalf("body %s: diagnostic %s", body, rr.Body.String())
+		}
+	}
+	if runs.Load() != 0 || orch.Executions() != 0 {
+		t.Fatalf("caller mode started an attempt runs=%d execs=%d", runs.Load(), orch.Executions())
+	}
+
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/attempts", strings.NewReader(
+		`{"id":"a-ok","idempotency_key":"k-ok","agent_id":"ag","payload":"p"}`)))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("accept: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["evidence_mode"] != "synthetic" || resp["id"] != "a-ok" {
+		t.Fatalf("accept body = %#v", resp)
 	}
 }
 

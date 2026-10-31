@@ -137,6 +137,9 @@ type Result struct {
 	Value     any
 	Error     string
 	Replay    bool // true if durable outcome was replayed (idempotent)
+	// EvidenceMode is the mode of the policy_decided row this delivery
+	// wrote (ADR 0031 §9). It is not the terminal execution row's mode.
+	EvidenceMode string
 }
 
 // SandboxScope is the credential + identity fence for one Attempt's sandbox.
