@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,15 +28,15 @@ type SandboxRunner func(ctx context.Context, attemptID string, payload []byte) e
 
 // Attempt is one dispatch into a sandbox.
 type Attempt struct {
-	ID                  string
-	IdempotencyKey      string
-	AgentID             string
-	Payload             []byte
-	Timeout             time.Duration
-	OwnerPrincipal      string
-	SandboxID           string
-	AllowedCredentials  []string
-	AllowedTools        []string
+	ID                 string
+	IdempotencyKey     string
+	AgentID            string
+	Payload            []byte
+	Timeout            time.Duration
+	OwnerPrincipal     string
+	SandboxID          string
+	AllowedCredentials []string
+	AllowedTools       []string
 }
 
 type attemptMeta struct {
@@ -52,6 +53,7 @@ type Orchestrator struct {
 	queue   *queue.Queue
 	runner  SandboxRunner
 	tools   *toolproxy.Proxy
+	owned   toolproxy.OutcomeStore // non-nil when New opened OutcomeDBPath
 	timeout time.Duration
 
 	mu      sync.Mutex
@@ -71,11 +73,18 @@ type Config struct {
 	DefaultTimeout time.Duration
 	Runner         SandboxRunner
 	ToolProxy      *toolproxy.Proxy
+	// OutcomeDBPath is the SQLite file for the Tool Proxy idempotency fence.
+	// Used only when ToolProxy is nil. Empty keeps the in-process MemoryStore
+	// (tests and processes that do not need restart survival). A non-empty
+	// path opens toolproxy.OpenSQLiteStore and the Orchestrator closes it.
+	OutcomeDBPath string
 }
 
 // New builds an Orchestrator. Runner defaults to a no-op that waits on ctx.
-// ToolProxy defaults to an in-process proxy with a no-op executor.
-func New(cfg Config) *Orchestrator {
+// ToolProxy defaults to an in-process proxy with a no-op executor and a
+// MemoryStore. When ToolProxy is nil and OutcomeDBPath is set, New opens
+// that path with toolproxy.OpenSQLiteStore and owns the store.
+func New(cfg Config) (*Orchestrator, error) {
 	if cfg.BusCapacity < 1 {
 		cfg.BusCapacity = 64
 	}
@@ -94,8 +103,18 @@ func New(cfg Config) *Orchestrator {
 			return ctx.Err()
 		}
 	}
+	var owned toolproxy.OutcomeStore
 	if cfg.ToolProxy == nil {
-		cfg.ToolProxy = toolproxy.NewProxy(nil, nil)
+		if cfg.OutcomeDBPath != "" {
+			store, err := toolproxy.OpenSQLiteStore(cfg.OutcomeDBPath)
+			if err != nil {
+				return nil, fmt.Errorf("orchestrator: outcome db: %w", err)
+			}
+			owned = store
+			cfg.ToolProxy = toolproxy.NewProxy(nil, store)
+		} else {
+			cfg.ToolProxy = toolproxy.NewProxy(nil, nil)
+		}
 	}
 
 	root, cancel := context.WithCancel(context.Background())
@@ -103,6 +122,7 @@ func New(cfg Config) *Orchestrator {
 		bus:     bus.New(cfg.BusCapacity),
 		runner:  cfg.Runner,
 		tools:   cfg.ToolProxy,
+		owned:   owned,
 		timeout: cfg.DefaultTimeout,
 		started: make(map[string]struct{}),
 		meta:    make(map[string]attemptMeta),
@@ -110,7 +130,7 @@ func New(cfg Config) *Orchestrator {
 		cancel:  cancel,
 	}
 	o.queue = queue.New(cfg.QueueCapacity, cfg.Workers, o.handleTask, nil)
-	return o
+	return o, nil
 }
 
 // Bus returns the in-process message bus.
@@ -243,10 +263,15 @@ func (o *Orchestrator) handleTask(ctx context.Context, t queue.Task) error {
 // Wait blocks until all in-flight Attempts finish (after cancel or natural end).
 func (o *Orchestrator) Wait() { o.active.Wait() }
 
-// Close cancels the root context, closes the queue and bus, and waits for Attempts.
+// Close cancels the root context, closes the queue and bus, waits for Attempts,
+// and closes an OutcomeDBPath store this Orchestrator opened.
 func (o *Orchestrator) Close() {
 	o.cancel()
 	o.queue.Close()
 	o.Wait()
 	o.bus.Close()
+	if o.owned != nil {
+		_ = o.owned.Close()
+		o.owned = nil
+	}
 }

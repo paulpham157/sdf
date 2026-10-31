@@ -15,7 +15,6 @@ import (
 	"github.com/paulpham157/sdf/go/internal/queue"
 )
 
-
 func maxRSSBytes() int64 {
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
@@ -48,7 +47,7 @@ func TestCancellationChaos_GoroutineCountMatches(t *testing.T) {
 	var entered atomic.Int64
 	release := make(chan struct{})
 	const N = 64
-	orch := orchestrator.New(orchestrator.Config{
+	orch, err := orchestrator.New(orchestrator.Config{
 		BusCapacity:    8,
 		QueueCapacity:  256,
 		Workers:        N, // one worker per attempt so all enter the runner
@@ -63,6 +62,9 @@ func TestCancellationChaos_GoroutineCountMatches(t *testing.T) {
 			}
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ctx := context.Background()
 	for i := 0; i < N; i++ {
@@ -102,7 +104,7 @@ func TestIdempotency_SameKeySingleExecution(t *testing.T) {
 	var runs atomic.Int64
 	started := make(chan struct{}, 1)
 	block := make(chan struct{})
-	orch := orchestrator.New(orchestrator.Config{
+	orch, err := orchestrator.New(orchestrator.Config{
 		Workers:        2,
 		QueueCapacity:  8,
 		DefaultTimeout: 5 * time.Second,
@@ -120,6 +122,9 @@ func TestIdempotency_SameKeySingleExecution(t *testing.T) {
 			}
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer orch.Close()
 
 	ctx := context.Background()
@@ -138,7 +143,7 @@ func TestIdempotency_SameKeySingleExecution(t *testing.T) {
 		t.Fatal("first attempt did not start")
 	}
 
-	err := orch.Start(ctx, orchestrator.Attempt{
+	err = orch.Start(ctx, orchestrator.Attempt{
 		ID:             "attempt-2",
 		IdempotencyKey: "idem-42",
 		AgentID:        "agent",
@@ -298,7 +303,6 @@ func TestBackpressure_MillionsStableGoroutinesAndRAM(t *testing.T) {
 		t.Fatalf("heap grew too much: +%d bytes (before=%d after=%d)", growth, memBefore.HeapAlloc, memAfter.HeapAlloc)
 	}
 }
-
 
 // TestQueueIdempotency_Direct mirrors queue-level single execution.
 func TestQueueIdempotency_Direct(t *testing.T) {
