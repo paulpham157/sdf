@@ -6,6 +6,7 @@ from sdf_core.measurement import AttemptObservation, ImpactMeasurement, Objectiv
 from sdf_core.db import ArtifactRow, AttemptRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow, make_engine
 from sdf_core.model import utcnow
 from sqlalchemy.orm import sessionmaker
+from tests.revision_support import bound
 
 
 def test_scorecard_reports_first_attempt_success_and_cost_per_accepted_task():
@@ -69,6 +70,7 @@ def test_db_trace_completeness_requires_task_artifact_and_evidence_chain():
             id="EVIDENCE-TRACE-METRIC", attempt_id="ATTEMPT-TRACE-METRIC", kind="test",
             status="PASS", command="check", exit_code=0, artifact_ref=None,
             confidence=1.0, criterion="check", measured_at=utcnow(), created_at=utcnow(),
+            **bound(db, "ATTEMPT-TRACE-METRIC"),
         ))
         db.add_all([
             GraphNodeRow(id="ATTEMPT-TRACE-METRIC", kind="attempt", title="attempt", source="test", owner="test", confidence=1.0, created_at=utcnow()),
@@ -92,6 +94,7 @@ def test_db_trace_completeness_requires_task_artifact_and_evidence_chain():
         db.add(ArtifactRow(
             id="ARTIFACT-TRACE-METRIC", attempt_id="ATTEMPT-TRACE-METRIC", kind="diff",
             uri="/tmp/diff", sha256="0" * 64, size_bytes=1, created_at=utcnow(),
+            **bound(db, "ATTEMPT-TRACE-METRIC"),
         ))
         db.add(GraphNodeRow(id="ARTIFACT-TRACE-METRIC", kind="artifact", title="diff", source="test", owner="test", confidence=1.0, created_at=utcnow()))
         db.add(DecisionEdgeRow(

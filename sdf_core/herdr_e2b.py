@@ -178,8 +178,12 @@ class HerdrE2BNativeAdapter:
     def run(self, *, attempt_id: str, workspace: Path, instructions: str):
         from .adapter import AdapterResult, RuntimeAgentAdapter
 
+        from .revisions import tree_digest
+
         before = RuntimeAgentAdapter._snapshot(workspace)
-        _ensure_git_baseline(workspace)
+        # ADR 0032 (#62): the baseline commit e2b-box pulls against, read on
+        # the host before the agent runs.
+        base_commit = _ensure_git_baseline(workspace)
         plan = self.adapter.plan(attempt_id=attempt_id, checkout=workspace, template=self.template,
                                  agent=self.agent, task=instructions, timeout_ms=self.timeout_ms)
         result = self.adapter.execute(plan, live=self.live)
@@ -195,14 +199,27 @@ class HerdrE2BNativeAdapter:
             stdout=str(agent.get("stdout", "")),
             stderr=str(agent.get("stderr", "")) + ("" if completed else f"\ne2b-box status: {result.status}"),
             exit_code=int(agent.get("exitCode") or 0) if completed else 1,
+            # Host-side, after the pull; ExecutionService recomputes and compares.
+            result_tree_sha256=tree_digest(workspace),
+            base_commit=base_commit,
+            base_commit_source="e2b-baseline" if base_commit else None,
         )
 
 
-def _ensure_git_baseline(workspace: Path) -> None:
-    # e2b-box keys a box by git worktree and pulls relative to a baseline commit.
-    if (workspace / ".git").exists():
-        return
+def _ensure_git_baseline(workspace: Path) -> str | None:
+    """Make sure the workspace is a Git worktree with a baseline commit; return ``HEAD``.
+
+    e2b-box keys a box by git worktree and pulls relative to a baseline commit.
+    The returned id names that commit (ADR 0032). It is ``None`` only when an
+    existing ``.git`` has no commit to name.
+    """
+
     env = {"PATH": os.environ.get("PATH", ""), "GIT_AUTHOR_NAME": "sdf", "GIT_AUTHOR_EMAIL": "sdf@localhost",
            "GIT_COMMITTER_NAME": "sdf", "GIT_COMMITTER_EMAIL": "sdf@localhost", "HOME": os.environ.get("HOME", "")}
-    for command in (("git", "init", "-q"), ("git", "add", "-A"), ("git", "commit", "-q", "--allow-empty", "-m", "sdf attempt baseline")):
-        subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True)
+    if not (workspace / ".git").exists():
+        for command in (("git", "init", "-q"), ("git", "add", "-A"), ("git", "commit", "-q", "--allow-empty", "-m", "sdf attempt baseline")):
+            subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True)
+    head = subprocess.run(("git", "rev-parse", "--verify", "-q", "HEAD"), cwd=workspace, env=env,
+                          capture_output=True, text=True, check=False)
+    commit = head.stdout.strip()
+    return commit if head.returncode == 0 and commit else None

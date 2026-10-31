@@ -43,6 +43,10 @@ class WorkspaceManager:
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(source.read_bytes())
+                # Keep the execute bit so the workspace has the fixture's
+                # revision identity (ADR 0032); only the owner bit is set.
+                if source.stat().st_mode & 0o100:
+                    target.chmod(target.stat().st_mode | 0o100)  # owner only
         return destination
 
 
@@ -76,7 +80,8 @@ class ArtifactStore:
         payload = json.dumps({"stdout": stdout, "stderr": stderr, "exit_code": exit_code}, ensure_ascii=False, indent=2).encode("utf-8")
         return self._write(artifact_id, "process_log", payload)
 
-    def capture_evaluator_output(self, *, artifact_id: str, evidence: Evidence) -> Artifact:
+    def capture_evaluator_output(self, *, artifact_id: str, evidence: Evidence,
+                                 revision: dict[str, str | None] | None = None) -> Artifact:
         """Persist the evaluator's output as the provenance artifact for Evidence.
 
         The evaluator output is intentionally separate from the agent process
@@ -95,6 +100,8 @@ class ArtifactStore:
                 "stderr": evidence.stderr,
                 "confidence": evidence.confidence,
                 "runner": evidence.runner,
+                # ADR 0032 (#62): the Attempt revision and tree this check ran against.
+                **({"revision": dict(revision)} if revision is not None else {}),
             },
             ensure_ascii=False,
             indent=2,

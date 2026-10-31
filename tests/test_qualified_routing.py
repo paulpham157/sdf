@@ -32,6 +32,7 @@ from sdf_core.routing import RoutingRequest
 from sdf_core.runtime import RuntimeEvent, RuntimeEventKind, RuntimeStatus, SqlAlchemyRuntimeEventSink
 from sdf_core.run_adapter import LiveRunAdapter, RunAdapterConfigError, configured_run_adapter
 from tests.test_run_adapter import LIVE, _Completing, _Transport
+from tests.revision_support import bound
 
 T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
 REQ = RoutingRequest(frozenset({VERIFIED_LOOP}), max_cost_usd=10.0, max_latency_ms=3_600_000)
@@ -72,7 +73,7 @@ def live_attempt(db, agent, *, passed=True, cost=0.01, seconds=60.0, error_class
     if evidence:
         db.add(EvidenceRow(id=f"E-{aid}", attempt_id=aid, kind="evaluation", status="PASS" if passed else "FAIL",
                            command="check", exit_code=0 if passed else 1, confidence=1.0, criterion="c",
-                           created_at=at))
+                           created_at=at, **bound(db, aid)))
     db.flush()
     return aid
 
@@ -91,7 +92,7 @@ def test_synthetic_attempts_without_live_ledger_never_qualify(db):
     db.add(AttemptRow(id="A-FAKE", task_id="T", status="completed", dispatch_key="d-fake", agent="pi",
                       created_at=T0, cost_usd=0.0, latency_ms=1.0, provider="pi"))
     db.add(EvidenceRow(id="E-FAKE", attempt_id="A-FAKE", kind="evaluation", status="PASS", command="c",
-                       exit_code=0, confidence=1.0, criterion="c", created_at=T0))
+                       exit_code=0, confidence=1.0, criterion="c", created_at=T0, **bound(db, "A-FAKE")))
     db.flush()
     quals = qualify_agents(db, ["pi"])
     assert not quals["pi"].qualified and quals["pi"].reason == "no finished live attempt measured"

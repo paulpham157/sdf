@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -86,6 +86,11 @@ class AttemptRow(Base):
     # principal (or an admin) may drive its Tool Proxy actions; NULL (internal
     # or pre-0018 Attempts) means admin-only over HTTP.
     principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    # ADR 0032 (#62): TRUE for every Attempt created after migration 0023 (set
+    # by the ORM guard and, on PostgreSQL, a trigger, whatever the writer
+    # says); NULL only for Attempts that existed before 0023.  Only a NULL
+    # Attempt may have unbound artifacts or Evidence.  Immutable.
+    revision_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -126,6 +131,36 @@ class ArtifactRow(Base):
     sha256: Mapped[str] = mapped_column(String(64))
     size_bytes: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # ADR 0032 (#62): the Attempt revision this artifact was derived from and
+    # the result tree it describes. NULL only for rows written before 0023.
+    revision_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class RevisionBindingError(ValueError):
+    """An artifact or Evidence row is not bound to its own Attempt's revision (ADR 0032)."""
+
+
+class AttemptRevisionRow(Base):
+    """Which repository snapshot an Attempt started from and produced (#62, ADR 0032).
+
+    One row per Attempt, written when its workspace is created. The base
+    identity is immutable; the result tree (and an adapter's base commit) is
+    set exactly once, before any artifact or Evidence row refers to it.
+    Never deleted.
+    """
+
+    __tablename__ = "attempt_revisions"
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    repository: Mapped[str] = mapped_column(String(500))
+    tree_format: Mapped[str] = mapped_column(String(32))
+    base_tree_sha256: Mapped[str] = mapped_column(String(64))
+    base_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    base_commit_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    result_tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class EvidenceRow(Base):
@@ -143,6 +178,9 @@ class EvidenceRow(Base):
     measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     evidence_mode: Mapped[str] = mapped_column(String(16), default="synthetic")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # ADR 0032 (#62): the revision and result tree the evaluator checked.
+    revision_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 RUNTIME_EVENT_PROVENANCE_SQL = (
@@ -630,6 +668,113 @@ def _enforce_plan_gate(session: Session, flush_context: Any, instances: Any) -> 
                 plan = session.get(PlanRow, item.plan_id)
                 if plan is None or plan.status != "approved":
                     raise PlanGateError(f"plan {item.plan_id} is not approved; no agent run may start")
+
+
+_REVISION_SET_ONCE = {"base_commit", "base_commit_source", "result_tree_sha256", "finished_at"}
+_BINDING_FIELDS = ("revision_id", "tree_sha256")
+
+
+def _pending_attempt(session: Session, attempt_id: str | None) -> "AttemptRow | None":
+    for item in session.new:
+        if isinstance(item, AttemptRow) and item.id == attempt_id:
+            return item
+    return session.get(AttemptRow, attempt_id) if attempt_id is not None else None
+
+
+def _pending_revision(session: Session, *, attempt_id: str | None = None, revision_id: str | None = None):
+    for item in session.new:
+        if isinstance(item, AttemptRevisionRow) and (
+            (attempt_id is not None and item.attempt_id == attempt_id) or (revision_id is not None and item.id == revision_id)
+        ):
+            return item
+    if revision_id is not None:
+        return session.get(AttemptRevisionRow, revision_id)
+    return session.scalar(select(AttemptRevisionRow).where(AttemptRevisionRow.attempt_id == attempt_id))
+
+
+def check_revision_binding(session: Session, row: Any) -> None:
+    """Refuse an artifact/Evidence row whose revision binding is missing, foreign or mismatched (ADR 0032)."""
+
+    kind = "evidence" if isinstance(row, EvidenceRow) else "artifact"
+    own = _pending_revision(session, attempt_id=row.attempt_id)
+    if row.revision_id is None:
+        if own is not None:
+            raise RevisionBindingError(
+                f"missing revision binding: {kind} {row.id} has none but attempt {row.attempt_id} has revision {own.id}"
+            )
+        if row.tree_sha256 is not None:
+            raise RevisionBindingError(f"{kind} {row.id} names a tree without a revision")
+        # Unbound rows are allowed only for an Attempt that existed before
+        # migration 0023 (revision_required IS NULL), never because a revision
+        # row happens to be missing.
+        attempt = _pending_attempt(session, row.attempt_id)
+        if attempt is None:
+            raise RevisionBindingError(f"missing revision binding: {kind} {row.id} names unknown attempt {row.attempt_id}")
+        if attempt.revision_required is not None:
+            raise RevisionBindingError(
+                f"missing revision binding: {kind} {row.id}: attempt {row.attempt_id} was created after "
+                "migration 0023 and has no revision"
+            )
+        return  # an Attempt from before migration 0023
+    if own is None or own.id != row.revision_id:
+        other = _pending_revision(session, revision_id=row.revision_id)
+        if other is not None and other.attempt_id != row.attempt_id:
+            raise RevisionBindingError(
+                f"cross-Attempt revision binding: {kind} {row.id} of attempt {row.attempt_id} refers to revision "
+                f"{other.id} of attempt {other.attempt_id}"
+            )
+        raise RevisionBindingError(f"{kind} {row.id} refers to unknown revision {row.revision_id}")
+    if own.result_tree_sha256 is None:
+        raise RevisionBindingError(f"{kind} {row.id}: revision {own.id} has no result tree yet")
+    if row.tree_sha256 != own.result_tree_sha256:
+        raise RevisionBindingError(
+            f"mismatched revision: {kind} {row.id} names tree {row.tree_sha256} but revision {own.id} "
+            f"produced {own.result_tree_sha256}"
+        )
+
+
+@event.listens_for(Session, "before_flush")
+def _guard_attempt_revisions(session: Session, flush_context: Any, instances: Any) -> None:
+    """Revisions are never deleted; base identity is immutable; results are set once.
+    New artifacts and Evidence must be bound to their own Attempt's revision."""
+
+    from sqlalchemy import inspect as sa_inspect
+
+    for item in session.deleted:
+        if isinstance(item, AttemptRevisionRow):
+            raise ValueError("attempt revision rows cannot be deleted")
+    for item in session.new:
+        if isinstance(item, AttemptRow):
+            item.revision_required = True  # whatever the caller set (ADR 0032)
+    with session.no_autoflush:
+        for item in list(session.dirty):
+            if isinstance(item, (ArtifactRow, EvidenceRow, AttemptRow)) and session.is_modified(item, include_collections=False):
+                state = sa_inspect(item)
+                fields = ("revision_required",) if isinstance(item, AttemptRow) else _BINDING_FIELDS
+                if any(state.attrs[name].history.has_changes() for name in fields):
+                    raise RevisionBindingError(
+                        f"{type(item).__name__} {item.id}: its revision binding is immutable after insert")
+        for item in list(session.dirty):
+            if not isinstance(item, AttemptRevisionRow) or not session.is_modified(item, include_collections=False):
+                continue
+            state = sa_inspect(item)
+            changed = {attr.key for attr in state.attrs if attr.history.has_changes()}
+            if changed - _REVISION_SET_ONCE:
+                raise RevisionBindingError("an attempt revision's base identity is immutable")
+            # Read the stored values: an expired attribute has no history.
+            table = AttemptRevisionRow.__table__
+            keys = sorted(changed)
+            stored = session.execute(
+                select(*[table.c[key] for key in keys]).where(table.c.id == state.identity[0])
+            ).first() if state.identity else None
+            for index, key in enumerate(keys):
+                before = state.attrs[key].history.deleted
+                previous = stored[index] if stored is not None else (before[0] if before else None)
+                if previous is not None and previous != getattr(item, key):
+                    raise RevisionBindingError(f"attempt revision {key} is set once and cannot change")
+        for item in list(session.new):
+            if isinstance(item, (ArtifactRow, EvidenceRow)):
+                check_revision_binding(session, item)
 
 
 _TOKEN_MUTABLE = {"last_used_at", "revoked_at", "revoked_by"}

@@ -46,6 +46,7 @@ from sdf_core.run_adapter import (
 from tests.auth_support import admin_client
 from tests.check_support import write_checks
 from tests.test_run_adapter import LIVE, _Completing, _Transport
+from tests.revision_support import bound
 
 CHECK = {"tests pass": [["python", "-c", "print('ok')"]]}
 ALEMBIC = Config(str(Path(__file__).parents[1] / "alembic.ini"))
@@ -244,7 +245,8 @@ def test_live_evidence_alone_does_not_make_a_routing_sample(db):
     db.add(AttemptRow(id="A-PLAN", task_id="T", status="completed", dispatch_key="d-plan", agent="pi",
                       evidence_mode="live", created_at=utcnow()))
     db.add(EvidenceRow(id="E-PLAN", attempt_id="A-PLAN", kind="evaluation", status="PASS", command="c",
-                       exit_code=0, confidence=1.0, criterion="c", evidence_mode="live", created_at=utcnow()))
+                       exit_code=0, confidence=1.0, criterion="c", evidence_mode="live", created_at=utcnow(),
+                       **bound(db, "A-PLAN")))
     db.flush()
     q = qualify_agents(db, ["pi"])["pi"]
     assert not q.qualified and q.reason == "no finished live attempt measured"
