@@ -93,17 +93,40 @@ def test_example_defaults_remain_when_nothing_is_configured():
     assert env["SDF_PI_BASE_URL"] == "https://api.vultrinference.com/v1"
     assert env.get("SDF_PI_API_KEY_ENV") is None
     assert run_network(env, agent="pi")["allow_out"] == list(DEFAULT_NETWORK["allow_out"])
-    # The example endpoint does not depend on the key variable being named VULTR_*.
-    named = run_environ("codex", {"SDF_CODEX_API_KEY_ENV": "GATEWAY_API_KEY", "GATEWAY_API_KEY": "k"})
-    assert named["SDF_CODEX_API_KEY_ENV"] == "GATEWAY_API_KEY"
-    assert named["SDF_OPENAI_BASE_URL"] == "https://api.vultrinference.com/v1"
-    assert named["SDF_CODEX_MODEL"] == "glm-5.3"
-    assert run_network(named, agent="codex")["allow_out"] == ["api.vultrinference.com"]
+    # Only the example key name may fill the example Codex URL. With nothing
+    # else set, /run selects that name. One host, not a wider allowlist.
+    implied = run_environ("codex", {})
+    assert implied["SDF_CODEX_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
+    assert implied["SDF_OPENAI_BASE_URL"] == "https://api.vultrinference.com/v1"
+    implied = run_environ("codex", {"VULTR_INFERENCE_API_KEY": "example-key-name-only"})
+    assert implied["SDF_CODEX_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
+    assert implied["SDF_OPENAI_BASE_URL"] == "https://api.vultrinference.com/v1"
+    assert implied["SDF_CODEX_MODEL"] == "glm-5.3"
+    assert run_network(implied, agent="codex")["allow_out"] == ["api.vultrinference.com"]
+    assert llm_attempt_provider("codex", implied) == "openai:api.vultrinference.com"
     # Unset Codex outside /run is the official Responses host, not a vendor name.
     assert llm_attempt_provider("codex", {}) == "openai:api.openai.com"
     assert llm_attempt_provider("claude", {}) == "anthropic:api.anthropic.com"
     assert llm_attempt_provider("pi", {}) == "openai:api.vultrinference.com"
     assert llm_attempt_provider("pi", {}) != "vultr"
+
+
+def test_codex_non_example_key_is_not_sent_to_the_example_host():
+    """A real OpenAI key, or any other key name, must not be aimed at the example host."""
+
+    for env in (
+        {"SDF_OPENAI_API_KEY": "openai-unit-test-value"},
+        {"SDF_CODEX_API_KEY_ENV": "GATEWAY_API_KEY", "GATEWAY_API_KEY": "gateway-unit-test-value"},
+    ):
+        resolved = run_environ("codex", env)
+        assert "SDF_OPENAI_BASE_URL" not in resolved
+        assert resolved.get("SDF_CODEX_MODEL") in (None, "")
+        allow = run_network(resolved, agent="codex")["allow_out"]
+        assert allow == ["api.openai.com"]
+        assert "api.vultrinference.com" not in allow
+        assert llm_attempt_provider("codex", resolved) == "openai:api.openai.com"
+        assert "openai-unit-test-value" not in str(allow)
+        assert "gateway-unit-test-value" not in str(allow)
 
 
 def test_subscription_mode_does_not_get_the_example_base_url():

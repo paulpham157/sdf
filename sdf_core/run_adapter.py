@@ -12,10 +12,14 @@
     ``SDF_<AGENT>_API_KEY_ENV``, ``SDF_<AGENT>_BASE_URL`` / ``SDF_OPENAI_BASE_URL``
     / ``SDF_ANTHROPIC_BASE_URL``, ``SDF_<AGENT>_MODEL``) via
     :func:`~sdf_core.credential_injection.create_credentialed_transport`
-    (ADR-0007).  With no base URL set, an OpenAI-family kind uses the example
-    OpenAI-compatible endpoint (ADR 0034); Claude uses the official Anthropic
-    Messages API.  The example key *name* ``VULTR_INFERENCE_API_KEY`` is used
-    only when no ``SDF_*`` key is set, and it does not select a protocol;
+    (ADR-0007).  Headless OpenAI-family kinds keep their example base URL.
+    ``/run`` Codex gets that example URL only when the resolved key variable
+    is ``VULTR_INFERENCE_API_KEY``; any other key with no base URL stays on
+    the official OpenAI Responses API, so the key is not sent to a host the
+    operator did not name (ADR 0034).  Claude uses the official Anthropic
+    Messages API unless ``SDF_ANTHROPIC_BASE_URL`` is set.  The example key
+    *name* is used only when no ``SDF_*`` key is set; it does not select a
+    protocol;
   - provider ``SDF_SANDBOX_PROVIDER`` = ``e2b`` (template
     ``SDF_E2B_AGENTS_TEMPLATE`` / :data:`~sdf_core.agent_sandbox.DEFAULT_TEMPLATE`)
     or ``daytona`` (``SDF_DAYTONA_SNAPSHOT``);
@@ -136,9 +140,14 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     Only agent configuration (``SDF_*`` minus server settings), the key
     variable the agent's ``SDF_<AGENT>_API_KEY_ENV`` names, and the sandbox
     provider's own variables pass; ``SDF_DOTENV`` and server secrets never do.
-    An unset OpenAI-family base URL becomes the example OpenAI-compatible
-    endpoint.  That fill does not depend on the key variable's name.  Claude
-    is left unset so the official Anthropic Messages API is used (ADR 0034).
+    Headless OpenAI-family kinds with an unset base URL get their example
+    default (the credential plan would apply it anyway).  Codex gets the
+    example URL and ``glm-5.3`` only when the resolved key variable is
+    :data:`~sdf_core.credentials.EXAMPLE_API_KEY_ENV`.  Any other Codex key
+    leaves ``SDF_OPENAI_BASE_URL`` unset, which resolves to the official
+    OpenAI API — the same host :func:`~sdf_core.credentials.resolved_llm_base_url`
+    reports — and is never pointed at the example host.  Claude is left unset
+    so the official Anthropic Messages API is used (ADR 0034).
     """
 
     spec = _AGENTS[agent]
@@ -155,18 +164,24 @@ def run_environ(agent: str, environ: Mapping[str, str]) -> dict[str, str]:
     key_variable = env.get(spec.api_key_env_variable) if spec.api_key_env_variable else None
     if key_variable and environ.get(key_variable):
         env[key_variable] = environ[key_variable]
-    # Example OpenAI-compatible endpoint for every key name, not only the
-    # example key variable.  api-key mode only: a base URL in subscription
-    # mode is a configuration error (ADR 0007).  Claude stays on the official
-    # Messages API.
+    # api-key mode only: a base URL in subscription mode is a configuration
+    # error (ADR 0007).  Claude stays on the official Messages API.
+    # Codex has no kind default.  Filling the example host for every key
+    # would send SDF_OPENAI_API_KEY / an arbitrary *_API_KEY_ENV to a host
+    # the operator did not configure.  Do that only for the example key name,
+    # matching pre-PR behavior.  Other unset Codex URLs stay unset and resolve
+    # to the official OpenAI API (same as resolved_llm_base_url).
     if (
         env[spec.mode_variable] == "api-key"
         and spec.protocol == "openai"
         and not (env.get(spec.base_url_source) or "").strip()
     ):
-        env[spec.base_url_source] = spec.default_base_url or EXAMPLE_OPENAI_BASE_URL
-        if agent == "codex" and not (env.get("SDF_CODEX_MODEL") or "").strip():
-            env["SDF_CODEX_MODEL"] = EXAMPLE_OPENAI_MODEL
+        if spec.default_base_url:
+            env[spec.base_url_source] = spec.default_base_url
+        elif key_variable == EXAMPLE_API_KEY_ENV:
+            env[spec.base_url_source] = EXAMPLE_OPENAI_BASE_URL
+            if agent == "codex" and not (env.get("SDF_CODEX_MODEL") or "").strip():
+                env["SDF_CODEX_MODEL"] = EXAMPLE_OPENAI_MODEL
     return env
 
 

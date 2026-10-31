@@ -275,8 +275,9 @@ def resolved_llm_base_url(agent: str, environ: Mapping[str, str]) -> str:
     """Base URL the kind will call: explicit override, example default, or official API.
 
     Does not validate the URL (callers that inject it still use ``_check_base_url``).
-    An unset Codex URL is the official OpenAI API; the /run path may first fill
-    the example OpenAI-compatible endpoint into ``environ``.
+    An unset Codex URL is the official OpenAI API.  ``/run`` writes the example
+    OpenAI-compatible endpoint into ``environ`` only when the key variable is
+    the example name (``VULTR_INFERENCE_API_KEY``).
     """
 
     spec = _spec(agent)

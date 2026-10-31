@@ -4,11 +4,12 @@ Status: accepted (branch `core/live-full-loop`, PR #53, pending review)
 
 > **Amended by [ADR 0034](0034-openai-or-claude-compatible-llm-transport.md).**
 > "Defaults to Vultr Inference" means the example OpenAI-compatible endpoint
-> (base URL + model), applied for every key-variable name, not a Vultr
-> protocol and not only when the key is named `VULTR_INFERENCE_API_KEY`.
-> E2B egress allows the resolved LLM host (Claude with no base URL:
-> `api.anthropic.com`), plus `SDF_RUN_EGRESS_ALLOW`. The sandbox does not
-> reach only Vultr.
+> (base URL + model), not a Vultr protocol. For `/run` Codex that fill happens
+> only when the resolved key variable is `VULTR_INFERENCE_API_KEY`. Any other
+> Codex key with no base URL stays on `api.openai.com`. E2B egress allows that
+> one resolved host (Claude with no base URL: `api.anthropic.com`), plus
+> `SDF_RUN_EGRESS_ALLOW`. The sandbox does not reach only Vultr, and a
+> non-example key is not given the example host.
 
 ## Context
 

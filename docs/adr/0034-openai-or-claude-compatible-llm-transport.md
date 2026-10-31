@@ -55,9 +55,13 @@ named `VULTR_INFERENCE_API_KEY`.
    `claude` with no `SDF_ANTHROPIC_BASE_URL` uses `https://api.anthropic.com`
    and Claude Code's own model. It is not pointed at the example host just
    because the key variable is `VULTR_INFERENCE_API_KEY`.
-   Codex with no base URL *outside* `/run` stays the official OpenAI API
-   (`https://api.openai.com/v1`). `/run` fills the example endpoint when
-   `SDF_OPENAI_BASE_URL` is unset, for every key name.
+   Codex with no `SDF_OPENAI_BASE_URL` stays the official OpenAI API
+   (`https://api.openai.com/v1`), on `/run` and in the coordinator. `/run`
+   fills the example endpoint only when the resolved key variable is
+   `VULTR_INFERENCE_API_KEY` (including the nothing-configured case, which
+   selects that name because no `SDF_*` key is set). A different key
+   (`SDF_OPENAI_API_KEY` or another `*_API_KEY_ENV`) is not sent to the
+   example host.
 5. **Egress follows the resolved host.** An E2B sandbox allows the hostname
    of each kind's resolved base URL (explicit, else example, else official)
    and denies everything else. `SDF_RUN_EGRESS_ALLOW` still adds hosts.
@@ -81,9 +85,11 @@ provenance are not given a new abstraction.
 
 ## Migration
 
-- To call official OpenAI from `/run` Codex, set
-  `SDF_OPENAI_BASE_URL=https://api.openai.com/v1` and `SDF_CODEX_MODEL` to a
-  model that host serves. The host must implement Responses.
+- `/run` Codex with `SDF_OPENAI_API_KEY` or any key variable other than
+  `VULTR_INFERENCE_API_KEY`, and no `SDF_OPENAI_BASE_URL`, calls
+  `https://api.openai.com/v1` (Responses). Set `SDF_OPENAI_BASE_URL` to use
+  another host, and `SDF_CODEX_MODEL` to a model that host serves. The
+  example URL is filled only for the example key name.
 - To keep Claude on a Claude-compatible proxy, including Vultr's
   Anthropic-compatible endpoint, set `SDF_ANTHROPIC_BASE_URL` (Vultr's is
   `https://api.vultrinference.com`, no `/v1`) and `SDF_CLAUDE_MODEL`. Unset

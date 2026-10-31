@@ -8,11 +8,14 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 - The **public** HTTP run path selects a real sandboxed agent when
   `SDF_RUN_ADAPTER=live` (alias `herdr`): codex, claude (Herdr) or opencode,
   pi, qwen, goose (headless), built from main's per-agent configuration (ADR 0023).
-- With no other configuration an OpenAI-family agent (`codex`, `opencode`,
-  `pi`, `qwen`, `goose`) uses the example OpenAI-compatible endpoint
-  (`https://api.vultrinference.com/v1`, model `glm-5.3`). The example key
-  *name* is `VULTR_INFERENCE_API_KEY` when no `SDF_*` key is set. That host
-  is not a protocol ([ADR 0034](adr/0034-openai-or-claude-compatible-llm-transport.md)).
+- With no other configuration the headless OpenAI-family agents (`opencode`,
+  `pi`, `qwen`, `goose`) use the example OpenAI-compatible endpoint
+  (`https://api.vultrinference.com/v1`, model `glm-5.3`). `/run` Codex uses
+  that endpoint only when its key variable is `VULTR_INFERENCE_API_KEY`
+  (the name selected when no `SDF_*` key is set). `SDF_OPENAI_API_KEY` or
+  another `*_API_KEY_ENV`, with no base URL, stays on `https://api.openai.com/v1`.
+  That example host is not a protocol
+  ([ADR 0034](adr/0034-openai-or-claude-compatible-llm-transport.md)).
   `claude` with no base URL uses `https://api.anthropic.com`. `codex` requires
   the OpenAI Responses API, not Chat Completions only.
 - **Egress:** E2B sandboxes allow the hostname of the resolved base URL and
