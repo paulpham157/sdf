@@ -109,8 +109,8 @@ def test_claude_settings_file_pins_endpoint_and_moves_the_key_to_a_helper(tmp_pa
 def test_pi_seed_writes_default_project_trust(tmp_path):
     from sdf_core.credential_injection import _PI_MODELS
 
-    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin:/usr/local/bin", "SDF_PI_BASE_URL": "https://x.example/v1",
-           "SDF_PI_MODEL": "m", "SDF_TEST_API_KEY": "k-secret"}
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin:/usr/local/bin", "PI_BASE_URL": "https://x.example/v1",
+           "PI_MODEL": "m", "SDF_TEST_API_KEY": "k-secret"}
     (tmp_path / ".pi/agent").mkdir(parents=True)
     (tmp_path / ".pi/agent/settings.json").write_text('{"theme":"dark","defaultProjectTrust":"never"}')
     subprocess.run(["node", "-e", _PI_MODELS, "SDF_TEST_API_KEY"], env=env, capture_output=True, text=True, check=True)

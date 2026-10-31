@@ -26,7 +26,7 @@ from sdf_core.run_adapter import (
     run_slot,
 )
 
-LIVE = {"SDF_RUN_ADAPTER": "live", "E2B_API_KEY": "e2b_unit_test_not_a_key", "VULTR_INFERENCE_API_KEY": "vk-unit-test-value"}
+LIVE = {"SDF_RUN_ADAPTER": "live", "E2B_API_KEY": "e2b_unit_test_not_a_key"}
 
 
 def _db():
@@ -59,33 +59,33 @@ def test_resolve_sandbox_provider():
 
 
 @pytest.mark.parametrize("agent", AGENT_KINDS)
-def test_all_six_kinds_build_with_example_defaults(agent):
-    from sdf_core.credentials import protocol_of
-
+def test_all_six_kinds_build_with_official_or_empty_defaults(agent):
     adapter = configured_run_adapter(_db(), environ={**LIVE, "SDF_RUN_AGENT": agent})
     assert isinstance(adapter, LiveRunAdapter)
     assert adapter.agent == agent and adapter.image == DEFAULT_TEMPLATE
     assert adapter.network["deny_out"] == list(DEFAULT_NETWORK["deny_out"])
-    if protocol_of(agent) == "openai":
-        # Example OpenAI-compatible host, not a Vultr protocol.
-        assert adapter.network["allow_out"] == list(DEFAULT_NETWORK["allow_out"])
-        assert adapter.model
-    else:
-        # Claude stays on the official Messages API unless a base URL is set.
+    if agent == "claude":
         assert adapter.network["allow_out"] == ["api.anthropic.com"]
         assert adapter.model is None
+    elif agent == "codex":
+        assert adapter.network["allow_out"] == ["api.openai.com"]
+        assert adapter.model is None
+    else:
+        # Headless kinds have no default host until BASE_URL is set.
+        assert adapter.network["allow_out"] == []
+        assert adapter.model
 
 
 def test_run_environ_is_agent_config_only():
     env = run_environ("codex", {**LIVE, "SDF_DOTENV": "/x/.env", "SDF_AUTH_PEPPER": "p", "SDF_DATABASE_URL": "pg",
-                                "OPENAI_API_KEY": "nope", "SDF_HERDR_CODEX_MODEL": "legacy-model"})
+                                "OPENAI_API_KEY": "openai-unit-test-value", "VULTR_INFERENCE_API_KEY": "not-used",
+                                "SDF_HERDR_CODEX_MODEL": "legacy-model"})
     assert "SDF_DOTENV" not in env and "SDF_AUTH_PEPPER" not in env and "SDF_DATABASE_URL" not in env
-    assert "OPENAI_API_KEY" not in env
-    assert env["SDF_CODEX_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
-    assert env["VULTR_INFERENCE_API_KEY"] == LIVE["VULTR_INFERENCE_API_KEY"]
-    assert env["SDF_OPENAI_BASE_URL"] == "https://api.vultrinference.com/v1"
-    assert env["SDF_CODEX_MODEL"] == "legacy-model"  # deprecated alias honoured
-    assert run_environ("codex", {**LIVE, "SDF_CODEX_MODEL": "m", "SDF_HERDR_CODEX_MODEL": "x"})["SDF_CODEX_MODEL"] == "m"
+    assert env["OPENAI_API_KEY"] == "openai-unit-test-value"
+    assert "VULTR_INFERENCE_API_KEY" not in env
+    assert "OPENAI_BASE_URL" not in env
+    assert "OPENAI_MODEL" not in env
+    assert run_environ("codex", {**LIVE, "OPENAI_MODEL": "m"})["OPENAI_MODEL"] == "m"
 
 
 def test_run_network_extra_hosts_and_open_cidr_rejected():

@@ -1,8 +1,8 @@
 """Live OpenCode Attempt in a fresh E2B sandbox against Vultr Serverless Inference.
 
 Skipped by default.  Gated on ``SDF_LIVE_E2B=1`` and ``SDF_LIVE_OPENCODE=1``
-plus ``E2B_API_KEY`` and ``VULTR_INFERENCE_API_KEY`` (env or the repo-root
-``.env``, loaded into a private mapping).  Runs the full SDF loop:
+plus ``E2B_API_KEY``, ``OPENCODE_API_KEY`` and ``OPENCODE_BASE_URL`` (env or the
+repo-root ``.env``, loaded into a private mapping).  Runs the full SDF loop:
 Task -> Attempt -> OpenCodeHeadlessRuntime (one ``opencode run`` turn in the
 sandbox) -> host-side criterion checks -> Evidence.  Egress is restricted to
 the inference host; the sandbox is killed and verified gone.
@@ -11,7 +11,7 @@ Template: ``SDF_E2B_OPENCODE_TEMPLATE`` (default: the shared
 ``sdf_core.agent_sandbox.DEFAULT_TEMPLATE``, the pinned ``sdf-herdr-agents``
 image with OpenCode 2.2.0; E2B's public ``opencode`` template ships an older
 OpenCode the runtime does not support).  Provider/model follow the normal per-agent config
-(``SDF_OPENCODE_BASE_URL``, ``SDF_OPENCODE_MODEL``, ...); Vultr is the default.
+(``OPENCODE_BASE_URL``, ``OPENCODE_MODEL``). There is no default host.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from sqlalchemy.orm import sessionmaker
 from sdf_core.adapter import RuntimeAgentAdapter
 from sdf_core.agent_sandbox import DEFAULT_TEMPLATE
 from sdf_core.credential_injection import create_credentialed_transport
-from sdf_core.credentials import DEFAULT_OPENCODE_BASE_URL, load_dotenv
+from sdf_core.credentials import load_dotenv
 from sdf_core.db import ArtifactRow, Base, DecisionEdgeRow, EvidenceRow, GraphNodeRow, TaskRow, make_engine
 from sdf_core.execution import ExecutionService
 from sdf_core.model import utcnow
@@ -41,13 +41,12 @@ from tests.test_vultr_agents_live import DELEGATE_PREFIX, SUBAGENT_TOOLS
 
 ENV = dict(os.environ)
 load_dotenv(environ=ENV)
-KEY_VAR = ENV.get("SDF_OPENCODE_API_KEY_ENV", "VULTR_INFERENCE_API_KEY")
 LIVE = (
     ENV.get("SDF_LIVE_E2B") == "1" and ENV.get("SDF_LIVE_OPENCODE") == "1"
-    and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get(KEY_VAR))
+    and bool(ENV.get("E2B_API_KEY")) and bool(ENV.get("OPENCODE_API_KEY")) and bool(ENV.get("OPENCODE_BASE_URL"))
 )
 pytestmark = pytest.mark.skipif(
-    not LIVE, reason="live OpenCode check: set SDF_LIVE_E2B=1 SDF_LIVE_OPENCODE=1 with E2B_API_KEY and VULTR_INFERENCE_API_KEY"
+    not LIVE, reason="live OpenCode check: set SDF_LIVE_E2B=1 SDF_LIVE_OPENCODE=1 with E2B_API_KEY, OPENCODE_API_KEY and OPENCODE_BASE_URL"
 )
 
 TEMPLATE = ENV.get("SDF_E2B_OPENCODE_TEMPLATE", DEFAULT_TEMPLATE)
@@ -82,14 +81,13 @@ def test_live_opencode_vultr_attempt_in_e2b(tmp_path: Path):
     environ = {
         "E2B_API_KEY": ENV["E2B_API_KEY"],
         "SDF_CREDENTIAL_MODE_OPENCODE": "api-key",
-        "SDF_OPENCODE_API_KEY_ENV": KEY_VAR,
-        KEY_VAR: ENV[KEY_VAR],
+        "OPENCODE_API_KEY": ENV["OPENCODE_API_KEY"],
+        "OPENCODE_BASE_URL": ENV["OPENCODE_BASE_URL"],
     }
-    for name in ("SDF_OPENCODE_BASE_URL", "SDF_OPENCODE_MODEL", "SDF_OPENCODE_SMALL_MODEL"):
-        if ENV.get(name):
-            environ[name] = ENV[name]
-    inference_host = urlsplit(environ.get("SDF_OPENCODE_BASE_URL", DEFAULT_OPENCODE_BASE_URL)).hostname
-    secrets = {name: environ[name] for name in ("E2B_API_KEY", KEY_VAR)}
+    if ENV.get("OPENCODE_MODEL"):
+        environ["OPENCODE_MODEL"] = ENV["OPENCODE_MODEL"]
+    inference_host = urlsplit(environ["OPENCODE_BASE_URL"]).hostname
+    secrets = {name: environ[name] for name in ("E2B_API_KEY", "OPENCODE_API_KEY")}
 
     transport, injection = create_credentialed_transport(
         agents=("opencode",), environ=environ, template=TEMPLATE, timeout_seconds=900,

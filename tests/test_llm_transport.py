@@ -1,4 +1,4 @@
-"""ADR 0034: each agent kind has one LLM transport, and Vultr is only an example endpoint."""
+"""ADR 0034: each agent kind has one LLM transport. The host is an endpoint, not a protocol."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from sdf_core.agent_sandbox import DEFAULT_NETWORK, AgentSpec, E2BAgentSandbox
+from sdf_core.agent_sandbox import AgentSpec, E2BAgentSandbox
 from sdf_core import usage
 from sdf_core.credentials import (
     AGENT_KINDS,
@@ -58,124 +58,65 @@ def test_each_kind_maps_to_exactly_one_protocol_family():
         protocol_of("vultr")
 
 
-def test_non_vultr_base_url_and_arbitrary_key_name():
+def test_allow_listed_names_select_the_host():
     env = {
         "SDF_CREDENTIAL_MODE_QWEN": "api-key",
-        "SDF_QWEN_API_KEY_ENV": "GATEWAY_API_KEY",
-        "GATEWAY_API_KEY": "gateway-unit-test-value",
-        "SDF_QWEN_BASE_URL": "https://llm.example.com/v1",
-        "SDF_QWEN_MODEL": "org-model",
+        "QWEN_API_KEY": "qwen-unit-test-value",
+        "QWEN_BASE_URL": "https://llm.example.com/v1",
+        "QWEN_MODEL": "org-model",
+        "VULTR_INFERENCE_API_KEY": "not-a-credential",
+        "GATEWAY_API_KEY": "not-a-credential",
     }
     plan = resolve_credential_plan("qwen", env)
-    assert plan.set_variables["SDF_QWEN_BASE_URL"] == "https://llm.example.com/v1"
-    assert plan.set_variables["GATEWAY_API_KEY"] == "gateway-unit-test-value"
+    assert plan.set_variables["QWEN_BASE_URL"] == "https://llm.example.com/v1"
+    assert plan.set_variables["QWEN_API_KEY"] == "qwen-unit-test-value"
     assert "VULTR_INFERENCE_API_KEY" not in plan.set_variables
+    assert "GATEWAY_API_KEY" not in plan.set_variables
     assert llm_attempt_provider("qwen", env) == "openai:llm.example.com"
 
     run_env = run_environ("codex", {
-        "SDF_CODEX_API_KEY_ENV": "GATEWAY_API_KEY",
-        "GATEWAY_API_KEY": "gateway-unit-test-value",
-        "SDF_OPENAI_BASE_URL": "https://llm.example.com/v1",
-        "SDF_CODEX_MODEL": "org-model",
+        "OPENAI_API_KEY": "openai-unit-test-value",
+        "OPENAI_BASE_URL": "https://llm.example.com/v1",
+        "OPENAI_MODEL": "org-model",
+        "VULTR_INFERENCE_API_KEY": "not-a-credential",
     })
-    assert run_env["SDF_CODEX_API_KEY_ENV"] == "GATEWAY_API_KEY"
-    assert run_env["SDF_OPENAI_BASE_URL"] == "https://llm.example.com/v1"
-    assert run_env["SDF_CODEX_MODEL"] == "org-model"
+    assert run_env["OPENAI_BASE_URL"] == "https://llm.example.com/v1"
+    assert run_env["OPENAI_MODEL"] == "org-model"
+    assert "VULTR_INFERENCE_API_KEY" not in run_env
     net = run_network(run_env, agent="codex")
     assert net["allow_out"] == ["llm.example.com"]
-    assert "api.vultrinference.com" not in net["allow_out"]
     assert net["deny_out"] == ["0.0.0.0/0"]
 
 
-def test_example_defaults_remain_when_nothing_is_configured():
-    """Do not fail closed: an unset OpenAI-family URL still has the example endpoint."""
+def test_official_defaults_when_claude_and_codex_urls_are_unset():
+    pi = run_environ("pi", {"PI_API_KEY": "pi-unit-test-value"})
+    assert "PI_BASE_URL" not in pi
+    assert run_network(pi, agent="pi")["allow_out"] == []
+    with pytest.raises(CredentialConfigError, match="requires PI_BASE_URL"):
+        resolve_credential_plan("pi", pi)
 
-    env = run_environ("pi", {"SDF_PI_API_KEY": "pi-unit-test-value"})
-    assert env["SDF_PI_BASE_URL"] == "https://api.vultrinference.com/v1"
-    assert env.get("SDF_PI_API_KEY_ENV") is None
-    assert run_network(env, agent="pi")["allow_out"] == list(DEFAULT_NETWORK["allow_out"])
-    # Only the example key name may fill the example Codex URL. With nothing
-    # else set, /run selects that name. One host, not a wider allowlist.
-    implied = run_environ("codex", {})
-    assert implied["SDF_CODEX_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
-    assert implied["SDF_OPENAI_BASE_URL"] == "https://api.vultrinference.com/v1"
-    implied = run_environ("codex", {"VULTR_INFERENCE_API_KEY": "example-key-name-only"})
-    assert implied["SDF_CODEX_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
-    assert implied["SDF_OPENAI_BASE_URL"] == "https://api.vultrinference.com/v1"
-    assert implied["SDF_CODEX_MODEL"] == "glm-5.3"
-    assert run_network(implied, agent="codex")["allow_out"] == ["api.vultrinference.com"]
-    assert llm_attempt_provider("codex", implied) == "openai:api.vultrinference.com"
-    # Unset Codex outside /run is the official Responses host, not a vendor name.
-    assert llm_attempt_provider("codex", {}) == "openai:api.openai.com"
+    codex = run_environ("codex", {"OPENAI_API_KEY": "openai-unit-test-value"})
+    assert "OPENAI_BASE_URL" not in codex
+    assert run_network(codex, agent="codex")["allow_out"] == ["api.openai.com"]
+    assert llm_attempt_provider("codex", codex) == "openai:api.openai.com"
     assert llm_attempt_provider("claude", {}) == "anthropic:api.anthropic.com"
-    assert llm_attempt_provider("pi", {}) == "openai:api.vultrinference.com"
-    assert llm_attempt_provider("pi", {}) != "vultr"
+    assert llm_attempt_provider("pi", {}) == "openai:unspecified"
 
-
-def test_codex_non_example_key_is_not_sent_to_the_example_host():
-    """A real OpenAI key, or any other key name, must not be aimed at the example host."""
-
-    for env in (
-        {"SDF_OPENAI_API_KEY": "openai-unit-test-value"},
-        {"SDF_CODEX_API_KEY_ENV": "GATEWAY_API_KEY", "GATEWAY_API_KEY": "gateway-unit-test-value"},
-    ):
-        resolved = run_environ("codex", env)
-        assert "SDF_OPENAI_BASE_URL" not in resolved
-        assert resolved.get("SDF_CODEX_MODEL") in (None, "")
-        allow = run_network(resolved, agent="codex")["allow_out"]
-        assert allow == ["api.openai.com"]
-        assert "api.vultrinference.com" not in allow
-        assert llm_attempt_provider("codex", resolved) == "openai:api.openai.com"
-        assert "openai-unit-test-value" not in str(allow)
-        assert "gateway-unit-test-value" not in str(allow)
-
-
-def test_claude_example_key_is_not_sent_to_anthropic():
-    """The example OpenAI key is not injected as ANTHROPIC_API_KEY without a Claude base URL."""
-
-    only_example = run_environ("claude", {"VULTR_INFERENCE_API_KEY": "example-key-name-only"})
-    assert "VULTR_INFERENCE_API_KEY" not in only_example
-    assert "SDF_CLAUDE_API_KEY_ENV" not in only_example
-    assert "SDF_ANTHROPIC_BASE_URL" not in only_example
-    assert "example-key-name-only" not in repr(only_example)
-    assert run_network(only_example, agent="claude")["allow_out"] == ["api.anthropic.com"]
-    with pytest.raises(CredentialConfigError, match="SDF_ANTHROPIC_API_KEY"):
-        resolve_credential_plan("claude", only_example)
-
-    named_without_url = run_environ("claude", {
-        "SDF_CLAUDE_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
-        "VULTR_INFERENCE_API_KEY": "example-key-name-only",
-    })
-    assert "VULTR_INFERENCE_API_KEY" not in named_without_url
-    assert "SDF_CLAUDE_API_KEY_ENV" not in named_without_url
-
-    proxied = run_environ("claude", {
-        "SDF_CLAUDE_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
-        "VULTR_INFERENCE_API_KEY": "example-key-name-only",
-        "SDF_ANTHROPIC_BASE_URL": "https://api.vultrinference.com",
-    })
-    assert proxied["SDF_CLAUDE_API_KEY_ENV"] == "VULTR_INFERENCE_API_KEY"
-    assert proxied["SDF_ANTHROPIC_BASE_URL"] == "https://api.vultrinference.com"
-    plan = resolve_credential_plan("claude", proxied)
-    assert plan.set_variables["ANTHROPIC_BASE_URL"] == "https://api.vultrinference.com"
-    assert set(plan.set_variables) == {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}
-
-    own_key = run_environ("claude", {"SDF_ANTHROPIC_API_KEY": "anthropic-unit-test-value"})
-    assert "VULTR_INFERENCE_API_KEY" not in own_key
-    assert "SDF_CLAUDE_API_KEY_ENV" not in own_key
-    assert "SDF_ANTHROPIC_BASE_URL" not in own_key
-    plan = resolve_credential_plan("claude", own_key)
-    assert "ANTHROPIC_BASE_URL" not in plan.set_variables
+    claude = run_environ("claude", {"ANTHROPIC_API_KEY": "anthropic-unit-test-value"})
+    assert "ANTHROPIC_BASE_URL" not in claude
+    assert "VULTR_INFERENCE_API_KEY" not in claude
+    plan = resolve_credential_plan("claude", claude)
     assert set(plan.set_variables) == {"ANTHROPIC_API_KEY"}
+    assert run_network(claude, agent="claude")["allow_out"] == ["api.anthropic.com"]
 
 
-def test_subscription_mode_does_not_get_the_example_base_url():
+def test_subscription_mode_does_not_inject_a_base_url():
     env = run_environ("codex", {
         "SDF_CREDENTIAL_MODE_CODEX": "subscription",
         "SDF_CONNECTION_CODEX": "codex-personal",
     })
-    assert "SDF_OPENAI_BASE_URL" not in env
-    assert "SDF_CODEX_MODEL" not in env
+    assert "OPENAI_BASE_URL" not in env
+    assert "OPENAI_MODEL" not in env
     assert run_network(env, agent="codex")["allow_out"] == ["api.openai.com"]
 
 
@@ -230,13 +171,13 @@ def test_begin_attempt_raises_when_credential_environ_is_missing(db, tmp_path: P
 def test_sandbox_egress_follows_configured_host():
     box = E2BAgentSandbox(
         AgentSpec("worker-1", "worker", "pi"),
-        environ={"SDF_PI_BASE_URL": "https://llm.example.com/v1", "SDF_PI_API_KEY": "pi-unit-test-value"},
+        environ={"PI_BASE_URL": "https://llm.example.com/v1", "PI_API_KEY": "pi-unit-test-value"},
     )
     assert box._network["allow_out"] == ["llm.example.com"]
-    assert box.credential_environ["SDF_PI_BASE_URL"] == "https://llm.example.com/v1"
+    assert box.credential_environ["PI_BASE_URL"] == "https://llm.example.com/v1"
     assert "pi-unit-test-value" not in str(box.credential_environ)
     default = E2BAgentSandbox(AgentSpec("worker-2", "worker", "goose"), environ={})
-    assert default._network["allow_out"] == ["api.vultrinference.com"]
+    assert default._network["allow_out"] == []
 
 
 def test_run_attempt_provider_follows_configured_host(monkeypatch, tmp_path: Path):
@@ -248,10 +189,9 @@ def test_run_attempt_provider_follows_configured_host(monkeypatch, tmp_path: Pat
         "SDF_RUN_ADAPTER": "live",
         "E2B_API_KEY": "e2b_unit_test_not_a_key",
         "SDF_RUN_AGENT": "qwen",
-        "SDF_QWEN_API_KEY_ENV": "GATEWAY_API_KEY",
-        "GATEWAY_API_KEY": "gateway-unit-test-value",
-        "SDF_QWEN_BASE_URL": "https://llm.example.com/v1",
-        "SDF_QWEN_MODEL": "org-model",
+        "QWEN_API_KEY": "qwen-unit-test-value",
+        "QWEN_BASE_URL": "https://llm.example.com/v1",
+        "QWEN_MODEL": "org-model",
     })
     assert adapter.network["allow_out"] == ["llm.example.com"]
     adapter._transport_factory = lambda **_kw: (_Transport(), None)
@@ -278,7 +218,7 @@ def test_coordinator_attempt_provider_follows_configured_host(db, fixture, tmp_p
 
     def factory(spec):
         sandbox = base(spec)
-        sandbox.credential_environ = {"SDF_PI_BASE_URL": url, "SDF_OPENCODE_BASE_URL": url}
+        sandbox.credential_environ = {"PI_BASE_URL": url, "OPENCODE_BASE_URL": url}
         return sandbox
 
     coordinator = Coordinator(

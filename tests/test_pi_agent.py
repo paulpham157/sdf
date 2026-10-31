@@ -19,7 +19,6 @@ from sdf_core.agent_models import agent_model_args
 from sdf_core.credential_injection import prepare_credential_injection
 from sdf_core.credentials import (
     AGENT_KINDS,
-    DEFAULT_PI_BASE_URL,
     CredentialConfigError,
     CredentialMode,
     resolve_credential_plan,
@@ -29,96 +28,67 @@ from sdf_core.pi_runtime import PiHeadlessRuntime, PiRuntimeError, parse_events
 from sdf_core.runtime import CredentialMetadata, RuntimeStatus
 
 KEY = "vk-test-0123456789abcdef-secret"
-PI = {"SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY": KEY}
+BASE = "https://llm.example.com/v1"
+PI = {"SDF_CREDENTIAL_MODE_PI": "api-key", "PI_API_KEY": KEY, "PI_BASE_URL": BASE}
 
 
 # --- credential plan ------------------------------------------------------
 
-def test_pi_is_an_agent_kind_with_vultr_defaults():
+def test_pi_requires_base_url_and_defaults_the_model():
     assert "pi" in AGENT_KINDS
     plan = resolve_credential_plan("pi", PI)
     assert plan.mode is CredentialMode.API_KEY
     assert dict(plan.set_variables) == {
-        "SDF_PI_API_KEY": KEY,
-        "SDF_PI_BASE_URL": "https://api.vultrinference.com/v1",
-        "SDF_PI_MODEL": "glm-5.3",
+        "PI_API_KEY": KEY,
+        "PI_BASE_URL": BASE,
+        "PI_MODEL": "glm-5.3",
     }
-    assert DEFAULT_PI_BASE_URL == "https://api.vultrinference.com/v1"
-    assert [(s.action, s.variable) for s in plan.seed_steps] == [("pi-models", "SDF_PI_API_KEY")]
+    assert [(s.action, s.variable) for s in plan.seed_steps] == [("pi-models", "PI_API_KEY")]
     assert set(plan.strip_variables) >= {
         "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_PACKAGE_DIR",
         "PI_SHARE_VIEWER_URL", "PI_OAUTH_CALLBACK_HOST",
     }
+    with pytest.raises(CredentialConfigError, match="requires PI_BASE_URL"):
+        resolve_credential_plan("pi", {"SDF_CREDENTIAL_MODE_PI": "api-key", "PI_API_KEY": KEY})
 
 
-def test_pi_named_key_variable_replaces_the_default():
-    env = {**PI, "SDF_PI_API_KEY_ENV": "GATEWAY_API_KEY", "GATEWAY_API_KEY": "gw-key-value"}
-    plan = resolve_credential_plan("pi", env)
-    assert plan.set_variables["GATEWAY_API_KEY"] == "gw-key-value"
-    assert "SDF_PI_API_KEY" not in plan.set_variables
-    assert plan.seed_steps[0].variable == "GATEWAY_API_KEY"
-
-
-def test_pi_named_key_unset_fails_closed_without_fallback():
-    env = {**PI, "SDF_PI_API_KEY_ENV": "GATEWAY_API_KEY"}
-    with pytest.raises(CredentialConfigError, match="requires GATEWAY_API_KEY") as err:
-        resolve_credential_plan("pi", env)
+def test_vendor_key_name_is_not_a_pi_credential():
+    with pytest.raises(CredentialConfigError, match="requires PI_API_KEY") as err:
+        resolve_credential_plan("pi", {
+            "SDF_CREDENTIAL_MODE_PI": "api-key", "PI_BASE_URL": BASE, "VULTR_INFERENCE_API_KEY": KEY,
+        })
     assert KEY not in str(err.value)
 
 
-def test_pi_default_key_follows_the_sdf_convention_and_ignores_the_vultr_variable():
-    """SDF_PI_API_KEY like SDF_OPENCODE_API_KEY; a bare VULTR_INFERENCE_API_KEY
-    is only read when SDF_PI_API_KEY_ENV names it (ADR-0007, no fallback)."""
-
-    with pytest.raises(CredentialConfigError, match="SDF_PI_API_KEY") as err:
-        resolve_credential_plan("pi", {"SDF_CREDENTIAL_MODE_PI": "api-key", "VULTR_INFERENCE_API_KEY": KEY})
-    assert KEY not in str(err.value)
-    plan = resolve_credential_plan("pi", {
-        "SDF_CREDENTIAL_MODE_PI": "api-key", "SDF_PI_API_KEY_ENV": "VULTR_INFERENCE_API_KEY",
-        "VULTR_INFERENCE_API_KEY": KEY,
-    })
-    assert dict(plan.set_variables)["VULTR_INFERENCE_API_KEY"] == KEY
-    assert "SDF_PI_API_KEY" not in plan.set_variables
-
-
-def test_pi_default_key_unset_fails_closed():
-    with pytest.raises(CredentialConfigError, match="SDF_PI_API_KEY"):
-        resolve_credential_plan("pi", {"SDF_CREDENTIAL_MODE_PI": "api-key"})
-
-
-@pytest.mark.parametrize("name", ["PATH", "lower_api_key", "OPENAI_API_KEY", "E2B_API_KEY", "DAYTONA_API_KEY",
-                                  "SDF_CONNECTION_PI_API_KEY", "PI_API_KEY", KEY])
-def test_pi_named_key_variable_must_be_a_dedicated_key_name(name):
-    env = {**PI, "SDF_PI_API_KEY_ENV": name, name: "value-of-the-named-var"}
-    with pytest.raises(CredentialConfigError) as err:
-        resolve_credential_plan("pi", env)
-    assert KEY not in str(err.value) and "value-of-the-named-var" not in str(err.value)
+def test_pi_key_unset_fails_closed():
+    with pytest.raises(CredentialConfigError, match="PI_API_KEY"):
+        resolve_credential_plan("pi", {"SDF_CREDENTIAL_MODE_PI": "api-key", "PI_BASE_URL": BASE})
 
 
 def test_pi_subscription_mode_is_rejected_and_mode_is_required():
     with pytest.raises(CredentialConfigError, match="subscription is not supported for pi"):
         resolve_credential_plan("pi", {**PI, "SDF_CREDENTIAL_MODE_PI": "subscription"})
     with pytest.raises(CredentialConfigError, match="SDF_CREDENTIAL_MODE_PI"):
-        resolve_credential_plan("pi", {"SDF_PI_API_KEY": KEY})
+        resolve_credential_plan("pi", {"PI_API_KEY": KEY})
 
 
 def test_pi_custom_base_url_and_model():
-    plan = resolve_credential_plan("pi", {**PI, "SDF_PI_BASE_URL": "https://llm.example.com/v1", "SDF_PI_MODEL": "org/big-1"})
-    assert plan.set_variables["SDF_PI_BASE_URL"] == "https://llm.example.com/v1"
-    assert plan.set_variables["SDF_PI_MODEL"] == "org/big-1"
+    plan = resolve_credential_plan("pi", {**PI, "PI_BASE_URL": "https://llm.example.com/v1", "PI_MODEL": "org/big-1"})
+    assert plan.set_variables["PI_BASE_URL"] == "https://llm.example.com/v1"
+    assert plan.set_variables["PI_MODEL"] == "org/big-1"
     assert agent_model_args("pi", {}) == ("--model", "glm-5.3")
 
 
 @pytest.mark.parametrize("url", ["http://api.vultrinference.com/v1", "https://127.0.0.1/v1", "https://localhost/v1"])
 def test_pi_base_url_follows_adr_0007_rules(url):
     with pytest.raises(CredentialConfigError):
-        resolve_credential_plan("pi", {**PI, "SDF_PI_BASE_URL": url})
+        resolve_credential_plan("pi", {**PI, "PI_BASE_URL": url})
 
 
 @pytest.mark.parametrize("model", ["glm-5.3:high", "glm 5.3", "-x"])
 def test_pi_model_must_be_a_bare_id(model):
     with pytest.raises(CredentialConfigError):
-        resolve_credential_plan("pi", {**PI, "SDF_PI_MODEL": model})
+        resolve_credential_plan("pi", {**PI, "PI_MODEL": model})
 
 
 def test_injection_strips_pi_variables_and_never_puts_the_key_in_commands():
@@ -142,11 +112,11 @@ def test_pi_models_seed_references_the_key_by_name_only(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     provider = json.loads(text)["providers"]["sdf"]
-    assert provider["baseUrl"] == DEFAULT_PI_BASE_URL
+    assert provider["baseUrl"] == BASE
     assert provider["api"] == "openai-completions"
     # A NAME, not a `!command` and not the value.
     # Pi 1.x: ``$NAME`` reads the variable (a bare name would be the key itself).
-    assert provider["apiKey"] == "$SDF_PI_API_KEY"
+    assert provider["apiKey"] == "$PI_API_KEY"
     [model] = provider["models"]
     assert model["id"] == "glm-5.3"
     # Zero so Pi does not report an SDF-seeded price as the provider's cost.
@@ -156,7 +126,7 @@ def test_pi_models_seed_references_the_key_by_name_only(tmp_path):
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute the seed script")
 def test_pi_models_seed_custom_endpoint_reports_zero_price(tmp_path):
     injection = prepare_credential_injection(
-        ["pi"], {**PI, "SDF_PI_BASE_URL": "https://llm.example.com/v1", "SDF_PI_MODEL": "big-1"}
+        ["pi"], {**PI, "PI_BASE_URL": "https://llm.example.com/v1", "PI_MODEL": "big-1"}
     )
     env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"], **injection.envs}
     subprocess.run(["bash", "-c", injection.seed_commands[0]], env=env, check=True)
@@ -250,7 +220,7 @@ def local(tmp_path, monkeypatch):
     fake.write_text(FAKE_PI)
     fake.chmod(0o755)
     env = {"PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_PI_LOG": str(tmp_path / "calls.jsonl"),
-           "HOME": str(tmp_path), "SDF_PI_MODEL": "glm-5.3"}
+           "HOME": str(tmp_path), "PI_MODEL": "glm-5.3"}
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "calc.py").write_text("def add(a, b):\n    return a - b\n")
@@ -406,11 +376,11 @@ def test_project_config_created_by_the_agent_blocks_the_next_turn(local):
 
 def test_missing_model_is_reported(local):
     transport, workspace, _ = local
-    del transport.env["SDF_PI_MODEL"]
+    del transport.env["PI_MODEL"]
     runtime = PiHeadlessRuntime(transport=transport, turn_timeout_s=20)
     runtime.bind_workspace("ATTEMPT-7", workspace)
     session = runtime.start(attempt_id="ATTEMPT-7", agent="pi")
-    with pytest.raises(PiRuntimeError, match="SDF_PI_MODEL"):
+    with pytest.raises(PiRuntimeError, match="PI_MODEL"):
         runtime.send(session.session_id, "fix")
 
 
@@ -568,7 +538,7 @@ def test_pi_runs_read_only_through_a_credentialed_daytona_transport():
     )
     assert isinstance(transport, CredentialedDaytonaHerdrTransport)
     assert transport.credential_metadata == {"pi": CredentialMetadata("api-key")}
-    assert injection.envs["SDF_PI_MODEL"] == "glm-5.3"
+    assert injection.envs["PI_MODEL"] == "glm-5.3"
     runtime = PiHeadlessRuntime(transport=transport)
     # Daytona never gets the ADR-0008 claim: Pi stays on read-only tools.
     assert pir._claim_fresh_e2b_permission_bypass(transport) is False
