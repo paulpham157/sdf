@@ -12,7 +12,10 @@ import (
 type Executor func(ctx context.Context, req ActionRequest) (any, error)
 
 // Proxy is an in-process Tool Proxy matching sdf_core.tools.ToolProxy:
-// binding → credential scope → allowlist → durable idempotency fence → executor.
+// binding → credential scope → allowlist → policy_decided audit →
+// durable idempotency fence → executor.
+// Every decision appends policy_decided, including denials and replays.
+// action_claimed / action_executed / action_failed stay one per action.
 type Proxy struct {
 	exec  Executor
 	store OutcomeStore
@@ -60,14 +63,19 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	// Refuse reserved sdf_* context keys (ADR 0026).
 	for k := range req.Context {
 		if strings.HasPrefix(strings.ToLower(k), "sdf_") {
-			return Result{
+			reason := fmt.Sprintf("reserved context key %q", k)
+			res := Result{
 				AttemptID: req.AttemptID,
 				ActionID:  req.ActionID(),
 				Status:    StatusDenied,
 				Effect:    "deny",
-				Reason:    fmt.Sprintf("reserved context key %q", k),
+				Reason:    reason,
 				Policy:    "context-reserved",
-			}, ErrDenied
+			}
+			if err := p.appendDecision(req, res.ActionID, req.Actor, principal, "deny", reason, res.Policy); err != nil {
+				return Result{}, err
+			}
+			return res, ErrDenied
 		}
 	}
 
@@ -75,14 +83,19 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	scope, ok := p.scopes[req.AttemptID]
 	p.mu.Unlock()
 	if !ok {
-		return Result{
+		reason := "attempt has no registered sandbox scope"
+		res := Result{
 			AttemptID: req.AttemptID,
 			ActionID:  req.ActionID(),
 			Status:    StatusDenied,
 			Effect:    "deny",
-			Reason:    "attempt has no registered sandbox scope",
+			Reason:    reason,
 			Policy:    PolicyAttemptBinding,
-		}, ErrDenied
+		}
+		if err := p.appendDecision(req, res.ActionID, req.Actor, principal, "deny", reason, res.Policy); err != nil {
+			return Result{}, err
+		}
+		return res, ErrDenied
 	}
 
 	// Server-derived actor always wins.
@@ -90,41 +103,33 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 	req.Actor = derived
 	actionID := req.ActionID()
 
-	if claimedActor != "" && claimedActor != derived {
-		return Result{
+	deny := func(reason, policy string) (Result, error) {
+		res := Result{
 			AttemptID: req.AttemptID,
 			ActionID:  actionID,
 			Actor:     derived,
 			Status:    StatusDenied,
 			Effect:    "deny",
-			Reason:    fmt.Sprintf("claimed actor %q does not match %q", claimedActor, derived),
-			Policy:    PolicyActorBinding,
-		}, ErrDenied
+			Reason:    reason,
+			Policy:    policy,
+		}
+		if err := p.appendDecision(req, actionID, derived, principal, "deny", reason, policy); err != nil {
+			return Result{}, err
+		}
+		return res, ErrDenied
+	}
+
+	if claimedActor != "" && claimedActor != derived {
+		return deny(fmt.Sprintf("claimed actor %q does not match %q", claimedActor, derived), PolicyActorBinding)
 	}
 	if principal != "" && scope.OwnerPrincipal != "" && principal != scope.OwnerPrincipal {
-		return Result{
-			AttemptID: req.AttemptID,
-			ActionID:  actionID,
-			Actor:     derived,
-			Status:    StatusDenied,
-			Effect:    "deny",
-			Reason:    fmt.Sprintf("principal %q did not start this attempt", principal),
-			Policy:    PolicyAttemptBinding,
-		}, ErrDenied
+		return deny(fmt.Sprintf("principal %q did not start this attempt", principal), PolicyAttemptBinding)
 	}
 
 	// Credential scope: agents only get credentials listed for their sandbox.
 	if cred := CredentialNameFromRequest(req); cred != "" {
 		if !scope.AllowsCredential(cred) {
-			return Result{
-				AttemptID: req.AttemptID,
-				ActionID:  actionID,
-				Actor:     derived,
-				Status:    StatusDenied,
-				Effect:    "deny",
-				Reason:    fmt.Sprintf("credential %q is outside sandbox %q scope", cred, scope.SandboxID),
-				Policy:    PolicyCredentialScope,
-			}, ErrDenied
+			return deny(fmt.Sprintf("credential %q is outside sandbox %q scope", cred, scope.SandboxID), PolicyCredentialScope)
 		}
 	}
 
@@ -137,16 +142,15 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 			}
 		}
 		if !allowed {
-			return Result{
-				AttemptID: req.AttemptID,
-				ActionID:  actionID,
-				Actor:     derived,
-				Status:    StatusDenied,
-				Effect:    "deny",
-				Reason:    fmt.Sprintf("tool %q not in allowlist", req.Tool),
-				Policy:    PolicyAllowlist,
-			}, ErrDenied
+			return deny(fmt.Sprintf("tool %q not in allowlist", req.Tool), PolicyAllowlist)
 		}
+	}
+
+	// ADR 0026: record this delivery's decision before the fence, including
+	// when the terminal outcome is replayed and the executor does not run.
+	const allowReason = "action passed tool proxy checks"
+	if err := p.appendDecision(req, actionID, derived, principal, "allow", allowReason, PolicyAllowlist); err != nil {
+		return Result{}, err
 	}
 
 	// Durable fence (ADR 0026): look up terminal outcome before claiming.
@@ -160,7 +164,18 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		return res, nil
 	}
 
-	okClaim, err := p.store.Claim(req.AttemptID, actionID)
+	okClaim, err := p.store.Claim(Observation{
+		AttemptID: req.AttemptID,
+		ActionID:  actionID,
+		Actor:     derived,
+		Principal: principal,
+		Tool:      req.Tool,
+		Action:    req.Action,
+		Resource:  req.Resource,
+		Decision:  "allow",
+		Reason:    "executor claim acquired",
+		Policy:    PolicyAllowlist,
+	})
 	if err != nil {
 		return Result{}, err
 	}
@@ -213,6 +228,10 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 			ActionID:  actionID,
 			Status:    StatusFailed,
 			Actor:     derived,
+			Principal: principal,
+			Tool:      req.Tool,
+			Action:    req.Action,
+			Resource:  req.Resource,
 			Reason:    reason,
 			Policy:    policy,
 			Error:     errMsg,
@@ -235,6 +254,10 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		ActionID:  actionID,
 		Status:    StatusExecuted,
 		Actor:     derived,
+		Principal: principal,
+		Tool:      req.Tool,
+		Action:    req.Action,
+		Resource:  req.Resource,
 		Reason:    res.Reason,
 		Policy:    res.Policy,
 		Value:     val,
@@ -243,6 +266,22 @@ func (p *Proxy) Execute(ctx context.Context, req ActionRequest, claimedActor, pr
 		return res, err
 	}
 	return res, nil
+}
+
+func (p *Proxy) appendDecision(req ActionRequest, actionID, actor, principal, effect, reason, policy string) error {
+	return p.store.AppendPolicy(Observation{
+		AttemptID: req.AttemptID,
+		ActionID:  actionID,
+		Actor:     actor,
+		Principal: principal,
+		Tool:      req.Tool,
+		Action:    req.Action,
+		Resource:  req.Resource,
+		Decision:  effect,
+		Reason:    reason,
+		Policy:    policy,
+		CreatedAt: time.Now().UTC(),
+	})
 }
 
 func resultFromStored(o StoredOutcome, replay bool) Result {
