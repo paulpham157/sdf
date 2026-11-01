@@ -1,4 +1,4 @@
-"""Sealed evaluator oracle (ADR 0037).
+"""Sealed evaluator oracle (ADR 0039).
 
 Pytest used to run inside the agent-writable workspace and accept a PASS from
 stdout. A helper the test imported was not covered by the fixture hash (ADR

@@ -1,4 +1,4 @@
-"""Acceptance gate for Verification Evidence (ADR 0037).
+"""Acceptance gate for Verification Evidence (ADR 0039).
 
 An agent reporting completion is not success. A PASS may accept an artifact
 only when the Evidence is verification produced by someone other than the
@@ -22,7 +22,7 @@ EVIDENCE_CLASS_SQL = (
     + ")"
 )
 
-# The deterministic evaluator, never an Attempt's agent (ADR 0002, ADR 0037).
+# The deterministic evaluator, never an Attempt's agent (ADR 0002, ADR 0039).
 EVALUATOR_IDENTITY = "sdf-evaluator"
 EVALUATOR_ROLE = "evaluator"
 AGENT_ROLE = "agent"
@@ -32,7 +32,7 @@ VERIFICATION_TTL = timedelta(hours=24)
 
 
 class AcceptanceError(ValueError):
-    """Verification Evidence cannot accept the artifact (ADR 0037)."""
+    """Verification Evidence cannot accept the artifact (ADR 0039)."""
 
 
 def _aware(value: datetime) -> datetime:

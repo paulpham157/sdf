@@ -1,4 +1,4 @@
-"""ADR 0037: a workspace file cannot forge verification, and a PASS is bound.
+"""ADR 0039: a workspace file cannot forge verification, and a PASS is bound.
 
 Adversarial cases are checks the agent can plant in its workspace. None of
 them may come back PASS. The acceptance gate is tested in both directions:
@@ -335,7 +335,7 @@ def test_worker_cannot_write_the_sealed_tree_but_can_write_temp(tmp_path):
 def test_subject_cannot_forge_the_evaluator_signal(tmp_path):
     """Import-time forge of the old marker and JUnit files must not be a PASS.
 
-    On the first cut of ADR 0037 this was a PASS: calc.py read
+    On the first cut of ADR 0039 this was a PASS: calc.py read
     SDF_ORACLE_TOKEN and SDF_ORACLE_MARKER, wrote a matching pair, and
     os._exit(0), while the fixture test asserts ``add(2, 3) == 999``. The
     same shape is a FAIL under ADR 0025's stdout check. The seal has to
