@@ -1,6 +1,20 @@
 # ADR 0025: server-registered evaluator checks
 
-Status: proposed (branch `sec/52-registered-checks`, issue #52)
+Status: accepted (maintainer, 2026-11-01, PR #85)
+
+Proposed on branch `sec/52-registered-checks`, issue #52.
+Narrowed by [ADR 0039](0039-evidence-independence.md) (same acceptance).
+The pytest summary parser in decision 3 is no longer the accepting signal:
+a pytest verdict is the notary's result frame, read by the parent. Linux
+x86_64 is the only platform on which that frame can be a pass; elsewhere
+the child exits 86 and the recorded status is `FAIL`. Inside a containment
+backend, a bare `pytest` executable is not rewritten into the notary and is
+`INCONCLUSIVE` (reason: `oracle result channel is not sealed for a bare
+pytest executable`) without the sandbox starting. `python -m pytest` still
+enters the notary, including there. Sealed checks run outside the Attempt
+workspace, so a cwd write does not trip the [ADR 0032](0032-attempt-revisions.md)
+drift hook; that hook still downgrades a PASS when the Attempt workspace
+itself changes. Details are the acceptance conditions in ADR 0039.
 
 ## Context
 
@@ -81,8 +95,10 @@ could be self-forged (`python -c pass` for every criterion).
        `<its interpreter> -I -c BOOTSTRAP -m pytest ...` (interpreter from the
        console script's shebang, outside the workspace), so it imports
        root-level code like `python -m pytest`. Inside a containment backend
-       bare `pytest` keeps the plain form (only the flags above); prefer
-       `python -m pytest` there. For `python3 -m pytest` the venv python must be
+       bare `pytest` keeps the plain form (only the flags above). That form
+       does not enter the notary, so ADR 0039 records it as `INCONCLUSIVE`
+       and does not run it; `python -m pytest` is the form that is sealed
+       there. For `python3 -m pytest` the venv python must be
        first on the server's `PATH` (the safe `PATH` is derived from it);
    - **the check's own files are verified against the server fixture.** Every
      pytest test file and python script a check names by a relative path must

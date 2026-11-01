@@ -343,7 +343,14 @@ def test_an_artifact_binding_cannot_be_rewritten_after_insert(tmp_path: Path):
         assert (artifact.revision_id, artifact.tree_sha256) == (a.id, a.result_tree_sha256)
 
 
-def test_a_check_that_changes_the_workspace_cannot_pass(tmp_path: Path):
+def test_a_check_write_stays_out_of_the_attempt_workspace(tmp_path: Path):
+    """A check's cwd is the sealed oracle, so a cwd write cannot move the revision (ADR 0039).
+
+    The same command used to land ``dropped.txt`` in the Attempt workspace and
+    force INCONCLUSIVE (ADR 0032). The drift hook still downgrades a PASS when
+    the workspace itself changes; the next test covers that.
+    """
+
     fixture = _fixture(tmp_path)
     checks = {"tests pass": [["python", "-c", "open('dropped.txt', 'w').write('x')"],
                              ["python", "-c", "print('ok')"]]}
@@ -351,18 +358,19 @@ def test_a_check_that_changes_the_workspace_cannot_pass(tmp_path: Path):
         _task(db, "TASK-REV-DRIFT")
         attempt = _service(db, tmp_path).run(task_id="TASK-REV-DRIFT", dispatch_key="drift-1", fixture=fixture,
                                              instructions="x", commands=[], criterion_checks=checks)
-        assert db.get(TaskRow, "TASK-REV-DRIFT").status == "inconclusive"
+        workspace = tmp_path / "workspaces" / attempt.id
+        assert not (workspace / "dropped.txt").exists()
+        assert db.get(TaskRow, "TASK-REV-DRIFT").status == "succeeded"
         revision = revision_for_attempt(db, attempt.id)
         evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).order_by(EvidenceRow.id).all()
-        # Both checks exited 0, yet neither is a PASS: the tree they leave is not the revision.
-        assert [e.status for e in evidence] == ["INCONCLUSIVE", "INCONCLUSIVE"]
+        assert [e.status for e in evidence] == ["PASS", "PASS"]
         for row in evidence:
+            assert row.evidence_class == "verification"
             assert (row.revision_id, row.tree_sha256) == (revision.id, revision.result_tree_sha256)
             output = json.loads(Path(db.get(ArtifactRow, row.artifact_ref).uri).read_text())
-            assert output["revision"]["tree_drift"] is True
-            assert output["revision"]["tree_after_check_sha256"] != revision.result_tree_sha256
-            assert "tree changed while this check ran" in output["stderr"]
-        assert verify_attempt_revision(db, attempt.id)["status"] == "verified"  # the records are consistent
+            assert output["revision"]["tree_drift"] is False
+            assert output["revision"]["tree_after_check_sha256"] == revision.result_tree_sha256
+        assert verify_attempt_revision(db, attempt.id)["status"] == "verified"
 
 
 def test_an_evaluator_without_the_hook_is_still_drift_checked(tmp_path: Path):

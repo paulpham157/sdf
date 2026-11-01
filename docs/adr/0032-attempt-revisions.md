@@ -116,9 +116,13 @@ validation of the intended outcome.
    - So a PASS always describes the recorded result tree. Hardened
      `python`/`pytest` checks run with `-B`, so bytecode caches no longer
      count as drift.
-   - A check that writes inside the workspace, for example pytest's
-     `tmp_path` (`TMPDIR` is the workspace), now yields `INCONCLUSIVE`. That
-     is the deliberate, safe choice.
+   - The hook hashes the Attempt workspace, not the check's cwd. Since
+     [ADR 0039](0039-evidence-independence.md), a sealed check's cwd is the
+     sealed tree and that process's `TMPDIR` is that tree; the subject
+     worker's `TMPDIR` is a private directory under `/tmp`. A relative write
+     or pytest `tmp_path` there does not change `result_tree_sha256`. A
+     write that does change the Attempt workspace still makes a PASS
+     `INCONCLUSIVE`. A FAIL stays FAIL.
 
 5. **Read surface.** `GET /attempts/{id}/revision` returns the revision, the
    Attempt's `evidence_mode` and a re-check of every binding and stored
