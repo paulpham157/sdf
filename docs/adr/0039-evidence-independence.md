@@ -370,3 +370,43 @@ After, only the check is verification, and it is bound to the diff it checked:
  "evidence_class": null, "command": "<missing check>",
  "criterion": "handles empty input"}
 ```
+
+## Hermetic CI (PR #99)
+
+This section is not part of the 2026-11-01 acceptance of the gates above.
+It records the test-isolation change that landed with the script-check
+worker (decision 8) so a maintainer can accept or reject it on its own.
+It does not change those gates.
+
+PR #99 keeps the hermetic suite from inheriting a developer shell:
+
+- `tests/conftest.py` drops every ambient `SDF_*` name except
+  `SDF_POSTGRES_TEST_URL`, `SDF_DOTENV`, and names starting with
+  `SDF_LIVE_`, `SDF_E2B_`, or `SDF_DAYTONA_`. When a live gate is already
+  on (`SDF_LIVE_E2B=1`, `SDF_LIVE_FULL_LOOP=1`, or a selected
+  `SDF_LIVE_VULTR_AGENTS` value), it also keeps
+  `SDF_CONTAINMENT_BACKEND` and `SDF_CONTAINMENT_SMOKE`. It then sets
+  `SDF_TEST_HERMETIC=1`, so an ambient `SDF_TEST_HERMETIC=0` does not
+  turn the repo `.env` back on. `SDF_FIXTURES_ROOT` is assigned to the
+  temp directory. `SDF_EVALUATOR_CONTAINMENT` is `off` for this suite.
+  `SDF_AUTH_DEV_INSECURE` and `SDF_AUTH_SINGLE_USER` are set to empty,
+  which wins over a `.env` line.
+- `sdf_core.credentials.load_dotenv` skips the repo-root `.env` when
+  `SDF_TEST_HERMETIC=1` and no `SDF_LIVE_*=1` is set. An explicit `path`,
+  or a `REPO_ROOT` pointed at a fixture directory, is still loaded. A
+  live gate still loads the default file.
+- `.github/workflows/ci.yml` runs a second step on Python 3.13,
+  `Hermetic suite ignores ambient SDF_* and .env`. That step writes a
+  junk repo-root `.env` and exports junk `SDF_*` values (including
+  `SDF_EVALUATOR_CONTAINMENT=require`, a containment backend, and
+  `SDF_TEST_HERMETIC=0`), then runs `uv run pytest -rs`.
+  `SDF_POSTGRES_TEST_URL` is left unset, so the Postgres tests stay
+  skipped. `SDF_LIVE_E2B` is `0`, not `1`, so live tests stay skipped.
+  Conftest still forces `SDF_TEST_HERMETIC=1` after that strip.
+- `tests/test_hermetic_env.py` checks the process environment, that the
+  repo-root `.env` is not loaded, that ambient `SDF_*` values are
+  ignored, and that `SDF_POSTGRES_TEST_URL` still opts the Postgres gate
+  in.
+
+Accepting this section accepts that CI step and those test-isolation
+changes. It does not accept a held-out oracle.
