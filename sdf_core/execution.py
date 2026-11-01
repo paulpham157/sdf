@@ -354,7 +354,7 @@ class ExecutionService:
                     # The check's own files must match the server fixture (ADR 0025).
                     reference=fixture,
                     after_check=after_check,
-                    # The diff artifact is what a PASS claims to have checked (ADR 0037).
+                    # The diff artifact is what a PASS claims to have checked (ADR 0039).
                     subject_artifact_sha256=diff.sha256,
                 )
         except Exception:
@@ -607,7 +607,7 @@ def _drift_checked(evidence: Evidence, after: str, result_tree: str | None) -> E
 
 
 def _enforce_acceptance(evaluation, *, attempt_agent: str, artifact_sha256: str):
-    """A PASS verifies only when ADR 0037's independence checks hold.
+    """A PASS verifies only when ADR 0039's independence checks hold.
 
     A failing check stays a failing check. A PASS whose verifier is the
     Attempt's agent, whose subject hash is not this diff, or which has expired

@@ -1,11 +1,56 @@
-# ADR 0037: verification evidence is independent of the agent workspace
+# ADR 0039: verification evidence is independent of the agent workspace
 
-Status: proposed (implemented with this change; awaiting maintainer acceptance).
-Numbered 0037 because main already has ADR 0034 (LLM transport), ADR 0035
-(Go orchestration), and ADR 0036 (path-filtered Go CI).
+Status: accepted (maintainer, 2026-11-01, PR #85)
+Numbered 0039 because `origin/main` already has ADR 0034 (LLM transport),
+ADR 0035 (Go orchestration), ADR 0036 (path-filtered Go CI), ADR 0037
+(Go tool-proxy fence audit parity), and ADR 0038 (Go attempt evidence mode).
+This file was numbered 0037 on the branch until that collision was resolved.
 Narrows the residual stated in [ADR 0025](0025-server-registered-checks.md).
 Does not change Evidence append-only rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md))
-or revision binding ([ADR 0032](0032-attempt-revisions.md)).
+or the drift hook in [ADR 0032](0032-attempt-revisions.md).
+
+## Acceptance conditions
+
+Recorded with the maintainer acceptance on 2026-11-01 (PR #85). These name
+gates the code already applies.
+
+1. **Linux x86_64 only; exit 86 elsewhere is not a pass.** The pytest
+   child's seccomp filter and the subject worker's cross-process filter
+   install only when `sys.platform` is `linux` and `os.uname().machine` is
+   `x86_64` or `amd64`. On any other platform the child raises before
+   pytest runs and calls `os._exit(86)`. The notary propagates that exit
+   status (`os.WEXITSTATUS`). No result frame is written.
+   `pytest_oracle_verdict` then records `FAIL` ("pytest ended without an
+   evaluator result"), because the exit code is not 0. The stdout summary
+   parser is not consulted. The same exit 86 is used when `prctl` or
+   seccomp fails on Linux x86_64, when the result file cannot be opened or
+   frozen, and when the worker cannot install its own filter: the worker
+   calls `os._exit(86)` before subject code runs, the import fails, and
+   the verdict is not a pass.
+
+2. **A bare `pytest` executable inside a containment backend is
+   `INCONCLUSIVE`.** On the host (`containment_backend is None`), a bare
+   `pytest` argv is rewritten to `<interpreter> -I -B -c BOOTSTRAP -m pytest`
+   (interpreter from the console script's shebang), so the bootstrap is the
+   notary. When a containment backend is set, that rewrite does not happen:
+   `harden_argv` leaves argv[0] as `pytest` plus the ADR 0025 flags. The
+   evaluator then does not start the sandbox. It returns `INCONCLUSIVE`
+   with reason `oracle result channel is not sealed for a bare pytest
+   executable`. `python -m pytest` and `python3 -m pytest` still enter the
+   notary, including inside a containment backend, because argv[0] is
+   `python` or `python3`. Stdout is not the accepting signal for either form.
+
+3. **ADR 0032 drift still watches the Attempt workspace.** A sealed check's
+   cwd is the sealed tree, not the Attempt workspace. `FixtureSandbox`
+   sets that process's `TMPDIR`, `TMP`, and `TEMP` to the sealed root. The
+   subject worker then points its own `TMPDIR` at a private directory under
+   `/tmp`. A relative write such as `open("dropped.txt")`, and pytest's
+   `tmp_path`, therefore land outside the Attempt workspace and do not
+   change `result_tree_sha256`. They do not trip the drift hook.
+   `ExecutionService` still hashes the Attempt workspace after every check
+   and once more after evaluation. If that digest differs from
+   `result_tree_sha256`, a PASS becomes `INCONCLUSIVE` (confidence at most
+   0.2) and a FAIL stays FAIL. The hook is unchanged.
 
 ## Context
 
@@ -100,10 +145,14 @@ Attempt's agent, or that it is still current.
      and the sealed oracle bytes still match the fixture.
 
    Zero collected tests, and tests that were only skipped, are `FAIL`. A
-   missing frame after exit 0 is `FAIL` (unexpected early exit). A frame whose
-   counts disagree is `INCONCLUSIVE`. None of these is a pass. The stdout
-   summary parser remains in the tree and is not the accepting signal. A bare
-   `pytest` executable, which does not run this bootstrap, is `INCONCLUSIVE`.
+   missing frame after exit 0 is `FAIL` (unexpected early exit). A missing
+   frame after any other exit, including the fail-closed exit 86, is `FAIL`
+   ("pytest ended without an evaluator result"). A frame whose counts
+   disagree is `INCONCLUSIVE`. None of these is a pass. The stdout summary
+   parser remains in the tree and is not the accepting signal. On the host,
+   a bare `pytest` argv is rewritten into this bootstrap. Inside a
+   containment backend it is not, and that form is `INCONCLUSIVE` without
+   running (acceptance condition 2).
 
 5. **Acceptance gate** (`check_verification_acceptance`), applied in
    `ExecutionService.finish` before a `validates` edge or a succeeded Task:
@@ -153,9 +202,11 @@ Attempt's agent, or that it is still current.
      `io_uring_register`, `pidfd_open`, `pidfd_getfd`, and the `chmod`
      family (`chmod`, `fchmod`, `fchmodat`, `fchmodat2`), and it sets
      `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE` 0, and `PR_SET_PDEATHSIG`
-     to `SIGKILL`. If the platform is not Linux x86_64, or `prctl` or
-     seccomp fails, the worker exits 86 before subject code runs. The
-     import then fails and the verdict is not a pass.
+     to `SIGKILL`. If the platform is not Linux x86_64, the pytest child
+     exits 86 before pytest starts (acceptance condition 1) and the worker,
+     if started, exits 86 before subject code runs. If `prctl` or seccomp
+     fails on Linux x86_64, the same exit 86 is used. The import then fails
+     and the verdict is not a pass.
    - The parent caps a worker response at 1_000_000 bytes, the same cap the
      worker applies to requests. A larger length, a body that is not UTF-8
      JSON, or a JSON value that is not an object closes the socket and
@@ -273,10 +324,12 @@ Attempt's agent, or that it is still current.
 - Evidence written before migration 0025 has NULL independence fields and
   cannot accept an artifact through the gate. `kind` and the scorecard's
   reading of historical `PASS` rows are unchanged.
-- A check's cwd is the sealed tree, not the Attempt workspace. A write such
-  as `open("dropped.txt")` does not move the revision, so it does not trip
-  the ADR 0032 drift hook. That hook still downgrades a PASS when the
-  workspace itself changes during evaluation.
+- A check's cwd is the sealed tree, not the Attempt workspace, and the
+  check's `TMPDIR` is that tree (the worker's is a private directory under
+  `/tmp`). A write such as `open("dropped.txt")` does not move the revision,
+  so it does not trip the ADR 0032 drift hook. That hook still downgrades a
+  PASS when the Attempt workspace itself changes during evaluation
+  (acceptance condition 3).
 - Absolute test paths that already live outside the workspace are not copied.
   They keep `--noconftest` and write the report to a private directory.
 - Containment still works: the report paths are relative to the sealed root,
