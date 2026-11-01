@@ -2,6 +2,7 @@ from tests.auth_support import admin_client
 from tests.check_support import write_checks
 from datetime import datetime, timezone
 
+from sdf_core.adapter import FakeNativeAdapter
 from sdf_core.api import configured_containment, configured_tool_policy
 from sdf_core.api import SessionLocal
 from sdf_core.db import AttemptRow, RuntimeEventRow, TaskRow
@@ -430,6 +431,66 @@ def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
     trace = client.get("/tasks/TASK-MISSING-COVERAGE-001/trace").json()
     evidence = next(node for node in trace["nodes"] if node["kind"] == "evidence")
     assert evidence["title"] == "INCONCLUSIVE"
+
+
+def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path, monkeypatch):
+    """One logical POST /run, retried with no dispatch key, runs once.
+
+    ``RunTaskRequest.dispatch_key`` is optional. No accepted ADR requires the
+    client to send one: ADR 0031 defines an idempotent replay only when the
+    same key is presented again. ``POST /tasks/{id}/run`` fills a missing key
+    with ``http-{uuid4().hex}``, so a second request is a new dispatch.
+
+    This is the client retry after a timeout: the same body, twice, with no
+    key. The first call is allowed to finish on the server (the response was
+    what timed out). The invariant is that the runtime adapter is invoked
+    exactly once and exactly one Attempt exists. Intentionally red until that
+    holds. Do not mark it xfail or skip.
+    """
+
+    class CountingAdapter:
+        provider = "fake"
+        evidence_mode = "synthetic"
+
+        def __init__(self):
+            self.calls = 0
+            self._fake = FakeNativeAdapter("app.py", "print('updated')\n")
+
+        def run(self, *, attempt_id, workspace, instructions):
+            self.calls += 1
+            return self._fake.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
+
+    monkeypatch.chdir(tmp_path)
+    adapter = CountingAdapter()
+    monkeypatch.setattr("sdf_core.api.configured_run_adapter", lambda _db: adapter)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    task_id = "TASK-RUN-RETRY-NO-KEY"
+    created = client.post("/tasks", json={
+        "id": task_id,
+        "title": "retry without a dispatch key",
+        "idempotency_key": "task-run-retry-no-key",
+        "acceptance_criteria": [],
+    })
+    assert created.status_code == 201
+    body = {"fixture_dir": str(fixture), "instructions": "complete the task"}
+    first = client.post(f"/tasks/{task_id}/run", json=body)
+    second = client.post(f"/tasks/{task_id}/run", json=body)
+    assert first.status_code == 200, first.text
+
+    db = SessionLocal()
+    try:
+        attempts = db.query(AttemptRow).filter_by(task_id=task_id).all()
+    finally:
+        db.close()
+    assert adapter.calls == 1 and len(attempts) == 1, (
+        "one logical POST /run without a dispatch key must invoke the adapter once and leave one Attempt; "
+        f"adapter ran {adapter.calls} time(s), second response {second.status_code}: {second.text}, "
+        f"attempts={[(row.id, row.status, row.dispatch_key) for row in attempts]}"
+    )
+    if second.status_code == 200:
+        assert second.json()["attempt_id"] == attempts[0].id
 
 
 def test_scorecard_endpoint_exposes_local_measurement_contract():
