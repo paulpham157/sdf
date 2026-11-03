@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .model import utcnow
+from .oracle import EMPTY_ORACLE_DIGEST
 
 EVIDENCE_CLASSES = ("execution", "verification", "outcome")
 EVIDENCE_CLASS_VERIFICATION = "verification"
@@ -80,6 +81,16 @@ def check_verification_acceptance(
         raise AcceptanceError(
             f"verification evidence {evidence_id} subject_artifact_sha256 {subject} does not match "
             f"the artifact being accepted ({artifact_sha256})"
+        )
+    oracle = _field(evidence, "oracle_digest")
+    if not isinstance(oracle, str) or oracle.strip() == "":
+        raise AcceptanceError(
+            f"verification evidence {evidence_id} oracle_digest is missing and cannot accept an artifact"
+        )
+    if oracle == EMPTY_ORACLE_DIGEST:
+        raise AcceptanceError(
+            f"verification evidence {evidence_id} oracle_digest is the empty digest "
+            f"({EMPTY_ORACLE_DIGEST}) and does not cover a registered check"
         )
     expires_at = _field(evidence, "expires_at")
     if expires_at is None:

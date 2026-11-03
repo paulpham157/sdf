@@ -8,11 +8,13 @@ The oracle is the fixture's test entrypoints, ``conftest.py``, support modules
 and data files next to those tests. They are copied to a directory outside the
 workspace, byte-checked against the fixture, and that directory is the check's
 cwd. The code under test is copied from the workspace only when it is not part
-of the oracle. Pass/fail for pytest is decided in a process that does not execute the
-code under test. That code runs in a worker; the oracle evaluates assertions
-on the values it returns. A seccomp filter on Linux x86_64 still rejects
+of the oracle. Pass/fail for pytest, and for a script or ``python -c`` check,
+is decided in a process that does not execute the code under test. That code
+runs in a worker. The oracle evaluates assertions on the values the worker
+returns, then writes a completion frame. The notary stores the frame only
+after that child has exited. A seccomp filter on Linux x86_64 still rejects
 ordinary writes to the result pipe, and fails closed when it cannot be
-installed. The pytest process and the notary set ``PR_SET_DUMPABLE`` to 0
+installed. The oracle child and the notary set ``PR_SET_DUMPABLE`` to 0
 so the worker cannot ptrace them or open ``/proc/<pid>/fd``. The worker
 itself is denied ``ptrace``, ``process_vm_*``, ``pidfd_getfd``,
 ``io_uring``, and ``chmod``, and that filter fails closed too. Responses from the worker are
@@ -48,14 +50,19 @@ MAX_FILES = 2_000
 REPORT_DIR_NAME = ".sdf-oracle"
 PLUGIN_MODULE = "sdf_oracle_plugin"
 RESULT_NAME = "result.json"
+# SHA-256 of zero bytes. A python -c check with no sealed files used to store
+# this and look as if an oracle had been hashed. Acceptance rejects it.
+EMPTY_ORACLE_DIGEST = hashlib.sha256(b"").hexdigest()
 
-# Runs inside the check, before pytest imports the code under test. The
-# process the sandbox spawned is the notary: it forks the pytest child, and
-# only after that child has exited does it write the result file. The child
-# never sees SDF_ORACLE_REPORT. A seccomp filter lets the result pipe be
-# written only from a stub mapped for the plugin, not from libc (os.write).
-# The notary holds the result fd across the run. The worker cannot ptrace
-# the pytest process, open its /proc fd directory, or chmod the sealed tree.
+# Runs inside the check, before the oracle imports the code under test. The
+# process the sandbox spawned is the notary: it forks the oracle child (pytest,
+# a script, or python -c), and only after that child has exited does it write
+# the result file. The child never sees SDF_ORACLE_REPORT. A seccomp filter
+# lets the result pipe be written only from a stub mapped for the plugin, not
+# from libc (os.write). The notary holds the result fd across the run. The
+# worker cannot ptrace the oracle process, open its /proc fd directory, or
+# chmod the sealed tree. A script child writes a completion frame through the
+# same stub only after its own code returns.
 PYTEST_SEAL = r'''
 import ctypes, os, sys
 
@@ -401,18 +408,20 @@ def _freeze_sealed_tree(root):
                 os.chmod(path, 0o444)
         os.chmod(dirpath, 0o555)
 
-def _seal_report_path(report):
+def _seal_report_path(report, whole_tree=True):
     """Freeze what the worker must not replace. The notary already holds the fd.
 
-    A result file inside the cwd means this is the sealed tree: freeze all of
-    it. A private report (absolute tests) is only its own directory, so the
-    workspace the check was pointed at stays writable.
+    A pytest result inside the cwd freezes the whole sealed tree: pytest does
+    not need to create files there. A script or ``python -c`` check does
+    (``open('dropped.txt')`` must land in the sealed cwd, not the workspace),
+    so only the result file and its directory are frozen. A private report
+    (absolute tests) is the same narrow freeze, so the workspace stays writable.
     """
     if not report:
         os._exit(86)
     cwd = os.path.realpath(os.getcwd())
     real = os.path.realpath(report)
-    if real == cwd or real.startswith(cwd + os.sep):
+    if whole_tree and (real == cwd or real.startswith(cwd + os.sep)):
         _freeze_sealed_tree(cwd)
         return
     if os.path.islink(report) or not os.path.isfile(report):
@@ -473,6 +482,22 @@ def _plugin(fd, write, rpc):
     mod.pytest_sessionfinish = pytest_sessionfinish
     sys.modules["sdf_oracle_plugin"] = mod
 
+def _arm_script(fd, write, rpc):
+    # Script and python -c: the frame is written only after the oracle code
+    # returns. The subject worker does not have this module.
+    import json, types
+    mod = types.ModuleType("sdf_oracle_plugin")
+    def note_completed(status):
+        if rpc is not None:
+            rpc.close()
+        if int(status) != 0:
+            return
+        payload = json.dumps({"completed": 1, "exitstatus": 0}).encode()
+        buf = ctypes.create_string_buffer(payload)
+        write(fd, buf, len(payload))
+    mod.note_completed = note_completed
+    sys.modules["sdf_oracle_plugin"] = mod
+
 def _undumpable():
     libc = ctypes.CDLL(None, use_errno=True)
     # Same-uid peers cannot ptrace or open /proc/<pid>/fd when this is 0.
@@ -481,6 +506,7 @@ def _undumpable():
 
 def _notary():
     report = os.environ.pop("SDF_ORACLE_REPORT", "")
+    kind = os.environ.pop("SDF_ORACLE_KIND", "pytest")
     _undumpable()
     # Open the result before the worker exists. Writes later use this fd, so
     # the directory can stay mode 0555 for the whole run (no chmod window).
@@ -505,7 +531,8 @@ def _notary():
         rpc = None
         if subjects:
             try:
-                _seal_report_path(report)
+                # Script checks keep the cwd writable. Pytest freezes the tree.
+                _seal_report_path(report, whole_tree=(kind != "script"))
             except OSError:
                 os._exit(86)
             rpc = _start_worker(write_fd)
@@ -516,7 +543,14 @@ def _notary():
             if rpc is not None:
                 rpc.close()
             os._exit(86)
-        _plugin(write_fd, write, rpc)
+        if kind == "pytest":
+            _plugin(write_fd, write, rpc)
+        elif kind == "script":
+            _arm_script(write_fd, write, rpc)
+        else:
+            if rpc is not None:
+                rpc.close()
+            os._exit(86)
         if subjects:
             _install_hook(rpc, subjects)
         return
@@ -541,6 +575,13 @@ def _notary():
             os.close(report_fd)
         except OSError:
             pass
+    # A signal delivered to the oracle child (the subject can still kill that
+    # pid) must not look like a normal exit. Die the same way so the parent
+    # observes the signal and cannot treat the run as a pass.
+    if os.WIFSIGNALED(status):
+        sig = os.WTERMSIG(status)
+        os.kill(os.getpid(), sig)
+        os._exit(128 + sig)
     os._exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 
 _notary()
@@ -646,7 +687,34 @@ class OracleReport:
             shutil.rmtree(self.directory, ignore_errors=True)
 
 
-def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> SealedOracle:
+def seal_oracle_digest(command: Sequence[str], files: Sequence[tuple[str, str]] = ()) -> str:
+    """SHA-256 of the registered check text plus the sealed oracle files.
+
+    Encoding, UTF-8, documented so two evaluators hash the same check the
+    same way. This is not the hash of an empty byte string
+    (:data:`EMPTY_ORACLE_DIGEST`); a check with no files still covers its argv.
+
+    ``sdf-oracle-v1\\n``
+    ``argv <N>\\n`` where ``N`` is the UTF-8 length of the argv blob
+    ``<arg0>\\0<arg1>\\0...`` (the argv blob itself; an argument may contain
+    newlines, so the length is what frames it)
+    ``\\n``
+    then one line per sealed file, paths sorted, ``file\\0<relative>\\0<sha256>\\n``.
+    ``<sha256>`` is the hex digest of that file's bytes. Subject files are
+    not included.
+    """
+
+    argv_blob = "\0".join(command)
+    header = f"sdf-oracle-v1\nargv {len(argv_blob.encode())}\n"
+    body = header + argv_blob + "\n"
+    for relative, file_hash in sorted(files):
+        body += f"file\0{relative}\0{file_hash}\n"
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def materialize(
+    fixture: Path, workspace: Path, targets: Sequence[str], *, command: Sequence[str] = (),
+) -> SealedOracle:
     """Build the sealed tree. Raises :class:`OracleTamper` instead of running."""
 
     fixture = Path(fixture)
@@ -673,12 +741,12 @@ def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> Seale
         workspace_root = workspace.resolve()
         if root.resolve() == workspace_root or root.resolve().is_relative_to(workspace_root):
             raise OracleTamper("sealed oracle would lie inside the agent workspace")
-        digest_lines: list[str] = []
+        file_hashes: list[tuple[str, str]] = []
         for relative in oracle_paths:
             data = _read_plain(fixture, relative)
             assert data is not None
             _place(root, relative, data, readonly=True)
-            digest_lines.append(f"{relative}\0{hashlib.sha256(data).hexdigest()}")
+            file_hashes.append((relative, hashlib.sha256(data).hexdigest()))
         copied = 0
         for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
             dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
@@ -698,7 +766,7 @@ def materialize(fixture: Path, workspace: Path, targets: Sequence[str]) -> Seale
                 if copied + len(oracle_paths) > MAX_FILES:
                     raise OracleTamper("workspace is too large to seal")
                 _place(root, relative, path.read_bytes(), readonly=False)
-        digest = hashlib.sha256("\n".join(digest_lines).encode()).hexdigest()
+        digest = seal_oracle_digest(command, file_hashes)
         return SealedOracle(root=root, oracle_paths=oracle_paths, oracle_digest=digest, fixture=fixture)
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
@@ -869,6 +937,63 @@ def pytest_oracle_verdict(
             f"pytest exit code {exit_code} disagrees with a passing result (frame exit {frame['exitstatus']})"
         )
     return "PASS", ""
+
+
+def script_oracle_verdict(
+    *,
+    exit_code: int | None,
+    frame: dict[str, int] | None,
+    oracle_changed: bool,
+) -> tuple[str, str]:
+    """``(status, reason)`` for a script or ``python -c`` check.
+
+    PASS only when the oracle child finished its own code and said so in the
+    completion frame, and the notary's exit code is 0. The subject's exit
+    code, a signal, and the child's stdout are not inputs. Exit 0 with no
+    frame is an unexpected early exit. A signal is a failure even if a frame
+    was also written. A frame that disagrees with the exit code is
+    inconclusive.
+    """
+
+    if oracle_changed:
+        return "INCONCLUSIVE", "oracle files changed while the check ran"
+    if isinstance(exit_code, int) and exit_code < 0:
+        return "FAIL", f"check ended on signal {-exit_code} before the oracle completed"
+    if frame is None:
+        if exit_code == 0:
+            return "FAIL", "check exited 0 without an evaluator result (unexpected early exit)"
+        return "FAIL", "check ended without an evaluator result"
+    if frame["completed"] != 1 or frame["exitstatus"] != 0:
+        return "FAIL", "oracle did not complete its assertions"
+    if exit_code != 0:
+        return "INCONCLUSIVE", (
+            f"check exit code {exit_code} disagrees with a completed oracle"
+        )
+    return "PASS", ""
+
+
+def load_script_result(path: Path) -> dict[str, int] | None:
+    """The script completion frame, or ``None`` when it is missing or not one.
+
+    The only accepted object is ``{"completed": 0|1, "exitstatus": <int>}``.
+    A pytest result frame is not a script completion.
+    """
+
+    try:
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 100_000:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"completed", "exitstatus"}:
+        return None
+    completed = payload.get("completed")
+    exitstatus = payload.get("exitstatus")
+    if isinstance(completed, bool) or not isinstance(completed, int) or completed not in (0, 1):
+        return None
+    if isinstance(exitstatus, bool) or not isinstance(exitstatus, int):
+        return None
+    return {"completed": completed, "exitstatus": exitstatus}
 
 
 def load_result_frame(path: Path) -> dict[str, int] | None:
