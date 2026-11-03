@@ -51,6 +51,21 @@ func (s *Server) handleAttempts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Presence, including JSON null. Unmarshalling null into a pointer clears
+	// it, so the key is checked on the raw object (ADR 0031).
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, ok := raw["evidence_mode"]; ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "ADR 0031: evidence_mode is set by the run path, not the request",
+		})
+		return
+	}
 	var req startRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -79,8 +94,17 @@ func (s *Server) handleAttempts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	mode, err := s.orch.EvidenceMode(req.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "id": req.ID})
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":        "accepted",
+		"id":            req.ID,
+		"evidence_mode": mode,
+	})
 }
 
 // Handler returns the root HTTP handler.

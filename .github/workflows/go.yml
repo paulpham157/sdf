@@ -1,0 +1,42 @@
+# ADR 0036: path-filtered Go CI for the orchestration core.
+# Separate from the Python CI workflow; gitleaks stays on Security.
+name: Go
+
+on:
+  pull_request:
+    paths:
+      - "go/**"
+      - ".github/workflows/go.yml"
+  push:
+    branches: [main]
+    paths:
+      - "go/**"
+      - ".github/workflows/go.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: go test ./...
+    runs-on: ubuntu-latest
+    # ADR 0035 backpressure (2M messages) needs a few minutes of headroom.
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: go test ./...
+        # Includes TestBackpressure_MillionsStableGoroutinesAndRAM,
+        # cancellation/idempotency chaos, and metrics goroutine/queue-depth checks.
+        # Do not pass -short; ADR 0036 forbids skipping the backpressure test in CI.
+        run: go test ./...

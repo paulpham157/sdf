@@ -1,8 +1,8 @@
 # ADR 0036: path-filtered Go CI for the orchestration core
 
-Status: proposed (2026-10-31). Written after merging ADR 0035's Go
-scaffold (#102). It becomes accepted when a maintainer merges the
-workflow that implements it. It does not change Credential Mode, Tool
+Status: accepted (2026-10-31, PR #106, merge `6ce95d4`). Written after
+merging ADR 0035's Go scaffold (#102). Implemented by
+`.github/workflows/go.yml`. It does not change Credential Mode, Tool
 Proxy, Attempt lifecycle or Evidence provenance.
 
 ## Context
@@ -84,5 +84,5 @@ ADR does not add a second secret scanner for Go.
    workflow is skipped.
 3. Confirm gitleaks still runs on both PRs via the existing Security
    workflow.
-4. When those checks behave as above, mark this ADR accepted on the
-   merging commit of the workflow PR.
+4. The merging commit of the workflow PR is #106 (`6ce95d4`,
+   `.github/workflows/go.yml`). This record is accepted on that evidence.
