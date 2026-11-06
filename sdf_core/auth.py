@@ -315,12 +315,13 @@ ROUTE_ROLES: dict[tuple[str, str], str] = {
     ("POST", "/attempts/{attempt_id}/actions"): "operator",
     ("POST", "/objectives/{objective_id}/metric"): "operator",
     ("POST", "/objectives/{objective_id}/observations"): "operator",
-    ("POST", "/objectives/{objective_id}/evidence"): "operator",
     ("POST", "/plans"): "operator",
     ("POST", "/plans/{plan_id}/runs"): "operator",
     ("POST", "/runs/{run_id}/cancel"): "operator",
     # Recording a Decision is a decision: approver, like plan approval.
+    # Outcome Evidence is a sign-off on the Objective, the same bar.
     ("POST", "/decisions"): "approver",
+    ("POST", "/objectives/{objective_id}/evidence"): "approver",
     ("POST", "/adrs"): "approver",
     ("POST", "/plans/{plan_id}/approve"): "approver",
     ("POST", "/plans/{plan_id}/reject"): "approver",

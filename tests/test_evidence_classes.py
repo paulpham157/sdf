@@ -21,11 +21,22 @@ from sqlalchemy.orm import sessionmaker
 from sdf_core.acceptance import (
     EVIDENCE_SUBJECT_SQL,
     AcceptanceError,
+    check_hidden_oracle_acceptance,
     check_verification_acceptance,
 )
 from sdf_core.adapter import FakeNativeAdapter
 from sdf_core.api import SessionLocal
-from sdf_core.db import ArtifactRow, AttemptRow, Base, DecisionEdgeRow, EvidenceRow, TaskRow, make_engine
+from sdf_core.db import (
+    ArtifactRow,
+    AttemptRow,
+    Base,
+    DecisionEdgeRow,
+    EvidenceRow,
+    PlanRow,
+    PlanTaskRow,
+    TaskRow,
+    make_engine,
+)
 from sdf_core.execution import ExecutionService
 from sdf_core.impact import (
     AttemptFact,
@@ -38,7 +49,7 @@ from sdf_core.impact import (
 from sdf_core.impact_repository import load_scorecard_facts
 from sdf_core.measurement import build_scorecard_from_db
 from sdf_core.model import utcnow
-from tests.auth_support import admin_client
+from tests.auth_support import admin_client, client_as
 from tests.revision_support import bound
 
 DIGEST = "a" * 64
@@ -289,14 +300,18 @@ def test_outcome_evidence_is_recorded_on_the_objective_and_does_not_accept_a_tas
         "expires_at": expires,
         "criterion": "incident_minutes",
         "confidence": 1.0,
+        "mode": "synthetic",
     })
     assert created.status_code == 201, created.text
     body = created.json()
     assert body["evidence_class"] == "outcome"
+    assert body["evidence_mode"] == "synthetic"
     assert body["attempt_id"] is None
     assert body["objective_id"] == objective
     assert body["verifier_identity"] == "alex"
     assert body["verifier_role"] == "stakeholder"
+    assert body["producer_identity"] == "test-admin"
+    assert body["producer_role"] == "approver"
     assert body["expires_at"] is not None
     listed = client.get(f"/objectives/{objective}/evidence")
     assert listed.status_code == 200
@@ -306,6 +321,7 @@ def test_outcome_evidence_is_recorded_on_the_objective_and_does_not_accept_a_tas
     assert viewed.json()["evidence_class"] == "outcome"
     refused = client.post(f"/objectives/{objective}/evidence", json={
         "verifier_identity": "native", "verifier_role": "agent", "summary": "the agent says it is done",
+        "mode": "synthetic",
     })
     assert refused.status_code == 422
     trace = client.get(f"/tasks/{task}/trace").json()
@@ -409,3 +425,161 @@ def test_migration_0028_keeps_legacy_null_class_and_round_trips(tmp_path, monkey
             "SELECT evidence_class FROM evidence WHERE id = 'EV-LEGACY'"
         )).scalar() is None
     engine.dispose()
+
+
+def _graph(client, suffix: str) -> str:
+    context, objective = f"BC-IND-{suffix}", f"OBJ-IND-{suffix}"
+    assert client.post("/business-contexts", json={
+        "id": context, "title": "context", "owner": "product", "source": "test",
+    }).status_code == 201
+    assert client.post("/objectives", json={
+        "id": objective, "title": "objective", "business_context_id": context,
+        "owner": "product", "source": "test",
+    }).status_code == 201
+    return objective
+
+
+def _task(client, objective: str | None, task_id: str) -> None:
+    body = {"id": task_id, "title": task_id, "idempotency_key": task_id, "acceptance_criteria": ["met"]}
+    if objective is not None:
+        body["objective_id"] = objective
+    assert client.post("/tasks", json=body).status_code == 201
+
+
+def _attempt(db, *, attempt_id: str, task_id: str, agent: str, parent_attempt_id: str | None = None) -> None:
+    db.add(AttemptRow(
+        id=attempt_id, task_id=task_id, status="completed", dispatch_key=attempt_id,
+        agent=agent, parent_attempt_id=parent_attempt_id, created_at=utcnow(),
+    ))
+
+
+def _outcome(client, objective: str, **overrides):
+    body = {
+        "verifier_identity": "alex",
+        "verifier_role": "stakeholder",
+        "status": "PASS",
+        "summary": "incident minutes fell",
+        "mode": "synthetic",
+    }
+    body.update(overrides)
+    return client.post(f"/objectives/{objective}/evidence", json=body)
+
+
+def test_outcome_evidence_rejects_the_producer_and_attempt_agents():
+    """The verifier is neither the recorder nor an agent that worked the Objective.
+
+    Attempts are not children of an Objective. They belong to a Task. That Task
+    is under the Objective through an implements edge, or through a Plan whose
+    objective_id is the Objective. A retry is another Attempt of the same Task.
+    """
+
+    setup = client_as("operator", principal="op-setup")
+    suffix = uuid4().hex[:8]
+    direct = _graph(setup, f"direct-{suffix}")
+    planned = _graph(setup, f"plan-{suffix}")
+    other = _graph(setup, f"other-{suffix}")
+    direct_task, plan_task, other_task = (f"TASK-{kind}-{suffix}" for kind in ("direct", "plan", "other"))
+    _task(setup, direct, direct_task)
+    _task(setup, None, plan_task)
+    _task(setup, other, other_task)
+    plan_id = f"PLAN-IND-{suffix}"
+    with SessionLocal() as db:
+        db.add(PlanRow(
+            id=plan_id, title="plan", objective_id=planned, status="approved", content={},
+            content_sha256="ab" * 32, proposed_by="planner", created_at=utcnow(),
+            decision_request_id=f"DREQ-IND-{suffix}",
+        ))
+        db.add(PlanTaskRow(task_id=plan_task, plan_id=plan_id, subtask_key="work"))
+        # The plan gate reads a persisted Plan. An Attempt added in the same
+        # flush cannot see an unflushed PlanRow.
+        db.flush()
+        _attempt(db, attempt_id=f"A-DIRECT-{suffix}", task_id=direct_task, agent="pi:worker-1")
+        _attempt(
+            db, attempt_id=f"A-RETRY-{suffix}", task_id=direct_task, agent="opencode:retry-1",
+            parent_attempt_id=f"A-DIRECT-{suffix}",
+        )
+        _attempt(db, attempt_id=f"A-PLAN-{suffix}", task_id=plan_task, agent="codex:plan-worker")
+        _attempt(db, attempt_id=f"A-OTHER-{suffix}", task_id=other_task, agent="goose:elsewhere")
+        db.commit()
+
+    recorder = client_as("approver", principal="casey")
+    operator = client_as("operator", principal="op-denied")
+    denied = _outcome(operator, direct, verifier_identity="alex")
+    assert denied.status_code == 403
+    assert "approver" in denied.json()["detail"]
+
+    def rejected(objective: str, verifier: str, needle: str) -> None:
+        response = _outcome(recorder, objective, verifier_identity=verifier)
+        assert response.status_code == 422, response.text
+        assert needle in response.json()["detail"]
+
+    rejected(direct, "casey", "producer_identity")
+    rejected(direct, "pi:worker-1", "attempt agent")
+    rejected(direct, "  opencode:retry-1  ", "attempt agent")
+    rejected(planned, "codex:plan-worker", "attempt agent")
+    # An agent that worked a different Objective is not this Objective's verifier.
+    elsewhere = _outcome(recorder, direct, verifier_identity="goose:elsewhere", mode="synthetic")
+    assert elsewhere.status_code == 201, elsewhere.text
+    with SessionLocal() as db:
+        stored = list(db.scalars(select(EvidenceRow).where(EvidenceRow.objective_id == direct)))
+        assert [row.verifier_identity for row in stored] == ["goose:elsewhere"]
+        assert not db.scalars(select(DecisionEdgeRow).where(
+            DecisionEdgeRow.source_id == stored[0].id, DecisionEdgeRow.relation == "validates",
+        )).first()
+        assert db.get(TaskRow, direct_task).status == "created"
+    # The direct Task's agent is not an agent of the Plan's Objective, and the
+    # Plan Task's agent is not an agent of the directly linked Objective.
+    assert _outcome(recorder, planned, verifier_identity="pi:worker-1").status_code == 201
+    assert _outcome(recorder, direct, verifier_identity="codex:plan-worker").status_code == 201
+
+
+@pytest.mark.parametrize("mode", ["synthetic", "live"])
+def test_independent_stakeholder_outcome_evidence_persists_mode_and_stays_fail_closed(mode: str):
+    setup = client_as("operator", principal="op-mode")
+    suffix = uuid4().hex[:8]
+    objective = _graph(setup, f"mode-{mode}-{suffix}")
+    task = f"TASK-MODE-{mode}-{suffix}"
+    _task(setup, objective, task)
+    recorder = client_as("approver", principal=f"casey-{mode}")
+    missing = recorder.post(f"/objectives/{objective}/evidence", json={
+        "verifier_identity": "alex", "verifier_role": "stakeholder", "summary": "signed off",
+    })
+    assert missing.status_code == 422
+    bogus = _outcome(recorder, objective, mode="bogus")
+    assert bogus.status_code == 422
+    with SessionLocal() as db:
+        before = build_scorecard_from_db(db).verified_pass_count
+    created = _outcome(
+        recorder, objective, verifier_identity="alex", verifier_role="stakeholder", mode=mode,
+        summary=f"signed off ({mode})",
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["evidence_mode"] == mode
+    assert body["evidence_class"] == "outcome"
+    assert body["producer_identity"] == f"casey-{mode}"
+    assert body["producer_role"] == "approver"
+    assert body["verifier_identity"] == "alex"
+    assert body["verifier_role"] == "stakeholder"
+    assert body["attempt_id"] is None
+    with SessionLocal() as db:
+        row = db.get(EvidenceRow, body["id"])
+        assert row.evidence_mode == mode
+        assert row.objective_id == objective
+        assert row.attempt_id is None
+        assert not db.scalars(select(DecisionEdgeRow).where(
+            DecisionEdgeRow.source_id == body["id"], DecisionEdgeRow.relation == "validates",
+        )).first()
+        assert db.scalars(select(DecisionEdgeRow).where(
+            DecisionEdgeRow.source_id == body["id"],
+            DecisionEdgeRow.target_id == objective,
+            DecisionEdgeRow.relation == "measures",
+        )).first()
+        assert db.get(TaskRow, task).status == "created"
+        assert build_scorecard_from_db(db).verified_pass_count == before
+    with pytest.raises(AcceptanceError, match="not verification"):
+        check_verification_acceptance(body, attempt_agent="pi:worker-1", artifact_sha256=DIGEST)
+    with pytest.raises(AcceptanceError, match="held-out or randomized"):
+        check_hidden_oracle_acceptance(
+            [body], required=True, attempt_agent="pi:worker-1", artifact_sha256=DIGEST,
+        )

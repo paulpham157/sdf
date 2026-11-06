@@ -64,9 +64,20 @@ another.
    is not Task verification. It carries `verifier_identity`,
    `verifier_role` (not `agent`), and an optional `expires_at`. The API
    records it on the Objective and reads it back from the Objective and
-   from `GET /evidence/{id}`. The decision-graph edge is `measures` from
-   the Evidence node to the Objective. It is not a `validates` edge to a
-   Task. The acceptance gate rejects it.
+   from `GET /evidence/{id}`. `POST /objectives/{id}/evidence` requires
+   the approver role, the same bar as `POST /decisions`: a human
+   principal who can approve. `producer_identity` is that principal and
+   `producer_role` is `approver`. `verifier_identity` must differ from
+   `producer_identity`. It must also differ from `Attempt.agent` on every
+   Attempt of a Task this Objective implements, and on every Attempt of a
+   Task in a Plan whose `objective_id` is this Objective. An Attempt has
+   no objective column; those two links are how its work belongs to the
+   Objective. A retry is another Attempt of the same Task. The request
+   carries `mode` (`synthetic` or `live`), stored as `evidence_mode`.
+   The decision-graph edge is `measures` from the Evidence node to the
+   Objective. It is not a `validates` edge to a Task. The acceptance
+   gate rejects it. It does not count as a verified pass, and it does
+   not satisfy a held-out or randomized oracle (ADR 0040).
 
 5. **Schema** (migration `0028_evidence_classes`). Existing rows are not
    rewritten. `ADD COLUMN` does not fire the Evidence append-only trigger.
@@ -128,8 +139,9 @@ another.
 
 ```json
 {"id": "EVIDENCE-OUTCOME-1", "kind": "outcome", "status": "PASS",
- "evidence_class": "outcome", "attempt_id": null,
+ "evidence_class": "outcome", "evidence_mode": "live", "attempt_id": null,
  "objective_id": "OBJ-1",
+ "producer_identity": "casey", "producer_role": "approver",
  "verifier_identity": "alex", "verifier_role": "stakeholder",
  "expires_at": "2026-12-01T00:00:00+00:00",
  "criterion": "incident_minutes"}
