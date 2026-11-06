@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from .acceptance import is_verified_pass
+
 V0_METRICS = (
     "first_attempt_success_rate",
     "accepted_task_rate",
@@ -24,6 +26,9 @@ V0_METRICS = (
     "escalation_rate",
     "cost_per_accepted_task",
     "escalation_exhaustion_rate",
+    # ADR 0042. numerator is the count of PASS rows in that bucket.
+    "verified_passes",
+    "unverified_legacy_passes",
 )
 
 EXHAUSTED = "escalation_exhausted"
@@ -204,16 +209,26 @@ class AttemptFact:
     escalation_reason: str | None
     outcome: str | None
     mode: EvidenceMode
+    agent: str = "native"
+    # The Attempt's diff digest. None when no diff was recorded, which cannot
+    # verify a pass (ADR 0042).
+    artifact_sha256: str | None = None
 
 
 @dataclass(frozen=True)
 class EvidenceFact:
     evidence_id: str
-    attempt_id: str
+    attempt_id: str | None
     status: str
     criterion: str | None
     measured_at: datetime
     mode: EvidenceMode
+    evidence_class: str | None = None
+    verifier_identity: str | None = None
+    verifier_role: str | None = None
+    subject_artifact_sha256: str | None = None
+    oracle_digest: str | None = None
+    expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +290,8 @@ def _basis(modes: Iterable[EvidenceMode]) -> str:
 class _Computation:
     def __init__(self, facts: ScorecardFacts):
         self.tasks = facts.tasks
+        self.attempts = facts.attempts
+        self.evidence = facts.evidence
         self.attempts_by_task: dict[str, list[AttemptFact]] = {}
         for attempt in facts.attempts:
             self.attempts_by_task.setdefault(attempt.task_id, []).append(attempt)
@@ -282,7 +299,8 @@ class _Computation:
             items.sort(key=lambda item: (item.created_at, item.attempt_id))
         self.evidence_by_attempt: dict[str, list[EvidenceFact]] = {}
         for item in facts.evidence:
-            self.evidence_by_attempt.setdefault(item.attempt_id, []).append(item)
+            if item.attempt_id:
+                self.evidence_by_attempt.setdefault(item.attempt_id, []).append(item)
         self.accepting: dict[str, AttemptFact] = {}
         for task in self.tasks:
             for attempt in self.attempts_by_task.get(task.task_id, []):
@@ -290,13 +308,29 @@ class _Computation:
                     self.accepting[task.task_id] = attempt
                     break
 
+    def _verdicts(self, attempt: AttemptFact) -> list[EvidenceFact]:
+        """Verification rows and historical rows with no class. Not execution or outcome."""
+
+        return [
+            item for item in self.evidence_by_attempt.get(attempt.attempt_id, [])
+            if item.evidence_class in (None, "verification")
+        ]
+
+    def _verified_row(self, attempt: AttemptFact, item: EvidenceFact) -> bool:
+        return is_verified_pass(
+            item, attempt_agent=attempt.agent, artifact_sha256=attempt.artifact_sha256,
+        )
+
     def _accepts(self, task: TaskFact, attempt: AttemptFact) -> bool:
-        evidence = self.evidence_by_attempt.get(attempt.attempt_id, [])
-        if not evidence or not task.acceptance_criteria:
+        verdicts = self._verdicts(attempt)
+        if not verdicts or not task.acceptance_criteria:
             return False
-        if any(item.status != "PASS" for item in evidence):
+        if any(item.status != "PASS" for item in verdicts):
             return False
-        passed = {item.criterion for item in evidence if item.status == "PASS"}
+        verified = [item for item in verdicts if self._verified_row(attempt, item)]
+        if len(verified) != len(verdicts):
+            return False
+        passed = {item.criterion for item in verified if item.criterion}
         return set(task.acceptance_criteria) <= passed
 
     def _modes(self, tasks: Sequence[TaskFact]) -> list[EvidenceMode]:
@@ -350,6 +384,7 @@ class _Computation:
                 self._time_to_accepted(accepted),
                 self._ratio("escalation_rate", len(escalated), attempted),
                 self._cost_per_accepted(accepted),
+                *self._pass_split(),
                 self._ratio(
                     "escalation_exhaustion_rate",
                     sum(
@@ -371,8 +406,8 @@ class _Computation:
             conclusive = {
                 item.criterion
                 for attempt in self.attempts_by_task.get(task.task_id, [])
-                for item in self.evidence_by_attempt.get(attempt.attempt_id, [])
-                if item.status in {"PASS", "FAIL"}
+                for item in self._verdicts(attempt)
+                if item.status in {"PASS", "FAIL"} and item.criterion
             }
             declared += len(task.acceptance_criteria)
             covered += sum(1 for criterion in task.acceptance_criteria if criterion in conclusive)
@@ -387,7 +422,8 @@ class _Computation:
     def _time_to_accepted(self, accepted: Sequence[TaskFact]) -> Metric:
         seconds = []
         for task in accepted:
-            evidence = self.evidence_by_attempt[self.accepting[task.task_id].attempt_id]
+            attempt = self.accepting[task.task_id]
+            evidence = [item for item in self.evidence_by_attempt[attempt.attempt_id] if self._verified_row(attempt, item)]
             seconds.append((max(item.measured_at for item in evidence) - task.created_at).total_seconds())
         total = sum(seconds)
         return Metric(
@@ -418,4 +454,47 @@ class _Computation:
             numerator=total if accepted else None,
             denominator=len(accepted),
             basis=_basis(self._modes(accepted)) if accepted else "none",
+        )
+
+    def _pass_split(self) -> tuple[Metric, Metric]:
+        """Verified verification passes, and every other PASS, as separate counts."""
+
+        by_id = {attempt.attempt_id: attempt for attempt in self.attempts}
+        verified = unverified = 0
+        modes: list[EvidenceMode] = []
+        for item in self.evidence:
+            if item.status != "PASS":
+                continue
+            modes.append(item.mode)
+            attempt = by_id.get(item.attempt_id) if item.attempt_id else None
+            agent = attempt.agent if attempt is not None else ""
+            digest = attempt.artifact_sha256 if attempt is not None else None
+            if is_verified_pass(item, attempt_agent=agent, artifact_sha256=digest):
+                verified += 1
+            else:
+                unverified += 1
+        total = verified + unverified
+        basis = _basis(modes) if total else "none"
+
+        def metric(name: str, count: int, note: str) -> Metric:
+            return Metric(
+                name=name,
+                value=(count / total) if total else None,
+                numerator=float(count) if total else None,
+                denominator=total,
+                basis=basis,
+                note=note,
+            )
+
+        return (
+            metric(
+                "verified_passes",
+                verified,
+                "PASS rows that pass the verification acceptance gate (ADR 0039, ADR 0042)",
+            ),
+            metric(
+                "unverified_legacy_passes",
+                unverified,
+                "PASS rows that are not verified: legacy, execution, outcome, expired, self-verified, or unbound",
+            ),
         )

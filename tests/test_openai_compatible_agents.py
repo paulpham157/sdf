@@ -485,7 +485,9 @@ def test_runtime_drives_the_sdf_attempt_loop(local, tmp_path, monkeypatch):
         commands=[], criterion_checks={"add returns the sum": [["python3", "-c", "from calc import add; assert add(2, 3) == 5"]]},
         validation_target=("assumption", "ASSUMPTION-CALC"),
     )
-    assert [e.status for e in db.query(EvidenceRow).filter_by(attempt_id=attempt.id)] == ["PASS"]
+    recorded = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
+    assert {e.evidence_class for e in recorded} == {"execution", "verification"}
+    assert all(e.status == "PASS" for e in recorded)
     assert db.get(TaskRow, "TASK-X").status == "succeeded"
     assert transport.closed == 1
 

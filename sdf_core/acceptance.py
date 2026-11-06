@@ -21,11 +21,22 @@ from .model import utcnow
 from .oracle import EMPTY_ORACLE_DIGEST
 
 EVIDENCE_CLASSES = ("execution", "verification", "outcome")
+EVIDENCE_CLASS_EXECUTION = "execution"
 EVIDENCE_CLASS_VERIFICATION = "verification"
+EVIDENCE_CLASS_OUTCOME = "outcome"
 EVIDENCE_CLASS_SQL = (
     "evidence_class IS NULL OR evidence_class IN ("
     + ", ".join(f"'{value}'" for value in EVIDENCE_CLASSES)
     + ")"
+)
+# Link shape (ADR 0042, migration 0028). NULL evidence_class stays legal so a
+# row written before the class was required can be read. A new write is refused
+# by the ORM. Execution and verification name an Attempt. Outcome names an
+# Objective and does not name an Attempt, so it cannot be read as task proof.
+EVIDENCE_SUBJECT_SQL = (
+    "evidence_class IS NULL OR "
+    "(evidence_class IN ('execution', 'verification') AND attempt_id IS NOT NULL AND objective_id IS NULL) OR "
+    "(evidence_class = 'outcome' AND objective_id IS NOT NULL AND attempt_id IS NULL)"
 )
 # ADR 0040. NULL is a row written before the column existed.
 ORACLE_VISIBILITIES = ("visible", "held_out")
@@ -119,6 +130,33 @@ def check_verification_acceptance(
             f"verification evidence {evidence_id} expired at {_aware(expires_at).isoformat()} "
             "and requires re-validation"
         )
+
+
+def is_verified_pass(
+    evidence: Any,
+    *,
+    attempt_agent: str,
+    artifact_sha256: str | None,
+    now: datetime | None = None,
+) -> bool:
+    """True only for an independent, unexpired, artifact-bound verification PASS.
+
+    Execution, outcome, a legacy NULL class, a self-verified row, a wrong
+    digest, and an expired verification are not verified passes (ADR 0042).
+    """
+
+    if _field(evidence, "status") != "PASS" or not artifact_sha256:
+        return False
+    try:
+        check_verification_acceptance(
+            evidence,
+            attempt_agent=attempt_agent,
+            artifact_sha256=artifact_sha256,
+            now=now,
+        )
+    except AcceptanceError:
+        return False
+    return True
 
 
 def is_hidden_oracle(evidence: Any) -> bool:

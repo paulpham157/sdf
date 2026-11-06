@@ -400,11 +400,13 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     ids = {node["id"] for node in trace["nodes"]}
     assert "ASSUMPTION-API-001" in ids
     assert any(node["kind"] == "artifact" for node in trace["nodes"])
-    evidence_id = next(node["id"] for node in trace["nodes"] if node["kind"] == "evidence")
-    evidence_response = client.get(f"/evidence/{evidence_id}")
-    assert evidence_response.status_code == 200
-    assert evidence_response.json()["criterion"] == "command succeeds"
-    assert evidence_response.json()["artifact_ref"].endswith("-OUTPUT")
+    evidence_bodies = [
+        client.get(f"/evidence/{node['id']}").json()
+        for node in trace["nodes"] if node["kind"] == "evidence"
+    ]
+    evidence_response_json = next(body for body in evidence_bodies if body["criterion"] == "command succeeds")
+    assert evidence_response_json["evidence_class"] == "verification"
+    assert evidence_response_json["artifact_ref"].endswith("-OUTPUT")
 
 
 def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
@@ -429,8 +431,8 @@ def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
     assert response.status_code == 200
     assert response.json()["task_status"] == "inconclusive"
     trace = client.get("/tasks/TASK-MISSING-COVERAGE-001/trace").json()
-    evidence = next(node for node in trace["nodes"] if node["kind"] == "evidence")
-    assert evidence["title"] == "INCONCLUSIVE"
+    titles = {node["title"] for node in trace["nodes"] if node["kind"] == "evidence"}
+    assert "INCONCLUSIVE" in titles
 
 
 def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path, monkeypatch):
@@ -626,4 +628,6 @@ def test_scorecard_endpoint_exposes_local_measurement_contract():
         "escalation_rate",
         "cost_per_accepted_task",
         "escalation_exhaustion_rate",
+        "verified_pass_count",
+        "unverified_legacy_pass_count",
     }

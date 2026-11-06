@@ -18,6 +18,8 @@ def test_empty_scorecard_is_deterministic_and_does_not_claim_time_or_cost():
         "escalation_rate": 0.0,
         "cost_per_accepted_task": None,
         "escalation_exhaustion_rate": 0.0,
+        "verified_pass_count": 0,
+        "unverified_legacy_pass_count": 0,
     }
 
 

@@ -51,7 +51,7 @@ A recorded observation from an Artifact or evaluator that supports, weakens or c
 _Avoid_: agent opinion, status flag
 
 **Evidence class**:
-Which kind of observation an Evidence row is: execution (the Attempt ran), verification (an Evaluator verdict) or outcome (a business result). A coverage gap is not verification. The row's `kind` stays a separate label (ADR 0039).
+Which kind of observation an Evidence row is: execution (the Attempt ran; the Attempt's agent is the producer; it never accepts an artifact), verification (an Evaluator verdict) or outcome (a business result linked to an Objective, with its own verifier and optional expiry). A coverage gap is verification with status INCONCLUSIVE. A row written before a class was required may have none; that row is legacy and is not a verified pass (ADR 0039, ADR 0042).
 _Avoid_: kind, status
 
 **Verification Evidence**:

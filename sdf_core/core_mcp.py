@@ -193,9 +193,11 @@ class CoreQueryService:
 
     @staticmethod
     def _evidence(e: EvidenceRow) -> dict[str, Any]:
-        return {"id": e.id, "attempt_id": e.attempt_id, "criterion": e.criterion, "status": e.status,
+        return {"id": e.id, "attempt_id": e.attempt_id, "objective_id": e.objective_id,
+                "criterion": e.criterion, "status": e.status,
                 "kind": e.kind, "exit_code": e.exit_code, "mode": e.evidence_mode, "measured_at": _iso(e.measured_at),
-                "evidence_class": e.evidence_class, "verifier_identity": e.verifier_identity,
+                "evidence_class": e.evidence_class, "producer_identity": e.producer_identity,
+                "verifier_identity": e.verifier_identity,
                 "verifier_role": e.verifier_role, "subject_artifact_sha256": e.subject_artifact_sha256,
                 "oracle_digest": e.oracle_digest, "oracle_visibility": e.oracle_visibility,
                 "input_seed": e.input_seed, "expires_at": _iso(e.expires_at)}
