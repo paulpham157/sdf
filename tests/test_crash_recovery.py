@@ -8,7 +8,7 @@ Task ``running`` to ``evaluating`` to ``failed`` so a new dispatch key can enter
 
 import gc
 import os
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -738,6 +738,262 @@ def _empty_run_config():
     from sdf_core.coordinator import RunConfig
 
     return RunConfig()
+
+
+class FakeSandboxProvider:
+    """Remote sandboxes keep executing until ``kill``.
+
+    ``recover_orphaned_attempts`` does not see this registry. A host that dies
+    after ``create`` never reaches the kill that ``LiveRunAdapter._teardown``
+    runs only on ``LiveRunAdapter.run``'s return or exception path.
+    """
+
+    def __init__(self) -> None:
+        self._next = 0
+        self.sandboxes: dict[str, dict[str, str]] = {}
+        self.events: list[tuple] = []
+
+    def create(self, attempt_id: str) -> str:
+        self._next += 1
+        sandbox_id = f"sbx-{self._next}"
+        still_running = tuple(
+            sid for sid, row in self.sandboxes.items() if row["state"] == "running"
+        )
+        self.sandboxes[sandbox_id] = {"attempt_id": attempt_id, "state": "running"}
+        self.events.append(("create", sandbox_id, attempt_id, still_running))
+        return sandbox_id
+
+    def kill(self, sandbox_id: str) -> None:
+        self.sandboxes[sandbox_id]["state"] = "killed"
+        self.events.append(("kill", sandbox_id))
+
+    def still_executing(self, sandbox_id: str) -> bool:
+        return self.sandboxes[sandbox_id]["state"] == "running"
+
+    def emit(self, sandbox_id: str, effect: str) -> None:
+        """A side effect the sandbox can still perform while it is executing."""
+
+        if not self.still_executing(sandbox_id):
+            raise RuntimeError(f"{sandbox_id} is terminated; refusing {effect}")
+        self.events.append(("effect", sandbox_id, effect))
+
+
+class FakeProviderSandboxAdapter(FakeNativeAdapter):
+    """Fake provider whose teardown runs only if ``run`` returns or raises.
+
+    That is the same shape as ``LiveRunAdapter``: ``_teardown`` is not called
+    from orphan recovery. ``begin_remote_work`` is the create that a lost host
+    already did, with no kill afterwards.
+    """
+
+    def __init__(self, sandboxes: FakeSandboxProvider) -> None:
+        super().__init__("app.py", "print('new')\n")
+        self.sandboxes = sandboxes
+        self.calls = 0
+
+    def begin_remote_work(self, attempt_id: str) -> str:
+        return self.sandboxes.create(attempt_id)
+
+    def run(self, *, attempt_id: str, workspace: Path, instructions: str):
+        self.calls += 1
+        sandbox_id = self.sandboxes.create(attempt_id)
+        try:
+            return super().run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
+        finally:
+            self.sandboxes.kill(sandbox_id)
+
+
+def test_new_dispatch_does_not_overlap_a_sandbox_left_running_by_lease_expiry(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A new explicit dispatch must not overlap remote work the dead host left running.
+
+    Lease expiry fails the Attempt row and unsticks the Task. It does not kill
+    or reconcile the provider sandbox, revoke credentials, cancel a runtime, or
+    wait for that work to stop. ``LiveRunAdapter._teardown`` runs only when
+    ``run`` returns or raises in the host process, so a lost host leaves the
+    sandbox executing.
+
+    ADR 0041 then allows a new explicit ``dispatch_key`` (with ``parent_attempt_id``)
+    to start another Attempt. This contract is stronger than that ADR: either
+    sandbox A is confirmed terminated before sandbox B is created, or the new
+    dispatch is rejected while A is still executing. Overlapping provider side
+    effects are not allowed.
+
+    The same explicit key must still replay the original Attempt and must not
+    start a sandbox. Keyless replay of a derived key is covered by
+    ``test_keyless_retry_after_recovered_failure_replays_failed_attempt``.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    provider = FakeSandboxProvider()
+    adapter = FakeProviderSandboxAdapter(provider)
+    monkeypatch.setattr("sdf_core.api.configured_run_adapter", lambda _db: adapter)
+    task_id = "TASK-REMOTE-OVERLAP"
+    first_key = "dispatch-remote-overlap-1"
+    db = SessionLocal()
+    service = ExecutionService(
+        db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+        adapter=adapter,
+    )
+    try:
+        db.add(TaskRow(
+            id=task_id, title="remote overlap", status="created",
+            idempotency_key="task-remote-overlap", acceptance_criteria=[], created_at=utcnow(),
+        ))
+        db.commit()
+        begun = service.begin(task_id=task_id, dispatch_key=first_key, fixture=fixture)
+        orphan_id = begun.attempt.id
+        sandbox_a = adapter.begin_remote_work(orphan_id)
+        assert provider.still_executing(sandbox_a)
+        assert adapter.calls == 0
+    finally:
+        db.close()
+    # The host process is gone. Do not call adapter.run: that is the only path
+    # that kills the sandbox, and a dead host does not run it.
+    del begun
+    del service
+    gc.collect()
+    reset_recovery_state()
+    db = SessionLocal()
+    try:
+        _expire_heartbeat(db, orphan_id)
+    finally:
+        db.close()
+
+    with admin_client() as restarted:
+        replay = restarted.post(f"/tasks/{task_id}/run", json={
+            "fixture_dir": str(fixture),
+            "dispatch_key": first_key,
+            "instructions": "replay the same key after the host lease expired",
+        })
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["attempt_id"] == orphan_id
+        assert adapter.calls == 0
+        assert [event for event in provider.events if event[0] == "create"] == [
+            ("create", sandbox_a, orphan_id, ()),
+        ]
+        if provider.still_executing(sandbox_a):
+            provider.emit(sandbox_a, "still-executing-after-recovery")
+        retry = restarted.post(f"/tasks/{task_id}/run", json={
+            "fixture_dir": str(fixture),
+            "dispatch_key": "dispatch-remote-overlap-2",
+            "parent_attempt_id": orphan_id,
+            "instructions": "retry with a new explicit dispatch key",
+        })
+
+    created_while_a_running = [
+        event for event in provider.events
+        if event[0] == "create" and sandbox_a in event[3]
+    ]
+    later = [event for event in provider.events if event[0] == "create" and event[1] != sandbox_a]
+    db = SessionLocal()
+    try:
+        rows = [
+            (row.id, row.status, row.dispatch_key, row.parent_attempt_id, row.error_class)
+            for row in db.query(AttemptRow).filter_by(task_id=task_id)
+        ]
+    finally:
+        db.close()
+    overlap = (
+        "a new explicit dispatch_key started a provider sandbox while sandbox "
+        f"{sandbox_a} was still executing. Lease recovery must confirm that remote "
+        "work is terminated before the next sandbox is created, or reject the new "
+        "dispatch while the first sandbox is still running. "
+        f"events={provider.events!r} attempts={rows!r} retry={retry.status_code} {retry.text}"
+    )
+    assert not created_while_a_running, overlap
+    if not later:
+        assert provider.still_executing(sandbox_a), (
+            "the new dispatch did not start a sandbox and sandbox A is not executing, "
+            "so this was not the overlap contract. "
+            f"events={provider.events!r} attempts={rows!r} retry={retry.status_code} {retry.text}"
+        )
+        assert 400 <= retry.status_code < 500, retry.text
+
+
+def test_recovery_does_not_fail_a_lease_renewed_after_the_select(tmp_path: Path, monkeypatch) -> None:
+    """A heartbeat committed after the expired SELECT must not be failed.
+
+    ``recover_orphaned_attempts`` loads running rows, decides liveness in
+    Python from that snapshot, then ``compare_and_swap_attempt`` updates
+    ``WHERE id AND status = running``. The observed ``executor_id`` and
+    ``executor_heartbeat_at`` are not in the predicate.
+
+    ``test_recovery_does_not_overwrite_a_completed_attempt`` commits a terminal
+    status in this window. ``test_heartbeat_refresh_does_not_touch_a_failed_attempt``
+    only covers a refresh that runs after the row is already failed.
+
+    The hook below is the renewal race: the real ``executor_is_live`` sees the
+    expired snapshot, another session commits a fresh heartbeat, and the stale
+    decision is what recovery would act on. The UPDATE must then lose, and the
+    Task must stay running. The hermetic database is one shared connection, so
+    this injects the interleaving the way the terminal-status race does instead
+    of using a skippable PostgreSQL barrier.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    attempt_id = "ATTEMPT-RENEWED-LEASE"
+    task_id = "TASK-RENEWED-LEASE"
+    expired = utcnow() - LEASE_TTL - timedelta(seconds=1)
+    db = SessionLocal()
+    try:
+        _running_attempt(
+            db, task_id, attempt_id, "dispatch-renewed-lease",
+            executor_id="executor-still-working", executor_heartbeat_at=expired,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    from sdf_core import recovery as recovery_mod
+
+    real_live = recovery_mod.executor_is_live
+    renewed: list = []
+
+    def renew_after_expired_snapshot(attempt, *, now=None):
+        decision = real_live(attempt, now=now)
+        if attempt.id != attempt_id:
+            return decision
+        assert decision is False, "the SELECT snapshot must look expired before the renewal commits"
+        other = SessionLocal()
+        try:
+            row = other.get(AttemptRow, attempt.id)
+            row.executor_heartbeat_at = utcnow()
+            other.commit()
+            renewed.append(row.executor_heartbeat_at)
+        finally:
+            other.close()
+        return decision
+
+    monkeypatch.setattr(recovery_mod, "executor_is_live", renew_after_expired_snapshot)
+    db = SessionLocal()
+    try:
+        settled = recover_orphaned_attempts(db)
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
+        attempt = db.get(AttemptRow, attempt_id)
+        task = db.get(TaskRow, task_id)
+        assert attempt is not None and task is not None and renewed
+        # SQLite returns the column without tzinfo; both instants are UTC.
+        stored_heartbeat = attempt.executor_heartbeat_at
+        if stored_heartbeat.tzinfo is None:
+            stored_heartbeat = stored_heartbeat.replace(tzinfo=timezone.utc)
+        assert stored_heartbeat == renewed[0]
+        assert attempt_id not in settled and attempt.status == "running" and task.status == "running", (
+            "recovery failed a lease that was renewed after the expired SELECT and before "
+            f"the UPDATE (settled={settled!r}, status={attempt.status!r}, "
+            f"error_class={attempt.error_class!r}, heartbeat={attempt.executor_heartbeat_at!r}, "
+            f"task={task.status!r})"
+        )
+    finally:
+        db.close()
 
 
 def test_heartbeat_refresh_does_not_touch_a_failed_attempt(tmp_path: Path) -> None:
