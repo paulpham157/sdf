@@ -4,8 +4,8 @@ The fixture sandbox is deliberately smaller than an operating-system sandbox.
 It gives SDF a trusted boundary for direct filesystem operations, bounded
 process execution and an explicit network capability seam.  Callers must
 provide a disposable fixture root; this module never grants access to a real
-repository.  OS-level filesystem isolation for arbitrary child code is not
-claimed by the portable implementation and remains a deployment concern.
+repository.  On Linux a child process is Landlock-confined to the fixture
+root.  Network isolation for that child remains a deployment concern.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .containment import ContainmentUnavailable
+from .process_containment import landlock_command, landlock_env, scrub_credentials
 
 
 class SandboxViolation(PermissionError):
@@ -94,11 +96,12 @@ class FixtureSandbox:
     a timed-out process group.  Network access is denied unless a caller opts
     in with both ``allow_network=True`` and an injected executor.
 
-    The child process boundary is intentionally explicit: portable Python can
-    bound lifecycle and output, but cannot provide OS-level filesystem or
-    network isolation for arbitrary native child code.  Deployments requiring
-    that stronger guarantee must provide an OS sandbox backend before running
-    an untrusted agent.
+The child process boundary is intentionally explicit. On Linux the child
+installs a Landlock ruleset before exec, so it can read the system and write
+only under the fixture root (plus trusted extra roots). Credential-shaped
+environment variables are removed. ``require_containment`` still refuses to
+start a child when no separate OS backend was configured. Network isolation
+for an arbitrary child remains a deployment concern.
     """
 
     def __init__(
@@ -204,6 +207,7 @@ class FixtureSandbox:
         env: Mapping[str, str] | None = None,
         timeout_seconds: float | None = None,
         max_output_bytes: int | None = None,
+        writable_roots: Sequence[Path] = (),
     ) -> ProcessResult:
         """Run a bounded child process in a validated fixture directory.
 
@@ -244,8 +248,24 @@ class FixtureSandbox:
         }
         if env:
             child_env.update({str(key): str(value) for key, value in env.items()})
-        # A caller-provided environment cannot silently turn network access on.
+        # A caller-provided environment cannot silently turn network access on,
+        # and it cannot hand the child a credential the Attempt did not scope.
+        child_env = scrub_credentials(child_env)
         child_env["SDF_NETWORK"] = "allowed" if self.allow_network else "denied"
+        # A sealed oracle tree is frozen read-only. Temp files belong in the
+        # extra writable directory the trusted caller named, not in that tree
+        # and not in the rest of /tmp.
+        subject_base = child_env.get("SDF_SUBJECT_BASE")
+        if subject_base and os.path.isdir(subject_base) and not os.path.islink(subject_base):
+            child_env["TMPDIR"] = child_env["TMP"] = child_env["TEMP"] = subject_base
+
+        launch: Sequence[str] = args
+        if self.containment_backend is None and os.name == "posix" and sys.platform == "linux":
+            # ADR 0004: the child is confined even when require_containment is
+            # left false. That flag still means "refuse without a configured
+            # backend"; this path is the portable Linux ruleset.
+            child_env = landlock_env(child_env, self.root, writable_roots)
+            launch = landlock_command(args)
 
         if self.containment_backend is not None:
             started_at = time.monotonic()
@@ -276,7 +296,7 @@ class FixtureSandbox:
 
         started_at = time.monotonic()
         process = subprocess.Popen(
-            args,
+            launch,
             cwd=run_cwd,
             env=child_env,
             stdin=subprocess.DEVNULL,
