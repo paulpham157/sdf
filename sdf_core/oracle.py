@@ -502,9 +502,12 @@ def _start_worker(result_fd, subject_root="", hide=False):
         pass
     worker_tmp = tempfile.mkdtemp(prefix="sdf-subject-", dir="/tmp")
     # SDF_ORACLE_* (the seed, the seal, the report path) stays in the oracle
-    # process. HOME is the sealed tree; a held-out worker must not be told that.
+    # process. HOME is the sealed tree. A held-out worker must not be told the
+    # host workspace variable. Its name is split so this sealed script, which
+    # is the remote command, does not contain it.
+    host_root = "SDF_" "SANDBOX_ROOT"
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith("SDF_ORACLE_") and not (hide and key == "SDF_SANDBOX_ROOT")}
+           if not key.startswith("SDF_ORACLE_") and not (hide and key == host_root)}
     env["TMPDIR"] = env["TMP"] = env["TEMP"] = worker_tmp
     cwd = subject_root or os.getcwd()
     if hide:
