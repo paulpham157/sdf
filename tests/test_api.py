@@ -500,6 +500,21 @@ def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path,
     assert adapter.calls == 2
 
 
+def test_explicit_keyless_prefix_is_rejected(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    created = client.post("/tasks", json={
+        "id": "TASK-KEYLESS-PREFIX", "title": "prefix", "idempotency_key": "task-keyless-prefix",
+        "acceptance_criteria": [],
+    })
+    assert created.status_code == 201, created.text
+    response = client.post("/tasks/TASK-KEYLESS-PREFIX/run", json={
+        "fixture_dir": str(fixture),
+        "dispatch_key": "keyless-not-a-derived-digest",
+    })
+    assert response.status_code == 422, response.text
+
+
 def test_derived_dispatch_key_is_stable_per_task_and_logical_request():
     """The fields ADR 0041 hashes, and the ones that must not collide."""
 

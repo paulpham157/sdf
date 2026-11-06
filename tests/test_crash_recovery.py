@@ -503,14 +503,20 @@ def test_finish_does_not_overwrite_a_reaped_attempt(tmp_path: Path, monkeypatch)
     task_id = "TASK-FENCE-STALE"
     db, service, begun, fixture = _begun(tmp_path, task_id)
     attempt_id = begun.attempt.id
-    db.get(AttemptRow, attempt_id).executor_heartbeat_at = utcnow() - LEASE_TTL - timedelta(seconds=1)
-    db.commit()
-    assert attempt_id in recover_orphaned_attempts(db)
-    assert db.get(AttemptRow, attempt_id).status == "failed"
-    assert db.get(AttemptRow, attempt_id).error_class == "killed"
-    assert db.get(TaskRow, task_id).status == "failed"
+    from sdf_core.db import ArtifactRow, DecisionEdgeRow, EvidenceRow, GraphNodeRow
+    from sdf_core.recovery import _owners
 
-    with pytest.raises((ValueError, AttemptFenceError), match="is not running"):
+    # Drop the in-memory claim so recovery can reap. Keep the service object
+    # so finish still runs against a stale "running" identity map.
+    _owners.pop(attempt_id, None)
+    side = SessionLocal()
+    try:
+        assert attempt_id in recover_orphaned_attempts(side)
+    finally:
+        side.close()
+    assert db.get(AttemptRow, attempt_id).status == "running"
+
+    with pytest.raises(AttemptFenceError, match="is not running"):
         _finish(service, attempt_id, fixture)
 
     db.expire_all()
@@ -519,6 +525,13 @@ def test_finish_does_not_overwrite_a_reaped_attempt(tmp_path: Path, monkeypatch)
     assert attempt.status == "failed"
     assert attempt.error_class == "killed"
     assert task.status == "failed"
+    assert db.query(ArtifactRow).filter_by(attempt_id=attempt_id).count() == 0
+    assert db.query(EvidenceRow).filter_by(attempt_id=attempt_id).count() == 0
+    assert db.query(GraphNodeRow).filter(GraphNodeRow.id.like(f"{attempt_id}-%")).count() == 0
+    assert db.query(DecisionEdgeRow).filter_by(target_id=attempt_id, source_kind="artifact").count() == 0
+    artifact_root = tmp_path / ".sdf-artifacts"
+    leftovers = list(artifact_root.glob(f"{attempt_id}*")) if artifact_root.exists() else []
+    assert leftovers == []
     db.close()
 
 
@@ -562,3 +575,198 @@ def test_begin_then_finish_still_settles(tmp_path: Path, monkeypatch) -> None:
     task = db.get(TaskRow, task_id)
     assert task.status != "running"
     db.close()
+
+
+def test_forked_worker_does_not_reap_a_siblings_fresh_attempt(tmp_path: Path, monkeypatch) -> None:
+    """A worker that inherited the arbiter id remints, then leaves a sibling's Attempt running."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core import recovery as rec
+
+    task_id = "TASK-FORK-SIBLING"
+    db, service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    saved_id = rec.EXECUTOR_ID
+    saved_owners = list(rec._owners.items())
+    arbiter_id = f"1-{os.getpid()}"  # not this process's pid prefix after we overwrite it
+    try:
+        # Worker A forked from the arbiter, reminted, and claimed the Attempt.
+        rec.EXECUTOR_ID = arbiter_id
+        rec._after_fork_in_child()
+        worker_a = rec.EXECUTOR_ID
+        assert worker_a.startswith(f"{os.getpid()}-") and worker_a != arbiter_id
+        begun.attempt.executor_id = worker_a
+        db.commit()
+        # Worker B forked from the same arbiter, not from A, so its owner map is empty.
+        rec.EXECUTOR_ID = arbiter_id
+        with rec._lock:
+            rec._owners.clear()
+        rec._after_fork_in_child()
+        assert rec.EXECUTOR_ID != worker_a
+        assert attempt_id not in recover_orphaned_attempts(db)
+        db.expire_all()
+        assert db.get(AttemptRow, attempt_id).status == "running"
+    finally:
+        rec.EXECUTOR_ID = saved_id
+        with rec._lock:
+            rec._owners.clear()
+            for key, owner in saved_owners:
+                if owner is not None:
+                    rec._owners[key] = owner
+        db.close()
+        del service
+
+
+def test_held_owner_survives_a_stale_heartbeat_when_the_refresher_is_stopped(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.recovery import shutdown_executor_heartbeat
+
+    shutdown_executor_heartbeat()
+    task_id = "TASK-HELD-STALE"
+    db, service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    db.get(AttemptRow, attempt_id).executor_heartbeat_at = utcnow() - LEASE_TTL - timedelta(seconds=5)
+    db.commit()
+    later = utcnow()
+    assert attempt_id not in recover_orphaned_attempts(db, now=later)
+    db.expire_all()
+    assert db.get(AttemptRow, attempt_id).status == "running"
+
+    from sdf_core.recovery import _owners
+
+    _owners.pop(attempt_id, None)
+    assert attempt_id in recover_orphaned_attempts(db, now=later)
+    db.expire_all()
+    assert db.get(AttemptRow, attempt_id).status == "failed"
+    db.close()
+    del service
+
+
+def test_fail_attempt_does_not_move_a_task_with_a_live_sibling(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.recovery import EXECUTOR_ID, _owners
+
+    task_id = "TASK-FAIL-SIBLING"
+    db, service, begun, _fixture = _begun(tmp_path, task_id)
+    dead_id = begun.attempt.id
+    live_id = "ATTEMPT-FAIL-SIBLING-LIVE"
+    db.add(AttemptRow(
+        id=live_id, task_id=task_id, status="running", dispatch_key="dispatch-fail-sibling-live",
+        agent="native", created_at=utcnow(), executor_id=EXECUTOR_ID,
+        executor_heartbeat_at=utcnow(),
+    ))
+    db.commit()
+
+    class _Hold:
+        pass
+
+    holder = _Hold()
+    _owners[live_id] = holder
+    _owners.pop(dead_id, None)
+    side = SessionLocal()
+    try:
+        assert dead_id in recover_orphaned_attempts(side)
+    finally:
+        side.close()
+    # The caller's Attempt object is still the pre-recovery row.
+    assert db.get(AttemptRow, dead_id).status == "running"
+
+    service._fail_attempt(db.get(TaskRow, task_id), db.get(AttemptRow, dead_id))
+
+    db.expire_all()
+    dead = db.get(AttemptRow, dead_id)
+    live = db.get(AttemptRow, live_id)
+    task = db.get(TaskRow, task_id)
+    assert dead.status == "failed" and dead.error_class == "killed"
+    assert live.status == "running"
+    assert task.status == "running"
+    _owners.pop(live_id, None)
+    db.close()
+
+
+def test_stale_coordinator_cancel_leaves_a_failed_task(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sqlalchemy.orm import Session as SASession
+
+    from sdf_core.coordinator import Coordinator, _Subtask
+    from sdf_core.db import AgentRunRow
+    from sdf_core.recovery import EXECUTOR_ID
+
+    task_id = "TASK-STALE-CANCEL"
+    db, service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    stale_task = db.get(TaskRow, task_id)
+    other = SessionLocal()
+    try:
+        other.get(TaskRow, task_id).status = "failed"
+        other.commit()
+    finally:
+        other.close()
+    assert stale_task.status == "running"
+    assert begun.attempt.executor_id == EXECUTOR_ID
+
+    original = SASession.get
+
+    def get(self, entity, ident, **kwargs):
+        if entity is TaskRow and ident == task_id:
+            return stale_task
+        return original(self, entity, ident, **kwargs)
+
+    monkeypatch.setattr(SASession, "get", get)
+    run_id = "RUN-STALE-CANCEL"
+    # Core insert: the ORM guard refuses an agent run whose plan is not approved.
+    from sqlalchemy import insert
+    db.execute(insert(AgentRunRow).values(
+        id=run_id, plan_id="PLAN-STALE", status="running", config={}, started_at=utcnow(), cost_usd=0,
+    ))
+    db.commit()
+    coord = Coordinator(db, factory=object(), workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art")
+    sub = _Subtask(key="s", spec={}, task_id=task_id, worker="worker-1", attempt_id=attempt_id)
+    coord._finalize(run_id, {}, {"s": sub}, config=_empty_run_config(), outcome="cancelled", error=None,
+                    violations=[], timings={}, wall_s=0, closed=[], still_running=set())
+    check = SessionLocal()
+    try:
+        assert check.get(TaskRow, task_id).status == "failed"
+    finally:
+        check.close()
+        db.close()
+
+
+def _empty_run_config():
+    from sdf_core.coordinator import RunConfig
+
+    return RunConfig()
+
+
+def test_heartbeat_refresh_does_not_touch_a_failed_attempt(tmp_path: Path) -> None:
+    from sdf_core.recovery import EXECUTOR_ID, _owners, _write_heartbeats
+
+    db = SessionLocal()
+    attempt_id = "ATTEMPT-HB-FAILED"
+    try:
+        db.add(TaskRow(
+            id="TASK-HB-FAILED", title="hb", status="failed", idempotency_key="task-hb-failed",
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        stamp = utcnow() - timedelta(seconds=5)
+        db.add(AttemptRow(
+            id=attempt_id, task_id="TASK-HB-FAILED", status="failed", dispatch_key="dispatch-hb-failed",
+            agent="native", created_at=utcnow(), executor_id=EXECUTOR_ID, executor_heartbeat_at=stamp,
+        ))
+        db.commit()
+        stored = db.get(AttemptRow, attempt_id).executor_heartbeat_at
+
+        class _Hold:
+            pass
+
+        holder = _Hold()
+        _owners[attempt_id] = holder
+        _write_heartbeats(db)
+        db.expire_all()
+        assert db.get(AttemptRow, attempt_id).executor_heartbeat_at == stored
+        assert db.get(AttemptRow, attempt_id).status == "failed"
+    finally:
+        _owners.pop(attempt_id, None)
+        db.close()

@@ -31,7 +31,14 @@ from .escalation import ModelTier
 from .adapter import FakeNativeAdapter
 from .dispatch_key import derived_dispatch_key
 from .execution import ExecutionService
-from .recovery import AttemptFenceError, recover_orphaned_attempts, settle_local_attempts, start_executor_heartbeat
+from .recovery import (
+    AttemptFenceError,
+    ensure_process_executor,
+    recover_orphaned_attempts,
+    settle_local_attempts,
+    shutdown_executor_heartbeat,
+    start_executor_heartbeat,
+)
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
 from .run_adapter import RunBusyError, configured_run_adapter, run_slot
@@ -195,8 +202,11 @@ async def _lifespan(_app: FastAPI):
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
-    # ADR 0041: refresh leases for this process, then fail Attempts left
-    # running with no live executor so a later dispatch can enter ready.
+    # ADR 0041: a forked worker must not keep the parent's executor id.
+    # Remint before recovery so a sibling's fresh Attempt is not reaped.
+    ensure_process_executor()
+    # Refresh leases for this process, then fail Attempts left running with
+    # no live executor so a later dispatch can enter ready.
     # RuntimeController.recover does not settle Attempt or Task rows (ADR 0029).
     start_executor_heartbeat(SessionLocal)
     recovered = SessionLocal()
@@ -215,6 +225,7 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        shutdown_executor_heartbeat()
         # ADR 0041: settle Attempts this process stamped whose executor is
         # already gone, so a graceful restart does not wait out the lease.
         shutdown = SessionLocal()
@@ -322,6 +333,14 @@ class RunTaskRequest(BaseModel):
 
     dispatch_key: str | None = Field(default=None, min_length=1, max_length=200)
     fixture_dir: str
+
+    @field_validator("dispatch_key")
+    @classmethod
+    def _reject_reserved_keyless_prefix(cls, value: str | None) -> str | None:
+        # The derived key uses this prefix. A caller must not supply it.
+        if value is not None and value.startswith("keyless-"):
+            raise ValueError("dispatch_key must not use the reserved keyless- prefix; omit it to replay")
+        return value
     instructions: str = "complete the task"
     criterion_checks: dict[str, list[CheckId]] | None = Field(
         default=None,
