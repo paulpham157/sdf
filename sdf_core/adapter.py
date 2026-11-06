@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .process_containment import confine_workspace_subprocesses
 from .runtime import AgentRuntime, RuntimeController, RuntimeStatus
 
 
@@ -68,7 +69,10 @@ class RuntimeAgentAdapter:
         session = None
         try:
             session = self.runtime.start(attempt_id=attempt_id, agent=self.agent)
-            self.runtime.send(session.session_id, instructions)
+            # The turn's own shell is not a host control-plane command. Confine
+            # children whose cwd is this workspace (ADR 0004).
+            with confine_workspace_subprocesses(workspace):
+                self.runtime.send(session.session_id, instructions)
             output = self.runtime.stream(session.session_id)
             final = self.runtime.status(session.session_id)
             collect_workspace = getattr(self.runtime, "collect_workspace", None)

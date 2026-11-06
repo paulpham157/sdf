@@ -20,12 +20,13 @@ from .db import (
     UsageLedgerRow,
 )
 from .decision_gate import check_decision_gate
+from . import recovery as _recovery
 from .recovery import (
     AttemptFenceError,
     claim_executor,
-    compare_and_swap_attempt,
     compare_and_swap_task,
     recover_orphaned_attempts,
+    require_owned_running,
     settle_owned_attempt,
 )
 from .escalation import ModelTier
@@ -323,8 +324,9 @@ class ExecutionService:
         attempt = self.db.get(AttemptRow, attempt_id)
         if attempt is None:
             raise ValueError(f"attempt not found: {attempt_id}")
-        if attempt.status != AttemptState.RUNNING.value:
-            raise ValueError(f"attempt {attempt_id} is not running")
+        # ADR 0041: refuse before revision close or artifact capture. A reaped
+        # Attempt must not leave capture files behind when the CAS later loses.
+        attempt = require_owned_running(self.db, attempt_id)
         # ADR 0033 (#60): no Evidence while a material decision blocks the
         # Task.  The Attempt stays running and can be finished once resolved.
         check_decision_gate(self.db, attempt.task_id)
@@ -707,20 +709,43 @@ class ExecutionService:
         return result
 
     def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> None:
-        # In-memory status may be stale. The Attempt may already be completed
-        # (finish moved it before the evaluator failed); still fail the Task
-        # if it is running or evaluating. Each write is CAS, so a Task that
-        # recovery has already failed is not resurrected.
-        compare_and_swap_attempt(
-            self.db, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED,
+        """Fail a running Attempt this executor still owns.
+
+        The Attempt write is ``settle_owned_attempt``. If that CAS loses, the
+        Task is left untouched, unless this same finish already moved the
+        Attempt to ``completed`` and the Task to ``evaluating`` in this
+        transaction (the evaluator then failed). Recovery's terminal Task is
+        not moved.
+        """
+
+        prior_status = attempt.status
+        prior_executor = attempt.executor_id
+        try:
+            settle_owned_attempt(self.db, attempt.id, AttemptState.FAILED.value)
+        except AttemptFenceError:
+            if prior_executor == _recovery.EXECUTOR_ID and prior_status == AttemptState.COMPLETED.value:
+                self._fail_task_if_exclusive(task, attempt)
+                self.db.commit()
+            return
+        self._fail_task_if_exclusive(task, attempt)
+        self.db.commit()
+
+    def _fail_task_if_exclusive(self, task: TaskRow, attempt: AttemptRow) -> None:
+        other = self.db.scalar(
+            select(AttemptRow.id).where(
+                AttemptRow.task_id == task.id,
+                AttemptRow.status == AttemptState.RUNNING.value,
+                AttemptRow.id != attempt.id,
+            )
         )
+        if other is not None:
+            return
         if compare_and_swap_task(
             self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING,
         ) or TaskState(task.status) == TaskState.EVALUATING:
             compare_and_swap_task(
                 self.db, task, from_status=TaskState.EVALUATING, to_status=TaskState.FAILED,
             )
-        self.db.commit()
 
 
 

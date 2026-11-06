@@ -51,7 +51,7 @@ from .db import (
 )
 from .evaluator import DeterministicEvaluator
 from .execution import ExecutionService
-from .recovery import AttemptFenceError, settle_owned_attempt
+from .recovery import AttemptFenceError, compare_and_swap_task, settle_owned_attempt
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode
 from .fixtures import resolve_fixture, server_write_roots
 from .observability import classify_error, redact
@@ -59,7 +59,6 @@ from . import tracing
 from .model import AttemptState, TaskState, utcnow
 from .decision_gate import RUN_SCOPE, is_material, pending_material
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
-from .state import transition_task
 
 _CANCEL_EVENTS: dict[str, threading.Event] = {}
 
@@ -972,9 +971,17 @@ class Coordinator:
                 except AttemptFenceError:
                     continue
                 task = self.db.get(TaskRow, sub.task_id, populate_existing=True)
-                if task is not None and task.status == TaskState.RUNNING.value:
-                    task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
-                    task.status = transition_task(TaskState.EVALUATING, TaskState.INCONCLUSIVE).value
+                if task is None:
+                    continue
+                # CAS so a Task recovery already failed is not overwritten.
+                if not compare_and_swap_task(
+                    self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING,
+                ):
+                    continue
+                if not compare_and_swap_task(
+                    self.db, task, from_status=TaskState.EVALUATING, to_status=TaskState.INCONCLUSIVE,
+                ):
+                    continue
         cost_breakdown = {}
         for aid, ag in agents.items():
             row = self._member_row(run_id, aid)

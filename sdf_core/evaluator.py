@@ -5,8 +5,10 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import stat
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -633,6 +635,7 @@ class DeterministicEvaluator:
             _protect_or_warn()
         sealed = None
         report = None
+        subject_base: Path | None = None
         try:
             absolute = [target for target in targets if os.path.isabs(target)]
             oracle_digest = None
@@ -701,7 +704,15 @@ class DeterministicEvaluator:
                     containment_backend=self.containment_backend,
                     require_containment=self.require_containment,
                 )
-                completed = sandbox.run(process_argv, env=child_env)
+                # The notary creates the subject temp here, outside the sealed
+                # tree and outside the Attempt workspace. Landlock allows this
+                # directory and not the rest of /tmp.
+                subject_base = Path(tempfile.mkdtemp(prefix="sdf-subject-base-"))
+                child_env["SDF_SUBJECT_BASE"] = str(subject_base)
+                writable: list[Path] = [subject_base]
+                if report is not None:
+                    writable.append(report.result_path.parent)
+                completed = sandbox.run(process_argv, env=child_env, writable_roots=writable)
             except (ContainmentUnavailable, SandboxViolation, OSError, ValueError) as exc:
                 return stop(
                     f"check could not run: {type(exc).__name__}: {exc}"[:500],
@@ -756,6 +767,8 @@ class DeterministicEvaluator:
                 oracle_visibility=visibility, input_seed=seed,
             )
         finally:
+            if subject_base is not None:
+                shutil.rmtree(subject_base, ignore_errors=True)
             if sealed is not None:
                 sealed.cleanup()
             elif report is not None:
