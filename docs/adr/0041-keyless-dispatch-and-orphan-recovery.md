@@ -49,9 +49,12 @@ a new explicit `dispatch_key`.
 
 The same derived key is the ADR 0031 dispatch key. `ExecutionService.begin`
 returns the stored Attempt, and `run` does not call the adapter again. That
-includes a keyless POST after the Attempt is already terminal. A keyless
-request is one logical execution, not a "start another one" API. The second
-POST replays.
+includes a keyless POST after the Attempt is already terminal, including
+after crash recovery has moved it to `failed` with `error_class` `killed`.
+The client receives that Attempt and the adapter does not run again. A
+keyless request is one logical execution, not a "start another one" API.
+A new execution still sends an explicit `dispatch_key` (and
+`parent_attempt_id` when it continues the finished Attempt).
 
 A new Attempt is an explicit new `dispatch_key`. When that Attempt continues
 a finished one, the client also sends `parent_attempt_id`, which is the
@@ -81,10 +84,21 @@ On FastAPI lifespan startup the process:
 No new state-machine transitions are added. A later `begin` can move that
 Task `failed -> ready -> running`.
 
+Each Attempt and Task write is compare-and-swap on the durable status
+(`UPDATE ... WHERE status = 'running'`, or `'evaluating'` for the second
+Task step) and checks `rowcount`. Recovery cannot overwrite an Attempt that
+`finish` has already moved off `running`. A stale worker whose session still
+says `running` cannot overwrite recovery or resurrect the Task:
+`finish` and `_fail_attempt` use the same CAS, and they do not write the
+Task unless they won the Attempt.
+
 The function commits once. A second call finds no matching `running` Attempt
-and writes nothing. Startup runs it, and the refresher runs it again after
-each heartbeat interval, so a lease that expires after startup is settled
-without another restart.
+and writes nothing. Startup runs it. Lifespan shutdown runs it again so
+Attempts this process stamped, whose `ExecutionService` is already gone, are
+settled immediately instead of waiting out the lease. The refresher runs it
+after each heartbeat interval. `ExecutionService.begin` also runs it before
+looking up the dispatch key or moving the Task to `ready`, so a `/run` after
+the lease expires settles the orphan without another process restart.
 
 `RuntimeController.recover` is still not called from this path.
 
@@ -122,16 +136,24 @@ share that connection. Same-process ownership still applies there. Production
 PostgreSQL runs the refresher.
 
 A hard kill of another OS process leaves a fresh heartbeat. The next startup
-in a new process treats that Attempt as live until the lease expires. The
-refresher then settles it. A same-process drop of the executor, which is how
-the crash test models the death, is settled on that startup.
+in a new process (a new `EXECUTOR_ID`) treats that Attempt as live until the
+lease expires. During that window a new `/run` with a different dispatch key
+still sees the Task `running` and cannot enter `ready`. After the lease
+expires, the next `/run`, the refresher, or a later startup settles it
+deterministically and the new dispatch can proceed. A graceful lifespan
+shutdown settles this process's un-owned Attempts immediately, so a clean
+restart does not wait out the lease.
+
+Crash-recovery tests mint a fresh `EXECUTOR_ID` and expire the previous
+heartbeat, which is how a new process observes a dead neighbor.
 
 ### 4. Invariants
 
 - One keyless logical request creates one Attempt and invokes the adapter once,
   including when two requests overlap.
 - A repeated keyless POST returns that Attempt and does not run the adapter,
-  including after the Attempt is terminal.
+  including after the Attempt is terminal and after recovery has marked it
+  `failed`/`killed`.
 - An explicit new `dispatch_key` can create another Attempt. A retry of a
   finished Attempt also sends `parent_attempt_id`.
 - Two tasks with the same keyless body get two Attempts.
@@ -144,13 +166,14 @@ the crash test models the death, is settled on that startup.
   heartbeat. In-flight work from a process that heartbeats and is inside the
   lease is left alone. In-flight work from a build that does not write the
   lease looks dead and is failed.
-- A crash of another process is retryable after the lease expires and the
-  refresher or a later startup has run, not necessarily on the first startup
-  if that startup happens inside the lease.
-- Migration `0027_attempt_executor_lease` revises `0024_decision_material_fence`
-  on this branch. Main already has `0025_evidence_independence` and
-  `0026_oracle_visibility`, which are not in this branch. Merging main
-  produces two Alembic heads until a merge revision joins `0026` and `0027`.
+- A hard crash of another process is retryable after the lease expires. The
+  next `/run`, the refresher, or a later startup settles it; a startup that
+  happens inside the lease leaves the Attempt alone. Graceful shutdown does
+  not wait.
+- A keyless retry of a recovered (`failed`/`killed`) Attempt replays that
+  Attempt. Operators who want a new execution after a crash send a new
+  explicit `dispatch_key` and `parent_attempt_id`.
+- Migration `0027_attempt_executor_lease` revises `0026_oracle_visibility`.
   The columns are nullable `ADD COLUMN` on SQLite and PostgreSQL. Downgrade
   drops them.
 
@@ -169,14 +192,24 @@ Local tests (SQLite, no live provider):
 - `tests/test_api.py::test_concurrent_keyless_runs_create_one_attempt`
   overlaps two `ExecutionService.run` calls on one derived key.
 - `tests/test_crash_recovery.py::test_host_crash_mid_run_is_recovered_and_task_is_retryable`
-  drops the service after `begin` and enters the FastAPI lifespan. The orphan
-  is `failed` or `cancelled`, and a new dispatch key runs once.
+  drops the service after `begin`, mints a new `EXECUTOR_ID`, expires the
+  previous heartbeat, and enters the FastAPI lifespan. The orphan is `failed`
+  or `cancelled`, and a new dispatch key runs once.
 - `tests/test_crash_recovery.py::test_startup_recovery_is_idempotent` enters
   that lifespan twice.
 - `tests/test_crash_recovery.py::test_live_executor_is_not_reaped_on_startup`
   keeps a held service and a fresh foreign heartbeat, and fails a stale one.
-  Dropping the service and entering startup again fails the held Attempt and
-  leaves the foreign one running.
+  A simulated restart with a fresh heartbeat leaves the previous Attempt
+  running until the lease expires; after expiry the next startup fails it
+  and leaves the foreign one running.
+- `tests/test_crash_recovery.py::test_expired_lease_is_settled_on_next_dispatch_without_restart`
+  plants an expired orphan after startup; the next `/run` settles it and
+  dispatches.
+- `tests/test_crash_recovery.py::test_recovery_does_not_overwrite_a_completed_attempt`
+  and `test_stale_finish_does_not_overwrite_recovery` lock both CAS races.
+- `tests/test_crash_recovery.py::test_keyless_retry_after_recovered_failure_replays_failed_attempt`
+  posts the same keyless body after recovery and requires the killed Attempt
+  back, with no adapter run.
 - `tests/test_crash_recovery.py::test_in_memory_database_does_not_start_the_lease_refresher`
 - `tests/test_migrations.py` upgrades an empty SQLite database to head
   `0027_attempt_executor_lease` and expects the two columns.
