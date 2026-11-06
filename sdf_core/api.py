@@ -488,6 +488,20 @@ class EvidenceResponse(BaseModel):
     revision_id: str | None = None
     tree_sha256: str | None = None
     evidence_mode: str | None = None
+    # ADR 0039. Null on Evidence written before migration 0025.
+    evidence_class: str | None = None
+    producer_identity: str | None = None
+    producer_role: str | None = None
+    verifier_identity: str | None = None
+    verifier_role: str | None = None
+    subject_artifact_sha256: str | None = None
+    oracle_digest: str | None = None
+    environment_digest: str | None = None
+    collected_at: datetime | None = None
+    expires_at: datetime | None = None
+    # ADR 0040. Null on Evidence written before migration 0026.
+    oracle_visibility: str | None = None
+    input_seed: str | None = None
 
 
 def node_payload(node: GraphNodeRow) -> dict[str, Any]:
@@ -693,6 +707,18 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
         "revision_id": evidence.revision_id,
         "tree_sha256": evidence.tree_sha256,
         "evidence_mode": evidence.evidence_mode,
+        "evidence_class": evidence.evidence_class,
+        "producer_identity": evidence.producer_identity,
+        "producer_role": evidence.producer_role,
+        "verifier_identity": evidence.verifier_identity,
+        "verifier_role": evidence.verifier_role,
+        "subject_artifact_sha256": evidence.subject_artifact_sha256,
+        "oracle_digest": evidence.oracle_digest,
+        "environment_digest": evidence.environment_digest,
+        "collected_at": evidence.collected_at,
+        "expires_at": evidence.expires_at,
+        "oracle_visibility": evidence.oracle_visibility,
+        "input_seed": evidence.input_seed,
     }
 
 
@@ -926,6 +952,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     instructions=payload.instructions,
                     commands=[],
                     criterion_checks=checks,
+                    oracle_policies=registry.oracle_policies() if registry is not None else None,
                     validation_target=target,
                     parent_attempt_id=payload.parent_attempt_id,
                     model_tier=payload.model_tier,

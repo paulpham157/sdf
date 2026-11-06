@@ -38,6 +38,38 @@ jobs:
         run: uv sync --locked --all-groups
       - name: Run hermetic suite
         run: uv run pytest -rs
+      # Same suite with a developer-shaped environment: a repo .env and junk
+      # SDF_* values. SDF_POSTGRES_TEST_URL is the Postgres gate's opt-in and
+      # is left unset here so those tests stay skipped; the postgres job sets
+      # it for real. SDF_LIVE_* is not set to 1, so live tests stay skipped.
+      - name: Hermetic suite ignores ambient SDF_* and .env
+        if: matrix.python-version == '3.13'
+        run: |
+          cat > .env <<'EOF'
+          SDF_DATABASE_URL=postgresql+psycopg://dotenv:dotenv@127.0.0.1:1/nope
+          SDF_AUTH_DEV_INSECURE=1
+          SDF_AUTH_SINGLE_USER=1
+          SDF_AGENT_SANDBOX=e2b
+          SDF_EVALUATOR_CONTAINMENT=require
+          EOF
+          uv run pytest -rs
+        env:
+          SDF_DATABASE_URL: postgresql+psycopg://junk:junk@127.0.0.1:1/nope
+          SDF_WORKSPACE_ROOT: /tmp/sdf-junk-workspaces
+          SDF_ARTIFACT_ROOT: /tmp/sdf-junk-artifacts
+          SDF_FIXTURES_ROOT: /tmp/sdf-junk-fixtures
+          SDF_AUTH_PEPPER: junk-pepper-from-the-ambient-environment
+          SDF_AUTH_DEV_INSECURE: "1"
+          SDF_AUTH_SINGLE_USER: "1"
+          SDF_EVALUATOR_CONTAINMENT: require
+          SDF_CONTAINMENT_BACKEND: e2b
+          SDF_CONTAINMENT_SMOKE: passed
+          SDF_AGENT_SANDBOX: e2b
+          SDF_REQUIRE_PLAN_APPROVAL: "1"
+          SDF_REQUIRE_CONTAINMENT: "0"
+          SDF_TOOL_ALLOWLIST: rm
+          SDF_TEST_HERMETIC: "0"
+          SDF_LIVE_E2B: "0"
 
   test-postgres:
     name: pytest (PostgreSQL 16, py3.13)

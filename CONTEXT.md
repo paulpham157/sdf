@@ -50,6 +50,26 @@ _Avoid_: version, commit (a Git commit is only an optional name for the base)
 A recorded observation from an Artifact or evaluator that supports, weakens or contradicts an Assumption or Decision.
 _Avoid_: agent opinion, status flag
 
+**Evidence class**:
+Which kind of observation an Evidence row is: execution (the Attempt ran), verification (an Evaluator verdict) or outcome (a business result). A coverage gap is not verification. The row's `kind` stays a separate label (ADR 0039).
+_Avoid_: kind, status
+
+**Verification Evidence**:
+Evidence an Evaluator records from a sealed oracle. It names its verifier, the artifact bytes it checked, the oracle and environment digests, and when it expires. The Attempt's agent is never the verifier, and expired verification cannot accept an artifact (ADR 0039).
+_Avoid_: test log, agent report
+
+**Oracle visibility**:
+Whether the oracle that produced a Verification row was in the agent workspace (`visible`) or only on the server (`held_out`). A visible pass is recorded. It does not accept a Task that declared a held-out or randomized oracle (ADR 0040).
+_Avoid_: hidden test, secret test file
+
+**Held-out oracle**:
+Oracle content stored on the server for a Task and sealed only at verification time. It is not copied into the agent workspace, and it is not returned by a prompt, an MCP tool, or an API response (ADR 0040).
+_Avoid_: private test, hidden fixture
+
+**Input seed**:
+The server-generated seed for a randomized check, recorded on Evidence after the run so the check can be repeated. The subject cannot read it before or during the run (ADR 0040).
+_Avoid_: random seed the agent picks, hypothesis example database
+
 **Evaluator**:
 The deterministic or policy-controlled checker that turns an Attempt's outputs into Evidence; an agent cannot self-certify its own result.
 _Avoid_: reviewer, judge
