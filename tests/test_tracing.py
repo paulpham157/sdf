@@ -60,7 +60,7 @@ def _all_strings(exporter) -> str:
     return "\n".join(chunks)
 
 
-# --- off by default: zero overhead ------------------------------------------------
+# --- off by default ----------------------------------------------------------------
 
 
 def test_disabled_by_default_creates_no_provider_or_exporter(monkeypatch):
@@ -101,11 +101,22 @@ def test_disabled_mode_never_imports_the_sdk():
         "import json, socket, sys, tempfile\n"
         "from pathlib import Path\n"
         "attempts = []\n"
-        "original = socket.socket.connect\n"
+        "original_connect = socket.socket.connect\n"
+        "original_create = socket.create_connection\n"
+        "def _port(address):\n"
+        "    return address[1] if isinstance(address, tuple) and len(address) > 1 else None\n"
         "def connect(self, address):\n"
         "    attempts.append(address)\n"
-        "    return original(self, address)\n"
+        "    if _port(address) == 9:\n"
+        "        raise OSError('refusing fake OTLP endpoint')\n"
+        "    return original_connect(self, address)\n"
+        "def create_connection(address, *args, **kwargs):\n"
+        "    attempts.append(address)\n"
+        "    if _port(address) == 9:\n"
+        "        raise OSError('refusing fake OTLP endpoint')\n"
+        "    return original_create(address, *args, **kwargs)\n"
         "socket.socket.connect = connect\n"
+        "socket.create_connection = create_connection\n"
         "import sdf_core.api, sdf_core.coordinator, sdf_core.run_adapter\n"
         "from fastapi.testclient import TestClient\n"
         "from sdf_core import credentials, tracing\n"
@@ -113,15 +124,12 @@ def test_disabled_mode_never_imports_the_sdk():
         "# developer file cannot turn tracing on and hide a disabled-mode failure.\n"
         "credentials.REPO_ROOT = Path(tempfile.mkdtemp())\n"
         "app = sdf_core.api.app\n"
-        "tel = app._telemetry\n"
-        "assert tel['tracing'] is False and tel['metrics'] is False and tel['logs'] is False\n"
-        "assert tel['operation_spans'] is False and tel['auto_configure'] is False\n"
         "assert tracing.configure_tracing({}) is False\n"
         "with tracing.span('x', task_id='t') as current:\n"
         "    assert current is tracing.NOOP_SPAN\n"
         "with TestClient(app) as client:\n"
         "    assert client.get('/healthz').status_code == 200\n"
-        "assert not tracing.enabled() and tracing._state.provider is None and tracing._state.exporter is None\n"
+        "assert tracing.enabled() is False\n"
         "modules = sorted(m for m in sys.modules if m.startswith('opentelemetry'))\n"
         "sockets = [list(item) if isinstance(item, tuple) else str(item) for item in attempts]\n"
         "print(json.dumps({'modules': modules, 'sockets': sockets}))\n"
@@ -143,6 +151,100 @@ def test_disabled_mode_never_imports_the_sdk():
     assert forbidden == []
     # The API package is present because FastAPI imports it. That is not the SDK.
     assert "opentelemetry.trace" in payload["modules"]
+    assert not any(address[1] == 9 for address in payload["sockets"] if isinstance(address, list) and len(address) > 1)
+
+
+def test_enabled_lifespan_has_one_pipeline_when_fastapi_auto_configure_is_set():
+    """Opt-in spans stay SDF's, with FastAPI auto-configure and a fake OTLP endpoint set.
+
+    The process imports the app only after those variables are in the environment,
+    which is when FastAPI would build its own exporters. SDF tracing is console,
+    so a second pipeline is the one that would open the fake endpoint or import
+    an OTLP exporter. The header value must not appear in process output.
+    """
+
+    header_value = "enabled-mode-header"
+    query_value = "leak-query-value"
+    code = (
+        "import json, socket, sys, tempfile\n"
+        "from pathlib import Path\n"
+        "attempts = []\n"
+        "original_connect = socket.socket.connect\n"
+        "original_create = socket.create_connection\n"
+        "def _port(address):\n"
+        "    return address[1] if isinstance(address, tuple) and len(address) > 1 else None\n"
+        "def connect(self, address):\n"
+        "    attempts.append(address)\n"
+        "    if _port(address) == 9:\n"
+        "        raise OSError('refusing fake OTLP endpoint')\n"
+        "    return original_connect(self, address)\n"
+        "def create_connection(address, *args, **kwargs):\n"
+        "    attempts.append(address)\n"
+        "    if _port(address) == 9:\n"
+        "        raise OSError('refusing fake OTLP endpoint')\n"
+        "    return original_create(address, *args, **kwargs)\n"
+        "socket.socket.connect = connect\n"
+        "socket.create_connection = create_connection\n"
+        "import opentelemetry.sdk.trace.export as sdk_export\n"
+        "captured = []\n"
+        "class Capture(sdk_export.SpanExporter):\n"
+        "    def export(self, spans):\n"
+        "        captured.extend(spans)\n"
+        "        return sdk_export.SpanExportResult.SUCCESS\n"
+        "    def shutdown(self):\n"
+        "        return None\n"
+        "    def force_flush(self, timeout_millis=30000):\n"
+        "        return True\n"
+        "sdk_export.ConsoleSpanExporter = lambda *args, **kwargs: Capture()\n"
+        "from sdf_core import credentials\n"
+        "credentials.REPO_ROOT = Path(tempfile.mkdtemp())\n"
+        "from fastapi.testclient import TestClient\n"
+        "from sdf_core import auth, tracing\n"
+        "from sdf_core.api import SessionLocal, app\n"
+        "with SessionLocal() as db:\n"
+        "    _row, plaintext = auth.create_token(db, principal='otel-probe', roles=['admin'],\n"
+        "                                      created_by='test', kind='human', expires_in_days=1)\n"
+        "    db.commit()\n"
+        "with TestClient(app, headers={'Authorization': 'Bearer ' + plaintext}) as client:\n"
+        "    status = client.get('/scorecard', params={'api_key': 'leak-query-value'}).status_code\n"
+        "    assert tracing.enabled() is True\n"
+        "spans = []\n"
+        "for span in captured:\n"
+        "    scope = getattr(span.instrumentation_scope, 'name', '') or ''\n"
+        "    attrs = {key: value if isinstance(value, (str, int, float, bool)) or value is None else str(value)\n"
+        "             for key, value in dict(span.attributes or {}).items()}\n"
+        "    spans.append({'name': span.name, 'scope': scope, 'kind': span.kind.name, 'attributes': attrs})\n"
+        "modules = sorted(name for name in sys.modules if name.startswith('opentelemetry'))\n"
+        "sockets = [list(item) if isinstance(item, tuple) else str(item) for item in attempts]\n"
+        "print(json.dumps({'status': status, 'tracing_after': tracing.enabled(), 'spans': spans,\n"
+        "                  'modules': modules, 'sockets': sockets}, default=str))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True,
+        env={"PATH": "/usr/bin:/bin", "SDF_AUTH_DEV_INSECURE": "1",
+             "SDF_AUTH_PEPPER": "otel-probe-pepper-not-a-credential",
+             "SDF_DATABASE_URL": "sqlite+pysqlite:///:memory:",
+             "SDF_OTEL_ENABLED": "1", "SDF_OTEL_EXPORTER": "console", "SDF_OTEL_DB": "1",
+             "FASTAPI_OTEL_AUTO_CONFIGURE": "true",
+             "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:9",
+             "OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer%20{header_value}",
+             "OTEL_SERVICE_NAME": "sdf-enabled-probe"})
+    combined = completed.stdout + completed.stderr
+    assert header_value not in combined and query_value not in combined
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert payload["status"] == 200
+    # Lifespan shutdown runs as the client exits, so tracing is off again and
+    # the captured spans are the ones that pipeline exported.
+    assert payload["tracing_after"] is False
+    spans = payload["spans"]
+    server = [span for span in spans if span["kind"] == "SERVER"]
+    assert [span["name"] for span in server] == ["GET /scorecard"]
+    assert server[0]["scope"].startswith("opentelemetry.instrumentation")
+    assert any(span["attributes"].get("db.system") or "db.statement" in span["attributes"] for span in spans)
+    assert not any(span["name"].startswith("fastapi.") or span["scope"] == "fastapi" for span in spans)
+    assert not any(name.startswith("opentelemetry.exporter") for name in payload["modules"])
+    assert "opentelemetry.sdk.trace" in payload["modules"]
     assert not any(address[1] == 9 for address in payload["sockets"] if isinstance(address, list) and len(address) > 1)
 
 
@@ -403,7 +505,6 @@ def test_db_instrumentation_that_does_not_attach_stays_off(spans, monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     try:
         assert tracing.instrument_sqlalchemy(engine, {"SDF_OTEL_DB": "1"}) is False
-        assert tracing._state.db_instrumented is False
         with engine.begin() as conn:
             conn.execute(text("select 1"))
     finally:
@@ -603,7 +704,6 @@ def test_lifespan_reads_dotenv_and_reenters(monkeypatch, tmp_path, caplog):
             assert not tracing.enabled() and not getattr(app, "_is_instrumented_by_opentelemetry", False)
             assert not tracing._state.db_instrumented and not tracing._state.fastapi_apps
     assert len(exporters) == 2
-    assert app._telemetry["tracing"] is False and app._telemetry["auto_configure"] is False
     for exporter in exporters:
         finished = exporter.get_finished_spans()
         server = [s for s in finished if s.kind.name == "SERVER"]

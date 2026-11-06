@@ -17,13 +17,22 @@ Langfuse, Grafana Tempo, Jaeger, Honeycomb...).
    Any backend that accepts OTLP works through the standard `OTEL_*`
    variables; SDF has no vendor-specific code. The SDK packages are an
    optional extra: `pip install 'sdf-core[otel]'`.
-2. **Off by default, zero overhead.** Nothing happens unless
-   `SDF_OTEL_ENABLED=1`. Disabled, the SDK is never imported, no provider or
-   exporter is built, and `tracing.span()` returns a shared no-op context.
+2. **Off by default.** Nothing is traced or exported unless
+   `SDF_OTEL_ENABLED=1`. Disabled, the OpenTelemetry SDK, exporters, and
+   instrumentation packages are not imported, no provider or exporter is
+   built, nothing is sent on the network, and `tracing.span()` returns a
+   shared no-op context. FastAPI depends on `opentelemetry-api` and imports
+   that API while the application is constructed. Those calls use a no-op
+   proxy: they do not record spans or export, and the import is not SDK
+   startup. FastAPI's native telemetry (its own traces, metrics, logs, and
+   any exporter `FASTAPI_OTEL_AUTO_CONFIGURE` would add) stays off, including
+   when that variable is set, so it is not a second pipeline.
 3. **What is traced.**
-   - FastAPI server spans (`/healthz` excluded; no headers captured even if
+   - FastAPI server spans from the OpenTelemetry instrumentation the lifespan
+     attaches (`/healthz` excluded; no headers captured even if
      `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` is set; no per-message
-     `http send`/`http receive` spans). The lifespan instruments the app and
+     `http send`/`http receive` spans). That is the attached instrumentation,
+     not FastAPI's native telemetry. The lifespan instruments the app and
      the DB engines and uninstruments them on exit.
    - `sdf.task.run` (POST /tasks/{id}/run) → `sdf.attempt` → `sdf.agent.run`
      → `sdf.sandbox.create`, `sdf.agent.start`, `sdf.agent.turn`,
@@ -79,6 +88,9 @@ Langfuse, Grafana Tempo, Jaeger, Honeycomb...).
 
 - Operators point SDF at their backend with env vars only; switching vendor
   is a config change.
+- Constructing the API imports the OpenTelemetry API because FastAPI depends
+  on it. With tracing disabled that import does not start a provider, an
+  exporter, or a network client.
 - A background run is a separate trace linked to the request; backends that
   show span links let you jump between them.
 - Agent internals (individual LLM calls inside opencode, pi...) are not
