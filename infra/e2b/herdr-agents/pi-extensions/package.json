@@ -5,6 +5,6 @@
   "dependencies": {
     "@cad0p/pi-steering": "0.2.0",
     "@paulpham157/apply-patch": "0.3.1",
-    "pi-lens": "4.4.6"
+    "pi-lens": "4.4.9"
   }
 }
