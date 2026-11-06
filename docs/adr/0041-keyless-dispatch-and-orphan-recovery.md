@@ -106,8 +106,11 @@ the lease expires settles the orphan without another process restart.
 
 Two columns on `attempts`, both nullable (migration `0027_attempt_executor_lease`):
 
-- `executor_id`: the process that claimed the Attempt (`EXECUTOR_ID`, minted
-  once per process).
+- `executor_id`: the process that claimed the Attempt. The id is
+  `{pid}-{uuid}`, minted for this OS process. Lifespan startup remints when
+  the id's pid is not this process, and `os.register_at_fork(after_in_child=...)`
+  remints in a forked worker and drops the copied owner map. Workers therefore
+  do not share one id with an empty owner map.
 - `executor_heartbeat_at`: the last time that process proved it was still
   executing.
 
@@ -117,17 +120,23 @@ through a weak reference. It lasts while that object lives.
 
 An Attempt is live when any of these holds:
 
-- This process still has the service that claimed it, and `executor_id` is
-  null or this process's id. Dropping the service (the host-crash test
-  deletes it) makes the Attempt dead immediately, even if the heartbeat is
-  fresh.
+- This process still has the service in its owner map and `executor_id` is
+  this process's id. That hold is authoritative here even when the heartbeat
+  is older than the lease, so a dead refresher thread does not reap a run
+  this process is still executing.
 - `executor_id` names another process and `executor_heartbeat_at` is within
   `LEASE_TTL` (30 seconds).
 
-An Attempt is dead when the heartbeat is null, when the heartbeat is older
-than the lease, or when this process stamped it and no longer holds the
-service. A null lease is how a row written before this migration, or a row
-inserted without `begin`, appears: nobody is executing it.
+An Attempt is dead when the heartbeat is null, when another process's
+heartbeat is older than the lease, or when this process stamped it and no
+longer holds the service (dead immediately, even if the heartbeat is fresh).
+A null lease is how a row written before this migration, or a row inserted
+without `begin`, appears: nobody is executing it.
+
+The heartbeat refresher runs under a supervisor that starts it again if the
+loop thread dies. Shutdown sets a stop flag and joins that supervisor.
+Heartbeats are a conditional update: `status` is still `running` and
+`executor_id` is this process. A failed row is not refreshed.
 
 The refresher rewrites `executor_heartbeat_at` every 10 seconds for Attempts
 this process still holds. It does not start on the one-connection in-memory
@@ -159,6 +168,21 @@ heartbeat, which is how a new process observes a dead neighbor.
 - Two tasks with the same keyless body get two Attempts.
 - Startup recovery is idempotent.
 - A live executor is not failed. A stale or missing lease is.
+- A forked worker remints its executor id before recovery, so a sibling's
+  fresh Attempt stays `running`.
+- A held local owner stays `running` when the heartbeat is older than the
+  lease and the refresher is stopped. Dropping that owner lets recovery fail it.
+- `finish` checks the owner fence before it closes the revision or captures
+  artifacts. A reaped Attempt gets no Artifact row, no Evidence row, no
+  artifact graph node, and no capture file.
+- `_fail_attempt` uses the owner fence. If that compare-and-swap loses, it
+  does not move the Task, including when another Attempt of the Task is
+  still `running`.
+- Coordinator cancel moves the Task with compare-and-swap
+  (`running` to `evaluating` to `inconclusive`). A Task recovery already
+  set to `failed` stays `failed`.
+- An explicit `dispatch_key` that starts with `keyless-` is rejected with
+  422. Heartbeat refresh does not change a failed Attempt.
 
 ## Consequences
 
@@ -176,6 +200,19 @@ heartbeat, which is how a new process observes a dead neighbor.
 - Migration `0027_attempt_executor_lease` revises `0026_oracle_visibility`.
   The columns are nullable `ADD COLUMN` on SQLite and PostgreSQL. Downgrade
   drops them.
+
+## Open question: lease clock
+
+The lease uses the application clock (`datetime.now(timezone.utc)` in the
+API process), not the database clock. Two processes, or a process and the
+database, can disagree. A clock that jumps forward makes a live heartbeat
+look stale, and recovery can reap a neighbor that is still working. A clock
+that jumps backward keeps a dead executor looking fresh until real time
+catches up. One alternative is to stamp and compare `executor_heartbeat_at`
+with the database clock (`now()` or `clock_timestamp()` on PostgreSQL), so
+every worker shares one clock. This pass does not change the clock source
+or the 30 second TTL. The owner should decide whether the database clock
+replaces the application clock.
 
 ## How this is proved
 
@@ -211,6 +248,16 @@ Local tests (SQLite, no live provider):
   posts the same keyless body after recovery and requires the killed Attempt
   back, with no adapter run.
 - `tests/test_crash_recovery.py::test_in_memory_database_does_not_start_the_lease_refresher`
+- `tests/test_crash_recovery.py::test_forked_worker_does_not_reap_a_siblings_fresh_attempt`
+  runs the after-fork remint with an empty owner map and leaves the sibling Attempt `running`.
+- `tests/test_crash_recovery.py::test_held_owner_survives_a_stale_heartbeat_when_the_refresher_is_stopped`
+  stops the refresher, ages the heartbeat past the lease, and still leaves a held Attempt `running`. Dropping the owner then lets recovery fail it.
+- `tests/test_crash_recovery.py::test_finish_does_not_overwrite_a_reaped_attempt`
+  finishes after recovery and requires no artifact row, evidence row, artifact graph node, or capture file.
+- `tests/test_crash_recovery.py::test_fail_attempt_does_not_move_a_task_with_a_live_sibling`
+- `tests/test_crash_recovery.py::test_stale_coordinator_cancel_leaves_a_failed_task`
+- `tests/test_crash_recovery.py::test_heartbeat_refresh_does_not_touch_a_failed_attempt`
+- `tests/test_api.py::test_explicit_keyless_prefix_is_rejected` expects 422.
 - `tests/test_migrations.py` upgrades an empty SQLite database to head
   `0027_attempt_executor_lease` and expects the two columns.
 

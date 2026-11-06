@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, Index, Integer, JSON, String, Text, UniqueConstraint, create_engine, select, text
 from sqlalchemy.pool import StaticPool
 from sqlalchemy import event
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, object_session, sessionmaker
 
 from .acceptance import (
     EVIDENCE_CLASS_SQL,
@@ -223,6 +223,9 @@ class EvidenceRow(Base):
     # ADR 0042. Set only on outcome Evidence. NULL on execution, verification,
     # and on rows written before migration 0027.
     objective_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    # ADR 0043. HMAC of the verdict and the bound artifact sha256, stamped at
+    # insert. NULL only for rows written before migration 0029.
+    content_mac: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 RUNTIME_EVENT_PROVENANCE_SQL = (
@@ -559,6 +562,24 @@ def make_session_factory(url: str = "sqlite+pysqlite:///:memory:"):
     engine = make_engine(url)
     Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(EvidenceRow, "before_insert")
+def _stamp_evidence_content_mac(mapper: Any, connection: Any, target: EvidenceRow) -> None:
+    """Commit the verdict MAC before the INSERT (ADR 0043)."""
+
+    if target.content_mac:
+        return
+    from .evidence_mac import evidence_content_mac
+
+    session = object_session(target)
+    artifact = None
+    if session is not None and target.artifact_ref:
+        with session.no_autoflush:
+            artifact = session.get(ArtifactRow, target.artifact_ref)
+    target.content_mac = evidence_content_mac(
+        target, artifact_sha256=artifact.sha256 if artifact is not None else None,
+    )
 
 
 @event.listens_for(Session, "before_flush")

@@ -10,7 +10,7 @@ export SDF_OTEL_ENABLED=1
 
 | Variable | Meaning |
 | --- | --- |
-| `SDF_OTEL_ENABLED` | `1`/`true` turns tracing on. Unset: the SDK is not imported, no provider or exporter is built, and nothing is sent. |
+| `SDF_OTEL_ENABLED` | `1`/`true` turns tracing on. Unset: the SDK, exporters, and instrumentation are not imported, no provider or exporter is built, and nothing is sent. FastAPI may import the OpenTelemetry API; that API does not record or export. |
 | `SDF_OTEL_EXPORTER` | `otlp` (default) or `console` (dev; prints spans to stdout). Falls back to `OTEL_TRACES_EXPORTER`. |
 | `SDF_OTEL_DB` | `1` adds SQLAlchemy spans (statements without values). |
 | `OTEL_SERVICE_NAME` | Defaults to `sdf-core`. |

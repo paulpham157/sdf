@@ -500,7 +500,13 @@ def _start_worker(result_fd, subject_root="", hide=False):
         os.set_inheritable(result_fd, False)
     except OSError:
         pass
-    worker_tmp = tempfile.mkdtemp(prefix="sdf-subject-", dir="/tmp")
+    # SDF_SUBJECT_BASE is a directory the sandbox ruleset already allows.
+    # It is outside the sealed tree and outside the Attempt workspace.
+    # Without it, /tmp stays the base (no Landlock, or a backend sandbox).
+    temp_base = os.environ.get("SDF_SUBJECT_BASE") or "/tmp"
+    if not os.path.isdir(temp_base) or os.path.islink(temp_base):
+        temp_base = "/tmp"
+    worker_tmp = tempfile.mkdtemp(prefix="sdf-subject-", dir=temp_base)
     # SDF_ORACLE_* (the seed, the seal, the report path) stays in the oracle
     # process. HOME is the sealed tree. A held-out worker must not be told the
     # host workspace variable. Its name is split so this sealed script, which
