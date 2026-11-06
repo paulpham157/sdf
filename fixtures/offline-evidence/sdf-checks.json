@@ -1,0 +1,9 @@
+{
+  "checks": {
+    "app-updated": [
+      "python3",
+      "-c",
+      "import ast, pathlib\ntext = pathlib.Path('app.py').read_text(encoding='utf-8')\ntree = ast.parse(text)\nbody = tree.body\nok = (\n    len(body) == 1\n    and isinstance(body[0], ast.Expr)\n    and isinstance(body[0].value, ast.Call)\n    and isinstance(body[0].value.func, ast.Name)\n    and body[0].value.func.id == 'print'\n    and len(body[0].value.args) == 1\n    and isinstance(body[0].value.args[0], ast.Constant)\n    and body[0].value.args[0].value == 'updated'\n    and not body[0].value.keywords\n)\nif not ok:\n    raise SystemExit('app.py is not a single print(\"updated\") call: ' + repr(text))\n"
+    ]
+  }
+}
