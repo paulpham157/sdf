@@ -229,8 +229,22 @@ async def _lifespan(_app: FastAPI):
             tracing.shutdown()  # uninstrument app and DB, flush queued spans
 
 
+# FastAPI 0.162 records native traces, metrics, and exception logs (messages
+# and stack traces) unless this is set, and builds OTLP exporters when
+# FASTAPI_OTEL_AUTO_CONFIGURE=true. ADR 0024 keeps that pipeline off: no SDK
+# provider, no exporter, and no second span path. An explicit auto_configure
+# of False overrides the environment variable. Server and DB spans come only
+# from sdf_core.tracing when SDF_OTEL_ENABLED is set.
+FASTAPI_TELEMETRY_OFF: dict[str, Any] = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
-              docs_url=None, redoc_url=None, openapi_url=None)
+              docs_url=None, redoc_url=None, openapi_url=None, telemetry=FASTAPI_TELEMETRY_OFF)
 
 
 _log = get_logger("api")
