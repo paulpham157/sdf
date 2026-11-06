@@ -1,6 +1,6 @@
 # ADR 0045: human cancel of one Attempt, and human messages on the existing hub
 
-Status: proposed
+Status: accepted (maintainer, 2026-11-06, PR #124)
 
 Numbered 0045 because 0043 is the evidence content MAC and 0044 is the
 human read model. Second step of the human-interaction workstream. Depends

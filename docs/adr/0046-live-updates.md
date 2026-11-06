@@ -1,6 +1,6 @@
 # ADR 0046: Server-Sent Events over one runtime-event stream
 
-Status: proposed
+Status: accepted (maintainer, 2026-11-06, PR #124)
 
 Numbered 0046 because 0043 is the evidence content MAC, 0044 is the read
 model, and 0045 is human actions. Third step of the human-interaction
