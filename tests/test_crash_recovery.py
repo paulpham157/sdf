@@ -1,13 +1,13 @@
-"""Host crash between an Attempt starting and finishing.
+"""Host crash between an Attempt starting and finishing (ADR 0041).
 
-Production startup is the FastAPI lifespan on ``sdf_core.api.app`` (authentication,
-logging, and tracing). ADR 0029 records that ``RuntimeController.recover`` is not
-called from that path, and the lifespan does not settle an Attempt left
-``running`` when the process dies after ``ExecutionService.begin`` commits.
-This test drives that startup and is intentionally red until a restarted host
-recovers the orphan. Do not mark it xfail or skip.
+Production startup is the FastAPI lifespan on ``sdf_core.api.app``. That startup
+fails an Attempt left ``running`` when no executor still holds it, and moves the
+Task ``running`` to ``evaluating`` to ``failed`` so a new dispatch key can enter
+``ready``. ``RuntimeController.recover`` is not part of this path (ADR 0029).
 """
 
+import gc
+from datetime import timedelta
 from pathlib import Path
 
 from sdf_core.adapter import FakeNativeAdapter
@@ -15,6 +15,7 @@ from sdf_core.api import SessionLocal
 from sdf_core.db import AttemptRow, TaskRow
 from sdf_core.execution import ExecutionService
 from sdf_core.model import utcnow
+from sdf_core.recovery import LEASE_TTL, recover_orphaned_attempts
 from tests.auth_support import admin_client
 
 # Terminal states an abandoned Attempt may end in. The model has no separate
@@ -112,3 +113,135 @@ def test_host_crash_mid_run_is_recovered_and_task_is_retryable(tmp_path: Path, m
         assert started.status != "running"
     finally:
         db.close()
+
+
+def _running_attempt(db, task_id: str, attempt_id: str, dispatch_key: str, **fields) -> None:
+    db.add(TaskRow(
+        id=task_id, title=task_id, status="running", idempotency_key=task_id,
+        acceptance_criteria=[], created_at=utcnow(),
+    ))
+    db.add(AttemptRow(
+        id=attempt_id, task_id=task_id, status="running", dispatch_key=dispatch_key,
+        agent="native", created_at=utcnow(), **fields,
+    ))
+
+
+def test_startup_recovery_is_idempotent(tmp_path: Path, monkeypatch) -> None:
+    """Settling the same orphan twice does not move it again."""
+
+    monkeypatch.chdir(tmp_path)
+    attempt_id = "ATTEMPT-RECOVER-ONCE"
+    task_id = "TASK-RECOVER-ONCE"
+    db = SessionLocal()
+    try:
+        _running_attempt(db, task_id, attempt_id, "dispatch-recover-once")
+        db.commit()
+    finally:
+        db.close()
+
+    with admin_client():
+        pass
+    db = SessionLocal()
+    try:
+        attempt = db.get(AttemptRow, attempt_id)
+        task = db.get(TaskRow, task_id)
+        assert attempt is not None and task is not None
+        assert attempt.status == "failed"
+        assert attempt.error_class == "killed"
+        assert task.status == "failed"
+        snapshot = (
+            attempt.status, attempt.error_class, task.status,
+            attempt.executor_id, attempt.executor_heartbeat_at,
+        )
+    finally:
+        db.close()
+
+    with admin_client():
+        pass
+    db = SessionLocal()
+    try:
+        attempt = db.get(AttemptRow, attempt_id)
+        task = db.get(TaskRow, task_id)
+        assert (
+            attempt.status, attempt.error_class, task.status,
+            attempt.executor_id, attempt.executor_heartbeat_at,
+        ) == snapshot
+        assert attempt_id not in recover_orphaned_attempts(db)
+    finally:
+        db.close()
+
+
+def test_live_executor_is_not_reaped_on_startup(tmp_path: Path, monkeypatch) -> None:
+    """A held executor and a fresh foreign heartbeat stay running. A stale one does not."""
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    db = SessionLocal()
+    service = ExecutionService(
+        db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+    )
+    db.add(TaskRow(
+        id="TASK-LIVE-HELD", title="held", status="created", idempotency_key="task-live-held",
+        acceptance_criteria=[], created_at=utcnow(),
+    ))
+    db.commit()
+    begun = service.begin(task_id="TASK-LIVE-HELD", dispatch_key="dispatch-live-held", fixture=fixture)
+    live_id = begun.attempt.id
+    fresh_id = "ATTEMPT-LIVE-FOREIGN"
+    stale_id = "ATTEMPT-STALE-FOREIGN"
+    _running_attempt(
+        db, "TASK-LIVE-FOREIGN", fresh_id, "dispatch-live-foreign",
+        executor_id="other-executor", executor_heartbeat_at=utcnow(),
+    )
+    _running_attempt(
+        db, "TASK-STALE-FOREIGN", stale_id, "dispatch-stale-foreign",
+        executor_id="other-executor", executor_heartbeat_at=utcnow() - LEASE_TTL - timedelta(seconds=1),
+    )
+    db.commit()
+    db.close()
+
+    with admin_client():
+        pass
+    db = SessionLocal()
+    try:
+        assert db.get(AttemptRow, live_id).status == "running"
+        assert db.get(TaskRow, "TASK-LIVE-HELD").status == "running"
+        assert db.get(AttemptRow, fresh_id).status == "running"
+        assert db.get(TaskRow, "TASK-LIVE-FOREIGN").status == "running"
+        assert db.get(AttemptRow, stale_id).status == "failed"
+        assert db.get(AttemptRow, stale_id).error_class == "killed"
+        assert db.get(TaskRow, "TASK-STALE-FOREIGN").status == "failed"
+    finally:
+        db.close()
+
+    del begun
+    del service
+    gc.collect()
+    with admin_client():
+        pass
+    db = SessionLocal()
+    try:
+        assert db.get(AttemptRow, live_id).status == "failed"
+        assert db.get(TaskRow, "TASK-LIVE-HELD").status == "failed"
+        assert db.get(AttemptRow, fresh_id).status == "running"
+        held = (db.get(AttemptRow, live_id).status, db.get(TaskRow, "TASK-LIVE-HELD").status)
+    finally:
+        db.close()
+
+    with admin_client():
+        pass
+    db = SessionLocal()
+    try:
+        assert (db.get(AttemptRow, live_id).status, db.get(TaskRow, "TASK-LIVE-HELD").status) == held
+        assert db.get(AttemptRow, fresh_id).status == "running"
+    finally:
+        db.close()
+
+
+def test_in_memory_database_does_not_start_the_lease_refresher() -> None:
+    from sdf_core.api import SessionLocal as factory
+    from sdf_core.recovery import heartbeat_refresher_enabled
+
+    assert heartbeat_refresher_enabled(factory) is False

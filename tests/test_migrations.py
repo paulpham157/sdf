@@ -18,6 +18,7 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
     assert {column["name"] for column in inspector.get_columns("attempts")} >= {
         "parent_attempt_id", "model_tier", "cost_usd", "provider", "latency_ms",
         "input_tokens", "output_tokens", "escalation_reason",
+        "executor_id", "executor_heartbeat_at",
     }
     assert "measured_at" in {column["name"] for column in inspector.get_columns("evidence")}
 
@@ -26,7 +27,7 @@ def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0026_oracle_visibility"]
+    assert script.get_heads() == ["0027_attempt_executor_lease"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 
