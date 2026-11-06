@@ -24,7 +24,7 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
 
 
 def test_executor_lease_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monkeypatch):
-    """0029 adds the lease columns; downgrading past it to 0026 removes them."""
+    """0027 adds the lease columns; downgrading it to 0026 removes them."""
 
     database_url = f"sqlite:///{tmp_path / 'lease.sqlite'}"
     monkeypatch.setenv("SDF_DATABASE_URL", database_url)
@@ -48,7 +48,7 @@ def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0029_attempt_executor_lease"]
+    assert script.get_heads() == ["0028_evidence_classes"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 

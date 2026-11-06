@@ -1,4 +1,4 @@
-"""Host crash between an Attempt starting and finishing (ADR 0043).
+"""Host crash between an Attempt starting and finishing (ADR 0041).
 
 Production startup is the FastAPI lifespan on ``sdf_core.api.app``. That startup
 fails an Attempt left ``running`` when no executor still holds it, and moves the

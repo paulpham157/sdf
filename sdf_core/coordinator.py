@@ -964,7 +964,7 @@ class Coordinator:
         for sub in subtasks.values():
             attempt = self.db.get(AttemptRow, sub.attempt_id) if sub.attempt_id else None
             if attempt is not None and attempt.status == AttemptState.RUNNING.value:
-                # ADR 0043: do not cancel, or move the Task, when recovery already
+                # ADR 0041: do not cancel, or move the Task, when recovery already
                 # settled this Attempt or another executor owns it.
                 try:
                     settle_owned_attempt(self.db, attempt.id, AttemptState.CANCELLED.value)

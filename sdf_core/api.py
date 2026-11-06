@@ -202,7 +202,7 @@ async def _lifespan(_app: FastAPI):
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
-    # ADR 0043: a forked worker must not keep the parent's executor id.
+    # ADR 0041: a forked worker must not keep the parent's executor id.
     # Remint before recovery so a sibling's fresh Attempt is not reaped.
     ensure_process_executor()
     # Refresh leases for this process, then fail Attempts left running with
@@ -226,7 +226,7 @@ async def _lifespan(_app: FastAPI):
         yield
     finally:
         shutdown_executor_heartbeat()
-        # ADR 0043: settle Attempts this process stamped whose executor is
+        # ADR 0041: settle Attempts this process stamped whose executor is
         # already gone, so a graceful restart does not wait out the lease.
         shutdown = SessionLocal()
         try:
@@ -993,7 +993,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     adapter=adapter,
                     evaluator=configured_evaluator(registry, live=not isinstance(adapter, FakeNativeAdapter)),
                 )
-                # ADR 0043: an omitted key is derived, not a fresh uuid. The same
+                # ADR 0041: an omitted key is derived, not a fresh uuid. The same
                 # logical request replays (ADR 0031), including after the Attempt
                 # is terminal. A new Attempt sends an explicit key.
                 attempt = service.run(

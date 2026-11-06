@@ -1,4 +1,4 @@
-"""Executor lease columns on Attempts (ADR 0043).
+"""Executor lease columns on Attempts (ADR 0041).
 
 Adds nullable ``executor_id`` and ``executor_heartbeat_at`` on ``attempts``.
 A running Attempt with both NULL has no executor. Startup settles it.
@@ -9,7 +9,7 @@ crash this column exists to close. No backfill is attempted.
 The columns are plain nullable ``ADD COLUMN`` on both dialects (no SQLite
 table rebuild, so no index, trigger or CHECK is touched).
 
-This revision follows ``0028_evidence_classes``. It does not use ``0027``.
+Revision id ``0027`` revises ``0026_oracle_visibility``.
 
 Downgrade drops the columns. It discards the lease.
 """
@@ -18,8 +18,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "0029_attempt_executor_lease"
-down_revision = "0028_evidence_classes"
+revision = "0027_attempt_executor_lease"
+down_revision = "0026_oracle_visibility"
 branch_labels = None
 depends_on = None
 
