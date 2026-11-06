@@ -486,8 +486,8 @@ def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path,
         f"adapter ran {adapter.calls} time(s), second response {second.status_code}: {second.text}, "
         f"attempts={attempt_rows}"
     )
-    if second.status_code == 200:
-        assert second.json()["attempt_id"] == parent_id
+    assert second.status_code == 200, second.text
+    assert second.json()["attempt_id"] == parent_id
     retried = client.post(f"/tasks/{task_id}/run", json={
         **body,
         "dispatch_key": "dispatch-run-retry-explicit",
@@ -515,9 +515,23 @@ def test_derived_dispatch_key_is_stable_per_task_and_logical_request():
     reordered = derived_dispatch_key(task_id="TASK-A", **{**fields, "criterion_checks": {"c": ["b", "a"]}})
     inherit = derived_dispatch_key(task_id="TASK-A", **{**fields, "parent_attempt_id": "ATTEMPT-1", "model_tier": None})
     named_tier = derived_dispatch_key(task_id="TASK-A", **{**fields, "parent_attempt_id": "ATTEMPT-1", "model_tier": "basic"})
-    assert first == again == explicit_basic
+    other_fixture = derived_dispatch_key(task_id="TASK-A", **{**fields, "fixture_dir": "/fixtures/other"})
+    half_target = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "validation_target_kind": "hypothesis", "validation_target_id": None},
+    )
+    both_target = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "validation_target_kind": "hypothesis", "validation_target_id": "H1"},
+    )
+    keyed = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "criterion_checks": {"d": ["b"], "c": ["a"]}},
+    )
+    keyed_reordered = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "criterion_checks": {"c": ["a"], "d": ["b"]}},
+    )
+    assert first == again == explicit_basic == half_target
+    assert keyed == keyed_reordered
     assert first.startswith("keyless-") and len(first) <= 200
-    assert len({first, other_task, other_instructions, reordered, inherit, named_tier}) == 6
+    assert len({first, other_task, other_instructions, reordered, inherit, named_tier, other_fixture, both_target, keyed}) == 9
 
 
 def test_concurrent_keyless_runs_create_one_attempt(tmp_path):
