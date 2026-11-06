@@ -1,28 +1,14 @@
-"""Failing tests for two open security gaps.
+"""Security boundaries for a hostile agent turn and for stored Evidence.
 
-These tests are meant to fail. They are not skipped, xfailed, or loosened.
-Nothing here changes production enforcement.
+G2. A child started by ``FixtureSandbox`` (the default path, not only
+``require_containment=True``) and a child the live adapter's ``send`` starts
+with its cwd inside the Attempt workspace must not write outside that
+workspace or observe a credential-shaped variable the Attempt did not scope.
+``require_containment=True`` with no backend still refuses to start.
 
-G2 — Tool Proxy bypass. A live agent turn does not go through the Tool Proxy.
-``LiveRunAdapter.run`` (``sdf_core/run_adapter.py``) starts a Herdr or headless
-runtime and sends the prompt. It never builds a ``ToolProxy`` and never calls
-``ExecutionService.execute_tool``. The agent's own shell, file, and network
-tools run inside the sandbox (Claude is started with
-``--dangerously-skip-permissions`` on a fresh E2B box, ADR 0008). Credential
-scope in the Go proxy (``go/internal/toolproxy/proxy.go``) applies only inside
-``Proxy.Execute``, and ``Orchestrator.handleTask`` calls the runner directly
-instead of ``CallTool``. ADR 0004 still requires the sandbox to constrain
-filesystem, process, and network when the proxy is skipped.
-``execute_tool`` asks for OS containment; ``FixtureSandbox`` does not, unless
-the caller sets ``require_containment``.
-
-G4 — Evidence authenticity. Evidence is append-only at the ORM boundary and,
-on PostgreSQL, via ``trg_evidence_append_only`` (ADR 0002). A row has no
-signature and no hash chain. ``verify_attempt_revision`` checks revision
-binding and that each artifact file matches the sha256 stored on that same
-row. A writer who can change the file and that sha256, or who can rewrite the
-evidence row under the ORM (SQLite has no append-only trigger), leaves a
-record verification still accepts.
+G4. Rewriting an Evidence row's verdict and the sha256 stored beside the
+artifact bytes must make ``verify_attempt_revision`` fail. The content MAC
+(ADR 0043) is the commitment that rewrite does not update.
 """
 
 from __future__ import annotations
@@ -167,8 +153,8 @@ def test_hostile_agent_cannot_bypass_tool_proxy_sandbox_or_credential_scope(tmp_
 
     The structured proxy denies ``process.run`` and ``credentials.inject`` for
     an out-of-scope name, and a containment-required sandbox refuses to start
-    the child. The live path and the default sandbox do not apply either
-    check. This assertion fails while that bypass still lands.
+    the child. The default sandbox and the live adapter's workspace shell
+    must refuse the same escape.
     """
 
     policy = AllowlistPolicy(
@@ -287,8 +273,8 @@ def test_rewritten_evidence_is_rejected_by_verification(tmp_path: Path):
     ``artifacts.sha256`` is updated to the new bytes, and the evidence row's
     status, command, and confidence are rewritten with SQL that does not pass
     through the ORM session guard. SQLite, which is what this hermetic test
-    uses, has no append-only trigger. ``verify_attempt_revision`` still
-    accepts the attempt. This assertion fails while that is true.
+    uses, has no append-only trigger. ``verify_attempt_revision`` must reject
+    the rewritten verdict.
     """
 
     with _session() as db:
