@@ -18,6 +18,7 @@ from .db import (
     UsageLedgerRow,
 )
 from .decision_gate import check_decision_gate
+from .recovery import claim_executor
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
@@ -253,6 +254,9 @@ class ExecutionService:
                     raise ValueError(f"dispatch key already belongs to task: {winner.task_id}")
                 return BegunAttempt(winner, self.workspaces.root / winner.id, existing=True)
             raise
+        # ADR 0041: the lease commits with ``running``. Dropping this service
+        # (the process, or a crash modeled that way) drops the claim.
+        claim_executor(self, attempt)
         task.status = transition_task(TaskState(task.status), TaskState.READY).value
         task.status = transition_task(TaskState(task.status), TaskState.RUNNING).value
         attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.DISPATCHED).value
