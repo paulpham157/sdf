@@ -20,6 +20,8 @@ SDF owns the Task, Attempt, state, budget, Policy Decision, Evaluator, Evidence,
 
 Tool actions are Attempt-bound and pass through the Tool Proxy. The proxy obtains a Policy Decision before execution. Containment must independently limit filesystem, process, and network access because policy cooperation by an agent is insufficient.
 
+On Linux, a process started inside an Attempt workspace is confined even when it skips the Tool Proxy (`sdf_core/process_containment.py`). Fixture sandbox children and the live adapter's workspace subprocesses install a Landlock ruleset (read the system, write only the workspace and roots the trusted caller names) and lose credential-shaped environment variables that the Attempt's credential scope did not grant.
+
 ## Execution architecture
 
 ```text
@@ -87,11 +89,43 @@ The current implementation retains deterministic fake adapters for tests. A live
 
 SDF starts with the lowest suitable Model Tier (`basic`, `medium`, then `high`). Escalation occurs only after a verified evaluator outcome, such as failure, inconclusive evidence, timeout, or policy/tool failure. Each escalation creates a new Attempt with lineage to its predecessor and remains bounded by maximum attempts, maximum tier, and a hard cost ceiling.
 
+## Dispatch and recovery
+
+[ADR 0041](adr/0041-keyless-dispatch-and-orphan-recovery.md) (proposed; implemented on `main`):
+
+- A `POST /tasks/{id}/run` without `dispatch_key` gets a derived key: `keyless-` plus the SHA-256 of the canonical request fields (task id, resolved fixture, instructions, checks, validation target, parent Attempt, Model Tier). Repeating the same request returns the stored Attempt and does not run the adapter again, also after the Attempt is terminal. A new execution sends a new explicit `dispatch_key`.
+- `ExecutionService.begin` claims an executor lease (`attempts.executor_id`, `executor_heartbeat_at`, migration `0027_attempt_executor_lease`) in the commit that moves the Attempt to `running`. A process-local refresher renews it every 10 seconds; another process's lease expires after 30 seconds.
+- Orphan recovery runs at API startup, at shutdown, after each heartbeat and in `begin`. It moves a `running` Attempt whose lease is dead to `failed` (`error_class` becomes `killed` unless one was already recorded), and its Task `running -> evaluating -> failed` when no other Attempt of that Task is running. No state-machine transition is added.
+- Attempt and Task writes in recovery, `finish` and cancel are compare-and-swap on the stored status, so recovery cannot overwrite a finished Attempt and a stale worker cannot resurrect a recovered one.
+
 ## Persistence and measurement
 
 PostgreSQL is the deployed source of truth for graph state, Tasks, Attempts, transitions, idempotency keys, and Evidence metadata. SQLite is permitted only for isolated tests and local deterministic demonstrations.
 
 Objectives may declare a metric, baseline, target, source, owner, and measurement window. Local evaluator results are Evidence, not proof of production impact; impact requires a measured Objective outcome against its baseline.
+
+## Evidence classes and integrity
+
+Every new Evidence row has an Evidence class
+([ADR 0042](adr/0042-evidence-classes.md), proposed; implemented on `main`):
+
+- **execution**: what the Attempt did (diff and process log), written by `finish`, with the Attempt's agent as producer. It never accepts an artifact or satisfies a criterion.
+- **verification**: an Evaluator verdict from a sealed oracle ([ADR 0039](adr/0039-evidence-independence.md), [ADR 0040](adr/0040-held-out-oracles.md)). A coverage gap is verification with status `INCONCLUSIVE` and no oracle digest. Only a verification `PASS` that passes the acceptance gate counts as a verified pass.
+- **outcome**: an Objective-level result recorded through `POST /objectives/{id}/evidence` by an approver, with a verifier who is neither that approver nor the agent of any Attempt under the Objective. It `measures` the Objective and never validates a Task.
+
+Each new row also carries `content_mac`, an HMAC-SHA256 over its verdict fields and the bound artifact digest ([ADR 0043](adr/0043-evidence-content-mac.md), proposed; migration `0029_evidence_content_mac`). The key is `SDF_EVIDENCE_MAC_KEY`; without it a fixed development key is used, so deployments must set it. `verify_attempt_revision` recomputes the MAC. Rows written before these migrations are not rewritten.
+
+## Go orchestration core
+
+`sdf-orch` ([ADR 0035](adr/0035-port-orchestration-core-to-go.md), proposed) is a Go process with an API gateway, task queue, Attempt dispatcher, in-process message bus and a local SQLite Tool Proxy fence ([ADR 0037](adr/0037-go-tool-proxy-fence-audit-parity.md), [ADR 0038](adr/0038-go-attempt-evidence-mode.md)). The Python Coordinator remains the single writer of Attempt state until a cutover is decided. See [sdf-orch.md](sdf-orch.md).
+
+## Human interaction (accepted, not built)
+
+[ADR 0044](adr/0044-human-read-model-and-approver-inbox.md) to [ADR 0047](adr/0047-console-ui.md) are accepted and fix the order of work: a read model and approver inbox over existing rows, then human cancel of one Attempt and human messages on the existing hub, then Server-Sent Events over the runtime-event stream, then a same-origin console that calls only the public API. None of these routes or the console exist in `sdf_core/api.py` yet. Human attestation of Evidence is deferred to a later ADR.
+
+## Diagrams
+
+`docs/SDF Core Architecture.tldraw` (tldraw) has four pages: the component architecture, the Task and Attempt state machines, the `POST /tasks/{task_id}/run` sequence, and the Evidence verification pipeline. Proposed or not-yet-built parts are drawn dashed.
 
 ## LLM transport
 
