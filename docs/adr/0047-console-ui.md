@@ -1,6 +1,6 @@
 # ADR 0047: a same-origin console that calls only the public API
 
-Status: proposed
+Status: accepted (maintainer, 2026-11-06, PR #124)
 
 Numbered 0047 because 0043 is the evidence content MAC and 0044-0046 are
 the earlier human-interaction steps. Fourth step of the workstream. Depends
