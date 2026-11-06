@@ -1,29 +1,39 @@
-"""Settle Attempts left ``running`` when their executor is gone (ADR 0029).
+"""Settle Attempts left ``running`` when their executor process is gone (ADR 0029).
 
 This is not ``RuntimeController.recover``. That call restores a runtime-event
-stream. This one moves Task and Attempt rows along the transitions that
-already exist, and only for a lease that is dead.
+stream. This one moves Task and Attempt rows along transitions that already
+exist, and only when the executor is dead.
 
-A lease is this process's :data:`EXECUTOR_ID` plus a heartbeat. This process
-treats an Attempt as live while the object that claimed it is still alive.
-Another process is live while its heartbeat is inside :data:`LEASE_TTL`.
-A running row with no ``executor_id`` is not swept: a startup pass cannot
-tell that row from a worker that never took a lease.
+Liveness of another process is a lock that dies with that process: an
+exclusive ``flock`` beside a SQLite file, or a PostgreSQL session advisory
+lock. A stale heartbeat does not reap a process that still holds the lock.
+A fresh heartbeat does not keep a process whose lock is gone. The heartbeat
+is only the signal when the database cannot host that lock (in-memory
+SQLite, which no second OS process shares).
 
-External work is not exactly-once. The adapter for a dispatch key runs at
-most once here. A crash can leave that work unfinished, or finished outside
-this process, and a later new key can run it again.
+A running row with no ``executor_id`` is not swept unless the operator sets
+``SDF_RECOVER_UNLEASED_ATTEMPTS=1`` after every pre-lease process has stopped.
+That switch is a deployment decision. Leaving it off does not fail a live
+worker that never wrote a lease, and turning it on will.
+
+External work is not exactly-once. The adapter for one dispatch key runs at
+most once here. Process death does not prove a remote sandbox has exited.
+A new key can start another one.
 """
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
-from weakref import WeakValueDictionary
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import exists, func, or_, select, text, update
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -33,20 +43,24 @@ from .observability import get_logger
 from .state import transition_attempt, transition_task
 
 
-# Another process is treated as dead only after this long without a heartbeat.
-# The refresher wakes more often, so a live executor does not age out.
+# Used only when this database cannot hold a cross-process lock (in-memory
+# SQLite). A file SQLite or PostgreSQL lock overrides the heartbeat.
 LEASE_TTL = timedelta(seconds=30)
 _HEARTBEAT_INTERVAL_S = 10.0
+UNLEASED_RECOVERY_ENV = "SDF_RECOVER_UNLEASED_ATTEMPTS"
 
-# Stable for this process. A restarted process mints a new id, so its startup
-# does not own the previous process's rows.
 EXECUTOR_ID = uuid4().hex
+_executor_pid = os.getpid()
 
-# attempt id → the object that is executing it. Weak: dropping the object
-# drops the claim, which is how a test models a crash inside this process.
-_owners: WeakValueDictionary[str, object] = WeakValueDictionary()
+# Attempts this process has started and not yet finished. A missing entry is
+# not death: the process lock is. The set only tells the heartbeat which rows
+# to refresh. It is cleared in a forked child.
+_claimed: set[str] = set()
 _lock = threading.Lock()
 _refresher_started = False
+_process_lease_file = None
+_process_lease_connection = None
+_LOCK_WAIT = "200ms"
 
 _log = get_logger("recovery")
 
@@ -68,52 +82,182 @@ class AttemptFenceError(ValueError):
         )
 
 
-def claim_executor(owner: object, attempt: AttemptRow) -> None:
-    """Record that ``owner`` is executing ``attempt`` until ``owner`` is gone.
+def current_executor_id() -> str:
+    """The executor id of this OS process, including after ``fork``.
 
-    The columns are committed by the caller, in the same transaction that
-    moves the Attempt to ``running``.
+    The id is minted at import. A forked child would otherwise keep the
+    parent's id and an empty claim set, and then treat the parent's fresh
+    Attempt as its own abandoned run. A pid check covers a fork that happened
+    before ``register_at_fork`` ran.
     """
 
+    _ensure_process_identity()
+    return EXECUTOR_ID
+
+
+def _ensure_process_identity() -> None:
+    global EXECUTOR_ID, _executor_pid, _process_lease_file, _process_lease_connection, _refresher_started
+    if os.getpid() == _executor_pid:
+        return
+    _executor_pid = os.getpid()
+    EXECUTOR_ID = uuid4().hex
     with _lock:
-        _owners[attempt.id] = owner
-    attempt.executor_id = EXECUTOR_ID
+        _claimed.clear()
+    # Drop the child's copy of the parent's lock fd. Closing it does not
+    # release the parent's lock: the parent still holds its own descriptor.
+    if _process_lease_file is not None:
+        try:
+            _process_lease_file.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _process_lease_file = None
+    if _process_lease_connection is not None:
+        try:
+            _process_lease_connection.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _process_lease_connection = None
+    _refresher_started = False
+
+
+def _after_fork_child() -> None:
+    _ensure_process_identity()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_child)
+
+
+def claim_executor(owner: object, attempt: AttemptRow) -> None:
+    """Stamp this process on ``attempt`` and remember it for heartbeats.
+
+    ``owner`` is not a liveness proof. The process lock is. Dropping
+    ``owner`` (request end, a decision gate, garbage collection) does not
+    make the Attempt dead. The columns commit with the transition to
+    ``running``.
+    """
+
+    del owner  # retained so callers stay the same; liveness is not this object
+    with _lock:
+        _claimed.add(attempt.id)
+    attempt.executor_id = current_executor_id()
     attempt.executor_heartbeat_at = utcnow()
 
 
 def release_executor(attempt_id: str) -> None:
-    """Drop this process's claim. A terminal Attempt does not need one."""
+    """Stop heartbeating an Attempt. This does not settle it."""
 
     with _lock:
-        _owners.pop(attempt_id, None)
+        _claimed.discard(attempt_id)
 
 
-def executor_is_live(attempt: AttemptRow, *, now: datetime | None = None) -> bool:
-    """True when some executor still owns this running Attempt.
+def hold_process_lease(session_factory: sessionmaker) -> None:
+    """Hold the lock that dies with this process, before any Attempt is published."""
 
-    This process's own id is live only while the claiming object is alive,
-    even if the heartbeat is fresh: dropping that object is an in-process
-    crash. A different id is live only while its heartbeat is inside the lease.
-    No id is not a live lease (and is not reaped).
+    engine = session_factory.kw.get("bind")
+    if engine is not None:
+        hold_engine_lease(engine)
+
+
+def hold_engine_lease(engine) -> None:
+    """Hold this process's executor lock on ``engine`` for the process lifetime."""
+
+    global _process_lease_file, _process_lease_connection
+    if engine.dialect.name == "postgresql":
+        if _process_lease_connection is not None:
+            return
+        connection = engine.raw_connection()
+        cursor = connection.cursor()
+        cursor.execute("SELECT pg_advisory_lock(%s)", (_lock_key(EXECUTOR_ID),))
+        connection.commit()
+        _process_lease_connection = connection
+        return
+    path = executor_lease_path(engine, EXECUTOR_ID)
+    if path is None or _process_lease_file is not None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    _process_lease_file = handle
+
+
+def executor_lease_path(engine, executor_id: str) -> Path | None:
+    """Lock file for a SQLite database file. ``None`` when there is no file."""
+
+    if engine.dialect.name != "sqlite":
+        return None
+    database = engine.url.database
+    if not database or database == ":memory:":
+        return None
+    digest = hashlib.sha256(executor_id.encode()).hexdigest()
+    return Path(database).resolve().parent / ".sdf-executor-leases" / digest
+
+
+def process_holds_lease(engine, executor_id: str) -> bool | None:
+    """Whether some live process holds ``executor_id``'s lock.
+
+    ``True`` the lock is held. ``False`` this call acquired it, so no process
+    held it, and the lock was released again. ``None`` this database cannot
+    express a cross-process lock.
+    """
+
+    if engine.dialect.name == "postgresql":
+        connection = engine.raw_connection()
+        try:
+            cursor = connection.cursor()
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", (_lock_key(executor_id),))
+            acquired = bool(cursor.fetchone()[0])
+            if acquired:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (_lock_key(executor_id),))
+            connection.commit()
+        finally:
+            connection.close()
+        return not acquired
+    path = executor_lease_path(engine, executor_id)
+    if path is None:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        return False
+    finally:
+        handle.close()
+
+
+def executor_is_live(attempt: AttemptRow, *, now: datetime | None = None, engine=None, db: Session | None = None) -> bool:
+    """True when the Attempt's executor should not be settled.
+
+    This process's own id is live while this process is alive. Garbage
+    collection of the ``ExecutionService`` is not death (a decision gate
+    leaves the Attempt running after the request returns). Another id is
+    live when its process lock is held, even if the heartbeat looks old.
+    Without a lock (in-memory SQLite), a foreign id uses the database clock,
+    not the host's ``utcnow``.
     """
 
     if not attempt.executor_id:
         return False
-    if attempt.executor_id == EXECUTOR_ID:
-        with _lock:
-            return attempt.id in _owners
-    if attempt.executor_heartbeat_at is None:
-        return False
-    now = now or utcnow()
-    return now - _as_utc(attempt.executor_heartbeat_at) <= LEASE_TTL
+    if attempt.executor_id == current_executor_id():
+        return True
+    if engine is not None:
+        held = process_holds_lease(engine, attempt.executor_id)
+        if held is not None:
+            return held
+    if db is None:
+        if attempt.executor_heartbeat_at is None:
+            return False
+        now = now or utcnow()
+        return now - _as_utc(attempt.executor_heartbeat_at) <= LEASE_TTL
+    return _heartbeat_fresh_on_database_clock(db, attempt)
 
 
 def heartbeat_refresher_enabled(session_factory: sessionmaker) -> bool:
-    """False for the one-connection in-memory SQLite used by hermetic tests.
-
-    A second thread cannot safely share that connection. PostgreSQL, and any
-    engine that checks out its own connections, can refresh.
-    """
+    """False for the one-connection in-memory SQLite used by hermetic tests."""
 
     engine = session_factory.kw.get("bind")
     if engine is None:
@@ -124,14 +268,15 @@ def heartbeat_refresher_enabled(session_factory: sessionmaker) -> bool:
 
 
 def start_executor_heartbeat(session_factory: sessionmaker) -> None:
-    """Refresh leases this process holds, and sweep dead ones, until exit.
+    """Hold this process's lock, then refresh heartbeats until exit.
 
-    Startup calls :func:`recover_orphaned_attempts` itself. This loop covers
-    a lease that expires later, so a dead neighbor is settled without another
-    restart. Hermetic in-memory SQLite does not start the thread.
+    The lock is what other processes trust. The heartbeat remains for
+    in-memory databases and for operators reading the row. Hermetic
+    in-memory SQLite does not start the thread.
     """
 
     global _refresher_started
+    hold_process_lease(session_factory)
     if not heartbeat_refresher_enabled(session_factory):
         return
     with _lock:
@@ -155,9 +300,8 @@ def compare_and_swap_attempt(
     """Persist ``to_status`` only while the row is still ``running``.
 
     ``executor_scoped`` also requires the lease to be unset or this process.
-    A finish from the owning executor uses that. Recovery and cancellation
-    pass false and add their own predicates. Does not commit. On loss, the
-    Attempt is expired so a later flush cannot overwrite the winner.
+    Does not commit. On loss, the Attempt is expired so a later flush cannot
+    overwrite the winner.
     """
 
     transition_attempt(AttemptState.RUNNING, to_status)
@@ -199,62 +343,74 @@ def compare_and_swap_task(db: Session, task: TaskRow, *, from_status: TaskState,
 def settle_task_if_idle(db: Session, task_id: str, terminal: TaskState) -> bool:
     """Move a Task ``running`` → ``evaluating`` → ``terminal`` when nothing is running.
 
-    No new transition is added. A Task that is not ``running``, or that still
-    has a running Attempt, is left as it is. Does not commit.
+    The ``running`` check is inside the UPDATE, so a sibling Attempt that
+    commits between a separate SELECT and this write cannot be skipped.
+    Does not commit.
     """
 
     if terminal not in (TaskState.FAILED, TaskState.INCONCLUSIVE, TaskState.SUCCEEDED):
         raise ValueError(f"unsupported terminal task state: {terminal}")
-    still = db.scalar(
+    running_sibling = exists(
         select(AttemptRow.id).where(
-            AttemptRow.task_id == task_id, AttemptRow.status == AttemptState.RUNNING.value,
-        ).limit(1)
+            AttemptRow.task_id == task_id,
+            AttemptRow.status == AttemptState.RUNNING.value,
+        )
     )
-    if still:
+    result = db.execute(
+        update(TaskRow)
+        .where(TaskRow.id == task_id, TaskRow.status == TaskState.RUNNING.value, ~running_sibling)
+        .values(status=TaskState.EVALUATING.value)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        task = db.get(TaskRow, task_id)
+        if task is not None:
+            db.expire(task)
         return False
     task = db.get(TaskRow, task_id)
     if task is None:
         return False
-    if not compare_and_swap_task(db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING):
-        return False
+    db.expire(task)
+    db.refresh(task)
     if not compare_and_swap_task(db, task, from_status=TaskState.EVALUATING, to_status=terminal):
         raise RuntimeError(f"task {task_id} moved to evaluating and then could not enter {terminal.value}")
     return True
 
 
 def cancel_running_attempt(db: Session, attempt: AttemptRow) -> bool:
-    """Cancel an Attempt only while it is still ``running``.
-
-    Any executor may be cancelled: cancellation is an operator decision, not
-    a crash. A row that recovery or finish already left terminal is unchanged.
-    Does not commit, and does not move the Task; the caller does that when
-    this returns true.
-    """
+    """Cancel an Attempt only while it is still ``running``. Does not commit."""
 
     return compare_and_swap_attempt(db, attempt, to_status=AttemptState.CANCELLED, executor_scoped=False)
 
 
-def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tuple[str, ...]:
-    """Fail running Attempts with a dead lease, and unstick their Tasks.
+def recover_orphaned_attempts(
+    db: Session, *, now: datetime | None = None, task_id: str | None = None,
+) -> tuple[str, ...]:
+    """Fail running Attempts whose executor is dead, and unstick their Tasks.
 
-    Attempt: ``running`` → ``failed``. ``error_class`` becomes ``killed`` only
-    when it was empty. Task: ``running`` → ``evaluating`` → ``failed``, and
-    only when no Attempt of that Task is still ``running``.
-
-    Each write matches the status (and, for a neighbor, the heartbeat) that
-    made the row look dead, so a refresh or a late finish wins and this pass
-    writes nothing. A second call finds nothing running under a dead lease.
-
-    Unleased rows (``executor_id`` unset) are skipped. Evidence, revisions,
-    and graph rows are not written or deleted. Commits when it changes rows.
+    Unleased rows are included only when ``SDF_RECOVER_UNLEASED_ATTEMPTS`` is
+    ``1``. Each write matches the status that was read. A second call writes
+    nothing. Evidence, revisions, and graph rows are not changed. Commits
+    when it changes rows.
     """
 
     now = now or utcnow()
-    running = list(db.scalars(select(AttemptRow).where(AttemptRow.status == AttemptState.RUNNING.value)))
+    engine = db.get_bind()
+    statement = select(AttemptRow).where(AttemptRow.status == AttemptState.RUNNING.value)
+    if task_id is not None:
+        statement = statement.where(AttemptRow.task_id == task_id)
+    running = list(db.scalars(statement))
     settled: list[str] = []
+    include_unleased = os.environ.get(UNLEASED_RECOVERY_ENV) == "1"
     try:
         for attempt in running:
-            if not _reap(db, attempt, now=now):
+            if attempt.executor_id:
+                if not _reap(db, attempt, now=now, engine=engine):
+                    continue
+            elif include_unleased:
+                if not _reap_unleased(db, attempt):
+                    continue
+            else:
                 continue
             settled.append(attempt.id)
         if not settled:
@@ -272,44 +428,72 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
 
 
 def reset_recovery_state() -> str:
-    """Drop in-process claims and mint a new executor id (a new OS process).
+    """Drop in-process claims and mint a new executor id (a test double for a new process).
 
-    Returns the new id. Does not stop a heartbeat thread. Hermetic tests do
-    not start one. Production code does not call this.
+    Does not release an OS or PostgreSQL lock already held for the previous
+    id. Production code does not call this. Hermetic tests do not start the
+    heartbeat thread.
     """
 
     global EXECUTOR_ID
     with _lock:
-        _owners.clear()
+        _claimed.clear()
     EXECUTOR_ID = uuid4().hex
     return EXECUTOR_ID
 
 
-def _reap(db: Session, attempt: AttemptRow, *, now: datetime) -> bool:
-    """Fail ``attempt`` if its lease is dead. False leaves the row untouched."""
-
-    if not attempt.executor_id or executor_is_live(attempt, now=now):
+def _reap(db: Session, attempt: AttemptRow, *, now: datetime, engine) -> bool:
+    if not attempt.executor_id or executor_is_live(attempt, now=now, engine=engine, db=db):
+        return False
+    if not _lock_attempt_nowait(db, attempt.id):
         return False
     conditions = [
         AttemptRow.id == attempt.id,
         AttemptRow.status == AttemptState.RUNNING.value,
         AttemptRow.executor_id == attempt.executor_id,
     ]
-    if attempt.executor_id == EXECUTOR_ID:
-        # The claiming object is already gone. A finish from this process
-        # changes status and this update matches nothing.
-        pass
-    elif attempt.executor_heartbeat_at is None:
-        conditions.append(AttemptRow.executor_heartbeat_at.is_(None))
+    # A foreign row is reaped only after its process lock was observed free
+    # (or, with no lock, after the heartbeat we read was already stale).
+    # Matching that heartbeat stops a refresh that committed in between.
+    # A lock that appeared since the liveness check wins: do not reap.
+    if attempt.executor_id != EXECUTOR_ID:
+        held = process_holds_lease(engine, attempt.executor_id)
+        if held is True:
+            return False
     else:
-        # Match the heartbeat we judged stale. A refresh changes it and wins.
-        conditions.append(AttemptRow.executor_heartbeat_at == attempt.executor_heartbeat_at)
+        held = None
+    if attempt.executor_id != EXECUTOR_ID and held is None:
+        if attempt.executor_heartbeat_at is None:
+            conditions.append(AttemptRow.executor_heartbeat_at.is_(None))
+        else:
+            conditions.append(AttemptRow.executor_heartbeat_at == attempt.executor_heartbeat_at)
     transition_attempt(AttemptState.RUNNING, AttemptState.FAILED)
-    error_class = attempt.error_class or "killed"
     result = db.execute(
         update(AttemptRow)
         .where(*conditions)
-        .values(status=AttemptState.FAILED.value, error_class=error_class)
+        .values(status=AttemptState.FAILED.value, error_class=attempt.error_class or "killed")
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.expire(attempt)
+        return False
+    db.expire(attempt)
+    db.refresh(attempt)
+    return True
+
+
+def _reap_unleased(db: Session, attempt: AttemptRow) -> bool:
+    """Fail a running Attempt that never took a lease. The caller opted in."""
+
+    transition_attempt(AttemptState.RUNNING, AttemptState.FAILED)
+    result = db.execute(
+        update(AttemptRow)
+        .where(
+            AttemptRow.id == attempt.id,
+            AttemptRow.status == AttemptState.RUNNING.value,
+            AttemptRow.executor_id.is_(None),
+        )
+        .values(status=AttemptState.FAILED.value, error_class=attempt.error_class or "killed")
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
@@ -335,22 +519,87 @@ def _refresh_loop(session_factory: sessionmaker) -> None:
 
 
 def _write_heartbeats(db: Session) -> None:
+    """Refresh one Attempt at a time so a locked row cannot stall the others.
+
+    A single ``UPDATE ... WHERE id IN (...)`` takes the locks in order. If
+    the first id is busy for a long transaction, the rest of the batch waits
+    and their heartbeats go stale. Each id is its own short transaction, and
+    PostgreSQL gives up after :data:`_LOCK_WAIT` instead of waiting.
+    """
+
     with _lock:
-        ids = [attempt_id for attempt_id, owner in _owners.items() if owner is not None]
-    if not ids:
-        return
-    now = utcnow()
-    db.execute(
+        ids = list(_claimed)
+    for attempt_id in ids:
+        try:
+            _heartbeat_one(db, attempt_id)
+        except (OperationalError, DBAPIError):
+            db.rollback()
+
+
+def _heartbeat_one(db: Session, attempt_id: str) -> None:
+    _set_lock_timeout(db)
+    result = db.execute(
         update(AttemptRow)
         .where(
-            AttemptRow.id.in_(ids),
+            AttemptRow.id == attempt_id,
             AttemptRow.status == AttemptState.RUNNING.value,
-            or_(AttemptRow.executor_id.is_(None), AttemptRow.executor_id == EXECUTOR_ID),
+            or_(AttemptRow.executor_id.is_(None), AttemptRow.executor_id == current_executor_id()),
         )
-        .values(executor_id=EXECUTOR_ID, executor_heartbeat_at=now)
+        .values(executor_id=current_executor_id(), executor_heartbeat_at=func.now())
         .execution_options(synchronize_session=False)
     )
     db.commit()
+    if result.rowcount != 1:
+        with _lock:
+            _claimed.discard(attempt_id)
+
+
+def _lock_attempt_nowait(db: Session, attempt_id: str) -> bool:
+    """False when the row is busy. Recovery then leaves it for the holder."""
+
+    try:
+        _set_lock_timeout(db)
+        locked = db.scalar(
+            select(AttemptRow.id).where(AttemptRow.id == attempt_id).with_for_update(nowait=True)
+        )
+    except (OperationalError, DBAPIError):
+        db.rollback()
+        return False
+    return locked is not None
+
+
+def _set_lock_timeout(db: Session) -> None:
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        db.execute(text(f"SET LOCAL lock_timeout = '{_LOCK_WAIT}'"))
+
+
+def _heartbeat_fresh_on_database_clock(db: Session, attempt: AttemptRow) -> bool:
+    """True when the row's heartbeat is inside the lease on the database clock.
+
+    Host ``utcnow`` is not used. Two machines with skewed clocks otherwise
+    expire a lease the database still considers fresh.
+    """
+
+    if attempt.executor_heartbeat_at is None:
+        return False
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        statement = text(
+            "SELECT executor_heartbeat_at >= (CURRENT_TIMESTAMP - INTERVAL '30 seconds') "
+            "FROM attempts WHERE id = :id"
+        )
+    else:
+        statement = text(
+            "SELECT executor_heartbeat_at >= datetime('now', '-30 seconds') "
+            "FROM attempts WHERE id = :id"
+        )
+    return bool(db.scalar(statement, {"id": attempt.id}))
+
+
+def _lock_key(executor_id: str) -> int:
+    digest = hashlib.sha256(b"sdf-executor-lease:" + executor_id.encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
 
 
 def _as_utc(value: datetime) -> datetime:

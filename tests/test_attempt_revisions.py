@@ -157,14 +157,18 @@ def test_run_records_base_and_result_and_binds_every_row(tmp_path: Path):
         artifacts = db.query(ArtifactRow).filter_by(attempt_id=attempt.id).all()
         evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
         assert {a.kind for a in artifacts} == {"diff", "process_log", "evaluator_output"}
-        assert evidence and all(e.criterion == "tests pass" for e in evidence)
+        verification = [e for e in evidence if e.evidence_class == "verification"]
+        execution = [e for e in evidence if e.evidence_class == "execution"]
+        assert len(verification) == 1 and verification[0].criterion == "tests pass"
+        assert len(execution) == 1 and execution[0].criterion is None
+        assert execution[0].producer_identity == attempt.agent
         for row in (*artifacts, *evidence):
             assert (row.revision_id, row.tree_sha256) == (revision.id, revision.result_tree_sha256)
-        output = json.loads(Path(db.get(ArtifactRow, evidence[0].artifact_ref).uri).read_text())
+        output = json.loads(Path(db.get(ArtifactRow, verification[0].artifact_ref).uri).read_text())
         assert output["revision"] == {"revision_id": revision.id, "tree_sha256": revision.result_tree_sha256,
                                       "tree_after_check_sha256": revision.result_tree_sha256, "tree_drift": False}
         assert verify_attempt_revision(db, attempt.id) == {
-            "attempt_id": attempt.id, "status": "verified", "problems": [], "artifacts": 3, "evidence": 1}
+            "attempt_id": attempt.id, "status": "verified", "problems": [], "artifacts": 3, "evidence": 2}
 
 
 def test_verification_detects_a_tampered_artifact(tmp_path: Path):
@@ -217,8 +221,10 @@ def test_finish_refuses_an_adapter_result_tree_that_does_not_match(tmp_path: Pat
 def test_finish_refuses_an_attempt_without_a_base_revision(tmp_path: Path):
     with _session() as db:
         _task(db, "TASK-REV-NONE")
+        from sdf_core.recovery import EXECUTOR_ID
+
         db.add(AttemptRow(id="ATTEMPT-NO-REV", task_id="TASK-REV-NONE", status="running", dispatch_key="no-rev",
-                          agent="test", created_at=utcnow()))
+                          agent="test", created_at=utcnow(), executor_id=EXECUTOR_ID))
         db.get(TaskRow, "TASK-REV-NONE").status = "running"
         db.commit()
         (tmp_path / "workspaces" / "ATTEMPT-NO-REV").mkdir(parents=True)
@@ -266,7 +272,7 @@ def _artifact(attempt_id: str, **binding) -> ArtifactRow:
 def _evidence(attempt_id: str, **binding) -> EvidenceRow:
     return EvidenceRow(id=f"EV-{attempt_id}-x"[:120], attempt_id=attempt_id, kind="evaluation", status="PASS",
                        command="c", exit_code=0, artifact_ref=None, confidence=1.0, criterion="tests pass",
-                       measured_at=utcnow(), created_at=utcnow(), **binding)
+                       measured_at=utcnow(), created_at=utcnow(), evidence_class="verification", **binding)
 
 
 @pytest.mark.parametrize("make", [_artifact, _evidence])
@@ -363,8 +369,10 @@ def test_a_check_write_stays_out_of_the_attempt_workspace(tmp_path: Path):
         assert db.get(TaskRow, "TASK-REV-DRIFT").status == "succeeded"
         revision = revision_for_attempt(db, attempt.id)
         evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).order_by(EvidenceRow.id).all()
-        assert [e.status for e in evidence] == ["PASS", "PASS"]
-        for row in evidence:
+        verification = [e for e in evidence if e.evidence_class == "verification"]
+        assert [e.status for e in verification] == ["PASS", "PASS"]
+        assert any(e.evidence_class == "execution" and e.status == "PASS" for e in evidence)
+        for row in verification:
             assert row.evidence_class == "verification"
             assert (row.revision_id, row.tree_sha256) == (revision.id, revision.result_tree_sha256)
             output = json.loads(Path(db.get(ArtifactRow, row.artifact_ref).uri).read_text())
@@ -449,8 +457,11 @@ def test_api_exposes_revision_in_trace_evidence_and_attempt_endpoint(tmp_path: P
     assert revision["base_tree_sha256"] == tree_digest(fixture)
     assert revision["result_tree_sha256"] and revision["base_commit"] is None
     assert revision["evidence_mode"] == "synthetic"
-    evidence_id = next(node["id"] for node in trace["nodes"] if node["kind"] == "evidence")
-    evidence = client.get(f"/evidence/{evidence_id}").json()
+    evidence_bodies = [
+        client.get(f"/evidence/{node['id']}").json()
+        for node in trace["nodes"] if node["kind"] == "evidence"
+    ]
+    evidence = next(body for body in evidence_bodies if body["criterion"] == "command succeeds")
     assert evidence["criterion"] == "command succeeds"
     assert (evidence["revision_id"], evidence["tree_sha256"]) == (revision["id"], revision["result_tree_sha256"])
     body = client.get(f"/attempts/{revision['attempt_id']}/revision").json()

@@ -40,9 +40,11 @@ def test_execution_closes_objective_to_evidence_loop(tmp_path: Path):
         )
         assert attempt.status == "completed"
         assert db.get(TaskRow, "TASK-001").status == "succeeded"
-        evidence = db.query(GraphNodeRow).filter_by(kind="evidence").one()
+        edge = db.query(__import__("sdf_core.db", fromlist=["DecisionEdgeRow"]).DecisionEdgeRow).filter_by(
+            target_id="ASSUMPTION-001", relation="validates").one()
+        evidence = db.get(GraphNodeRow, edge.source_id)
         assert evidence.id.startswith("EVIDENCE-")
-        edge = db.query(__import__("sdf_core.db", fromlist=["DecisionEdgeRow"]).DecisionEdgeRow).filter_by(source_id=evidence.id, relation="validates").one()
+        assert evidence.metadata_json["evidence_class"] == "verification"
         assert edge.relation == "validates"
         evidence_row = db.get(__import__("sdf_core.db", fromlist=["EvidenceRow"]).EvidenceRow, evidence.id)
         assert evidence_row.artifact_ref is not None
@@ -196,7 +198,8 @@ def test_deliberate_retry_preserves_prior_evidence_and_records_lineage(tmp_path:
             for row in db.query(EvidenceRow).filter_by(attempt_id=prior.id).order_by(EvidenceRow.id)
         ]
         assert evidence_after == evidence_before
-        assert db.query(EvidenceRow).filter_by(attempt_id=retried.id).count() == 1
+        assert db.query(EvidenceRow).filter_by(attempt_id=retried.id, evidence_class="verification").count() == 1
+        assert db.query(EvidenceRow).filter_by(attempt_id=retried.id, evidence_class="execution").count() == 1
         diff = db.get(ArtifactRow, f"{retried.id}-DIFF")
         assert "+print('new')" in Path(diff.uri).read_text(encoding="utf-8")
 
@@ -287,7 +290,9 @@ def test_evaluator_artifact_failure_settles_task_and_allows_deliberate_retry(tmp
         assert prior.status == "completed"
         assert db.get(TaskRow, "TASK-ARTIFACT-CRASH").status == "failed"
         prior_evidence = db.query(EvidenceRow).filter_by(attempt_id=prior.id).all()
-        assert prior_evidence == []
+        # The process was observed. The check was not stored: artifact capture failed first.
+        assert [row.evidence_class for row in prior_evidence] == ["execution"]
+        assert prior_evidence[0].status == "PASS"
 
         retried = service.run(
             task_id="TASK-ARTIFACT-CRASH", dispatch_key="artifact-crash-retry",

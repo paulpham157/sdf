@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
+import json
 from pathlib import Path
 import time
 from uuid import uuid4
@@ -21,7 +23,14 @@ from .decision_gate import check_decision_gate
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
-from .acceptance import AcceptanceError, check_hidden_oracle_acceptance, check_verification_acceptance, is_hidden_oracle
+from .acceptance import (
+    AGENT_ROLE,
+    AcceptanceError,
+    EVIDENCE_CLASS_EXECUTION,
+    check_hidden_oracle_acceptance,
+    check_verification_acceptance,
+    is_hidden_oracle,
+)
 from .evaluator import DeterministicEvaluator, Evidence
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
@@ -42,6 +51,7 @@ from .recovery import (
     claim_executor,
     compare_and_swap_attempt,
     compare_and_swap_task,
+    recover_orphaned_attempts,
     release_executor,
     settle_task_if_idle,
 )
@@ -214,14 +224,39 @@ class ExecutionService:
         check_plan_gate(self.db, task_id, require_plan=require_plan_approval)
         # ADR 0033 (#60): no dispatch while a material decision blocks the Task.
         check_decision_gate(self.db, task_id)
-        existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
+        # A replay does not sweep every running Attempt. The key lookup is
+        # the whole check. A new key settles only this Task's dead Attempts,
+        # on a side session, so a replay and an unrelated run are not blocked
+        # on the global set.
+        existing = self.db.scalar(
+            select(AttemptRow)
+            .where(AttemptRow.dispatch_key == dispatch_key)
+            .execution_options(populate_existing=True)
+        )
         if existing:
             if existing.task_id != task_id:
                 raise ValueError(f"dispatch key already belongs to task: {existing.task_id}")
             return BegunAttempt(existing, self.workspaces.root / existing.id, existing=True)
-        task = self.db.get(TaskRow, task_id)
+        _recover_orphans_independently(self.db, task_id)
+        task = self.db.scalar(select(TaskRow).where(TaskRow.id == task_id).with_for_update())
         if task is None:
             raise ValueError(f"task not found: {task_id}")
+        parent = self.db.get(AttemptRow, parent_attempt_id) if parent_attempt_id else None
+        if parent_attempt_id and (parent is None or parent.task_id != task_id):
+            raise ValueError("parent attempt not found for task")
+        if parent is not None:
+            check_retry_parent(self.db, parent)
+        # One running Attempt per Task. The task row lock makes two workers
+        # serialize. The loser sees the winner and raises before any adapter.
+        already_running = self.db.scalar(
+            select(AttemptRow.id).where(
+                AttemptRow.task_id == task_id,
+                AttemptRow.status == AttemptState.RUNNING.value,
+            )
+        )
+        if already_running:
+            self.db.rollback()
+            raise ValueError(f"task {task_id} already has a running attempt")
         if cost_usd < 0:
             raise ValueError("cost_usd must not be negative")
         if latency_ms is not None and latency_ms < 0:
@@ -230,11 +265,6 @@ class ExecutionService:
             raise ValueError("input_tokens must not be negative")
         if output_tokens is not None and output_tokens < 0:
             raise ValueError("output_tokens must not be negative")
-        parent = self.db.get(AttemptRow, parent_attempt_id) if parent_attempt_id else None
-        if parent_attempt_id and (parent is None or parent.task_id != task_id):
-            raise ValueError("parent attempt not found for task")
-        if parent is not None:
-            check_retry_parent(self.db, parent)
         model_tier = retry_tier(parent, model_tier)
         if parent is not None and escalation_reason is None:
             escalation_reason = derived_escalation_reason(parent)
@@ -343,29 +373,25 @@ class ExecutionService:
             self._fail_attempt(task, attempt)
             raise
         binding = {"revision_id": revision.id, "tree_sha256": revision.result_tree_sha256}
+        # Release the revision write before evaluation. Evidence stays out of
+        # the database until the short fenced transaction below, so a long
+        # check does not hold the Attempt row lock and a lost fence does not
+        # keep Evidence.
+        self.db.commit()
         try:
             diff = self.artifacts.capture_diff(artifact_id=f"{attempt_id}-DIFF", before=before, after=workspace, files=result.changed_files)
             process = self.artifacts.capture_process(artifact_id=f"{attempt_id}-LOG", stdout=result.stdout, stderr=result.stderr, exit_code=result.exit_code)
         except Exception:
             self._fail_attempt(task, attempt)
             raise
-        for artifact in (diff, process):
-            self.db.add(ArtifactRow(id=artifact.artifact_id, attempt_id=attempt_id, kind=artifact.kind, uri=str(artifact.path), sha256=artifact.sha256, size_bytes=artifact.size_bytes, created_at=utcnow(), **binding))
-            self.db.add(GraphNodeRow(id=artifact.artifact_id, kind="artifact", title=artifact.kind, source=str(artifact.path), owner="execution", confidence=1.0, created_at=utcnow(), metadata_json=dict(binding)))
-        # PostgreSQL's endpoint-integrity trigger runs per edge row. Flush the
-        # artifact graph nodes first so the trigger can observe them.
-        self.db.flush()
-        for artifact in (diff, process):
-            self.db.add(DecisionEdgeRow(source_kind="artifact", source_id=artifact.artifact_id, target_kind="attempt", target_id=attempt_id, relation="measures", source="execution", owner="sdf", confidence=1.0, created_at=utcnow(), evidence_ref=artifact.artifact_id))
-
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
         if not adapter_succeeded:
-            self._commit_terminal(attempt, task, AttemptState.FAILED, TaskState.FAILED)
+            self._write_fenced_result(
+                attempt, task, diff, process, result, binding, evidence_mode,
+                attempt_state=AttemptState.FAILED, task_state=TaskState.FAILED, evaluation=None,
+                validation_target=None,
+            )
             return attempt
-        # The adapter finished. The Attempt is completed even if evaluation
-        # later crashes; that crash fails the Task and keeps this Attempt.
-        # Still uncommitted, so a lost fence rolls the artifacts back.
-        self._record_adapter_success(attempt, task)
         result_tree = revision.result_tree_sha256
 
         def after_check(evidence: Evidence) -> Evidence:
@@ -390,7 +416,12 @@ class ExecutionService:
                     oracle_policies=oracle_policies,
                 )
         except Exception:
-            self._fail_attempt(task, attempt)
+            self.db.rollback()
+            self._write_fenced_result(
+                attempt, task, diff, process, result, binding, evidence_mode,
+                attempt_state=AttemptState.COMPLETED, task_state=TaskState.FAILED, evaluation=None,
+                validation_target=None,
+            )
             raise
         # Also after the whole evaluation, for an evaluator that does not call
         # ``after_check``: an unobserved row inherits the final tree.
@@ -409,6 +440,11 @@ class ExecutionService:
             evaluation, attempt_agent=attempt.agent, artifact_sha256=diff.sha256,
             requires_hidden=requires_hidden,
         )
+        self._stage_run_artifacts(attempt, diff, process, binding)
+        self._record_execution_evidence(
+            attempt=attempt, diff=diff, process=process, result=result, binding=binding,
+            evidence_mode=evidence_mode,
+        )
         for evidence in evaluation.evidence:
             try:
                 evaluator_artifact = self.artifacts.capture_evaluator_output(
@@ -418,7 +454,10 @@ class ExecutionService:
                               "tree_drift": _drifted(evidence, result_tree)},
                 )
             except Exception:
-                self._fail_attempt(task, attempt)
+                # The check output was not stored. Execution Evidence staged
+                # above stays in this transaction and commits with the fence.
+                # A lost fence rolls it back.
+                self._fence_and_commit(attempt, task, AttemptState.COMPLETED, TaskState.FAILED)
                 raise
             self.db.add(
                 ArtifactRow(
@@ -554,8 +593,86 @@ class ExecutionService:
                     )
                 )
         task_state = {"PASS": TaskState.SUCCEEDED, "FAIL": TaskState.FAILED, "INCONCLUSIVE": TaskState.INCONCLUSIVE}[evaluation.status]
-        self._commit_task_from_evaluating(attempt, task, task_state)
+        self._fence_and_commit(attempt, task, AttemptState.COMPLETED, task_state)
         return attempt
+
+    def _record_execution_evidence(
+        self, *, attempt: AttemptRow, diff, process, result: AdapterResult, binding: dict, evidence_mode: str | None,
+    ) -> None:
+        """Record that the Attempt ran. This is not verification (ADR 0042).
+
+        ``producer_identity`` is the Attempt's agent. A PASS here means the
+        adapter exited 0. It does not accept the artifact, even when
+        ``subject_artifact_sha256`` is the diff digest.
+        """
+
+        now = utcnow()
+        succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
+        status = "PASS" if succeeded else "FAIL"
+        files = [str(name)[:200] for name in result.changed_files[:40]]
+        summary = json.dumps(
+            {
+                "reason": "execution",
+                "adapter_status": result.status,
+                "exit_code": result.exit_code,
+                "changed_files": files,
+                "diff_sha256": diff.sha256,
+                "process_log_sha256": process.sha256,
+            },
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+        evidence_id = _execution_evidence_id(attempt.id)
+        self.db.add(EvidenceRow(
+            id=evidence_id,
+            attempt_id=attempt.id,
+            kind="execution",
+            status=status,
+            command=summary,
+            exit_code=result.exit_code,
+            artifact_ref=process.artifact_id,
+            confidence=1.0,
+            criterion=None,
+            measured_at=now,
+            created_at=now,
+            **({"evidence_mode": evidence_mode} if evidence_mode else {}),
+            **binding,
+            evidence_class=EVIDENCE_CLASS_EXECUTION,
+            producer_identity=attempt.agent,
+            producer_role=AGENT_ROLE,
+            subject_artifact_sha256=diff.sha256,
+            collected_at=now,
+        ))
+        self.db.add(GraphNodeRow(
+            id=evidence_id,
+            kind="evidence",
+            title=status,
+            source=f"execution:{attempt.id}"[:500],
+            owner=(attempt.agent or "agent")[:120],
+            confidence=1.0,
+            created_at=now,
+            metadata_json={
+                "evidence_class": EVIDENCE_CLASS_EXECUTION,
+                "producer_identity": attempt.agent,
+                "producer_role": AGENT_ROLE,
+                "subject_artifact_sha256": diff.sha256,
+                "exit_code": result.exit_code,
+                **binding,
+            },
+        ))
+        self.db.flush()
+        self.db.add(DecisionEdgeRow(
+            source_kind="evidence",
+            source_id=evidence_id,
+            target_kind="attempt",
+            target_id=attempt.id,
+            relation="measures",
+            source="execution",
+            owner="sdf",
+            confidence=1.0,
+            created_at=now,
+            evidence_ref=process.artifact_id,
+        ))
 
     def execute_tool(
         self,
@@ -629,15 +746,59 @@ class ExecutionService:
         self.db.refresh(attempt)
         self.db.refresh(task)
 
-    def _record_adapter_success(self, attempt: AttemptRow, task: TaskRow) -> None:
-        """Move the Attempt to completed and the Task to evaluating. Does not commit."""
+    def _stage_run_artifacts(self, attempt: AttemptRow, diff, process, binding: dict) -> None:
+        for artifact in (diff, process):
+            self.db.add(ArtifactRow(
+                id=artifact.artifact_id, attempt_id=attempt.id, kind=artifact.kind, uri=str(artifact.path),
+                sha256=artifact.sha256, size_bytes=artifact.size_bytes, created_at=utcnow(), **binding,
+            ))
+            self.db.add(GraphNodeRow(
+                id=artifact.artifact_id, kind="artifact", title=artifact.kind, source=str(artifact.path),
+                owner="execution", confidence=1.0, created_at=utcnow(), metadata_json=dict(binding),
+            ))
+        self.db.flush()
+        for artifact in (diff, process):
+            self.db.add(DecisionEdgeRow(
+                source_kind="artifact", source_id=artifact.artifact_id, target_kind="attempt",
+                target_id=attempt.id, relation="measures", source="execution", owner="sdf",
+                confidence=1.0, created_at=utcnow(), evidence_ref=artifact.artifact_id,
+            ))
 
-        if not compare_and_swap_attempt(self.db, attempt, to_status=AttemptState.COMPLETED, executor_scoped=True):
+    def _write_fenced_result(
+        self, attempt, task, diff, process, result, binding, evidence_mode, *,
+        attempt_state: AttemptState, task_state: TaskState, evaluation, validation_target,
+    ) -> None:
+        """Write artifacts and execution Evidence, then fence the status.
+
+        Nothing is committed if the Attempt is no longer running for this
+        executor. ``evaluation`` is unused here: verification rows are added
+        by the success path before :meth:`_fence_and_commit`.
+        """
+
+        del evaluation, validation_target
+        self._stage_run_artifacts(attempt, diff, process, binding)
+        self._record_execution_evidence(
+            attempt=attempt, diff=diff, process=process, result=result, binding=binding,
+            evidence_mode=evidence_mode,
+        )
+        self._fence_and_commit(attempt, task, attempt_state, task_state)
+
+    def _fence_and_commit(
+        self, attempt: AttemptRow, task: TaskRow, attempt_state: AttemptState, task_state: TaskState,
+    ) -> None:
+        """Compare-and-swap the Attempt, then commit this transaction.
+
+        Evidence and artifact rows already staged are committed only when the
+        swap wins. A loss rolls them back.
+        """
+
+        if not compare_and_swap_attempt(self.db, attempt, to_status=attempt_state, executor_scoped=True):
             self.db.rollback()
             raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id)
-        if not compare_and_swap_task(self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING):
-            self.db.rollback()
-            raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id)
+        settle_task_if_idle(self.db, task.id, task_state)
+        self.db.commit()
+        self.db.refresh(attempt)
+        self.db.refresh(task)
 
     def _commit_task_from_evaluating(self, attempt: AttemptRow, task: TaskRow, task_state: TaskState) -> None:
         if not compare_and_swap_task(self.db, task, from_status=TaskState.EVALUATING, to_status=task_state):
@@ -678,6 +839,20 @@ class ExecutionService:
         self.db.refresh(attempt)
         self.db.refresh(task)
         return True
+
+
+
+def _recover_orphans_independently(db: Session, task_id: str | None = None) -> None:
+    """Settle dead Attempts for one Task without committing the caller's work."""
+
+    from sqlalchemy.orm import sessionmaker
+
+    bind = db.get_bind()
+    side = sessionmaker(bind, expire_on_commit=False)()
+    try:
+        recover_orphaned_attempts(side, task_id=task_id)
+    finally:
+        side.close()
 
 
 TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,
@@ -778,12 +953,22 @@ def _overall(previous: str, evidence: tuple[Evidence, ...]) -> str:
     return previous
 
 
+def _execution_evidence_id(attempt_id: str) -> str:
+    candidate = f"EVIDENCE-{attempt_id}-EXEC"
+    if len(candidate) <= 120:
+        return candidate
+    return "EVIDENCE-EXEC-" + hashlib.sha256(attempt_id.encode()).hexdigest()
+
+
 def check_retry_parent(db: Session, parent: AttemptRow) -> None:
     """A retry/escalation parent must be finished and not accepted (#50 review)."""
 
     if parent.status not in TERMINAL_ATTEMPT_STATES:
         raise ValueError(f"parent attempt {parent.id} is {parent.status}; only a finished attempt can be retried")
-    statuses = [row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))]
+    statuses = [
+        row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))
+        if row.evidence_class in (None, "verification")
+    ]
     if parent.status == AttemptState.COMPLETED.value and statuses and all(s == "PASS" for s in statuses):
         raise ValueError(f"parent attempt {parent.id} passed every check; there is nothing to retry")
 

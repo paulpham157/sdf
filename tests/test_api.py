@@ -2,6 +2,7 @@ from tests.auth_support import admin_client
 from tests.check_support import write_checks
 from datetime import datetime, timezone
 
+from sdf_core.adapter import FakeNativeAdapter
 from sdf_core.api import configured_containment, configured_tool_policy
 from sdf_core.api import SessionLocal
 from sdf_core.db import AttemptRow, RuntimeEventRow, TaskRow
@@ -469,11 +470,13 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     ids = {node["id"] for node in trace["nodes"]}
     assert "ASSUMPTION-API-001" in ids
     assert any(node["kind"] == "artifact" for node in trace["nodes"])
-    evidence_id = next(node["id"] for node in trace["nodes"] if node["kind"] == "evidence")
-    evidence_response = client.get(f"/evidence/{evidence_id}")
-    assert evidence_response.status_code == 200
-    assert evidence_response.json()["criterion"] == "command succeeds"
-    assert evidence_response.json()["artifact_ref"].endswith("-OUTPUT")
+    evidence_bodies = [
+        client.get(f"/evidence/{node['id']}").json()
+        for node in trace["nodes"] if node["kind"] == "evidence"
+    ]
+    evidence_response_json = next(body for body in evidence_bodies if body["criterion"] == "command succeeds")
+    assert evidence_response_json["evidence_class"] == "verification"
+    assert evidence_response_json["artifact_ref"].endswith("-OUTPUT")
 
 
 def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
@@ -498,8 +501,176 @@ def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
     assert response.status_code == 200
     assert response.json()["task_status"] == "inconclusive"
     trace = client.get("/tasks/TASK-MISSING-COVERAGE-001/trace").json()
-    evidence = next(node for node in trace["nodes"] if node["kind"] == "evidence")
-    assert evidence["title"] == "INCONCLUSIVE"
+    titles = {node["title"] for node in trace["nodes"] if node["kind"] == "evidence"}
+    assert "INCONCLUSIVE" in titles
+
+
+def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path, monkeypatch):
+    """A POST /run with no dispatch key is rejected and does not run.
+
+    #112 derived a key so the retry would replay. This branch requires the
+    key (ADR 0031 amendment). Two omitted-key requests create nothing. An
+    explicit key runs once, and repeating that key does not run again.
+    """
+
+    class CountingAdapter:
+        provider = "fake"
+        evidence_mode = "synthetic"
+
+        def __init__(self):
+            self.calls = 0
+            self._fake = FakeNativeAdapter("app.py", "print('updated')\n")
+
+        def run(self, *, attempt_id, workspace, instructions):
+            self.calls += 1
+            return self._fake.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
+
+    monkeypatch.chdir(tmp_path)
+    adapter = CountingAdapter()
+    monkeypatch.setattr("sdf_core.api.configured_run_adapter", lambda _db: adapter)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    task_id = "TASK-RUN-RETRY-NO-KEY"
+    created = client.post("/tasks", json={
+        "id": task_id,
+        "title": "retry without a dispatch key",
+        "idempotency_key": "task-run-retry-no-key",
+        "acceptance_criteria": [],
+    })
+    assert created.status_code == 201
+    body = {"fixture_dir": str(fixture), "instructions": "complete the task"}
+    first = client.post(f"/tasks/{task_id}/run", json=body)
+    second = client.post(f"/tasks/{task_id}/run", json=body)
+    assert first.status_code == 422 and second.status_code == 422
+    assert adapter.calls == 0
+    db = SessionLocal()
+    try:
+        assert db.query(AttemptRow).filter_by(task_id=task_id).count() == 0
+        assert db.get(TaskRow, task_id).status == "created"
+    finally:
+        db.close()
+    keyed = client.post(f"/tasks/{task_id}/run", json={**body, "dispatch_key": "dispatch-run-retry-explicit"})
+    assert keyed.status_code == 200, keyed.text
+    again = client.post(f"/tasks/{task_id}/run", json={**body, "dispatch_key": "dispatch-run-retry-explicit"})
+    assert again.status_code == 200, again.text
+    assert again.json()["attempt_id"] == keyed.json()["attempt_id"]
+    assert adapter.calls == 1
+
+
+def test_derived_dispatch_key_is_stable_per_task_and_logical_request():
+    """The fields ADR 0041 hashes, and the ones that must not collide."""
+
+    from sdf_core.dispatch_key import derived_dispatch_key
+
+    fields = dict(
+        fixture_dir="/fixtures/app", instructions="same", criterion_checks={"c": ["a", "b"]},
+        validation_target_kind=None, validation_target_id=None, parent_attempt_id=None, model_tier=None,
+    )
+    first = derived_dispatch_key(task_id="TASK-A", **fields)
+    again = derived_dispatch_key(task_id="TASK-A", **fields)
+    other_task = derived_dispatch_key(task_id="TASK-B", **fields)
+    other_instructions = derived_dispatch_key(task_id="TASK-A", **{**fields, "instructions": "other"})
+    explicit_basic = derived_dispatch_key(task_id="TASK-A", **{**fields, "model_tier": "basic"})
+    reordered = derived_dispatch_key(task_id="TASK-A", **{**fields, "criterion_checks": {"c": ["b", "a"]}})
+    inherit = derived_dispatch_key(task_id="TASK-A", **{**fields, "parent_attempt_id": "ATTEMPT-1", "model_tier": None})
+    named_tier = derived_dispatch_key(task_id="TASK-A", **{**fields, "parent_attempt_id": "ATTEMPT-1", "model_tier": "basic"})
+    other_fixture = derived_dispatch_key(task_id="TASK-A", **{**fields, "fixture_dir": "/fixtures/other"})
+    half_target = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "validation_target_kind": "hypothesis", "validation_target_id": None},
+    )
+    both_target = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "validation_target_kind": "hypothesis", "validation_target_id": "H1"},
+    )
+    keyed = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "criterion_checks": {"d": ["b"], "c": ["a"]}},
+    )
+    keyed_reordered = derived_dispatch_key(
+        task_id="TASK-A", **{**fields, "criterion_checks": {"c": ["a"], "d": ["b"]}},
+    )
+    assert first == again == explicit_basic == half_target
+    assert keyed == keyed_reordered
+    assert first.startswith("keyless-") and len(first) <= 200
+    assert len({first, other_task, other_instructions, reordered, inherit, named_tier, other_fixture, both_target, keyed}) == 9
+
+
+def test_concurrent_keyless_runs_create_one_attempt(tmp_path):
+    """Two overlapping runs of one derived key leave one Attempt and one adapter call."""
+
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from sdf_core.adapter import FakeNativeAdapter
+    from sdf_core.db import Base, TaskRow
+    from sdf_core.dispatch_key import derived_dispatch_key
+    from sdf_core.execution import ExecutionService
+    from sdf_core.model import utcnow
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'race.sqlite'}", connect_args={"timeout": 30})
+
+    @event.listens_for(engine, "connect")
+    def _pragmas(connection, _record):
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    task_id = "TASK-KEYLESS-RACE"
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    key = derived_dispatch_key(
+        task_id=task_id, fixture_dir=str(fixture), instructions="complete the task",
+        criterion_checks=None, validation_target_kind=None, validation_target_id=None,
+        parent_attempt_id=None, model_tier=None,
+    )
+    with factory() as db:
+        db.add(TaskRow(
+            id=task_id, title="race", status="created", idempotency_key="task-keyless-race",
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        db.commit()
+
+    class Adapter:
+        provider = "fake"
+        evidence_mode = "synthetic"
+
+        def __init__(self):
+            self.calls = 0
+            self._lock = threading.Lock()
+            self._fake = FakeNativeAdapter("app.py", "print('updated')\n")
+
+        def run(self, *, attempt_id, workspace, instructions):
+            with self._lock:
+                self.calls += 1
+            return self._fake.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
+
+    adapter = Adapter()
+    barrier = threading.Barrier(2)
+
+    def once():
+        barrier.wait(timeout=10)
+        db = factory()
+        try:
+            service = ExecutionService(
+                db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+                adapter=adapter,
+            )
+            return service.run(
+                task_id=task_id, dispatch_key=key, fixture=fixture, instructions="complete the task", commands=[],
+            ).id
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ids = list(pool.map(lambda _index: once(), (0, 1)))
+    assert ids[0] == ids[1]
+    assert adapter.calls == 1
+    with factory() as db:
+        assert db.query(AttemptRow).filter_by(task_id=task_id).count() == 1
 
 
 def test_scorecard_endpoint_exposes_local_measurement_contract():
@@ -515,4 +686,6 @@ def test_scorecard_endpoint_exposes_local_measurement_contract():
         "escalation_rate",
         "cost_per_accepted_task",
         "escalation_exhaustion_rate",
+        "verified_pass_count",
+        "unverified_legacy_pass_count",
     }

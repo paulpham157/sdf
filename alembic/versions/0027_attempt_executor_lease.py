@@ -5,13 +5,16 @@ Adds nullable columns:
 * ``executor_id`` — the process that moved the Attempt to ``running``.
 * ``executor_heartbeat_at`` — the last heartbeat from that process.
 
-Existing rows stay NULL. NULL is not a lease, and startup does not fail
-those rows: it cannot tell them from a worker that never wrote a lease.
-New runs set both columns in the same commit that enters ``running``.
+Existing rows stay NULL. NULL is not a lease. Startup does not fail those
+rows unless the operator sets ``SDF_RECOVER_UNLEASED_ATTEMPTS=1`` after
+every pre-lease process has stopped. New runs set both columns in the same
+commit that enters ``running``.
 
 Both dialects use ``ADD COLUMN`` (no SQLite table rebuild, so indexes,
 triggers and CHECKs are untouched). The columns are nullable, so the
 append-only triggers on other tables are not involved and no row is rewritten.
+
+``0028_evidence_classes`` revises this revision.
 
 Downgrade drops the columns. Attempts that were running keep their status;
 only the lease is discarded.

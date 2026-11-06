@@ -151,7 +151,8 @@ def test_parent_must_be_finished(tmp_path, monkeypatch):
     parent_id = f"ATTEMPT-RUNNING-{uuid.uuid4().hex[:8]}"
     with SessionLocal() as db:
         db.add(AttemptRow(id=parent_id, task_id=task_id, status="running", dispatch_key=parent_id,
-                          agent="native", model_tier="basic", cost_usd=0.0, created_at=utcnow()))
+                          agent="native", model_tier="basic", cost_usd=0.0, created_at=utcnow(),
+                          executor_id="live-parent", executor_heartbeat_at=utcnow()))
         db.commit()
     retry = _run(task_id, fixture, parent_attempt_id=parent_id)
     assert retry.status_code == 409 and "only a finished attempt" in retry.json()["detail"]

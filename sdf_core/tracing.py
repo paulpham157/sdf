@@ -2,7 +2,10 @@
 
 Off by default.  With ``SDF_OTEL_ENABLED`` unset nothing here imports the
 OpenTelemetry SDK, no provider or exporter exists, and :func:`span` returns a
-shared no-op context manager.  When enabled, spans are exported over OTLP/HTTP
+shared no-op context manager.  FastAPI depends on the OpenTelemetry API and
+may import that API while the app is constructed; the API's proxy providers
+do not export.  This module still does not import the SDK unless tracing is
+enabled.  When enabled, spans are exported over OTLP/HTTP
 (or to the console for development); any OTLP backend works - Jaeger, Grafana
 Tempo, Langfuse, LangSmith - through the standard ``OTEL_*`` variables.  The
 API reads them from the environment *and* the repo-root ``.env``:
@@ -576,7 +579,15 @@ def instrument_sqlalchemy(engines: Any, environ: Mapping[str, str] | None = None
     if not isinstance(engines, (list, tuple)):
         engines = [engines]
     unique = list({id(e): e for e in engines if e is not None}.values())
-    SQLAlchemyInstrumentor().instrument(engines=unique, tracer_provider=_state.provider, enable_commenter=False)
+    instrumentor = SQLAlchemyInstrumentor()
+    # A dependency conflict makes instrument() return None without attaching.
+    # Reporting that as enabled would hide a silent no-op.
+    attached = instrumentor.instrument(
+        engines=unique, tracer_provider=_state.provider, enable_commenter=False,
+    )
+    if not attached and not instrumentor._is_instrumented_by_opentelemetry:
+        _log.warning("SQLAlchemy instrumentation did not attach; DB spans stay off")
+        return False
     _state.db_instrumented = True
     return True
 

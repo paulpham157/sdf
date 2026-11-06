@@ -133,18 +133,32 @@ hermetic tests.
 
 **Who is live.** `begin` stamps `executor_id` (this process) and
 `executor_heartbeat_at` in the same commit that enters `running`, and holds
-the claim on the `ExecutionService` until the Attempt is terminal.
+the claim on the `ExecutionService` until the Attempt is terminal. Before
+that, the process holds a lock that the operating system or PostgreSQL
+releases when the process dies: an exclusive `flock` beside a SQLite file,
+or a session advisory lock on PostgreSQL.
 
-- This process's id is live only while that object is still alive. Dropping
-  it is the in-process crash: the next startup or `/run` fails the Attempt
-  even if the heartbeat is fresh.
-- A different `executor_id` is live while its heartbeat is within 30 seconds.
-  A heartbeat older than that, or a null heartbeat on a leased row, is dead.
-  The refresher rewrites the heartbeat about every 10 seconds so a long run
-  in a live process does not age out.
-- A running row with **no** `executor_id` is not swept. Startup cannot tell
-  it from a worker that never took a lease, including rows written before
-  migration `0027`. New runs always take a lease.
+- This process's id stays live while the process is alive. Dropping the
+  `ExecutionService` (the request ended, or a material decision left the
+  Attempt running, ADR 0033) is not death and is not labeled `killed`.
+  A forked child mints its own id; it does not keep the parent's id and
+  then treat the parent's Attempt as abandoned. Another process does not
+  settle these rows while this process still holds the lock.
+- A different `executor_id` is live while its process holds that lock. A
+  stale heartbeat does not make it dead. A fresh heartbeat does not make it
+  live after the lock is gone. The heartbeat is not the cross-process fence.
+- In-memory SQLite has no file and no second OS process. There the foreign
+  id is judged by the heartbeat (30 seconds). A held object in this process
+  is never reaped because the heartbeat is old.
+- A running row with **no** `executor_id` is not swept on startup. That
+  includes Attempts left `running` by a process from before migration
+  `0027`. Sweeping them would also fail a pre-lease process that is still
+  alive. New runs always take a lease. An operator who has stopped every
+  pre-lease process may set `SDF_RECOVER_UNLEASED_ATTEMPTS=1` for one
+  startup. That fails unleased `running` rows only. It does not fail a row
+  whose executor lock or in-process claim is held. Setting it while an old
+  process is still running will fail that process's Attempts. That is a
+  deployment decision; the default is off.
 
 **What changes.** A dead leased Attempt moves `running` → `failed`, and
 `error_class` becomes `killed` only when it was empty. If the Task is
@@ -172,16 +186,28 @@ does not call the adapter. A new key can enter `ready` (the Task is
 
 **Boundaries.**
 
-- A hard crash of another OS process is indistinguishable from a live
-  neighbor until its heartbeat is older than 30 seconds. Startup does not
-  reap a fresh foreign heartbeat. The next `/run` after the lease expires
-  does. This window is why a restart can still see `running` → `ready`
-  refused until the lease is stale.
-- In-memory SQLite tests share one connection, so they do not run the
-  heartbeat thread. File SQLite and PostgreSQL use the same compare-and-swap.
-- No sweep of every `running` row. A live claim and a fresh foreign
-  heartbeat stay `running`.
+- On file SQLite and PostgreSQL, a dead process is visible as soon as its
+  lock is released. Recovery does not wait out a heartbeat, and it does not
+  reap a process that still holds the lock.
+- The same `dispatch_key` is one Attempt across connections that share the
+  database, not only inside one process. The unique key is the fence. The
+  loser does not call the adapter.
+- In-memory SQLite cannot see another OS process. Its foreign-executor rule
+  is the heartbeat compared on the database clock, not the host's
+  `utcnow`, and only there.
+- `finish` does not update the Attempt row until evaluation has returned.
+  Execution Evidence and verification Evidence commit in that same short
+  transaction. If the compare-and-swap loses, the transaction rolls back
+  and the Evidence is not kept. A second key on a Task that already has a
+  running Attempt is rejected before the adapter runs.
+- `flock` is not a reliable lock on NFS. A deployment that puts the SQLite
+  file on NFS does not get this fence. PostgreSQL advisory locks follow the
+  database connection, not the filesystem.
+- No sweep of every `running` row. Unleased rows stay `running` until the
+  operator sets `SDF_RECOVER_UNLEASED_ATTEMPTS=1` after pre-lease processes
+  are stopped.
 - Not exactly-once for external effects. The adapter for one key runs at
-  most once in this host. A crash can mean that call already reached a
-  sandbox. Recovery does not repeat it. A new key can. See the ADR 0031
-  amendment.
+  most once. Process death does not prove a remote sandbox has exited. A
+  new key can start another sandbox that overlaps one the dead process
+  already created. Recovery does not start that key, and it does not repeat
+  the old key. See the ADR 0031 amendment.

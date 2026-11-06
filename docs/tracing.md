@@ -10,7 +10,7 @@ export SDF_OTEL_ENABLED=1
 
 | Variable | Meaning |
 | --- | --- |
-| `SDF_OTEL_ENABLED` | `1`/`true` turns tracing on. Unset: no SDK import, no overhead. |
+| `SDF_OTEL_ENABLED` | `1`/`true` turns tracing on. Unset: the SDK is not imported, no provider or exporter is built, and nothing is sent. |
 | `SDF_OTEL_EXPORTER` | `otlp` (default) or `console` (dev; prints spans to stdout). Falls back to `OTEL_TRACES_EXPORTER`. |
 | `SDF_OTEL_DB` | `1` adds SQLAlchemy spans (statements without values). |
 | `OTEL_SERVICE_NAME` | Defaults to `sdf-core`. |
@@ -18,6 +18,12 @@ export SDF_OTEL_ENABLED=1
 | `OTEL_EXPORTER_OTLP_HEADERS` | Backend auth, `key=value,key2=value2` (URL-encode spaces as `%20`). Never logged or put on spans. |
 | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Standard sampling, e.g. `parentbased_traceidratio` / `0.1`. Process environment only. |
 | `OTEL_SDK_DISABLED=true`, `OTEL_TRACES_EXPORTER=none` | Keep tracing off. |
+
+FastAPI 0.162 depends on the OpenTelemetry API and can record its own traces,
+metrics, logs, and OTLP exporters (`FASTAPI_OTEL_AUTO_CONFIGURE`). The SDF app
+turns that native pipeline off, including when the environment variable is
+set. Importing the API does not start the SDK. Server and database spans
+still come only from `sdf_core.tracing` when `SDF_OTEL_ENABLED` is set.
 
 The API reads these from the environment and the repo-root `.env`
 (sampler, timeout, compression and `OTEL_RESOURCE_ATTRIBUTES` from the

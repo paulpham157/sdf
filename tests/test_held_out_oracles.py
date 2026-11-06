@@ -447,7 +447,9 @@ def test_honest_subject_is_accepted_on_the_held_out_and_randomized_rows(tmp_path
         "randomized property": ["hidden-property"],
     }, assumption=assumption)
     assert body["task_status"] == "succeeded", body
-    rows = {row.criterion: row for row in _rows(body["attempt_id"])}
+    rows = {
+        row.criterion: row for row in _rows(body["attempt_id"]) if row.evidence_class == "verification"
+    }
     assert set(rows) == {"visible example", "held-out case", "randomized property"}
     for row in rows.values():
         assert row.status == "PASS", (row.criterion, row.stderr)
@@ -561,6 +563,7 @@ def test_orm_rejects_an_unknown_oracle_visibility():
         db.add(EvidenceRow(
             id="EV-BAD-VIS", attempt_id="ATTEMPT-VIS", kind="evaluation", status="PASS",
             command="c", confidence=1.0, created_at=utcnow(), oracle_visibility="secret",
+            evidence_class="verification",
             **bound(db, "ATTEMPT-VIS"),
         ))
         with pytest.raises(ValueError, match="oracle_visibility"):

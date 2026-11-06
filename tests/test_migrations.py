@@ -23,11 +23,32 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
     assert "measured_at" in {column["name"] for column in inspector.get_columns("evidence")}
 
 
+def test_executor_lease_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monkeypatch):
+    """0027 adds the lease columns; downgrading it to 0026 removes them."""
+
+    database_url = f"sqlite:///{tmp_path / 'lease.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert {"executor_id", "executor_heartbeat_at"} <= names
+        command.downgrade(config, "0026_oracle_visibility")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert "executor_id" not in names and "executor_heartbeat_at" not in names
+        command.upgrade(config, "head")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert {"executor_id", "executor_heartbeat_at"} <= names
+    finally:
+        engine.dispose()
+
+
 def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0027_attempt_executor_lease"]
+    assert script.get_heads() == ["0028_evidence_classes"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 
@@ -48,6 +69,7 @@ def test_evidence_rows_are_append_only_at_session_boundary():
             kind="evaluation", status="PASS", command="pytest", exit_code=0,
             artifact_ref="ARTIFACT-IMMUTABLE-001", confidence=1.0,
             criterion="tests pass", measured_at=utcnow(), created_at=utcnow(),
+            evidence_class="verification",
             **bound(db, "ATTEMPT-IMMUTABLE-001"),
         )
         db.add(row)
@@ -105,13 +127,13 @@ def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkey
 
     with sessionmaker(engine, expire_on_commit=False)() as db:
         db.add(EvidenceRow(id="EV-LEGACY-2", attempt_id="ATTEMPT-LEGACY", kind="evaluation", status="PASS",
-                           command="c", confidence=1.0, created_at=utcnow()))
+                           command="c", confidence=1.0, created_at=utcnow(), evidence_class="verification"))
         db.commit()
         db.add(AttemptRow(id="ATTEMPT-NEW", task_id="T", status="completed", dispatch_key="new", agent="x",
                           created_at=utcnow()))
         db.commit()
         db.add(EvidenceRow(id="EV-NEW", attempt_id="ATTEMPT-NEW", kind="evaluation", status="PASS",
-                           command="c", confidence=1.0, created_at=utcnow()))
+                           command="c", confidence=1.0, created_at=utcnow(), evidence_class="verification"))
         with pytest.raises(RevisionBindingError, match="created after migration 0023"):
             db.commit()
         db.rollback()

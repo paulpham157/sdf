@@ -248,7 +248,7 @@ def test_live_evidence_alone_does_not_make_a_routing_sample(db):
                       evidence_mode="live", created_at=utcnow()))
     db.add(EvidenceRow(id="E-PLAN", attempt_id="A-PLAN", kind="evaluation", status="PASS", command="c",
                        exit_code=0, confidence=1.0, criterion="c", evidence_mode="live", created_at=utcnow(),
-                       **bound(db, "A-PLAN")))
+                       evidence_class="verification", **bound(db, "A-PLAN")))
     db.flush()
     q = qualify_agents(db, ["pi"])["pi"]
     assert not q.qualified and q.reason == "no finished live attempt measured"

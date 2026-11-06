@@ -83,7 +83,8 @@ def test_claude_settings_file_pins_endpoint_and_moves_the_key_to_a_helper(tmp_pa
         env["ANTHROPIC_API_KEY"] = key
     (tmp_path / ".config/sdf").mkdir(parents=True)
     (tmp_path / ".config/sdf/agent-env.sh").write_text(f"export ANTHROPIC_API_KEY='{key}'\n")
-    out = subprocess.run(["node", "-e", _CLAUDE_TRUST_WORKSPACE, "/tmp/sdf/W"], env=env, capture_output=True,
+    node = shutil.which("node")
+    out = subprocess.run([node, "-e", _CLAUDE_TRUST_WORKSPACE, "/tmp/sdf/W"], env=env, capture_output=True,
                          text=True, check=True).stdout
     path = out.strip().splitlines()[-1]
     assert path == str(tmp_path) + CLAUDE_SETTINGS_SUFFIX
@@ -113,6 +114,6 @@ def test_pi_seed_writes_default_project_trust(tmp_path):
            "PI_MODEL": "m", "SDF_TEST_API_KEY": "k-secret"}
     (tmp_path / ".pi/agent").mkdir(parents=True)
     (tmp_path / ".pi/agent/settings.json").write_text('{"theme":"dark","defaultProjectTrust":"never"}')
-    subprocess.run(["node", "-e", _PI_MODELS, "SDF_TEST_API_KEY"], env=env, capture_output=True, text=True, check=True)
+    subprocess.run([shutil.which("node"), "-e", _PI_MODELS, "SDF_TEST_API_KEY"], env=env, capture_output=True, text=True, check=True)
     st = json.loads((tmp_path / ".pi/agent/settings.json").read_text())
     assert st == {"theme": "dark", "defaultProjectTrust": "always"}

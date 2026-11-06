@@ -474,14 +474,32 @@ class LiveRunAdapter:
 
         if not sandbox_id or self._live_confirmed == attempt_id:
             return
-        from .db import AttemptRow
+        from sqlalchemy import or_, update
 
-        attempt = self.db.get(AttemptRow, attempt_id)
-        if attempt is None:
-            return
-        attempt.evidence_mode = self.evidence_mode
-        self.db.commit()
-        self._live_confirmed = attempt_id
+        from .db import AttemptRow
+        from .recovery import current_executor_id
+
+        # A recovered Attempt is not promoted. Same connection as the run:
+        # a second connection deadlocks the in-memory SQLite tests.
+        nested = self.db.begin_nested()
+        result = self.db.execute(
+            update(AttemptRow)
+            .where(
+                AttemptRow.id == attempt_id,
+                AttemptRow.status == "running",
+                or_(AttemptRow.executor_id.is_(None), AttemptRow.executor_id == current_executor_id()),
+                AttemptRow.evidence_mode != self.evidence_mode,
+            )
+            .values(evidence_mode=self.evidence_mode)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 1:
+            nested.commit()
+            self.db.commit()
+            self.db.expire_all()
+            self._live_confirmed = attempt_id
+        else:
+            nested.rollback()
 
     def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
         # Checked in configured_run_adapter() too; kept for direct callers.

@@ -30,6 +30,7 @@ from .db import (
 from .escalation import ModelTier
 from .adapter import FakeNativeAdapter
 from .execution import ExecutionService
+from .recovery import AttemptFenceError, start_executor_heartbeat
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
 from .run_adapter import RunBusyError, configured_run_adapter, run_slot
@@ -193,8 +194,10 @@ async def _lifespan(_app: FastAPI):
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
-    # ADR 0029: fail Attempts whose executor lease died with the previous process.
-    # A live lease (this process's claim, or a fresh heartbeat from another) is left running.
+    # Hold this process's executor lock before recovery, then fail Attempts
+    # whose process is gone. A lock that is still held is left running, even
+    # when its heartbeat is old. RuntimeController.recover is not this path.
+    start_executor_heartbeat(SessionLocal)
     _recover_orphaned_attempts()
     # ADR 0024: off unless SDF_OTEL_ENABLED; spans never leave SDF Core for a sandbox.
     # SDF_OTEL_* / OTEL_* may live in the repo-root .env like every other setting.
@@ -204,14 +207,15 @@ async def _lifespan(_app: FastAPI):
         tracing.instrument_fastapi(_app)
         # SessionLocal owns its own engine; the instrumentor is a singleton, so pass both at once.
         tracing.instrument_sqlalchemy([engine, SessionLocal.kw.get("bind")], otel_env)
-    from .recovery import start_executor_heartbeat
-    start_executor_heartbeat(SessionLocal)
     try:
         yield
     finally:
         # A graceful stop drops claims that no request still holds. A request
         # still inside its Attempt keeps the claim, so it is not failed here.
-        _recover_orphaned_attempts()
+        try:
+            _recover_orphaned_attempts()
+        except Exception:
+            _log.warning("shutdown orphan settlement failed", exc_info=True)
         if owned:
             tracing.shutdown()  # uninstrument app and DB, flush queued spans
 
@@ -226,8 +230,22 @@ def _recover_orphaned_attempts() -> None:
         db.close()
 
 
+# FastAPI 0.162 records native traces, metrics, and exception logs (messages
+# and stack traces) unless this is set, and builds OTLP exporters when
+# FASTAPI_OTEL_AUTO_CONFIGURE=true. ADR 0024 keeps that pipeline off: no SDK
+# provider, no exporter, and no second span path. An explicit auto_configure
+# of False overrides the environment variable. Server and DB spans come only
+# from sdf_core.tracing when SDF_OTEL_ENABLED is set.
+FASTAPI_TELEMETRY_OFF: dict[str, Any] = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
-              docs_url=None, redoc_url=None, openapi_url=None)
+              docs_url=None, redoc_url=None, openapi_url=None, telemetry=FASTAPI_TELEMETRY_OFF)
 
 
 _log = get_logger("api")
@@ -379,6 +397,18 @@ class ObservationRequest(BaseModel):
     mode: Literal["synthetic", "live"]
 
 
+class OutcomeEvidenceRequest(BaseModel):
+    """A business result for an Objective. Not Attempt verification (ADR 0042)."""
+
+    verifier_identity: str = Field(min_length=1, max_length=120)
+    verifier_role: str = Field(default="stakeholder", min_length=1, max_length=32)
+    status: Literal["PASS", "FAIL", "INCONCLUSIVE"] = "PASS"
+    summary: str = Field(min_length=1, max_length=4000)
+    expires_at: datetime | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    criterion: str | None = Field(default=None, max_length=500)
+
+
 def configured_tool_policy() -> AllowlistPolicy:
     """Build the server-side allowlist; an unset list fails closed.
 
@@ -495,7 +525,8 @@ def resolve_registered_checks(
 
 class EvidenceResponse(BaseModel):
     id: str
-    attempt_id: str
+    attempt_id: str | None = None
+    objective_id: str | None = None
     kind: str
     status: str
     command: str
@@ -508,7 +539,7 @@ class EvidenceResponse(BaseModel):
     revision_id: str | None = None
     tree_sha256: str | None = None
     evidence_mode: str | None = None
-    # ADR 0039. Null on Evidence written before migration 0025.
+    # ADR 0039 / ADR 0042. Null only on Evidence written before a class was required.
     evidence_class: str | None = None
     producer_identity: str | None = None
     producer_role: str | None = None
@@ -708,22 +739,18 @@ def get_task_trace(task_id: str, db: Session = Depends(get_db)):
     }
 
 
-@app.get("/evidence/{evidence_id}", response_model=EvidenceResponse)
-def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
-    evidence = db.get(EvidenceRow, evidence_id)
-    if evidence is None:
-        raise HTTPException(status_code=404, detail="evidence not found")
-    criterion = evidence.criterion
+def evidence_payload(evidence: EvidenceRow) -> dict[str, Any]:
     return {
         "id": evidence.id,
         "attempt_id": evidence.attempt_id,
+        "objective_id": evidence.objective_id,
         "kind": evidence.kind,
         "status": evidence.status,
         "command": evidence.command,
         "exit_code": evidence.exit_code,
         "artifact_ref": evidence.artifact_ref,
         "confidence": evidence.confidence,
-        "criterion": criterion,
+        "criterion": evidence.criterion,
         "revision_id": evidence.revision_id,
         "tree_sha256": evidence.tree_sha256,
         "evidence_mode": evidence.evidence_mode,
@@ -740,6 +767,14 @@ def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
         "oracle_visibility": evidence.oracle_visibility,
         "input_seed": evidence.input_seed,
     }
+
+
+@app.get("/evidence/{evidence_id}", response_model=EvidenceResponse)
+def get_evidence(evidence_id: str, db: Session = Depends(get_db)):
+    evidence = db.get(EvidenceRow, evidence_id)
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="evidence not found")
+    return evidence_payload(evidence)
 
 
 @app.get("/attempts/{attempt_id}/revision")
@@ -979,6 +1014,8 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RunBusyError as exc:
             raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        except AttemptFenceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ValueError, FileExistsError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
@@ -1078,6 +1115,100 @@ def record_outcome_observation(objective_id: str, payload: ObservationRequest, r
         "source": payload.source,
         "mode": payload.mode,
     }
+
+
+def _aware_expiry(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+@app.post("/objectives/{objective_id}/evidence", status_code=status.HTTP_201_CREATED, response_model=EvidenceResponse)
+def record_outcome_evidence(objective_id: str, payload: OutcomeEvidenceRequest, request: Request,
+                            db: Session = Depends(get_db)):
+    """Record Outcome Evidence on an Objective.
+
+    The row is not Attempt Evidence and it does not validate a Task (ADR 0042).
+    ``verifier_role`` cannot be ``agent``.
+    """
+
+    get_objective_node(db, objective_id)
+    if payload.verifier_role == "agent":
+        raise HTTPException(status_code=422, detail="outcome evidence verifier_role cannot be agent")
+    verifier = payload.verifier_identity.strip()
+    if not verifier:
+        raise HTTPException(status_code=422, detail="outcome evidence requires a verifier_identity")
+    summary = payload.summary.strip()
+    if not summary:
+        raise HTTPException(status_code=422, detail="outcome evidence requires a summary")
+    principal = getattr(getattr(request.state, "principal", None), "name", None) or "sdf"
+    now = datetime.now(timezone.utc)
+    evidence_id = f"EVIDENCE-OUTCOME-{uuid4().hex}"
+    row = EvidenceRow(
+        id=evidence_id,
+        attempt_id=None,
+        objective_id=objective_id,
+        kind="outcome",
+        status=payload.status,
+        command=summary,
+        exit_code=None,
+        artifact_ref=None,
+        confidence=payload.confidence,
+        criterion=payload.criterion,
+        measured_at=now,
+        evidence_mode="synthetic",
+        created_at=now,
+        evidence_class="outcome",
+        producer_identity=principal,
+        producer_role="operator",
+        verifier_identity=verifier,
+        verifier_role=payload.verifier_role,
+        collected_at=now,
+        expires_at=_aware_expiry(payload.expires_at),
+    )
+    db.add(row)
+    db.add(GraphNodeRow(
+        id=evidence_id,
+        kind="evidence",
+        title=payload.status,
+        source=f"objective:{objective_id}"[:500],
+        owner=verifier[:120],
+        confidence=payload.confidence,
+        created_at=now,
+        metadata_json={
+            "evidence_class": "outcome",
+            "objective_id": objective_id,
+            "verifier_identity": verifier,
+            "verifier_role": payload.verifier_role,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "criterion": payload.criterion,
+        },
+    ))
+    db.flush()
+    db.add(DecisionEdgeRow(
+        source_kind="evidence",
+        source_id=evidence_id,
+        target_kind="objective",
+        target_id=objective_id,
+        relation="measures",
+        source="api",
+        owner=principal[:120],
+        confidence=payload.confidence,
+        created_at=now,
+    ))
+    db.commit()
+    return evidence_payload(row)
+
+
+@app.get("/objectives/{objective_id}/evidence", response_model=list[EvidenceResponse])
+def list_objective_evidence(objective_id: str, db: Session = Depends(get_db)):
+    get_objective_node(db, objective_id)
+    rows = db.scalars(
+        select(EvidenceRow).where(EvidenceRow.objective_id == objective_id).order_by(EvidenceRow.created_at)
+    )
+    return [evidence_payload(row) for row in rows]
 
 
 @app.get("/objectives/{objective_id}/impact")

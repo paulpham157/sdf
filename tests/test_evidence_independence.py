@@ -437,14 +437,19 @@ def test_honest_helper_from_the_fixture_still_passes(tmp_path):
     assert evidence.producer_identity == EVALUATOR_IDENTITY
 
 
-def test_a_coverage_gap_is_not_verification_evidence(tmp_path):
+def test_a_coverage_gap_is_verification_and_cannot_accept(tmp_path):
     result = DeterministicEvaluator().evaluate(
         attempt_id="ATTEMPT-GAP", workspace=tmp_path, criteria=["needs a check"], criterion_checks={},
     )
     gap = result.evidence[0]
     assert gap.status == "INCONCLUSIVE"
-    assert gap.evidence_class is None
-    assert gap.verifier_identity is None
+    assert gap.evidence_class == "verification"
+    assert gap.verifier_identity == EVALUATOR_IDENTITY
+    assert gap.stderr.startswith("coverage_gap:")
+    assert gap.oracle_digest is None
+    assert gap.subject_artifact_sha256 is None
+    with pytest.raises(AcceptanceError, match="does not match"):
+        check_verification_acceptance(gap, attempt_agent="native", artifact_sha256="a" * 64)
 
 
 # --- acceptance gate ----------------------------------------------------------
@@ -549,7 +554,10 @@ def test_run_records_verification_bound_to_the_diff_artifact(tmp_path):
     assert body["task_status"] == "succeeded", body
     with SessionLocal() as db:
         attempt = db.get(AttemptRow, body["attempt_id"])
-        rows = list(db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt.id)))
+        rows = [
+            row for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt.id))
+            if row.evidence_class == "verification"
+        ]
         assert len(rows) == 1
         row = rows[0]
         diff = db.scalars(select(ArtifactRow).where(
@@ -594,7 +602,10 @@ def test_script_and_python_c_passes_are_accepted(tmp_path):
     assert body["task_status"] == "succeeded", body
     with SessionLocal() as db:
         attempt = db.get(AttemptRow, body["attempt_id"])
-        rows = list(db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt.id)))
+        rows = [
+            row for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt.id))
+            if row.evidence_class == "verification"
+        ]
         assert {row.command for row in rows} == {
             "python3 -c from calc import add; assert add(2, 3) == 5",
             "python3 checks/run.py",

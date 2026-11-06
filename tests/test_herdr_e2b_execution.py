@@ -138,7 +138,8 @@ def test_execution_service_evaluates_an_interactive_herdr_attempt_whose_turn_end
 
     assert db.get(TaskRow, "TASK-CALC").status == "succeeded"
     assert relations == {"validates"}
-    assert [(e.criterion, e.status) for e in db.query(EvidenceRow).filter_by(attempt_id=attempt.id)] == [
+    assert [(e.criterion, e.status) for e in db.query(EvidenceRow).filter_by(
+        attempt_id=attempt.id, evidence_class="verification")] == [
         ("add returns the sum", "PASS")
     ]
     assert [(e.kind.value, e.status.value) for e in controller.events] == [
