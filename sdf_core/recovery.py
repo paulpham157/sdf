@@ -58,24 +58,70 @@ def claim_executor(owner: object, attempt: AttemptRow) -> None:
     attempt.executor_heartbeat_at = utcnow()
 
 
+class AttemptFenceError(ValueError):
+    """This process cannot settle the Attempt (ADR 0041).
+
+    The row was not ``running`` for ``EXECUTOR_ID``. Callers must not write
+    the Attempt or its Task after this.
+    """
+
+    def __init__(self, attempt_id: str, *, status: str | None, executor_id: str | None):
+        self.attempt_id = attempt_id
+        self.status = status
+        self.executor_id = executor_id
+        super().__init__(
+            f"attempt {attempt_id} is not running "
+            f"(status={status!r}, executor_id={executor_id!r})"
+        )
+
+
+def settle_owned_attempt(db: Session, attempt_id: str, target: str, **columns: object) -> AttemptRow:
+    """Set status only while the row is ``running`` for this executor.
+
+    The WHERE clause is the fence. Zero rows leaves the Attempt and the Task
+    untouched. This does not commit.
+    """
+
+    result = db.execute(
+        update(AttemptRow)
+        .where(
+            AttemptRow.id == attempt_id,
+            AttemptRow.status == AttemptState.RUNNING.value,
+            AttemptRow.executor_id == EXECUTOR_ID,
+        )
+        .values(status=target, **columns)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        attempt = db.get(AttemptRow, attempt_id, populate_existing=True)
+        status = None if attempt is None else attempt.status
+        owner = None if attempt is None else attempt.executor_id
+        raise AttemptFenceError(attempt_id, status=status, executor_id=owner)
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is not None:
+        attempt.status = target
+        for key, value in columns.items():
+            setattr(attempt, key, value)
+    return attempt
+
+
 def executor_is_live(attempt: AttemptRow, *, now: datetime | None = None) -> bool:
-    """True when some executor still owns this running Attempt."""
+    """True when some executor still owns this running Attempt.
+
+    A stale heartbeat is dead even if this process still holds the service
+    object (a pause or a skewed clock). A fresh heartbeat from this process
+    counts only while that object is still alive.
+    """
 
     now = now or utcnow()
     with _lock:
         held_here = attempt.id in _owners
-    # This process still has the object that called begin. A crashed caller
-    # that only dropped that object (the host-crash test) is not held.
-    if held_here and attempt.executor_id in (None, EXECUTOR_ID):
-        return True
     if not attempt.executor_id or attempt.executor_heartbeat_at is None:
         return False
     age = now - _as_utc(attempt.executor_heartbeat_at)
     if age > LEASE_TTL:
         return False
     if attempt.executor_id == EXECUTOR_ID:
-        # We stamped it, and the owner object is gone. Do not wait out the
-        # lease: this process is not executing it.
         return held_here
     return True
 

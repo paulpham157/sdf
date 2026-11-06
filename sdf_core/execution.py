@@ -19,10 +19,12 @@ from .db import (
 )
 from .decision_gate import check_decision_gate
 from .recovery import (
+    AttemptFenceError,
     claim_executor,
     compare_and_swap_attempt,
     compare_and_swap_task,
     recover_orphaned_attempts,
+    settle_owned_attempt,
 )
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
@@ -200,9 +202,17 @@ class ExecutionService:
         check_decision_gate(self.db, task_id)
         # ADR 0041: settle expired/dead orphans before looking up the key or
         # moving the Task out of running, so a /run after the lease expires
-        # does not need another process restart.
-        recover_orphaned_attempts(self.db)
-        existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
+        # does not need another process restart. Use a side session so this
+        # does not commit the caller's unit of work (a Coordinator run).
+        _recover_orphans_independently(self.db)
+        cached_task = self.db.get(TaskRow, task_id)
+        if cached_task is not None:
+            self.db.expire(cached_task)
+        existing = self.db.scalar(
+            select(AttemptRow)
+            .where(AttemptRow.dispatch_key == dispatch_key)
+            .execution_options(populate_existing=True)
+        )
         if existing:
             if existing.task_id != task_id:
                 raise ValueError(f"dispatch key already belongs to task: {existing.task_id}")
@@ -341,12 +351,13 @@ class ExecutionService:
 
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
         new_attempt_status = AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
-        # ADR 0041: compare-and-swap so recovery cannot be overwritten and a
-        # completed Attempt cannot be marked killed.
-        if not compare_and_swap_attempt(
-            self.db, attempt, from_status=AttemptState.RUNNING, to_status=new_attempt_status,
-        ):
-            raise ValueError(f"attempt {attempt_id} is not running")
+        # ADR 0041: compare-and-swap on status and executor_id so recovery
+        # cannot be overwritten and another executor cannot finish this row.
+        try:
+            attempt = settle_owned_attempt(self.db, attempt_id, new_attempt_status.value)
+        except AttemptFenceError:
+            self.db.rollback()
+            raise
         if not compare_and_swap_task(
             self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING,
         ):
@@ -614,6 +625,20 @@ class ExecutionService:
                 self.db, task, from_status=TaskState.EVALUATING, to_status=TaskState.FAILED,
             )
         self.db.commit()
+
+
+
+def _recover_orphans_independently(db: Session) -> None:
+    """Run orphan recovery without committing the caller's transaction."""
+
+    from sqlalchemy.orm import sessionmaker
+
+    bind = db.get_bind()
+    side = sessionmaker(bind, expire_on_commit=False)()
+    try:
+        recover_orphaned_attempts(side)
+    finally:
+        side.close()
 
 
 TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,

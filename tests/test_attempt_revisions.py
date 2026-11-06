@@ -217,8 +217,10 @@ def test_finish_refuses_an_adapter_result_tree_that_does_not_match(tmp_path: Pat
 def test_finish_refuses_an_attempt_without_a_base_revision(tmp_path: Path):
     with _session() as db:
         _task(db, "TASK-REV-NONE")
+        from sdf_core.recovery import EXECUTOR_ID
+
         db.add(AttemptRow(id="ATTEMPT-NO-REV", task_id="TASK-REV-NONE", status="running", dispatch_key="no-rev",
-                          agent="test", created_at=utcnow()))
+                          agent="test", created_at=utcnow(), executor_id=EXECUTOR_ID))
         db.get(TaskRow, "TASK-REV-NONE").status = "running"
         db.commit()
         (tmp_path / "workspaces" / "ATTEMPT-NO-REV").mkdir(parents=True)

@@ -23,6 +23,27 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
     assert "measured_at" in {column["name"] for column in inspector.get_columns("evidence")}
 
 
+def test_executor_lease_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monkeypatch):
+    """0027 is the only head, and downgrading it removes the lease columns."""
+
+    database_url = f"sqlite:///{tmp_path / 'lease.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert {"executor_id", "executor_heartbeat_at"} <= names
+        command.downgrade(config, "0026_oracle_visibility")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert "executor_id" not in names and "executor_heartbeat_at" not in names
+        command.upgrade(config, "head")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert {"executor_id", "executor_heartbeat_at"} <= names
+    finally:
+        engine.dispose()
+
+
 def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 

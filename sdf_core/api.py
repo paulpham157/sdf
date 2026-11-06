@@ -31,7 +31,7 @@ from .escalation import ModelTier
 from .adapter import FakeNativeAdapter
 from .dispatch_key import derived_dispatch_key
 from .execution import ExecutionService
-from .recovery import recover_orphaned_attempts, settle_local_attempts, start_executor_heartbeat
+from .recovery import AttemptFenceError, recover_orphaned_attempts, settle_local_attempts, start_executor_heartbeat
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
 from .run_adapter import RunBusyError, configured_run_adapter, run_slot
@@ -976,6 +976,8 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RunBusyError as exc:
             raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        except AttemptFenceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ValueError, FileExistsError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
