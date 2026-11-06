@@ -1,6 +1,6 @@
 # ADR 0040: held-out and randomized oracles
 
-Status: proposed (implemented with this change; awaiting maintainer acceptance).
+Status: accepted (maintainer, 2026-11-07, PR #104 follow-up)
 Follows [ADR 0039](0039-evidence-independence.md). Does not change Evidence
 append-only rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md)) or
 revision binding ([ADR 0032](0032-attempt-revisions.md)).
