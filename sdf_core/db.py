@@ -92,6 +92,11 @@ class AttemptRow(Base):
     # says); NULL only for Attempts that existed before 0023.  Only a NULL
     # Attempt may have unbound artifacts or Evidence.  Immutable.
     revision_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
+    # ADR 0041: the process executing a running Attempt, and when it last
+    # proved that. NULL means nobody holds it. Startup fails a running
+    # Attempt whose owner is gone or whose heartbeat is older than the lease.
+    executor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executor_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ObjectiveMetricRow(Base):
