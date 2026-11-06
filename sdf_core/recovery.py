@@ -8,6 +8,7 @@ while its heartbeat is newer than :data:`LEASE_TTL`.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -30,17 +31,27 @@ from .state import transition_attempt, transition_task
 LEASE_TTL = timedelta(seconds=30)
 _HEARTBEAT_INTERVAL_S = 10
 
-# Stable for this process. A restarted process mints a new id, so a fresh
-# heartbeat stamped here and a fresh heartbeat stamped next door are not the
-# same executor.
-EXECUTOR_ID = uuid4().hex
+def _mint_executor_id() -> str:
+    """Unique after fork: the OS pid plus a random id.
+
+    A forking server (uvicorn workers, gunicorn) copies the parent's id into
+    every child. The pid makes a copied id fail the check in the child, and
+    the uuid keeps two restarts of the same pid distinct.
+    """
+
+    return f"{os.getpid()}-{uuid4().hex}"
+
+
+# Read at call time. ``remint_executor_id`` replaces it in this process.
+EXECUTOR_ID = _mint_executor_id()
 
 # attempt id -> the ExecutionService (or other owner) that is running it.
 # The value is weak: dropping the owner drops the claim, including when the
 # test models a crash by deleting the service in this same process.
 _owners: WeakValueDictionary[str, object] = WeakValueDictionary()
 _lock = threading.Lock()
-_refresher_started = False
+_stop = threading.Event()
+_supervisor: threading.Thread | None = None
 
 _log = get_logger("recovery")
 
@@ -105,25 +116,84 @@ def settle_owned_attempt(db: Session, attempt_id: str, target: str, **columns: o
     return attempt
 
 
+def require_owned_running(db: Session, attempt_id: str) -> AttemptRow:
+    """Reload the Attempt and refuse unless this executor still has it running.
+
+    Callers that capture files must call this first. A stale identity-map
+    status is not enough: recovery may have committed on another session.
+    """
+
+    attempt = db.get(AttemptRow, attempt_id, populate_existing=True)
+    status = None if attempt is None else attempt.status
+    owner = None if attempt is None else attempt.executor_id
+    if attempt is None or status != AttemptState.RUNNING.value or owner != EXECUTOR_ID:
+        _log.warning(
+            "refusing to settle attempt %s: status=%s executor_id=%s this_executor=%s",
+            attempt_id, status, owner, EXECUTOR_ID,
+        )
+        raise AttemptFenceError(attempt_id, status=status, executor_id=owner)
+    return attempt
+
+
 def executor_is_live(attempt: AttemptRow, *, now: datetime | None = None) -> bool:
     """True when some executor still owns this running Attempt.
 
-    A stale heartbeat is dead even if this process still holds the service
-    object (a pause or a skewed clock). A fresh heartbeat from this process
-    counts only while that object is still alive.
+    A local owner that is still in ``_owners`` is authoritative for this
+    process, even when its heartbeat is older than the lease (the refresher
+    may be dead). A dropped local owner is dead even if the heartbeat is
+    fresh. Another process is live only while its heartbeat is inside the lease.
     """
 
     now = now or utcnow()
     with _lock:
         held_here = attempt.id in _owners
+    if held_here and attempt.executor_id == EXECUTOR_ID:
+        return True
     if not attempt.executor_id or attempt.executor_heartbeat_at is None:
         return False
     age = now - _as_utc(attempt.executor_heartbeat_at)
     if age > LEASE_TTL:
         return False
     if attempt.executor_id == EXECUTOR_ID:
-        return held_here
+        return False
     return True
+
+
+def remint_executor_id() -> str:
+    """Mint an executor id for this OS process and drop copied claims."""
+
+    global EXECUTOR_ID
+    with _lock:
+        _owners.clear()
+    EXECUTOR_ID = _mint_executor_id()
+    return EXECUTOR_ID
+
+
+def ensure_process_executor() -> str:
+    """Remint when this process inherited another process's id.
+
+    Lifespan startup calls this before recovery. A child whose copied id
+    starts with the parent's pid does not match ``os.getpid()``.
+    """
+
+    prefix = f"{os.getpid()}-"
+    if not str(EXECUTOR_ID).startswith(prefix):
+        return remint_executor_id()
+    return EXECUTOR_ID
+
+
+def _after_fork_in_child() -> None:
+    """Forked workers must not keep the parent's id or its owner map."""
+
+    global _supervisor
+    _stop.set()
+    _supervisor = None
+    _stop.clear()
+    remint_executor_id()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
 def heartbeat_refresher_enabled(session_factory: sessionmaker) -> bool:
@@ -142,24 +212,32 @@ def heartbeat_refresher_enabled(session_factory: sessionmaker) -> bool:
 
 
 def start_executor_heartbeat(session_factory: sessionmaker) -> None:
-    """Refresh leases, then sweep orphans, until the process exits.
+    """Refresh leases, then sweep orphans, until shutdown.
 
-    The first sweep is the caller's: startup calls
-    :func:`recover_orphaned_attempts` itself. This loop covers a lease that
-    expires later, so a dead neighbor is settled without another restart.
+    A supervisor restarts the refresher if that thread dies. The first sweep
+    is still the caller's: startup calls :func:`recover_orphaned_attempts`.
     """
 
-    global _refresher_started
+    global _supervisor
     if not heartbeat_refresher_enabled(session_factory):
         return
     with _lock:
-        if _refresher_started:
+        if _supervisor is not None and _supervisor.is_alive():
             return
-        _refresher_started = True
-    thread = threading.Thread(
-        target=_refresh_loop, args=(session_factory,), name="sdf-executor-lease", daemon=True,
-    )
-    thread.start()
+        _stop.clear()
+        _supervisor = threading.Thread(
+            target=_supervise, args=(session_factory,), name="sdf-executor-lease-supervisor", daemon=True,
+        )
+        _supervisor.start()
+
+
+def shutdown_executor_heartbeat(timeout: float = 5.0) -> None:
+    """Stop the refresher and join it so shutdown does not leave the thread running."""
+
+    _stop.set()
+    thread = _supervisor
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout)
 
 
 def compare_and_swap_attempt(
@@ -293,23 +371,35 @@ def reset_recovery_state() -> str:
     may already be running; hermetic tests never start one.
     """
 
-    global EXECUTOR_ID
-    with _lock:
-        _owners.clear()
-    EXECUTOR_ID = uuid4().hex
-    return EXECUTOR_ID
+    return remint_executor_id()
+
+
+def _supervise(session_factory: sessionmaker) -> None:
+    while not _stop.is_set():
+        worker = threading.Thread(
+            target=_refresh_loop, args=(session_factory,), name="sdf-executor-lease", daemon=True,
+        )
+        worker.start()
+        while worker.is_alive() and not _stop.is_set():
+            worker.join(timeout=0.5)
+        if _stop.is_set():
+            worker.join(timeout=2)
+            return
+        _log.warning("executor lease refresher stopped; restarting")
 
 
 def _refresh_loop(session_factory: sessionmaker) -> None:
-    while True:
-        time.sleep(_HEARTBEAT_INTERVAL_S)
+    while not _stop.is_set():
+        if _stop.wait(_HEARTBEAT_INTERVAL_S):
+            return
         db = session_factory()
         try:
             _write_heartbeats(db)
             recover_orphaned_attempts(db)
-        except Exception:  # noqa: BLE001 - a sweep must not kill the refresher
+        except Exception:  # noqa: BLE001 - the supervisor restarts a dead refresher
             db.rollback()
             _log.warning("executor lease sweep failed", exc_info=True)
+            return
         finally:
             db.close()
 
@@ -324,13 +414,16 @@ def _write_heartbeats(db: Session) -> None:
         with _lock:
             if attempt_id not in _owners:
                 continue
-        attempt = db.get(AttemptRow, attempt_id)
-        if attempt is None or attempt.status != AttemptState.RUNNING.value:
-            continue
-        if attempt.executor_id not in (None, EXECUTOR_ID):
-            continue
-        attempt.executor_id = EXECUTOR_ID
-        attempt.executor_heartbeat_at = now
+        db.execute(
+            update(AttemptRow)
+            .where(
+                AttemptRow.id == attempt_id,
+                AttemptRow.status == AttemptState.RUNNING.value,
+                AttemptRow.executor_id == EXECUTOR_ID,
+            )
+            .values(executor_heartbeat_at=now)
+            .execution_options(synchronize_session=False)
+        )
     db.commit()
 
 
