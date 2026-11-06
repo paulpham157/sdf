@@ -20,7 +20,7 @@ _HERMETIC_SLICE = [
     "tests/test_api.py::test_configured_containment_requires_explicit_smoke_promotion",
     "tests/test_check_hardening.py::test_containment_defaults_to_require_for_live_agents",
     "tests/test_check_security.py::test_evaluator_does_not_inherit_server_env",
-    "tests/test_evidence_independence.py::test_a_coverage_gap_is_not_verification_evidence",
+    "tests/test_evidence_independence.py::test_a_coverage_gap_is_verification_and_cannot_accept",
     "tests/test_hermetic_env.py::test_repo_dotenv_is_not_loaded_for_hermetic_tests",
     "tests/test_hermetic_env.py::test_process_env_is_hermetic",
 ]

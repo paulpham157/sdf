@@ -10,7 +10,8 @@ from typing import Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .db import AttemptRow, DecisionEdgeRow, EvidenceRow, TaskRow
+from .acceptance import is_verified_pass
+from .db import ArtifactRow, AttemptRow, DecisionEdgeRow, EvidenceRow, TaskRow
 
 
 def _validate_finite(value: float | None, field_name: str) -> None:
@@ -54,8 +55,13 @@ class Scorecard:
     escalation_rate: float
     cost_per_accepted_task: float | None
     escalation_exhaustion_rate: float
+    # ADR 0041. Counts of PASS rows, not rates. A verified pass is an
+    # independent, unexpired, artifact-bound verification PASS. Everything
+    # else with status PASS is unverified, including a legacy NULL class.
+    verified_pass_count: int = 0
+    unverified_legacy_pass_count: int = 0
 
-    def as_dict(self) -> dict[str, float | None]:
+    def as_dict(self) -> dict[str, float | int | None]:
         return {
             "first_attempt_success_rate": self.first_attempt_success_rate,
             "accepted_task_rate": self.accepted_task_rate,
@@ -65,10 +71,17 @@ class Scorecard:
             "escalation_rate": self.escalation_rate,
             "cost_per_accepted_task": self.cost_per_accepted_task,
             "escalation_exhaustion_rate": self.escalation_exhaustion_rate,
+            "verified_pass_count": self.verified_pass_count,
+            "unverified_legacy_pass_count": self.unverified_legacy_pass_count,
         }
 
 
-def build_scorecard(observations: Sequence[AttemptObservation]) -> Scorecard:
+def build_scorecard(
+    observations: Sequence[AttemptObservation],
+    *,
+    verified_pass_count: int = 0,
+    unverified_legacy_pass_count: int = 0,
+) -> Scorecard:
     items = tuple(observations)
     task_ids = {item.task_id for item in items}
     task_count = len(task_ids)
@@ -91,6 +104,8 @@ def build_scorecard(observations: Sequence[AttemptObservation]) -> Scorecard:
         escalation_rate=rate(len(escalated_tasks), task_count),
         cost_per_accepted_task=(total_cost / len(accepted_tasks)) if accepted_tasks else None,
         escalation_exhaustion_rate=rate(len(exhausted_tasks), task_count),
+        verified_pass_count=verified_pass_count,
+        unverified_legacy_pass_count=unverified_legacy_pass_count,
     )
 
 
@@ -101,25 +116,53 @@ def build_scorecard_from_db(db: Session) -> Scorecard:
     tasks = {task.id: task for task in db.scalars(select(TaskRow)).all()}
     evidence = tuple(db.scalars(select(EvidenceRow)).all())
     edges = tuple(db.scalars(select(DecisionEdgeRow)).all())
+    attempts_by_id = {attempt.id: attempt for attempt in attempts}
+    diff_sha: dict[str, str] = {}
+    for attempt_id, sha in db.execute(
+        select(ArtifactRow.attempt_id, ArtifactRow.sha256)
+        .where(ArtifactRow.kind == "diff")
+        .order_by(ArtifactRow.created_at, ArtifactRow.id)
+    ).all():
+        diff_sha[attempt_id] = sha
     evidence_by_attempt: dict[str, list[EvidenceRow]] = {}
+    verified_pass_count = 0
+    unverified_legacy_pass_count = 0
     for item in evidence:
-        evidence_by_attempt.setdefault(item.attempt_id, []).append(item)
+        if item.attempt_id:
+            evidence_by_attempt.setdefault(item.attempt_id, []).append(item)
+        if item.status != "PASS":
+            continue
+        attempt = attempts_by_id.get(item.attempt_id) if item.attempt_id else None
+        if is_verified_pass(
+            item,
+            attempt_agent=attempt.agent if attempt is not None else "",
+            artifact_sha256=diff_sha.get(item.attempt_id) if item.attempt_id else None,
+        ):
+            verified_pass_count += 1
+        else:
+            unverified_legacy_pass_count += 1
     attempt_numbers: dict[str, int] = {}
     observations: list[AttemptObservation] = []
     for attempt in attempts:
         attempt_numbers[attempt.task_id] = attempt_numbers.get(attempt.task_id, 0) + 1
         rows = evidence_by_attempt.get(attempt.id, [])
-        statuses = {row.status for row in rows}
-        if "FAIL" in statuses:
+        # Execution and outcome are not task verdicts. A legacy NULL class is a
+        # verdict, and it is not a verified pass (ADR 0041).
+        verdicts = [row for row in rows if row.evidence_class in (None, "verification")]
+        verified = [
+            row for row in verdicts
+            if is_verified_pass(row, attempt_agent=attempt.agent, artifact_sha256=diff_sha.get(attempt.id))
+        ]
+        if any(row.status == "FAIL" for row in verdicts):
             status = "failed"
-        elif rows and statuses == {"PASS"}:
+        elif verdicts and len(verified) == len(verdicts) and all(row.status == "PASS" for row in verdicts):
             status = "succeeded"
         else:
             status = "inconclusive"
         accepted_seconds = None
         task = tasks.get(attempt.task_id)
-        measured = [row.measured_at for row in rows if row.status == "PASS" and row.measured_at is not None]
-        if task is not None and task.status == "succeeded" and measured:
+        measured = [row.measured_at for row in verified if row.measured_at is not None]
+        if status == "succeeded" and task is not None and task.status == "succeeded" and measured:
             try:
                 accepted_seconds = max(0.0, (min(measured) - attempt.created_at).total_seconds())
             except TypeError:
@@ -163,7 +206,11 @@ def build_scorecard_from_db(db: Session) -> Scorecard:
             escalated=attempt.parent_attempt_id is not None,
             escalation_exhausted=task is not None and task.status == "escalation_exhausted",
         ))
-    return build_scorecard(observations)
+    return build_scorecard(
+        observations,
+        verified_pass_count=verified_pass_count,
+        unverified_legacy_pass_count=unverified_legacy_pass_count,
+    )
 
 
 @dataclass(frozen=True, slots=True)

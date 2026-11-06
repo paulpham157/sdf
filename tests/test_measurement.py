@@ -70,6 +70,7 @@ def test_db_trace_completeness_requires_task_artifact_and_evidence_chain():
             id="EVIDENCE-TRACE-METRIC", attempt_id="ATTEMPT-TRACE-METRIC", kind="test",
             status="PASS", command="check", exit_code=0, artifact_ref=None,
             confidence=1.0, criterion="check", measured_at=utcnow(), created_at=utcnow(),
+            evidence_class="verification",
             **bound(db, "ATTEMPT-TRACE-METRIC"),
         ))
         db.add_all([

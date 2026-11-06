@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import hashlib
+import json
 from pathlib import Path
 import time
 from uuid import uuid4
@@ -21,7 +23,14 @@ from .decision_gate import check_decision_gate
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
-from .acceptance import AcceptanceError, check_hidden_oracle_acceptance, check_verification_acceptance, is_hidden_oracle
+from .acceptance import (
+    AGENT_ROLE,
+    AcceptanceError,
+    EVIDENCE_CLASS_EXECUTION,
+    check_hidden_oracle_acceptance,
+    check_verification_acceptance,
+    is_hidden_oracle,
+)
 from .evaluator import DeterministicEvaluator, Evidence
 from .model import AttemptState, TaskState, utcnow
 from .state import transition_attempt, transition_task
@@ -329,6 +338,15 @@ class ExecutionService:
         for artifact in (diff, process):
             self.db.add(DecisionEdgeRow(source_kind="artifact", source_id=artifact.artifact_id, target_kind="attempt", target_id=attempt_id, relation="measures", source="execution", owner="sdf", confidence=1.0, created_at=utcnow(), evidence_ref=artifact.artifact_id))
 
+        try:
+            self._record_execution_evidence(
+                attempt=attempt, diff=diff, process=process, result=result, binding=binding,
+                evidence_mode=evidence_mode,
+            )
+        except Exception:
+            self._fail_attempt(task, attempt)
+            raise
+
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
         attempt.status = transition_attempt(
             AttemptState(attempt.status), AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
@@ -530,6 +548,84 @@ class ExecutionService:
         self.db.commit()
         return attempt
 
+    def _record_execution_evidence(
+        self, *, attempt: AttemptRow, diff, process, result: AdapterResult, binding: dict, evidence_mode: str | None,
+    ) -> None:
+        """Record that the Attempt ran. This is not verification (ADR 0041).
+
+        ``producer_identity`` is the Attempt's agent. A PASS here means the
+        adapter exited 0. It does not accept the artifact, even when
+        ``subject_artifact_sha256`` is the diff digest.
+        """
+
+        now = utcnow()
+        succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
+        status = "PASS" if succeeded else "FAIL"
+        files = [str(name)[:200] for name in result.changed_files[:40]]
+        summary = json.dumps(
+            {
+                "reason": "execution",
+                "adapter_status": result.status,
+                "exit_code": result.exit_code,
+                "changed_files": files,
+                "diff_sha256": diff.sha256,
+                "process_log_sha256": process.sha256,
+            },
+            sort_keys=True,
+            ensure_ascii=True,
+        )
+        evidence_id = _execution_evidence_id(attempt.id)
+        self.db.add(EvidenceRow(
+            id=evidence_id,
+            attempt_id=attempt.id,
+            kind="execution",
+            status=status,
+            command=summary,
+            exit_code=result.exit_code,
+            artifact_ref=process.artifact_id,
+            confidence=1.0,
+            criterion=None,
+            measured_at=now,
+            created_at=now,
+            **({"evidence_mode": evidence_mode} if evidence_mode else {}),
+            **binding,
+            evidence_class=EVIDENCE_CLASS_EXECUTION,
+            producer_identity=attempt.agent,
+            producer_role=AGENT_ROLE,
+            subject_artifact_sha256=diff.sha256,
+            collected_at=now,
+        ))
+        self.db.add(GraphNodeRow(
+            id=evidence_id,
+            kind="evidence",
+            title=status,
+            source=f"execution:{attempt.id}"[:500],
+            owner=(attempt.agent or "agent")[:120],
+            confidence=1.0,
+            created_at=now,
+            metadata_json={
+                "evidence_class": EVIDENCE_CLASS_EXECUTION,
+                "producer_identity": attempt.agent,
+                "producer_role": AGENT_ROLE,
+                "subject_artifact_sha256": diff.sha256,
+                "exit_code": result.exit_code,
+                **binding,
+            },
+        ))
+        self.db.flush()
+        self.db.add(DecisionEdgeRow(
+            source_kind="evidence",
+            source_id=evidence_id,
+            target_kind="attempt",
+            target_id=attempt.id,
+            relation="measures",
+            source="execution",
+            owner="sdf",
+            confidence=1.0,
+            created_at=now,
+            evidence_ref=process.artifact_id,
+        ))
+
     def execute_tool(
         self,
         *,
@@ -687,12 +783,22 @@ def _overall(previous: str, evidence: tuple[Evidence, ...]) -> str:
     return previous
 
 
+def _execution_evidence_id(attempt_id: str) -> str:
+    candidate = f"EVIDENCE-{attempt_id}-EXEC"
+    if len(candidate) <= 120:
+        return candidate
+    return "EVIDENCE-EXEC-" + hashlib.sha256(attempt_id.encode()).hexdigest()
+
+
 def check_retry_parent(db: Session, parent: AttemptRow) -> None:
     """A retry/escalation parent must be finished and not accepted (#50 review)."""
 
     if parent.status not in TERMINAL_ATTEMPT_STATES:
         raise ValueError(f"parent attempt {parent.id} is {parent.status}; only a finished attempt can be retried")
-    statuses = [row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))]
+    statuses = [
+        row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))
+        if row.evidence_class in (None, "verification")
+    ]
     if parent.status == AttemptState.COMPLETED.value and statuses and all(s == "PASS" for s in statuses):
         raise ValueError(f"parent attempt {parent.id} passed every check; there is nothing to retry")
 

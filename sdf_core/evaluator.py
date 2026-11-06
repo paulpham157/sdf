@@ -255,8 +255,8 @@ class Evidence:
     # caller observed it (``after_check``); differs from the revision's result
     # tree only when the check (or anything else) changed the workspace.
     tree_after_sha256: str | None = None
-    # ADR 0039: independence of a real check. Coverage gaps leave these unset
-    # so kind=evaluation is not treated as verification.
+    # ADR 0039 / ADR 0041: independence of a verification row. A coverage gap is
+    # verification with status INCONCLUSIVE. It does not carry an oracle digest.
     evidence_class: str | None = None
     producer_identity: str | None = None
     producer_role: str | None = None
@@ -267,7 +267,7 @@ class Evidence:
     environment_digest: str | None = None
     collected_at: Any = None
     expires_at: Any = None
-    # ADR 0040. NULL on a coverage gap and on Evidence written before the column.
+    # ADR 0040. NULL when the check was not sealed, including a coverage gap.
     oracle_visibility: str | None = None
     input_seed: str | None = None
 
@@ -422,20 +422,10 @@ class DeterministicEvaluator:
             ))
 
         if not evidence:
-            add(
-                Evidence(
-                    evidence_id="",
-                    attempt_id=attempt_id,
-                    kind="evaluation",
-                    status="INCONCLUSIVE",
-                    command="<no evaluator commands>",
-                    exit_code=None,
-                    stdout="",
-                    stderr="no evaluator commands supplied",
-                    confidence=0.2,
-                    criterion=None,
-                )
-            )
+            add(self._coverage_gap(
+                attempt_id=attempt_id, criterion=None, command="<no evaluator commands>",
+                detail="no evaluator commands supplied",
+            ))
 
         statuses = [item.status for item in evidence]
         if "FAIL" in statuses:
@@ -448,40 +438,52 @@ class DeterministicEvaluator:
             overall = "PASS"
         return EvaluationResult(status=overall, evidence=tuple(evidence))
 
-    def _coverage_evidence(self, *, attempt_id: str, criterion: str) -> Evidence:
+    def _coverage_gap(self, *, attempt_id: str, criterion: str | None, command: str, detail: str) -> Evidence:
+        """A missing check is an explicit verification outcome, not a NULL class.
+
+        It names the evaluator and status INCONCLUSIVE. It has no oracle digest
+        and no subject digest, so it cannot accept an artifact (ADR 0041).
+        """
+
+        collected = utcnow()
         return Evidence(
             evidence_id="",
             attempt_id=attempt_id,
             kind="evaluation",
             status="INCONCLUSIVE",
-            command="<missing check>",
+            command=command,
             exit_code=None,
             stdout="",
-            stderr=f"no deterministic check mapped to criterion: {criterion}",
+            stderr=f"coverage_gap: {detail}",
             confidence=0.2,
             criterion=criterion,
+            evidence_class=EVIDENCE_CLASS_VERIFICATION,
+            producer_identity=EVALUATOR_IDENTITY,
+            producer_role=EVALUATOR_ROLE,
+            verifier_identity=EVALUATOR_IDENTITY,
+            verifier_role=EVALUATOR_ROLE,
+            collected_at=collected,
+            expires_at=collected + VERIFICATION_TTL,
+        )
+
+    def _coverage_evidence(self, *, attempt_id: str, criterion: str) -> Evidence:
+        return self._coverage_gap(
+            attempt_id=attempt_id, criterion=criterion, command="<missing check>",
+            detail=f"no deterministic check mapped to criterion: {criterion}",
         )
 
     def _unmapped_evidence(self, *, attempt_id: str, criterion: str) -> Evidence:
-        return Evidence(
-            evidence_id="",
-            attempt_id=attempt_id,
-            kind="evaluation",
-            status="INCONCLUSIVE",
-            command="<unmapped criterion>",
-            exit_code=None,
-            stdout="",
-            stderr=f"criterion is not declared by the task: {criterion}",
-            confidence=0.2,
-            criterion=criterion,
+        return self._coverage_gap(
+            attempt_id=attempt_id, criterion=criterion, command="<unmapped criterion>",
+            detail=f"criterion is not declared by the task: {criterion}",
         )
 
     def _inconclusive(self, attempt_id: str, index: int, rendered: str, criterion: str | None, reason: str,
                       stdout: str = "", runner: str | None = None, *,
                       subject_artifact_sha256: str | None = None, oracle_digest: str | None = None,
                       oracle_visibility: str | None = None, input_seed: str | None = None) -> Evidence:
-        # A check that did not run is still a verification verdict, not a
-        # coverage gap (ADR 0039). It cannot accept an artifact.
+        # A check that did not run is still a verification verdict (ADR 0039).
+        # It cannot accept an artifact. A coverage gap is recorded separately.
         collected = utcnow()
         return Evidence(
             evidence_id=f"EVIDENCE-{attempt_id}-{index}",

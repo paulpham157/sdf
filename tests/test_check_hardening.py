@@ -453,7 +453,7 @@ def test_http_run_records_where_each_check_ran(tmp_path):
     db = SessionLocal()
     try:
         attempt = db.query(AttemptRow).filter_by(task_id=task_id).one()
-        evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).one()
+        evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id, evidence_class="verification").one()
         artifact = db.get(ArtifactRow, f"{evidence.id}-OUTPUT")
         assert json.loads(Path(artifact.uri.removeprefix("file://")).read_text())["runner"] == "host"
     finally:
@@ -493,7 +493,10 @@ def test_plan_run_honours_required_containment(tmp_path, monkeypatch):
         db = SessionLocal()
         try:
             attempts = db.query(AttemptRow).filter_by(task_id=task_id_for(plan_id, "add")).all()
-            statuses = {row.status for a in attempts for row in db.query(EvidenceRow).filter_by(attempt_id=a.id)}
+            statuses = {
+                row.status for a in attempts
+                for row in db.query(EvidenceRow).filter_by(attempt_id=a.id, evidence_class="verification")
+            }
             assert statuses == {"INCONCLUSIVE"}, statuses
         finally:
             db.close()

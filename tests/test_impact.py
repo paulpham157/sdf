@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 
 from sdf_core.impact import (
+    V0_METRICS,
     AttemptFact,
     EvidenceFact,
     EvidenceMode,
@@ -72,6 +73,8 @@ def attempt(**overrides) -> AttemptFact:
         escalation_reason=None,
         outcome=None,
         mode=EvidenceMode.SYNTHETIC,
+        agent="native",
+        artifact_sha256="a" * 64,
     )
     kwargs.update(overrides)
     return AttemptFact(**kwargs)
@@ -85,6 +88,12 @@ def evidence(**overrides) -> EvidenceFact:
         criterion="tests pass",
         measured_at=T0 + timedelta(seconds=30),
         mode=EvidenceMode.SYNTHETIC,
+        evidence_class="verification",
+        verifier_identity="sdf-evaluator",
+        verifier_role="evaluator",
+        subject_artifact_sha256="a" * 64,
+        oracle_digest="b" * 64,
+        expires_at=T0 + timedelta(days=1),
     )
     kwargs.update(overrides)
     return EvidenceFact(**kwargs)
@@ -351,13 +360,4 @@ def test_metric_basis_distinguishes_synthetic_from_live():
 def test_scorecard_never_reports_business_impact():
     names = {item.name for item in scorecard().metrics}
     assert "business_impact" not in names
-    assert names == {
-        "first_attempt_success_rate",
-        "accepted_task_rate",
-        "evidence_coverage",
-        "trace_completeness",
-        "time_to_accepted_evidence",
-        "escalation_rate",
-        "cost_per_accepted_task",
-        "escalation_exhaustion_rate",
-    }
+    assert names == set(V0_METRICS)

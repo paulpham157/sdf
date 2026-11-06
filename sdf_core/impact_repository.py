@@ -77,9 +77,19 @@ def _tasks_with_artifacts(db: Session) -> set[str]:
     return {attempt_task[attempt_id] for attempt_id in attempts_with_artifacts if attempt_id in attempt_task}
 
 
+def _diff_sha256(db: Session) -> dict[str, str]:
+    rows = db.execute(
+        select(ArtifactRow.attempt_id, ArtifactRow.sha256)
+        .where(ArtifactRow.kind == "diff")
+        .order_by(ArtifactRow.created_at, ArtifactRow.id)
+    ).all()
+    return {attempt_id: sha for attempt_id, sha in rows}
+
+
 def load_scorecard_facts(db: Session) -> ScorecardFacts:
     task_objective = _task_objective_ids(db)
     tasks_with_artifacts = _tasks_with_artifacts(db)
+    diff_sha = _diff_sha256(db)
 
     tasks = tuple(
         TaskFact(
@@ -104,6 +114,8 @@ def load_scorecard_facts(db: Session) -> ScorecardFacts:
             escalation_reason=row.escalation_reason,
             outcome=row.outcome,
             mode=EvidenceMode(row.evidence_mode),
+            agent=row.agent,
+            artifact_sha256=diff_sha.get(row.id),
         )
         for row in db.scalars(select(AttemptRow))
     )
@@ -116,6 +128,12 @@ def load_scorecard_facts(db: Session) -> ScorecardFacts:
             criterion=row.criterion,
             measured_at=row.created_at,
             mode=EvidenceMode(row.evidence_mode),
+            evidence_class=row.evidence_class,
+            verifier_identity=row.verifier_identity,
+            verifier_role=row.verifier_role,
+            subject_artifact_sha256=row.subject_artifact_sha256,
+            oracle_digest=row.oracle_digest,
+            expires_at=row.expires_at,
         )
         for row in db.scalars(select(EvidenceRow))
     )

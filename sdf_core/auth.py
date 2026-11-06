@@ -315,6 +315,7 @@ ROUTE_ROLES: dict[tuple[str, str], str] = {
     ("POST", "/attempts/{attempt_id}/actions"): "operator",
     ("POST", "/objectives/{objective_id}/metric"): "operator",
     ("POST", "/objectives/{objective_id}/observations"): "operator",
+    ("POST", "/objectives/{objective_id}/evidence"): "operator",
     ("POST", "/plans"): "operator",
     ("POST", "/plans/{plan_id}/runs"): "operator",
     ("POST", "/runs/{run_id}/cancel"): "operator",

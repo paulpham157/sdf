@@ -518,7 +518,8 @@ def test_runtime_drives_the_sdf_attempt_loop(local, tmp_path, monkeypatch):
         validation_target=("assumption", "ASSUMPTION-CALC"),
     )
     evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).all()
-    assert [e.status for e in evidence] == ["PASS"]
+    assert {e.evidence_class for e in evidence} == {"execution", "verification"}
+    assert all(e.status == "PASS" for e in evidence)
     assert db.get(TaskRow, "TASK-PI").status == "succeeded"
     assert {e.relation for e in db.query(DecisionEdgeRow).filter_by(target_id="ASSUMPTION-CALC")} == {"validates"}
     assert transport.closed == 1

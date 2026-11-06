@@ -359,7 +359,10 @@ def test_run_succeeds_only_with_pass_evidence_for_every_subtask(db, fixture, tmp
         task = db.get(TaskRow, task_id_for(plan.id, key))
         assert task.status == "succeeded"
         evidence = db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == sub["attempts"][-1]["attempt_id"])).all()
-        assert len(evidence) == 3 and all(e.status == "PASS" for e in evidence)
+        verification = [e for e in evidence if e.evidence_class == "verification"]
+        execution = [e for e in evidence if e.evidence_class == "execution"]
+        assert len(verification) == 3 and all(e.status == "PASS" for e in verification)
+        assert len(execution) == 1 and execution[0].producer_role == "agent"
     # Claims recorded separately from Evidence; the lead's final report is one.
     claims = db.scalars(select(AgentClaimRow).where(AgentClaimRow.run_id == run.id)).all()
     assert {c.agent_id for c in claims} == {"worker-1", "worker-2", "lead-1"}
