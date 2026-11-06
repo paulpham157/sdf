@@ -10,12 +10,14 @@ import gc
 from datetime import timedelta
 from pathlib import Path
 
-from sdf_core.adapter import FakeNativeAdapter
+import pytest
+
+from sdf_core.adapter import AdapterResult, FakeNativeAdapter
 from sdf_core.api import SessionLocal
 from sdf_core.db import AttemptRow, TaskRow
 from sdf_core.execution import ExecutionService
 from sdf_core.model import utcnow
-from sdf_core.recovery import LEASE_TTL, recover_orphaned_attempts
+from sdf_core.recovery import LEASE_TTL, AttemptFenceError, recover_orphaned_attempts
 from tests.auth_support import admin_client
 
 # Terminal states an abandoned Attempt may end in. The model has no separate
@@ -245,3 +247,95 @@ def test_in_memory_database_does_not_start_the_lease_refresher() -> None:
     from sdf_core.recovery import heartbeat_refresher_enabled
 
     assert heartbeat_refresher_enabled(factory) is False
+
+
+def _begun(tmp_path: Path, task_id: str):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    db = SessionLocal()
+    db.add(TaskRow(
+        id=task_id, title=task_id, status="created", idempotency_key=task_id,
+        acceptance_criteria=[], created_at=utcnow(),
+    ))
+    db.commit()
+    service = ExecutionService(
+        db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+    )
+    begun = service.begin(task_id=task_id, dispatch_key=f"dispatch-{task_id}", fixture=fixture)
+    return db, service, begun, fixture
+
+
+def _finish(service, attempt_id: str, fixture: Path):
+    return service.finish(
+        attempt_id=attempt_id,
+        result=AdapterResult(attempt_id=attempt_id, status="succeeded", changed_files=()),
+        fixture=fixture,
+        commands=[],
+    )
+
+
+def test_finish_does_not_overwrite_a_reaped_attempt(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    task_id = "TASK-FENCE-STALE"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    db.get(AttemptRow, attempt_id).executor_heartbeat_at = utcnow() - LEASE_TTL - timedelta(seconds=1)
+    db.commit()
+    assert attempt_id in recover_orphaned_attempts(db)
+    assert db.get(AttemptRow, attempt_id).status == "failed"
+    assert db.get(AttemptRow, attempt_id).error_class == "killed"
+    assert db.get(TaskRow, task_id).status == "failed"
+
+    with pytest.raises(AttemptFenceError):
+        _finish(service, attempt_id, fixture)
+
+    db.expire_all()
+    attempt = db.get(AttemptRow, attempt_id)
+    task = db.get(TaskRow, task_id)
+    assert attempt.status == "failed"
+    assert attempt.error_class == "killed"
+    assert task.status == "failed"
+    db.close()
+
+
+def test_finish_from_another_executor_is_refused(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    task_id = "TASK-FENCE-OTHER"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    attempt = db.get(AttemptRow, attempt_id)
+    attempt.executor_id = "other-executor"
+    db.commit()
+    before = (
+        db.get(AttemptRow, attempt_id).status,
+        db.get(AttemptRow, attempt_id).error_class,
+        db.get(TaskRow, task_id).status,
+    )
+
+    with pytest.raises(AttemptFenceError):
+        _finish(service, attempt_id, fixture)
+
+    db.expire_all()
+    attempt = db.get(AttemptRow, attempt_id)
+    task = db.get(TaskRow, task_id)
+    assert (attempt.status, attempt.error_class, task.status) == before
+    assert attempt.status == "running" and task.status == "running"
+    db.close()
+
+
+def test_begin_then_finish_still_settles(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    task_id = "TASK-FENCE-OK"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    workspace = begun.workspace
+    result = FakeNativeAdapter("app.py", "print('new')\n").run(
+        attempt_id=begun.attempt.id, workspace=workspace, instructions="complete the task",
+    )
+    finished = service.finish(
+        attempt_id=begun.attempt.id, result=result, fixture=fixture, commands=[],
+    )
+    assert finished.status == "completed"
+    task = db.get(TaskRow, task_id)
+    assert task.status != "running"
+    db.close()

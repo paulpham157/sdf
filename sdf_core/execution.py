@@ -18,7 +18,8 @@ from .db import (
     UsageLedgerRow,
 )
 from .decision_gate import check_decision_gate
-from .recovery import claim_executor
+from .observability import get_logger
+from .recovery import EXECUTOR_ID, AttemptFenceError, claim_executor, require_owned_running, settle_owned_attempt
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
@@ -113,10 +114,7 @@ class ExecutionService:
                 result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
             except Exception as exc:
                 self._record_measured_telemetry(attempt, time.monotonic() - started, error=exc)
-                attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
-                task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
-                task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
-                self.db.commit()
+                self._fail_attempt(task, attempt)
                 self._trace_outcome(attempt_span, attempt)
                 raise
             self._record_measured_telemetry(attempt, time.monotonic() - started)
@@ -298,8 +296,9 @@ class ExecutionService:
         attempt = self.db.get(AttemptRow, attempt_id)
         if attempt is None:
             raise ValueError(f"attempt not found: {attempt_id}")
-        if attempt.status != AttemptState.RUNNING.value:
-            raise ValueError(f"attempt {attempt_id} is not running")
+        # ADR 0041: a stale lease may already have been reaped. Refuse before
+        # any artifact or Task write when this executor no longer owns it.
+        attempt = require_owned_running(self.db, attempt_id)
         # ADR 0033 (#60): no Evidence while a material decision blocks the
         # Task.  The Attempt stays running and can be finished once resolved.
         check_decision_gate(self.db, attempt.task_id)
@@ -334,9 +333,14 @@ class ExecutionService:
             self.db.add(DecisionEdgeRow(source_kind="artifact", source_id=artifact.artifact_id, target_kind="attempt", target_id=attempt_id, relation="measures", source="execution", owner="sdf", confidence=1.0, created_at=utcnow(), evidence_ref=artifact.artifact_id))
 
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
-        attempt.status = transition_attempt(
-            AttemptState(attempt.status), AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
-        ).value
+        target = AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
+        transition_attempt(AttemptState.RUNNING, target)
+        try:
+            attempt = settle_owned_attempt(self.db, attempt_id, target.value)
+        except AttemptFenceError:
+            self.db.rollback()
+            raise
+        task = self.db.get(TaskRow, attempt.task_id, populate_existing=True)
         task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
         if not adapter_succeeded:
             task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
@@ -584,13 +588,44 @@ class ExecutionService:
         return result
 
     def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> None:
-        if attempt.status == AttemptState.RUNNING.value:
-            attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.FAILED).value
+        """Fail a running Attempt this executor still owns, and its Task.
+
+        A conditional update is the only status write. If the Attempt is no
+        longer ``running`` for this ``executor_id``, the Attempt and the Task
+        stay as stored (ADR 0041). An Attempt this executor already moved off
+        ``running`` can still move its Task out of ``running`` or ``evaluating``.
+        """
+
+        pending = _dirty_attempt_values(attempt)
+        current = self.db.get(AttemptRow, attempt.id, populate_existing=True)
+        if current is None:
+            return
+        settled = False
+        if current.status == AttemptState.RUNNING.value:
+            if current.executor_id != EXECUTOR_ID:
+                self.db.rollback()
+                _log_fence_skip(current)
+                return
+            try:
+                settle_owned_attempt(self.db, attempt.id, AttemptState.FAILED.value, **pending)
+            except AttemptFenceError:
+                self.db.rollback()
+                return
+            settled = True
+        elif current.executor_id != EXECUTOR_ID:
+            self.db.rollback()
+            _log_fence_skip(current)
+            return
+        self.db.refresh(task)
+        moved = False
         if task.status == TaskState.RUNNING.value:
             task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
+            moved = True
         if task.status == TaskState.EVALUATING.value:
             task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
-        self.db.commit()
+            moved = True
+        if settled or moved:
+            self.db.commit()
 
 
 TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,
@@ -727,6 +762,21 @@ def derived_escalation_reason(parent: AttemptRow) -> str:
     if parent.error_class:
         reason += f", error {parent.error_class}"
     return (reason + ")")[:500]
+
+
+def _dirty_attempt_values(attempt: AttemptRow) -> dict[str, object]:
+    from sqlalchemy import inspect as sa_inspect
+
+    state = sa_inspect(attempt)
+    names = ("provider", "latency_ms", "cost_usd", "input_tokens", "output_tokens", "error_class")
+    return {name: getattr(attempt, name) for name in names if state.attrs[name].history.has_changes()}
+
+
+def _log_fence_skip(attempt: AttemptRow) -> None:
+    get_logger("execution").warning(
+        "refusing to settle attempt %s: status=%s executor_id=%s",
+        attempt.id, attempt.status, attempt.executor_id,
+    )
 
 
 def _adapter_identity(adapter: object) -> str:

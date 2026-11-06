@@ -103,30 +103,46 @@ through a weak reference. It lasts while that object lives.
 
 An Attempt is live when any of these holds:
 
-- This process still has the service that claimed it, and `executor_id` is
-  null or this process's id. Dropping the service (the host-crash test
-  deletes it) makes the Attempt dead immediately, even if the heartbeat is
-  fresh.
+- `executor_id` is this process, the heartbeat is within `LEASE_TTL` (30
+  seconds), and this process still has the service that claimed it. Dropping
+  the service (the host-crash test deletes it) makes the Attempt dead
+  immediately, even if the heartbeat is fresh.
 - `executor_id` names another process and `executor_heartbeat_at` is within
-  `LEASE_TTL` (30 seconds).
+  the same lease.
 
 An Attempt is dead when the heartbeat is null, when the heartbeat is older
-than the lease, or when this process stamped it and no longer holds the
-service. A null lease is how a row written before this migration, or a row
-inserted without `begin`, appears: nobody is executing it.
+than the lease (a pause or a skewed clock), or when this process stamped it
+and no longer holds the service. A stale heartbeat is dead even if the
+service object is still in memory. A null lease is how a row written before
+this migration, or a row inserted without `begin`, appears: nobody is
+executing it.
 
 The refresher rewrites `executor_heartbeat_at` every 10 seconds for Attempts
-this process still holds. It does not start on the one-connection in-memory
+this process still holds, and only while the heartbeat it writes is fresh
+does the hold stay live. It does not start on the one-connection in-memory
 SQLite used by hermetic tests (`StaticPool`), because a second thread cannot
-share that connection. Same-process ownership still applies there. Production
-PostgreSQL runs the refresher.
+share that connection. Production PostgreSQL runs the refresher.
 
 A hard kill of another OS process leaves a fresh heartbeat. The next startup
 in a new process treats that Attempt as live until the lease expires. The
 refresher then settles it. A same-process drop of the executor, which is how
 the crash test models the death, is settled on that startup.
 
-### 4. Invariants
+### 4. Finish fence
+
+`finish`, the adapter-failure path, and any other writer that settles a
+`running` Attempt (including the coordinator cancelling one at the end of a
+plan run) apply a conditional update: `status` changes only when the row is
+still `running` and `executor_id` is this process. Zero rows is
+`AttemptFenceError`. The caller rolls back pending writes from that settle
+and does not change the Attempt or the Task. The refusal is logged.
+
+A finish that already moved the Attempt off `running` for this same executor
+may still move the Task from `running` or `evaluating` to `failed`. It does
+not do that when the Attempt belongs to someone else, or when recovery has
+already left the Task terminal.
+
+### 5. Invariants
 
 - One keyless logical request creates one Attempt and invokes the adapter once,
   including when two requests overlap.
@@ -137,6 +153,12 @@ the crash test models the death, is settled on that startup.
 - Two tasks with the same keyless body get two Attempts.
 - Startup recovery is idempotent.
 - A live executor is not failed. A stale or missing lease is.
+- `finish` after recovery has reaped a stale lease leaves the Attempt
+  `failed` with `error_class` `killed` and leaves the Task where recovery
+  put it.
+- `finish` for a different `executor_id` changes neither the Attempt nor the
+  Task.
+- `begin` then `finish` for the owning executor still settles the Attempt.
 
 ## Consequences
 
@@ -175,7 +197,13 @@ Local tests (SQLite, no live provider):
   Dropping the service and entering startup again fails the held Attempt and
   leaves the foreign one running.
 - `tests/test_crash_recovery.py::test_in_memory_database_does_not_start_the_lease_refresher`
-- `tests/test_migrations.py` upgrades an empty SQLite database to head
-  `0027_attempt_executor_lease` and expects the two columns.
+- `tests/test_crash_recovery.py::test_finish_does_not_overwrite_a_reaped_attempt`
+  ages the heartbeat, recovers, then `finish` from the original executor.
+  The Attempt stays `failed` / `killed` and the Task stays `failed`.
+- `tests/test_crash_recovery.py::test_finish_from_another_executor_is_refused`
+- `tests/test_crash_recovery.py::test_begin_then_finish_still_settles`
+- `tests/test_migrations.py::test_executor_lease_revision_upgrades_and_downgrades_on_sqlite`
+  upgrades from base to head `0027_attempt_executor_lease`, downgrades that
+  revision, and upgrades again. `alembic heads` is that single revision.
 
 PostgreSQL and live provider runs are not part of this proof.
