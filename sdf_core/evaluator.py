@@ -255,7 +255,7 @@ class Evidence:
     # caller observed it (``after_check``); differs from the revision's result
     # tree only when the check (or anything else) changed the workspace.
     tree_after_sha256: str | None = None
-    # ADR 0039 / ADR 0041: independence of a verification row. A coverage gap is
+    # ADR 0039 / ADR 0042: independence of a verification row. A coverage gap is
     # verification with status INCONCLUSIVE. It does not carry an oracle digest.
     evidence_class: str | None = None
     producer_identity: str | None = None
@@ -442,7 +442,7 @@ class DeterministicEvaluator:
         """A missing check is an explicit verification outcome, not a NULL class.
 
         It names the evaluator and status INCONCLUSIVE. It has no oracle digest
-        and no subject digest, so it cannot accept an artifact (ADR 0041).
+        and no subject digest, so it cannot accept an artifact (ADR 0042).
         """
 
         collected = utcnow()

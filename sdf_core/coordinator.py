@@ -51,6 +51,7 @@ from .db import (
 )
 from .evaluator import DeterministicEvaluator
 from .execution import ExecutionService
+from .recovery import AttemptFenceError, settle_owned_attempt
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode
 from .fixtures import resolve_fixture, server_write_roots
 from .observability import classify_error, redact
@@ -58,7 +59,7 @@ from . import tracing
 from .model import AttemptState, TaskState, utcnow
 from .decision_gate import RUN_SCOPE, is_material, pending_material
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
-from .state import transition_attempt, transition_task
+from .state import transition_task
 
 _CANCEL_EVENTS: dict[str, threading.Event] = {}
 
@@ -964,9 +965,14 @@ class Coordinator:
         for sub in subtasks.values():
             attempt = self.db.get(AttemptRow, sub.attempt_id) if sub.attempt_id else None
             if attempt is not None and attempt.status == AttemptState.RUNNING.value:
-                attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.CANCELLED).value
-                task = self.db.get(TaskRow, sub.task_id)
-                if task.status == TaskState.RUNNING.value:
+                # ADR 0041: do not cancel, or move the Task, when recovery already
+                # settled this Attempt or another executor owns it.
+                try:
+                    settle_owned_attempt(self.db, attempt.id, AttemptState.CANCELLED.value)
+                except AttemptFenceError:
+                    continue
+                task = self.db.get(TaskRow, sub.task_id, populate_existing=True)
+                if task is not None and task.status == TaskState.RUNNING.value:
                     task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
                     task.status = transition_task(TaskState.EVALUATING, TaskState.INCONCLUSIVE).value
         cost_breakdown = {}

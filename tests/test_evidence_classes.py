@@ -1,4 +1,4 @@
-"""ADR 0041: execution, verification, and outcome are different Evidence.
+"""ADR 0042: execution, verification, and outcome are different Evidence.
 
 A PASS is a verified pass only when it is independent, unexpired, and bound
 to the Attempt's diff. Legacy, execution, outcome, expired, self-verified,
@@ -353,15 +353,15 @@ def test_orm_rejects_a_missing_class_and_a_mislinked_outcome():
         db.close()
 
 
-def test_migration_0027_keeps_legacy_null_class_and_round_trips(tmp_path, monkeypatch):
+def test_migration_0028_keeps_legacy_null_class_and_round_trips(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
-        "m0027", Path("alembic/versions/0027_evidence_classes.py"),
+        "m0028", Path("alembic/versions/0028_evidence_classes.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module._SUBJECT_RULE == EVIDENCE_SUBJECT_SQL
 
-    database_url = f"sqlite:///{tmp_path / 'm0027.sqlite'}"
+    database_url = f"sqlite:///{tmp_path / 'm0028.sqlite'}"
     monkeypatch.setenv("SDF_DATABASE_URL", database_url)
     config = Config("alembic.ini")
     engine = create_engine(database_url)

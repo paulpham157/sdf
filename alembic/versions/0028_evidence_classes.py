@@ -1,4 +1,4 @@
-"""Objective link for outcome Evidence, and a nullable attempt (ADR 0041).
+"""Objective link for outcome Evidence, and a nullable attempt (ADR 0042).
 
 Adds nullable ``objective_id`` on ``evidence``. ``attempt_id`` becomes
 nullable so an outcome row can name an Objective and not an Attempt.
@@ -27,8 +27,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0027_evidence_classes"
-down_revision = "0026_oracle_visibility"
+revision = "0028_evidence_classes"
+down_revision = "0027_attempt_executor_lease"
 branch_labels = None
 depends_on = None
 
@@ -56,12 +56,12 @@ BEGIN
            OR NEW.objective_id IS NULL
            OR NEW.revision_id IS NOT NULL
            OR NEW.tree_sha256 IS NOT NULL THEN
-            RAISE EXCEPTION 'outcome evidence % must name an objective and no attempt revision (ADR 0041)', NEW.id;
+            RAISE EXCEPTION 'outcome evidence % must name an objective and no attempt revision (ADR 0042)', NEW.id;
         END IF;
         RETURN NEW;
     END IF;
     IF NEW.evidence_class = 'outcome' THEN
-        RAISE EXCEPTION 'outcome evidence % must not name an attempt (ADR 0041)', NEW.id;
+        RAISE EXCEPTION 'outcome evidence % must not name an attempt (ADR 0042)', NEW.id;
     END IF;
     SELECT id, result_tree_sha256 INTO own_id, own_tree FROM attempt_revisions WHERE attempt_id = NEW.attempt_id;
     IF NEW.revision_id IS NULL THEN
@@ -110,7 +110,7 @@ def upgrade():
     if outcome:
         raise RuntimeError(
             f"{outcome} evidence row(s) already have evidence_class 'outcome' without an objective link; "
-            "inspect them before upgrading (ADR 0041). This migration does not rewrite Evidence."
+            "inspect them before upgrading (ADR 0042). This migration does not rewrite Evidence."
         )
     if bind.dialect.name == "postgresql":
         op.execute("ALTER TABLE evidence ALTER COLUMN attempt_id DROP NOT NULL")
@@ -134,7 +134,7 @@ def downgrade():
     if nulls:
         raise RuntimeError(
             f"{nulls} evidence row(s) have no attempt_id. Downgrade cannot restore NOT NULL "
-            "without deleting Evidence, and Evidence is append-only (ADR 0041)."
+            "without deleting Evidence, and Evidence is append-only (ADR 0042)."
         )
     op.drop_index("ix_evidence_objective_id", table_name="evidence")
     if bind.dialect.name == "postgresql":

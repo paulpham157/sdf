@@ -414,8 +414,8 @@ changes. It does not accept a held-out oracle.
 
 ## Later proposal
 
-[ADR 0041](0041-evidence-classes.md) (proposed) asks to write the reserved
+[ADR 0042](0042-evidence-classes.md) (proposed) asks to write the reserved
 `execution` and `outcome` classes, to record a coverage gap as verification
 with status `INCONCLUSIVE` instead of NULL, and to stop counting a legacy
 `PASS` as a verified pass. The decisions in this ADR stay as accepted until
-a maintainer accepts 0041. This note does not change them.
+a maintainer accepts 0042. This note does not change them.

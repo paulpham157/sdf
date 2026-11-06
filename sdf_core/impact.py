@@ -26,7 +26,7 @@ V0_METRICS = (
     "escalation_rate",
     "cost_per_accepted_task",
     "escalation_exhaustion_rate",
-    # ADR 0041. numerator is the count of PASS rows in that bucket.
+    # ADR 0042. numerator is the count of PASS rows in that bucket.
     "verified_passes",
     "unverified_legacy_passes",
 )
@@ -211,7 +211,7 @@ class AttemptFact:
     mode: EvidenceMode
     agent: str = "native"
     # The Attempt's diff digest. None when no diff was recorded, which cannot
-    # verify a pass (ADR 0041).
+    # verify a pass (ADR 0042).
     artifact_sha256: str | None = None
 
 
@@ -490,7 +490,7 @@ class _Computation:
             metric(
                 "verified_passes",
                 verified,
-                "PASS rows that pass the verification acceptance gate (ADR 0039, ADR 0041)",
+                "PASS rows that pass the verification acceptance gate (ADR 0039, ADR 0042)",
             ),
             metric(
                 "unverified_legacy_passes",

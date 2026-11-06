@@ -74,11 +74,16 @@ sandboxes tagged with its own `sdf_attempt_id`, and evaluator boxes `e2b-box` cr
 # deterministic suite (no live keys)
 uv run pytest -q
 
+# one public HTTP walk with the fake adapter (no paid keys; not production proof)
+scripts/demo-evidence.sh
+
 # live public-path proof (keys from env / .env; never echo them)
 SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 
 # what happened in an attempt
 python -m sdf_core.cli runs show ATTEMPT-…
 ```
+
+`scripts/demo-evidence.sh` uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). The fake adapter writes `app.py`; the registered check `app-updated` is what the evaluator runs. Evidence from that script is synthetic.
 
 See also `.env.example`, ADR 0023, and `tests/test_real_agent_loop_live.py`.

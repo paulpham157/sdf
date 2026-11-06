@@ -20,6 +20,14 @@ from .db import (
     UsageLedgerRow,
 )
 from .decision_gate import check_decision_gate
+from .recovery import (
+    AttemptFenceError,
+    claim_executor,
+    compare_and_swap_attempt,
+    compare_and_swap_task,
+    recover_orphaned_attempts,
+    settle_owned_attempt,
+)
 from .escalation import ModelTier
 from .impact import EVIDENCE_MODE_VALUES, EvidenceMode, initial_evidence_mode
 from . import tracing
@@ -121,10 +129,7 @@ class ExecutionService:
                 result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
             except Exception as exc:
                 self._record_measured_telemetry(attempt, time.monotonic() - started, error=exc)
-                attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
-                task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
-                task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
-                self.db.commit()
+                self._fail_attempt(task, attempt)
                 self._trace_outcome(attempt_span, attempt)
                 raise
             self._record_measured_telemetry(attempt, time.monotonic() - started)
@@ -204,7 +209,19 @@ class ExecutionService:
         check_plan_gate(self.db, task_id, require_plan=require_plan_approval)
         # ADR 0033 (#60): no dispatch while a material decision blocks the Task.
         check_decision_gate(self.db, task_id)
-        existing = self.db.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
+        # ADR 0041: settle expired/dead orphans before looking up the key or
+        # moving the Task out of running, so a /run after the lease expires
+        # does not need another process restart. Use a side session so this
+        # does not commit the caller's unit of work (a Coordinator run).
+        _recover_orphans_independently(self.db)
+        cached_task = self.db.get(TaskRow, task_id)
+        if cached_task is not None:
+            self.db.expire(cached_task)
+        existing = self.db.scalar(
+            select(AttemptRow)
+            .where(AttemptRow.dispatch_key == dispatch_key)
+            .execution_options(populate_existing=True)
+        )
         if existing:
             if existing.task_id != task_id:
                 raise ValueError(f"dispatch key already belongs to task: {existing.task_id}")
@@ -265,6 +282,9 @@ class ExecutionService:
                     raise ValueError(f"dispatch key already belongs to task: {winner.task_id}")
                 return BegunAttempt(winner, self.workspaces.root / winner.id, existing=True)
             raise
+        # ADR 0041: the lease commits with ``running``. Dropping this service
+        # (the process, or a crash modeled that way) drops the claim.
+        claim_executor(self, attempt)
         task.status = transition_task(TaskState(task.status), TaskState.READY).value
         task.status = transition_task(TaskState(task.status), TaskState.RUNNING).value
         attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.DISPATCHED).value
@@ -348,12 +368,20 @@ class ExecutionService:
             raise
 
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
-        attempt.status = transition_attempt(
-            AttemptState(attempt.status), AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
-        ).value
-        task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
+        new_attempt_status = AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
+        # ADR 0041: compare-and-swap on status and executor_id so recovery
+        # cannot be overwritten and another executor cannot finish this row.
+        try:
+            attempt = settle_owned_attempt(self.db, attempt_id, new_attempt_status.value)
+        except AttemptFenceError:
+            self.db.rollback()
+            raise
+        if not compare_and_swap_task(
+            self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING,
+        ):
+            raise ValueError(f"task {task.id} is not running")
         if not adapter_succeeded:
-            task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
+            compare_and_swap_task(self.db, task, from_status=TaskState.EVALUATING, to_status=TaskState.FAILED)
             self.db.commit()
             return attempt
         result_tree = revision.result_tree_sha256
@@ -544,14 +572,17 @@ class ExecutionService:
                     )
                 )
         task_state = {"PASS": TaskState.SUCCEEDED, "FAIL": TaskState.FAILED, "INCONCLUSIVE": TaskState.INCONCLUSIVE}[evaluation.status]
-        task.status = transition_task(TaskState(task.status), task_state).value
+        if not compare_and_swap_task(
+            self.db, task, from_status=TaskState.EVALUATING, to_status=task_state,
+        ):
+            raise ValueError(f"task {task.id} is not evaluating")
         self.db.commit()
         return attempt
 
     def _record_execution_evidence(
         self, *, attempt: AttemptRow, diff, process, result: AdapterResult, binding: dict, evidence_mode: str | None,
     ) -> None:
-        """Record that the Attempt ran. This is not verification (ADR 0041).
+        """Record that the Attempt ran. This is not verification (ADR 0042).
 
         ``producer_identity`` is the Attempt's agent. A PASS here means the
         adapter exited 0. It does not accept the artifact, even when
@@ -676,13 +707,34 @@ class ExecutionService:
         return result
 
     def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> None:
-        if attempt.status == AttemptState.RUNNING.value:
-            attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.FAILED).value
-        if task.status == TaskState.RUNNING.value:
-            task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
-        if task.status == TaskState.EVALUATING.value:
-            task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
+        # In-memory status may be stale. The Attempt may already be completed
+        # (finish moved it before the evaluator failed); still fail the Task
+        # if it is running or evaluating. Each write is CAS, so a Task that
+        # recovery has already failed is not resurrected.
+        compare_and_swap_attempt(
+            self.db, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED,
+        )
+        if compare_and_swap_task(
+            self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING,
+        ) or TaskState(task.status) == TaskState.EVALUATING:
+            compare_and_swap_task(
+                self.db, task, from_status=TaskState.EVALUATING, to_status=TaskState.FAILED,
+            )
         self.db.commit()
+
+
+
+def _recover_orphans_independently(db: Session) -> None:
+    """Run orphan recovery without committing the caller's transaction."""
+
+    from sqlalchemy.orm import sessionmaker
+
+    bind = db.get_bind()
+    side = sessionmaker(bind, expire_on_commit=False)()
+    try:
+        recover_orphaned_attempts(side)
+    finally:
+        side.close()
 
 
 TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,

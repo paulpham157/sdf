@@ -55,7 +55,7 @@ class Scorecard:
     escalation_rate: float
     cost_per_accepted_task: float | None
     escalation_exhaustion_rate: float
-    # ADR 0041. Counts of PASS rows, not rates. A verified pass is an
+    # ADR 0042. Counts of PASS rows, not rates. A verified pass is an
     # independent, unexpired, artifact-bound verification PASS. Everything
     # else with status PASS is unverified, including a legacy NULL class.
     verified_pass_count: int = 0
@@ -147,7 +147,7 @@ def build_scorecard_from_db(db: Session) -> Scorecard:
         attempt_numbers[attempt.task_id] = attempt_numbers.get(attempt.task_id, 0) + 1
         rows = evidence_by_attempt.get(attempt.id, [])
         # Execution and outcome are not task verdicts. A legacy NULL class is a
-        # verdict, and it is not a verified pass (ADR 0041).
+        # verdict, and it is not a verified pass (ADR 0042).
         verdicts = [row for row in rows if row.evidence_class in (None, "verification")]
         verified = [
             row for row in verdicts

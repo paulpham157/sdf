@@ -1,4 +1,4 @@
-# ADR 0041: execution, verification, and outcome are different Evidence
+# ADR 0042: execution, verification, and outcome are different Evidence
 
 Status: proposed
 Follows [ADR 0039](0039-evidence-independence.md) and
@@ -7,8 +7,8 @@ rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md)), revision
 binding for Attempt-scoped Evidence ([ADR 0032](0032-attempt-revisions.md)),
 or the fail-closed gates in ADR 0039 and ADR 0040.
 
-Numbered 0041 because 0039 is evidence independence and 0040 is held-out
-oracles. Issue #88 was filed when independence was drafted as 0034; 0034 on
+Numbered 0042 because 0041 is keyless `/run` and orphan recovery, 0039 is
+evidence independence, and 0040 is held-out oracles. Issue #88 was filed when independence was drafted as 0034; 0034 on
 `main` is the LLM transport ADR. This file is a new proposal rather than an
 edit of ADR 0039: that ADR is accepted, and it still says `execution` and
 `outcome` are reserved and a coverage gap stays NULL. Those sentences stay
@@ -37,7 +37,7 @@ another.
    missing or outside that set. The database column stays nullable.
    Evidence written before this rule, including rows with
    `evidence_class` NULL, is not rewritten and is not backfilled
-   (ADR 0002). Migration `0027_evidence_classes` does not add `NOT NULL`.
+   (ADR 0002). Migration `0028_evidence_classes` does not add `NOT NULL`.
 
 2. **Execution Evidence** is what the Attempt did: the diff and the process
    log, summarized when the run is finished. `evidence_class` is
@@ -68,7 +68,7 @@ another.
    the Evidence node to the Objective. It is not a `validates` edge to a
    Task. The acceptance gate rejects it.
 
-5. **Schema** (migration `0027_evidence_classes`). Existing rows are not
+5. **Schema** (migration `0028_evidence_classes`). Existing rows are not
    rewritten. `ADD COLUMN` does not fire the Evidence append-only trigger.
 
    | Column | Meaning |

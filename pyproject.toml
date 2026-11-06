@@ -5,7 +5,7 @@ description = "Software Decision Fabric Core vertical slice"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi>=0.115,<1",
+  "fastapi>=0.162,<1",
   "uvicorn>=0.32,<1",
   "sqlalchemy>=2.0,<3",
   "alembic>=1.14,<2",

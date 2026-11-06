@@ -29,7 +29,7 @@ EVIDENCE_CLASS_SQL = (
     + ", ".join(f"'{value}'" for value in EVIDENCE_CLASSES)
     + ")"
 )
-# Link shape (ADR 0041, migration 0027). NULL evidence_class stays legal so a
+# Link shape (ADR 0042, migration 0028). NULL evidence_class stays legal so a
 # row written before the class was required can be read. A new write is refused
 # by the ORM. Execution and verification name an Attempt. Outcome names an
 # Objective and does not name an Attempt, so it cannot be read as task proof.
@@ -142,7 +142,7 @@ def is_verified_pass(
     """True only for an independent, unexpired, artifact-bound verification PASS.
 
     Execution, outcome, a legacy NULL class, a self-verified row, a wrong
-    digest, and an expired verification are not verified passes (ADR 0041).
+    digest, and an expired verification are not verified passes (ADR 0042).
     """
 
     if _field(evidence, "status") != "PASS" or not artifact_sha256:

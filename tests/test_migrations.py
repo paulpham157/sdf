@@ -18,15 +18,37 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
     assert {column["name"] for column in inspector.get_columns("attempts")} >= {
         "parent_attempt_id", "model_tier", "cost_usd", "provider", "latency_ms",
         "input_tokens", "output_tokens", "escalation_reason",
+        "executor_id", "executor_heartbeat_at",
     }
     assert "measured_at" in {column["name"] for column in inspector.get_columns("evidence")}
+
+
+def test_executor_lease_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monkeypatch):
+    """0027 adds the lease columns; downgrading it to 0026 removes them."""
+
+    database_url = f"sqlite:///{tmp_path / 'lease.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert {"executor_id", "executor_heartbeat_at"} <= names
+        command.downgrade(config, "0026_oracle_visibility")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert "executor_id" not in names and "executor_heartbeat_at" not in names
+        command.upgrade(config, "head")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert {"executor_id", "executor_heartbeat_at"} <= names
+    finally:
+        engine.dispose()
 
 
 def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0027_evidence_classes"]
+    assert script.get_heads() == ["0028_evidence_classes"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 

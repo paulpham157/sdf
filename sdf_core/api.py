@@ -29,7 +29,9 @@ from .db import (
 )
 from .escalation import ModelTier
 from .adapter import FakeNativeAdapter
+from .dispatch_key import derived_dispatch_key
 from .execution import ExecutionService
+from .recovery import AttemptFenceError, recover_orphaned_attempts, settle_local_attempts, start_executor_heartbeat
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
 from .run_adapter import RunBusyError, configured_run_adapter, run_slot
@@ -193,6 +195,15 @@ async def _lifespan(_app: FastAPI):
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
+    # ADR 0041: refresh leases for this process, then fail Attempts left
+    # running with no live executor so a later dispatch can enter ready.
+    # RuntimeController.recover does not settle Attempt or Task rows (ADR 0029).
+    start_executor_heartbeat(SessionLocal)
+    recovered = SessionLocal()
+    try:
+        recover_orphaned_attempts(recovered)
+    finally:
+        recovered.close()
     # ADR 0024: off unless SDF_OTEL_ENABLED; spans never leave SDF Core for a sandbox.
     # SDF_OTEL_* / OTEL_* may live in the repo-root .env like every other setting.
     otel_env = _operator_env()
@@ -204,12 +215,36 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        # ADR 0041: settle Attempts this process stamped whose executor is
+        # already gone, so a graceful restart does not wait out the lease.
+        shutdown = SessionLocal()
+        try:
+            settle_local_attempts(shutdown)
+        except Exception:
+            shutdown.rollback()
+            _log.warning("shutdown orphan settlement failed", exc_info=True)
+        finally:
+            shutdown.close()
         if owned:
             tracing.shutdown()  # uninstrument app and DB, flush queued spans
 
 
+# FastAPI 0.162 records native traces, metrics, and exception logs (messages
+# and stack traces) unless this is set, and builds OTLP exporters when
+# FASTAPI_OTEL_AUTO_CONFIGURE=true. ADR 0024 keeps that pipeline off: no SDK
+# provider, no exporter, and no second span path. An explicit auto_configure
+# of False overrides the environment variable. Server and DB spans come only
+# from sdf_core.tracing when SDF_OTEL_ENABLED is set.
+FASTAPI_TELEMETRY_OFF: dict[str, Any] = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
-              docs_url=None, redoc_url=None, openapi_url=None)
+              docs_url=None, redoc_url=None, openapi_url=None, telemetry=FASTAPI_TELEMETRY_OFF)
 
 
 _log = get_logger("api")
@@ -349,7 +384,7 @@ class ObservationRequest(BaseModel):
 
 
 class OutcomeEvidenceRequest(BaseModel):
-    """A business result for an Objective. Not Attempt verification (ADR 0041)."""
+    """A business result for an Objective. Not Attempt verification (ADR 0042)."""
 
     verifier_identity: str = Field(min_length=1, max_length=120)
     verifier_role: str = Field(default="stakeholder", min_length=1, max_length=32)
@@ -490,7 +525,7 @@ class EvidenceResponse(BaseModel):
     revision_id: str | None = None
     tree_sha256: str | None = None
     evidence_mode: str | None = None
-    # ADR 0039 / ADR 0041. Null only on Evidence written before a class was required.
+    # ADR 0039 / ADR 0042. Null only on Evidence written before a class was required.
     evidence_class: str | None = None
     producer_identity: str | None = None
     producer_role: str | None = None
@@ -939,9 +974,21 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                     adapter=adapter,
                     evaluator=configured_evaluator(registry, live=not isinstance(adapter, FakeNativeAdapter)),
                 )
+                # ADR 0041: an omitted key is derived, not a fresh uuid. The same
+                # logical request replays (ADR 0031), including after the Attempt
+                # is terminal. A new Attempt sends an explicit key.
                 attempt = service.run(
                     task_id=task_id,
-                    dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
+                    dispatch_key=payload.dispatch_key or derived_dispatch_key(
+                        task_id=task_id,
+                        fixture_dir=os.fspath(fixture),
+                        instructions=payload.instructions,
+                        criterion_checks=payload.criterion_checks,
+                        validation_target_kind=payload.validation_target_kind,
+                        validation_target_id=payload.validation_target_id,
+                        parent_attempt_id=payload.parent_attempt_id,
+                        model_tier=payload.model_tier.value if payload.model_tier else None,
+                    ),
                     fixture=fixture,
                     instructions=payload.instructions,
                     commands=[],
@@ -960,6 +1007,8 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RunBusyError as exc:
             raise HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "30"}) from exc
+        except AttemptFenceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ValueError, FileExistsError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
@@ -1074,7 +1123,7 @@ def record_outcome_evidence(objective_id: str, payload: OutcomeEvidenceRequest, 
                             db: Session = Depends(get_db)):
     """Record Outcome Evidence on an Objective.
 
-    The row is not Attempt Evidence and it does not validate a Task (ADR 0041).
+    The row is not Attempt Evidence and it does not validate a Task (ADR 0042).
     ``verifier_role`` cannot be ``agent``.
     """
 

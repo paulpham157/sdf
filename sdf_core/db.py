@@ -98,6 +98,11 @@ class AttemptRow(Base):
     # says); NULL only for Attempts that existed before 0023.  Only a NULL
     # Attempt may have unbound artifacts or Evidence.  Immutable.
     revision_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
+    # ADR 0041: the process executing a running Attempt, and when it last
+    # proved that. NULL means nobody holds it. Startup fails a running
+    # Attempt whose owner is gone or whose heartbeat is older than the lease.
+    executor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executor_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -180,7 +185,7 @@ class EvidenceRow(Base):
     )
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     # Nullable for outcome Evidence, which names an Objective and not an Attempt
-    # (ADR 0041). Execution and verification still require an attempt. Historical
+    # (ADR 0042). Execution and verification still require an attempt. Historical
     # rows keep the attempt they were written with.
     attempt_id: Mapped[str | None] = mapped_column(String(120), index=True)
     kind: Mapped[str] = mapped_column(String(40))
@@ -196,7 +201,7 @@ class EvidenceRow(Base):
     # ADR 0032 (#62): the revision and result tree the evaluator checked.
     revision_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     tree_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # ADR 0039 / ADR 0041. The column stays nullable so a row written before a
+    # ADR 0039 / ADR 0042. The column stays nullable so a row written before a
     # class was required still reads. Every new insert must set execution,
     # verification, or outcome; the session guard refuses NULL. A coverage gap
     # is verification, not NULL.
@@ -215,7 +220,7 @@ class EvidenceRow(Base):
     # recorded after a randomized check, never a value the subject could read.
     oracle_visibility: Mapped[str | None] = mapped_column(String(16), nullable=True)
     input_seed: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # ADR 0041. Set only on outcome Evidence. NULL on execution, verification,
+    # ADR 0042. Set only on outcome Evidence. NULL on execution, verification,
     # and on rows written before migration 0027.
     objective_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
 
@@ -567,18 +572,18 @@ def _reject_evidence_mutation(session: Session, flush_context: Any, instances: A
         if isinstance(item, EvidenceRow) and item.evidence_class not in EVIDENCE_CLASSES:
             raise ValueError(
                 f"evidence_class must be one of {list(EVIDENCE_CLASSES)} on every new Evidence row "
-                f"(ADR 0041); a historical row may be NULL, not {item.evidence_class!r}"
+                f"(ADR 0042); a historical row may be NULL, not {item.evidence_class!r}"
             )
         if isinstance(item, EvidenceRow) and item.evidence_class == "outcome":
             if item.attempt_id is not None or not item.objective_id:
                 raise ValueError(
-                    "outcome evidence must be linked to an objective and not to an attempt (ADR 0041)"
+                    "outcome evidence must be linked to an objective and not to an attempt (ADR 0042)"
                 )
             if item.revision_id is not None or item.tree_sha256 is not None:
-                raise ValueError("outcome evidence is not bound to an attempt revision (ADR 0041)")
+                raise ValueError("outcome evidence is not bound to an attempt revision (ADR 0042)")
         elif isinstance(item, EvidenceRow) and (not item.attempt_id or item.objective_id is not None):
             raise ValueError(
-                f"{item.evidence_class} evidence must be linked to an attempt and not to an objective (ADR 0041)"
+                f"{item.evidence_class} evidence must be linked to an attempt and not to an objective (ADR 0042)"
             )
         if isinstance(item, EvidenceRow) and item.oracle_visibility is not None and item.oracle_visibility not in ORACLE_VISIBILITIES:
             raise ValueError(
@@ -780,7 +785,7 @@ def check_revision_binding(session: Session, row: Any) -> None:
     if isinstance(row, EvidenceRow) and row.evidence_class == "outcome":
         if row.attempt_id is not None or not row.objective_id or row.revision_id is not None or row.tree_sha256 is not None:
             raise RevisionBindingError(
-                f"outcome evidence {row.id} is linked to an objective and not to an attempt revision (ADR 0041)"
+                f"outcome evidence {row.id} is linked to an objective and not to an attempt revision (ADR 0042)"
             )
         return
     own = _pending_revision(session, attempt_id=row.attempt_id)

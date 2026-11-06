@@ -86,7 +86,7 @@ class AgentQualification:
 
 
 def _accepted(evidence: Sequence[EvidenceRow]) -> bool:
-    """Evaluator rows only. Execution and outcome never accept an Attempt (ADR 0041).
+    """Evaluator rows only. Execution and outcome never accept an Attempt (ADR 0042).
 
     A historical row with no class is still evaluator Evidence (ADR 0030).
     The scorecard does not treat that row as a verified pass; routing still
