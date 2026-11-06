@@ -31,7 +31,7 @@ from .escalation import ModelTier
 from .adapter import FakeNativeAdapter
 from .dispatch_key import derived_dispatch_key
 from .execution import ExecutionService
-from .recovery import recover_orphaned_attempts, start_executor_heartbeat
+from .recovery import recover_orphaned_attempts, settle_local_attempts, start_executor_heartbeat
 from .credentials import CredentialConfigError
 from .measurement import build_scorecard_from_db
 from .run_adapter import RunBusyError, configured_run_adapter, run_slot
@@ -215,6 +215,16 @@ async def _lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        # ADR 0041: settle Attempts this process stamped whose executor is
+        # already gone, so a graceful restart does not wait out the lease.
+        shutdown = SessionLocal()
+        try:
+            settle_local_attempts(shutdown)
+        except Exception:
+            shutdown.rollback()
+            _log.warning("shutdown orphan settlement failed", exc_info=True)
+        finally:
+            shutdown.close()
         if owned:
             tracing.shutdown()  # uninstrument app and DB, flush queued spans
 

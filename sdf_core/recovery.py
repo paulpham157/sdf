@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -116,6 +116,63 @@ def start_executor_heartbeat(session_factory: sessionmaker) -> None:
     thread.start()
 
 
+def compare_and_swap_attempt(
+    db: Session,
+    attempt: AttemptRow,
+    *,
+    from_status: AttemptState,
+    to_status: AttemptState,
+    extra: dict[str, object] | None = None,
+) -> bool:
+    """Persist ``to_status`` only if the row is still ``from_status``.
+
+    Returns True when this session won. On loss, expires ``attempt`` so a
+    later flush cannot overwrite the durable winner.
+    """
+
+    transition_attempt(from_status, to_status)
+    values: dict[str, object] = {"status": to_status.value}
+    if extra:
+        values.update(extra)
+    result = db.execute(
+        update(AttemptRow)
+        .where(AttemptRow.id == attempt.id, AttemptRow.status == from_status.value)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.expire(attempt)
+        return False
+    attempt.status = to_status.value
+    if extra:
+        for key, value in extra.items():
+            setattr(attempt, key, value)
+    return True
+
+
+def compare_and_swap_task(
+    db: Session,
+    task: TaskRow,
+    *,
+    from_status: TaskState,
+    to_status: TaskState,
+) -> bool:
+    """Persist ``to_status`` only if the Task row is still ``from_status``."""
+
+    transition_task(from_status, to_status)
+    result = db.execute(
+        update(TaskRow)
+        .where(TaskRow.id == task.id, TaskRow.status == from_status.value)
+        .values(status=to_status.value)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.expire(task)
+        return False
+    task.status = to_status.value
+    return True
+
+
 def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tuple[str, ...]:
     """Fail running Attempts with no live executor, and unstick their Tasks.
 
@@ -125,6 +182,10 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
     Task: ``running`` to ``evaluating`` to ``failed``, and only when no
     Attempt of that Task is still running. A later dispatch can then enter
     ``ready``. No new transitions are added.
+
+    Each write is compare-and-swap on the durable status, so a worker that
+    already completed the Attempt wins, and a stale worker cannot resurrect
+    a Task recovery has failed.
 
     A second call finds nothing running and writes nothing.
     """
@@ -137,9 +198,11 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
         if executor_is_live(attempt, now=now):
             live_tasks.add(attempt.task_id)
             continue
-        attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.FAILED).value
-        if attempt.error_class is None:
-            attempt.error_class = "killed"
+        extra = {"error_class": "killed"} if attempt.error_class is None else None
+        if not compare_and_swap_attempt(
+            db, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED, extra=extra,
+        ):
+            continue
         settled.append(attempt.id)
     if not settled:
         return ()
@@ -147,10 +210,13 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
         if task_id in live_tasks:
             continue
         task = db.get(TaskRow, task_id)
-        if task is None or task.status != TaskState.RUNNING.value:
+        if task is None:
             continue
-        task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
-        task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
+        if not compare_and_swap_task(
+            db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING,
+        ):
+            continue
+        compare_and_swap_task(db, task, from_status=TaskState.EVALUATING, to_status=TaskState.FAILED)
     try:
         db.commit()
     except Exception:
@@ -158,6 +224,34 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
         raise
     _log.info("recovered orphaned attempts: %s", ",".join(settled))
     return tuple(settled)
+
+
+def settle_local_attempts(db: Session) -> tuple[str, ...]:
+    """Fail Attempts this process stamped whose executor object is gone.
+
+    Called on lifespan shutdown. Living ``ExecutionService`` objects keep
+    their claims, so an in-flight request is left alone. Attempts whose
+    owner has already been dropped (a drained request, or a crash modeled
+    by deleting the service) are dead immediately even if the heartbeat is
+    fresh, because ``executor_id`` is this process. Neighbor processes with
+    a live heartbeat are left alone.
+    """
+
+    return recover_orphaned_attempts(db)
+
+
+def reset_recovery_state() -> str:
+    """Drop in-process claims and mint a new executor id (a new OS process).
+
+    Returns the new ``EXECUTOR_ID``. Does not stop a heartbeat thread that
+    may already be running; hermetic tests never start one.
+    """
+
+    global EXECUTOR_ID
+    with _lock:
+        _owners.clear()
+    EXECUTOR_ID = uuid4().hex
+    return EXECUTOR_ID
 
 
 def _refresh_loop(session_factory: sessionmaker) -> None:
