@@ -35,6 +35,15 @@
 
 ### Breaking API changes
 
+- **Outcome Evidence on `POST /objectives/{id}/evidence` requires an approver (ADR 0042).**
+  An operator token is no longer enough; the bar is the same as `POST /decisions`.
+  `verifier_identity` must differ from the recording principal and from
+  `Attempt.agent` on Attempts under that Objective's Tasks (a direct
+  `implements` edge, or a Task of a Plan with that `objective_id`). The body
+  must include `mode` (`synthetic` or `live`), stored as `evidence_mode`.
+  The row still does not validate a Task, count as a verified pass, or
+  satisfy a held-out oracle.
+
 - **LLM credentials use one allow-listed name per value (ADR 0034).**
   Claude reads `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL`.
   Codex reads `OPENAI_BASE_URL`, `OPENAI_API_KEY` and `OPENAI_MODEL`.

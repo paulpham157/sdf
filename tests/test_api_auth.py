@@ -87,6 +87,40 @@ def test_roles():
     assert client_as("admin").get(f"/tasks/{tid}/trace").status_code == 200
     node = {"id": f"DEC-{uuid.uuid4().hex[:8]}", "title": "d", "owner": "hung"}
     assert client_as("operator").post("/decisions", json=node).status_code == 403
+    assert auth.required_role("POST", "/objectives/{objective_id}/evidence") == "approver"
+    assert auth.required_role("POST", "/decisions") == "approver"
+
+
+def test_outcome_evidence_uses_the_decision_bar():
+    suffix = uuid.uuid4().hex[:8]
+    context, objective = f"BC-AUTH-{suffix}", f"OBJ-AUTH-{suffix}"
+    operator = client_as("operator", principal="op-outcome")
+    assert operator.post("/business-contexts", json={
+        "id": context, "title": "context", "owner": "product", "source": "test",
+    }).status_code == 201
+    assert operator.post("/objectives", json={
+        "id": objective, "title": "objective", "business_context_id": context,
+        "owner": "product", "source": "test",
+    }).status_code == 201
+    payload = {
+        "verifier_identity": "alex",
+        "verifier_role": "stakeholder",
+        "summary": "the metric moved",
+        "mode": "live",
+    }
+    denied = operator.post(f"/objectives/{objective}/evidence", json=payload)
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "this action needs the approver role"
+    approver = client_as("approver", principal="casey-auth")
+    created = approver.post(f"/objectives/{objective}/evidence", json=payload)
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["evidence_mode"] == "live"
+    assert body["producer_identity"] == "casey-auth"
+    assert body["producer_role"] == "approver"
+    assert body["verifier_identity"] == "alex"
+    viewer = client_as("viewer")
+    assert viewer.post(f"/objectives/{objective}/evidence", json=payload).status_code == 403
 
 
 def _propose(client: TestClient, tmp_path, monkeypatch):

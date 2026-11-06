@@ -23,6 +23,8 @@ from .db import (
     GraphNodeRow,
     ObjectiveMetricRow,
     OutcomeObservationRow,
+    PlanRow,
+    PlanTaskRow,
     TaskRow,
     make_engine,
     make_session_factory,
@@ -412,6 +414,9 @@ class OutcomeEvidenceRequest(BaseModel):
     expires_at: datetime | None = None
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     criterion: str | None = Field(default=None, max_length=500)
+    # Caller-reported, like an observation. This is not the /run evidence
+    # mode, which the server sets only after a real sandbox exists (ADR 0031).
+    mode: Literal["synthetic", "live"]
 
 
 def configured_tool_policy() -> AllowlistPolicy:
@@ -1137,13 +1142,46 @@ def _aware_expiry(value: datetime | None) -> datetime | None:
     return value
 
 
+def _objective_attempt_agents(db: Session, objective_id: str) -> set[str]:
+    """Agent identities of Attempts whose work belongs to this Objective.
+
+    An Attempt has no objective column. ``Attempt.agent`` is the identity
+    (a plan run stores ``kind:agent_id``). The Attempt belongs to a Task
+    (``attempts.task_id``). That Task belongs to the Objective in either of
+    the two links this schema actually writes:
+
+    - ``POST /tasks`` stores an ``implements`` edge from the Objective to the Task.
+    - A Plan stores ``plans.objective_id`` and its Tasks in ``plan_tasks``.
+      Retries are further Attempts of the same Task (``parent_attempt_id``),
+      so they are included without a separate walk.
+    """
+
+    task_ids = set(db.scalars(select(DecisionEdgeRow.target_id).where(
+        DecisionEdgeRow.source_kind == "objective",
+        DecisionEdgeRow.source_id == objective_id,
+        DecisionEdgeRow.target_kind == "task",
+        DecisionEdgeRow.relation == "implements",
+    )))
+    plan_ids = list(db.scalars(select(PlanRow.id).where(PlanRow.objective_id == objective_id)))
+    if plan_ids:
+        task_ids.update(db.scalars(select(PlanTaskRow.task_id).where(PlanTaskRow.plan_id.in_(plan_ids))))
+    if not task_ids:
+        return set()
+    return {
+        agent
+        for agent in db.scalars(select(AttemptRow.agent).where(AttemptRow.task_id.in_(task_ids)))
+        if agent
+    }
+
+
 @app.post("/objectives/{objective_id}/evidence", status_code=status.HTTP_201_CREATED, response_model=EvidenceResponse)
 def record_outcome_evidence(objective_id: str, payload: OutcomeEvidenceRequest, request: Request,
                             db: Session = Depends(get_db)):
     """Record Outcome Evidence on an Objective.
 
     The row is not Attempt Evidence and it does not validate a Task (ADR 0042).
-    ``verifier_role`` cannot be ``agent``.
+    ``verifier_role`` cannot be ``agent``. The verifier cannot be the principal
+    who records the row, or the agent of an Attempt under this Objective.
     """
 
     get_objective_node(db, objective_id)
@@ -1156,6 +1194,22 @@ def record_outcome_evidence(objective_id: str, payload: OutcomeEvidenceRequest, 
     if not summary:
         raise HTTPException(status_code=422, detail="outcome evidence requires a summary")
     principal = getattr(getattr(request.state, "principal", None), "name", None) or "sdf"
+    if verifier == principal:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "outcome evidence verifier_identity must differ from producer_identity (ADR 0042); "
+                "the principal who records the outcome cannot verify it"
+            ),
+        )
+    if verifier in _objective_attempt_agents(db, objective_id):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "outcome evidence verifier_identity matches an attempt agent of this objective (ADR 0042); "
+                "an attempt's agent cannot verify the objective it worked"
+            ),
+        )
     now = datetime.now(timezone.utc)
     evidence_id = f"EVIDENCE-OUTCOME-{uuid4().hex}"
     row = EvidenceRow(
@@ -1170,11 +1224,11 @@ def record_outcome_evidence(objective_id: str, payload: OutcomeEvidenceRequest, 
         confidence=payload.confidence,
         criterion=payload.criterion,
         measured_at=now,
-        evidence_mode="synthetic",
+        evidence_mode=payload.mode,
         created_at=now,
         evidence_class="outcome",
         producer_identity=principal,
-        producer_role="operator",
+        producer_role="approver",
         verifier_identity=verifier,
         verifier_role=payload.verifier_role,
         collected_at=now,
