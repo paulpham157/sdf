@@ -261,7 +261,7 @@ def test_live_run_forced_timeout_is_classified(tmp_path: Path, monkeypatch: pyte
                                        "idempotency_key": "live-timeout-" + os.urandom(4).hex()}).status_code == 201
     fixture = _fixture(tmp_path)
     res = client.post("/tasks/TASK-LIVE-TIMEOUT/run", json={
-        "fixture_dir": str(fixture), "criterion_checks": {"c": CHECK_ADD},
+        "dispatch_key": "live-timeout", "fixture_dir": str(fixture), "criterion_checks": {"c": CHECK_ADD},
         "instructions": "Write a 3000-word essay about sandboxes to essay.md, then fix calc.py."})
     body = res.json()
     detail = body.get("detail") if isinstance(body.get("detail"), dict) else body

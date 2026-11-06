@@ -51,11 +51,12 @@ def test_escalation_reason_is_derived_from_the_parent_attempt(tmp_path, monkeypa
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     task_id = _task("ESC")
-    first = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture)})
+    first = client.post(f"/tasks/{task_id}/run", json={"dispatch_key": f"{task_id}-first", "fixture_dir": str(fixture)})
     assert first.status_code == 200
     parent_id = first.json()["attempt_id"]
 
     second = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": f"{task_id}-second",
         "fixture_dir": str(fixture), "parent_attempt_id": parent_id, "model_tier": "medium",
     })
 

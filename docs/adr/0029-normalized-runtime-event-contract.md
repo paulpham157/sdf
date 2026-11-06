@@ -107,7 +107,10 @@ The contract lives in `sdf_core/events.py`.
   restart, and redelivery from a remote Herdr bridge, have not been exercised
   against a deployed endpoint (the P2 HTTPS bridge proof remains the gate for
   that).
-- **`recover` is not wired into `LiveRunAdapter` (follow-up).** Each `/run`
+- **Startup reconciliation is not `RuntimeController.recover`.** The
+  amendment below settles a dead Attempt row. `recover()` only restores a
+  runtime-event stream, and it is still not called from `LiveRunAdapter`.
+  Each `/run`
   creates a fresh sandbox and kills it in `finally`, so there is no live
   session to reattach to, and headless runtimes name sessions
   `<kind>-<attempt>-<n>` per process: a re-run of the same Attempt would
@@ -115,3 +118,70 @@ The contract lives in `sdf_core/events.py`.
   `runtime_started`. Real reattach needs the Herdr binding snapshot
   (workspace and pane ids) and the sandbox id persisted, and a sandbox that
   outlives the SDF process; that belongs with the P2 bridge work.
+
+## Amendment (2026-11-06): startup reconciliation of a dead Attempt
+
+This ADR stays **proposed**. The amendment is part of that proposal. It does
+not accept it. It does not change the event contract above. It says what a
+restart does with an Attempt left `running`.
+
+`RuntimeController.recover` is not used. FastAPI lifespan startup, lifespan
+shutdown, and `POST /tasks/{id}/run` (before a new Attempt is created) call
+`recover_orphaned_attempts`. A background refresh does the same on PostgreSQL
+and on any engine that is not the single-connection in-memory SQLite used by
+hermetic tests.
+
+**Who is live.** `begin` stamps `executor_id` (this process) and
+`executor_heartbeat_at` in the same commit that enters `running`, and holds
+the claim on the `ExecutionService` until the Attempt is terminal.
+
+- This process's id is live only while that object is still alive. Dropping
+  it is the in-process crash: the next startup or `/run` fails the Attempt
+  even if the heartbeat is fresh.
+- A different `executor_id` is live while its heartbeat is within 30 seconds.
+  A heartbeat older than that, or a null heartbeat on a leased row, is dead.
+  The refresher rewrites the heartbeat about every 10 seconds so a long run
+  in a live process does not age out.
+- A running row with **no** `executor_id` is not swept. Startup cannot tell
+  it from a worker that never took a lease, including rows written before
+  migration `0027`. New runs always take a lease.
+
+**What changes.** A dead leased Attempt moves `running` → `failed`, and
+`error_class` becomes `killed` only when it was empty. If the Task is
+`running` and no Attempt of that Task is still `running`, the Task moves
+`running` → `evaluating` → `failed`, which are existing transitions. The
+Attempt and the Task are updated in one transaction, each with a
+compare-and-swap on the status that was read. A lost swap writes nothing
+for that row. A second pass finds no dead lease and writes nothing.
+Evidence, revisions, graph rows, and provenance are not inserted, updated,
+or deleted.
+
+**Fences.** `finish` and the adapter-failure path update the Attempt only
+while it is still `running` for this executor (or unleased, for a row this
+process is finishing directly). A loss rolls that transaction back, so a
+late writer does not keep artifacts or Evidence and does not move the Task.
+`/run` returns 409. Coordinator cancellation moves `running` → `cancelled`
+only while the Attempt is still `running`, then the Task toward
+`inconclusive` only if that cancel won and nothing is still running. Cancel
+and recovery can race: one terminal state wins, the other leaves the rows
+alone. A terminal Attempt is not moved again.
+
+**After settlement.** The same `dispatch_key` replays the failed Attempt and
+does not call the adapter. A new key can enter `ready` (the Task is
+`failed`). That new key is a new adapter call.
+
+**Boundaries.**
+
+- A hard crash of another OS process is indistinguishable from a live
+  neighbor until its heartbeat is older than 30 seconds. Startup does not
+  reap a fresh foreign heartbeat. The next `/run` after the lease expires
+  does. This window is why a restart can still see `running` → `ready`
+  refused until the lease is stale.
+- In-memory SQLite tests share one connection, so they do not run the
+  heartbeat thread. File SQLite and PostgreSQL use the same compare-and-swap.
+- No sweep of every `running` row. A live claim and a fresh foreign
+  heartbeat stay `running`.
+- Not exactly-once for external effects. The adapter for one key runs at
+  most once in this host. A crash can mean that call already reached a
+  sandbox. Recovery does not repeat it. A new key can. See the ADR 0031
+  amendment.

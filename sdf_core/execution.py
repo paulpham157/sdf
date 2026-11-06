@@ -37,6 +37,14 @@ from .tools import (
     ToolProxy,
 )
 from .sandbox import FixtureSandbox
+from .recovery import (
+    AttemptFenceError,
+    claim_executor,
+    compare_and_swap_attempt,
+    compare_and_swap_task,
+    release_executor,
+    settle_task_if_idle,
+)
 from .revisions import close_revision, record_base_revision, tree_digest
 
 
@@ -93,42 +101,53 @@ class ExecutionService:
         """
         with tracing.span("sdf.attempt", task_id=task_id, model_tier=getattr(model_tier, "value", model_tier),
                           parent_attempt_id=parent_attempt_id) as attempt_span:
-            begun = self.begin(
-                task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
-                parent_attempt_id=parent_attempt_id, model_tier=model_tier,
-                require_plan_approval=require_plan_approval,
-                principal=principal,
-                evidence_mode=initial_evidence_mode(self.adapter).value,
-            )
-            tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id,
-                                   evidence_mode=begun.attempt.evidence_mode)
-            if begun.existing:
-                tracing.set_attributes(attempt_span, status=begun.attempt.status, outcome="existing")
-                return begun.attempt
-            task = self.db.get(TaskRow, task_id)
-            attempt = begun.attempt
-            started = time.monotonic()
+            begun = None
             try:
-                result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
-            except Exception as exc:
-                self._record_measured_telemetry(attempt, time.monotonic() - started, error=exc)
-                attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.FAILED).value
-                task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
-                task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
-                self.db.commit()
-                self._trace_outcome(attempt_span, attempt)
-                raise
-            self._record_measured_telemetry(attempt, time.monotonic() - started)
-            finished = self.finish(
-                attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
-                criterion_checks=criterion_checks, oracle_policies=oracle_policies,
-                validation_target=validation_target,
-                # ADR 0031: Evidence takes the Attempt's mode as stored now (a
-                # live adapter promotes it once its sandbox exists).
-                evidence_mode=attempt.evidence_mode,
-            )
-            self._trace_outcome(attempt_span, finished)
-            return finished
+                begun = self.begin(
+                    task_id=task_id, dispatch_key=dispatch_key, fixture=fixture, validation_target=validation_target,
+                    parent_attempt_id=parent_attempt_id, model_tier=model_tier,
+                    require_plan_approval=require_plan_approval,
+                    principal=principal,
+                    evidence_mode=initial_evidence_mode(self.adapter).value,
+                )
+                tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id,
+                                       evidence_mode=begun.attempt.evidence_mode)
+                if begun.existing:
+                    tracing.set_attributes(attempt_span, status=begun.attempt.status, outcome="existing")
+                    return begun.attempt
+                task = self.db.get(TaskRow, task_id)
+                attempt = begun.attempt
+                started = time.monotonic()
+                try:
+                    result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
+                except Exception as exc:
+                    self._record_measured_telemetry(attempt, time.monotonic() - started, error=exc)
+                    if not self._fail_attempt(task, attempt):
+                        raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id) from exc
+                    self._trace_outcome(attempt_span, attempt)
+                    raise
+                self._record_measured_telemetry(attempt, time.monotonic() - started)
+                finished = self.finish(
+                    attempt_id=attempt.id, result=result, fixture=fixture, commands=commands,
+                    criterion_checks=criterion_checks, oracle_policies=oracle_policies,
+                    validation_target=validation_target,
+                    # ADR 0031: Evidence takes the Attempt's mode as stored now (a
+                    # live adapter promotes it once its sandbox exists).
+                    evidence_mode=attempt.evidence_mode,
+                )
+                self._trace_outcome(attempt_span, finished)
+                return finished
+            finally:
+                # Keep the claim while the Attempt is still running (a decision
+                # gate can refuse finish and leave it running). Drop it once
+                # the row is terminal so a later sweep does not see an owner.
+                if begun is not None and not begun.existing:
+                    try:
+                        still_running = begun.attempt.status == AttemptState.RUNNING.value
+                    except Exception:  # noqa: BLE001 - a failed reload must not drop a live claim
+                        still_running = True
+                    if not still_running:
+                        release_executor(begun.attempt.id)
 
     def _record_measured_telemetry(self, attempt: AttemptRow, seconds: float, *, error: Exception | None = None) -> None:
         """Fill Attempt telemetry from server-side measurement (#50).
@@ -260,7 +279,15 @@ class ExecutionService:
         task.status = transition_task(TaskState(task.status), TaskState.RUNNING).value
         attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.DISPATCHED).value
         attempt.status = transition_attempt(AttemptState(attempt.status), AttemptState.RUNNING).value
-        self.db.commit()
+        # Same commit as ``running``: a crash after this row is visible leaves
+        # a lease, and the claim object is already registered so this process
+        # still counts as live.
+        claim_executor(self, attempt)
+        try:
+            self.db.commit()
+        except Exception:
+            release_executor(attempt.id)
+            raise
 
         try:
             workspace = self.workspaces.create(attempt_id, fixture)
@@ -270,6 +297,8 @@ class ExecutionService:
         except Exception:
             self.db.rollback()
             self._fail_attempt(task, attempt)
+            if attempt.status != AttemptState.RUNNING.value:
+                release_executor(attempt.id)
             raise
         return BegunAttempt(attempt, workspace, existing=False)
 
@@ -295,7 +324,7 @@ class ExecutionService:
         if attempt is None:
             raise ValueError(f"attempt not found: {attempt_id}")
         if attempt.status != AttemptState.RUNNING.value:
-            raise ValueError(f"attempt {attempt_id} is not running")
+            raise AttemptFenceError(attempt_id, status=attempt.status, executor_id=attempt.executor_id)
         # ADR 0033 (#60): no Evidence while a material decision blocks the
         # Task.  The Attempt stays running and can be finished once resolved.
         check_decision_gate(self.db, attempt.task_id)
@@ -330,14 +359,13 @@ class ExecutionService:
             self.db.add(DecisionEdgeRow(source_kind="artifact", source_id=artifact.artifact_id, target_kind="attempt", target_id=attempt_id, relation="measures", source="execution", owner="sdf", confidence=1.0, created_at=utcnow(), evidence_ref=artifact.artifact_id))
 
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
-        attempt.status = transition_attempt(
-            AttemptState(attempt.status), AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
-        ).value
-        task.status = transition_task(TaskState(task.status), TaskState.EVALUATING).value
         if not adapter_succeeded:
-            task.status = transition_task(TaskState(task.status), TaskState.FAILED).value
-            self.db.commit()
+            self._commit_terminal(attempt, task, AttemptState.FAILED, TaskState.FAILED)
             return attempt
+        # The adapter finished. The Attempt is completed even if evaluation
+        # later crashes; that crash fails the Task and keeps this Attempt.
+        # Still uncommitted, so a lost fence rolls the artifacts back.
+        self._record_adapter_success(attempt, task)
         result_tree = revision.result_tree_sha256
 
         def after_check(evidence: Evidence) -> Evidence:
@@ -526,8 +554,7 @@ class ExecutionService:
                     )
                 )
         task_state = {"PASS": TaskState.SUCCEEDED, "FAIL": TaskState.FAILED, "INCONCLUSIVE": TaskState.INCONCLUSIVE}[evaluation.status]
-        task.status = transition_task(TaskState(task.status), task_state).value
-        self.db.commit()
+        self._commit_task_from_evaluating(attempt, task, task_state)
         return attempt
 
     def execute_tool(
@@ -579,14 +606,78 @@ class ExecutionService:
         self.db.commit()
         return result
 
-    def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> None:
-        if attempt.status == AttemptState.RUNNING.value:
-            attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.FAILED).value
-        if task.status == TaskState.RUNNING.value:
-            task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
-        if task.status == TaskState.EVALUATING.value:
-            task.status = transition_task(TaskState.EVALUATING, TaskState.FAILED).value
+    def _commit_terminal(
+        self, attempt: AttemptRow, task: TaskRow, attempt_state: AttemptState, task_state: TaskState,
+    ) -> None:
+        """Commit a terminal Attempt only while it is still running for this executor.
+
+        The status write is a compare-and-swap. A recovery or cancel that
+        already left the row terminal wins: this transaction rolls back, so
+        artifacts and Evidence from the late writer are not kept, and
+        :class:`AttemptFenceError` is raised.
+        """
+
+        if not compare_and_swap_attempt(self.db, attempt, to_status=attempt_state, executor_scoped=True):
+            self.db.rollback()
+            raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id)
+        try:
+            settle_task_if_idle(self.db, task.id, task_state)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self.db.refresh(attempt)
+        self.db.refresh(task)
+
+    def _record_adapter_success(self, attempt: AttemptRow, task: TaskRow) -> None:
+        """Move the Attempt to completed and the Task to evaluating. Does not commit."""
+
+        if not compare_and_swap_attempt(self.db, attempt, to_status=AttemptState.COMPLETED, executor_scoped=True):
+            self.db.rollback()
+            raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id)
+        if not compare_and_swap_task(self.db, task, from_status=TaskState.RUNNING, to_status=TaskState.EVALUATING):
+            self.db.rollback()
+            raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id)
+
+    def _commit_task_from_evaluating(self, attempt: AttemptRow, task: TaskRow, task_state: TaskState) -> None:
+        if not compare_and_swap_task(self.db, task, from_status=TaskState.EVALUATING, to_status=task_state):
+            self.db.rollback()
+            raise AttemptFenceError(attempt.id, status=attempt.status, executor_id=attempt.executor_id)
         self.db.commit()
+        self.db.refresh(attempt)
+        self.db.refresh(task)
+
+    def _fail_attempt(self, task: TaskRow, attempt: AttemptRow) -> bool:
+        """Fail a running Attempt. False when a fence already settled it.
+
+        A loss rolls this transaction back and leaves the winner's rows.
+        """
+
+        if attempt.status == AttemptState.RUNNING.value:
+            if not compare_and_swap_attempt(self.db, attempt, to_status=AttemptState.FAILED, executor_scoped=True):
+                self.db.rollback()
+                return False
+            settle = lambda: settle_task_if_idle(self.db, task.id, TaskState.FAILED)
+        elif task.status == TaskState.EVALUATING.value:
+            # The adapter already completed this Attempt in this transaction.
+            settle = lambda: compare_and_swap_task(
+                self.db, task, from_status=TaskState.EVALUATING, to_status=TaskState.FAILED,
+            )
+        elif task.status == TaskState.RUNNING.value:
+            settle = lambda: settle_task_if_idle(self.db, task.id, TaskState.FAILED)
+        else:
+            settle = lambda: True
+        try:
+            if settle() is False and attempt.status == AttemptState.RUNNING.value:
+                self.db.rollback()
+                return False
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self.db.refresh(attempt)
+        self.db.refresh(task)
+        return True
 
 
 TERMINAL_ATTEMPT_STATES = frozenset({AttemptState.COMPLETED.value, AttemptState.FAILED.value,

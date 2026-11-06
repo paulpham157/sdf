@@ -168,7 +168,10 @@ def _run_task(fixture: Path, criteria: dict[str, list[str]], *, assumption: str 
         "acceptance_criteria": list(criteria),
     })
     assert created.status_code == 201, created.text
-    body: dict = {"fixture_dir": str(fixture), "criterion_checks": criteria, "instructions": "complete the task"}
+    body: dict = {
+        "dispatch_key": f"ho-{task_id}", "fixture_dir": str(fixture),
+        "criterion_checks": criteria, "instructions": "complete the task",
+    }
     if assumption is not None:
         client.post("/assumptions", json={
             "id": assumption, "title": "add is addition", "owner": "product", "source": "test",

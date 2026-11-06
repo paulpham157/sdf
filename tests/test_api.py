@@ -113,6 +113,7 @@ def test_legacy_commands_field_is_rejected(tmp_path):
     (fixture / "app.py").write_text("print('old')\n")
     client.post("/tasks", json={"id": "TASK-LEGACY-OBS", "title": "observe", "idempotency_key": "legacy-observe"})
     result = client.post("/tasks/TASK-LEGACY-OBS/run", json={
+        "dispatch_key": "legacy-obs",
         "fixture_dir": str(fixture), "commands": [["python", "-c", "print('legacy-observation')"]],
     })
     assert result.status_code == 422
@@ -199,7 +200,8 @@ def test_objective_metric_and_attempt_telemetry_are_persisted(tmp_path):
         json={"id": "TASK-METRIC-RUN", "title": "telemetry", "idempotency_key": "metric-run", "acceptance_criteria": []},
     )
     assert created.status_code == 201
-    response = client.post("/tasks/TASK-METRIC-RUN/run", json={"fixture_dir": str(fixture)})
+    response = client.post("/tasks/TASK-METRIC-RUN/run", json={
+        "dispatch_key": "metric-run", "fixture_dir": str(fixture)})
     assert response.status_code == 200
     # Telemetry is server-measured (#50): the fake adapter costs nothing,
     # reports no tokens, and its latency is the wall clock SDF observed.
@@ -226,21 +228,87 @@ def test_task_creation_is_idempotent():
     assert second.json()["title"] == "Repeatable task"
 
 
-def test_run_without_dispatch_key_gets_unique_claim_per_task_request(tmp_path):
+def test_run_without_dispatch_key_gets_unique_claim_per_task_request(tmp_path, monkeypatch):
+    """A missing dispatch key is rejected. Distinct explicit keys still claim one Attempt each.
+
+    The original gap was a keyless POST minting ``http-{uuid}`` and running twice.
+    That retry is now a 422 with no Attempt. Two tasks with the same instructions
+    and different keys still get two Attempts, and repeating one key does not.
+    """
+
+    from sdf_core.adapter import FakeNativeAdapter
+
+    class CountingAdapter:
+        provider = "fake"
+        evidence_mode = "synthetic"
+
+        def __init__(self):
+            self.calls = 0
+            self._fake = FakeNativeAdapter("app.py", "print('updated')\n")
+
+        def run(self, *, attempt_id, workspace, instructions):
+            self.calls += 1
+            return self._fake.run(attempt_id=attempt_id, workspace=workspace, instructions=instructions)
+
+    monkeypatch.chdir(tmp_path)
+    adapter = CountingAdapter()
+    monkeypatch.setattr("sdf_core.api.configured_run_adapter", lambda _db: adapter)
     fixture = tmp_path / "fixture"
     fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
     for task_id, key in (("TASK-DISPATCH-A", "dispatch-api-a"), ("TASK-DISPATCH-B", "dispatch-api-b")):
         created = client.post(
             "/tasks",
             json={"id": task_id, "title": "dispatch", "idempotency_key": key, "acceptance_criteria": []},
         )
         assert created.status_code == 201
+    for body in (
+        {"fixture_dir": str(fixture), "instructions": "same"},
+        {"fixture_dir": str(fixture), "instructions": "same", "dispatch_key": None},
+        {"fixture_dir": str(fixture), "instructions": "same", "dispatch_key": ""},
+        {"fixture_dir": str(fixture), "instructions": "same", "dispatch_key": "   "},
+    ):
+        rejected = client.post("/tasks/TASK-DISPATCH-A/run", json=body)
+        assert rejected.status_code == 422, rejected.text
+        assert "dispatch_key" in rejected.text
+    db = SessionLocal()
+    try:
+        assert db.get(TaskRow, "TASK-DISPATCH-A").status == "created"
+        assert db.get(TaskRow, "TASK-DISPATCH-B").status == "created"
+        assert db.query(AttemptRow).filter(AttemptRow.task_id.in_(("TASK-DISPATCH-A", "TASK-DISPATCH-B"))).count() == 0
+    finally:
+        db.close()
+    assert adapter.calls == 0
+
     responses = [
-        client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture), "instructions": "same"})
-        for task_id in ("TASK-DISPATCH-A", "TASK-DISPATCH-B")
+        client.post(f"/tasks/{task_id}/run", json={
+            "fixture_dir": str(fixture), "instructions": "same", "dispatch_key": key,
+        })
+        for task_id, key in (("TASK-DISPATCH-A", "dispatch-explicit-a"), ("TASK-DISPATCH-B", "dispatch-explicit-b"))
     ]
-    assert all(response.status_code == 200 for response in responses)
+    assert all(response.status_code == 200 for response in responses), [response.text for response in responses]
     assert responses[0].json()["attempt_id"] != responses[1].json()["attempt_id"]
+    assert adapter.calls == 2
+    replay = client.post("/tasks/TASK-DISPATCH-A/run", json={
+        "fixture_dir": str(fixture), "instructions": "different body, same key",
+        "dispatch_key": "dispatch-explicit-a",
+    })
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["attempt_id"] == responses[0].json()["attempt_id"]
+    assert adapter.calls == 2
+    conflict = client.post("/tasks/TASK-DISPATCH-B/run", json={
+        "fixture_dir": str(fixture), "instructions": "same", "dispatch_key": "dispatch-explicit-a",
+    })
+    assert conflict.status_code == 409, conflict.text
+    assert adapter.calls == 2
+    rerun = client.post("/tasks/TASK-DISPATCH-A/run", json={
+        "fixture_dir": str(fixture), "instructions": "intentional rerun",
+        "dispatch_key": "dispatch-explicit-a-again",
+        "parent_attempt_id": responses[0].json()["attempt_id"],
+    })
+    assert rerun.status_code == 200, rerun.text
+    assert rerun.json()["attempt_id"] != responses[0].json()["attempt_id"]
+    assert adapter.calls == 3
 
 
 def test_structured_tool_endpoint_denies_by_default_without_side_effect(tmp_path, monkeypatch):
@@ -368,6 +436,7 @@ def test_run_endpoint_executes_fixture_and_updates_task(tmp_path):
     response = client.post(
         "/tasks/TASK-RUN-001/run",
         json={
+            "dispatch_key": "task-run-001",
             "fixture_dir": str(fixture),
             "criterion_checks": {"command succeeds": ["prints-ok"]},
         },
@@ -390,6 +459,7 @@ def test_evidence_endpoint_and_full_trace_include_artifact_and_assumption(tmp_pa
     client.post("/assumptions", json={"id": "ASSUMPTION-API-001", "title": "change is safe", "owner": "product", "source": "test"})
     client.post("/tasks", json={"id": "TASK-TRACE-001", "title": "trace", "idempotency_key": "task-trace-001", "acceptance_criteria": ["command succeeds"]})
     response = client.post("/tasks/TASK-TRACE-001/run", json={
+        "dispatch_key": "task-trace-001",
         "fixture_dir": str(fixture),
         "criterion_checks": {"command succeeds": ["prints-ok"]},
         "validation_target_kind": "assumption", "validation_target_id": "ASSUMPTION-API-001",
@@ -422,7 +492,7 @@ def test_run_with_missing_criterion_coverage_is_inconclusive(tmp_path):
     assert created.status_code == 201
     response = client.post(
         "/tasks/TASK-MISSING-COVERAGE-001/run",
-        json={"fixture_dir": str(fixture)},
+        json={"dispatch_key": "missing-coverage", "fixture_dir": str(fixture)},
     )
 
     assert response.status_code == 200

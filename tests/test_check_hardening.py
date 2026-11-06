@@ -379,8 +379,9 @@ def test_http_fixture_under_workspace_root_is_refused(tmp_path, monkeypatch):
     task_id = f"TASK-S6-{uuid.uuid4().hex[:8]}"
     assert client.post("/tasks", json={"id": task_id, "title": "s6", "idempotency_key": task_id,
                                        "acceptance_criteria": ["c"]}).status_code == 201
-    response = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture),
-                                                          "criterion_checks": {"c": ["ok"]}})
+    response = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": f"s6-{task_id}", "fixture_dir": str(fixture),
+        "criterion_checks": {"c": ["ok"]}})
     assert response.status_code == 400
     assert "workspace or artifact root" in response.text
 
@@ -447,8 +448,9 @@ def test_http_run_records_where_each_check_ran(tmp_path):
     task_id = f"TASK-S4-{uuid.uuid4().hex[:8]}"
     assert client.post("/tasks", json={"id": task_id, "title": "s4", "idempotency_key": task_id,
                                        "acceptance_criteria": ["c"]}).status_code == 201
-    response = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture),
-                                                          "criterion_checks": {"c": ["ok"]}})
+    response = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": f"s4-{task_id}", "fixture_dir": str(fixture),
+        "criterion_checks": {"c": ["ok"]}})
     assert response.status_code == 200, response.text
     db = SessionLocal()
     try:

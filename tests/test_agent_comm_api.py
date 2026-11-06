@@ -44,7 +44,8 @@ def test_plan_gate_and_lead_worker_run_over_http(tmp_path, fake_agents):
     refused = client.post(f"/plans/{plan_id}/runs", json={"config": FAST, "wait": True})
     assert refused.status_code == 409 and "approve" in refused.json()["detail"]
     task_run = client.post(f"/tasks/{task_id_for(plan_id, 'add')}/run",
-                           json={"fixture_dir": str(tmp_path / "toy"), "instructions": "bypass"})
+                           json={"dispatch_key": f"bypass-{plan_id}", "fixture_dir": str(tmp_path / "toy"),
+                                 "instructions": "bypass"})
     assert task_run.status_code == 409
     assert body["proposed_by"] == "planner"
     # An operator cannot approve, whatever name it claims.
@@ -98,5 +99,5 @@ def test_require_plan_approval_flag_gates_legacy_task_run(tmp_path, monkeypatch)
     task_id = f"TASK-GATED-{uuid.uuid4().hex[:8]}"
     client.post("/tasks", json={"id": task_id, "title": "x", "idempotency_key": task_id})
     monkeypatch.setenv("SDF_REQUIRE_PLAN_APPROVAL", "1")
-    response = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture)})
+    response = client.post(f"/tasks/{task_id}/run", json={"dispatch_key": f"gated-{task_id}", "fixture_dir": str(fixture)})
     assert response.status_code == 409 and "plan" in response.json()["detail"].lower()

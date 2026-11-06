@@ -212,7 +212,8 @@ def test_http_run_records_the_starting_principal_as_owner(tmp_path, monkeypatch)
     created = admin_client().post("/tasks", json={"id": f"TASK-OWN-{suffix}", "title": "own",
                                                   "idempotency_key": f"own-{suffix}", "acceptance_criteria": []})
     assert created.status_code == 201
-    run = operator.post(f"/tasks/TASK-OWN-{suffix}/run", json={"fixture_dir": str(fixture), "instructions": "x"})
+    run = operator.post(f"/tasks/TASK-OWN-{suffix}/run", json={
+        "dispatch_key": f"own-{suffix}", "fixture_dir": str(fixture), "instructions": "x"})
     assert run.status_code == 200, run.text
     with SessionLocal() as db:
         assert db.get(AttemptRow, run.json()["attempt_id"]).principal == "op-runner"

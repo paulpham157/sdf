@@ -56,9 +56,9 @@ from .fixtures import resolve_fixture, server_write_roots
 from .observability import classify_error, redact
 from . import tracing
 from .model import AttemptState, TaskState, utcnow
+from .recovery import cancel_running_attempt, settle_task_if_idle
 from .decision_gate import RUN_SCOPE, is_material, pending_material
 from .plans import DecisionPolicy, NoAutoResolvePolicy, resolve_request, task_id_for
-from .state import transition_attempt, transition_task
 
 _CANCEL_EVENTS: dict[str, threading.Event] = {}
 
@@ -963,12 +963,10 @@ class Coordinator:
             outcome, error = "failed", "success claimed without PASS Evidence for every subtask"
         for sub in subtasks.values():
             attempt = self.db.get(AttemptRow, sub.attempt_id) if sub.attempt_id else None
-            if attempt is not None and attempt.status == AttemptState.RUNNING.value:
-                attempt.status = transition_attempt(AttemptState.RUNNING, AttemptState.CANCELLED).value
-                task = self.db.get(TaskRow, sub.task_id)
-                if task.status == TaskState.RUNNING.value:
-                    task.status = transition_task(TaskState.RUNNING, TaskState.EVALUATING).value
-                    task.status = transition_task(TaskState.EVALUATING, TaskState.INCONCLUSIVE).value
+            if attempt is not None and cancel_running_attempt(self.db, attempt):
+                # Only the writer that won the Attempt moves the Task. Recovery
+                # or finish may already have taken the terminal transition.
+                settle_task_if_idle(self.db, sub.task_id, TaskState.INCONCLUSIVE)
         cost_breakdown = {}
         for aid, ag in agents.items():
             row = self._member_row(run_id, aid)

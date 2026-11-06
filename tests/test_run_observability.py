@@ -224,14 +224,14 @@ def test_fixture_dir_confined_to_fixtures_root(tmp_path, monkeypatch):
     (root / "link").symlink_to(outside)
     monkeypatch.setenv("SDF_FIXTURES_ROOT", str(root))
     client.post("/tasks", json={"id": "TASK-FIXROOT", "title": "f", "idempotency_key": "fixroot"})
-    for bad in (str(outside), str(root / "ok" / ".." / ".." / "secret"), str(root / "link"), "../secret",
-                str(root / "missing")):
-        res = client.post("/tasks/TASK-FIXROOT/run", json={"fixture_dir": bad})
+    for index, bad in enumerate((str(outside), str(root / "ok" / ".." / ".." / "secret"), str(root / "link"), "../secret",
+                                 str(root / "missing"))):
+        res = client.post("/tasks/TASK-FIXROOT/run", json={"dispatch_key": f"fixroot-bad-{index}", "fixture_dir": bad})
         assert res.status_code == 400, (bad, res.text)
         assert client.post("/plans", json={"title": "p", "fixture_dir": bad, "tasks": []}).status_code in (400, 422)
-    assert client.post("/tasks/TASK-FIXROOT/run", json={"fixture_dir": "ok"}).status_code == 200
+    assert client.post("/tasks/TASK-FIXROOT/run", json={"dispatch_key": "fixroot-ok", "fixture_dir": "ok"}).status_code == 200
     # The fixtures root itself is not a fixture (it resolved to the cwd for Plans before).
-    assert client.post("/tasks/TASK-FIXROOT/run", json={"fixture_dir": "."}).status_code == 400
+    assert client.post("/tasks/TASK-FIXROOT/run", json={"dispatch_key": "fixroot-dot", "fixture_dir": "."}).status_code == 400
 
 
 def test_plan_stores_the_resolved_confined_fixture(tmp_path, monkeypatch):
@@ -267,11 +267,11 @@ def test_run_config_error_is_400_and_busy_is_429(tmp_path, monkeypatch):
     client.post("/tasks", json={"id": "TASK-RUNCFG", "title": "f", "idempotency_key": "runcfg"})
     monkeypatch.setenv("SDF_RUN_ADAPTER", "live")
     monkeypatch.setenv("SDF_RUN_AGENT", "nope")
-    res = client.post("/tasks/TASK-RUNCFG/run", json={"fixture_dir": str(fixture)})
+    res = client.post("/tasks/TASK-RUNCFG/run", json={"dispatch_key": "runcfg-agent", "fixture_dir": str(fixture)})
     assert res.status_code == 400 and "SDF_RUN_AGENT" in res.text
     monkeypatch.setenv("SDF_SANDBOX_PROVIDER", "fly")
     monkeypatch.delenv("SDF_RUN_AGENT")
-    assert client.post("/tasks/TASK-RUNCFG/run", json={"fixture_dir": str(fixture)}).status_code == 400
+    assert client.post("/tasks/TASK-RUNCFG/run", json={"dispatch_key": "runcfg-fly", "fixture_dir": str(fixture)}).status_code == 400
     monkeypatch.delenv("SDF_SANDBOX_PROVIDER")
     # Since #70, configured_run_adapter() validates provider keys; use dummies so
     # the busy path is reached without depending on the real environment.
@@ -290,7 +290,7 @@ def test_run_config_error_is_400_and_busy_is_429(tmp_path, monkeypatch):
         yield
 
     monkeypatch.setattr(api, "run_slot", full)
-    res = client.post("/tasks/TASK-RUNCFG/run", json={"fixture_dir": str(fixture)})
+    res = client.post("/tasks/TASK-RUNCFG/run", json={"dispatch_key": "runcfg-busy", "fixture_dir": str(fixture)})
     assert res.status_code == 429 and res.headers["retry-after"] == "30"
 
 

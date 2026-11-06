@@ -541,8 +541,9 @@ def test_run_records_verification_bound_to_the_diff_artifact(tmp_path):
     task_id = f"TASK-IND-{uuid.uuid4().hex[:8]}"
     assert client.post("/tasks", json={"id": task_id, "title": "t", "idempotency_key": task_id,
                                        "acceptance_criteria": ["adds"]}).status_code == 201
-    response = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture),
-                                                          "criterion_checks": {"adds": ["unit"]}})
+    response = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": f"ind-{task_id}", "fixture_dir": str(fixture),
+        "criterion_checks": {"adds": ["unit"]}})
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["task_status"] == "succeeded", body
@@ -584,6 +585,7 @@ def test_script_and_python_c_passes_are_accepted(tmp_path):
     assert client.post("/tasks", json={"id": task_id, "title": "t", "idempotency_key": task_id,
                                        "acceptance_criteria": ["adds", "scripted"]}).status_code == 201
     response = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": f"ind-c-{task_id}",
         "fixture_dir": str(fixture),
         "criterion_checks": {"adds": ["expr"], "scripted": ["script"]},
     })

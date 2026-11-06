@@ -224,7 +224,7 @@ def test_http_task_attempt_hierarchy_and_trace_id_on_attempt(spans, tmp_path):
         client.post("/tasks", json={"id": task_id, "title": "otel", "idempotency_key": task_id,
                                     "acceptance_criteria": ["command succeeds"]})
         response = client.post(f"/tasks/{task_id}/run?api_key={SECRET}", json={
-            "fixture_dir": str(fixture), "instructions": PROMPT,
+            "dispatch_key": f"otel-{task_id}", "fixture_dir": str(fixture), "instructions": PROMPT,
             "criterion_checks": {"command succeeds": ["prints-ok"]}})
         assert response.status_code == 200, response.text
     finally:

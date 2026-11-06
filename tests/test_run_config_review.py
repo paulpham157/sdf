@@ -125,8 +125,13 @@ def _fixture(tmp_path, *, passing: bool):
 
 
 def _run(task_id, fixture, **extra):
-    return admin.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(fixture), "criterion_checks": {"ok": ["verdict"]}, **extra})
+    body = {
+        "dispatch_key": f"d-{uuid.uuid4().hex}",
+        "fixture_dir": str(fixture),
+        "criterion_checks": {"ok": ["verdict"]},
+    }
+    body.update(extra)
+    return admin.post(f"/tasks/{task_id}/run", json=body)
 
 
 def test_parent_that_passed_every_check_cannot_be_retried(tmp_path, monkeypatch):

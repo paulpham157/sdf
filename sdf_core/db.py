@@ -87,6 +87,10 @@ class AttemptRow(Base):
     # principal (or an admin) may drive its Tool Proxy actions; NULL (internal
     # or pre-0018 Attempts) means admin-only over HTTP.
     principal: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    # ADR 0029: the process that moved this Attempt to running, and when it last
+    # heartbeated. NULL means no lease; startup does not fail an unleased row.
+    executor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executor_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # ADR 0032 (#62): TRUE for every Attempt created after migration 0023 (set
     # by the ORM guard and, on PostgreSQL, a trigger, whatever the writer
     # says); NULL only for Attempts that existed before 0023.  Only a NULL

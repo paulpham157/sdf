@@ -184,6 +184,7 @@ def test_scorecard_reflects_a_real_task_attempt_evidence_chain(tmp_path):
     response = client.post(
         "/tasks/TASK-SCORECARD-001/run",
         json={
+            "dispatch_key": "scorecard-run",
             "fixture_dir": str(fixture),
             "criterion_checks": {"command succeeds": ["prints-ok"]},
         },

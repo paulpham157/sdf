@@ -18,6 +18,7 @@ def test_alembic_upgrade_head_is_valid_from_empty_sqlite(tmp_path, monkeypatch):
     assert {column["name"] for column in inspector.get_columns("attempts")} >= {
         "parent_attempt_id", "model_tier", "cost_usd", "provider", "latency_ms",
         "input_tokens", "output_tokens", "escalation_reason",
+        "executor_id", "executor_heartbeat_at",
     }
     assert "measured_at" in {column["name"] for column in inspector.get_columns("evidence")}
 
@@ -26,7 +27,7 @@ def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0026_oracle_visibility"]
+    assert script.get_heads() == ["0027_attempt_executor_lease"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 
@@ -125,4 +126,36 @@ def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkey
         assert sorted(connection.execute(text("SELECT id FROM evidence")).scalars().all()) == ["EV-LEGACY", "EV-LEGACY-2"]
     command.upgrade(config, "head")
     assert "attempt_revisions" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+def test_executor_lease_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monkeypatch):
+    """0027 adds nullable lease columns and does not rewrite Attempt rows."""
+
+    from sqlalchemy import text
+
+    database_url = f"sqlite:///{tmp_path / 'm0027.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    engine = create_engine(database_url)
+    command.upgrade(config, "0026_oracle_visibility")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO attempts (id, task_id, status, dispatch_key, agent, model_tier, cost_usd, created_at) "
+            "VALUES ('ATTEMPT-LEASE', 'T', 'running', 'lease-1', 'native', 'basic', 0, '2026-01-01T00:00:00+00:00')"
+        ))
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    assert {"executor_id", "executor_heartbeat_at"} <= {c["name"] for c in inspector.get_columns("attempts")}
+    with engine.connect() as connection:
+        row = connection.execute(text(
+            "SELECT status, executor_id, executor_heartbeat_at FROM attempts WHERE id = 'ATTEMPT-LEASE'"
+        )).one()
+        assert row.status == "running" and row.executor_id is None and row.executor_heartbeat_at is None
+    command.downgrade(config, "0026_oracle_visibility")
+    assert "executor_id" not in {c["name"] for c in inspect(engine).get_columns("attempts")}
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM attempts WHERE id = 'ATTEMPT-LEASE'")).scalar() == "running"
+    command.upgrade(config, "head")
+    assert "executor_id" in {c["name"] for c in inspect(engine).get_columns("attempts")}
     engine.dispose()

@@ -62,7 +62,8 @@ usage-ledger `sandbox` row.
      Attempt and its Evidence always agree. Plan-run bases are now `live`
      (or `synthetic`), no longer `mixed`.
    - An idempotent replay (same `dispatch_key`) returns the stored Attempt
-     without touching its mode.
+     without touching its mode. `POST /tasks/{id}/run` requires that key;
+     the amendment below is part of this proposal.
 
 5. **The database holds only known modes.**
    - Migration `0021_evidence_mode_check` adds `CHECK (evidence_mode IN
@@ -206,3 +207,36 @@ Local tests:
 Live checks:
 - `tests/test_live_full_loop_http.py` asserts that a live `/run` produces a
   live Attempt and live Evidence.
+
+## Amendment (2026-11-06): `dispatch_key` is required
+
+This ADR stays **proposed**. The amendment is part of that proposal. It does
+not accept it.
+
+`POST /tasks/{id}/run` requires `dispatch_key` (1 to 200 characters, not
+blank). A missing field, JSON `null`, `""`, or a whitespace-only value is
+**422**. That rejection does not create an Attempt, does not change the Task,
+does not call the adapter, and does not write Evidence. The auth audit of a
+rejected mutation is the existing request log, not a run.
+
+The same key is one Attempt:
+
+- A repeated request, including after the Attempt is terminal, returns the
+  stored Attempt and does not call the adapter again. The body of a replay is
+  not a second run. The stored mode is left as it was (item 4).
+- Two overlapping requests with the same key leave one Attempt and one
+  adapter call. The unique `dispatch_key` decides the winner.
+- A key already stored for a different Task is **409**. Nothing new is written.
+- A new Attempt is a new key. `parent_attempt_id` is how a finished Attempt
+  is continued, and only when that parent is finished and did not pass every
+  check (the existing retry rule).
+
+**At-most-once inside this process, not exactly-once outside it.** For one
+key, this host calls the adapter at most once: the call that won `begin`, and
+not a replay. If the process dies after the adapter has started and before
+`finish` commits, that external work (a sandbox, a provider call) may have
+happened with no finished Attempt. Recovery marks the Attempt `failed`. It
+does not run the adapter again. A client that sends the same key is told
+about that Attempt. A client that sends a **new** key starts another Attempt,
+which can repeat the external effect. This proposal does not claim
+exactly-once external effects across a crash.

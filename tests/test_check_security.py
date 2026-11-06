@@ -92,7 +92,8 @@ def test_http_run_rejects_fake_absolute_python_and_never_executes_it(tmp_path):
     fake = _fake_python(tmp_path / "evil", marker)
     task_id = _task(["c"])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(_fixture(tmp_path)), "criterion_checks": {"c": [[str(fake), "-c", "pass"]]},
+        "dispatch_key": task_id, "fixture_dir": str(_fixture(tmp_path)),
+        "criterion_checks": {"c": [[str(fake), "-c", "pass"]]},
     })
     assert response.status_code == 422
     assert not marker.exists(), "caller-supplied executable ran on the host"
@@ -102,7 +103,8 @@ def test_http_run_rejects_caller_argv_that_reads_server_env(tmp_path, monkeypatc
     monkeypatch.setenv(CANARY_ENV, CANARY)
     task_id = _task(["c"])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(_fixture(tmp_path)), "criterion_checks": {"c": [["python", "-c", PRINT_CANARY]]},
+        "dispatch_key": task_id, "fixture_dir": str(_fixture(tmp_path)),
+        "criterion_checks": {"c": [["python", "-c", PRINT_CANARY]]},
     })
     assert response.status_code == 422
     assert CANARY not in response.text
@@ -115,7 +117,7 @@ def test_http_registered_check_does_not_see_server_env(tmp_path, monkeypatch):
     write_checks(fixture, {"env-probe": ["python", "-c", PRINT_CANARY]})
     task_id = _task(["c"])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(fixture), "criterion_checks": {"c": ["env-probe"]},
+        "dispatch_key": task_id, "fixture_dir": str(fixture), "criterion_checks": {"c": ["env-probe"]},
     })
     assert response.status_code == 200, response.text
     assert response.json()["task_status"] == "succeeded"
@@ -127,7 +129,8 @@ def test_http_registered_check_does_not_see_server_env(tmp_path, monkeypatch):
 def test_http_unknown_check_id_is_rejected_before_any_attempt(tmp_path):
     task_id = _task(["c"])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(_fixture(tmp_path)), "criterion_checks": {"c": ["not-registered"]},
+        "dispatch_key": task_id, "fixture_dir": str(_fixture(tmp_path)),
+        "criterion_checks": {"c": ["not-registered"]},
     })
     assert response.status_code == 400
     assert "not-registered" in response.text
@@ -141,7 +144,8 @@ def test_http_unknown_check_id_is_rejected_before_any_attempt(tmp_path):
 def test_http_run_rejects_unknown_fields(tmp_path):
     task_id = _task([])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(_fixture(tmp_path)), "checks_override": {"c": [["python", "-c", "pass"]]},
+        "dispatch_key": task_id, "fixture_dir": str(_fixture(tmp_path)),
+        "checks_override": {"c": [["python", "-c", "pass"]]},
     })
     assert response.status_code == 422
 
@@ -151,7 +155,7 @@ def test_http_invalid_fixture_manifest_is_a_400_not_a_run(tmp_path):
     write_checks(fixture, {"bad": ["/bin/sh", "-c", "true"]})
     task_id = _task(["c"])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(fixture), "criterion_checks": {"c": ["bad"]},
+        "dispatch_key": task_id, "fixture_dir": str(fixture), "criterion_checks": {"c": ["bad"]},
     })
     assert response.status_code == 400
     assert "check registry error" in response.text
@@ -164,7 +168,7 @@ def test_http_evaluator_containment_required_without_backend_is_inconclusive(tmp
     write_checks(fixture, {"ok": ["python", "-c", "print('ok')"]})
     task_id = _task(["c"])
     response = client.post(f"/tasks/{task_id}/run", json={
-        "fixture_dir": str(fixture), "criterion_checks": {"c": ["ok"]},
+        "dispatch_key": task_id, "fixture_dir": str(fixture), "criterion_checks": {"c": ["ok"]},
     })
     assert response.status_code == 200, response.text
     assert response.json()["task_status"] == "inconclusive"
@@ -173,7 +177,8 @@ def test_http_evaluator_containment_required_without_backend_is_inconclusive(tmp
 def test_http_bad_evaluator_containment_mode_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("SDF_EVALUATOR_CONTAINMENT", "sometimes")
     task_id = _task([])
-    response = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(_fixture(tmp_path))})
+    response = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": task_id, "fixture_dir": str(_fixture(tmp_path))})
     assert response.status_code == 400
 
 

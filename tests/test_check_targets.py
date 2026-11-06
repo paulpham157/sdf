@@ -184,7 +184,8 @@ def test_http_run_verifies_against_the_fixture(tmp_path):
     task_id = f"TASK-T64-{uuid.uuid4().hex[:8]}"
     assert client.post("/tasks", json={"id": task_id, "title": "t", "idempotency_key": task_id,
                                        "acceptance_criteria": ["c"]}).status_code == 201
-    response = client.post(f"/tasks/{task_id}/run", json={"fixture_dir": str(fixture), "criterion_checks": {"c": ["unit"]}})
+    response = client.post(f"/tasks/{task_id}/run", json={
+        "dispatch_key": f"t64-{task_id}", "fixture_dir": str(fixture), "criterion_checks": {"c": ["unit"]}})
     assert response.status_code == 200, response.text
     assert response.json()["task_status"] == "succeeded", response.json()
 

@@ -193,6 +193,9 @@ async def _lifespan(_app: FastAPI):
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
     configure_logging()
+    # ADR 0029: fail Attempts whose executor lease died with the previous process.
+    # A live lease (this process's claim, or a fresh heartbeat from another) is left running.
+    _recover_orphaned_attempts()
     # ADR 0024: off unless SDF_OTEL_ENABLED; spans never leave SDF Core for a sandbox.
     # SDF_OTEL_* / OTEL_* may live in the repo-root .env like every other setting.
     otel_env = _operator_env()
@@ -201,11 +204,26 @@ async def _lifespan(_app: FastAPI):
         tracing.instrument_fastapi(_app)
         # SessionLocal owns its own engine; the instrumentor is a singleton, so pass both at once.
         tracing.instrument_sqlalchemy([engine, SessionLocal.kw.get("bind")], otel_env)
+    from .recovery import start_executor_heartbeat
+    start_executor_heartbeat(SessionLocal)
     try:
         yield
     finally:
+        # A graceful stop drops claims that no request still holds. A request
+        # still inside its Attempt keeps the claim, so it is not failed here.
+        _recover_orphaned_attempts()
         if owned:
             tracing.shutdown()  # uninstrument app and DB, flush queued spans
+
+
+def _recover_orphaned_attempts() -> None:
+    from .recovery import recover_orphaned_attempts
+
+    db = SessionLocal()
+    try:
+        recover_orphaned_attempts(db)
+    finally:
+        db.close()
 
 
 app = FastAPI(title="SDF Core", version="0.1.0", lifespan=_lifespan, dependencies=[Depends(authorize)],
@@ -285,7 +303,11 @@ class RunTaskRequest(BaseModel):
     # old argv form of ``criterion_checks`` fail loudly instead of being ignored.
     model_config = ConfigDict(extra="forbid")
 
-    dispatch_key: str | None = Field(default=None, min_length=1, max_length=200)
+    dispatch_key: str = Field(min_length=1, max_length=200, description=(
+        "Required idempotency key for this Attempt (ADR 0031). The same key replays the stored "
+        "Attempt and does not run the adapter again. A missing, null, or blank key is rejected "
+        "and creates nothing. A new Attempt needs a new key."
+    ))
     fixture_dir: str
     instructions: str = "complete the task"
     criterion_checks: dict[str, list[CheckId]] | None = Field(
@@ -302,6 +324,15 @@ class RunTaskRequest(BaseModel):
     model_tier: ModelTier | None = Field(default=None, description=(
         "Declared routing tier (not measured). Default basic; a retry defaults to the parent's tier "
         "and may not go below it."))
+
+    @field_validator("dispatch_key")
+    @classmethod
+    def _dispatch_key_not_blank(cls, value: str) -> str:
+        # min_length rejects "". A whitespace-only key is the same absence.
+        if not value.strip():
+            raise ValueError("dispatch_key is required")
+        return value
+
     # cost_usd, provider, latency_ms, input_tokens, output_tokens and
     # escalation_reason were removed (#50, ADR 0027): they are measured by the
     # server, and extra="forbid" rejects a request that still sends them (or
@@ -898,6 +929,11 @@ def run_timeline(run_id: str, db: Session = Depends(get_db)):
 def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Session = Depends(get_db)):
     if not db.get(TaskRow, task_id):
         raise HTTPException(status_code=404, detail="task not found")
+    # A lease that expired while this process stayed up is settled before a new
+    # key tries to enter ready. The same key still replays the stored Attempt.
+    from .recovery import recover_orphaned_attempts
+    recover_orphaned_attempts(db)
+    db.expire_all()
     fixture = resolve_fixture(payload.fixture_dir)
     target = None
     if payload.validation_target_kind and payload.validation_target_id:
@@ -924,7 +960,7 @@ def run_task(task_id: str, payload: RunTaskRequest, request: Request, db: Sessio
                 )
                 attempt = service.run(
                     task_id=task_id,
-                    dispatch_key=payload.dispatch_key or f"http-{uuid4().hex}",
+                    dispatch_key=payload.dispatch_key,
                     fixture=fixture,
                     instructions=payload.instructions,
                     commands=[],

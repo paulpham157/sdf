@@ -168,7 +168,8 @@ def test_missing_credentials_fail_before_any_attempt_exists(db, tmp_path, fixtur
     assert client.post("/tasks", json={"id": "TASK-EVMODE-NOKEY", "title": "t", "idempotency_key": "evmode-nokey",
                                        "acceptance_criteria": ["c"]}).status_code == 201
     write_checks(fixture, {"ok": ["python", "-c", "print('ok')"]})
-    response = client.post("/tasks/TASK-EVMODE-NOKEY/run", json={"fixture_dir": str(fixture)})
+    response = client.post("/tasks/TASK-EVMODE-NOKEY/run", json={
+        "dispatch_key": "evmode-nokey", "fixture_dir": str(fixture)})
     assert response.status_code == 400 and "E2B_API_KEY" in response.text
     with SessionLocal() as api_db:
         assert api_db.scalars(select(AttemptRow).where(AttemptRow.task_id == "TASK-EVMODE-NOKEY")).all() == []
@@ -223,7 +224,8 @@ def test_run_response_and_timeline_carry_the_attempt_mode(fixture):
                                        "acceptance_criteria": ["c"]}).status_code == 201
     write_checks(fixture, {"ok": ["python", "-c", "print('ok')"]})
     body = client.post("/tasks/TASK-EVMODE-API/run",
-                       json={"fixture_dir": str(fixture), "criterion_checks": {"c": ["ok"]}}).json()
+                       json={"dispatch_key": "evmode-api", "fixture_dir": str(fixture),
+                             "criterion_checks": {"c": ["ok"]}}).json()
     assert body["evidence_mode"] == "synthetic"
     entries = client.get(f"/runs/{body['attempt_id']}/timeline").json()["entries"]
     assert [e["evidence_mode"] for e in entries if e.get("kind") == "attempt_created"] == ["synthetic"]

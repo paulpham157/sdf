@@ -439,8 +439,9 @@ def test_api_exposes_revision_in_trace_evidence_and_attempt_endpoint(tmp_path: P
     write_checks(fixture, {"prints-ok": ["python", "-c", "print('ok')"]})
     assert client.post("/tasks", json={"id": "TASK-REV-API", "title": "rev", "idempotency_key": "task-rev-api",
                                        "acceptance_criteria": ["command succeeds"]}).status_code == 201
-    run = client.post("/tasks/TASK-REV-API/run", json={"fixture_dir": str(fixture),
-                                                      "criterion_checks": {"command succeeds": ["prints-ok"]}})
+    run = client.post("/tasks/TASK-REV-API/run", json={
+        "dispatch_key": "rev-api", "fixture_dir": str(fixture),
+        "criterion_checks": {"command succeeds": ["prints-ok"]}})
     assert run.status_code == 200, run.text
     trace = client.get("/tasks/TASK-REV-API/trace").json()
     [revision] = trace["revisions"]
