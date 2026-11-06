@@ -1,4 +1,4 @@
-"""Settle Attempts left ``running`` with no live executor (ADR 0041).
+"""Settle Attempts left ``running`` with no live executor (ADR 0043).
 
 Liveness is a lease, not ``RuntimeController.recover`` (ADR 0029 only restores
 a runtime-event stream). This process treats an Attempt as live while the
@@ -70,7 +70,7 @@ def claim_executor(owner: object, attempt: AttemptRow) -> None:
 
 
 class AttemptFenceError(ValueError):
-    """This process cannot settle the Attempt (ADR 0041).
+    """This process cannot settle the Attempt (ADR 0043).
 
     The row was not ``running`` for ``EXECUTOR_ID``. Callers must not write
     the Attempt or its Task after this.

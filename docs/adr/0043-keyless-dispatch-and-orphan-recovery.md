@@ -1,4 +1,4 @@
-# ADR 0041: a keyless /run is exactly once, and startup settles a dead running Attempt
+# ADR 0043: a keyless /run is exactly once, and startup settles a dead running Attempt
 
 Status: proposed. The exactly-once rule records the owner's decision on PR #112
 (2026-11-06): a `/run` request with a missing `dispatch_key` is handled
@@ -104,7 +104,7 @@ the lease expires settles the orphan without another process restart.
 
 ### 3. Live versus dead
 
-Two columns on `attempts`, both nullable (migration `0027_attempt_executor_lease`):
+Two columns on `attempts`, both nullable (migration `0029_attempt_executor_lease`):
 
 - `executor_id`: the process that claimed the Attempt. The id is
   `{pid}-{uuid}`, minted for this OS process. Lifespan startup remints when
@@ -197,7 +197,9 @@ heartbeat, which is how a new process observes a dead neighbor.
 - A keyless retry of a recovered (`failed`/`killed`) Attempt replays that
   Attempt. Operators who want a new execution after a crash send a new
   explicit `dispatch_key` and `parent_attempt_id`.
-- Migration `0027_attempt_executor_lease` revises `0026_oracle_visibility`.
+- Migration `0029_attempt_executor_lease` revises `0028_evidence_classes`.
+  `0028_evidence_classes` revises `0026_oracle_visibility`, so the script
+  directory has one head. `0027` is not this migration.
   The columns are nullable `ADD COLUMN` on SQLite and PostgreSQL. Downgrade
   drops them.
 
@@ -259,6 +261,6 @@ Local tests (SQLite, no live provider):
 - `tests/test_crash_recovery.py::test_heartbeat_refresh_does_not_touch_a_failed_attempt`
 - `tests/test_api.py::test_explicit_keyless_prefix_is_rejected` expects 422.
 - `tests/test_migrations.py` upgrades an empty SQLite database to head
-  `0027_attempt_executor_lease` and expects the two columns.
+  `0029_attempt_executor_lease` and expects the two columns.
 
 PostgreSQL and live provider runs are not part of this proof.

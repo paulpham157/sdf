@@ -28,7 +28,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0028_evidence_classes"
-down_revision = "0027_attempt_executor_lease"
+down_revision = "0026_oracle_visibility"
 branch_labels = None
 depends_on = None
 

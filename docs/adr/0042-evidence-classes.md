@@ -7,8 +7,10 @@ rules ([ADR 0002](0002-evidence-closes-the-decision-loop.md)), revision
 binding for Attempt-scoped Evidence ([ADR 0032](0032-attempt-revisions.md)),
 or the fail-closed gates in ADR 0039 and ADR 0040.
 
-Numbered 0042 because 0041 is keyless `/run` and orphan recovery, 0039 is
-evidence independence, and 0040 is held-out oracles. Issue #88 was filed when independence was drafted as 0034; 0034 on
+Numbered 0042 because 0039 is evidence independence and 0040 is held-out
+oracles. Keyless `/run` and orphan recovery is
+[ADR 0043](0043-keyless-dispatch-and-orphan-recovery.md).
+Issue #88 was filed when independence was drafted as 0034; 0034 on
 `main` is the LLM transport ADR. This file is a new proposal rather than an
 edit of ADR 0039: that ADR is accepted, and it still says `execution` and
 `outcome` are reserved and a coverage gap stays NULL. Those sentences stay

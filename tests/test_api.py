@@ -439,7 +439,7 @@ def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path,
     """One logical POST /run, retried with no dispatch key, runs once.
 
     ``RunTaskRequest.dispatch_key`` stays optional (owner decision on PR #112,
-    ADR 0041). The same body for the same task derives one dispatch key.
+    ADR 0043). The same body for the same task derives one dispatch key.
     ADR 0031 replays that key, including after the Attempt is terminal, so a
     timeout retry does not start a second Attempt. A deliberate new Attempt
     sends an explicit key (and ``parent_attempt_id`` when it is a retry).
@@ -516,7 +516,7 @@ def test_explicit_keyless_prefix_is_rejected(tmp_path):
 
 
 def test_derived_dispatch_key_is_stable_per_task_and_logical_request():
-    """The fields ADR 0041 hashes, and the ones that must not collide."""
+    """The fields ADR 0043 hashes, and the ones that must not collide."""
 
     from sdf_core.dispatch_key import derived_dispatch_key
 

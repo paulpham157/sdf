@@ -210,7 +210,7 @@ class ExecutionService:
         check_plan_gate(self.db, task_id, require_plan=require_plan_approval)
         # ADR 0033 (#60): no dispatch while a material decision blocks the Task.
         check_decision_gate(self.db, task_id)
-        # ADR 0041: settle expired/dead orphans before looking up the key or
+        # ADR 0043: settle expired/dead orphans before looking up the key or
         # moving the Task out of running, so a /run after the lease expires
         # does not need another process restart. Use a side session so this
         # does not commit the caller's unit of work (a Coordinator run).
@@ -283,7 +283,7 @@ class ExecutionService:
                     raise ValueError(f"dispatch key already belongs to task: {winner.task_id}")
                 return BegunAttempt(winner, self.workspaces.root / winner.id, existing=True)
             raise
-        # ADR 0041: the lease commits with ``running``. Dropping this service
+        # ADR 0043: the lease commits with ``running``. Dropping this service
         # (the process, or a crash modeled that way) drops the claim.
         claim_executor(self, attempt)
         task.status = transition_task(TaskState(task.status), TaskState.READY).value
@@ -324,7 +324,7 @@ class ExecutionService:
         attempt = self.db.get(AttemptRow, attempt_id)
         if attempt is None:
             raise ValueError(f"attempt not found: {attempt_id}")
-        # ADR 0041: refuse before revision close or artifact capture. A reaped
+        # ADR 0043: refuse before revision close or artifact capture. A reaped
         # Attempt must not leave capture files behind when the CAS later loses.
         attempt = require_owned_running(self.db, attempt_id)
         # ADR 0033 (#60): no Evidence while a material decision blocks the
@@ -371,7 +371,7 @@ class ExecutionService:
 
         adapter_succeeded = result.status.lower() in {"completed", "succeeded", "success"} and result.exit_code == 0
         new_attempt_status = AttemptState.COMPLETED if adapter_succeeded else AttemptState.FAILED
-        # ADR 0041: compare-and-swap on status and executor_id so recovery
+        # ADR 0043: compare-and-swap on status and executor_id so recovery
         # cannot be overwritten and another executor cannot finish this row.
         try:
             attempt = settle_owned_attempt(self.db, attempt_id, new_attempt_status.value)

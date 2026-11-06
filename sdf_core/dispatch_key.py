@@ -1,4 +1,4 @@
-"""Deterministic dispatch key for a keyless ``POST /tasks/{id}/run`` (ADR 0041).
+"""Deterministic dispatch key for a keyless ``POST /tasks/{id}/run`` (ADR 0043).
 
 A missing ``dispatch_key`` is not a new Attempt. The same task and the same
 logical request always hash to the same key, and ADR 0031 replays that key.
