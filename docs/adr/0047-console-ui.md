@@ -1,11 +1,11 @@
-# ADR 0046: a same-origin console that calls only the public API
+# ADR 0047: a same-origin console that calls only the public API
 
 Status: proposed
 
 Fourth step of the human-interaction workstream. Depends on
-[ADR 0043](0043-human-read-model-and-approver-inbox.md),
-[ADR 0044](0044-human-actions.md), and
-[ADR 0045](0045-live-updates.md). The console is a thin client. It does not
+[ADR 0044](0044-human-read-model-and-approver-inbox.md),
+[ADR 0045](0045-human-actions.md), and
+[ADR 0046](0046-live-updates.md). The console is a thin client. It does not
 read the database, and it does not grow a private API.
 
 ## Context
@@ -24,7 +24,7 @@ and lives up to 365 days (`sdf_core/auth.py:12-18`, `sdf_core/auth.py:63-64`;
 ADR 0015). `create_token` refuses an expiry under 1 day or over 365
 (`sdf_core/auth.py:178-179`). Identity on every mutating route is the
 principal from that token (`sdf_core/api.py:146-161`). Plan approval,
-decision resolve, and the human actions in ADR 0044 all read that principal.
+decision resolve, and the human actions in ADR 0045 all read that principal.
 A script that can read the approver token can act as that approver until
 the token is revoked or expires.
 
@@ -35,7 +35,7 @@ still passes through it unless the route is listed in `PUBLIC_ROUTES`
 (`sdf_core/auth.py:302`).
 
 The reads, actions, and streams a console needs are the public routes in
-ADR 0043, ADR 0044, and ADR 0045, plus the gates that already exist:
+ADR 0044, ADR 0045, and ADR 0046, plus the gates that already exist:
 `POST /plans/{id}/approve`, `POST /plans/{id}/reject`,
 `POST /decision-requests/{id}/resolve` (`sdf_core/api.py:1327-1336`,
 `sdf_core/api.py:1494`), and `GET /auth/whoami`, which already returns
@@ -43,7 +43,7 @@ ADR 0043, ADR 0044, and ADR 0045, plus the gates that already exist:
 
 `approver` does not imply `operator` (`sdf_core/auth.py:48`). A person who
 only approves cannot cancel or post a human message unless they also hold
-`operator` or `admin` (ADR 0044). `can_approve` is false for a service token
+`operator` or `admin` (ADR 0045). `can_approve` is false for a service token
 and for a reserved name (`sdf_core/auth.py:95-97`).
 
 ## Decision
@@ -134,23 +134,23 @@ is the credential, and it is at most one day old.
 
 The console hides approve and resolve when `whoami.can_approve` is false.
 It hides cancel and the message box when the principal lacks `operator` and
-lacks `admin` (ADR 0044). Hiding a control is not the authorization. The
+lacks `admin` (ADR 0045). Hiding a control is not the authorization. The
 API still returns 403.
 
 ### 4. Screens
 
 The first client has only these screens:
 
-- Inbox: `GET /inbox` (ADR 0043).
+- Inbox: `GET /inbox` (ADR 0044).
 - Run and Attempt: `GET /runs/{id}`, `GET /attempts/{id}`,
-  `GET /runs/{id}/timeline`, and the runtime-event stream from ADR 0045.
-  The timeline stream is used only if it shipped with ADR 0045. If that
+  `GET /runs/{id}/timeline`, and the runtime-event stream from ADR 0046.
+  The timeline stream is used only if it shipped with ADR 0046. If that
   ADR's open question leaves the timeline on polling, the console polls
   `GET /runs/{id}/timeline`.
 - Approve, reject, and resolve: the three existing posts, with the
   confirmation header.
-- Cancel: `POST /attempts/{id}/cancel` (ADR 0044).
-- Message: `POST /runs/{id}/messages` (ADR 0044), including an
+- Cancel: `POST /attempts/{id}/cancel` (ADR 0045).
+- Message: `POST /runs/{id}/messages` (ADR 0045), including an
   `Idempotency-Key` the page generates for that submit.
 
 The client does not build plans, does not start runs, does not record
@@ -161,7 +161,7 @@ register. It does not import `sdf_core.db` or open a database driver.
 A stream uses the cookie on the same origin. The browser's `EventSource`
 cannot set `Authorization`. That is why the cookie session exists. On
 `event: goodbye` or a dropped connection the page calls the matching GET
-and replaces what it showed (ADR 0045: polling is the source of truth).
+and replaces what it showed (ADR 0046: polling is the source of truth).
 
 ### 5. Contract test
 
@@ -191,7 +191,7 @@ differs from `app.version`, or if a source file mentions `localStorage` or
 ## Proof
 
 Tests to add. No browser is required for the API tests. A browser pass is
-part of implementing ADR 0046, after acceptance, and is not part of this
+part of implementing ADR 0047, after acceptance, and is not part of this
 document's merge.
 
 - `tests/test_console_contract.py::test_console_paths_are_registered_routes`
@@ -224,7 +224,7 @@ document's merge.
 
 Metrics. `auth_session` log records on the existing `sdf` logger:
 `created`, `rejected`, `logout`. The record has the principal and not the
-token. ADR 0043 states the OTEL-attribute rule.
+token. ADR 0044 states the OTEL-attribute rule.
 
 ## Alternatives rejected
 
@@ -233,7 +233,7 @@ token. ADR 0043 states the OTEL-attribute rule.
   the page script from reading the session secret.
 - **A short-lived bearer held only in a JavaScript variable.** A refresh
   drops it, and an XSS can still read the variable. It also cannot ride on
-  `EventSource`, which has no header API. The cookie is what makes ADR 0045
+  `EventSource`, which has no header API. The cookie is what makes ADR 0046
   usable from the browser without putting the token in script.
 - **A new session table.** `create_token` already stores an HMAC, an expiry,
   roles, a kind, and a revocation column (`sdf_core/auth.py:158-194`). A
@@ -274,8 +274,8 @@ token. ADR 0043 states the OTEL-attribute rule.
 - `create_token` cannot mint a token shorter than one day
   (`sdf_core/auth.py:178-179`). A shorter console session means changing
   that floor, which this ADR does not do.
-- The console is useless for its screens until ADR 0043, ADR 0044, and
-  ADR 0045 are implemented. Shipping the package before those routes exist
+- The console is useless for its screens until ADR 0044, ADR 0045, and
+  ADR 0046 are implemented. Shipping the package before those routes exist
   fails `test_console_paths_are_registered_routes`. That failure is the
   point of the sequencing rule.
 
@@ -296,9 +296,9 @@ token. ADR 0043 states the OTEL-attribute rule.
 
 ## Sequencing
 
-No console code, and no `/auth/session` route, is added until ADR 0043,
-ADR 0044, ADR 0045, and this ADR are all accepted. See the sequencing
-section in ADR 0043. Accepting this ADR accepts the package location, the
+No console code, and no `/auth/session` route, is added until ADR 0044,
+ADR 0045, ADR 0046, and this ADR are all accepted. See the sequencing
+section in ADR 0044. Accepting this ADR accepts the package location, the
 cookie session, the CSRF header, the confirmation header, the screen list,
 and the decision to leave CORS and anonymous docs unchanged. It does not
 by itself authorize the implementation while the earlier ADRs are still

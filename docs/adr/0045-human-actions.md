@@ -1,9 +1,9 @@
-# ADR 0044: human cancel of one Attempt, and human messages on the existing hub
+# ADR 0045: human cancel of one Attempt, and human messages on the existing hub
 
 Status: proposed
 
 Second step of the human-interaction workstream. Depends on
-[ADR 0043](0043-human-read-model-and-approver-inbox.md) for sequencing.
+[ADR 0044](0044-human-read-model-and-approver-inbox.md) for sequencing.
 Does not add a role, an evidence class, a message store, or a task state.
 Evidence attestation is deferred at the end of the Decision. It is not
 implemented with this ADR.
@@ -139,7 +139,7 @@ process that did not call `begin` could never cancel. `finish` keeps using
 Outcomes:
 
 - **Won.** Both CAS calls match. The transaction commits. The response is
-  200 and the attempt detail from ADR 0043. If this process still holds the
+  200 and the attempt detail from ADR 0044. If this process still holds the
   owner in the weak map (`sdf_core/recovery.py:38-41`), the handler then
   calls that owner's cancel hook. The hook calls `RuntimeController.cancel`,
   which appends `runtime_cancelled` (`sdf_core/runtime.py:367-371`). The
@@ -372,7 +372,7 @@ The cancel race can run on two sessions against one database, the way
   `test_every_mutating_route_forbids_a_viewer` cover the two new posts.
 
 Metrics, as `human_action` log records on the existing `sdf` logger, with
-the same OTEL-attribute rule as ADR 0043:
+the same OTEL-attribute rule as ADR 0044:
 
 - cancel: `result` is `won`, `lost`, `idempotent`, or `rejected`
 - message: `result` is `created`, `replayed`, `rejected`, or `limited`
@@ -410,7 +410,7 @@ the same OTEL-attribute rule as ADR 0043:
 
 - A lost race returns 409 to the caller who lost. The caller who won sees
   the terminal Attempt they wrote. Clients treat 409 as "reload the Attempt",
-  using the ADR 0043 detail route.
+  using the ADR 0044 detail route.
 - A cancel issued on a process that does not hold the runtime stops `finish`
   immediately and stops the provider on the owner's next heartbeat, at most
   about 10 seconds later (`sdf_core/recovery.py:31`). The sandbox can still
@@ -444,8 +444,8 @@ the same OTEL-attribute rule as ADR 0043:
 
 ## Sequencing
 
-Implementation of this ADR waits until ADR 0043 and this ADR are both
+Implementation of this ADR waits until ADR 0044 and this ADR are both
 accepted. Attestation code is not part of that implementation. SSE
-([ADR 0045](0045-live-updates.md)) and the console
-([ADR 0046](0046-console-ui.md)) wait for their own acceptance as well.
-See the sequencing section in ADR 0043.
+([ADR 0046](0046-live-updates.md)) and the console
+([ADR 0047](0047-console-ui.md)) wait for their own acceptance as well.
+See the sequencing section in ADR 0044.

@@ -1,12 +1,12 @@
-# ADR 0043: a human read model and an approver inbox over the rows SDF already stores
+# ADR 0044: a human read model and an approver inbox over the rows SDF already stores
 
 Status: proposed
 
 First step of the human-interaction workstream. Does not add a table, a role,
 or an event kind. Read paths stay reads. Later steps are
-[ADR 0044](0044-human-actions.md),
-[ADR 0045](0045-live-updates.md), and
-[ADR 0046](0046-console-ui.md). Sequencing is at the end of this file.
+[ADR 0045](0045-human-actions.md),
+[ADR 0046](0046-live-updates.md), and
+[ADR 0047](0047-console-ui.md). Sequencing is at the end of this file.
 
 ## Context
 
@@ -89,11 +89,11 @@ Runtime events already have a per-stream `sequence` and report missing
 sequence numbers as `gaps`. A stream is `(source, attempt_id, session_id)`.
 Nothing is synthesised to fill a gap (ADR 0029, `sdf_core/events.py:1-28`,
 `sdf_core/events.py:189-206`). This ADR does not change that contract.
-Live delivery of new rows is [ADR 0045](0045-live-updates.md).
+Live delivery of new rows is [ADR 0046](0046-live-updates.md).
 
 There is no browser client in this repository, no `CORSMiddleware`, and no
 SSE or WebSocket handler. The console that will call these reads is
-[ADR 0046](0046-console-ui.md).
+[ADR 0047](0047-console-ui.md).
 
 ## Decision
 
@@ -303,19 +303,19 @@ not add an exporter.
 The workstream order is fixed:
 
 1. This ADR (read model and inbox).
-2. [ADR 0044](0044-human-actions.md) (attempt cancel, human messages;
+2. [ADR 0045](0045-human-actions.md) (attempt cancel, human messages;
    attestation deferred).
-3. [ADR 0045](0045-live-updates.md) (SSE over the existing event rows and
+3. [ADR 0046](0046-live-updates.md) (SSE over the existing event rows and
    the timeline).
-4. [ADR 0046](0046-console-ui.md) (thin client).
+4. [ADR 0047](0047-console-ui.md) (thin client).
 
 No implementation of this workstream starts until this ADR is accepted.
 ADR 0028: a proposed ADR is not authority. Accepting this ADR accepts the
 routes, the cursor, the inbox filter, and the read-only rule above. It does
 not accept the later ADRs, and it does not accept writing code for them.
 
-Code for step 2 starts only after this ADR and ADR 0044 are both accepted.
-Code for step 3 starts only after those two and ADR 0045 are accepted.
+Code for step 2 starts only after this ADR and ADR 0045 are both accepted.
+Code for step 3 starts only after those two and ADR 0046 are accepted.
 Code for step 4 starts only after all four are accepted. Human attestation
 of evidence is not one of the four steps. No attestation code starts until
-a later ADR is accepted. ADR 0044 records why.
+a later ADR is accepted. ADR 0045 records why.

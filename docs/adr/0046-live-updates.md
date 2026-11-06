@@ -1,10 +1,10 @@
-# ADR 0045: Server-Sent Events over the runtime-event stream and the timeline
+# ADR 0046: Server-Sent Events over the runtime-event stream and the timeline
 
 Status: proposed
 
 Third step of the human-interaction workstream. Depends on
-[ADR 0043](0043-human-read-model-and-approver-inbox.md) and
-[ADR 0044](0044-human-actions.md) for sequencing. Does not add an event
+[ADR 0044](0044-human-read-model-and-approver-inbox.md) and
+[ADR 0045](0045-human-actions.md) for sequencing. Does not add an event
 table, an event kind, or a bus. Polling stays the source of truth.
 
 ## Context
@@ -35,7 +35,7 @@ unique identity is `(source, attempt_id, session_id, sequence)`
 false. No event changes Attempt status, Task status, or Evidence
 (`sdf_core/events.py:19-22`; ADR 0029). A human cancel that wins appends
 `runtime_cancelled` only as a consequence of `RuntimeController.cancel`
-(ADR 0044, `sdf_core/runtime.py:367-371`). That kind is already in
+(ADR 0045, `sdf_core/runtime.py:367-371`). That kind is already in
 `RUNTIME_LIFECYCLE_KINDS` (`sdf_core/events.py:49-56`).
 
 Authentication is per request. `authorize` checks the bearer token, then
@@ -210,7 +210,7 @@ and no second machine.
   `tests/test_api_auth.py::test_every_route_requires_a_token`.
 
 Metrics, as `human_stream` log records on the existing `sdf` logger
-(ADR 0043 states the OTEL-attribute rule):
+(ADR 0044 states the OTEL-attribute rule):
 
 - `opened`, with `route` and `principal`
 - `gap`, with `count`
@@ -262,9 +262,9 @@ Metrics, as `human_stream` log records on the existing `sdf` logger
    composite cursor in a follow-up ADR? This ADR does not define one.
 4. Should the timeline stream exist in the first implementation, or should
    the first implementation ship only the runtime-event stream and leave
-   the timeline on polling until ADR 0046 needs it?
+   the timeline on polling until ADR 0047 needs it?
 
 ## Sequencing
 
-Implementation waits until ADR 0043, ADR 0044, and this ADR are accepted.
-The console waits for [ADR 0046](0046-console-ui.md) as well. See ADR 0043.
+Implementation waits until ADR 0044, ADR 0045, and this ADR are accepted.
+The console waits for [ADR 0047](0047-console-ui.md) as well. See ADR 0044.
