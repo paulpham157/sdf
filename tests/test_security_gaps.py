@@ -279,7 +279,9 @@ def test_rewritten_evidence_is_rejected_by_verification(tmp_path: Path):
 
     with _session() as db:
         attempt = _run_passing_attempt(db, tmp_path)
-        evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id).one()
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
         assert evidence.status == "PASS"
         original = (evidence.status, evidence.command, evidence.confidence)
         artifact = db.get(ArtifactRow, evidence.artifact_ref)
