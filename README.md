@@ -20,6 +20,28 @@ uv run pytest
 SDF_AUTH_DEV_INSECURE=1 uv run uvicorn sdf_core.api:app --reload --host 127.0.0.1
 ```
 
+### Offline evidence demo
+
+`scripts/demo-evidence.sh` walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, the task trace, and `python -m sdf_core.cli runs show`. It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
+
+```bash
+scripts/demo-evidence.sh
+```
+
+The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval.
+
+`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact.
+
+The script prints these results:
+
+- Run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`.
+- `GET /evidence/{id}`: `status=PASS`, `verifier_identity=sdf-evaluator`, `revision_id`, and `tree_sha256`.
+- `GET /attempts/{id}/revision`: `result_tree_sha256`. `base_commit` is null because this fixture records a tree id, not a git commit.
+- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and Evidence, with Evidence `validates` the Assumption. The fake adapter records no runtime events.
+- `python -m sdf_core.cli runs show <attempt id>`: the same timeline. `usage_ledger` has no rows for this adapter. `cost_usd` is `0` on the Attempt. That zero is unmetered. It is not an invoice and not an `SDF_PRICE_*` or `SDF_E2B_USD_PER_SECOND` estimate.
+
+The state database is a temporary SQLite file. Workspaces and artifacts land in `.sdf-workspaces/` and `.sdf-artifacts/`.
+
 The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL:
 
 ```bash
