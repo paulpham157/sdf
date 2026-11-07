@@ -253,6 +253,14 @@
 
 ### Added
 
+- **One-command offline evidence demo.** `uv run scripts/demo.py` walks the
+  public fake-adapter HTTP loop, prints a four-beat story (intent, work,
+  independent check, outcome), and writes a local HTML page. No E2B or model
+  key is required. The sealed oracle still needs Linux x86_64 with Landlock
+  (ADR 0039); other hosts exit with a pointer to GitHub Codespaces.
+  `scripts/demo-evidence.sh` remains as a wrapper. A Codespaces dev container
+  lives in `.devcontainer/devcontainer.json`.
+
 - **Human read model and approver inbox (ADR 0044).** Viewer `GET /tasks`,
   `/attempts`, `/plans` and `/objectives` list rows in keyset pages (50 by
   default, at most 100); `GET /tasks/{id}` and `GET /attempts/{id}` read one.
