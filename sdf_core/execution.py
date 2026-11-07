@@ -230,6 +230,17 @@ class ExecutionService:
         task = self.db.get(TaskRow, task_id)
         if task is None:
             raise ValueError(f"task not found: {task_id}")
+        if task.status == TaskState.RUNNING.value:
+            blocker = self.db.scalar(
+                select(AttemptRow.id).where(
+                    AttemptRow.task_id == task_id,
+                    AttemptRow.status == AttemptState.RUNNING.value,
+                )
+            )
+            if blocker is not None:
+                raise ValueError(
+                    f"attempt {blocker} is still running; lease expiry does not confirm its work has stopped"
+                )
         if cost_usd < 0:
             raise ValueError("cost_usd must not be negative")
         if latency_ms is not None and latency_ms < 0:

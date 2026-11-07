@@ -3,7 +3,9 @@
 Liveness is a lease, not ``RuntimeController.recover`` (ADR 0029 only restores
 a runtime-event stream). This process treats an Attempt as live while the
 ``ExecutionService`` that started it is still alive. Another process is live
-while its heartbeat is newer than :data:`LEASE_TTL`.
+while its heartbeat is newer than :data:`LEASE_TTL`. Lease expiry does not
+prove remote work has stopped: a ``live`` Attempt, or a registered effect
+that has not confirmed stop, stays ``running``.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from weakref import WeakValueDictionary
@@ -20,6 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from .db import AttemptRow, TaskRow
+from .impact import EvidenceMode
 from .model import AttemptState, TaskState, utcnow
 from .observability import get_logger
 from .state import transition_attempt, transition_task
@@ -49,6 +53,11 @@ EXECUTOR_ID = _mint_executor_id()
 # The value is weak: dropping the owner drops the claim, including when the
 # test models a crash by deleting the service in this same process.
 _owners: WeakValueDictionary[str, object] = WeakValueDictionary()
+# attempt id -> returns True only when that attempt's external effects are
+# confirmed finished. A False or an exception is not quiescence. This map is
+# the in-process provider handle. It dies with the process. It is not a
+# promise that an arbitrary external effect can be exactly-once.
+_remote_effects: dict[str, Callable[[], bool]] = {}
 _lock = threading.Lock()
 _stop = threading.Event()
 _supervisor: threading.Thread | None = None
@@ -240,6 +249,54 @@ def shutdown_executor_heartbeat(timeout: float = 5.0) -> None:
         thread.join(timeout)
 
 
+def register_remote_effect(attempt_id: str, confirm_stopped: Callable[[], bool]) -> None:
+    """Remember that ``attempt_id`` can still cause effects outside the row.
+
+    ``confirm_stopped`` returns True only when those effects are confirmed
+    finished. False, or any exception, means recovery must leave the Attempt
+    ``running`` and must not free its Task for another execution. Lease expiry
+    is not a substitute for this confirmation.
+
+    The callback is process-local. A restarted process does not have it. A
+    ``live`` Attempt with no callback is therefore also unresolved: this
+    process will not claim the provider sandbox is gone.
+    """
+
+    with _lock:
+        _remote_effects[attempt_id] = confirm_stopped
+
+
+def clear_remote_effect(attempt_id: str) -> None:
+    """Drop a process-local effect registration. Does not touch the row."""
+
+    with _lock:
+        _remote_effects.pop(attempt_id, None)
+
+
+def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
+    """True when this Attempt must not be failed merely because its lease expired."""
+
+    with _lock:
+        confirm_stopped = _remote_effects.get(attempt.id)
+    if confirm_stopped is not None:
+        try:
+            stopped = bool(confirm_stopped())
+        except Exception:
+            _log.warning(
+                "remote effect for attempt %s was not confirmed stopped",
+                attempt.id, exc_info=True,
+            )
+            return True
+        if not stopped:
+            return True
+        clear_remote_effect(attempt.id)
+        return False
+    # confirm_live commits this before teardown. After the creating process is
+    # gone there is no sandbox id here and no provider call. Do not treat the
+    # lease timeout as proof the sandbox has stopped.
+    return attempt.evidence_mode == EvidenceMode.LIVE.value
+
+
 def compare_and_swap_attempt(
     db: Session,
     attempt: AttemptRow,
@@ -247,8 +304,14 @@ def compare_and_swap_attempt(
     from_status: AttemptState,
     to_status: AttemptState,
     extra: dict[str, object] | None = None,
+    observed_lease: tuple[str | None, datetime | None] | None = None,
 ) -> bool:
     """Persist ``to_status`` only if the row is still ``from_status``.
+
+    When ``observed_lease`` is set, the update also requires the durable
+    ``executor_id`` and ``executor_heartbeat_at`` to still be that snapshot.
+    A heartbeat renewal committed after the SELECT then matches zero rows.
+    Callers that only fence status (cancel) omit it.
 
     Returns True when this session won. On loss, expires ``attempt`` so a
     later flush cannot overwrite the durable winner.
@@ -258,9 +321,14 @@ def compare_and_swap_attempt(
     values: dict[str, object] = {"status": to_status.value}
     if extra:
         values.update(extra)
+    clauses = [AttemptRow.id == attempt.id, AttemptRow.status == from_status.value]
+    if observed_lease is not None:
+        executor_id, heartbeat = observed_lease
+        clauses.append(AttemptRow.executor_id.is_not_distinct_from(executor_id))
+        clauses.append(AttemptRow.executor_heartbeat_at.is_not_distinct_from(heartbeat))
     result = db.execute(
         update(AttemptRow)
-        .where(AttemptRow.id == attempt.id, AttemptRow.status == from_status.value)
+        .where(*clauses)
         .values(**values)
         .execution_options(synchronize_session=False)
     )
@@ -298,20 +366,25 @@ def compare_and_swap_task(
 
 
 def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tuple[str, ...]:
-    """Fail running Attempts with no live executor, and unstick their Tasks.
+    """Fail running Attempts whose executor is gone and whose effects are confirmed stopped.
 
-    Attempt: ``running`` to ``failed`` (existing transition). ``error_class``
-    is ``killed`` when it was empty: the executor did not finish.
+    A stale or missing lease is not enough when the Attempt can still cause
+    effects. A held local owner, a fresh foreign heartbeat, a heartbeat that
+    changed after this SELECT, a ``live`` Attempt this process cannot see a
+    stopped sandbox for, or a registered effect whose stop is not confirmed,
+    all stay ``running``. The Task stays ``running`` with them, so a new
+    dispatch cannot enter ``ready``.
+
+    Attempt, when it is settled: ``running`` to ``failed``. ``error_class``
+    is ``killed`` when it was empty. The update matches the snapshot
+    ``executor_id`` and ``executor_heartbeat_at`` as well as status, so a
+    renewal between the SELECT and the UPDATE does not lose.
 
     Task: ``running`` to ``evaluating`` to ``failed``, and only when no
-    Attempt of that Task is still running. A later dispatch can then enter
-    ``ready``. No new transitions are added.
+    Attempt of that Task is still running. No new transitions are added.
 
-    Each write is compare-and-swap on the durable status, so a worker that
-    already completed the Attempt wins, and a stale worker cannot resurrect
-    a Task recovery has failed.
-
-    A second call finds nothing running and writes nothing.
+    A second call writes nothing for an Attempt it already settled, and it
+    does not settle one it left running.
     """
 
     now = now or utcnow()
@@ -319,13 +392,20 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
     live_tasks: set[str] = set()
     settled: list[str] = []
     for attempt in running:
-        if executor_is_live(attempt, now=now):
+        # Captured before liveness checks. A renewal that commits inside that
+        # window must not be the value this UPDATE requires.
+        observed_lease = (attempt.executor_id, attempt.executor_heartbeat_at)
+        if executor_is_live(attempt, now=now) or _remote_effect_blocks_settle(attempt):
             live_tasks.add(attempt.task_id)
             continue
         extra = {"error_class": "killed"} if attempt.error_class is None else None
         if not compare_and_swap_attempt(
             db, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED, extra=extra,
+            observed_lease=observed_lease,
         ):
+            fresh = db.get(AttemptRow, attempt.id, populate_existing=True)
+            if fresh is not None and fresh.status == AttemptState.RUNNING.value:
+                live_tasks.add(attempt.task_id)
             continue
         settled.append(attempt.id)
     if not settled:

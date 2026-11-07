@@ -469,7 +469,9 @@ class LiveRunAdapter:
 
         One-way and idempotent: ``synthetic`` -> ``live`` only, never back.
         Committed at once, so a process that dies mid-run leaves a ``live``
-        RUNNING Attempt exactly when a sandbox existed.
+        RUNNING Attempt exactly when a sandbox existed. Recovery will not
+        treat a later lease expiry as proof that sandbox has stopped, and it
+        will not start a provider kill from a process that no longer holds one.
         """
 
         if not sandbox_id or self._live_confirmed == attempt_id:

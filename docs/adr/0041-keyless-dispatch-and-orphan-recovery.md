@@ -73,10 +73,13 @@ On FastAPI lifespan startup the process:
 
 1. Starts the lease refresher when the database can take a second connection.
 2. Loads every Attempt in `running`.
-3. Leaves an Attempt alone when an executor still holds it (below).
+3. Leaves an Attempt alone when an executor still holds it (below), when
+   its heartbeat was renewed after this read, or when its remote effects are
+   not confirmed stopped (section 5).
 4. Moves each other Attempt `running -> failed`. `error_class` becomes
    `killed` when it was empty. `killed` is the existing taxonomy class for
-   an execution that was terminated before it finished.
+   an execution that was terminated before it finished. Lease expiry by
+   itself is not that confirmation.
 5. For each Task that owned a settled Attempt, if the Task is `running` and
    no Attempt of that Task is still `running`, moves the Task
    `running -> evaluating -> failed`.
@@ -84,13 +87,17 @@ On FastAPI lifespan startup the process:
 No new state-machine transitions are added. A later `begin` can move that
 Task `failed -> ready -> running`.
 
-Each Attempt and Task write is compare-and-swap on the durable status
-(`UPDATE ... WHERE status = 'running'`, or `'evaluating'` for the second
-Task step) and checks `rowcount`. Recovery cannot overwrite an Attempt that
+Each Attempt and Task write is compare-and-swap and checks `rowcount`.
+The Attempt predicate is durable status plus the `executor_id` and
+`executor_heartbeat_at` observed by the SELECT (`IS NOT DISTINCT FROM`,
+so a null lease still matches). A heartbeat renewal committed after that
+SELECT matches zero rows. The Task predicate is status only
+(`running`, then `evaluating`). Recovery cannot overwrite an Attempt that
 `finish` has already moved off `running`. A stale worker whose session still
 says `running` cannot overwrite recovery or resurrect the Task:
-`finish` and `_fail_attempt` use the same CAS, and they do not write the
-Task unless they won the Attempt.
+`finish` and `_fail_attempt` use the owner fence, and they do not write the
+Task unless they won the Attempt. Cancel keeps a status-only compare-and-swap
+(ADR 0045); it does not send the lease snapshot.
 
 The function commits once. A second call finds no matching `running` Attempt
 and writes nothing. Startup runs it. Lifespan shutdown runs it again so
@@ -148,10 +155,11 @@ A hard kill of another OS process leaves a fresh heartbeat. The next startup
 in a new process (a new `EXECUTOR_ID`) treats that Attempt as live until the
 lease expires. During that window a new `/run` with a different dispatch key
 still sees the Task `running` and cannot enter `ready`. After the lease
-expires, the next `/run`, the refresher, or a later startup settles it
-deterministically and the new dispatch can proceed. A graceful lifespan
-shutdown settles this process's un-owned Attempts immediately, so a clean
-restart does not wait out the lease.
+expires, a synthetic in-process Attempt can be settled and a new explicit
+dispatch can proceed. An Attempt that is `live`, or that still has a
+registered remote effect, cannot (section 5). A graceful lifespan shutdown
+settles this process's un-owned synthetic Attempts immediately. It does not
+settle one whose remote effects are unconfirmed.
 
 Crash-recovery tests mint a fresh `EXECUTOR_ID` and expire the previous
 heartbeat, which is how a new process observes a dead neighbor.
@@ -167,11 +175,15 @@ heartbeat, which is how a new process observes a dead neighbor.
   finished Attempt also sends `parent_attempt_id`.
 - Two tasks with the same keyless body get two Attempts.
 - Startup recovery is idempotent.
-- A live executor is not failed. A stale or missing lease is.
+- A live executor is not failed. A stale or missing lease fails only an
+  Attempt whose remote effects are confirmed stopped (section 5). A heartbeat
+  renewed after the SELECT is not failed.
 - A forked worker remints its executor id before recovery, so a sibling's
   fresh Attempt stays `running`.
 - A held local owner stays `running` when the heartbeat is older than the
-  lease and the refresher is stopped. Dropping that owner lets recovery fail it.
+  lease and the refresher is stopped. Dropping that owner lets recovery fail
+  a synthetic Attempt. Dropping it does not fail a `live` Attempt or one
+  whose registered effect has not confirmed stop.
 - `finish` checks the owner fence before it closes the revision or captures
   artifacts. A reaped Attempt gets no Artifact row, no Evidence row, no
   artifact graph node, and no capture file.
@@ -190,16 +202,57 @@ heartbeat, which is how a new process observes a dead neighbor.
   heartbeat. In-flight work from a process that heartbeats and is inside the
   lease is left alone. In-flight work from a build that does not write the
   lease looks dead and is failed.
-- A hard crash of another process is retryable after the lease expires. The
-  next `/run`, the refresher, or a later startup settles it; a startup that
-  happens inside the lease leaves the Attempt alone. Graceful shutdown does
-  not wait.
+- A hard crash of another process is retryable after the lease expires only
+  when that Attempt is not `live` and has no registered remote effect still
+  outstanding. A `live` Attempt stays `running` and blocks a new dispatch.
+  A startup inside the lease leaves every Attempt alone. Graceful shutdown
+  does not wait on synthetic in-process work. It does not declare a live
+  sandbox stopped.
 - A keyless retry of a recovered (`failed`/`killed`) Attempt replays that
   Attempt. Operators who want a new execution after a crash send a new
   explicit `dispatch_key` and `parent_attempt_id`.
 - Migration `0027_attempt_executor_lease` revises `0026_oracle_visibility`.
   The columns are nullable `ADD COLUMN` on SQLite and PostgreSQL. Downgrade
   drops them.
+
+## 5. Lease expiry is not quiescence
+
+The earlier text of this ADR treated a stale lease as a dead execution and
+then allowed a new explicit dispatch. That is too weak. A lease timeout does
+not prove that local or remote work has stopped causing effects.
+
+Recovery may fail the Attempt and unstick the Task only when all of these hold:
+
+- The executor is not live under section 3, judged from the SELECT snapshot.
+- The UPDATE still sees that snapshot's `executor_id` and
+  `executor_heartbeat_at`.
+- Remote effects are confirmed stopped. Confirmation is one of:
+  - the Attempt is not `live` and nothing in this process has registered an
+    outstanding effect (in-process synthetic work died with the executor);
+  - a process-local `confirm_stopped` callback returns True.
+
+Otherwise the Attempt and its Task stay `running`. `ExecutionService.begin`
+returns the existing Attempt for the same dispatch key and does not run the
+adapter again. A new dispatch key raises, and `POST /tasks/{id}/run` returns
+409. No new state-machine transition is added.
+
+This process does not call the sandbox provider during recovery. It does not
+list E2B or Daytona sandboxes, and it does not kill by id from a restarted
+process. `LiveRunAdapter.confirm_live` is what records that a sandbox existed
+(`evidence_mode=live`, committed before teardown). After that process is gone,
+the row stays `running` until some future terminator confirms stop. There is
+no such terminator in this change.
+
+Remaining limitations, which this ADR does not claim to close:
+
+- A sandbox created before `confirm_live` commits is still `synthetic`. Lease
+  expiry can settle that row. The provider sandbox may still be running.
+- Effects that never register and never promote to `live` are treated as
+  in-process. Recovery does not promise exactly-once behavior for arbitrary
+  external side effects.
+- The lease clock is still the application clock (the open question below).
+- A registered callback exists only in the process that registered it. It is
+  not durable.
 
 ## Open question: lease clock
 
@@ -257,8 +310,19 @@ Local tests (SQLite, no live provider):
 - `tests/test_crash_recovery.py::test_fail_attempt_does_not_move_a_task_with_a_live_sibling`
 - `tests/test_crash_recovery.py::test_stale_coordinator_cancel_leaves_a_failed_task`
 - `tests/test_crash_recovery.py::test_heartbeat_refresh_does_not_touch_a_failed_attempt`
+- `tests/test_crash_recovery.py::test_new_dispatch_does_not_overlap_a_sandbox_left_running_by_lease_expiry`
+  keeps a fake provider sandbox executing after the host lease expires. The
+  same key replays. A new key is refused while that sandbox is still executing.
+- `tests/test_crash_recovery.py::test_recovery_does_not_fail_a_lease_renewed_after_the_select`
+  renews the heartbeat after the SELECT and requires the Attempt to stay running.
+- `tests/test_crash_recovery.py::test_live_attempt_is_not_reaped_or_retried_without_a_confirmed_stop`
+- `tests/test_crash_recovery.py::test_termination_failure_leaves_the_attempt_running`
+- `tests/test_crash_recovery.py::test_confirmed_stop_allows_settle_and_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_stale_heartbeat_with_the_owner_still_alive_refuses_a_new_dispatch`
 - `tests/test_api.py::test_explicit_keyless_prefix_is_rejected` expects 422.
 - `tests/test_migrations.py` upgrades an empty SQLite database to head
   `0027_attempt_executor_lease` and expects the two columns.
 
-PostgreSQL and live provider runs are not part of this proof.
+No live provider sandbox was killed or listed to prove section 5. The provider
+boundary there is what the code refuses to do, not a claim that E2B or Daytona
+was observed. PostgreSQL is not required for these hermetic tests.

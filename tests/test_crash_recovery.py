@@ -20,7 +20,10 @@ from sdf_core.dispatch_key import derived_dispatch_key
 from sdf_core.execution import ExecutionService
 from sdf_core.fixtures import resolve_fixture
 from sdf_core.model import utcnow
-from sdf_core.recovery import AttemptFenceError, LEASE_TTL, recover_orphaned_attempts, reset_recovery_state
+from sdf_core.recovery import (
+    AttemptFenceError, LEASE_TTL, clear_remote_effect, recover_orphaned_attempts, register_remote_effect,
+    reset_recovery_state,
+)
 from tests.auth_support import admin_client
 
 # Terminal states an abandoned Attempt may end in. The model has no separate
@@ -792,7 +795,28 @@ class FakeProviderSandboxAdapter(FakeNativeAdapter):
         self.calls = 0
 
     def begin_remote_work(self, attempt_id: str) -> str:
-        return self.sandboxes.create(attempt_id)
+        """Start a sandbox the way a live adapter does, and do not kill it.
+
+        ``LiveRunAdapter.confirm_live`` commits ``evidence_mode=live`` once a
+        sandbox exists. Recovery must see that, and the process-local probe,
+        or a later dispatch can overlap this sandbox. The probe reports stop
+        only after ``kill``; this method does not kill.
+        """
+
+        sandbox_id = self.sandboxes.create(attempt_id)
+        db = SessionLocal()
+        try:
+            row = db.get(AttemptRow, attempt_id)
+            row.evidence_mode = "live"
+            db.commit()
+        finally:
+            db.close()
+
+        def confirm_stopped() -> bool:
+            return not self.sandboxes.still_executing(sandbox_id)
+
+        register_remote_effect(attempt_id, confirm_stopped)
+        return sandbox_id
 
     def run(self, *, attempt_id: str, workspace: Path, instructions: str):
         self.calls += 1
@@ -804,7 +828,7 @@ class FakeProviderSandboxAdapter(FakeNativeAdapter):
 
 
 def test_new_dispatch_does_not_overlap_a_sandbox_left_running_by_lease_expiry(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path, monkeypatch, request,
 ) -> None:
     """A new explicit dispatch must not overlap remote work the dead host left running.
 
@@ -826,6 +850,8 @@ def test_new_dispatch_does_not_overlap_a_sandbox_left_running_by_lease_expiry(
     """
 
     monkeypatch.chdir(tmp_path)
+    holder: dict[str, str] = {}
+    request.addfinalizer(lambda: clear_remote_effect(holder["id"]) if holder.get("id") else None)
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
@@ -847,6 +873,7 @@ def test_new_dispatch_does_not_overlap_a_sandbox_left_running_by_lease_expiry(
         db.commit()
         begun = service.begin(task_id=task_id, dispatch_key=first_key, fixture=fixture)
         orphan_id = begun.attempt.id
+        holder["id"] = orphan_id
         sandbox_a = adapter.begin_remote_work(orphan_id)
         assert provider.still_executing(sandbox_a)
         assert adapter.calls == 0
@@ -918,10 +945,9 @@ def test_new_dispatch_does_not_overlap_a_sandbox_left_running_by_lease_expiry(
 def test_recovery_does_not_fail_a_lease_renewed_after_the_select(tmp_path: Path, monkeypatch) -> None:
     """A heartbeat committed after the expired SELECT must not be failed.
 
-    ``recover_orphaned_attempts`` loads running rows, decides liveness in
-    Python from that snapshot, then ``compare_and_swap_attempt`` updates
-    ``WHERE id AND status = running``. The observed ``executor_id`` and
-    ``executor_heartbeat_at`` are not in the predicate.
+    Recovery loads running rows and decides liveness from that snapshot. The
+    UPDATE has to require that same ``executor_id`` and ``executor_heartbeat_at``.
+    A renewal committed after the snapshot must make the update miss.
 
     ``test_recovery_does_not_overwrite_a_completed_attempt`` commits a terminal
     status in this window. ``test_heartbeat_refresh_does_not_touch_a_failed_attempt``
@@ -994,6 +1020,223 @@ def test_recovery_does_not_fail_a_lease_renewed_after_the_select(tmp_path: Path,
         )
     finally:
         db.close()
+
+
+def test_live_attempt_is_not_reaped_or_retried_without_a_confirmed_stop(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A live Attempt stays running when this process cannot confirm the sandbox stopped.
+
+    No provider kill is attempted. Duplicate recovery does not settle it, the
+    same dispatch key replays it, and a new dispatch is refused.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    adapter = CountingAdapter()
+    monkeypatch.setattr("sdf_core.api.configured_run_adapter", lambda _db: adapter)
+    task_id = "TASK-LIVE-UNCONFIRMED"
+    attempt_id = "ATTEMPT-LIVE-UNCONFIRMED"
+    dispatch_key = "dispatch-live-unconfirmed"
+    db = SessionLocal()
+    try:
+        _running_attempt(
+            db, task_id, attempt_id, dispatch_key,
+            executor_id="dead-live-executor",
+            executor_heartbeat_at=utcnow() - LEASE_TTL - timedelta(seconds=5),
+            evidence_mode="live",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
+        assert recover_orphaned_attempts(db) == ()
+        assert recover_orphaned_attempts(db) == ()
+    finally:
+        db.close()
+    db = SessionLocal()
+    try:
+        assert db.get(AttemptRow, attempt_id).status == "running"
+        assert db.get(AttemptRow, attempt_id).error_class is None
+        assert db.get(TaskRow, task_id).status == "running"
+    finally:
+        db.close()
+
+    with admin_client() as client:
+        replay = client.post(f"/tasks/{task_id}/run", json={
+            "fixture_dir": str(fixture), "dispatch_key": dispatch_key, "instructions": "same key",
+        })
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["attempt_id"] == attempt_id
+        assert adapter.calls == 0
+        retry = client.post(f"/tasks/{task_id}/run", json={
+            "fixture_dir": str(fixture),
+            "dispatch_key": "dispatch-live-unconfirmed-2",
+            "parent_attempt_id": attempt_id,
+            "instructions": "new key while the live sandbox is unconfirmed",
+        })
+        assert 400 <= retry.status_code < 500, retry.text
+        assert "still running" in retry.text
+        assert adapter.calls == 0
+    db = SessionLocal()
+    try:
+        assert db.get(AttemptRow, attempt_id).status == "running"
+        assert db.query(AttemptRow).filter_by(task_id=task_id).count() == 1
+    finally:
+        db.close()
+
+
+def test_termination_failure_leaves_the_attempt_running(tmp_path: Path, monkeypatch) -> None:
+    """A provider that fails or refuses to confirm stop blocks settle and a new dispatch."""
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    task_id = "TASK-STOP-FAILED"
+    attempt_id = "ATTEMPT-STOP-FAILED"
+    db = SessionLocal()
+    service = ExecutionService(
+        db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+    )
+    try:
+        db.add(TaskRow(
+            id=task_id, title="stop failed", status="created", idempotency_key=task_id,
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        db.commit()
+        begun = service.begin(task_id=task_id, dispatch_key="dispatch-stop-failed", fixture=fixture)
+        attempt_id = begun.attempt.id
+    finally:
+        db.close()
+
+    def confirm_stopped() -> bool:
+        raise RuntimeError("provider unavailable")
+
+    register_remote_effect(attempt_id, confirm_stopped)
+    try:
+        del begun
+        del service
+        gc.collect()
+        reset_recovery_state()
+        side = SessionLocal()
+        try:
+            _expire_heartbeat(side, attempt_id)
+            assert recover_orphaned_attempts(side) == ()
+            assert recover_orphaned_attempts(side) == ()
+        finally:
+            side.close()
+        check = SessionLocal()
+        try:
+            assert check.get(AttemptRow, attempt_id).status == "running"
+            assert check.get(TaskRow, task_id).status == "running"
+        finally:
+            check.close()
+        again = SessionLocal()
+        try:
+            refused = ExecutionService(
+                again, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+            )
+            with pytest.raises(ValueError, match="still running"):
+                refused.begin(
+                    task_id=task_id, dispatch_key="dispatch-stop-failed-2", fixture=fixture,
+                    parent_attempt_id=attempt_id,
+                )
+            assert again.get(AttemptRow, attempt_id).status == "running"
+            assert again.query(AttemptRow).filter_by(task_id=task_id).count() == 1
+        finally:
+            again.close()
+    finally:
+        clear_remote_effect(attempt_id)
+
+
+def test_confirmed_stop_allows_settle_and_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """Once the registered effect reports it has stopped, lease expiry can settle and retry."""
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    adapter = CountingAdapter()
+    monkeypatch.setattr("sdf_core.api.configured_run_adapter", lambda _db: adapter)
+    task_id = "TASK-STOP-CONFIRMED"
+    attempt_id = "ATTEMPT-STOP-CONFIRMED"
+    db = SessionLocal()
+    try:
+        _running_attempt(
+            db, task_id, attempt_id, "dispatch-stop-confirmed",
+            executor_id="dead-after-stop",
+            executor_heartbeat_at=utcnow() - LEASE_TTL - timedelta(seconds=5),
+            evidence_mode="live",
+        )
+        db.commit()
+    finally:
+        db.close()
+    register_remote_effect(attempt_id, lambda: True)
+    try:
+        side = SessionLocal()
+        try:
+            assert attempt_id in recover_orphaned_attempts(side)
+            assert recover_orphaned_attempts(side) == ()
+        finally:
+            side.close()
+    finally:
+        clear_remote_effect(attempt_id)
+    db = SessionLocal()
+    try:
+        assert db.get(AttemptRow, attempt_id).status == "failed"
+        assert db.get(AttemptRow, attempt_id).error_class == "killed"
+        assert db.get(TaskRow, task_id).status == "failed"
+    finally:
+        db.close()
+    with admin_client() as client:
+        retry = client.post(f"/tasks/{task_id}/run", json={
+            "fixture_dir": str(fixture),
+            "dispatch_key": "dispatch-stop-confirmed-2",
+            "parent_attempt_id": attempt_id,
+            "instructions": "retry after the effect was confirmed stopped",
+        })
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["attempt_id"] != attempt_id
+        assert adapter.calls == 1
+
+
+def test_stale_heartbeat_with_the_owner_still_alive_refuses_a_new_dispatch(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Lease expiry does not reap an Attempt whose executor object is still held."""
+
+    monkeypatch.chdir(tmp_path)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    task_id = "TASK-OWNER-STILL-ALIVE"
+    db = SessionLocal()
+    service = ExecutionService(
+        db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+    )
+    try:
+        db.add(TaskRow(
+            id=task_id, title="owner alive", status="created", idempotency_key=task_id,
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        db.commit()
+        begun = service.begin(task_id=task_id, dispatch_key="dispatch-owner-alive", fixture=fixture)
+        attempt_id = begun.attempt.id
+        db.get(AttemptRow, attempt_id).executor_heartbeat_at = utcnow() - LEASE_TTL - timedelta(seconds=5)
+        db.commit()
+        assert attempt_id not in recover_orphaned_attempts(db, now=utcnow())
+        with pytest.raises(ValueError, match="still running"):
+            service.begin(task_id=task_id, dispatch_key="dispatch-owner-alive-2", fixture=fixture)
+        assert db.get(AttemptRow, attempt_id).status == "running"
+        assert db.query(AttemptRow).filter_by(task_id=task_id).count() == 1
+    finally:
+        db.close()
+        del service
 
 
 def test_heartbeat_refresh_does_not_touch_a_failed_attempt(tmp_path: Path) -> None:
