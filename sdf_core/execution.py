@@ -872,11 +872,19 @@ def check_retry_parent(db: Session, parent: AttemptRow) -> None:
 
     if parent.status not in TERMINAL_ATTEMPT_STATES:
         raise ValueError(f"parent attempt {parent.id} is {parent.status}; only a finished attempt can be retried")
-    statuses = [
-        row.status for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))
+    from .evidence_mac import stored_content_mac_ok
+
+    verdicts = [
+        row for row in db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == parent.id))
         if row.evidence_class in (None, "verification")
     ]
-    if parent.status == AttemptState.COMPLETED.value and statuses and all(s == "PASS" for s in statuses):
+    # A stored PASS counts only when its current content MAC matches. A cleared
+    # or old-format MAC is not proof the parent passed, and it is not re-signed.
+    if (
+        parent.status == AttemptState.COMPLETED.value
+        and verdicts
+        and all(row.status == "PASS" and stored_content_mac_ok(row) for row in verdicts)
+    ):
         raise ValueError(f"parent attempt {parent.id} passed every check; there is nothing to retry")
 
 

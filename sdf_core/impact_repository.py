@@ -17,7 +17,7 @@ from .db import (
     OutcomeObservationRow,
     TaskRow,
 )
-from .evidence_mac import content_mac_problem
+from .evidence_mac import artifact_sha256_for_content_mac, content_mac_problem
 from .impact import (
     AttemptFact,
     EvidenceFact,
@@ -27,13 +27,6 @@ from .impact import (
     ScorecardFacts,
     TaskFact,
 )
-
-
-def _mac_artifact_sha(db: Session, row: EvidenceRow) -> str | None:
-    if not row.artifact_ref:
-        return None
-    artifact = db.get(ArtifactRow, row.artifact_ref)
-    return artifact.sha256 if artifact is not None else None
 
 
 def load_metric_declaration(db: Session, objective_id: str) -> MetricDeclaration | None:
@@ -143,7 +136,9 @@ def load_scorecard_facts(db: Session) -> ScorecardFacts:
             subject_artifact_sha256=row.subject_artifact_sha256,
             oracle_digest=row.oracle_digest,
             expires_at=row.expires_at,
-            content_authentic=content_mac_problem(row, artifact_sha256=_mac_artifact_sha(db, row)) is None,
+            content_authentic=content_mac_problem(
+                row, artifact_sha256=artifact_sha256_for_content_mac(row),
+            ) is None,
         )
         for row in evidence_rows
     )

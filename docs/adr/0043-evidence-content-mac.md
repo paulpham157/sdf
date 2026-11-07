@@ -85,8 +85,13 @@ commitment that the rewrite in those columns does not update.
 - Rotating `SDF_EVIDENCE_MAC_KEY` makes previously stamped rows fail
   verification. Rotation is a deliberate re-stamp, not a silent change.
   This code does not re-stamp.
-- `created_at` is not in the MAC. Qualification's recorded-sample check
-  (`status == PASS` on non-execution, non-outcome rows) does not consult the
-  MAC; it is the historical sample, not an authenticity pass.
-- Timeline and API reads show the stored columns. Authenticity is the
-  verification report, not the column values alone.
+- `created_at` is not in the MAC. Routing qualification and retry refusal
+  consult the current MAC on the evaluator rows they treat as a stored PASS.
+  They do not apply the independence or expiry policy, and they do not
+  re-sign. Timeline, MCP, and API reads show the stored columns and do not
+  accept an artifact. The in-memory evaluator verdict at `finish` has no MAC
+  yet. Go does not write this Evidence table.
+- A scorecard fact built in memory has no `content_mac` column.
+  `load_scorecard_facts` is the persisted projection: it sets
+  `content_authentic` from the current MAC, so dropping that column off the
+  fact cannot make a tampered row a verified pass.

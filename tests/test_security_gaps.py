@@ -43,7 +43,7 @@ from sdf_core.db import (
     TaskRow,
     make_engine,
 )
-from sdf_core.execution import ExecutionService
+from sdf_core.execution import ExecutionService, check_retry_parent
 from sdf_core.evidence_mac import evidence_content_mac
 from sdf_core.model import utcnow
 from sdf_core.policy import ActionRequest, AllowlistPolicy
@@ -519,6 +519,27 @@ def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
             f"digest: {acceptance}. evidence_content_mac does not cover {column}, so a same-store writer "
             "can change it without the server key and verification still treats the row as authentic."
         )
+
+
+def test_unauthenticated_pass_does_not_count_as_passed_every_check(tmp_path: Path):
+    """Retry refusal is a later decision on stored Evidence, so a cleared MAC is not a pass."""
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        stored = db.get(AttemptRow, attempt.id)
+        assert stored is not None
+        with pytest.raises(ValueError, match="nothing to retry"):
+            check_retry_parent(db, stored)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        db.execute(
+            text("UPDATE evidence SET content_mac = NULL WHERE id = :id"),
+            {"id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        check_retry_parent(db, db.get(AttemptRow, attempt.id))
 
 
 def test_reloaded_evidence_mac_still_verifies(tmp_path: Path):

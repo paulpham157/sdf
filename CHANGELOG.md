@@ -22,7 +22,9 @@
   MAC fails verification and is not re-signed. A match under the public
   development key is not authenticity against someone who knows that key.
   The MAC binds the stored verifier string; it does not prove the verifier
-  is an independent party.
+  is an independent party. Routing qualification and retry refusal treat a
+  stored PASS as success only when that MAC is current. They do not re-sign
+  a missing or format-1 row.
 - **Verification Evidence is independent of the agent workspace (ADR 0039).**
   Checks run from a sealed oracle copied from the server fixture. Pytest and
   script verdicts are a result frame read by a non-dumpable notary, and subject

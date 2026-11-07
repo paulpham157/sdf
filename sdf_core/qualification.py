@@ -6,7 +6,9 @@ Routing inputs come only from records the SDF server writes itself:
   the live run adapter writes those rows (ADR 0023), and the row's ``agent``
   names the agent kind that ran.
 * **Success** - Evaluator Evidence (append-only, ADR 0002): an Attempt counts
-  as accepted only when it has Evidence and every row is ``PASS``.
+  as accepted only when it has Evidence, every consulted row is ``PASS``, and
+  each of those rows has a current content MAC (ADR 0043). A missing or
+  old-format MAC is not a success and is not re-signed.
 * **Cost** - the Attempt's ledger rows. A *sample* whose turn or sandbox row
   has ``cost_source = 'missing'`` has no measured cost and is left out of the
   cost mean (it still counts toward success). The *agent* is unqualified for
@@ -41,8 +43,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import AttemptRow, EvidenceRow, RoutingDecisionRow, RuntimeEventRow, UsageLedgerRow
-from .events import TRUSTED_ACTION_SOURCES
 from .escalation import ModelTier
+from .events import TRUSTED_ACTION_SOURCES
+from .evidence_mac import stored_content_mac_ok
 from .model import AttemptState, utcnow
 from .routing import ModelProfile, ModelRouter, RoutingMeasurement, RoutingRequest
 
@@ -89,12 +92,16 @@ def _accepted(evidence: Sequence[EvidenceRow]) -> bool:
     """Evaluator rows only. Execution and outcome never accept an Attempt (ADR 0042).
 
     A historical row with no class is still evaluator Evidence (ADR 0030).
-    The scorecard does not treat that row as a verified pass; routing still
-    uses it as the sample's recorded result.
+    The scorecard's verified pass also requires independence and freshness.
+    This sample does not. It does require the stored PASS to carry a current
+    content MAC (ADR 0043). A cleared, malformed, or format-1 MAC is not a
+    success and is not re-signed.
     """
 
     verdicts = [row for row in evidence if row.evidence_class not in {"execution", "outcome"}]
-    return bool(verdicts) and all(row.status == "PASS" for row in verdicts)
+    return bool(verdicts) and all(
+        row.status == "PASS" and stored_content_mac_ok(row) for row in verdicts
+    )
 
 
 def _measured_cost(rows: Sequence[UsageLedgerRow]) -> float | None:

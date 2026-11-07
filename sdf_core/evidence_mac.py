@@ -159,6 +159,36 @@ def evidence_content_mac(
     return hmac.new(evidence_mac_key(), canonical, hashlib.sha256).hexdigest()
 
 
+def artifact_sha256_for_content_mac(row: Any) -> str | None:
+    """Sha256 the MAC was bound to, or ``""`` when a detached row cannot be read.
+
+    An empty string matches neither a stamped digest nor a NULL binding, so a
+    detached row that names an artifact fails closed instead of hashing NULL.
+    """
+
+    ref = getattr(row, "artifact_ref", None)
+    if not ref:
+        return None
+    from sqlalchemy.orm import object_session
+
+    from .db import ArtifactRow
+
+    session = object_session(row)
+    if session is None:
+        return ""
+    artifact = session.get(ArtifactRow, ref)
+    return artifact.sha256 if artifact is not None else None
+
+
+def stored_content_mac_ok(row: Any) -> bool:
+    """True only when this persisted row's current content MAC matches.
+
+    Missing, malformed, and format-1 MACs are not ok. The row is not re-signed.
+    """
+
+    return content_mac_problem(row, artifact_sha256=artifact_sha256_for_content_mac(row)) is None
+
+
 def content_mac_problem(row: Any, *, artifact_sha256: str | None) -> str | None:
     """None when ``row.content_mac`` is a current-format MAC of these bytes.
 
