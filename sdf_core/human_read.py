@@ -174,81 +174,91 @@ def objective_item(row: GraphNodeRow) -> dict[str, Any]:
     })
 
 
-# One inbox request reads at most this many pending rows, plus one extra row
-# that tells us whether another window exists. Own-plan filtering stays in
-# Python (``str.casefold``, the same comparison as ``decide_plan``). SQL
-# ``lower()`` is not that comparison. A longer run of ineligible rows continues
-# on the next cursor instead of scanning the rest of the table in this request.
-_INBOX_SCAN_CAP = 100
+def _same_proposer(proposed_by: str | None, principal: Principal) -> bool:
+    """``decide_plan``'s separation-of-duties comparison (Python ``casefold``)."""
+
+    return principal.name.casefold() == (proposed_by or "").casefold()
 
 
-def _plans_for(db: Session, rows: list[DecisionRequestRow]) -> dict[str, PlanRow]:
-    ids = [row.subject_id for row in rows if row.subject_kind == "plan"]
-    if not ids:
-        return {}
-    return {plan.id: plan for plan in db.scalars(select(PlanRow).where(PlanRow.id.in_(ids)))}
+def _hidden_proposer_spellings(db: Session, principal: Principal) -> list[str]:
+    """Stored ``proposed_by`` values that casefold-equal the caller.
 
-
-def _inbox_visible(row: DecisionRequestRow, plan: PlanRow | None, principal: Principal) -> bool:
-    """Pending rows the caller may approve or resolve.
-
-    A plan request with no plan row is not actionable (``decide_plan`` cannot
-    resolve it). Otherwise the plan is hidden when ``proposed_by`` casefolds
-    to the caller, unless single-user mode is on.
+    One query returns each distinct spelling of a pending plan, not one row
+    per plan. Python ``casefold`` chooses the spellings; the page query then
+    matches those exact strings. SQL ``lower()`` is not this comparison.
+    Single-user mode hides nothing, so it does not run the query.
     """
 
-    if row.subject_kind != "plan":
-        return True
-    if plan is None:
-        return False
     if single_user_mode():
-        return True
-    return principal.name.casefold() != (plan.proposed_by or "").casefold()
+        return []
+    spellings = db.scalars(
+        select(PlanRow.proposed_by)
+        .join(
+            DecisionRequestRow,
+            and_(
+                DecisionRequestRow.subject_kind == "plan",
+                DecisionRequestRow.subject_id == PlanRow.id,
+                DecisionRequestRow.status == "pending",
+            ),
+        )
+        .distinct()
+    ).all()
+    return [name for name in spellings if _same_proposer(name, principal)]
 
 
 def inbox_page(
     db: Session, principal: Principal, limit: int, cursor: str | None,
 ) -> tuple[list[tuple[DecisionRequestRow, PlanRow | None]], str | None]:
-    """One bounded window of pending requests this caller may approve.
+    """Pending requests this caller may approve, in ``(created_at, id)`` order.
 
-    At most ``_INBOX_SCAN_CAP`` pending rows are read, in ``(created_at, id)``
-    order, strictly after ``cursor``. Ineligible rows in that window do not
-    occupy a slot in ``items``. When the window ends before the page is full
-    and another row exists, ``next_cursor`` is the last row examined (an
-    opaque keyset position) so the next request does not reread it. When the
-    page fills, ``next_cursor`` is the last returned item, as ADR 0044 states.
-    A caller who cannot approve gets an empty page and no query of the table.
+    The page is ``limit`` eligible rows (plus one lookahead the caller does
+    not see). ``next_cursor`` is that last returned row, or null when no
+    eligible row remains. A plan request is eligible only when its plan row
+    exists and, unless single-user mode is on, ``proposed_by`` does not
+    casefold-equal the caller. A caller who cannot approve gets an empty page
+    and does not query the inbox tables.
+
+    The database may walk past ineligible rows while filling ``LIMIT``. The
+    application materializes at most ``limit + 1`` decision rows, plus one
+    string per distinct pending proposer spelling.
     """
 
     if cursor:
         decode_cursor(cursor)  # 422 for everyone, including a caller who sees nothing
     if not principal.can_approve:
         return [], None
-    scanned = decode_cursor(cursor) if cursor else None
-    query = select(DecisionRequestRow).where(DecisionRequestRow.status == "pending")
-    if scanned is not None:
-        query = query.where(_after(DecisionRequestRow, scanned[0], scanned[1]))
-    window = list(db.scalars(
-        query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(_INBOX_SCAN_CAP + 1)
-    ))
-    more = len(window) > _INBOX_SCAN_CAP
-    batch = window[:_INBOX_SCAN_CAP]
-    plans = _plans_for(db, batch)
-    found: list[tuple[DecisionRequestRow, PlanRow | None]] = []
-    for row in batch:
-        plan = plans.get(row.subject_id) if row.subject_kind == "plan" else None
-        if not _inbox_visible(row, plan, principal):
-            continue
-        found.append((row, plan))
-        if len(found) > limit:
-            break
-    if len(found) > limit:
-        last = found[limit - 1][0]
-        return found[:limit], encode_cursor(last.created_at, last.id)
-    if more and batch:
-        last = batch[-1]
-        return found, encode_cursor(last.created_at, last.id)
-    return found, None
+    hidden = _hidden_proposer_spellings(db, principal)
+    query = (
+        select(DecisionRequestRow, PlanRow)
+        .outerjoin(
+            PlanRow,
+            and_(
+                DecisionRequestRow.subject_kind == "plan",
+                DecisionRequestRow.subject_id == PlanRow.id,
+            ),
+        )
+        .where(DecisionRequestRow.status == "pending")
+    )
+    if hidden:
+        ineligible = and_(
+            DecisionRequestRow.subject_kind == "plan",
+            or_(PlanRow.id.is_(None), PlanRow.proposed_by.in_(hidden)),
+        )
+    else:
+        ineligible = and_(DecisionRequestRow.subject_kind == "plan", PlanRow.id.is_(None))
+    query = query.where(~ineligible)
+    if cursor:
+        created_at, row_id = decode_cursor(cursor)
+        query = query.where(_after(DecisionRequestRow, created_at, row_id))
+    rows = list(db.execute(
+        query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(limit + 1)
+    ).all())
+    next_cursor = None
+    if len(rows) > limit:
+        last = rows[limit - 1][0]
+        next_cursor = encode_cursor(last.created_at, last.id)
+        rows = rows[:limit]
+    return [(request, plan) for request, plan in rows], next_cursor
 
 
 def inbox_item(db: Session, request: DecisionRequestRow, plan: PlanRow | None) -> dict[str, Any]:

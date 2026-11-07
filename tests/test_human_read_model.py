@@ -76,6 +76,28 @@ def _ordered(items: list[dict]) -> bool:
     return keys == sorted(keys)
 
 
+def _assert_cursor_is_last_item(body: dict) -> None:
+    """ADR 0044: the cursor is the last returned item, or null when the page is done.
+
+    An empty page is terminal. A continuation cursor never names a row the
+    response did not return.
+    """
+
+    from sdf_core.human_read import decode_cursor
+
+    items = body["items"]
+    cursor = body["next_cursor"]
+    if not items:
+        assert cursor is None
+        return
+    if cursor is None:
+        return
+    stamp, row_id = decode_cursor(cursor)
+    last = items[-1]
+    assert row_id == last["id"]
+    assert _aware(stamp.isoformat()) == _aware(last["created_at"])
+
+
 def _pages(client, path: str, *, limit: int, extra: dict | None = None) -> list[dict]:
     items: list[dict] = []
     cursor = None
@@ -90,6 +112,7 @@ def _pages(client, path: str, *, limit: int, extra: dict | None = None) -> list[
         assert set(body) == {"items", "next_cursor"}
         assert isinstance(body["items"], list)
         assert len(body["items"]) <= limit
+        _assert_cursor_is_last_item(body)
         items.extend(body["items"])
         cursor = body["next_cursor"]
         if cursor is None:
@@ -704,11 +727,13 @@ def _bound_parameter(parameters) -> set:
 
 
 def test_inbox_page_is_bounded_across_self_proposed_plans():
-    """One request reads at most the scan cap, however many own plans are pending."""
+    """A long own-plan prefix does not batch rows in the application.
+
+    The page query's ``LIMIT`` is ``limit + 1`` eligible rows. Proposer
+    spellings arrive as one ``DISTINCT`` result, not one row per plan.
+    """
 
     from sqlalchemy import event
-
-    from sdf_core.human_read import _INBOX_SCAN_CAP
 
     suffix = uuid.uuid4().hex[:8]
     proposer_name = f"bound-{suffix}"
@@ -741,17 +766,23 @@ def test_inbox_page_is_bounded_across_self_proposed_plans():
     finally:
         event.remove(bind, "before_cursor_execute", before)
     assert first.status_code == 200, first.text
+    _assert_cursor_is_last_item(first.json())
     selects = _decision_selects(captured)
-    assert len(selects) == 1, [statement[:240] for statement, _ in selects]
-    statement, parameters = selects[0]
-    assert "LIMIT" in statement.upper()
-    assert _INBOX_SCAN_CAP + 1 in _bound_parameter(parameters)
+    limited = [(statement, parameters) for statement, parameters in selects if "LIMIT" in statement.upper()]
+    distinct = [
+        statement for statement, _parameters in selects
+        if "DISTINCT" in statement.upper() and "proposed_by" in statement.lower()
+    ]
+    assert len(limited) == 1, [statement[:240] for statement, _ in selects]
+    assert len(distinct) == 1, [statement[:240] for statement, _ in selects]
+    assert 2 in _bound_parameter(limited[0][1])
+    assert 251 not in _bound_parameter(limited[0][1])
     assert len(first.json()["items"]) <= 1
 
     seen_own = []
     seen_target = 0
     cursor = None
-    for windows in range(1, 2001):
+    for _windows in range(1, 2001):
         params = {"limit": 1}
         if cursor is not None:
             params["cursor"] = cursor
@@ -759,6 +790,7 @@ def test_inbox_page_is_bounded_across_self_proposed_plans():
         assert page.status_code == 200, page.text
         body = page.json()
         assert len(body["items"]) <= 1
+        _assert_cursor_is_last_item(body)
         for item in body["items"]:
             if item["id"] in set(own_ids):
                 seen_own.append(item["id"])
@@ -846,7 +878,7 @@ def test_inbox_omits_a_plan_request_whose_plan_is_gone():
 
 @pytest.mark.skipif(not os.getenv("SDF_POSTGRES_TEST_URL"), reason="SDF_POSTGRES_TEST_URL is not set")
 def test_inbox_page_bound_and_casefold_on_postgresql():
-    """The same cap and casefold rules, executed against PostgreSQL."""
+    """Eligible-row LIMIT and Python casefold, executed against PostgreSQL."""
 
     import os
     from pathlib import Path
@@ -858,7 +890,7 @@ def test_inbox_page_bound_and_casefold_on_postgresql():
 
     from sdf_core.auth import Principal
     from sdf_core.db import make_engine
-    from sdf_core.human_read import _INBOX_SCAN_CAP, inbox_page
+    from sdf_core.human_read import decode_cursor, inbox_page
 
     url = os.environ["SDF_POSTGRES_TEST_URL"]
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
@@ -916,11 +948,22 @@ def test_inbox_page_bound_and_casefold_on_postgresql():
         finally:
             event.remove(engine, "before_cursor_execute", before)
         selects = _decision_selects(captured)
-        assert len(selects) == 1
-        statement, parameters = selects[0]
-        assert "LIMIT" in statement.upper()
-        assert _INBOX_SCAN_CAP + 1 in _bound_parameter(parameters)
+        limited = [(statement, parameters) for statement, parameters in selects if "LIMIT" in statement.upper()]
+        distinct = [
+            statement for statement, _parameters in selects
+            if "DISTINCT" in statement.upper() and "proposed_by" in statement.lower()
+        ]
+        assert len(limited) == 1, [statement[:240] for statement, _ in selects]
+        assert len(distinct) == 1
+        assert 2 in _bound_parameter(limited[0][1])
         assert len(first_page) <= 1
+        if cursor is not None:
+            assert first_page
+            stamp, row_id = decode_cursor(cursor)
+            assert row_id == first_page[-1][0].id
+            assert _aware(stamp.isoformat()) == _aware(first_page[-1][0].created_at.isoformat())
+        elif not first_page:
+            assert cursor is None
 
         def tally(window, counts):
             assert len(window) <= 1
@@ -933,6 +976,11 @@ def test_inbox_page_bound_and_casefold_on_postgresql():
             if cursor is None:
                 break
             window, cursor = inbox_page(db, principal, 1, cursor)
+            if not window:
+                assert cursor is None
+            elif cursor is not None:
+                stamp, row_id = decode_cursor(cursor)
+                assert row_id == window[-1][0].id
             tally(window, counts)
         else:
             if cursor is not None:
