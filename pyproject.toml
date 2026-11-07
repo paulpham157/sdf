@@ -9,7 +9,7 @@ dependencies = [
   "uvicorn>=0.32,<1",
   # Hold below 2.1 until opentelemetry-instrumentation-sqlalchemy accepts it.
   # 0.66b2 requires sqlalchemy<2.1 (open-telemetry/opentelemetry-python-contrib#5120 is merged, not on PyPI).
-  "sqlalchemy>=2.0,<2.1",
+  "sqlalchemy>=2.0,<2.2",
   "alembic>=1.14,<2",
   "psycopg[binary]>=3.2,<4",
   "e2b>=2,<3",
