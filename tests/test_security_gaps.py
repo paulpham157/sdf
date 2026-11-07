@@ -528,3 +528,37 @@ def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
             f"digest: {acceptance}. evidence_content_mac does not cover {column}, so a same-store writer "
             "can change it without the server key and verification still treats the row as authentic."
         )
+
+
+def test_legacy_unsigned_row_without_mac_version_still_verifies(tmp_path: Path):
+    """A pre-0029 row (NULL MAC and NULL version) is not itself a MAC failure."""
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        assert evidence.content_mac and evidence.content_mac_version == 2
+        db.execute(
+            text(
+                "INSERT INTO evidence ("
+                "id, attempt_id, kind, status, command, exit_code, artifact_ref, "
+                "confidence, criterion, measured_at, evidence_mode, created_at, "
+                "revision_id, tree_sha256, evidence_class, producer_identity, "
+                "producer_role, verifier_identity, verifier_role, "
+                "subject_artifact_sha256, oracle_digest, environment_digest, "
+                "collected_at, expires_at, oracle_visibility, input_seed, "
+                "objective_id, content_mac, content_mac_version"
+                ") SELECT 'EV-LEGACY-UNSIGNED', attempt_id, kind, status, command, "
+                "exit_code, artifact_ref, confidence, criterion, measured_at, "
+                "evidence_mode, created_at, revision_id, tree_sha256, evidence_class, "
+                "producer_identity, producer_role, verifier_identity, verifier_role, "
+                "subject_artifact_sha256, oracle_digest, environment_digest, "
+                "collected_at, expires_at, oracle_visibility, input_seed, "
+                "objective_id, NULL, NULL FROM evidence WHERE id = :id"
+            ),
+            {"id": evidence.id},
+        )
+        db.commit()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] == "verified" and report["problems"] == [], report
