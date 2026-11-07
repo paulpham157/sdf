@@ -24,6 +24,23 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
   The request names **check ids** only (`"criterion_checks": {"<criterion>":
   ["<id>"]}`); argv comes from the server registry (ADR 0025), and checks run
   with a reduced environment, never the server's.
+- Each run writes one execution Evidence row (the adapter ran, its exit code
+  and changed files) and one verification row per check. Only verification
+  rows accept the Task; execution never does (ADR 0042). Every row carries a
+  content MAC keyed by `SDF_EVIDENCE_MAC_KEY`, and the Attempt revision check
+  recomputes it (ADR 0043).
+- A request without `dispatch_key` gets one derived from the task, resolved
+  `fixture_dir`, instructions, `criterion_checks`, validation target, parent
+  Attempt and model tier. Retrying the same request replays its Attempt
+  instead of starting another; send a new explicit `dispatch_key` for a
+  deliberate new Attempt (ADR 0041).
+- A running Attempt is live while its executor is in this process, or while
+  another process's heartbeat on it (renewed every 10 seconds) is newer than
+  30 seconds. Otherwise it is settled `failed` (`error_class=killed` unless
+  one was already recorded). Its Task moves to `failed` through `evaluating`
+  when no other Attempt of that Task is still running. This happens at startup, in the background refresher, before
+  a new run, and at shutdown for this process's own dropped Attempts; an
+  in-flight request is left alone (ADR 0041).
 - Teardown kills the sandbox by id with retries. A failed kill is surfaced as
   `cleanup_failed` on the Attempt, the usage ledger and a runtime event; it is
   never swallowed.
@@ -57,6 +74,7 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_RUN_MAX_CONCURRENT` | Live runs per process (default `2`; more → 429) |
 | `SDF_HERDR_TIMEOUT_MS` / `SDF_RUN_TURN_TIMEOUT_S` | Herdr / headless turn timeouts (`240000` / `420`) |
 | `SDF_E2B_SANDBOX_TIMEOUT_SECONDS` | E2B sandbox lifetime (default `900`) |
+| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC (ADR 0043). Unset uses a fixed development key from the source; set a long random value in every deployment |
 | `SDF_LOG_FORMAT` / `SDF_LOG_LEVEL` | `json` or `text` logs (redacted, with request/attempt ids) |
 | `SDF_PRICE_<MODEL>` / `SDF_E2B_USD_PER_SECOND` | Price overrides used for cost estimates |
 | `E2B_API_KEY` / `E2B_DOMAIN` | E2B provider credentials |
@@ -84,6 +102,6 @@ SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 python -m sdf_core.cli runs show ATTEMPT-…
 ```
 
-`scripts/demo-evidence.sh` uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). The fake adapter writes `app.py`; the registered check `app-updated` is what the evaluator runs. Evidence from that script is synthetic.
+`scripts/demo-evidence.sh` uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). The fake adapter writes `app.py`; the registered check `app-updated` is what the evaluator runs. Evidence from that script is synthetic. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API.
 
 See also `.env.example`, ADR 0023, and `tests/test_real_agent_loop_live.py`.
