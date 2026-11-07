@@ -145,6 +145,8 @@ def is_verified_pass(
     digest, and an expired verification are not verified passes (ADR 0042).
     """
 
+    if _field(evidence, "content_authentic") is False:
+        return False
     if _field(evidence, "status") != "PASS" or not artifact_sha256:
         return False
     try:
@@ -156,6 +158,11 @@ def is_verified_pass(
         )
     except AcceptanceError:
         return False
+    if hasattr(evidence, "content_mac") or hasattr(evidence, "content_mac_version"):
+        from .evidence_mac import stored_content_mac_ok
+
+        if not stored_content_mac_ok(evidence):
+            return False
     return True
 
 

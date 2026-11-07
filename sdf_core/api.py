@@ -203,6 +203,12 @@ async def _lifespan(_app: FastAPI):
         raise RuntimeError(
             "SDF Core refuses to start without authentication: set SDF_AUTH_PEPPER (>= 32 chars) and create "
             "a token with `python -m sdf_core.auth_cli create`, or set SDF_AUTH_DEV_INSECURE=1 and bind 127.0.0.1")
+    from .evidence_mac import EvidenceMacKeyError, require_evidence_mac_key
+
+    try:
+        require_evidence_mac_key()
+    except EvidenceMacKeyError as exc:
+        raise RuntimeError(str(exc)) from exc
     configure_logging()
     # ADR 0041: a forked worker must not keep the parent's executor id.
     # Remint before recovery so a sibling's fresh Attempt is not reaped.

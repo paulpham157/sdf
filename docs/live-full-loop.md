@@ -74,7 +74,7 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_RUN_MAX_CONCURRENT` | Live runs per process (default `2`; more → 429) |
 | `SDF_HERDR_TIMEOUT_MS` / `SDF_RUN_TURN_TIMEOUT_S` | Herdr / headless turn timeouts (`240000` / `420`) |
 | `SDF_E2B_SANDBOX_TIMEOUT_SECONDS` | E2B sandbox lifetime (default `900`) |
-| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC (ADR 0043). Unset uses a fixed development key from the source; set a long random value in every deployment |
+| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC, at least 32 characters (ADR 0043). Unset or shorter: the server does not start and does not stamp Evidence. Not logged. Rotation is an operator re-stamp, not an automatic rewrite |
 | `SDF_LOG_FORMAT` / `SDF_LOG_LEVEL` | `json` or `text` logs (redacted, with request/attempt ids) |
 | `SDF_PRICE_<MODEL>` / `SDF_E2B_USD_PER_SECOND` | Price overrides used for cost estimates |
 | `E2B_API_KEY` / `E2B_DOMAIN` | E2B provider credentials |
@@ -104,6 +104,6 @@ SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 python -m sdf_core.cli runs show ATTEMPT-…
 ```
 
-`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`, which wraps it) uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). It runs two tasks against the same sealed `app-updated` check: an honest `print('updated')` that verification accepts, and a near-miss `print('updated ')` (plus a weak test rewrite) that the agent claims succeeded and SDF rejects. Evidence from that script is synthetic. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API and points at GitHub Codespaces.
+`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`, which wraps it) uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). It runs two tasks against the same sealed `app-updated` check: an honest `print('updated')` that verification accepts, and a near-miss `print('updated ')` (plus a weak test rewrite) that the agent claims succeeded and SDF rejects. Evidence from that script is synthetic. If `SDF_EVIDENCE_MAC_KEY` is unset, the script sets a demo-only fixture key so verification can accept the honest edit; a user-supplied key is kept when it is at least 32 characters. Starting the API any other way (including `uvicorn` or the Paseo `api` script) requires you to set `SDF_EVIDENCE_MAC_KEY` yourself; the server does not start without it. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API and points at GitHub Codespaces.
 
 See also `.env.example`, ADR 0023, and `tests/test_real_agent_loop_live.py`.

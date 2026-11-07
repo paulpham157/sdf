@@ -11,10 +11,15 @@ sha256, revision binding, and objective id. Version 2 adds the acceptance
 columns listed in ``CONTENT_MAC_V2_FIELDS``. New inserts use version 2.
 Existing MACs are verified with the payload their stored version names.
 
-The key is ``SDF_EVIDENCE_MAC_KEY`` when that variable is set. Hermetic tests
-leave it unset and use a fixed development key so insert and verify agree in
-one process. That key is not in the database. A writer who only updates the
-evidence row and ``artifacts.sha256`` cannot produce a matching MAC.
+The key is ``SDF_EVIDENCE_MAC_KEY`` (at least 32 characters). When it is
+unset or shorter, insert and the API refuse to start, and verification does
+not fall back to a key. ``SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY=1`` is the
+only way to use the public ``_DEV_KEY`` constant, and a match under that
+constant is not authenticity. The key is never logged. Rotating it is an
+operator re-stamp; this module does not rotate or invent a secret.
+
+The MAC binds the stored verifier string. It does not prove that the named
+verifier is an independent party.
 """
 
 from __future__ import annotations
@@ -23,10 +28,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 _DEV_KEY = b"sdf-evidence-mac-v1-development"
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_MIN_KEY_CHARS = 32
 
 CONTENT_MAC_V1 = 1
 CONTENT_MAC_V2 = 2
@@ -52,10 +60,49 @@ CONTENT_MAC_V2_FIELDS = (
 )
 
 
-def evidence_mac_key() -> bytes:
+class EvidenceMacKeyError(RuntimeError):
+    """The Evidence MAC key is missing or too short to stamp or verify."""
+
+
+def _key_error() -> EvidenceMacKeyError:
+    return EvidenceMacKeyError(
+        "SDF_EVIDENCE_MAC_KEY must be set to at least 32 characters. "
+        "The public development key is not used. "
+        "SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY=1 is only for a local fixture "
+        "and is not an authenticity claim."
+    )
+
+
+def evidence_mac_key_source() -> str:
+    """``configured``, ``insecure-development``, or ``missing``.
+
+    A short ``SDF_EVIDENCE_MAC_KEY`` is ``missing``. The allow-flag does not
+    override a key that was set. The returned name is safe to log.
+    """
+
     configured = os.environ.get("SDF_EVIDENCE_MAC_KEY")
     if configured:
-        return hashlib.sha256(configured.encode("utf-8")).digest()
+        if len(configured) >= _MIN_KEY_CHARS:
+            return "configured"
+        return "missing"
+    if os.environ.get("SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY") == "1":
+        return "insecure-development"
+    return "missing"
+
+
+def require_evidence_mac_key() -> str:
+    """Return the key source, or raise when no usable key is configured."""
+
+    source = evidence_mac_key_source()
+    if source == "missing":
+        raise _key_error()
+    return source
+
+
+def evidence_mac_key() -> bytes:
+    source = require_evidence_mac_key()
+    if source == "configured":
+        return hashlib.sha256(os.environ["SDF_EVIDENCE_MAC_KEY"].encode("utf-8")).digest()
     return hashlib.sha256(_DEV_KEY).digest()
 
 
@@ -116,6 +163,48 @@ def evidence_content_mac(
     if resolved >= CONTENT_MAC_V2:
         payload["mac_version"] = CONTENT_MAC_V2
         for field in CONTENT_MAC_V2_FIELDS:
-            payload[field] = _canonical_mac_value(getattr(row, field, None))
+            value = getattr(row, field, None)
+            # The column default is synthetic. Stamp often runs before that
+            # default is copied onto the instance; a later load returns it.
+            if field == "evidence_mode" and value is None:
+                value = "synthetic"
+            payload[field] = _canonical_mac_value(value)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hmac.new(evidence_mac_key(), canonical, hashlib.sha256).hexdigest()
+
+
+def artifact_sha256_for_content_mac(row: Any) -> str | None:
+    """Sha256 bound into the MAC, or ``""`` when a detached row cannot be read."""
+
+    ref = getattr(row, "artifact_ref", None)
+    if not ref:
+        return None
+    from sqlalchemy.orm import object_session
+
+    from .db import ArtifactRow
+
+    session = object_session(row)
+    if session is None:
+        return ""
+    artifact = session.get(ArtifactRow, ref)
+    return artifact.sha256 if artifact is not None else None
+
+
+def stored_content_mac_ok(row: Any) -> bool:
+    """True only for a current MAC under a configured key.
+
+    Format 1, a missing MAC, and the public development key are not ok.
+    Nothing is rewritten.
+    """
+
+    if evidence_mac_key_source() != "configured":
+        return False
+    if getattr(row, "content_mac_version", None) != CONTENT_MAC_CURRENT:
+        return False
+    mac = getattr(row, "content_mac", None)
+    if not isinstance(mac, str) or not _HEX64.fullmatch(mac):
+        return False
+    expected = evidence_content_mac(
+        row, artifact_sha256=artifact_sha256_for_content_mac(row), version=CONTENT_MAC_CURRENT,
+    )
+    return hmac.compare_digest(expected, mac)

@@ -6,7 +6,9 @@ Routing inputs come only from records the SDF server writes itself:
   the live run adapter writes those rows (ADR 0023), and the row's ``agent``
   names the agent kind that ran.
 * **Success** - Evaluator Evidence (append-only, ADR 0002): an Attempt counts
-  as accepted only when it has Evidence and every row is ``PASS``.
+  as accepted only when every consulted row is ``PASS`` and has a current
+  content MAC under ``SDF_EVIDENCE_MAC_KEY`` (ADR 0043). A missing, format-1,
+  or development-key MAC is not a success and is not re-signed.
 * **Cost** - the Attempt's ledger rows. A *sample* whose turn or sandbox row
   has ``cost_source = 'missing'`` has no measured cost and is left out of the
   cost mean (it still counts toward success). The *agent* is unqualified for
@@ -42,6 +44,7 @@ from sqlalchemy.orm import Session
 
 from .db import AttemptRow, EvidenceRow, RoutingDecisionRow, RuntimeEventRow, UsageLedgerRow
 from .events import TRUSTED_ACTION_SOURCES
+from .evidence_mac import stored_content_mac_ok
 from .escalation import ModelTier
 from .model import AttemptState, utcnow
 from .routing import ModelProfile, ModelRouter, RoutingMeasurement, RoutingRequest
@@ -94,7 +97,9 @@ def _accepted(evidence: Sequence[EvidenceRow]) -> bool:
     """
 
     verdicts = [row for row in evidence if row.evidence_class not in {"execution", "outcome"}]
-    return bool(verdicts) and all(row.status == "PASS" for row in verdicts)
+    return bool(verdicts) and all(
+        row.status == "PASS" and stored_content_mac_ok(row) for row in verdicts
+    )
 
 
 def _measured_cost(rows: Sequence[UsageLedgerRow]) -> float | None:

@@ -680,13 +680,10 @@ def _stamp_plan_casefold(mapper: Any, connection: Any, target: PlanRow) -> None:
 def _stamp_evidence_content_mac(mapper: Any, connection: Any, target: EvidenceRow) -> None:
     """Commit the verdict MAC before the INSERT (ADR 0043)."""
 
-    from .evidence_mac import CONTENT_MAC_CURRENT, evidence_content_mac
+    from .evidence_mac import CONTENT_MAC_CURRENT, evidence_content_mac, require_evidence_mac_key
 
-    if target.content_mac_version is None:
-        target.content_mac_version = CONTENT_MAC_CURRENT
-    if target.content_mac:
-        return
-
+    require_evidence_mac_key()
+    target.content_mac_version = CONTENT_MAC_CURRENT
     session = object_session(target)
     artifact = None
     if session is not None and target.artifact_ref:
@@ -695,7 +692,7 @@ def _stamp_evidence_content_mac(mapper: Any, connection: Any, target: EvidenceRo
     target.content_mac = evidence_content_mac(
         target,
         artifact_sha256=artifact.sha256 if artifact is not None else None,
-        version=target.content_mac_version,
+        version=CONTENT_MAC_CURRENT,
     )
 
 

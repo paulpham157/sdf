@@ -58,6 +58,9 @@ os.environ["SDF_FIXTURES_ROOT"] = os.path.realpath(tempfile.gettempdir())
 # checks on the host.  Tests of the default delete this variable.  Live-gated
 # tests must not inherit it: see _live_tests_require_evaluator_containment.
 os.environ["SDF_EVALUATOR_CONTAINMENT"] = "off"
+# Hermetic MAC key. Not a deployment secret and not the public development
+# constant. Assigned after the SDF_* strip so an ambient value cannot replace it.
+os.environ["SDF_EVIDENCE_MAC_KEY"] = "pytest-evidence-mac-key-not-a-deployment-secret"
 
 
 @pytest.fixture(autouse=True)

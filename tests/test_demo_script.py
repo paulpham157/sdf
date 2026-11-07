@@ -92,6 +92,60 @@ def test_demo_script_accepts_honest_edit_and_rejects_plausible_miss(tmp_path):
     assert str(html_path.resolve().as_uri()) in stdout
 
 
+@pytest.mark.skipif(demo.unsupported_host_message() is not None, reason=_PLATFORM_REASON)
+def test_demo_script_supplies_its_own_mac_key_and_accepts_honest_edit(tmp_path):
+    """The user-facing command must work without the pytest fixture MAC key."""
+
+    out_dir = tmp_path / "story"
+    env = os.environ.copy()
+    env.pop("SDF_EVIDENCE_MAC_KEY", None)
+    env.pop("SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY", None)
+    for name in demo.PROVIDER_KEY_VARS:
+        env.pop(name, None)
+    for name in demo._LIVE_ENV:
+        env.pop(name, None)
+    completed = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "demo.py"), "--out", str(out_dir)],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    stdout = completed.stdout
+    assert "A accepted / B rejected, though the agent said done" in stdout
+    assert "Task A: task_status=succeeded" in stdout
+    assert "Task A: verification status=PASS" in stdout
+    assert "Task B: task_status=succeeded" not in stdout
+    assert "Task B: verification status=PASS" not in stdout
+    assert "verifier=sdf-evaluator" in stdout
+
+
+def test_configure_evidence_mac_key_sets_a_fixture_when_unset(monkeypatch):
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
+    assert demo.configure_evidence_mac_key() == demo.DEMO_EVIDENCE_MAC_KEY
+    assert os.environ["SDF_EVIDENCE_MAC_KEY"] == demo.DEMO_EVIDENCE_MAC_KEY
+    assert len(demo.DEMO_EVIDENCE_MAC_KEY) >= demo.MIN_EVIDENCE_MAC_KEY_CHARS
+
+
+def test_configure_evidence_mac_key_keeps_a_long_user_key(monkeypatch):
+    supplied = "user-supplied-evidence-mac-key-not-the-demo-fixture"
+    assert len(supplied) >= demo.MIN_EVIDENCE_MAC_KEY_CHARS
+    monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", supplied)
+    assert demo.configure_evidence_mac_key() == supplied
+    assert os.environ["SDF_EVIDENCE_MAC_KEY"] == supplied
+
+
+def test_configure_evidence_mac_key_rejects_a_short_user_key(monkeypatch):
+    monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", "too-short")
+    with pytest.raises(SystemExit) as caught:
+        demo.configure_evidence_mac_key()
+    assert caught.value.code == 2
+    assert os.environ["SDF_EVIDENCE_MAC_KEY"] == "too-short"
+
+
 def test_demo_evidence_wrapper_delegates_to_demo_py():
     text = (REPO / "scripts" / "demo-evidence.sh").read_text(encoding="utf-8")
     assert "scripts/demo.py" in text

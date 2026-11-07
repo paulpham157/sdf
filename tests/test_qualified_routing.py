@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
 from sdf_core import run_adapter as ra
@@ -79,6 +79,19 @@ def live_attempt(db, agent, *, passed=True, cost=0.01, seconds=60.0, error_class
 
 
 # --- gate and fail-safe ------------------------------------------------------
+
+def test_a_cleared_content_mac_is_not_an_accepted_routing_sample(db):
+    aid = live_attempt(db, "pi", passed=True)
+    assert select_agent(db, ["pi"], REQ).agent == "pi"
+    db.execute(text("UPDATE evidence SET content_mac = NULL WHERE attempt_id = :id"), {"id": aid})
+    db.commit()
+    db.expire_all()
+    after = qualify_agents(db, ["pi"])["pi"]
+    assert after.accepted_attempts == 0
+    assert after.measurement is not None and after.measurement.success_rate == 0.0
+    assert VERIFIED_LOOP not in after.measurement.capabilities
+    assert select_agent(db, ["pi"], REQ).agent is None
+
 
 def test_routing_refuses_until_one_real_agent_completed_the_verified_loop(db):
     route = select_agent(db, ["pi", "opencode"], REQ)

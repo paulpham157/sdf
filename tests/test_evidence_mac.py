@@ -8,6 +8,8 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from sdf_core.evidence_mac import (
     CONTENT_MAC_V1,
     CONTENT_MAC_V2,
@@ -64,6 +66,24 @@ def test_v1_payload_matches_the_migration_0029_canonical_bytes():
     # A v2 hash of the same verdict fields must not collide with v1.
     v2_row = _v1_row(content_mac_version=CONTENT_MAC_V2)
     assert evidence_content_mac(v2_row, artifact_sha256=digest, version=CONTENT_MAC_V2) != expected
+
+
+def test_unset_or_short_mac_key_is_not_the_public_development_key(monkeypatch):
+    """A missing or short key must not fall back to the public development constant."""
+
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY", raising=False)
+    with pytest.raises(Exception) as missing:
+        evidence_mac_key()
+    missing_text = str(missing.value)
+    assert "SDF_EVIDENCE_MAC_KEY" in missing_text
+    assert "sdf-evidence-mac-v1-development" not in missing_text
+    monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", "too-short")
+    with pytest.raises(Exception) as short:
+        evidence_mac_key()
+    short_text = str(short.value)
+    assert "too-short" not in short_text
+    assert "sdf-evidence-mac-v1-development" not in short_text
 
 
 def test_v2_covers_each_acceptance_column():
