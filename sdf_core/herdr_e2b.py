@@ -90,7 +90,8 @@ class HerdrE2BAdapter:
         live: bool = False,
         pull: bool = True,
         cleanup: bool = True,
-        before_remote: Callable[[], None] | None = None,
+        before_remote: Callable[[], str | None] | None = None,
+        on_identified: Callable[[str, str], None] | None = None,
         on_stop: Callable[[bool], None] | None = None,
     ) -> HerdrE2BResult:
         if not live:
@@ -101,7 +102,7 @@ class HerdrE2BAdapter:
             raise E2BAdapterError("live E2B execution requires the e2b-box plugin command")
         if before_remote is None:
             raise E2BAdapterError("refusing to start e2b-box without an Attempt fence")
-        before_remote()
+        effect_id = before_remote()
         env = {
             "PATH": self._environ.get("PATH", ""),
             "HOME": self._environ.get("HOME", ""),
@@ -134,7 +135,10 @@ class HerdrE2BAdapter:
                 except Exception as cleanup_error:
                     if primary_error is None:
                         primary_error = cleanup_error
-        confirmed = bool(cleanup_succeeded and isinstance(payload, dict) and payload.get("sandboxId"))
+        sandbox_seen = payload.get("sandboxId") if isinstance(payload, dict) else None
+        if effect_id and isinstance(sandbox_seen, str) and sandbox_seen.strip() and on_identified is not None:
+            on_identified(effect_id, sandbox_seen)
+        confirmed = bool(cleanup_succeeded and isinstance(sandbox_seen, str) and sandbox_seen.strip())
         if on_stop is not None:
             on_stop(confirmed)
         if primary_error is not None:
@@ -207,34 +211,46 @@ class HerdrE2BNativeAdapter:
         plan = self.adapter.plan(attempt_id=attempt_id, checkout=workspace, template=self.template,
                                  agent=self.agent, task=instructions, timeout_ms=self.timeout_ms)
         before_remote = None
+        on_identified = None
         on_stop = None
         if self.live:
             if self._recovery_session_factory is None:
                 raise E2BAdapterError("refusing to start e2b-box without an Attempt fence")
             open_session = self._recovery_session_factory
 
-            def before_remote() -> None:
+            def before_remote() -> str:
                 from .recovery import note_remote_effect_uncertain
+                from .remote_effects import in_new_session
 
-                db = open_session()
-                try:
-                    note_remote_effect_uncertain(db, attempt_id)
-                finally:
-                    db.close()
+                return in_new_session(
+                    open_session, lambda db: note_remote_effect_uncertain(db, attempt_id, provider="e2b-box"),
+                )
+
+            def on_identified(effect_id: str, sandbox_id: str) -> None:
+                from .remote_effects import identify_remote_sandbox, in_new_session
+
+                in_new_session(open_session, lambda db: identify_remote_sandbox(db, effect_id, sandbox_id))
 
             def on_stop(confirmed: bool) -> None:
-                from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped
+                from .recovery import note_remote_effect_stop_failed
 
                 if not confirmed:
                     note_remote_effect_stop_failed(attempt_id)
                     return
-                db = open_session()
-                try:
-                    note_remote_effect_stopped(db, attempt_id)
-                finally:
-                    db.close()
+                from .remote_effects import in_new_session, probe_from_environ, reconcile_attempt
 
-        result = self.adapter.execute(plan, live=self.live, before_remote=before_remote, on_stop=on_stop)
+                # Kill success without a lookup does not refresh the row.
+                kill, absent = probe_from_environ(self.adapter._environ)
+                if absent is None:
+                    return
+                in_new_session(
+                    open_session,
+                    lambda db: reconcile_attempt(db, attempt_id, kill=kill, absent=absent),
+                )
+
+        result = self.adapter.execute(
+            plan, live=self.live, before_remote=before_remote, on_identified=on_identified, on_stop=on_stop,
+        )
         self.last_result = result
         after = RuntimeAgentAdapter._snapshot(workspace)
         changed = tuple(path for path in RuntimeAgentAdapter._changed(before, after) if not path.startswith(".git/"))

@@ -50,7 +50,8 @@ class DaytonaHerdrTransport:
         sandbox_factory: SandboxFactory | None = None,
         sandbox_connector: SandboxConnector | None = None,
         sandbox_id: str | None = None,
-        before_provider_create: Callable[[], None] | None = None,
+        before_provider_create: Callable[[], str | None] | None = None,
+        on_sandbox_identified: Callable[[str, str], None] | None = None,
     ) -> None:
         if not snapshot.strip():
             raise ValueError("Daytona Herdr snapshot must be non-empty")
@@ -68,6 +69,7 @@ class DaytonaHerdrTransport:
         self._connector = sandbox_connector
         self._sandbox_id = sandbox_id
         self._before_provider_create = before_provider_create
+        self._on_sandbox_identified = on_sandbox_identified
         self._sandbox: Any = None
         self._unidentified_sandbox: Any = None
         self._sandbox_lock = threading.RLock()
@@ -234,8 +236,9 @@ class DaytonaHerdrTransport:
                 if self._sandbox_id is not None:
                     sandbox = connector(self._sandbox_id)
                 else:
+                    effect_id = None
                     if self._before_provider_create is not None:
-                        self._before_provider_create()
+                        effect_id = self._before_provider_create()
                     with tracing.span("sdf.sandbox.create", sandbox__provider="daytona",
                                       sandbox__template=self.snapshot) as create_span:
                         sandbox = factory(
@@ -244,6 +247,9 @@ class DaytonaHerdrTransport:
                             timeout=self.timeout_seconds,
                         )
                         tracing.set_attributes(create_span, sandbox__id=getattr(sandbox, "id", None))
+                    created_id = getattr(sandbox, "id", None) or getattr(sandbox, "sandbox_id", None)
+                    if effect_id and isinstance(created_id, str) and created_id and self._on_sandbox_identified:
+                        self._on_sandbox_identified(effect_id, created_id)
             except HerdrRuntimeError:
                 raise
             except Exception as exc:

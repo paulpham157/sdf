@@ -66,7 +66,8 @@ class E2BHerdrTransport:
         sandbox_id: str | None = None,
         network: Mapping[str, Any] | None = None,
         metadata: Mapping[str, str] | None = None,
-        before_provider_create: Callable[[], None] | None = None,
+        before_provider_create: Callable[[], str | None] | None = None,
+        on_sandbox_identified: Callable[[str, str], None] | None = None,
     ) -> None:
         if not template.strip():
             raise ValueError("E2B Herdr template must be non-empty")
@@ -93,6 +94,7 @@ class E2BHerdrTransport:
         self._connector = sandbox_connector or Sandbox.connect
         self._sandbox_id = sandbox_id
         self._before_provider_create = before_provider_create
+        self._on_sandbox_identified = on_sandbox_identified
         self._sandbox: Any = None
         self._sandbox_lock = threading.RLock()
         self._fresh_sandbox = False
@@ -302,8 +304,9 @@ class E2BHerdrTransport:
                         opts["metadata"] = dict(self._metadata)
                     # Commit the Attempt fence before the provider call. A crash
                     # inside the factory is an unknown outcome and stays uncertain.
+                    effect_id = None
                     if self._before_provider_create is not None:
-                        self._before_provider_create()
+                        effect_id = self._before_provider_create()
                     # ADR 0024: host-side span only; nothing about tracing reaches the sandbox.
                     with tracing.span("sdf.sandbox.create", sandbox__provider="e2b",
                                       sandbox__template=self.template) as create_span:
@@ -311,6 +314,9 @@ class E2BHerdrTransport:
                             template=self.template, timeout=self.timeout_seconds, envs=dict(self._envs), **opts
                         )
                         tracing.set_attributes(create_span, sandbox__id=getattr(sandbox, "sandbox_id", None))
+                    created_id = getattr(sandbox, "sandbox_id", None)
+                    if effect_id and isinstance(created_id, str) and created_id and self._on_sandbox_identified:
+                        self._on_sandbox_identified(effect_id, created_id)
                 sandbox_id = sandbox.sandbox_id
             except SandboxException as exc:
                 raise HerdrRuntimeError(f"E2B sandbox provisioning failed: {exc}") from exc
