@@ -125,8 +125,22 @@ def test_pi_extension_pins_match_the_runtime_allowlist():
     assert manifest["private"] is True
     # Exactly the allowlist, at exact versions, nothing else at the top level.
     assert manifest["dependencies"] == {name: ext.version for name, ext in PI_EXTENSIONS.items()}
-    assert set(manifest) <= {"name", "private", "description", "dependencies"}  # no scripts
+    # No scripts. The only extra key is an exact minimatch override: pi-lens
+    # 4.4.6 depends on minimatch ^10.2.6, which cannot select the
+    # GHSA-g3hv-75wg-m249 fix (>=11.0.1). A direct minimatch dependency would
+    # leave that nested 10.2.6 installed and would break the allowlist above.
+    assert set(manifest) <= {"name", "private", "description", "dependencies", "overrides"}
+    assert "scripts" not in manifest
+    override = manifest["overrides"]["minimatch"]
+    assert set(manifest["overrides"]) == {"minimatch"}
+    assert re.fullmatch(r"\d+\.\d+\.\d+", override), override
+    assert tuple(int(part) for part in override.split(".")) >= (11, 0, 1)
     assert lock["packages"][""]["dependencies"] == manifest["dependencies"]
+    locked_minimatch = lock["packages"]["node_modules/minimatch"]
+    assert locked_minimatch["version"] == override
+    assert not any(
+        key.endswith("/minimatch") and key != "node_modules/minimatch" for key in lock["packages"]
+    )
     for name, ext in PI_EXTENSIONS.items():
         locked = lock["packages"][f"node_modules/{name}"]
         assert (locked["version"], locked["integrity"]) == (ext.version, ext.integrity)
