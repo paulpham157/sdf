@@ -132,6 +132,35 @@ def check_verification_acceptance(
         )
 
 
+def _carries_content_mac(evidence: Any) -> bool:
+    """True for a stored row or payload that has a content MAC column."""
+
+    if isinstance(evidence, dict):
+        return "content_mac" in evidence
+    return hasattr(evidence, "content_mac")
+
+
+def _mac_artifact_sha(evidence: Any) -> str | None:
+    """Sha256 the content MAC was bound to, or ``""`` when it cannot be read.
+
+    An empty string cannot match a stamped digest or a NULL binding, so a
+    detached row with an artifact ref fails closed instead of hashing NULL.
+    """
+
+    ref = _field(evidence, "artifact_ref")
+    if not ref:
+        return None
+    from sqlalchemy.orm import object_session
+
+    from .db import ArtifactRow
+
+    session = object_session(evidence)
+    if session is None:
+        return ""
+    artifact = session.get(ArtifactRow, ref)
+    return artifact.sha256 if artifact is not None else None
+
+
 def is_verified_pass(
     evidence: Any,
     *,
@@ -143,8 +172,15 @@ def is_verified_pass(
 
     Execution, outcome, a legacy NULL class, a self-verified row, a wrong
     digest, and an expired verification are not verified passes (ADR 0042).
+    A stored row is also not a verified pass unless its current content MAC
+    matches (ADR 0043). That MAC binds the stored verifier string. It does
+    not establish that the verifier is an independent party. An in-memory
+    fact with no content MAC column is only the policy check; set
+    ``content_authentic`` false when a loader already rejected the MAC.
     """
 
+    if _field(evidence, "content_authentic") is False:
+        return False
     if _field(evidence, "status") != "PASS" or not artifact_sha256:
         return False
     try:
@@ -156,6 +192,11 @@ def is_verified_pass(
         )
     except AcceptanceError:
         return False
+    if _carries_content_mac(evidence):
+        from .evidence_mac import content_mac_problem
+
+        if content_mac_problem(evidence, artifact_sha256=_mac_artifact_sha(evidence)):
+            return False
     return True
 
 

@@ -44,7 +44,7 @@ The script prints these results:
 
 The state database is a temporary SQLite file. Workspaces and artifacts land in `.sdf-workspaces/` and `.sdf-artifacts/`.
 
-The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL and an Evidence MAC key. Without `SDF_EVIDENCE_MAC_KEY` the server uses a fixed development key from the source, so a database writer can recompute the MAC of a rewritten verdict ([ADR 0043](docs/adr/0043-evidence-content-mac.md)):
+The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL and an Evidence MAC key. Without `SDF_EVIDENCE_MAC_KEY` the server uses a fixed development key published in the source. A match under that key is not authenticity: a database writer who knows it can recompute the MAC of a rewritten verdict ([ADR 0043](docs/adr/0043-evidence-content-mac.md)). A missing or old-format MAC does not verify.
 
 ```bash
 export SDF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/sdf_core'

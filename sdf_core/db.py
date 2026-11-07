@@ -566,10 +566,13 @@ def make_session_factory(url: str = "sqlite+pysqlite:///:memory:"):
 
 @event.listens_for(EvidenceRow, "before_insert")
 def _stamp_evidence_content_mac(mapper: Any, connection: Any, target: EvidenceRow) -> None:
-    """Commit the verdict MAC before the INSERT (ADR 0043)."""
+    """Commit the current content MAC before the INSERT (ADR 0043).
 
-    if target.content_mac:
-        return
+    A caller-supplied MAC is replaced. It might be an old format or a MAC
+    under a different key. This listener does not run on UPDATE and does not
+    re-sign rows already stored.
+    """
+
     from .evidence_mac import evidence_content_mac
 
     session = object_session(target)

@@ -168,7 +168,8 @@ def test_run_records_base_and_result_and_binds_every_row(tmp_path: Path):
         assert output["revision"] == {"revision_id": revision.id, "tree_sha256": revision.result_tree_sha256,
                                       "tree_after_check_sha256": revision.result_tree_sha256, "tree_drift": False}
         assert verify_attempt_revision(db, attempt.id) == {
-            "attempt_id": attempt.id, "status": "verified", "problems": [], "artifacts": 3, "evidence": 2}
+            "attempt_id": attempt.id, "status": "verified", "problems": [], "artifacts": 3, "evidence": 2,
+            "mac_key": "development"}
 
 
 def test_verification_detects_a_tampered_artifact(tmp_path: Path):

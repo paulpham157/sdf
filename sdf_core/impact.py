@@ -229,6 +229,9 @@ class EvidenceFact:
     subject_artifact_sha256: str | None = None
     oracle_digest: str | None = None
     expires_at: datetime | None = None
+    # False when the stored content MAC did not verify. In-memory fixtures
+    # leave this true; they are not a stored row (ADR 0043).
+    content_authentic: bool = True
 
 
 @dataclass(frozen=True)

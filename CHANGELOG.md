@@ -15,6 +15,14 @@
   `verify_attempt_revision` recomputes it and reports a mismatch as `failed`.
   Set `SDF_EVIDENCE_MAC_KEY` in deployments; without it a fixed development key
   is used. Older rows are not backfilled.
+- **The content MAC now binds acceptance metadata (ADR 0043).** Format 2 also
+  covers class, mode, producer and verifier identity and role, subject and
+  oracle digests, environment digest, visibility, input seed, and the
+  measured, collected, and expiry times. A missing, malformed, or format-1
+  MAC fails verification and is not re-signed. A match under the public
+  development key is not authenticity against someone who knows that key.
+  The MAC binds the stored verifier string; it does not prove the verifier
+  is an independent party.
 - **Verification Evidence is independent of the agent workspace (ADR 0039).**
   Checks run from a sealed oracle copied from the server fixture. Pytest and
   script verdicts are a result frame read by a non-dumpable notary, and subject

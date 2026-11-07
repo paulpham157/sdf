@@ -28,7 +28,6 @@ execute on the host.  It can be reproduced independently with::
 from __future__ import annotations
 
 import hashlib
-import hmac
 import os
 import re
 import stat
@@ -40,7 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import ArtifactRow, AttemptRevisionRow, AttemptRow, EvidenceRow, RevisionBindingError
-from .evidence_mac import evidence_content_mac
+from .evidence_mac import content_mac_problem, evidence_mac_key_source
 from .fixtures import fixtures_root
 from .model import utcnow
 
@@ -237,28 +236,72 @@ def _sha256_file(path: Path) -> str | None:
         return None
 
 
+def _bound_artifact_sha(db: Session, row: EvidenceRow, artifact_sha: dict[str, str]) -> str | None:
+    if row.artifact_ref and row.artifact_ref not in artifact_sha:
+        other = db.get(ArtifactRow, row.artifact_ref)
+        return other.sha256 if other is not None else None
+    if not row.artifact_ref:
+        return None
+    return artifact_sha.get(row.artifact_ref)
+
+
+def _verification_report(
+    *, attempt_id: str, status: str, problems: list[str], artifacts: int, evidence: int,
+) -> dict[str, Any]:
+    # mac_key names which key the MAC check used. "verified" under
+    # "development" matches the public fallback; it is not authenticity
+    # against an attacker who knows that key (ADR 0043).
+    return {
+        "attempt_id": attempt_id,
+        "status": status,
+        "problems": problems,
+        "artifacts": artifacts,
+        "evidence": evidence,
+        "mac_key": evidence_mac_key_source(),
+    }
+
+
 def verify_attempt_revision(db: Session, attempt_id: str, *, check_files: bool = True) -> dict[str, Any]:
-    """Re-check an Attempt's revision bindings and stored artifact digests.
+    """Re-check an Attempt's revision bindings, artifact bytes, and Evidence MACs.
 
     ``status`` is ``unbound`` (no revision: an Attempt from before migration
     0023 or one that never got a workspace), ``incomplete`` (no result
     revision yet), ``verified`` or ``failed`` with the problems listed.
     This verifies the records, the stored artifact bytes, and each Evidence
     row's content MAC (ADR 0043). It does not re-run any check and is not
-    acceptance Evidence. A NULL MAC is a row from before that commitment and
-    is not itself a failure.
+    acceptance Evidence.
+
+    A missing, malformed, or old-format MAC is ``failed``. Old-format rows are
+    not re-signed. ``verified`` means the current MAC matches the key this
+    process holds. When ``mac_key`` is ``development``, that match is not
+    authenticity against an attacker who knows the public development key.
+    The MAC also does not prove that ``verifier_identity`` is an independent
+    party; it only binds the stored string.
     """
 
     revision = revision_for_attempt(db, attempt_id)
     artifacts = db.scalars(select(ArtifactRow).where(ArtifactRow.attempt_id == attempt_id).order_by(ArtifactRow.id)).all()
     evidence = db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt_id).order_by(EvidenceRow.id)).all()
     problems: list[str] = []
+    artifact_sha = {row.id: row.sha256 for row in artifacts}
+
+    def mac_problems() -> list[str]:
+        found: list[str] = []
+        for row in evidence:
+            problem = content_mac_problem(row, artifact_sha256=_bound_artifact_sha(db, row, artifact_sha))
+            if problem:
+                found.append(problem)
+        return found
+
     if revision is None:
         bound = [row.id for row in (*artifacts, *evidence) if row.revision_id is not None]
         if bound:
             problems.append(f"rows reference a revision but the attempt has none: {bound}")
-        return {"attempt_id": attempt_id, "status": "failed" if problems else "unbound", "problems": problems,
-                "artifacts": len(artifacts), "evidence": len(evidence)}
+        problems.extend(mac_problems())
+        return _verification_report(
+            attempt_id=attempt_id, status="failed" if problems else "unbound", problems=problems,
+            artifacts=len(artifacts), evidence=len(evidence),
+        )
     for value, name in ((revision.base_tree_sha256, "base_tree_sha256"), (revision.result_tree_sha256, "result_tree_sha256")):
         if value is not None and not _HEX64.fullmatch(value):
             problems.append(f"revision {name} is not a sha256 hex digest")
@@ -276,26 +319,14 @@ def verify_attempt_revision(db: Session, attempt_id: str, *, check_files: bool =
                 problems.append(f"artifact {row.id} file is missing")
             elif actual != row.sha256:
                 problems.append(f"artifact {row.id} file digest does not match its recorded sha256")
-    artifact_sha = {row.id: row.sha256 for row in artifacts}
-    for row in evidence:
-        if not row.content_mac:
-            continue
-        if row.artifact_ref and row.artifact_ref not in artifact_sha:
-            other = db.get(ArtifactRow, row.artifact_ref)
-            bound_sha = other.sha256 if other is not None else None
-        else:
-            bound_sha = artifact_sha.get(row.artifact_ref) if row.artifact_ref else None
-        expected = evidence_content_mac(row, artifact_sha256=bound_sha)
-        if not hmac.compare_digest(expected, row.content_mac):
-            problems.append(
-                f"evidence {row.id} content mac does not match its stored status, command, "
-                "confidence, or bound artifact sha256"
-            )
+    problems.extend(mac_problems())
     if problems:
         status = "failed"
     elif revision.result_tree_sha256 is None:
         status = "incomplete"
     else:
         status = "verified"
-    return {"attempt_id": attempt_id, "status": status, "problems": problems,
-            "artifacts": len(artifacts), "evidence": len(evidence)}
+    return _verification_report(
+        attempt_id=attempt_id, status=status, problems=problems,
+        artifacts=len(artifacts), evidence=len(evidence),
+    )

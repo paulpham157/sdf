@@ -28,7 +28,8 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
   and changed files) and one verification row per check. Only verification
   rows accept the Task; execution never does (ADR 0042). Every row carries a
   content MAC keyed by `SDF_EVIDENCE_MAC_KEY`, and the Attempt revision check
-  recomputes it (ADR 0043).
+  recomputes it (ADR 0043). Unset uses a public development key, which is not
+  an authenticity claim. A missing or old-format MAC fails verification.
 - A request without `dispatch_key` gets one derived from the task, resolved
   `fixture_dir`, instructions, `criterion_checks`, validation target, parent
   Attempt and model tier. Retrying the same request replays its Attempt
@@ -74,7 +75,7 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_RUN_MAX_CONCURRENT` | Live runs per process (default `2`; more → 429) |
 | `SDF_HERDR_TIMEOUT_MS` / `SDF_RUN_TURN_TIMEOUT_S` | Herdr / headless turn timeouts (`240000` / `420`) |
 | `SDF_E2B_SANDBOX_TIMEOUT_SECONDS` | E2B sandbox lifetime (default `900`) |
-| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC (ADR 0043). Unset uses a fixed development key from the source; set a long random value in every deployment |
+| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC (ADR 0043). Unset uses a public development key from the source, and a match under that key is not authenticity; set a long random value in every deployment |
 | `SDF_LOG_FORMAT` / `SDF_LOG_LEVEL` | `json` or `text` logs (redacted, with request/attempt ids) |
 | `SDF_PRICE_<MODEL>` / `SDF_E2B_USD_PER_SECOND` | Price overrides used for cost estimates |
 | `E2B_API_KEY` / `E2B_DOMAIN` | E2B provider credentials |

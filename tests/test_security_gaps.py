@@ -10,10 +10,8 @@ G4. Rewriting an Evidence row's verdict and the sha256 stored beside the
 artifact bytes must make ``verify_attempt_revision`` fail. The content MAC
 (ADR 0043) is the commitment that rewrite does not update. A same-store
 writer, which SQLite allows, must also fail verification when it clears
-``content_mac`` on a row this process signed, or when it rewrites an
-acceptance column the MAC payload does not cover. A NULL MAC on a row that
-was never signed (written before migration 0029) is the legacy case and is
-not these tests.
+``content_mac``, or when it rewrites acceptance metadata the MAC binds.
+A missing or old-format MAC is not a pass and is not re-signed.
 """
 
 from __future__ import annotations
@@ -349,14 +347,13 @@ def test_rewritten_evidence_is_rejected_by_verification(tmp_path: Path):
         )
 
 
-# Columns ``acceptance.py`` uses to decide independence, binding, freshness, or
-# hidden-oracle status, and that ``evidence_content_mac`` does not sign.
-# Values are legal for the column and, where the acceptance gate reads the
-# column, still a forgery that gate accepts: a different verifier who is not
-# the attempt's agent, a non-agent role, an expiry further in the future, a
-# held-out bit, a non-empty oracle digest. Subject digest and evidence class
-# are included because the MAC omits them too; the acceptance gate may reject
-# those two forgeries on its own, which is not a content-MAC check.
+# Columns the acceptance gate reads. The current content MAC must bind each
+# one. Values are legal for the column. Where the gate reads the column, the
+# forgery is one that gate would still accept (a different non-agent verifier,
+# a non-agent role, an expiry further in the future, a held-out bit, a
+# non-empty oracle digest), so only the MAC can catch it. Subject digest and
+# evidence class are included too; the gate may reject those two forgeries
+# on its own, which is not a substitute for the MAC.
 _UNSIGNED_ACCEPTANCE_COLUMNS = (
     "verifier_identity",
     "verifier_role",
@@ -408,15 +405,11 @@ def _acceptance_after_rewrite(row, *, attempt_agent: str, artifact_sha256: str) 
 def test_cleared_modern_content_mac_is_rejected(tmp_path: Path):
     """G4: clearing content_mac on a signed row must not hide a verdict rewrite.
 
-    ADR 0043 / migration 0029 leave a genuine pre-migration row unsigned, and
-    ``verify_attempt_revision`` skips a falsy ``content_mac``. That skip is for
-    a row that was never signed. There is no immutable per-row marker that a
-    MAC is required. This row is inserted by this process, so the ORM stamps a
-    MAC. The tamper is the same SQLite rewrite as
+    The tamper is the same SQLite rewrite as
     ``test_rewritten_evidence_is_rejected_by_verification`` (verdict columns
     plus the evaluator artifact bytes and ``artifacts.sha256``) and then sets
-    ``content_mac`` to NULL. Verification must reject it. This test does not
-    change the legacy unsigned-row rule.
+    ``content_mac`` to NULL. Verification must reject it. A missing MAC is not
+    treated as a pre-migration pass, and the row is not re-signed.
     """
 
     with _session() as db:
@@ -476,14 +469,12 @@ def test_cleared_modern_content_mac_is_rejected(tmp_path: Path):
 def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
     """G4: a same-store rewrite of an acceptance column must not stay verified.
 
-    ``evidence_content_mac`` signs the verdict and the bound artifact sha256.
-    It does not sign evidence class or mode, producer or verifier identity and
-    role, subject or oracle or environment digests, collection or expiry
-    timestamps, oracle visibility, or the input seed. ``acceptance.py`` uses
-    those columns. The MAC is computed before and after the SQL update. The
-    stored MAC is not rewritten. ``verify_attempt_revision`` must reject the
-    row. SQLite is the store, matching the other G4 test: PostgreSQL's
-    append-only trigger may block the UPDATE, and this finding is about the
+    The current MAC binds evidence class and mode, producer and verifier
+    identity and role, subject, oracle, and environment digests, collection
+    and expiry timestamps, oracle visibility, and the input seed. The MAC is
+    computed before and after the SQL update. The stored MAC is not rewritten.
+    ``verify_attempt_revision`` must reject the row. SQLite is the store:
+    PostgreSQL's append-only trigger may block the UPDATE, and this is the
     write path that allows it.
     """
 
@@ -528,3 +519,129 @@ def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
             f"digest: {acceptance}. evidence_content_mac does not cover {column}, so a same-store writer "
             "can change it without the server key and verification still treats the row as authentic."
         )
+
+
+def test_reloaded_evidence_mac_still_verifies(tmp_path: Path):
+    """A healthy row still verifies after the session reloads it from SQLite."""
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        db.expire_all()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] == "verified" and report["problems"] == [], report
+        assert report["mac_key"] == "development"
+
+
+def test_missing_or_malformed_content_mac_is_not_authentic(tmp_path: Path):
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        for mac in (None, "", "not-a-mac", "AB" * 32):
+            db.execute(
+                text("UPDATE evidence SET content_mac = :mac WHERE id = :id"),
+                {"mac": mac, "id": evidence.id},
+            )
+            db.commit()
+            db.expire_all()
+            report = verify_attempt_revision(db, attempt.id)
+            assert report["status"] == "failed", (mac, report)
+            assert any("no current content mac" in problem for problem in report["problems"]), report
+            assert db.get(EvidenceRow, evidence.id).content_mac == mac
+
+
+def test_old_format_content_mac_is_not_verified_or_resigned(tmp_path: Path):
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        artifact = db.get(ArtifactRow, evidence.artifact_ref)
+        assert artifact is not None
+        legacy = evidence_content_mac(evidence, artifact_sha256=artifact.sha256, version=1)
+        assert legacy != evidence.content_mac
+        db.execute(
+            text("UPDATE evidence SET content_mac = :mac WHERE id = :id"),
+            {"mac": legacy, "id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] == "failed", report
+        assert any("old format" in problem and "not re-signed" in problem for problem in report["problems"]), report
+        assert db.get(EvidenceRow, evidence.id).content_mac == legacy
+
+
+def test_transplanted_evidence_id_fails_the_content_mac(tmp_path: Path):
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        moved = evidence.id + "-moved"
+        db.execute(
+            text("UPDATE evidence SET id = :new WHERE id = :old"),
+            {"new": moved, "old": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] == "failed", report
+        assert any(moved in problem and "content mac does not match" in problem for problem in report["problems"]), report
+
+
+def test_configured_key_rejects_a_development_key_mac(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A public development-key MAC is not authentic once a deployment key is set."""
+
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        dev_mac = evidence.content_mac
+        assert verify_attempt_revision(db, attempt.id)["mac_key"] == "development"
+        monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", "deployment-secret-not-the-dev-key")
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["mac_key"] == "configured"
+        assert report["status"] == "failed", report
+        assert db.get(EvidenceRow, evidence.id).content_mac == dev_mac
+
+
+def test_development_key_match_is_not_authenticity_against_that_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Anyone who knows the public development key can recompute a matching MAC.
+
+    ``status=verified`` with ``mac_key=development`` only means insert and
+    verify shared that public constant. It is not a claim against an attacker
+    who recomputes the HMAC. ``test_configured_key_rejects_a_development_key_mac``
+    is the deployment claim.
+    """
+
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        artifact = db.get(ArtifactRow, evidence.artifact_ref)
+        assert artifact is not None
+        db.execute(
+            text("UPDATE evidence SET verifier_identity = :verifier WHERE id = :id"),
+            {"verifier": "forged-verifier", "id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        rewritten = db.get(EvidenceRow, evidence.id)
+        assert rewritten is not None
+        forged = evidence_content_mac(rewritten, artifact_sha256=artifact.sha256)
+        assert forged != rewritten.content_mac
+        db.execute(
+            text("UPDATE evidence SET content_mac = :mac WHERE id = :id"),
+            {"mac": forged, "id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["mac_key"] == "development"
+        assert report["status"] == "verified" and report["problems"] == [], report
