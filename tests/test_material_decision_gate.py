@@ -103,24 +103,51 @@ def _config(wall: float = 60, hold: float = 3600) -> RunConfig:
 
 def _resolve_when_pending(engine, plan_id: str, outcome: str, resolution: str = "", seen: dict | None = None,
                           wait_s: float = 0.3):
-    """From another session (like the API): wait for a pending material request, then resolve it as a human."""
+    """From another session (like the API): wait for a pending material request, then resolve it as a human.
+
+    The requester posts the decision and reports done in the same turn, but the
+    request is visible first. Approving before the coordinator ingests that
+    report means verification is never held, so ``held`` stays ``['pending']``
+    while the database status is already ``approved`` (issue #140).
+    """
 
     def work():
         Session = sessionmaker(engine, expire_on_commit=False)
         deadline = time.monotonic() + 20
+        pending = None
         while time.monotonic() < deadline:
             with Session() as other:
                 runs = list(other.scalars(select(AgentRunRow.id).where(AgentRunRow.plan_id == plan_id)))
                 gate = pending_material(other, run_ids=runs)
                 if gate:
-                    time.sleep(wait_s)  # several coordinator polls while blocked
-                    if seen is not None:
-                        seen["add_evidence_after_wait"] = list(other.scalars(select(EvidenceRow.criterion)))
-                    resolve_request(other, gate[0].request_id, outcome=outcome, resolved_by="hung",
-                                    resolver_kind="human", resolution=resolution)
-                    other.commit()
-                    return
+                    pending = gate[0]
+                    break
             time.sleep(0.02)
+        if pending is None:
+            return
+        # Wait until the requester's done/failed report is on the hub: that is
+        # when the coordinator sets verify_requested and (while this request
+        # is still pending) records held "verification:<scope>".
+        while time.monotonic() < deadline:
+            with Session() as other:
+                reported = any(
+                    (message.meta or {}).get("status") in ("done", "failed")
+                    for message in other.scalars(select(AgentMessageRow).where(
+                        AgentMessageRow.run_id == pending.run_id,
+                        AgentMessageRow.from_agent == pending.requested_by,
+                        AgentMessageRow.kind == "report",
+                    ))
+                )
+                if reported:
+                    break
+            time.sleep(0.02)
+        time.sleep(wait_s)  # several coordinator polls while blocked
+        with Session() as other:
+            if seen is not None:
+                seen["add_evidence_after_wait"] = list(other.scalars(select(EvidenceRow.criterion)))
+            resolve_request(other, pending.request_id, outcome=outcome, resolved_by="hung",
+                            resolver_kind="human", resolution=resolution)
+            other.commit()
 
     thread = threading.Thread(target=work)
     thread.start()

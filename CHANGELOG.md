@@ -11,6 +11,20 @@
   Neither writes verification Evidence. The format survey is
   [`docs/research/session-history-formats.md`](docs/research/session-history-formats.md).
 
+### Fixed
+
+- **Material-decision tests wait for the requester's report before a human resolves (#140).**
+  Approving as soon as the request row exists (plus a short sleep) raced the
+  coordinator: under load the human could approve before verification was
+  requested, so `held` stayed `['pending']` while status was already
+  `approved`. The helper now polls until that agent's `done`/`failed` report
+  is on the hub, then waits, then resolves.
+- **The Core query relay leaves a 0-byte in-progress request for the next poll.**
+  A non-atomic drop can appear empty; consuming it deleted the file without
+  writing a response, so a bypass of the shim timed out and
+  `test_relay_end_to_end_with_real_shim_and_message_visibility` raised
+  `KeyError: 'forged'`.
+
 ### Security
 
 - **Workspace children are confined when they skip the Tool Proxy (ADR 0004).**
