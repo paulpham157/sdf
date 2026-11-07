@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from dataclasses import dataclass
 
@@ -125,6 +125,7 @@ class ExecutionService:
                 return begun.attempt
             task = self.db.get(TaskRow, task_id)
             attempt = begun.attempt
+            self._bind_attempt_fence(self.adapter, attempt.id)
             started = time.monotonic()
             try:
                 result = self.adapter.run(attempt_id=attempt.id, workspace=begun.workspace, instructions=instructions)
@@ -230,6 +231,17 @@ class ExecutionService:
         task = self.db.get(TaskRow, task_id)
         if task is None:
             raise ValueError(f"task not found: {task_id}")
+        if task.status == TaskState.RUNNING.value:
+            blocker = self.db.scalar(
+                select(AttemptRow.id).where(
+                    AttemptRow.task_id == task_id,
+                    AttemptRow.status == AttemptState.RUNNING.value,
+                )
+            )
+            if blocker is not None:
+                raise ValueError(
+                    f"attempt {blocker} is still running; lease expiry does not confirm its work has stopped"
+                )
         if cost_usd < 0:
             raise ValueError("cost_usd must not be negative")
         if latency_ms is not None and latency_ms < 0:
@@ -396,6 +408,7 @@ class ExecutionService:
 
         try:
             with tracing.span("sdf.evaluate", attempt_id=attempt_id):
+                self._bind_attempt_fence(getattr(self.evaluator, "containment_backend", None), attempt_id)
                 evaluation = self.evaluator.evaluate(
                     attempt_id=attempt_id,
                     workspace=workspace,
@@ -659,6 +672,15 @@ class ExecutionService:
             evidence_ref=process.artifact_id,
         ))
 
+    def _bind_attempt_fence(self, target: object, attempt_id: str) -> None:
+        """Attach the Attempt to a remote entry point before it can create a sandbox."""
+
+        bind = getattr(target, "bind_attempt", None)
+        if not callable(bind):
+            return
+        opener = sessionmaker(bind=self.db.get_bind(), expire_on_commit=False)
+        bind(attempt_id, opener)
+
     def execute_tool(
         self,
         *,
@@ -687,6 +709,7 @@ class ExecutionService:
         workspace = self.workspaces.root / attempt_id
         if not workspace.is_dir():
             raise ValueError(f"attempt workspace not found: {attempt_id}")
+        self._bind_attempt_fence(containment_backend, attempt_id)
         durable_audit = audit or SqlAlchemyAuditSink(self.db, principal=principal)
         proxy = ToolProxy(
             policy=policy,

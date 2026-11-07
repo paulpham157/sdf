@@ -236,6 +236,8 @@ class E2BContainmentBackend:
         self._runner = runner or self._run
         self._environ = dict(os.environ if environ is None else environ)
         self._sleep = sleep or time.sleep
+        self._attempt_id: str | None = None
+        self._recovery_session_factory: Any = None
 
     def probe(self) -> ContainmentProbe:
         path = shutil.which(self.executable)
@@ -249,6 +251,25 @@ class E2BContainmentBackend:
             True,
             "e2b-box and credentials are present; disposable live smoke test required",
         )
+
+    def bind_attempt(self, attempt_id: str, session_factory: Any) -> None:
+        """Fence ``attempt_id`` before ``run`` syncs an e2b-box.
+
+        Without this, ``run`` refuses to call the CLI. A sandbox with no
+        Attempt row would survive lease recovery.
+        """
+
+        if not str(attempt_id).strip() or not callable(session_factory):
+            raise ValueError("E2B containment requires an Attempt id and a session factory")
+        self._attempt_id = attempt_id
+        self._recovery_session_factory = session_factory
+
+    def _note_effect(self, note) -> None:
+        db = self._recovery_session_factory()
+        try:
+            note(db, self._attempt_id)
+        finally:
+            db.close()
 
     def run(
         self,
@@ -269,11 +290,15 @@ class E2BContainmentBackend:
         The sequence is sync, exec, kill. There is no pull.
         """
 
+        if not command:
+            raise ValueError("command must not be empty")
+        if self._attempt_id is None or self._recovery_session_factory is None:
+            raise ContainmentUnavailable(
+                "E2B containment refuses to start a sandbox without an Attempt fence"
+            )
         probe = self.probe()
         if not probe.available:
             raise ContainmentUnavailable(probe.detail)
-        if not command:
-            raise ValueError("command must not be empty")
         root = Path(root).expanduser().resolve()
         cwd = Path(cwd).expanduser().resolve()
         try:
@@ -295,13 +320,20 @@ class E2BContainmentBackend:
         for name in ("HERDR_PLUGIN_STATE_DIR", "HERDR_E2B_STATE_DIR", "XDG_STATE_HOME"):
             if self._environ.get(name):
                 cli_env[name] = self._environ[name]
+        from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped, note_remote_effect_uncertain
+
+        self._note_effect(note_remote_effect_uncertain)
         primary_error: Exception | None = None
         result: subprocess.CompletedProcess[str] | None = None
+        saw_id = False
         try:
             synced = self._call(
                 (self.executable, "-t", self.template, "sync"), root, timeout_ms, cli_env, attempts=COMMAND_ATTEMPTS,
             )
             self._remember_sandbox(root, cli_env, synced)
+            saw_id = bool(
+                _sandbox_id_from_record(box_key(root), cli_env) or _sandbox_id_from_output(synced)
+            )
             raw = self._call(
                 (self.executable, "exec", "--timeout-ms", str(timeout_ms), remote),
                 root, timeout_ms, cli_env, attempts=COMMAND_ATTEMPTS,
@@ -310,6 +342,12 @@ class E2BContainmentBackend:
         except Exception as exc:
             primary_error = exc
         kill_error = self._kill(root, timeout_ms, cli_env)
+        if kill_error or not saw_id:
+            # Kill failed, or sync never showed a sandbox id. A later kill
+            # success must not mark this Attempt stopped.
+            note_remote_effect_stop_failed(self._attempt_id)
+        else:
+            self._note_effect(note_remote_effect_stopped)
         if result is not None:
             # A measured exit code is the verdict. Cleanup failure stays visible
             # and does not turn PASS/FAIL into INCONCLUSIVE.

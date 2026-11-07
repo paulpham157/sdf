@@ -155,6 +155,18 @@ class E2BAgentSandbox:
         self._expires: float | None = None
         self._lock = threading.Lock()
         self._sandbox_id: str | None = None
+        self._remote_attempt_id: str | None = None
+        self._recovery_session_factory: Any = None
+
+    def bind_attempt(self, attempt_id: str, session_factory: Any) -> None:
+        """Fence this worker's Attempt before ``start`` creates its sandbox.
+
+        ``session_factory`` opens a short session. It must not be the
+        coordinator's shared session: sandbox start runs on another thread.
+        """
+
+        self._remote_attempt_id = attempt_id
+        self._recovery_session_factory = session_factory
 
     @property
     def sandbox_id(self) -> str | None:
@@ -172,9 +184,26 @@ class E2BAgentSandbox:
 
             # ADR-0017: validated before any sandbox exists.
             pi_extensions = resolve_pi_extensions(self._environ.get(PI_EXTENSIONS_ENV))
+        before_create = None
+        if self._remote_attempt_id is not None:
+            if self._recovery_session_factory is None:
+                raise RuntimeError("attempt is bound without a session factory; refusing to create a sandbox")
+            attempt_id = self._remote_attempt_id
+            open_session = self._recovery_session_factory
+
+            def before_create() -> None:
+                from .recovery import note_remote_effect_uncertain
+
+                db = open_session()
+                try:
+                    note_remote_effect_uncertain(db, attempt_id)
+                finally:
+                    db.close()
+
         self._transport, _ = create_credentialed_transport(
             agents=(self.spec.kind,), environ=self._environ, template=self._template,
             timeout_seconds=self._sandbox_timeout_s, network=self._network,
+            before_provider_create=before_create,
         )
         if self.spec.kind == "opencode":
             from .opencode_runtime import OpenCodeHeadlessRuntime
@@ -298,12 +327,28 @@ class E2BAgentSandbox:
         return lifetime
 
     def close(self) -> None:
-        with self._lock:
-            if self._transport is not None and self._died is None:
-                try:
-                    self._transport.close()
-                finally:
-                    self._died = time.monotonic()
+        sandbox_id = self._sandbox_id
+        closed = False
+        try:
+            with self._lock:
+                if self._transport is not None and self._died is None:
+                    try:
+                        self._transport.close()
+                        closed = True
+                    finally:
+                        self._died = time.monotonic()
+        finally:
+            if sandbox_id and self._remote_attempt_id and self._recovery_session_factory is not None:
+                from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped
+
+                if not closed:
+                    note_remote_effect_stop_failed(self._remote_attempt_id)
+                else:
+                    db = self._recovery_session_factory()
+                    try:
+                        note_remote_effect_stopped(db, self._remote_attempt_id)
+                    finally:
+                        db.close()
 
 
 def e2b_factory(environ: Mapping[str, str], **kwargs: Any) -> AgentSandboxFactory:
