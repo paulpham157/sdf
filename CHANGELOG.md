@@ -9,12 +9,19 @@
   subprocesses install a Landlock ruleset (write only the workspace and roots
   the trusted caller names) and drop credential-shaped environment variables
   the Attempt's credential scope did not grant (`sdf_core/process_containment.py`).
-- **Evidence rows carry a content MAC (ADR 0043, proposed).** Migration
-  `0029_evidence_content_mac` adds `evidence.content_mac`, an HMAC-SHA256 over
-  the verdict fields and the bound artifact sha256, stamped at insert.
-  `verify_attempt_revision` recomputes it and reports a mismatch as `failed`.
-  Set `SDF_EVIDENCE_MAC_KEY` in deployments; without it a fixed development key
-  is used. Older rows are not backfilled.
+- **Evidence rows carry a versioned content MAC (ADR 0043, proposed).**
+  Migration `0029_evidence_content_mac` adds `evidence.content_mac`, an
+  HMAC-SHA256 over the verdict fields and the bound artifact sha256, stamped
+  at insert. Migration `0031_evidence_mac_v2` adds `content_mac_version` and
+  extends the payload to the acceptance columns (producer, verifier, class,
+  mode, subject/oracle/environment digests, collection and expiry times,
+  oracle visibility, and input seed). New inserts are version 2. Existing
+  MAC'd rows are backfilled to version 1 and still verify with the original
+  payload. A NULL MAC is accepted only when `content_mac_version` is also
+  NULL (a row written before 0029). `verify_attempt_revision` recomputes the
+  MAC for the stored version and reports a mismatch or a missing MAC on a
+  versioned row as `failed`. Set `SDF_EVIDENCE_MAC_KEY` in deployments;
+  without it a fixed development key is used.
 - **Verification Evidence is independent of the agent workspace (ADR 0039).**
   Checks run from a sealed oracle copied from the server fixture. Pytest and
   script verdicts are a result frame read by a non-dumpable notary, and subject

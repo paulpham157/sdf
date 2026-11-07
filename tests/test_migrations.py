@@ -69,7 +69,7 @@ def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0030_attempt_remote_effect"]
+    assert script.get_heads() == ["0031_evidence_mac_v2"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 
@@ -169,4 +169,74 @@ def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkey
         assert sorted(connection.execute(text("SELECT id FROM evidence")).scalars().all()) == ["EV-LEGACY", "EV-LEGACY-2"]
     command.upgrade(config, "head")
     assert "attempt_revisions" in inspect(engine).get_table_names()
+    engine.dispose()
+
+
+def test_migration_0031_versions_existing_macs_and_leaves_legacy_null(tmp_path, monkeypatch):
+    """0031 adds content_mac_version: existing MACs become v1, unsigned rows stay legacy."""
+
+    from sqlalchemy import text
+
+    from sdf_core.db import EvidenceRow
+    from sdf_core.evidence_mac import CONTENT_MAC_CURRENT
+    from sdf_core.model import utcnow
+
+    database_url = f"sqlite:///{tmp_path / 'm0031.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    engine = create_engine(database_url)
+    command.upgrade(config, "0029_evidence_content_mac")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO attempts (id, task_id, status, dispatch_key, agent, model_tier, cost_usd, created_at, "
+            "evidence_mode) VALUES ('ATTEMPT-LEGACY', 'T', 'completed', 'legacy', 'old', 'basic', 0, '2026-10-01', "
+            "'synthetic')"
+        ))
+        connection.execute(text(
+            "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at, "
+            "content_mac) VALUES ('EV-SIGNED', 'ATTEMPT-LEGACY', 'evaluation', 'PASS', 'c', 1.0, 'synthetic', "
+            "'2026-10-01', :mac)"
+        ), {"mac": "ab" * 32})
+        connection.execute(text(
+            "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, created_at) "
+            "VALUES ('EV-LEGACY', 'ATTEMPT-LEGACY', 'evaluation', 'PASS', 'c', 1.0, 'synthetic', '2026-10-01')"
+        ))
+    assert "content_mac_version" not in {c["name"] for c in inspect(engine).get_columns("evidence")}
+    command.upgrade(config, "head")
+    columns = {column["name"] for column in inspect(engine).get_columns("evidence")}
+    assert {"content_mac", "content_mac_version"} <= columns
+    with engine.connect() as connection:
+        rows = {
+            row[0]: (row[1], row[2])
+            for row in connection.execute(text(
+                "SELECT id, content_mac_version, content_mac IS NOT NULL FROM evidence"
+            ))
+        }
+        assert rows["EV-SIGNED"] == (1, 1)
+        assert rows["EV-LEGACY"] == (None, 0)
+
+    with sessionmaker(engine, expire_on_commit=False)() as db:
+        db.add(EvidenceRow(
+            id="EV-NEW", attempt_id="ATTEMPT-LEGACY", kind="evaluation", status="PASS",
+            command="c", confidence=1.0, created_at=utcnow(), evidence_class="verification",
+        ))
+        db.commit()
+        created = db.get(EvidenceRow, "EV-NEW")
+        assert created is not None
+        assert created.content_mac_version == CONTENT_MAC_CURRENT
+        assert created.content_mac and len(created.content_mac) == 64
+
+    command.downgrade(config, "0030_attempt_remote_effect")
+    assert "content_mac_version" not in {c["name"] for c in inspect(engine).get_columns("evidence")}
+    with engine.connect() as connection:
+        macs = dict(connection.execute(text("SELECT id, content_mac FROM evidence")).all())
+        assert macs["EV-SIGNED"] == "ab" * 32
+        assert macs["EV-LEGACY"] is None
+        assert macs["EV-NEW"] is not None
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        versions = dict(connection.execute(text("SELECT id, content_mac_version FROM evidence")).all())
+        assert versions["EV-SIGNED"] == 1
+        assert versions["EV-LEGACY"] is None
+        assert versions["EV-NEW"] == 1  # remaining MAC is classified as v1 after a downgrade/upgrade
     engine.dispose()
