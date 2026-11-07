@@ -41,12 +41,19 @@ It is hermetic: no secrets, no `SDF_LIVE_*` flags, no provider keys.
 
 - `pytest (SQLite, py3.11 / py3.13)`: the full suite, `uv sync --locked
   --all-groups` then `uv run pytest -rs`, on the minimum supported Python and
-  the local dev version.
+  the local dev version. On py3.13 the suite runs a second time with a repo
+  `.env` and junk `SDF_*` values in the environment, so a test that reads the
+  developer's environment fails there.
 - `pytest (PostgreSQL 16, py3.13)`: a `postgres:16-alpine` service (same
   credentials as `docker-compose.test.yml`), `alembic upgrade head`, then the
   full suite with only `SDF_POSTGRES_TEST_URL` set (`SDF_DATABASE_URL` is for the
   migration step only), so the PostgreSQL integration
   tests run instead of skipping.
+
+`.github/workflows/go.yml` (ADR 0036) runs only when `go/**` or the workflow
+file changes, on pull requests and pushes to `main`. Its one job, `go test
+./...`, runs the whole Go suite, including the ADR 0035 backpressure test,
+without `-short` and with a 15-minute timeout.
 
 `.github/workflows/security.yml` runs on the same triggers plus weekly:
 
@@ -175,6 +182,12 @@ a private mapping). A green unit suite without that gate is not live evidence.
 ## Verification boundaries
 
 - `tests/` and fake transports prove local contracts only.
+- The sealed oracle runs only on Linux x86_64, and host checks there run under
+  Landlock (ADR 0039). On macOS, on arm64, or in an emulated amd64 container
+  without Landlock, every pytest, Python script or `python -c` check is a
+  non-pass by design, and
+  `scripts/demo-evidence.sh` refuses to start. A PASS verdict needs a native
+  Linux x86_64 host, such as the CI runner.
 - A green CI run is the same hermetic evidence on a clean runner (SQLite on
   py3.11/3.13, PostgreSQL 16 on py3.13); it is not live-provider evidence.
 - A template build proves that the image can start and pass its readiness command.

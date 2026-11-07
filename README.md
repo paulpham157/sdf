@@ -7,6 +7,8 @@
 - A durable **Decision Graph**: Business Context → Objective → Task → Attempt → Artifact → Evidence.
 - An evaluator-led execution loop: agents do work; independent checks determine the outcome.
 - Bounded, evidence-driven model escalation (`basic` → `medium` → `high`).
+- Classed Evidence: execution (the Attempt ran), verification (a sealed-oracle verdict) and outcome (an approver-recorded business result). Only verification accepts a Task, and every row carries a content MAC.
+- Exactly-once dispatch: a retried `POST /tasks/{id}/run` replays its Attempt, and an Attempt whose executor died is settled `failed`.
 - Policy-controlled, Attempt-bound tool actions with optional containment.
 - A FastAPI API, SQLAlchemy persistence, Alembic migrations, and PostgreSQL support.
 
@@ -22,7 +24,7 @@ SDF_AUTH_DEV_INSECURE=1 uv run uvicorn sdf_core.api:app --reload --host 127.0.0.
 
 ### Offline evidence demo
 
-`scripts/demo-evidence.sh` walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, the task trace, and `python -m sdf_core.cli runs show`. It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
+`scripts/demo-evidence.sh` walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, the task trace, and `python -m sdf_core.cli runs show`. It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle that judges the fixture's `python -c` check runs nowhere else, and on any other host that check is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
 
 ```bash
 scripts/demo-evidence.sh
@@ -30,22 +32,23 @@ scripts/demo-evidence.sh
 
 The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval.
 
-`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact.
+`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact. The run also writes one execution Evidence row (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)).
 
 The script prints these results:
 
 - Run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`.
 - `GET /evidence/{id}`: `status=PASS`, `verifier_identity=sdf-evaluator`, `revision_id`, and `tree_sha256`.
 - `GET /attempts/{id}/revision`: `result_tree_sha256`. `base_commit` is null because this fixture records a tree id, not a git commit.
-- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and Evidence, with Evidence `validates` the Assumption. The fake adapter records no runtime events.
+- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and both Evidence rows. Only the verification row `validates` the Assumption. The fake adapter records no runtime events.
 - `python -m sdf_core.cli runs show <attempt id>`: the same timeline. `usage_ledger` has no rows for this adapter. `cost_usd` is `0` on the Attempt. That zero is unmetered. It is not an invoice and not an `SDF_PRICE_*` or `SDF_E2B_USD_PER_SECOND` estimate.
 
 The state database is a temporary SQLite file. Workspaces and artifacts land in `.sdf-workspaces/` and `.sdf-artifacts/`.
 
-The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL:
+The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL and an Evidence MAC key. Without `SDF_EVIDENCE_MAC_KEY` the server uses a fixed development key from the source, so a database writer can recompute the MAC of a rewritten verdict ([ADR 0043](docs/adr/0043-evidence-content-mac.md)):
 
 ```bash
 export SDF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/sdf_core'
+export SDF_EVIDENCE_MAC_KEY='<long random secret, kept out of the database>'
 uv run alembic upgrade head
 uv run uvicorn sdf_core.api:app --host 127.0.0.1
 ```
@@ -85,7 +88,11 @@ containing `.pi/` and gets write tools only in a fresh E2B sandbox
 Every agent turn runs in its own process session and cgroup v2 leaf; leftovers
 (detached, double-forked or reparented to PID 1) are killed (TERM, then KILL)
 when the turn ends, times out, or is cancelled
-([ADR 0019](docs/adr/0019-per-turn-process-containment.md)).
+([ADR 0019](docs/adr/0019-per-turn-process-containment.md)). On Linux, a
+child process started inside the Attempt workspace also runs under Landlock: it
+can write only inside the workspace, and credential-shaped environment
+variables that were not allow-listed are dropped
+([ADR 0004](docs/adr/0004-internal-runtime-and-enforced-tool-policy.md)).
 
 Qwen Code (`qwen`, `0.26.2`) and Goose (`goose`, `1.56.0`) are further
 headless kinds for any OpenAI-compatible endpoint (`QWEN_BASE_URL` /
@@ -163,7 +170,11 @@ uv run python -m sdf_core.auth_cli revoke <token-id>
 ```
 
 Roles: `viewer` (read), `operator` (create tasks/plans, start/cancel runs),
-`approver` (approve/reject plans, resolve decision requests), `admin`. The
+`approver` (approve/reject plans, resolve decision requests, record Decisions,
+ADRs and outcome Evidence), `admin`. Outcome Evidence
+(`POST /objectives/{id}/evidence`) names a verifier who is neither the
+recording principal nor an agent that worked the Objective
+([ADR 0042](docs/adr/0042-evidence-classes.md)). The
 proposer, approver and run starter recorded in the Decision Graph are always
 the token's principal, never a request field. Nobody approves their own plan
 unless `SDF_AUTH_SINGLE_USER=1` (solo deployments; recorded as
@@ -180,7 +191,8 @@ Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 
 See [CHANGELOG.md](CHANGELOG.md) for breaking API changes (registered checks,
-server-measured telemetry and run prices).
+server-measured telemetry, run prices, keyless run replay, dead-executor
+recovery and Evidence classes).
 
 ## Core principle
 
@@ -195,6 +207,7 @@ An agent reporting completion is not success. A Task has an **Accepted Outcome**
 - `CONTEXT.md` — canonical domain vocabulary.
 - `docs/adr/` — architecture decisions.
 - `docs/architecture.md` — current architectural overview.
+- `docs/SDF Core Architecture.tldraw` — architecture, Task/Attempt lifecycle, run sequence and Evidence verification diagrams (tldraw; dashed means proposed or not built).
 - `docs/CONTRIBUTING.md` — contributor workflow, verification boundaries, and E2B/Herdr setup.
 
 ## License
