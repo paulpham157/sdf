@@ -50,6 +50,7 @@ class DaytonaHerdrTransport:
         sandbox_factory: SandboxFactory | None = None,
         sandbox_connector: SandboxConnector | None = None,
         sandbox_id: str | None = None,
+        before_provider_create: Callable[[], None] | None = None,
     ) -> None:
         if not snapshot.strip():
             raise ValueError("Daytona Herdr snapshot must be non-empty")
@@ -66,6 +67,7 @@ class DaytonaHerdrTransport:
         self._factory = sandbox_factory
         self._connector = sandbox_connector
         self._sandbox_id = sandbox_id
+        self._before_provider_create = before_provider_create
         self._sandbox: Any = None
         self._unidentified_sandbox: Any = None
         self._sandbox_lock = threading.RLock()
@@ -232,6 +234,8 @@ class DaytonaHerdrTransport:
                 if self._sandbox_id is not None:
                     sandbox = connector(self._sandbox_id)
                 else:
+                    if self._before_provider_create is not None:
+                        self._before_provider_create()
                     with tracing.span("sdf.sandbox.create", sandbox__provider="daytona",
                                       sandbox__template=self.snapshot) as create_span:
                         sandbox = factory(

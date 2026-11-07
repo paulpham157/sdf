@@ -8,7 +8,12 @@ workspace or observe a credential-shaped variable the Attempt did not scope.
 
 G4. Rewriting an Evidence row's verdict and the sha256 stored beside the
 artifact bytes must make ``verify_attempt_revision`` fail. The content MAC
-(ADR 0043) is the commitment that rewrite does not update.
+(ADR 0043) is the commitment that rewrite does not update. A same-store
+writer, which SQLite allows, must also fail verification when it clears
+``content_mac`` on a row this process signed, or when it rewrites an
+acceptance column the MAC payload does not cover. A NULL MAC on a row that
+was never signed (written before migration 0029) is the legacy case and is
+not these tests.
 """
 
 from __future__ import annotations
@@ -18,12 +23,14 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
+from sdf_core.acceptance import AcceptanceError, check_verification_acceptance, is_hidden_oracle, is_verified_pass
 from sdf_core.adapter import FakeNativeAdapter, RuntimeAgentAdapter
 from sdf_core.containment import ContainmentUnavailable
 from sdf_core.db import (
@@ -39,6 +46,7 @@ from sdf_core.db import (
     make_engine,
 )
 from sdf_core.execution import ExecutionService
+from sdf_core.evidence_mac import evidence_content_mac
 from sdf_core.model import utcnow
 from sdf_core.policy import ActionRequest, AllowlistPolicy
 from sdf_core.revisions import verify_attempt_revision
@@ -339,3 +347,218 @@ def test_rewritten_evidence_is_rejected_by_verification(tmp_path: Path):
             f"attempt status={stored_attempt.status}. "
             "Evidence has no signature or hash chain."
         )
+
+
+# Columns ``acceptance.py`` uses to decide independence, binding, freshness, or
+# hidden-oracle status, and that ``evidence_content_mac`` does not sign.
+# Values are legal for the column and, where the acceptance gate reads the
+# column, still a forgery that gate accepts: a different verifier who is not
+# the attempt's agent, a non-agent role, an expiry further in the future, a
+# held-out bit, a non-empty oracle digest. Subject digest and evidence class
+# are included because the MAC omits them too; the acceptance gate may reject
+# those two forgeries on its own, which is not a content-MAC check.
+_UNSIGNED_ACCEPTANCE_COLUMNS = (
+    "verifier_identity",
+    "verifier_role",
+    "expires_at",
+    "oracle_visibility",
+    "subject_artifact_sha256",
+    "oracle_digest",
+    "evidence_class",
+    "evidence_mode",
+    "producer_identity",
+    "producer_role",
+    "environment_digest",
+    "collected_at",
+    "input_seed",
+)
+_FORGED_ACCEPTANCE_VALUE = {
+    "verifier_identity": "forged-verifier",
+    "verifier_role": "stakeholder",
+    "expires_at": datetime(2099, 1, 1, tzinfo=timezone.utc),
+    "oracle_visibility": "held_out",
+    "subject_artifact_sha256": "ab" * 32,
+    "oracle_digest": "cd" * 32,
+    "evidence_class": "execution",
+    "evidence_mode": "live",
+    "producer_identity": "forged-producer",
+    "producer_role": "agent",
+    "environment_digest": "ef" * 32,
+    "collected_at": datetime(2020, 1, 1, tzinfo=timezone.utc),
+    "input_seed": "forged-input-seed",
+}
+
+
+def _acceptance_after_rewrite(row, *, attempt_agent: str, artifact_sha256: str) -> str:
+    """How the acceptance gate treats ``row`` after a metadata-only rewrite."""
+
+    try:
+        check_verification_acceptance(
+            row, attempt_agent=attempt_agent, artifact_sha256=artifact_sha256,
+        )
+    except AcceptanceError as exc:
+        return f"rejects ({exc})"
+    return (
+        "accepts"
+        f"; is_verified_pass={is_verified_pass(row, attempt_agent=attempt_agent, artifact_sha256=artifact_sha256)}"
+        f"; is_hidden_oracle={is_hidden_oracle(row)}"
+    )
+
+
+def test_cleared_modern_content_mac_is_rejected(tmp_path: Path):
+    """G4: clearing content_mac on a signed row must not hide a verdict rewrite.
+
+    ADR 0043 / migration 0029 leave a genuine pre-migration row unsigned, and
+    ``verify_attempt_revision`` skips a falsy ``content_mac``. That skip is for
+    a row that was never signed. There is no immutable per-row marker that a
+    MAC is required. This row is inserted by this process, so the ORM stamps a
+    MAC. The tamper is the same SQLite rewrite as
+    ``test_rewritten_evidence_is_rejected_by_verification`` (verdict columns
+    plus the evaluator artifact bytes and ``artifacts.sha256``) and then sets
+    ``content_mac`` to NULL. Verification must reject it. This test does not
+    change the legacy unsigned-row rule.
+    """
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        assert evidence.status == "PASS"
+        assert evidence.content_mac and len(evidence.content_mac) == 64
+        original_mac = evidence.content_mac
+        original = (evidence.status, evidence.command, evidence.confidence)
+        baseline = verify_attempt_revision(db, attempt.id)
+        assert baseline["status"] == "verified" and baseline["problems"] == [], baseline
+        artifact = db.get(ArtifactRow, evidence.artifact_ref)
+        assert artifact is not None and artifact.kind == "evaluator_output"
+        path = Path(artifact.uri)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["status"] = "FAIL"
+        payload["command"] = "echo tampered"
+        payload["stdout"] = "tampered result"
+        payload["confidence"] = 0.0
+        raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        path.write_bytes(raw)
+        artifact.sha256 = hashlib.sha256(raw).hexdigest()
+        artifact.size_bytes = len(raw)
+        db.commit()
+
+        db.execute(
+            text(
+                "UPDATE evidence SET status = :status, command = :command, confidence = :confidence, "
+                "content_mac = NULL WHERE id = :id"
+            ),
+            {"status": "FAIL", "command": "echo tampered", "confidence": 0.0, "id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+
+        rewritten = db.get(EvidenceRow, evidence.id)
+        assert rewritten is not None
+        assert rewritten.content_mac is None
+        assert (rewritten.status, rewritten.command, rewritten.confidence) == ("FAIL", "echo tampered", 0.0)
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] != "verified", (
+            "G4 cleared content MAC: a modern signed verification row was rewritten and content_mac was "
+            f"set to NULL. evidence {evidence.id} status {original[0]!r} -> {rewritten.status!r}, "
+            f"command {original[1]!r} -> {rewritten.command!r}, confidence {original[2]!r} -> {rewritten.confidence!r}; "
+            f"the stamped MAC was {original_mac} and is now NULL; evaluator_output was swapped to FAIL and "
+            "artifacts.sha256 was updated to those bytes, so the file check still matches. "
+            f"verify_attempt_revision returned {report['status']!r} problems={report['problems']}. "
+            "A NULL MAC is only the pre-migration case (ADR 0043). This row was signed by this process "
+            "and then cleared. There is no per-row marker, and verify_attempt_revision skips a falsy "
+            "content_mac, so the rewrite verifies."
+        )
+
+
+@pytest.mark.parametrize("column", _UNSIGNED_ACCEPTANCE_COLUMNS)
+def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
+    """G4: a same-store rewrite of an acceptance column must not stay verified.
+
+    ``evidence_content_mac`` signs the verdict and the bound artifact sha256.
+    It does not sign evidence class or mode, producer or verifier identity and
+    role, subject or oracle or environment digests, collection or expiry
+    timestamps, oracle visibility, or the input seed. ``acceptance.py`` uses
+    those columns. The MAC is computed before and after the SQL update. The
+    stored MAC is not rewritten. ``verify_attempt_revision`` must reject the
+    row. SQLite is the store, matching the other G4 test: PostgreSQL's
+    append-only trigger may block the UPDATE, and this finding is about the
+    write path that allows it.
+    """
+
+    forged = _FORGED_ACCEPTANCE_VALUE[column]
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        artifact = db.get(ArtifactRow, evidence.artifact_ref)
+        assert artifact is not None and artifact.kind == "evaluator_output"
+        assert evidence.content_mac and len(evidence.content_mac) == 64
+        original = getattr(evidence, column)
+        assert forged != original, (column, original, forged)
+        diff_sha = evidence.subject_artifact_sha256
+        assert isinstance(diff_sha, str) and len(diff_sha) == 64
+        mac_before = evidence_content_mac(evidence, artifact_sha256=artifact.sha256)
+        assert mac_before == evidence.content_mac
+        baseline = verify_attempt_revision(db, attempt.id)
+        assert baseline["status"] == "verified" and baseline["problems"] == [], baseline
+
+        db.execute(
+            text(f"UPDATE evidence SET {column} = :value WHERE id = :id"),
+            {"value": forged, "id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+
+        rewritten = db.get(EvidenceRow, evidence.id)
+        assert rewritten is not None
+        assert getattr(rewritten, column) == forged, (column, getattr(rewritten, column), forged)
+        mac_after = evidence_content_mac(rewritten, artifact_sha256=artifact.sha256)
+        report = verify_attempt_revision(db, attempt.id)
+        acceptance = _acceptance_after_rewrite(
+            rewritten, attempt_agent=attempt.agent, artifact_sha256=diff_sha,
+        )
+        assert report["status"] != "verified", (
+            f"G4 unsigned metadata: rewriting evidence.{column} from {original!r} to {forged!r} "
+            f"left the content MAC unchanged (before={mac_before}, after={mac_after}, "
+            f"stored={rewritten.content_mac}) and verify_attempt_revision returned {report['status']!r} "
+            f"problems={report['problems']}. Acceptance of the forged row against the original diff "
+            f"digest: {acceptance}. evidence_content_mac does not cover {column}, so a same-store writer "
+            "can change it without the server key and verification still treats the row as authentic."
+        )
+
+
+def test_legacy_unsigned_row_without_mac_version_still_verifies(tmp_path: Path):
+    """A pre-0029 row (NULL MAC and NULL version) is not itself a MAC failure."""
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        assert evidence.content_mac and evidence.content_mac_version == 2
+        db.execute(
+            text(
+                "INSERT INTO evidence ("
+                "id, attempt_id, kind, status, command, exit_code, artifact_ref, "
+                "confidence, criterion, measured_at, evidence_mode, created_at, "
+                "revision_id, tree_sha256, evidence_class, producer_identity, "
+                "producer_role, verifier_identity, verifier_role, "
+                "subject_artifact_sha256, oracle_digest, environment_digest, "
+                "collected_at, expires_at, oracle_visibility, input_seed, "
+                "objective_id, content_mac, content_mac_version"
+                ") SELECT 'EV-LEGACY-UNSIGNED', attempt_id, kind, status, command, "
+                "exit_code, artifact_ref, confidence, criterion, measured_at, "
+                "evidence_mode, created_at, revision_id, tree_sha256, evidence_class, "
+                "producer_identity, producer_role, verifier_identity, verifier_role, "
+                "subject_artifact_sha256, oracle_digest, environment_digest, "
+                "collected_at, expires_at, oracle_visibility, input_seed, "
+                "objective_id, NULL, NULL FROM evidence WHERE id = :id"
+            ),
+            {"id": evidence.id},
+        )
+        db.commit()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] == "verified" and report["problems"] == [], report

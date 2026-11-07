@@ -66,7 +66,13 @@ EVIDENCE_MODE_SQL = "evidence_mode IN (" + ", ".join(f"'{v}'" for v in EVIDENCE_
 
 class AttemptRow(Base):
     __tablename__ = "attempts"
-    __table_args__ = (CheckConstraint(EVIDENCE_MODE_SQL, name="ck_attempts_evidence_mode"),)
+    __table_args__ = (
+        CheckConstraint(EVIDENCE_MODE_SQL, name="ck_attempts_evidence_mode"),
+        CheckConstraint(
+            "remote_effect IS NULL OR remote_effect IN ('uncertain', 'stopped')",
+            name="ck_attempts_remote_effect",
+        ),
+    )
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     task_id: Mapped[str] = mapped_column(String(120), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
@@ -103,6 +109,11 @@ class AttemptRow(Base):
     # Attempt whose owner is gone or whose heartbeat is older than the lease.
     executor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     executor_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Committed before a provider sandbox create. ``uncertain`` means the
+    # create was entered and stop is not confirmed. NULL means this Attempt
+    # never entered that call. ``stopped`` means this process confirmed the
+    # provider resource is gone. Evidence mode is not that record.
+    remote_effect: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class ObjectiveMetricRow(Base):
@@ -226,6 +237,9 @@ class EvidenceRow(Base):
     # ADR 0043. HMAC of the verdict and the bound artifact sha256, stamped at
     # insert. NULL only for rows written before migration 0029.
     content_mac: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 1 = v1 payload (migration 0029). 2 = v2 payload (acceptance columns too).
+    # NULL = written before migration 0029, when no MAC was stamped.
+    content_mac_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 RUNTIME_EVENT_PROVENANCE_SQL = (
@@ -568,9 +582,12 @@ def make_session_factory(url: str = "sqlite+pysqlite:///:memory:"):
 def _stamp_evidence_content_mac(mapper: Any, connection: Any, target: EvidenceRow) -> None:
     """Commit the verdict MAC before the INSERT (ADR 0043)."""
 
+    from .evidence_mac import CONTENT_MAC_CURRENT, evidence_content_mac
+
+    if target.content_mac_version is None:
+        target.content_mac_version = CONTENT_MAC_CURRENT
     if target.content_mac:
         return
-    from .evidence_mac import evidence_content_mac
 
     session = object_session(target)
     artifact = None
@@ -578,7 +595,9 @@ def _stamp_evidence_content_mac(mapper: Any, connection: Any, target: EvidenceRo
         with session.no_autoflush:
             artifact = session.get(ArtifactRow, target.artifact_ref)
     target.content_mac = evidence_content_mac(
-        target, artifact_sha256=artifact.sha256 if artifact is not None else None,
+        target,
+        artifact_sha256=artifact.sha256 if artifact is not None else None,
+        version=target.content_mac_version,
     )
 
 

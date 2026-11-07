@@ -4,6 +4,38 @@
 
 ### Security
 
+- **Workspace children are confined when they skip the Tool Proxy (ADR 0004).**
+  On Linux, fixture sandbox children and the live adapter's workspace
+  subprocesses install a Landlock ruleset (write only the workspace and roots
+  the trusted caller names) and drop credential-shaped environment variables
+  the Attempt's credential scope did not grant (`sdf_core/process_containment.py`).
+- **Evidence rows carry a versioned content MAC (ADR 0043, proposed).**
+  Migration `0029_evidence_content_mac` adds `evidence.content_mac`, an
+  HMAC-SHA256 over the verdict fields and the bound artifact sha256, stamped
+  at insert. Migration `0031_evidence_mac_v2` adds `content_mac_version` and
+  extends the payload to the acceptance columns (producer, verifier, class,
+  mode, subject/oracle/environment digests, collection and expiry times,
+  oracle visibility, and input seed). New inserts are version 2. Existing
+  MAC'd rows are backfilled to version 1 and still verify with the original
+  payload. A NULL MAC is accepted only when `content_mac_version` is also
+  NULL (a row written before 0029). `verify_attempt_revision` recomputes the
+  MAC for the stored version and reports a mismatch or a missing MAC on a
+  versioned row as `failed`. Set `SDF_EVIDENCE_MAC_KEY` in deployments;
+  without it a fixed development key is used.
+- **Verification Evidence is independent of the agent workspace (ADR 0039).**
+  Checks run from a sealed oracle copied from the server fixture. Pytest and
+  script verdicts are a result frame read by a non-dumpable notary, and subject
+  code runs in a separate worker under seccomp. Migration
+  `0025_evidence_independence` adds the class, producer, verifier, subject
+  digest, oracle and environment digests, `collected_at` and `expires_at`.
+  Only a verification `PASS` that passes the acceptance gate accepts an
+  artifact; a gated `PASS` is stored as `INCONCLUSIVE`. Linux x86_64 only:
+  elsewhere the check exits 86 and is not a pass.
+- **Held-out and randomized oracles (ADR 0040).** Checks under `.sdf-held-out/`
+  stay on the server and are sealed only at verification. A randomized check
+  gets a server seed when it runs. Migration `0026_oracle_visibility` adds
+  `oracle_visibility` and `input_seed`. A Task that maps a held-out or
+  randomized check is not accepted on a visible `PASS` alone.
 - Live-gated pytest (`SDF_LIVE_E2B`, `SDF_LIVE_FULL_LOOP`, `SDF_LIVE_VULTR_AGENTS`)
   no longer inherits the hermetic `SDF_EVALUATOR_CONTAINMENT=off`. Those tests
   force `require` and the promoted E2B containment backend, so evaluator checks
@@ -35,6 +67,24 @@
 
 ### Breaking API changes
 
+- **A keyless `POST /tasks/{id}/run` is handled exactly once (ADR 0041, proposed).**
+  A request without `dispatch_key` gets a derived `keyless-<sha256>` key over
+  the request fields, so a retry of the same body returns the stored Attempt
+  and does not run the adapter again, also after the Attempt is terminal.
+  Send a new explicit `dispatch_key` for a new execution.
+- **Dead running Attempts are settled (ADR 0041, proposed).** Migration
+  `0027_attempt_executor_lease` adds `executor_id` and `executor_heartbeat_at`.
+  Startup, shutdown, the lease refresher and `ExecutionService.begin` move a
+  `running` Attempt whose lease is dead to `failed` (`error_class` `killed`
+  when empty) and its Task to `failed`. Attempt and Task writes in recovery,
+  `finish` and cancel are compare-and-swap.
+- **Every new Evidence row has a class (ADR 0042, proposed).** Migration
+  `0028_evidence_classes` adds `objective_id` and makes `attempt_id` nullable
+  for outcome rows. `finish` writes an `execution` row for the diff and
+  process log; it never accepts an artifact. A coverage gap is `verification`
+  with status `INCONCLUSIVE`. `/scorecard` and `/impact-scorecard` count only
+  gated verification `PASS` rows as verified passes and report other `PASS`
+  rows separately.
 - **Outcome Evidence on `POST /objectives/{id}/evidence` requires an approver (ADR 0042).**
   An operator token is no longer enough; the bar is the same as `POST /decisions`.
   `verifier_identity` must differ from the recording principal and from
@@ -203,6 +253,24 @@
 
 ### Added
 
+- **Human read model and approver inbox (ADR 0044).** Viewer `GET /tasks`,
+  `/attempts`, `/plans` and `/objectives` list rows in keyset pages (50 by
+  default, at most 100); `GET /tasks/{id}` and `GET /attempts/{id}` read one.
+  `GET /inbox` lists the pending decision requests the caller may resolve,
+  empty for a principal that cannot approve. Payloads are redacted and omit
+  lease columns, dispatch keys and held-out oracle output.
+  `GET /decision-requests` is unchanged.
+- **Go orchestration core `sdf-orch` (ADR 0035, proposed).** `go/cmd/sdf-orch`
+  runs an API gateway, task queue, Attempt dispatcher and in-process message
+  bus, with `/healthz` and `/metrics`. Its Tool Proxy idempotency fence keeps a
+  local SQLite event log (`-outcome-db` / `SDF_TOOL_OUTCOME_DB`, ADR 0037) and
+  stamps each Attempt's evidence mode (ADR 0038). It does not write
+  PostgreSQL Attempt state. `.github/workflows/go.yml` runs `go test ./...`
+  when `go/**` changes (ADR 0036). See `docs/sdf-orch.md`.
+- **Architecture canvas.** `docs/SDF Core Architecture.tldraw` replaces
+  `docs/system_architecture.tldraw` with four pages: architecture, Task and
+  Attempt lifecycle, the `/run` sequence and the Evidence verification
+  pipeline.
 - **LLM transports are OpenAI-compatible or Claude Messages only (ADR 0034).**
   Each agent kind maps to one family (`openai` or `anthropic`). Codex requires
   the OpenAI Responses API, not Chat Completions alone. Vultr remains the
