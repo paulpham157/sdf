@@ -93,6 +93,8 @@ sandboxes tagged with its own `sdf_attempt_id`, and evaluator boxes `e2b-box` cr
 uv run pytest -q
 
 # one public HTTP walk with the fake adapter (no paid keys; not production proof)
+uv run scripts/demo.py
+# historical alias:
 scripts/demo-evidence.sh
 
 # live public-path proof (keys from env / .env; never echo them)
@@ -102,6 +104,6 @@ SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 python -m sdf_core.cli runs show ATTEMPT-…
 ```
 
-`scripts/demo-evidence.sh` uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). The fake adapter writes `app.py`; the registered check `app-updated` is what the evaluator runs. Evidence from that script is synthetic. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API.
+`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`, which wraps it) uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). The fake adapter writes `app.py`; the registered check `app-updated` is what the evaluator runs. Evidence from that script is synthetic. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API and points at GitHub Codespaces.
 
 See also `.env.example`, ADR 0023, and `tests/test_real_agent_loop_live.py`.
