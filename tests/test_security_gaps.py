@@ -562,3 +562,87 @@ def test_legacy_unsigned_row_without_mac_version_still_verifies(tmp_path: Path):
         db.commit()
         report = verify_attempt_revision(db, attempt.id)
         assert report["status"] == "verified" and report["problems"] == [], report
+
+
+def test_clearing_mac_and_version_is_not_a_legacy_pass(tmp_path: Path):
+    """Nulling both content_mac and content_mac_version must not verify or re-sign."""
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        db.execute(
+            text(
+                "UPDATE evidence SET content_mac = NULL, content_mac_version = NULL WHERE id = :id"
+            ),
+            {"id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        rewritten = db.get(EvidenceRow, evidence.id)
+        assert rewritten is not None
+        assert rewritten.content_mac is None and rewritten.content_mac_version is None
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] != "verified", report
+
+
+def test_format1_mac_is_not_re_signed_or_verified(tmp_path: Path):
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        artifact = db.get(ArtifactRow, evidence.artifact_ref)
+        assert artifact is not None
+        legacy = evidence_content_mac(evidence, artifact_sha256=artifact.sha256, version=1)
+        db.execute(
+            text(
+                "UPDATE evidence SET content_mac = :mac, content_mac_version = 1 WHERE id = :id"
+            ),
+            {"mac": legacy, "id": evidence.id},
+        )
+        db.commit()
+        db.expire_all()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] != "verified", report
+        stored = db.get(EvidenceRow, evidence.id)
+        assert stored is not None and stored.content_mac == legacy and stored.content_mac_version == 1
+
+
+def test_unauthenticated_pass_does_not_count_as_passed_every_check(tmp_path: Path):
+    from sdf_core.execution import check_retry_parent
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        stored = db.get(AttemptRow, attempt.id)
+        assert stored is not None
+        with pytest.raises(ValueError, match="nothing to retry"):
+            check_retry_parent(db, stored)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        db.execute(text("UPDATE evidence SET content_mac = NULL WHERE id = :id"), {"id": evidence.id})
+        db.commit()
+        db.expire_all()
+        check_retry_parent(db, db.get(AttemptRow, attempt.id))
+
+
+def test_scorecard_loader_does_not_trust_a_cleared_content_mac(tmp_path: Path):
+    from sdf_core.impact_repository import load_scorecard_facts
+
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        evidence = db.query(EvidenceRow).filter_by(
+            attempt_id=attempt.id, evidence_class="verification",
+        ).one()
+        db.execute(text("UPDATE evidence SET content_mac = NULL WHERE id = :id"), {"id": evidence.id})
+        db.commit()
+        db.expire_all()
+        facts = load_scorecard_facts(db)
+        fact = next(item for item in facts.evidence if item.evidence_id == evidence.id)
+        parent = next(item for item in facts.attempts if item.attempt_id == attempt.id)
+        assert is_verified_pass(
+            fact, attempt_agent=parent.agent, artifact_sha256=parent.artifact_sha256,
+        ) is False
+        assert db.get(EvidenceRow, evidence.id).content_mac is None
