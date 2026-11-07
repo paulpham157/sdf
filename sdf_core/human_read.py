@@ -174,6 +174,14 @@ def objective_item(row: GraphNodeRow) -> dict[str, Any]:
     })
 
 
+# One inbox request reads at most this many pending rows, plus one extra row
+# that tells us whether another window exists. Own-plan filtering stays in
+# Python (``str.casefold``, the same comparison as ``decide_plan``). SQL
+# ``lower()`` is not that comparison. A longer run of ineligible rows continues
+# on the next cursor instead of scanning the rest of the table in this request.
+_INBOX_SCAN_CAP = 100
+
+
 def _plans_for(db: Session, rows: list[DecisionRequestRow]) -> dict[str, PlanRow]:
     ids = [row.subject_id for row in rows if row.subject_kind == "plan"]
     if not ids:
@@ -181,66 +189,71 @@ def _plans_for(db: Session, rows: list[DecisionRequestRow]) -> dict[str, PlanRow
     return {plan.id: plan for plan in db.scalars(select(PlanRow).where(PlanRow.id.in_(ids)))}
 
 
-def _proposer_may_not_see(plan: PlanRow | None, principal: Principal) -> bool:
-    """Same casefold comparison ``decide_plan`` uses to refuse self-approval."""
+def _inbox_visible(row: DecisionRequestRow, plan: PlanRow | None, principal: Principal) -> bool:
+    """Pending rows the caller may approve or resolve.
 
-    if plan is None or single_user_mode():
+    A plan request with no plan row is not actionable (``decide_plan`` cannot
+    resolve it). Otherwise the plan is hidden when ``proposed_by`` casefolds
+    to the caller, unless single-user mode is on.
+    """
+
+    if row.subject_kind != "plan":
+        return True
+    if plan is None:
         return False
-    return principal.name.casefold() == (plan.proposed_by or "").casefold()
+    if single_user_mode():
+        return True
+    return principal.name.casefold() != (plan.proposed_by or "").casefold()
 
 
 def inbox_page(
     db: Session, principal: Principal, limit: int, cursor: str | None,
 ) -> tuple[list[tuple[DecisionRequestRow, PlanRow | None]], str | None]:
-    """Pending requests this caller may approve or resolve.
+    """One bounded window of pending requests this caller may approve.
 
-    A caller who cannot approve gets an empty page. A plan the caller proposed
-    is omitted unless single-user mode is on. The cursor is the last included
-    row, so a filtered plan does not consume a slot or stall the next page.
+    At most ``_INBOX_SCAN_CAP`` pending rows are read, in ``(created_at, id)``
+    order, strictly after ``cursor``. Ineligible rows in that window do not
+    occupy a slot in ``items``. When the window ends before the page is full
+    and another row exists, ``next_cursor`` is the last row examined (an
+    opaque keyset position) so the next request does not reread it. When the
+    page fills, ``next_cursor`` is the last returned item, as ADR 0044 states.
+    A caller who cannot approve gets an empty page and no query of the table.
     """
 
     if cursor:
         decode_cursor(cursor)  # 422 for everyone, including a caller who sees nothing
     if not principal.can_approve:
         return [], None
+    scanned = decode_cursor(cursor) if cursor else None
+    query = select(DecisionRequestRow).where(DecisionRequestRow.status == "pending")
+    if scanned is not None:
+        query = query.where(_after(DecisionRequestRow, scanned[0], scanned[1]))
+    window = list(db.scalars(
+        query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(_INBOX_SCAN_CAP + 1)
+    ))
+    more = len(window) > _INBOX_SCAN_CAP
+    batch = window[:_INBOX_SCAN_CAP]
+    plans = _plans_for(db, batch)
     found: list[tuple[DecisionRequestRow, PlanRow | None]] = []
-    scanned: tuple[datetime, str] | None = decode_cursor(cursor) if cursor else None
-    seen: set[str] = set()
-    while len(found) <= limit:
-        query = select(DecisionRequestRow).where(DecisionRequestRow.status == "pending")
-        if scanned is not None:
-            query = query.where(_after(DecisionRequestRow, scanned[0], scanned[1]))
-        batch = list(db.scalars(query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(100)))
-        if not batch:
+    for row in batch:
+        plan = plans.get(row.subject_id) if row.subject_kind == "plan" else None
+        if not _inbox_visible(row, plan, principal):
+            continue
+        found.append((row, plan))
+        if len(found) > limit:
             break
-        plans = _plans_for(db, batch)
-        advanced = False
-        for row in batch:
-            if row.id in seen:
-                batch = []
-                break
-            seen.add(row.id)
-            advanced = True
-            scanned = (row.created_at, row.id)
-            plan = plans.get(row.subject_id) if row.subject_kind == "plan" else None
-            if row.subject_kind == "plan" and _proposer_may_not_see(plan, principal):
-                continue
-            found.append((row, plan))
-            if len(found) > limit:
-                break
-        if not advanced or len(batch) < 100:
-            break
-    next_cursor = None
     if len(found) > limit:
         last = found[limit - 1][0]
-        next_cursor = encode_cursor(last.created_at, last.id)
-        found = found[:limit]
-    return found, next_cursor
+        return found[:limit], encode_cursor(last.created_at, last.id)
+    if more and batch:
+        last = batch[-1]
+        return found, encode_cursor(last.created_at, last.id)
+    return found, None
 
 
 def inbox_item(db: Session, request: DecisionRequestRow, plan: PlanRow | None) -> dict[str, Any]:
     payload = {**decision_request_payload(request), **material_payload(db, request), "actionable": True}
-    if request.subject_kind == "plan":
-        payload["proposed_by"] = plan.proposed_by if plan is not None else None
-        payload["content_sha256"] = plan.content_sha256 if plan is not None else None
+    if request.subject_kind == "plan" and plan is not None:
+        payload["proposed_by"] = plan.proposed_by
+        payload["content_sha256"] = plan.content_sha256
     return redact_payload(payload)
