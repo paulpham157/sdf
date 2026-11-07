@@ -3,8 +3,8 @@
 Liveness is a lease, not ``RuntimeController.recover`` (ADR 0029 only restores
 a runtime-event stream). This process treats an Attempt as live while the
 ``ExecutionService`` that started it is still alive. Another process is live
-while its heartbeat is newer than :data:`LEASE_TTL`. Lease expiry does not
-prove remote work has stopped. A provider create commits ``remote_effect``
+while its heartbeat is newer than :data:`LEASE_TTL` on the database clock.
+Lease expiry does not prove remote work has stopped. A provider create commits ``remote_effect``
 ``uncertain`` before the provider call, and that row stays ``running`` until
 stop is confirmed. Evidence mode is not that proof.
 """
@@ -19,8 +19,8 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session, object_session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from .db import AttemptRow, TaskRow
@@ -86,7 +86,9 @@ def claim_executor(owner: object, attempt: AttemptRow) -> None:
     with _lock:
         _owners[attempt.id] = owner
     attempt.executor_id = EXECUTOR_ID
-    attempt.executor_heartbeat_at = utcnow()
+    session = object_session(attempt)
+    # Stamp the database clock. The row is already flushed, so the session exists.
+    attempt.executor_heartbeat_at = lease_clock(session) if session is not None else utcnow()
 
 
 class AttemptFenceError(ValueError):
@@ -161,7 +163,8 @@ def executor_is_live(attempt: AttemptRow, *, now: datetime | None = None) -> boo
     A local owner that is still in ``_owners`` is authoritative for this
     process, even when its heartbeat is older than the lease (the refresher
     may be dead). A dropped local owner is dead even if the heartbeat is
-    fresh. Another process is live only while its heartbeat is inside the lease.
+    fresh.     Another process is live only while its heartbeat is inside the lease
+    measured on the clock passed in. Recovery passes the database clock.
     """
 
     now = now or utcnow()
@@ -455,7 +458,9 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
     does not settle one it left running.
     """
 
-    now = now or utcnow()
+    # Callers may pass ``now`` to simulate expiry. Production uses the database
+    # clock, so one process's wall clock cannot reap or spare another.
+    now = lease_clock(db) if now is None else now
     running = list(db.scalars(select(AttemptRow).where(AttemptRow.status == AttemptState.RUNNING.value)))
     live_tasks: set[str] = set()
     settled: list[str] = []
@@ -557,7 +562,7 @@ def _write_heartbeats(db: Session) -> None:
         ids = list(_owners.keys())
     if not ids:
         return
-    now = utcnow()
+    now = lease_clock(db)
     for attempt_id in ids:
         with _lock:
             if attempt_id not in _owners:
@@ -573,6 +578,21 @@ def _write_heartbeats(db: Session) -> None:
             .execution_options(synchronize_session=False)
         )
     db.commit()
+
+
+def lease_clock(db: Session) -> datetime:
+    """Aware UTC time from the database, not from this process.
+
+    PostgreSQL uses ``clock_timestamp()`` (the statement clock, not the
+    transaction start). SQLite ``CURRENT_TIMESTAMP`` is UTC and naive; it is
+    treated as UTC. Other application timestamps stay on ``utcnow``.
+    """
+
+    dialect = db.get_bind().dialect.name
+    value = db.scalar(select(func.clock_timestamp() if dialect == "postgresql" else func.now()))
+    if not isinstance(value, datetime):
+        raise RuntimeError(f"database clock was {value!r}")
+    return _as_utc(value)
 
 
 def _as_utc(value: datetime) -> datetime:

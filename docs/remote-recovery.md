@@ -18,17 +18,23 @@ A new explicit `dispatch_key` is refused while any row for that Task is not `abs
 
 A worker retry that already holds a sandbox id records that id as `identified`. It does not open a `creating` row with a null id. Reconnect of an existing id does not count as another create.
 
-After a kill that this process believes succeeded, E2B `get_info` is the check that may set `absent`. That check does not run in the hermetic suite and does not run when `E2B_API_KEY` is unset. The row then stays `identified` until reconcile. `Sandbox.kill` returning success is not the check.
+After a kill that this process believes succeeded, a separate lookup may set `absent`. That lookup does not run in the hermetic suite and does not run when the provider key is unset. The row then stays `identified` until reconcile. A kill or delete return value is not the check.
+
+The lease that decides whether a foreign executor is still live is the database clock (`clock_timestamp()` on PostgreSQL, `CURRENT_TIMESTAMP` on SQLite). One API process being ahead or behind does not reap or spare that executor. The 30 second TTL is unchanged. Other timestamps in the product still use the application clock.
 
 ## Reconcile
 
 `POST /attempts/{attempt_id}/remote-effects/reconcile` (admin) takes no "mark stopped" flag.
 
-For each `identified` row it asks the configured provider to kill that id, then calls a separate lookup. Only a lookup that reports the id missing sets `phase=absent`. `Sandbox.kill` returning success is not that lookup. E2B absence is `Sandbox.get_info` raising not-found. Any other error leaves the row in place. Daytona ids are not looked up by this build, so they stay `identified`.
+For each `identified` row it asks the configured provider to kill that id, then calls a separate lookup. Only a lookup that reports the id missing sets `phase=absent`. `Sandbox.kill` or `Daytona.delete` returning is not that lookup.
+
+E2B absence is `Sandbox.get_info` raising not-found. Any other error leaves the row in place.
+
+Daytona absence is `Daytona.get` raising not-found (HTTP 404) or returning state `destroyed`. `stopped` and `paused` can be started again, so they stay `identified`. `unknown`, `error`, `destroying`, an authentication failure, and any other error also stay `identified`. Delete is requested with `wait=False`; acceptance of that request is not absence.
 
 When every row is `absent`, `remote_effect` becomes `stopped` and lease recovery may settle a still-`running` Attempt. A second reconcile is a no-op.
 
-Hermetic tests set `SDF_TEST_HERMETIC=1` and do not call a provider. A deployment without `E2B_API_KEY` also has no lookup: reconcile returns `blocked=probe_unavailable` and changes nothing.
+Hermetic tests set `SDF_TEST_HERMETIC=1` and do not call a provider. A deployment with neither `E2B_API_KEY` nor `DAYTONA_API_KEY` has no lookup: reconcile returns `blocked=probe_unavailable` and changes nothing. A key for one provider does not prove the other provider's id is gone.
 
 ## Unknown create
 
@@ -54,14 +60,12 @@ Repeating reconcile is safe. It does not create sandboxes. It does not clear an 
 
 ## Rollout
 
-Apply migrations through `0031_attempt_remote_sandboxes` before serving traffic that creates provider sandboxes. Rows written before that table existed have no sandbox inventory. A `live` Attempt with no sandbox rows still stays `running` on lease expiry. It is not marked `stopped` for lack of rows.
+Apply migrations through `0032_attempt_remote_sandboxes` (it revises `0031_evidence_mac_v2`) before serving traffic that creates provider sandboxes. Rows written before that table existed have no sandbox inventory. A `live` Attempt with no sandbox rows still stays `running` on lease expiry. It is not marked `stopped` for lack of rows.
 
 In-process fake adapters never open a sandbox row. A crash before any provider call remains retryable.
 
 ## Not solved
 
-- Application-clock lease TTL. Two processes can disagree about whether a heartbeat is fresh. The recovery update still requires the heartbeat value it read, but it does not move the clock into the database.
-- A sandbox created and then lost with no id and no metadata match.
+- A sandbox created and then lost with no id. Reconcile does not list E2B or Daytona to guess which sandbox it was. An empty list is not proof.
 - The coordinator lead sandbox, which has no Attempt.
-- Daytona absence. This build does not call a Daytona lookup.
-- No live provider was required to merge this behavior. Kill-success from the SDK is not treated as proof.
+- No live E2B or Daytona sandbox was created for this behavior. The Daytona rules above are the SDK's documented `get` and state values, executed here against those result objects, not against a Daytona account. Kill or delete success is not proof.

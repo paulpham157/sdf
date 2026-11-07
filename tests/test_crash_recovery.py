@@ -1856,6 +1856,107 @@ def test_finished_attempt_with_a_known_sandbox_blocks_until_lookup(tmp_path: Pat
     db.close()
 
 
+def test_database_clock_not_the_application_clock_decides_the_lease(tmp_path: Path, monkeypatch) -> None:
+    """A fast application clock must not reap a database-fresh heartbeat.
+
+    A slow application clock must not keep a database-expired heartbeat.
+    """
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.recovery import _owners, lease_clock
+
+    task_id = "TASK-DB-CLOCK"
+    db, service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    _owners.pop(attempt_id, None)
+    row = db.get(AttemptRow, attempt_id)
+    row.executor_id = "foreign-clock"
+    fresh = lease_clock(db)
+    row.executor_heartbeat_at = fresh
+    db.commit()
+    monkeypatch.setattr("sdf_core.recovery.utcnow", lambda: fresh + timedelta(hours=1))
+    assert attempt_id not in recover_orphaned_attempts(db)
+    db.expire_all()
+    assert db.get(AttemptRow, attempt_id).status == "running"
+
+    expired = lease_clock(db) - LEASE_TTL - timedelta(seconds=5)
+    db.get(AttemptRow, attempt_id).executor_heartbeat_at = expired
+    db.commit()
+    monkeypatch.setattr("sdf_core.recovery.utcnow", lambda: expired + timedelta(seconds=1))
+    assert attempt_id in recover_orphaned_attempts(db)
+    db.expire_all()
+    assert db.get(AttemptRow, attempt_id).status == "failed"
+    db.close()
+    del service
+
+
+def test_daytona_stopped_or_paused_is_not_absence_and_not_found_is(tmp_path: Path, monkeypatch) -> None:
+    """Daytona get distinguishes destroyed from stopped, paused, unknown, and auth errors."""
+
+    monkeypatch.chdir(tmp_path)
+    from daytona import DaytonaAuthenticationError, DaytonaNotFoundError, SandboxState
+
+    from sdf_core.db import AttemptRemoteSandboxRow
+    from sdf_core.remote_effects import daytona_get_is_absent, identify_remote_sandbox, reconcile_attempt
+
+    def lookup(outcome):
+        def get(_sandbox_id: str):
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        return get
+
+    class _Box:
+        def __init__(self, state):
+            self.state = state
+
+    assert daytona_get_is_absent(lookup(DaytonaNotFoundError("gone", status_code=404)), "sbx") is True
+    assert daytona_get_is_absent(lookup(_Box(SandboxState.DESTROYED)), "sbx") is True
+    for state in (
+        SandboxState.STOPPED, SandboxState.PAUSED, SandboxState.STARTED,
+        SandboxState.UNKNOWN, SandboxState.ERROR, SandboxState.DESTROYING,
+    ):
+        assert daytona_get_is_absent(lookup(_Box(state)), "sbx") is False
+    assert daytona_get_is_absent(
+        lookup(DaytonaAuthenticationError("denied", status_code=401)), "sbx",
+    ) is False
+
+    task_id = "TASK-DAYTONA-ABSENT"
+    db, _service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    effect_id = _fence_create(attempt_id)
+
+    def stopped_get(_sandbox_id: str):
+        return _Box(SandboxState.STOPPED)
+
+    def missing_get(_sandbox_id: str):
+        raise DaytonaNotFoundError("gone", status_code=404)
+
+    def check(side) -> None:
+        row = side.get(AttemptRemoteSandboxRow, effect_id)
+        row.provider = "daytona"
+        identify_remote_sandbox(side, effect_id, "sbx-daytona")
+        held = reconcile_attempt(
+            side, attempt_id, kill=lambda _provider, _sandbox_id: None,
+            absent=lambda provider, sandbox_id: (
+                provider == "daytona" and daytona_get_is_absent(stopped_get, sandbox_id)
+            ),
+        )
+        assert held.resolved is False and held.blocked == "still_present"
+        cleared = reconcile_attempt(
+            side, attempt_id, kill=lambda _provider, _sandbox_id: None,
+            absent=lambda provider, sandbox_id: (
+                provider == "daytona" and daytona_get_is_absent(missing_get, sandbox_id)
+            ),
+        )
+        assert cleared.resolved is True and cleared.blocked is None
+
+    _with_session(check)
+    assert _row_effect(attempt_id)[1] == "stopped"
+    db.close()
+
+
 def test_reconcile_does_not_clear_an_unknown_create(tmp_path: Path, monkeypatch) -> None:
     """An observed id can be verified. The create that never recorded an id stays."""
 

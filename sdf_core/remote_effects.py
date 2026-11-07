@@ -229,12 +229,35 @@ def reconcile_attempt(
     return _result(db, attempt_id, rows, blocked=blocked)
 
 
-def probe_from_environ(environ: Mapping[str, str] | None = None) -> tuple[Kill | None, Absent | None]:
-    """E2B lookup used outside the hermetic suite.
+def daytona_get_is_absent(get: Callable[[str], object], sandbox_id: str) -> bool:
+    """True only when ``Daytona.get`` reports the sandbox gone.
 
-    ``Sandbox.kill`` returning true is not treated as absence. Absence is
-    ``Sandbox.get_info`` raising not-found. Any other error is not absence.
-    Daytona has no lookup wired here. Hermetic runs do not call the provider.
+    The SDK maps HTTP 404 to ``DaytonaNotFoundError``. A returned sandbox is
+    absent only in state ``destroyed``. ``stopped`` and ``paused`` can be
+    started again. ``unknown``, ``error``, authentication failures, and any
+    other exception are not absence. This does not list sandboxes, so a
+    create that never stored an id is not resolved here.
+    """
+
+    try:
+        sandbox = get(sandbox_id)
+    except Exception as exc:
+        if getattr(exc, "status_code", None) == 404 or type(exc).__name__ == "DaytonaNotFoundError":
+            return True
+        return False
+    state = getattr(sandbox, "state", None)
+    value = getattr(state, "value", state)
+    return str(value) == "destroyed"
+
+
+def probe_from_environ(environ: Mapping[str, str] | None = None) -> tuple[Kill | None, Absent | None]:
+    """Provider lookup used outside the hermetic suite.
+
+    E2B absence is ``Sandbox.get_info`` raising not-found. ``Sandbox.kill``
+    returning true is not absence. Daytona absence is :func:`daytona_get_is_absent`
+    after ``Daytona.get``. ``Daytona.delete`` returning is not absence.
+    Hermetic runs do not call a provider. A missing key for that provider
+    is not absence.
     """
 
     import os
@@ -246,35 +269,62 @@ def probe_from_environ(environ: Mapping[str, str] | None = None) -> tuple[Kill |
     # in that mapping and must not call the provider.
     if env.get("SDF_TEST_HERMETIC") == "1" or os.environ.get("SDF_TEST_HERMETIC") == "1":
         return None, None
-    api_key = (env.get("E2B_API_KEY") or "").strip()
-    if not api_key:
+    e2b_key = (env.get("E2B_API_KEY") or "").strip()
+    daytona_key = (env.get("DAYTONA_API_KEY") or "").strip()
+    if not e2b_key and not daytona_key:
         return None, None
     domain = (env.get("E2B_DOMAIN") or "").strip() or None
 
-    def call_kwargs() -> dict[str, str]:
-        opts = {"api_key": api_key}
+    def e2b_kwargs() -> dict[str, str]:
+        opts = {"api_key": e2b_key}
         if domain:
             opts["domain"] = domain
         return opts
 
-    def kill(provider: str, sandbox_id: str) -> None:
-        if provider not in {"e2b", "e2b-box"}:
-            raise RuntimeError(f"no kill wired for provider {provider}")
-        from e2b import Sandbox
+    def daytona_client():
+        from daytona import Daytona, DaytonaConfig
 
-        Sandbox.kill(sandbox_id, **call_kwargs())
+        kwargs: dict[str, str] = {"api_key": daytona_key}
+        if (env.get("DAYTONA_API_URL") or "").strip():
+            kwargs["api_url"] = env["DAYTONA_API_URL"].strip()
+        if (env.get("DAYTONA_TARGET") or "").strip():
+            kwargs["target"] = env["DAYTONA_TARGET"].strip()
+        return Daytona(DaytonaConfig(**kwargs))
+
+    def kill(provider: str, sandbox_id: str) -> None:
+        if provider in {"e2b", "e2b-box"}:
+            if not e2b_key:
+                raise RuntimeError("no E2B key for kill")
+            from e2b import Sandbox
+
+            Sandbox.kill(sandbox_id, **e2b_kwargs())
+            return
+        if provider == "daytona":
+            if not daytona_key:
+                raise RuntimeError("no Daytona key for delete")
+            client = daytona_client()
+            # delete() accepts the request and returns. That is not absence.
+            client.delete(client.get(sandbox_id), timeout=60, wait=False)
+            return
+        raise RuntimeError(f"no kill wired for provider {provider}")
 
     def absent(provider: str, sandbox_id: str) -> bool:
-        if provider not in {"e2b", "e2b-box"}:
-            return False
-        from e2b import Sandbox, SandboxNotFoundException
+        if provider in {"e2b", "e2b-box"}:
+            if not e2b_key:
+                return False
+            from e2b import Sandbox, SandboxNotFoundException
 
-        try:
-            Sandbox.get_info(sandbox_id, **call_kwargs())
-        except SandboxNotFoundException:
-            return True
-        except Exception:
+            try:
+                Sandbox.get_info(sandbox_id, **e2b_kwargs())
+            except SandboxNotFoundException:
+                return True
+            except Exception:
+                return False
             return False
+        if provider == "daytona":
+            if not daytona_key:
+                return False
+            return daytona_get_is_absent(daytona_client().get, sandbox_id)
         return False
 
     return kill, absent

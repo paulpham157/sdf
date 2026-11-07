@@ -298,27 +298,32 @@ Remaining limitations, which this ADR does not claim to close:
   `sdf_run`, and `sdf_agent`. A sandbox that died before those tags were
   stored will not be found by that filter, and this build does not treat an
   empty filter result as absence.
-- Daytona absence is not implemented. A Daytona id stays `identified`.
+- Daytona `get` confirms absence only for HTTP 404 or state `destroyed`.
+  `stopped`, `paused`, `unknown`, `error`, and authentication failures stay
+  `identified`. This was not executed against a Daytona account.
 - Recovery does not promise exactly-once behavior for arbitrary external side
   effects.
-- The lease clock is still the application clock (the open question below).
+- The lease stamp and the expiry comparison use the database clock. Other
+  product timestamps still use the application clock. The 30 second TTL is
+  unchanged. See the clock note below.
 - A process-local stop callback exists only in the process that registered
   it. Durable rows are the authority after restart. `note_remote_effect_stopped`
   still refuses while this process has recorded a failed stop, but a later
   lookup that reports a known id missing can mark that row `absent`.
 
-## Open question: lease clock
+## Lease clock
 
-The lease uses the application clock (`datetime.now(timezone.utc)` in the
-API process), not the database clock. Two processes, or a process and the
-database, can disagree. A clock that jumps forward makes a live heartbeat
-look stale, and recovery can reap a neighbor that is still working. A clock
-that jumps backward keeps a dead executor looking fresh until real time
-catches up. One alternative is to stamp and compare `executor_heartbeat_at`
-with the database clock (`now()` or `clock_timestamp()` on PostgreSQL), so
-every worker shares one clock. This pass does not change the clock source
-or the 30 second TTL. The owner should decide whether the database clock
-replaces the application clock.
+The lease stamp and the foreign-executor expiry check use the database clock.
+PostgreSQL reads `clock_timestamp()` so a long transaction does not freeze
+the lease. SQLite reads `CURRENT_TIMESTAMP`, which is UTC. A process whose
+wall clock is an hour ahead does not reap a heartbeat the database still
+calls fresh. A process whose wall clock is behind does not keep a heartbeat
+the database calls expired. The recovery UPDATE still has to match the
+`executor_id` and `executor_heartbeat_at` it read. The TTL stays 30 seconds.
+
+`utcnow()` remains the clock for other columns. Callers of
+`recover_orphaned_attempts` may still pass `now` in tests. Production does
+not.
 
 ## How this is proved
 
@@ -385,7 +390,8 @@ The create-window tests drive `E2BHerdrTransport._ensure_sandbox` or
 call E2B or Daytona.
 - `tests/test_api.py::test_explicit_keyless_prefix_is_rejected` expects 422.
 - `tests/test_migrations.py` upgrades an empty SQLite database to head and
-  back. The sandbox inventory is `0031_attempt_remote_sandboxes`. It does not
+  back. The sandbox inventory is `0032_attempt_remote_sandboxes`, which revises
+  `0031_evidence_mac_v2`. It does not
   rewrite `0027_attempt_executor_lease`.
 
 Durable rows and reconcile are also covered, still without a live provider:
@@ -402,6 +408,14 @@ Durable rows and reconcile are also covered, still without a live provider:
 - `tests/test_postgres_integration.py::test_postgresql_observed_lease_matches_and_a_committed_renewal_does_not`
   uses two PostgreSQL sessions. The unchanged snapshot matches. A heartbeat
   committed by the other session makes the recovery UPDATE match zero rows.
+
+`tests/test_crash_recovery.py::test_database_clock_not_the_application_clock_decides_the_lease`
+and `tests/test_postgres_integration.py::test_postgresql_lease_follows_the_database_clock_not_the_application_clock`
+move the application clock an hour ahead of a database-fresh heartbeat and
+one second after a database-expired heartbeat. The PostgreSQL test uses
+`clock_timestamp()` in real transactions. `test_daytona_stopped_or_paused_is_not_absence_and_not_found_is`
+uses the Daytona SDK's not-found error and `SandboxState` values. It does
+not call the Daytona API.
 
 No live E2B or Daytona sandbox was created, killed, or listed for this
 proof. The E2B absence check in `probe_from_environ` is the SDK `get_info`
