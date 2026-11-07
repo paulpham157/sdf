@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -1584,3 +1584,108 @@ def resolve_decision_request(request_id: str, payload: ResolveDecisionRequest, d
         db.rollback()
         raise _gate(exc) from exc
     return {**decision_request_payload(request), **material_payload(db, request)}
+
+
+# --- ADR 0044: human read model and approver inbox --------------------------------
+#
+# Collections and detail over rows that already exist. Reads do not add or
+# change domain rows. ``GET /decision-requests`` stays the unfiltered JSON array
+# above. ``viewer`` is the default for a safe method, so these routes are not
+# added to ``ROUTE_ROLES`` or ``PUBLIC_ROUTES``.
+
+from . import human_read  # noqa: E402
+from .human_read import CursorError  # noqa: E402
+
+_PageLimit = Annotated[int, Query(ge=1, le=100)]
+
+
+def _human_read(request: Request, items: int, *, cursor: str | None, actionable_count: int | None = None) -> None:
+    """One ``human_read`` log, and the same fields on the request span when tracing is on."""
+
+    route = getattr(request.scope.get("route"), "path", request.url.path)
+    fields: dict[str, Any] = {"route": route, "items": items, "cursor_present": cursor is not None}
+    if actionable_count is not None:
+        fields["actionable_count"] = actionable_count
+    _log.info("human_read", extra=fields)
+    tracing.set_attributes(**fields)
+
+
+def _read_page(loader):
+    try:
+        return loader()
+    except CursorError as exc:
+        raise HTTPException(status_code=422, detail="cursor is not valid") from exc
+
+
+@app.get("/tasks")
+def list_tasks(request: Request, db: Session = Depends(get_db), limit: _PageLimit = 50, cursor: str | None = None):
+    rows, next_cursor = _read_page(lambda: human_read.keyset_page(db, TaskRow, limit, cursor))
+    items = [human_read.task_item(row) for row in rows]
+    _human_read(request, len(items), cursor=cursor)
+    return {"items": items, "next_cursor": next_cursor}
+
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+    task = db.get(TaskRow, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    payload = human_read.task_detail(db, task)
+    _human_read(request, 1, cursor=None)
+    return payload
+
+
+@app.get("/attempts")
+def list_attempts(request: Request, db: Session = Depends(get_db), limit: _PageLimit = 50, cursor: str | None = None):
+    rows, next_cursor = _read_page(lambda: human_read.keyset_page(db, AttemptRow, limit, cursor))
+    items = [human_read.attempt_item(row) for row in rows]
+    _human_read(request, len(items), cursor=cursor)
+    return {"items": items, "next_cursor": next_cursor}
+
+
+@app.get("/attempts/{attempt_id}")
+def get_attempt(attempt_id: str, request: Request, db: Session = Depends(get_db)):
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    payload = human_read.attempt_item(attempt)
+    _human_read(request, 1, cursor=None)
+    return payload
+
+
+@app.get("/plans")
+def list_plans(
+    request: Request,
+    db: Session = Depends(get_db),
+    status: Literal["proposed", "approved", "rejected"] | None = None,
+    limit: _PageLimit = 50,
+    cursor: str | None = None,
+):
+    criteria = (PlanRow.status == status,) if status is not None else ()
+    rows, next_cursor = _read_page(lambda: human_read.keyset_page(db, PlanRow, limit, cursor, *criteria))
+    items = [human_read.plan_item(row) for row in rows]
+    _human_read(request, len(items), cursor=cursor)
+    return {"items": items, "next_cursor": next_cursor}
+
+
+@app.get("/objectives")
+def list_objectives(request: Request, db: Session = Depends(get_db), limit: _PageLimit = 50, cursor: str | None = None):
+    rows, next_cursor = _read_page(
+        lambda: human_read.keyset_page(db, GraphNodeRow, limit, cursor, GraphNodeRow.kind == "objective"))
+    items = [human_read.objective_item(row) for row in rows]
+    _human_read(request, len(items), cursor=cursor)
+    return {"items": items, "next_cursor": next_cursor}
+
+
+@app.get("/inbox")
+def get_inbox(
+    request: Request,
+    db: Session = Depends(get_db),
+    principal: _auth.Principal = Depends(current_principal),
+    limit: _PageLimit = 50,
+    cursor: str | None = None,
+):
+    page, next_cursor = _read_page(lambda: human_read.inbox_page(db, principal, limit, cursor))
+    items = [human_read.inbox_item(db, row, plan) for row, plan in page]
+    _human_read(request, len(items), cursor=cursor, actionable_count=len(items))
+    return {"items": items, "next_cursor": next_cursor}
