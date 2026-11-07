@@ -119,9 +119,11 @@ Each new row also carries `content_mac`, an HMAC-SHA256 over its verdict fields 
 
 `sdf-orch` ([ADR 0035](adr/0035-port-orchestration-core-to-go.md), proposed) is a Go process with an API gateway, task queue, Attempt dispatcher, in-process message bus and a local SQLite Tool Proxy fence ([ADR 0037](adr/0037-go-tool-proxy-fence-audit-parity.md), [ADR 0038](adr/0038-go-attempt-evidence-mode.md)). The Python Coordinator remains the single writer of Attempt state until a cutover is decided. See [sdf-orch.md](sdf-orch.md).
 
-## Human interaction (accepted, not built)
+## Human interaction
 
-[ADR 0044](adr/0044-human-read-model-and-approver-inbox.md) to [ADR 0047](adr/0047-console-ui.md) are accepted and fix the order of work: a read model and approver inbox over existing rows, then human cancel of one Attempt and human messages on the existing hub, then Server-Sent Events over the runtime-event stream, then a same-origin console that calls only the public API. None of these routes or the console exist in `sdf_core/api.py` yet. Human attestation of Evidence is deferred to a later ADR.
+[ADR 0044](adr/0044-human-read-model-and-approver-inbox.md) to [ADR 0047](adr/0047-console-ui.md) are accepted and fix the order of work: a read model and approver inbox over existing rows, then human cancel of one Attempt and human messages on the existing hub, then Server-Sent Events over the runtime-event stream, then a same-origin console that calls only the public API. Human attestation of Evidence is deferred to a later ADR.
+
+ADR 0044 is built (`sdf_core/human_read.py`). Viewer `GET /tasks`, `/attempts`, `/plans` and `/objectives` list existing rows in keyset pages (50 by default, at most 100), and `GET /tasks/{id}` and `GET /attempts/{id}` read one. `GET /inbox` lists the pending decision requests the caller may resolve: it is empty for a principal that cannot approve, and it omits a proposer's own plan unless single-user mode is on. Payloads are redacted and carry no lease columns, dispatch keys or held-out oracle output. Nothing on these routes writes a domain row. ADR 0045 to 0047 are not built yet.
 
 ## Diagrams
 

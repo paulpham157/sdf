@@ -246,6 +246,13 @@
 
 ### Added
 
+- **Human read model and approver inbox (ADR 0044).** Viewer `GET /tasks`,
+  `/attempts`, `/plans` and `/objectives` list rows in keyset pages (50 by
+  default, at most 100); `GET /tasks/{id}` and `GET /attempts/{id}` read one.
+  `GET /inbox` lists the pending decision requests the caller may resolve,
+  empty for a principal that cannot approve. Payloads are redacted and omit
+  lease columns, dispatch keys and held-out oracle output.
+  `GET /decision-requests` is unchanged.
 - **Go orchestration core `sdf-orch` (ADR 0035, proposed).** `go/cmd/sdf-orch`
   runs an API gateway, task queue, Attempt dispatcher and in-process message
   bus, with `/healthz` and `/metrics`. Its Tool Proxy idempotency fence keeps a
