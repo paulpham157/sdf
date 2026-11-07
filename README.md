@@ -7,6 +7,8 @@
 - A durable **Decision Graph**: Business Context → Objective → Task → Attempt → Artifact → Evidence.
 - An evaluator-led execution loop: agents do work; independent checks determine the outcome.
 - Bounded, evidence-driven model escalation (`basic` → `medium` → `high`).
+- Classed Evidence: execution (the Attempt ran), verification (a sealed-oracle verdict) and outcome (an approver-recorded business result). Only verification accepts a Task, and every row carries a content MAC.
+- Exactly-once dispatch: a retried `POST /tasks/{id}/run` replays its Attempt, and an Attempt whose executor died is settled `failed`.
 - Policy-controlled, Attempt-bound tool actions with optional containment.
 - A FastAPI API, SQLAlchemy persistence, Alembic migrations, and PostgreSQL support.
 
@@ -22,7 +24,7 @@ SDF_AUTH_DEV_INSECURE=1 uv run uvicorn sdf_core.api:app --reload --host 127.0.0.
 
 ### Offline evidence demo
 
-`scripts/demo-evidence.sh` walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, the task trace, and `python -m sdf_core.cli runs show`. It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
+`scripts/demo-evidence.sh` walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, the task trace, and `python -m sdf_core.cli runs show`. It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle runs nowhere else, and any other check result is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
 
 ```bash
 scripts/demo-evidence.sh
@@ -30,14 +32,14 @@ scripts/demo-evidence.sh
 
 The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval.
 
-`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact.
+`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact. The run also writes one execution Evidence row (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)).
 
 The script prints these results:
 
 - Run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`.
 - `GET /evidence/{id}`: `status=PASS`, `verifier_identity=sdf-evaluator`, `revision_id`, and `tree_sha256`.
 - `GET /attempts/{id}/revision`: `result_tree_sha256`. `base_commit` is null because this fixture records a tree id, not a git commit.
-- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and Evidence, with Evidence `validates` the Assumption. The fake adapter records no runtime events.
+- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and both Evidence rows. Only the verification row `validates` the Assumption. The fake adapter records no runtime events.
 - `python -m sdf_core.cli runs show <attempt id>`: the same timeline. `usage_ledger` has no rows for this adapter. `cost_usd` is `0` on the Attempt. That zero is unmetered. It is not an invoice and not an `SDF_PRICE_*` or `SDF_E2B_USD_PER_SECOND` estimate.
 
 The state database is a temporary SQLite file. Workspaces and artifacts land in `.sdf-workspaces/` and `.sdf-artifacts/`.
