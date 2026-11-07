@@ -14,10 +14,11 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, collate, or_, select
 from sqlalchemy.orm import Session
 
 from .auth import Principal, single_user_mode
+from .casefold import casefold
 from .db import AttemptRow, DecisionRequestRow, GraphNodeRow, PlanRow, TaskRow
 from .decision_gate import material_payload
 from .observability import redact_value
@@ -174,36 +175,48 @@ def objective_item(row: GraphNodeRow) -> dict[str, Any]:
     })
 
 
-def _same_proposer(proposed_by: str | None, principal: Principal) -> bool:
-    """``decide_plan``'s separation-of-duties comparison (Python ``casefold``)."""
+class InboxNormalizationError(RuntimeError):
+    """The inbox cannot be listed because a plan fold is missing or wrong.
 
-    return principal.name.casefold() == (proposed_by or "").casefold()
-
-
-def _hidden_proposer_spellings(db: Session, principal: Principal) -> list[str]:
-    """Stored ``proposed_by`` values that casefold-equal the caller.
-
-    One query returns each distinct spelling of a pending plan, not one row
-    per plan. Python ``casefold`` chooses the spellings; the page query then
-    matches those exact strings. SQL ``lower()`` is not this comparison.
-    Single-user mode hides nothing, so it does not run the query.
+    The handler must not return a page. A partial list would look like a
+    complete inbox while omitting or mis-classifying plans.
     """
 
-    if single_user_mode():
-        return []
-    spellings = db.scalars(
-        select(PlanRow.proposed_by)
-        .join(
-            DecisionRequestRow,
-            and_(
-                DecisionRequestRow.subject_kind == "plan",
-                DecisionRequestRow.subject_id == PlanRow.id,
-                DecisionRequestRow.status == "pending",
-            ),
+
+def _identity_collation(db: Session) -> str:
+    """Bytewise equality. A locale collation must not merge two folds."""
+
+    name = db.get_bind().dialect.name
+    if name == "postgresql":
+        return "C"
+    if name == "sqlite":
+        return "BINARY"
+    raise InboxNormalizationError(f"unsupported database {name!r} for casefold identity")
+
+
+def _require_casefold_backfill(db: Session) -> None:
+    """One-row probe. A missing fold is a failed inbox, not a skipped plan."""
+
+    missing = db.scalar(select(PlanRow.id).where(PlanRow.proposed_by_casefold.is_(None)).limit(1))
+    if missing is not None:
+        raise InboxNormalizationError(
+            f"plan {missing} is missing proposed_by_casefold; inbox listing is unavailable "
+            "until migration 0030_plan_casefold has backfilled every plan"
         )
-        .distinct()
-    ).all()
-    return [name for name in spellings if _same_proposer(name, principal)]
+
+
+def _require_returned_fold(plan: PlanRow) -> None:
+    try:
+        expected = casefold(plan.proposed_by or "")
+    except ValueError as exc:
+        raise InboxNormalizationError(
+            f"plan {plan.id} proposer cannot be casefolded; inbox listing is unavailable"
+        ) from exc
+    if plan.proposed_by_casefold != expected:
+        raise InboxNormalizationError(
+            f"plan {plan.id} proposed_by_casefold does not match the pinned casefold; "
+            "inbox listing is unavailable"
+        )
 
 
 def inbox_page(
@@ -211,23 +224,37 @@ def inbox_page(
 ) -> tuple[list[tuple[DecisionRequestRow, PlanRow | None]], str | None]:
     """Pending requests this caller may approve, in ``(created_at, id)`` order.
 
-    The page is ``limit`` eligible rows (plus one lookahead the caller does
-    not see). ``next_cursor`` is that last returned row, or null when no
-    eligible row remains. A plan request is eligible only when its plan row
-    exists and, unless single-user mode is on, ``proposed_by`` does not
-    casefold-equal the caller. A caller who cannot approve gets an empty page
-    and does not query the inbox tables.
+    ``next_cursor`` is the last returned row, or null when no eligible row
+    remains. The database may read ineligible pending rows while it fills
+    ``LIMIT``. The application receives at most ``limit + 1`` of them and one
+    bound fold of the caller, not a list of proposers.
 
-    The database may walk past ineligible rows while filling ``LIMIT``. The
-    application materializes at most ``limit + 1`` decision rows, plus one
-    string per distinct pending proposer spelling.
+    A missing plan row is not actionable. A missing or incorrect
+    ``proposed_by_casefold`` aborts the listing. Single-user mode does not
+    hide the caller's plans. A caller who cannot approve gets an empty page
+    after the missing-fold probe and does not run the page query.
     """
 
     if cursor:
         decode_cursor(cursor)  # 422 for everyone, including a caller who sees nothing
+    _require_casefold_backfill(db)
     if not principal.can_approve:
         return [], None
-    hidden = _hidden_proposer_spellings(db, principal)
+    try:
+        caller_fold = casefold(principal.name)
+    except ValueError as exc:
+        raise InboxNormalizationError(
+            f"caller identity cannot be casefolded; inbox listing is unavailable: {exc}"
+        ) from exc
+    collation = _identity_collation(db)
+    has_plan = PlanRow.id.is_not(None)
+    if single_user_mode():
+        visible_plan = has_plan
+    else:
+        visible_plan = and_(
+            has_plan,
+            collate(PlanRow.proposed_by_casefold, collation) != caller_fold,
+        )
     query = (
         select(DecisionRequestRow, PlanRow)
         .outerjoin(
@@ -238,21 +265,17 @@ def inbox_page(
             ),
         )
         .where(DecisionRequestRow.status == "pending")
+        .where(or_(DecisionRequestRow.subject_kind != "plan", visible_plan))
     )
-    if hidden:
-        ineligible = and_(
-            DecisionRequestRow.subject_kind == "plan",
-            or_(PlanRow.id.is_(None), PlanRow.proposed_by.in_(hidden)),
-        )
-    else:
-        ineligible = and_(DecisionRequestRow.subject_kind == "plan", PlanRow.id.is_(None))
-    query = query.where(~ineligible)
     if cursor:
         created_at, row_id = decode_cursor(cursor)
         query = query.where(_after(DecisionRequestRow, created_at, row_id))
     rows = list(db.execute(
         query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(limit + 1)
     ).all())
+    for _request, plan in rows:
+        if plan is not None:
+            _require_returned_fold(plan)
     next_cursor = None
     if len(rows) > limit:
         last = rows[limit - 1][0]

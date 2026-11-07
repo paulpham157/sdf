@@ -378,3 +378,33 @@ Code for step 4 starts only after all four are accepted. Human attestation
 of evidence is not one of the four steps. No attestation code starts until
 a later ADR defines an explicit attestation class and rule. ADR 0045
 records that boundary.
+
+## Amendment: proposer casefold column
+
+The inbox must hide a plan when `proposed_by.casefold()` equals the caller,
+the same comparison `decide_plan` uses, without loading every proposer.
+That comparison is `str.casefold`, not SQL `lower()`.
+
+`plans.proposed_by_casefold` stores `str.casefold(proposed_by)` at insert.
+Migration `0030_plan_casefold` backfills existing rows in Python, in batches,
+and then rejects a missing fold. The inbox compares that column to
+`str.casefold` of the caller with a binary collation (`C` on PostgreSQL,
+`BINARY` on SQLite). It does not repair rows on GET. A missing fold or a
+stored fold that disagrees with `str.casefold(proposed_by)` on a row the
+page would return makes `GET /inbox` fail instead of returning a partial list.
+`can_approve` false still yields an empty page only when every plan has a
+fold; a missing fold fails the listing for that caller too, because an empty
+page would otherwise look complete.
+
+Python 3.11, 3.12, and 3.13 ship Unicode 14.0.0, 15.0.0, and 15.1.0. Full
+casefold mappings are the same in those versions, so `str.casefold` agrees.
+Any other Unicode version is refused at fold time. A direct write that stores
+a non-null but wrong fold is unsupported: the database can require the value
+and freeze it, and it cannot recompute `str.casefold`.
+
+The equality index finds one caller's plans. The inbox still walks pending
+requests in `(created_at, id)` order and skips the caller's rows inside the
+database while it fills `LIMIT`. That walk is not an application fetch, and
+the equality index does not make it a seek. `next_cursor` remains the last
+returned item, or null when nothing eligible remains.
+

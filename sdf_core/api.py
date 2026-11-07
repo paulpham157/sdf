@@ -1594,7 +1594,7 @@ def resolve_decision_request(request_id: str, payload: ResolveDecisionRequest, d
 # added to ``ROUTE_ROLES`` or ``PUBLIC_ROUTES``.
 
 from . import human_read  # noqa: E402
-from .human_read import CursorError  # noqa: E402
+from .human_read import CursorError, InboxNormalizationError  # noqa: E402
 
 _PageLimit = Annotated[int, Query(ge=1, le=100)]
 
@@ -1685,7 +1685,10 @@ def get_inbox(
     limit: _PageLimit = 50,
     cursor: str | None = None,
 ):
-    page, next_cursor = _read_page(lambda: human_read.inbox_page(db, principal, limit, cursor))
+    try:
+        page, next_cursor = _read_page(lambda: human_read.inbox_page(db, principal, limit, cursor))
+    except InboxNormalizationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     items = [human_read.inbox_item(db, row, plan) for row, plan in page]
     _human_read(request, len(items), cursor=cursor, actionable_count=len(items))
     return {"items": items, "next_cursor": next_cursor}

@@ -709,6 +709,12 @@ def _decision_selects(statements: list[tuple]) -> list[tuple]:
     return selected
 
 
+def casefold_name(value: str) -> str:
+    from sdf_core.casefold import casefold
+
+    return casefold(value)
+
+
 def _bound_parameter(parameters) -> set:
     values: list = []
     if isinstance(parameters, dict):
@@ -727,11 +733,7 @@ def _bound_parameter(parameters) -> set:
 
 
 def test_inbox_page_is_bounded_across_self_proposed_plans():
-    """A long own-plan prefix does not batch rows in the application.
-
-    The page query's ``LIMIT`` is ``limit + 1`` eligible rows. Proposer
-    spellings arrive as one ``DISTINCT`` result, not one row per plan.
-    """
+    """A long own-plan prefix is filtered in SQL, not loaded as proposer names."""
 
     from sqlalchemy import event
 
@@ -752,6 +754,11 @@ def test_inbox_page_is_bounded_across_self_proposed_plans():
             db, plan_id=f"P-OTHER-{suffix}", proposed_by=other_name,
             created_at=base + timedelta(seconds=250),
         )
+        for index in range(100):
+            _pending_plan(
+                db, plan_id=f"P-DIST-{suffix}-{index:04d}", proposed_by=f"dist-{suffix}-{index:04d}",
+                created_at=base + timedelta(seconds=300 + index),
+            )
         db.commit()
 
     bind = SessionLocal.kw["bind"]
@@ -768,15 +775,18 @@ def test_inbox_page_is_bounded_across_self_proposed_plans():
     assert first.status_code == 200, first.text
     _assert_cursor_is_last_item(first.json())
     selects = _decision_selects(captured)
-    limited = [(statement, parameters) for statement, parameters in selects if "LIMIT" in statement.upper()]
-    distinct = [
-        statement for statement, _parameters in selects
-        if "DISTINCT" in statement.upper() and "proposed_by" in statement.lower()
+    limited = [
+        (statement, parameters) for statement, parameters in selects
+        if "LIMIT" in statement.upper() and "ORDER BY" in statement.upper()
     ]
-    assert len(limited) == 1, [statement[:240] for statement, _ in selects]
-    assert len(distinct) == 1, [statement[:240] for statement, _ in selects]
-    assert 2 in _bound_parameter(limited[0][1])
-    assert 251 not in _bound_parameter(limited[0][1])
+    assert len(limited) == 1, [statement[:300] for statement, _ in selects]
+    page_sql, page_params = limited[0]
+    assert "DISTINCT" not in page_sql.upper()
+    flat = _bound_parameter(page_params)
+    assert 2 in flat
+    assert casefold_name(proposer_name) in flat
+    assert other_name not in flat
+    assert not any(isinstance(value, str) and value.startswith(f"dist-{suffix}-") for value in flat)
     assert len(first.json()["items"]) <= 1
 
     seen_own = []
@@ -948,14 +958,18 @@ def test_inbox_page_bound_and_casefold_on_postgresql():
         finally:
             event.remove(engine, "before_cursor_execute", before)
         selects = _decision_selects(captured)
-        limited = [(statement, parameters) for statement, parameters in selects if "LIMIT" in statement.upper()]
-        distinct = [
-            statement for statement, _parameters in selects
-            if "DISTINCT" in statement.upper() and "proposed_by" in statement.lower()
+        limited = [
+            (statement, parameters) for statement, parameters in selects
+            if "LIMIT" in statement.upper() and "ORDER BY" in statement.upper()
         ]
-        assert len(limited) == 1, [statement[:240] for statement, _ in selects]
-        assert len(distinct) == 1
-        assert 2 in _bound_parameter(limited[0][1])
+        assert len(limited) == 1, [statement[:300] for statement, _ in selects]
+        page_sql, page_params = limited[0]
+        assert "DISTINCT" not in page_sql.upper()
+        flat = _bound_parameter(page_params)
+        assert 2 in flat
+        assert casefold_name(proposer_name) in flat
+        assert f"pg-other-{suffix}" not in flat
+        assert "DISTINCT" not in page_sql.upper()
         assert len(first_page) <= 1
         if cursor is not None:
             assert first_page
