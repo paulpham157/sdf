@@ -2126,7 +2126,7 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-sqlalchemy", marker = "extra == 'otel'", specifier = "==0.66b2" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.45.0,<1.46" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
-    { name = "sqlalchemy", specifier = ">=2.0,<3" },
+    { name = "sqlalchemy", specifier = ">=2.0,<2.1" },
     { name = "uvicorn", specifier = ">=0.32,<1" },
 ]
 provides-extras = ["otel"]
