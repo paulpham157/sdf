@@ -8,12 +8,10 @@ workspace or observe a credential-shaped variable the Attempt did not scope.
 
 G4. Rewriting an Evidence row's verdict and the sha256 stored beside the
 artifact bytes must make ``verify_attempt_revision`` fail. The content MAC
-(ADR 0043) is the commitment that rewrite does not update. A same-store
-writer, which SQLite allows, must also fail verification when it clears
-``content_mac`` on a row this process signed, or when it rewrites an
-acceptance column the MAC payload does not cover. A NULL MAC on a row that
-was never signed (written before migration 0029) is the legacy case and is
-not these tests.
+(ADR 0043) is that commitment. A same-store writer, which SQLite allows,
+must also fail verification when it clears ``content_mac`` or its version,
+or when it rewrites an acceptance column the current MAC binds. A NULL or
+format-1 MAC is not a pass and is not re-signed.
 """
 
 from __future__ import annotations
@@ -349,14 +347,10 @@ def test_rewritten_evidence_is_rejected_by_verification(tmp_path: Path):
         )
 
 
-# Columns ``acceptance.py`` uses to decide independence, binding, freshness, or
-# hidden-oracle status, and that ``evidence_content_mac`` does not sign.
-# Values are legal for the column and, where the acceptance gate reads the
-# column, still a forgery that gate accepts: a different verifier who is not
-# the attempt's agent, a non-agent role, an expiry further in the future, a
-# held-out bit, a non-empty oracle digest. Subject digest and evidence class
-# are included because the MAC omits them too; the acceptance gate may reject
-# those two forgeries on its own, which is not a content-MAC check.
+# Acceptance columns the current MAC must bind. Values stay legal. Where the
+# gate reads the column, the forgery is one that gate would still accept, so
+# only the MAC can catch it. Subject digest and evidence class may also be
+# rejected by that gate; that policy check is not a substitute for the MAC.
 _UNSIGNED_ACCEPTANCE_COLUMNS = (
     "verifier_identity",
     "verifier_role",
@@ -408,15 +402,9 @@ def _acceptance_after_rewrite(row, *, attempt_agent: str, artifact_sha256: str) 
 def test_cleared_modern_content_mac_is_rejected(tmp_path: Path):
     """G4: clearing content_mac on a signed row must not hide a verdict rewrite.
 
-    ADR 0043 / migration 0029 leave a genuine pre-migration row unsigned, and
-    ``verify_attempt_revision`` skips a falsy ``content_mac``. That skip is for
-    a row that was never signed. There is no immutable per-row marker that a
-    MAC is required. This row is inserted by this process, so the ORM stamps a
-    MAC. The tamper is the same SQLite rewrite as
-    ``test_rewritten_evidence_is_rejected_by_verification`` (verdict columns
-    plus the evaluator artifact bytes and ``artifacts.sha256``) and then sets
-    ``content_mac`` to NULL. Verification must reject it. This test does not
-    change the legacy unsigned-row rule.
+    The tamper matches ``test_rewritten_evidence_is_rejected_by_verification``
+    and then sets ``content_mac`` to NULL. Verification must reject it. The
+    row is not re-signed.
     """
 
     with _session() as db:
@@ -476,15 +464,10 @@ def test_cleared_modern_content_mac_is_rejected(tmp_path: Path):
 def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
     """G4: a same-store rewrite of an acceptance column must not stay verified.
 
-    ``evidence_content_mac`` signs the verdict and the bound artifact sha256.
-    It does not sign evidence class or mode, producer or verifier identity and
-    role, subject or oracle or environment digests, collection or expiry
-    timestamps, oracle visibility, or the input seed. ``acceptance.py`` uses
-    those columns. The MAC is computed before and after the SQL update. The
-    stored MAC is not rewritten. ``verify_attempt_revision`` must reject the
-    row. SQLite is the store, matching the other G4 test: PostgreSQL's
-    append-only trigger may block the UPDATE, and this finding is about the
-    write path that allows it.
+    The current MAC binds these columns. It is computed before and after the
+    SQL update and the stored MAC is not rewritten. SQLite allows the write.
+    PostgreSQL's append-only trigger may block it; that boundary is covered
+    on a real server, not with a mock.
     """
 
     forged = _FORGED_ACCEPTANCE_VALUE[column]
