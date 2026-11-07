@@ -44,11 +44,32 @@ def test_executor_lease_revision_upgrades_and_downgrades_on_sqlite(tmp_path, mon
         engine.dispose()
 
 
+def test_remote_effect_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monkeypatch):
+    """0030 adds the provider-create fence; downgrading it removes the column."""
+
+    database_url = f"sqlite:///{tmp_path / 'remote-effect.sqlite'}"
+    monkeypatch.setenv("SDF_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    try:
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert "remote_effect" in names
+        command.downgrade(config, "0029_evidence_content_mac")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert "remote_effect" not in names
+        command.upgrade(config, "head")
+        names = {column["name"] for column in inspect(engine).get_columns("attempts")}
+        assert "remote_effect" in names
+    finally:
+        engine.dispose()
+
+
 def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0030_evidence_mac_v2"]
+    assert script.get_heads() == ["0031_evidence_mac_v2"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 
@@ -151,8 +172,8 @@ def test_migration_0023_attempt_revisions_round_trips_on_sqlite(tmp_path, monkey
     engine.dispose()
 
 
-def test_migration_0030_versions_existing_macs_and_leaves_legacy_null(tmp_path, monkeypatch):
-    """0030 adds content_mac_version: existing MACs become v1, unsigned rows stay legacy."""
+def test_migration_0031_versions_existing_macs_and_leaves_legacy_null(tmp_path, monkeypatch):
+    """0031 adds content_mac_version: existing MACs become v1, unsigned rows stay legacy."""
 
     from sqlalchemy import text
 
@@ -160,7 +181,7 @@ def test_migration_0030_versions_existing_macs_and_leaves_legacy_null(tmp_path, 
     from sdf_core.evidence_mac import CONTENT_MAC_CURRENT
     from sdf_core.model import utcnow
 
-    database_url = f"sqlite:///{tmp_path / 'm0030.sqlite'}"
+    database_url = f"sqlite:///{tmp_path / 'm0031.sqlite'}"
     monkeypatch.setenv("SDF_DATABASE_URL", database_url)
     config = Config("alembic.ini")
     engine = create_engine(database_url)
@@ -205,7 +226,7 @@ def test_migration_0030_versions_existing_macs_and_leaves_legacy_null(tmp_path, 
         assert created.content_mac_version == CONTENT_MAC_CURRENT
         assert created.content_mac and len(created.content_mac) == 64
 
-    command.downgrade(config, "0029_evidence_content_mac")
+    command.downgrade(config, "0030_attempt_remote_effect")
     assert "content_mac_version" not in {c["name"] for c in inspect(engine).get_columns("evidence")}
     with engine.connect() as connection:
         macs = dict(connection.execute(text("SELECT id, content_mac FROM evidence")).all())

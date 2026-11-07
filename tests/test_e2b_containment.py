@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from sqlalchemy.orm import sessionmaker
+
 from sdf_core.containment import ContainmentUnavailable
+from sdf_core.db import AttemptRow, Base, TaskRow, make_engine
 from sdf_core.e2b_containment import (
     E2BContainmentBackend,
     attempt_owns_sandbox,
@@ -14,6 +17,25 @@ from sdf_core.e2b_containment import (
     box_state_dir,
 )
 from sdf_core.evaluator import DeterministicEvaluator
+from sdf_core.model import utcnow
+
+
+def _bind(backend: E2BContainmentBackend, attempt_id: str = "A") -> None:
+    engine = make_engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(engine, expire_on_commit=False)
+    db = factory()
+    db.add(TaskRow(
+        id=f"T-{attempt_id}", title="t", status="running", idempotency_key=f"k-{attempt_id}",
+        acceptance_criteria=[], created_at=utcnow(),
+    ))
+    db.add(AttemptRow(
+        id=attempt_id, task_id=f"T-{attempt_id}", status="running", dispatch_key=f"d-{attempt_id}",
+        agent="native", created_at=utcnow(),
+    ))
+    db.commit()
+    db.close()
+    backend.bind_attempt(attempt_id, factory)
 
 
 def test_e2b_probe_requires_plugin_and_key(monkeypatch):
@@ -40,6 +62,7 @@ def test_e2b_run_syncs_execs_and_kills_without_pulling(tmp_path: Path, monkeypat
     cwd = root / "subdir"
     cwd.mkdir(parents=True)
     backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "<REDACTED>", "E2B_DOMAIN": "e2b.dev"})
+    _bind(backend)
     result = backend.run(
         ["python", "-c", "print('ok')"], root=root, cwd=cwd,
         env={"SDF_NETWORK": "denied", "SDF_SANDBOX_ROOT": "/tmp/host-workspace"}, timeout_seconds=2,
@@ -65,6 +88,7 @@ def test_e2b_allows_agent_network_egress_when_requested(tmp_path: Path, monkeypa
         return json.dumps({"ok": True, "exitCode": 0, "stdout": "network-enabled", "stderr": ""}) if command[1] == "exec" else "{}"
 
     backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "<REDACTED>"})
+    _bind(backend, "A-NET")
     result = backend.run(["node", "-e", "console.log('ok')"], root=tmp_path, cwd=tmp_path, allow_network=True)
     assert result.returncode == 0
     assert result.stdout == "network-enabled"
@@ -80,6 +104,7 @@ def test_e2b_invalid_provider_result_is_fail_closed(tmp_path: Path, monkeypatch)
         return "{}" if command[1] != "exec" else json.dumps({"ok": False, "error": "gone"})
 
     backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "<REDACTED>"})
+    _bind(backend, "A-BAD")
     with pytest.raises(ContainmentUnavailable, match="could not measure"):
         backend.run(["true"], root=tmp_path, cwd=tmp_path)
     assert [call[1] for call in calls] == ["-t", "exec", "kill"]
@@ -165,7 +190,9 @@ def _check(tmp_path: Path, script: Path, *, body: str = "def add(a, b):\n    ret
     workspace.mkdir()
     (workspace / "calc.py").write_text(body, encoding="utf-8")
     assert not (workspace / ".git").exists()
-    return DeterministicEvaluator(containment_backend=_backend(script), require_containment=True)._run_one(
+    backend = _backend(script)
+    _bind(backend, f"A-{script.parent.name}")
+    return DeterministicEvaluator(containment_backend=backend, require_containment=True)._run_one(
         command=["python3", "-c", "from calc import add; assert add(2, 3) == 5"],
         workspace=workspace, attempt_id="A", index=1, criterion="add returns the sum", reference=None,
     ), workspace
@@ -253,8 +280,10 @@ def test_persistent_sync_error_is_inconclusive_with_stdout_and_the_box_log(tmp_p
     log = box_state_dir({"HERDR_E2B_STATE_DIR": str(state)}) / "boxes" / f"{box_key(workspace)}.log"
     log.parent.mkdir(parents=True)
     log.write_text("provisioning\nFAILED: template 'missing' was not found\n", encoding="utf-8")
+    backend = _backend(script, HERDR_E2B_STATE_DIR=str(state))
+    _bind(backend, "ATTEMPT-1")
     evidence = DeterministicEvaluator(
-        containment_backend=_backend(script, HERDR_E2B_STATE_DIR=str(state)),
+        containment_backend=backend,
         require_containment=True,
     )._run_one(
         command=["python3", "-c", "from calc import add; assert add(2, 3) == 5"],

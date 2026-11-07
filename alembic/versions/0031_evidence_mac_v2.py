@@ -18,8 +18,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0030_evidence_mac_v2"
-down_revision = "0029_evidence_content_mac"
+revision = "0031_evidence_mac_v2"
+down_revision = "0030_attempt_remote_effect"
 branch_labels = None
 depends_on = None
 

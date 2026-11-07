@@ -409,13 +409,31 @@ class LiveRunAdapter:
     def _transport(self, attempt_id: str) -> tuple[Any, Any]:
         kwargs: dict[str, Any] = {"agents": (self.agent,), "environ": self.run_env, "provider": self.provider,
                                   "read_connection": PluginConnectionBridge(environ=self.run_env),
-                                  "timeout_seconds": self.sandbox_timeout_s}
+                                  "timeout_seconds": self.sandbox_timeout_s,
+                                  "before_provider_create": lambda: self._fence_provider_create(attempt_id)}
         if self.provider == "e2b":
             kwargs |= {"template": self.image, "network": self.network,
                        "metadata": {"sdf_attempt_id": attempt_id, "sdf_run": "tasks-run", "sdf_agent": self.agent}}
         else:
             kwargs["snapshot"] = self.image
         return self._transport_factory(**kwargs)
+
+    def _fence_provider_create(self, attempt_id: str) -> None:
+        """Commit ``uncertain`` before ``_ensure_sandbox`` calls the provider.
+
+        Uses the run's own session. A second connection here deadlocks the
+        one-file SQLite tests that already have this session in a transaction.
+        A synthetic Attempt that never reaches this call stays unmarked.
+        """
+
+        from .recovery import note_remote_effect_uncertain
+
+        note_remote_effect_uncertain(self.db, attempt_id)
+
+    def _note_provider_stopped(self, attempt_id: str) -> None:
+        from .recovery import note_remote_effect_stopped
+
+        note_remote_effect_stopped(self.db, attempt_id)
 
     def _default_kill_by_id(self, sandbox_id: str) -> None:
         if self.provider == "e2b":
@@ -469,7 +487,9 @@ class LiveRunAdapter:
 
         One-way and idempotent: ``synthetic`` -> ``live`` only, never back.
         Committed at once, so a process that dies mid-run leaves a ``live``
-        RUNNING Attempt exactly when a sandbox existed.
+        RUNNING Attempt exactly when a sandbox existed. Recovery will not
+        treat a later lease expiry as proof that sandbox has stopped, and it
+        will not start a provider kill from a process that no longer holds one.
         """
 
         if not sandbox_id or self._live_confirmed == attempt_id:
@@ -512,6 +532,12 @@ class LiveRunAdapter:
                               sandbox__id=metered.sandbox_id) as cleanup_span:
                 sandbox_id, cleanup_error = self._teardown(transport, metered.sandbox_id)
                 tracing.set_attributes(cleanup_span, sandbox__id=sandbox_id)
+                if cleanup_error is None and sandbox_id:
+                    self._note_provider_stopped(attempt_id)
+                elif sandbox_id or cleanup_error:
+                    from .recovery import note_remote_effect_stop_failed
+
+                    note_remote_effect_stop_failed(attempt_id)
                 if cleanup_error:
                     # The class only: the cleanup error text is kept on the event/ledger, not the span.
                     tracing.mark_error("cleanup_failed", cleanup_span)

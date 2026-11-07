@@ -12,7 +12,7 @@
 - **Evidence rows carry a versioned content MAC (ADR 0043, proposed).**
   Migration `0029_evidence_content_mac` adds `evidence.content_mac`, an
   HMAC-SHA256 over the verdict fields and the bound artifact sha256, stamped
-  at insert. Migration `0030_evidence_mac_v2` adds `content_mac_version` and
+  at insert. Migration `0031_evidence_mac_v2` adds `content_mac_version` and
   extends the payload to the acceptance columns (producer, verifier, class,
   mode, subject/oracle/environment digests, collection and expiry times,
   oracle visibility, and input seed). New inserts are version 2. Existing

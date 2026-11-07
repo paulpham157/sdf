@@ -83,13 +83,25 @@ class HerdrE2BAdapter:
             ),
         )
 
-    def execute(self, plan: HerdrE2BPlan, *, live: bool = False, pull: bool = True, cleanup: bool = True) -> HerdrE2BResult:
+    def execute(
+        self,
+        plan: HerdrE2BPlan,
+        *,
+        live: bool = False,
+        pull: bool = True,
+        cleanup: bool = True,
+        before_remote: Callable[[], None] | None = None,
+        on_stop: Callable[[bool], None] | None = None,
+    ) -> HerdrE2BResult:
         if not live:
             return HerdrE2BResult(plan.attempt_id, None, None, None, "dry-run", {"plan": plan.commands})
         if not self._environ.get("E2B_API_KEY"):
             raise E2BAdapterError("live E2B execution requires E2B_API_KEY")
         if shutil.which("e2b-box") is None:
             raise E2BAdapterError("live E2B execution requires the e2b-box plugin command")
+        if before_remote is None:
+            raise E2BAdapterError("refusing to start e2b-box without an Attempt fence")
+        before_remote()
         env = {
             "PATH": self._environ.get("PATH", ""),
             "HOME": self._environ.get("HOME", ""),
@@ -122,6 +134,9 @@ class HerdrE2BAdapter:
                 except Exception as cleanup_error:
                     if primary_error is None:
                         primary_error = cleanup_error
+        confirmed = bool(cleanup_succeeded and isinstance(payload, dict) and payload.get("sandboxId"))
+        if on_stop is not None:
+            on_stop(confirmed)
         if primary_error is not None:
             if isinstance(primary_error, E2BAdapterError):
                 raise primary_error
@@ -174,6 +189,11 @@ class HerdrE2BNativeAdapter:
         self.timeout_ms = timeout_ms
         self.live = live
         self.last_result: HerdrE2BResult | None = None
+        self._recovery_session_factory: Callable[[], Any] | None = None
+
+    def bind_attempt(self, attempt_id: str, session_factory: Callable[[], Any]) -> None:
+        del attempt_id
+        self._recovery_session_factory = session_factory
 
     def run(self, *, attempt_id: str, workspace: Path, instructions: str):
         from .adapter import AdapterResult, RuntimeAgentAdapter
@@ -186,7 +206,35 @@ class HerdrE2BNativeAdapter:
         base_commit = _ensure_git_baseline(workspace)
         plan = self.adapter.plan(attempt_id=attempt_id, checkout=workspace, template=self.template,
                                  agent=self.agent, task=instructions, timeout_ms=self.timeout_ms)
-        result = self.adapter.execute(plan, live=self.live)
+        before_remote = None
+        on_stop = None
+        if self.live:
+            if self._recovery_session_factory is None:
+                raise E2BAdapterError("refusing to start e2b-box without an Attempt fence")
+            open_session = self._recovery_session_factory
+
+            def before_remote() -> None:
+                from .recovery import note_remote_effect_uncertain
+
+                db = open_session()
+                try:
+                    note_remote_effect_uncertain(db, attempt_id)
+                finally:
+                    db.close()
+
+            def on_stop(confirmed: bool) -> None:
+                from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped
+
+                if not confirmed:
+                    note_remote_effect_stop_failed(attempt_id)
+                    return
+                db = open_session()
+                try:
+                    note_remote_effect_stopped(db, attempt_id)
+                finally:
+                    db.close()
+
+        result = self.adapter.execute(plan, live=self.live, before_remote=before_remote, on_stop=on_stop)
         self.last_result = result
         after = RuntimeAgentAdapter._snapshot(workspace)
         changed = tuple(path for path in RuntimeAgentAdapter._changed(before, after) if not path.startswith(".git/"))

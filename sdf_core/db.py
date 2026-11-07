@@ -66,7 +66,13 @@ EVIDENCE_MODE_SQL = "evidence_mode IN (" + ", ".join(f"'{v}'" for v in EVIDENCE_
 
 class AttemptRow(Base):
     __tablename__ = "attempts"
-    __table_args__ = (CheckConstraint(EVIDENCE_MODE_SQL, name="ck_attempts_evidence_mode"),)
+    __table_args__ = (
+        CheckConstraint(EVIDENCE_MODE_SQL, name="ck_attempts_evidence_mode"),
+        CheckConstraint(
+            "remote_effect IS NULL OR remote_effect IN ('uncertain', 'stopped')",
+            name="ck_attempts_remote_effect",
+        ),
+    )
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     task_id: Mapped[str] = mapped_column(String(120), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
@@ -103,6 +109,11 @@ class AttemptRow(Base):
     # Attempt whose owner is gone or whose heartbeat is older than the lease.
     executor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     executor_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Committed before a provider sandbox create. ``uncertain`` means the
+    # create was entered and stop is not confirmed. NULL means this Attempt
+    # never entered that call. ``stopped`` means this process confirmed the
+    # provider resource is gone. Evidence mode is not that record.
+    remote_effect: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class ObjectiveMetricRow(Base):
