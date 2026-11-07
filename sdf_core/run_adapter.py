@@ -534,6 +534,10 @@ class LiveRunAdapter:
                 tracing.set_attributes(cleanup_span, sandbox__id=sandbox_id)
                 if cleanup_error is None and sandbox_id:
                     self._note_provider_stopped(attempt_id)
+                elif sandbox_id or cleanup_error:
+                    from .recovery import note_remote_effect_stop_failed
+
+                    note_remote_effect_stop_failed(attempt_id)
                 if cleanup_error:
                     # The class only: the cleanup error text is kept on the event/ledger, not the span.
                     tracing.mark_error("cleanup_failed", cleanup_span)

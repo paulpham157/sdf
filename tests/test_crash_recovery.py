@@ -1539,3 +1539,243 @@ def test_worker_sandbox_start_passes_the_create_fence(tmp_path: Path, monkeypatc
     captured["before"]()
     assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
     db.close()
+
+
+def test_containment_cli_without_an_attempt_fence_does_not_call_e2b_box(tmp_path: Path) -> None:
+    from sdf_core.containment import ContainmentUnavailable
+    from sdf_core.e2b_containment import E2BContainmentBackend
+
+    calls = []
+    backend = E2BContainmentBackend(
+        runner=lambda command, *_args: calls.append(tuple(command)) or "{}",
+        environ={"E2B_API_KEY": "unit-test-not-a-live-key"},
+    )
+    with pytest.raises(ContainmentUnavailable, match="Attempt fence"):
+        backend.run(["true"], root=tmp_path, cwd=tmp_path)
+    assert calls == []
+
+
+def test_containment_cli_crash_during_sync_refuses_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """``E2BContainmentBackend.run`` is the CLI entry. A sync failure stays uncertain."""
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sdf_core.e2b_containment.shutil.which", lambda _name: "/usr/bin/e2b-box")
+    from sdf_core.containment import ContainmentUnavailable
+    from sdf_core.e2b_containment import E2BContainmentBackend
+
+    task_id = "TASK-CLI-SYNC"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    calls = []
+
+    def runner(command, *_args):
+        calls.append(tuple(command))
+        if command[1] == "-t":
+            raise RuntimeError("sync dropped; sandbox outcome unknown")
+        return "{}"
+
+    backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "unit-test-not-a-live-key"}, sleep=lambda _s: None)
+    backend.bind_attempt(attempt_id, SessionLocal)
+    with pytest.raises(ContainmentUnavailable):
+        backend.run(["true"], root=tmp_path, cwd=tmp_path)
+    assert calls and calls[0][1] == "-t"
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    del service, begun
+    _abandon_host(attempt_id)
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    db.close()
+
+
+def test_containment_kill_failure_is_not_cleared_by_a_later_success(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sdf_core.e2b_containment.shutil.which", lambda _name: "/usr/bin/e2b-box")
+    from sdf_core.e2b_containment import E2BContainmentBackend
+
+    task_id = "TASK-CLI-KILL"
+    db, _service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+
+    def runner(command, *_args):
+        if command[0] == "e2b-box" and command[1] == "kill":
+            raise RuntimeError("kill failed")
+        if command[1] == "-t":
+            return '{"sandboxId": "sbx-cli"}'
+        return json.dumps({"ok": True, "exitCode": 0, "stdout": "", "stderr": ""})
+
+    import json
+    backend = E2BContainmentBackend(runner=runner, environ={"E2B_API_KEY": "unit-test-not-a-live-key"}, sleep=lambda _s: None)
+    backend.bind_attempt(attempt_id, SessionLocal)
+    result = backend.run(["true"], root=tmp_path, cwd=tmp_path)
+    assert result.returncode == 0
+    assert getattr(result, "cleanup_error", None)
+    assert _row_effect(attempt_id)[1] == "uncertain"
+    stopped = SessionLocal()
+    try:
+        assert note_remote_effect_stopped(stopped, attempt_id) is False
+    finally:
+        stopped.close()
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    del _service, begun
+    _abandon_host(attempt_id)
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    db.close()
+
+
+def test_e2b_box_adapter_crash_before_run_does_not_call_the_cli(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.herdr_e2b import E2BAdapterError, HerdrE2BAdapter
+
+    calls = []
+    adapter = HerdrE2BAdapter(
+        runner=lambda command, *_args: calls.append(tuple(command)) or "{}",
+        environ={"E2B_API_KEY": "unit-test-not-a-live-key"},
+    )
+    monkeypatch.setattr("sdf_core.herdr_e2b.shutil.which", lambda _name: "/usr/bin/e2b-box")
+    plan = adapter.plan(attempt_id="ATTEMPT-CLI", checkout=tmp_path, template="codex", agent="codex")
+    with pytest.raises(E2BAdapterError, match="Attempt fence"):
+        adapter.execute(plan, live=True)
+    assert calls == []
+
+
+def test_e2b_box_run_crash_refuses_a_new_dispatch_until_stop_is_confirmed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.herdr_e2b import E2BAdapterError, HerdrE2BAdapter
+
+    task_id = "TASK-E2B-BOX"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    calls = []
+
+    def runner(command, *_args):
+        calls.append(tuple(command))
+        if command[1] == "run":
+            raise RuntimeError("e2b-box run dropped")
+        return "{}"
+
+    adapter = HerdrE2BAdapter(runner=runner, environ={"E2B_API_KEY": "unit-test-not-a-live-key"})
+    monkeypatch.setattr("sdf_core.herdr_e2b.shutil.which", lambda _name: "/usr/bin/e2b-box")
+    plan = adapter.plan(attempt_id=attempt_id, checkout=tmp_path, template="codex", agent="codex")
+
+    def before():
+        _fence_create(attempt_id)
+
+    def on_stop(confirmed: bool) -> None:
+        if not confirmed:
+            from sdf_core.recovery import note_remote_effect_stop_failed
+            note_remote_effect_stop_failed(attempt_id)
+            return
+        side = SessionLocal()
+        try:
+            note_remote_effect_stopped(side, attempt_id)
+        finally:
+            side.close()
+
+    with pytest.raises(E2BAdapterError):
+        adapter.execute(plan, live=True, before_remote=before, on_stop=on_stop)
+    assert [command[1] for command in calls] == ["run", "kill"]
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    del service, begun
+    _abandon_host(attempt_id)
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    db.close()
+
+
+def test_reconnect_does_not_open_a_second_provider_create(tmp_path: Path) -> None:
+    from sdf_core.e2b_herdr_transport import E2BHerdrTransport
+
+    class _Box:
+        sandbox_id = "sbx-existing"
+
+    called = {"before": 0, "factory": 0}
+
+    def factory(**_kwargs):
+        called["factory"] += 1
+        raise AssertionError("reconnect must not create")
+
+    transport = E2BHerdrTransport(
+        template="template",
+        environ={"E2B_API_KEY": "unit-test-not-a-live-key"},
+        sandbox_id="sbx-existing",
+        sandbox_factory=factory,
+        sandbox_connector=lambda *_args, **_kwargs: _Box(),
+        before_provider_create=lambda: called.__setitem__("before", called["before"] + 1),
+    )
+    assert transport._ensure_sandbox().sandbox_id == "sbx-existing"
+    assert called == {"before": 0, "factory": 0}
+
+
+def test_two_sandbox_creates_stay_uncertain_until_each_stop_is_confirmed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    task_id = "TASK-TWO-SANDBOXES"
+    _db, _service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    _fence_create(attempt_id)
+    _fence_create(attempt_id)
+    side = SessionLocal()
+    try:
+        assert note_remote_effect_stopped(side, attempt_id) is False
+        assert _row_effect(attempt_id)[1] == "uncertain"
+        assert note_remote_effect_stopped(side, attempt_id) is True
+        assert _row_effect(attempt_id)[1] == "stopped"
+    finally:
+        side.close()
+    from sdf_core.recovery import note_remote_effect_stop_failed
+
+    _fence_create(attempt_id)
+    note_remote_effect_stop_failed(attempt_id)
+    _fence_create(attempt_id)
+    side = SessionLocal()
+    try:
+        assert note_remote_effect_stopped(side, attempt_id) is False
+    finally:
+        side.close()
+    assert _row_effect(attempt_id)[1] == "uncertain"
+    _db.close()
+
+
+def test_lead_sandbox_start_does_not_fence_or_launch_an_attempt(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.agent_sandbox import AgentSpec, E2BAgentSandbox
+
+    task_id = "TASK-LEAD-OUT"
+    db, _service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    captured: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        captured["before"] = kwargs.get("before_provider_create")
+        raise RuntimeError("stop before provider")
+
+    monkeypatch.setattr("sdf_core.credential_injection.create_credentialed_transport", fake_create)
+    lead = E2BAgentSandbox(
+        AgentSpec("lead-1", "lead", "opencode", "model"),
+        environ={"OPENCODE_BASE_URL": "https://example.test"}, template="template", network={},
+    )
+    with pytest.raises(RuntimeError, match="stop before provider"):
+        lead.start(tmp_path)
+    assert captured["before"] is None
+    assert _row_effect(attempt_id) == ("synthetic", None, "running")
+    db.close()
+
+
+def test_reused_worker_sandbox_marks_the_new_attempt_uncertain(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.coordinator import Coordinator
+
+    task_id = "TASK-REUSE-SANDBOX"
+    db, _service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+
+    class _Sandbox:
+        sandbox_id = "sbx-still-open"
+
+        def bind_attempt(self, bound_id, factory):
+            self.bound_id = bound_id
+            self.factory = factory
+
+    coord = Coordinator(
+        db, factory=lambda _spec: None, workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art",
+    )
+    coord._fence_worker_attempt(_Sandbox(), attempt_id)
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    db.close()

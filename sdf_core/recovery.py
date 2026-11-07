@@ -62,6 +62,13 @@ _owners: WeakValueDictionary[str, object] = WeakValueDictionary()
 # the in-process provider handle. It dies with the process. It is not a
 # promise that an arbitrary external effect can be exactly-once.
 _remote_effects: dict[str, Callable[[], bool]] = {}
+# How many provider creates for this Attempt have not been confirmed stopped
+# in this process, and Attempts whose termination failed or was unknown.
+# Both die with the process. The durable column stays ``uncertain`` until
+# every counted effect is confirmed, so one later success cannot clear an
+# earlier failure.
+_outstanding_effects: dict[str, int] = {}
+_stop_blocked: set[str] = set()
 _lock = threading.Lock()
 _stop = threading.Event()
 _supervisor: threading.Thread | None = None
@@ -290,18 +297,49 @@ def note_remote_effect_uncertain(db: Session, attempt_id: str) -> None:
     attempt = db.get(AttemptRow, attempt_id)
     if attempt is None:
         raise RuntimeError(f"cannot record a remote effect for missing attempt {attempt_id}")
+    with _lock:
+        _outstanding_effects[attempt_id] = _outstanding_effects.get(attempt_id, 0) + 1
     attempt.remote_effect = REMOTE_EFFECT_UNCERTAIN
     db.commit()
 
 
-def note_remote_effect_stopped(db: Session, attempt_id: str) -> None:
-    """Commit ``stopped`` only after this process confirmed the provider resource is gone."""
+def note_remote_effect_stop_failed(attempt_id: str) -> None:
+    """A termination failed or the provider outcome is unknown.
 
+    Later successes in this process must not mark the Attempt ``stopped``.
+    """
+
+    with _lock:
+        _stop_blocked.add(attempt_id)
+
+
+def note_remote_effect_stopped(db: Session, attempt_id: str) -> bool:
+    """Commit ``stopped`` only when every counted effect for this Attempt is confirmed gone.
+
+    One successful teardown does not cover a second sandbox, and it does not
+    erase an earlier failed or unknown termination. Returns False when the
+    row is left ``uncertain``. A stop with no matching create is not confirmation.
+    """
+
+    with _lock:
+        if attempt_id in _stop_blocked:
+            return False
+        count = _outstanding_effects.get(attempt_id, 0)
+        if count > 1:
+            _outstanding_effects[attempt_id] = count - 1
+            return False
+        if count == 1:
+            _outstanding_effects.pop(attempt_id, None)
+        else:
+            return False
     attempt = db.get(AttemptRow, attempt_id)
     if attempt is None:
         raise RuntimeError(f"cannot record remote-effect stop for missing attempt {attempt_id}")
+    if attempt.remote_effect != REMOTE_EFFECT_UNCERTAIN:
+        return False
     attempt.remote_effect = REMOTE_EFFECT_STOPPED
     db.commit()
+    return True
 
 
 def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:

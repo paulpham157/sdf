@@ -406,9 +406,7 @@ class Coordinator:
                 worker_agent = agents[sub.worker]
                 self._begin_attempt(run_id, sub, fixture, worker_agent.spec, parent=None,
                                     evidence_mode=EvidenceMode.SYNTHETIC.value, sandbox=worker_agent.sandbox)
-                bind_attempt = getattr(worker_agent.sandbox, "bind_attempt", None)
-                if callable(bind_attempt):
-                    bind_attempt(sub.attempt_id, open_recovery)
+                self._fence_worker_attempt(worker_agent.sandbox, sub.attempt_id, open_recovery)
             lead_ws = self.workspace_root / f"{run_id}-lead"
             lead_ws.mkdir(parents=True, exist_ok=True)
             (lead_ws / "README.md").write_text("Lead workspace: coordinate via sdf messaging; no code here.\n")
@@ -771,6 +769,24 @@ class Coordinator:
         return self.db.scalar(select(AgentRunMemberRow).where(
             AgentRunMemberRow.run_id == run_id, AgentRunMemberRow.agent_id == agent_id))
 
+    def _fence_worker_attempt(self, sandbox: object, attempt_id: str, open_recovery=None) -> None:
+        """Bind a worker Attempt. An already-open sandbox is an effect now, not at the next create."""
+
+        if open_recovery is None:
+            open_recovery = sessionmaker(bind=self.db.get_bind(), expire_on_commit=False)
+        bind_attempt = getattr(sandbox, "bind_attempt", None)
+        if not callable(bind_attempt):
+            return
+        bind_attempt(attempt_id, open_recovery)
+        if getattr(sandbox, "sandbox_id", None):
+            from .recovery import note_remote_effect_uncertain
+
+            db = open_recovery()
+            try:
+                note_remote_effect_uncertain(db, attempt_id)
+            finally:
+                db.close()
+
     def _begin_attempt(self, run_id: str, sub: _Subtask, fixture: Path, spec: AgentSpec, parent: str | None,
                        *, evidence_mode: str, sandbox: AgentSandbox) -> None:
         sub.rounds += 1
@@ -921,6 +937,7 @@ class Coordinator:
             # A retry runs in the worker's already-started sandbox.
             self._begin_attempt(run_id, sub, fixture, worker.spec, parent=attempt_id,
                                 evidence_mode=config.evidence_mode, sandbox=worker.sandbox)
+            self._fence_worker_attempt(worker.sandbox, sub.attempt_id)
             hub.attempt_for[sub.worker] = sub.attempt_id
             text += f" Failing: {failed}. Fix it and report done again (new attempt {sub.attempt_id})."
             sub.verdict = None  # the retry attempt is unverified until the host checks it again

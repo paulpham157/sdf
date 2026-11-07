@@ -38,7 +38,7 @@ def test_live_result_correlates_provider_ids_without_network(tmp_path: Path, mon
     )
     monkeypatch.setattr("sdf_core.herdr_e2b.shutil.which", lambda _: "/usr/local/bin/e2b-box")
     plan = adapter.plan(attempt_id="ATTEMPT-009", checkout=tmp_path, template="codex", agent="codex")
-    result = adapter.execute(plan, live=True)
+    result = adapter.execute(plan, live=True, before_remote=lambda: None)
     assert result.sandbox_id == "sb-1"
     assert result.herdr_session_id == "hs-1"
     assert result.workspace_id == "w-1"
@@ -62,6 +62,6 @@ def test_live_failure_still_attempts_cleanup(tmp_path: Path, monkeypatch: pytest
     plan = adapter.plan(attempt_id="ATTEMPT-CLEANUP", checkout=tmp_path, template="codex", agent="codex")
 
     with pytest.raises(E2BAdapterError, match="invalid JSON"):
-        adapter.execute(plan, live=True)
+        adapter.execute(plan, live=True, before_remote=lambda: None)
 
     assert [command[1] for command in calls] == ["run", "kill"]

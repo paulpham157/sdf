@@ -249,24 +249,33 @@ observed (`evidence_mode=live`). That write is later than the create fence. A
 
 `E2BHerdrTransport._ensure_sandbox` and `DaytonaHerdrTransport._ensure_sandbox`
 commit `remote_effect=uncertain` through `before_provider_create` immediately
-before the provider factory, and only on a fresh create. `LiveRunAdapter` and
-a coordinator worker sandbox (`E2BAgentSandbox.bind_attempt`) supply that
-callback. `uncertain` is not cleared because the factory raised: a timeout can
-mean the provider created a sandbox the client never observed. `stopped` is
-committed only after a teardown that both saw a sandbox id and reported
-success. Until then a new dispatch stays refused. There is still no reaper, so
-a crashed create blocks that Task until some later process can confirm stop.
-That is the availability cost of failing closed.
+before the provider factory, and only on a fresh create. Reconnect with an
+existing sandbox id does not call that factory. `LiveRunAdapter` and a
+coordinator worker sandbox (`E2BAgentSandbox.bind_attempt`) supply the
+callback. A worker Attempt that reuses an already-open sandbox is marked
+`uncertain` at begin. `E2BContainmentBackend.run` and live
+`HerdrE2BAdapter.execute` refuse to call `e2b-box` unless an Attempt fence is
+bound, and they commit `uncertain` before the CLI command that can create a
+box.
+
+`uncertain` is not cleared because the factory or the CLI raised. `stopped`
+is committed only when every create counted in this process has a confirmed
+termination that saw a sandbox id. One successful kill does not cover a
+second sandbox. A failed or unknown termination blocks later successes in
+this process from marking `stopped`. Until then a new dispatch stays refused.
+There is still no reaper, so a crashed create blocks that Task until some
+later process can confirm stop. That is the availability cost of failing closed.
 
 A fake in-process adapter never enters `_ensure_sandbox`. Its `remote_effect`
 stays NULL, so a host crash between `begin` and `run` remains retryable.
 
 Remaining limitations, which this ADR does not claim to close:
 
-- The coordinator lead sandbox has no Attempt, so this fence does not cover it.
-- `E2BContainmentBackend` provisions through the `e2b-box` CLI, not
-  `_ensure_sandbox`. An evaluator box is outside this Attempt fence.
-- Any new provider create that skips `before_provider_create` is not fenced.
+- The coordinator lead sandbox has no Attempt. It does not call
+  `bind_attempt` or `_begin_attempt`, so it cannot open this hole for a
+  worker Attempt. The lead box itself is out of scope.
+- Any new provider create that skips `before_provider_create` or the CLI
+  fence is not fenced.
   Evidence mode will not catch it while the row is still synthetic.
 - After a hard crash, `uncertain` stays set. This process will not list or
   kill provider sandboxes to clear it.

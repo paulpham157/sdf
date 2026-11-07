@@ -329,21 +329,26 @@ class E2BAgentSandbox:
     def close(self) -> None:
         sandbox_id = self._sandbox_id
         closed = False
-        with self._lock:
-            if self._transport is not None and self._died is None:
-                try:
-                    self._transport.close()
-                    closed = True
-                finally:
-                    self._died = time.monotonic()
-        if closed and sandbox_id and self._remote_attempt_id and self._recovery_session_factory is not None:
-            from .recovery import note_remote_effect_stopped
+        try:
+            with self._lock:
+                if self._transport is not None and self._died is None:
+                    try:
+                        self._transport.close()
+                        closed = True
+                    finally:
+                        self._died = time.monotonic()
+        finally:
+            if sandbox_id and self._remote_attempt_id and self._recovery_session_factory is not None:
+                from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped
 
-            db = self._recovery_session_factory()
-            try:
-                note_remote_effect_stopped(db, self._remote_attempt_id)
-            finally:
-                db.close()
+                if not closed:
+                    note_remote_effect_stop_failed(self._remote_attempt_id)
+                else:
+                    db = self._recovery_session_factory()
+                    try:
+                        note_remote_effect_stopped(db, self._remote_attempt_id)
+                    finally:
+                        db.close()
 
 
 def e2b_factory(environ: Mapping[str, str], **kwargs: Any) -> AgentSandboxFactory:
