@@ -66,6 +66,8 @@ ATTRIBUTE_KEYS = frozenset({
     "sdf.error_class", "sdf.cleanup_error", "sdf.verdict",
     "sdf.tokens.input", "sdf.tokens.output", "sdf.cost_usd", "sdf.usage_source", "sdf.provider",
     "sdf.subtasks", "sdf.agents", "sdf.evidence_mode",
+    # ADR 0044: one human-read log's route template and counters. Not payloads.
+    "sdf.route", "sdf.items", "sdf.cursor_present", "sdf.actionable_count",
 })
 
 

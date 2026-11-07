@@ -1,6 +1,6 @@
 # ADR 0044: a human read model and an approver inbox over the rows SDF already stores
 
-Status: proposed
+Status: accepted (maintainer, 2026-11-06, PR #124)
 
 Numbered 0044 because [ADR 0043](0043-evidence-content-mac.md) is the
 evidence content MAC. First step of the human-interaction workstream. Does
