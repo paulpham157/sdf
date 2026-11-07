@@ -13,7 +13,7 @@ uv sync --all-groups
 uv run scripts/demo.py
 ```
 
-You should see a Task accepted because an evaluator verified that `app.py` prints `updated` — not because the fake agent said so — and a `file://` path to a local HTML story page. `scripts/demo-evidence.sh` is a wrapper for the same command.
+You should see two tasks against the same criterion: an honest edit accepted because the evaluator verified that `app.py` prints `updated`, and a plausible-but-wrong edit the agent claimed was done (`print('updated ')` plus a weak test it rewrote) that SDF rejects. The local HTML story page (`file://`) shows both side by side. `scripts/demo-evidence.sh` is a wrapper for the same command. Pass `--only accepted` or `--only rejected` to run one task.
 
 ## What it provides
 
@@ -39,18 +39,18 @@ The API starts with an in-memory SQLite database for local development. Swagger 
 
 ### Offline evidence demo
 
-`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`) walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, and the task trace. It prints a four-beat story and writes a self-contained HTML page (`--out DIR` to choose the directory; `--open` to open it). It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle that judges the fixture's `python -c` check runs nowhere else, and on any other host that check is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API and points at the Codespaces button above. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
+`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`) walks the public HTTP loop twice with the default fake adapter: Business Context, Objective, two Tasks, `POST /tasks/{id}/run` for each, then evaluator Evidence, the Attempt revision, and the task trace. It prints a four-beat story (intent, the agent's claim for A and B, the independent check for each, and the outcome) and writes a two-column HTML page (`--out DIR` to choose the directory; `--open` to open it; `--only accepted|rejected` to run one task). It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle that judges the fixture's `python -c` check runs nowhere else, and on any other host that check is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API and points at the Codespaces button above. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
 
 The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval. Provider keys in the environment are ignored and reported as unused.
 
-`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact. The run also writes one execution Evidence row (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)).
+Both tasks reuse fixture `fixtures/offline-evidence` and the sealed `app-updated` check, which requires a single `print('updated')` with no trailing space. Task A is an honest `FakeNativeAdapter` write of `print('updated')`; verification Evidence from `sdf-evaluator` PASSes and the Task is accepted. Task B writes `print('updated ')` (trailing space), claims `Done! app.py updated, all tests pass`, and also writes a weak `tests/test_app.py` substring check plus a rewritten workspace `sdf-checks.json`. A naive CI run of those files would go green; the sealed oracle ignores workspace checks and FAILs Task B, so SDF does not accept it. Each run also writes execution Evidence (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)). Adapter stdout stays on the process-log artifact.
 
 The loop records these results:
 
-- Run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`.
-- `GET /evidence/{id}`: `status=PASS`, `verifier_identity=sdf-evaluator`, `revision_id`, and `tree_sha256`.
+- Task A run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`. Task B: the adapter attempt is `completed` and the agent claimed success, but `task_status` is not `succeeded` and verification is a non-pass from `sdf-evaluator`.
+- `GET /evidence/{id}`: Task A `status=PASS`, Task B a non-pass; both `verifier_identity=sdf-evaluator`, with `revision_id` and `tree_sha256`.
 - `GET /attempts/{id}/revision`: `result_tree_sha256`. `base_commit` is null because this fixture records a tree id, not a git commit.
-- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and both Evidence rows. Only the verification row `validates` the Assumption. The fake adapter records no runtime events.
+- `GET /tasks/TASK-OFFLINE-001/trace` and `GET /tasks/TASK-OFFLINE-002/trace`: Business Context, Objective, Task, Attempt, and both Evidence rows. Only a verification PASS `validates` the Assumption. The fake adapter records no runtime events.
 - `python -m sdf_core.cli runs show <attempt id>` still prints the same timeline against `SDF_DATABASE_URL`. `usage_ledger` has no rows for this adapter. `cost_usd` is `0` on the Attempt. That zero is unmetered. It is not an invoice and not an `SDF_PRICE_*` or `SDF_E2B_USD_PER_SECOND` estimate.
 
 The state database is a temporary SQLite file. Workspaces and artifacts land in that temporary directory (not in the repo working tree).

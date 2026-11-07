@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -615,13 +616,47 @@ class LiveRunAdapter:
             log.error("cleanup_event_not_recorded", extra={"error": type(exc).__name__})
 
 
+
+def fake_adapter_from_environ(environ: Mapping[str, str]) -> FakeNativeAdapter:
+    """Default fake adapter; ``SDF_DEMO_FAKE_SPEC`` may override it for the demo.
+
+    The spec is a JSON object with ``relative_file``, ``replacement``, and
+    optional ``stdout`` and ``extra_files`` (string-to-string). Unset keeps
+    the historical ``app.py`` / ``print('updated')`` behaviour. This is a
+    demo and test hook; it does not change live-adapter or oracle semantics.
+    """
+
+    spec_path = (environ.get("SDF_DEMO_FAKE_SPEC") or "").strip()
+    if not spec_path:
+        return FakeNativeAdapter("app.py", "print('updated')\n")
+    try:
+        spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RunAdapterConfigError(f"SDF_DEMO_FAKE_SPEC is not readable JSON: {exc}") from exc
+    if not isinstance(spec, dict):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC must be a JSON object")
+    relative_file = spec.get("relative_file") or "app.py"
+    replacement = spec.get("replacement")
+    if not isinstance(relative_file, str) or not isinstance(replacement, str):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC needs string relative_file and replacement")
+    stdout = spec.get("stdout")
+    extra = spec.get("extra_files") or {}
+    if stdout is not None and not isinstance(stdout, str):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC stdout must be a string")
+    if not isinstance(extra, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in extra.items()
+    ):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC extra_files must be an object of strings")
+    return FakeNativeAdapter(relative_file, replacement, stdout=stdout, extra_files=extra)
+
+
 def configured_run_adapter(db: Session, *, environ: Mapping[str, str] | None = None) -> NativeAdapter:
     """Select the NativeAdapter for ``POST /tasks/{id}/run`` (fail closed on config)."""
 
     env = environ if environ is not None else os.environ
     mode = (env.get("SDF_RUN_ADAPTER") or "fake").strip().lower()
     if mode in _FAKE_MODES:
-        return FakeNativeAdapter("app.py", "print('updated')\n")
+        return fake_adapter_from_environ(env)
     if mode not in _LIVE_MODES:
         raise RunAdapterConfigError(f"SDF_RUN_ADAPTER must be fake or live (alias herdr); got {mode!r}")
     agent = (env.get("SDF_RUN_AGENT") or _DEFAULT_AGENT).strip().lower() or _DEFAULT_AGENT

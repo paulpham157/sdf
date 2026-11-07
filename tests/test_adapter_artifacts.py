@@ -74,6 +74,33 @@ def test_fake_native_adapter_changes_isolated_workspace_and_captures_immutable_d
         )
 
 
+def test_fake_native_adapter_optional_stdout_and_extra_files(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    result = FakeNativeAdapter(
+        "app.py",
+        "print('updated ')\n",
+        stdout="Done! app.py updated, all tests pass",
+        extra_files={"tests/test_app.py": "assert True\n"},
+    ).run(attempt_id="ATTEMPT-DEMO", workspace=workspace, instructions="ignored")
+    assert result.status == "completed"
+    assert result.stdout == "Done! app.py updated, all tests pass"
+    assert result.changed_files == ("app.py", "tests/test_app.py")
+    assert (workspace / "app.py").read_text(encoding="utf-8") == "print('updated ')\n"
+    assert (workspace / "tests" / "test_app.py").read_text(encoding="utf-8") == "assert True\n"
+
+
+def test_fake_native_adapter_refuses_path_escape(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(ValueError, match="outside the workspace"):
+        FakeNativeAdapter(
+            "app.py",
+            "print('x')\n",
+            extra_files={"../escape.py": "no\n"},
+        ).run(attempt_id="ATTEMPT-X", workspace=workspace, instructions="no")
+
+
 def test_process_artifact_is_json_and_immutable(tmp_path: Path):
     store = ArtifactStore(tmp_path / "artifacts")
     artifact = store.capture_process(artifact_id="ARTIFACT-LOG-001", stdout="ok", stderr="", exit_code=0)

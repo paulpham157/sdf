@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """One-command offline evidence demo (no E2B or model keys).
 
-Walks the public HTTP loop with the default fake adapter and prints a
-plain-language story plus a self-contained HTML page. This fixture loop is
-not production proof. The sealed evaluator oracle (ADR 0039) produces a
-PASS only on Linux x86_64 with Landlock.
+Walks the public HTTP loop twice with the default fake adapter: an honest
+edit that verification accepts, and a plausible-but-wrong edit the agent
+claims succeeded. Prints a plain-language story plus a self-contained HTML
+page. This fixture loop is not production proof. The sealed evaluator
+oracle (ADR 0039) produces a verdict only on Linux x86_64 with Landlock.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from pathlib import Path
 
 CODESPACES_URL = "https://codespaces.new/paulpham157/sdf"
 PASS_BADGE = "PASS — accepted by evidence"
+REJECT_BADGE = "REJECTED — agent said done"
 PROVIDER_KEY_VARS = (
     "E2B_API_KEY",
     "OPENAI_API_KEY",
@@ -51,6 +53,47 @@ _LIVE_ENV = (
 _LANDLOCK_CREATE_RULESET = 444
 _LANDLOCK_CREATE_RULESET_VERSION = 1
 _HTML_NAME = "index.html"
+
+CLAIM_A = "Done. app.py now prints updated."
+CLAIM_B = "Done! app.py updated, all tests pass"
+REPLACEMENT_A = "print('updated')\n"
+REPLACEMENT_B = "print('updated ')\n"
+
+TASK_A = {
+    "id": "TASK-OFFLINE-001",
+    "title": "Apply the honest fake edit",
+    "idempotency_key": "offline-evidence-001",
+    "dispatch_key": "offline-evidence-001",
+    "instructions": "replace app.py so it prints updated",
+    "label": "A",
+    "name": "honest edit",
+}
+TASK_B = {
+    "id": "TASK-OFFLINE-002",
+    "title": "Apply a plausible but wrong edit",
+    "idempotency_key": "offline-evidence-002",
+    "dispatch_key": "offline-evidence-002",
+    "instructions": "replace app.py so it looks updated and make tests pass",
+    "label": "B",
+    "name": "plausible but wrong",
+}
+
+
+def weak_test_source() -> str:
+    return (
+        "from pathlib import Path\n\n\n"
+        "def test_app_mentions_updated():\n"
+        "    # Naive substring check: also passes for print('updated ').\n"
+        '    assert "updated" in Path("app.py").read_text(encoding="utf-8")\n'
+    )
+
+
+def weak_checks_source() -> str:
+    return json.dumps({
+        "checks": {
+            "app-updated": ["python3", "-c", "print('all tests pass')"],
+        }
+    }, indent=2) + "\n"
 
 
 def repo_root() -> Path:
@@ -101,15 +144,40 @@ def provider_keys_present(environ: dict[str, str] | None = None) -> bool:
     return any(env.get(name) for name in PROVIDER_KEY_VARS)
 
 
-def configure_env(demo_dir: Path, root: Path) -> None:
+def configure_env(demo_dir: Path, root: Path) -> Path:
     os.environ["SDF_RUN_ADAPTER"] = "fake"
     os.environ["SDF_AUTH_DEV_INSECURE"] = "1"
     os.environ["SDF_FIXTURES_ROOT"] = str(root / "fixtures")
     os.environ["SDF_DATABASE_URL"] = f"sqlite+pysqlite:///{demo_dir / 'sdf.db'}"
     os.environ["SDF_WORKSPACE_ROOT"] = str(demo_dir / "workspaces")
     os.environ["SDF_ARTIFACT_ROOT"] = str(demo_dir / "artifacts")
+    spec_path = demo_dir / "fake-spec.json"
+    os.environ["SDF_DEMO_FAKE_SPEC"] = str(spec_path)
     for name in _LIVE_ENV:
         os.environ.pop(name, None)
+    return spec_path
+
+
+def write_fake_spec(
+    spec_path: Path,
+    *,
+    replacement: str,
+    stdout: str,
+    extra_files: dict[str, str] | None = None,
+) -> None:
+    spec_path.write_text(
+        json.dumps(
+            {
+                "relative_file": "app.py",
+                "replacement": replacement,
+                "stdout": stdout,
+                "extra_files": extra_files or {},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _free_port() -> int:
@@ -190,7 +258,7 @@ class LocalApi:
             proc.wait(timeout=5)
 
 
-def run_loop(base: str) -> dict:
+def seed_graph(base: str, tasks: list[dict]) -> None:
     steps = [
         ("/business-contexts", {
             "id": "BC-OFFLINE-001",
@@ -211,37 +279,45 @@ def run_loop(base: str) -> dict:
             "owner": "local-dev",
             "source": "demo",
         }),
-        ("/tasks", {
-            "id": "TASK-OFFLINE-001",
-            "title": "Apply the deterministic fake edit",
-            "objective_id": "OBJ-OFFLINE-001",
-            "idempotency_key": "offline-evidence-001",
-            "acceptance_criteria": ["app.py prints updated"],
-        }),
     ]
+    for task in tasks:
+        steps.append(("/tasks", {
+            "id": task["id"],
+            "title": task["title"],
+            "objective_id": "OBJ-OFFLINE-001",
+            "idempotency_key": task["idempotency_key"],
+            "acceptance_criteria": ["app.py prints updated"],
+        }))
     for path, body in steps:
         status, payload = _json_request("POST", base + path, body)
         if status not in {200, 201}:
             raise SystemExit(f"{path} failed: {status} {payload}")
-    status, run = _json_request("POST", base + "/tasks/TASK-OFFLINE-001/run", {
-        "dispatch_key": "offline-evidence-001",
+
+
+def run_task(base: str, task: dict) -> dict:
+    status, run = _json_request("POST", base + f"/tasks/{task['id']}/run", {
+        "dispatch_key": task["dispatch_key"],
         "fixture_dir": "offline-evidence",
-        "instructions": "replace app.py so it prints updated",
+        "instructions": task["instructions"],
         "criterion_checks": {"app.py prints updated": ["app-updated"]},
         "validation_target_kind": "assumption",
         "validation_target_id": "ASSUMPTION-OFFLINE-001",
     })
     if status != 200:
-        raise SystemExit(f"/run failed: {status} {run}")
+        raise SystemExit(f"/run {task['id']} failed: {status} {run}")
     attempt_id = run["attempt_id"]
-    _, trace = _json_request("GET", base + "/tasks/TASK-OFFLINE-001/trace")
+    _, trace = _json_request("GET", base + f"/tasks/{task['id']}/trace")
     evidence: dict[str, dict] = {}
     for node in trace["nodes"]:
         if node.get("kind") == "evidence":
             _, row = _json_request("GET", base + f"/evidence/{node['id']}")
+            # A shared assumption's subgraph can include another task's Evidence.
+            if row.get("attempt_id") != attempt_id:
+                continue
             evidence[row["evidence_class"]] = row
     _, revision = _json_request("GET", base + f"/attempts/{attempt_id}/revision")
     return {
+        "task": task,
         "run": run,
         "trace": trace,
         "evidence": evidence,
@@ -264,12 +340,20 @@ def workspace_app(demo_dir: Path, root: Path, attempt_id: str) -> tuple[str, str
     return before, after
 
 
-def print_story(result: dict, before: str, after: str, html_path: Path) -> None:
-    run = result["run"]
-    verification = result["evidence"].get("verification", {})
-    execution = result["evidence"].get("execution", {})
-    edges = result["trace"].get("edges") or []
-    validates = next((edge for edge in edges if edge.get("relation") == "validates"), None)
+def _case_ok(case: dict, expect_accept: bool) -> bool:
+    run = case["run"]
+    verification = case["evidence"].get("verification", {})
+    if expect_accept:
+        return run.get("task_status") == "succeeded" and verification.get("status") == "PASS"
+    return (
+        run.get("task_status") != "succeeded"
+        and verification.get("status") != "PASS"
+        and verification.get("verifier_identity") == "sdf-evaluator"
+        and run.get("attempt_status") == "completed"
+    )
+
+
+def print_story(cases: list[dict], html_path: Path) -> None:
     print()
     print("Software Decision Fabric — 60-second demo")
     print("=" * 44)
@@ -287,70 +371,125 @@ def print_story(result: dict, before: str, after: str, html_path: Path) -> None:
     print("   Business context : Offline evidence demo")
     print("   Objective        : Show independent fake-adapter evidence")
     print("   Assumption       : the adapter writes print('updated')")
-    print("   Task             : Apply the deterministic fake edit")
     print("   Acceptance       : app.py prints updated")
+    if len(cases) == 2:
+        print("   Two tasks, same criterion: an honest edit and a near-miss.")
     print()
-    print("2. Work  (fake adapter — no E2B, no model keys)")
-    print(f"   provider={run.get('provider')}  evidence_mode={run.get('evidence_mode')}")
-    print("   before app.py : " + before.strip())
-    print("   after  app.py : " + after.strip())
-    print("   The adapter finished. That is only an Attempt, not acceptance.")
+    print("2. The agent's claim")
+    for case in cases:
+        task = case["task"]
+        run = case["run"]
+        print(f"   Task {task['label']} ({task['name']})")
+        print(f"     claimed : {case['agent_claim']!r}")
+        print(f"     before app.py : {case['before'].strip()}")
+        print(f"     after  app.py : {case['after'].strip()}")
+        if task["label"] == "B":
+            print("     also wrote tests/test_app.py (a substring check that would pass)")
+            print("     and rewrote sdf-checks.json to print('all tests pass')")
+        print(
+            f"     provider={run.get('provider')}  evidence_mode={run.get('evidence_mode')}  "
+            f"attempt_status={run.get('attempt_status')}"
+        )
+        print("     The adapter finished. That is only an Attempt, not acceptance.")
     print()
     print("3. Independent check")
-    print(
-        f"   execution evidence : class={execution.get('evidence_class')} "
-        f"producer={execution.get('producer_identity')} "
-        f"(records that the adapter ran; cannot accept the Task)"
-    )
-    print(
-        f"   verification       : status={verification.get('status')} "
-        f"verifier={verification.get('verifier_identity')} "
-        f"criterion={verification.get('criterion')!r}"
-    )
-    if validates:
+    for case in cases:
+        task = case["task"]
+        verification = case["evidence"].get("verification", {})
+        execution = case["evidence"].get("execution", {})
+        print(f"   Task {task['label']}")
         print(
-            f"   graph edge         : {validates['source_kind']}:{validates['source_id']} "
-            f"validates {validates['target_kind']}:{validates['target_id']}"
+            f"     execution evidence : class={execution.get('evidence_class')} "
+            f"producer={execution.get('producer_identity')} "
+            f"(records that the adapter ran; cannot accept the Task)"
         )
+        print(
+            f"     verification       : status={verification.get('status')} "
+            f"verifier={verification.get('verifier_identity')} "
+            f"criterion={verification.get('criterion')!r}"
+        )
+        if task["label"] == "B":
+            print("     A naive workspace test would pass; the sealed check ignored it.")
     print()
     print("4. Outcome")
-    passed = verification.get("status") == "PASS" and run.get("task_status") == "succeeded"
-    why = (
-        "verification Evidence PASS, not the agent's stdout"
-        if passed
-        else "see status below — this was not a clean PASS"
+    by_label = {case["task"]["label"]: case for case in cases}
+    for case in cases:
+        task = case["task"]
+        run = case["run"]
+        verification = case["evidence"].get("verification", {})
+        accepted = run.get("task_status") == "succeeded" and verification.get("status") == "PASS"
+        label = "accepted" if accepted else "rejected"
+        print(
+            f"   Task {task['label']}: task_status={run.get('task_status')}  "
+            f"attempt_status={run.get('attempt_status')}  ({label})"
+        )
+        print(
+            f"   Task {task['label']}: verification status={verification.get('status')} "
+            f"verifier={verification.get('verifier_identity')}"
+        )
+        print(f"   Task {task['label']}: attempt {case['attempt_id']}")
+    if "A" in by_label and "B" in by_label:
+        print("   A accepted / B rejected, though the agent said done")
+    print()
+    takeaway = (
+        "An agent can say it is done and even make a weak test go green; "
+        "SDF accepts a Task only when independent verification Evidence passes."
     )
-    print(f"   task_status={run.get('task_status')}  attempt_status={run.get('attempt_status')}")
-    print(f"   why: {why}")
-    print(f"   attempt: {result['attempt_id']}")
+    print(f"Takeaway: {takeaway}")
     print()
     print(f"Story page: {html_path.resolve().as_uri()}")
     print()
-    if not passed:
-        raise SystemExit("Demo did not reach a verification PASS.")
+
+    problems = []
+    if "A" in by_label and not _case_ok(by_label["A"], True):
+        problems.append("Task A did not reach a verification PASS.")
+    if "B" in by_label and not _case_ok(by_label["B"], False):
+        problems.append("Task B was not rejected by independent verification.")
+    if problems:
+        raise SystemExit("\n".join(problems))
 
 
-def write_html(result: dict, before: str, after: str, path: Path) -> None:
-    run = result["run"]
-    verification = result["evidence"].get("verification", {})
-    execution = result["evidence"].get("execution", {})
-    nodes = result["trace"].get("nodes") or []
-    edges = result["trace"].get("edges") or []
-    node_html = "".join(
-        f'<li><code>{html.escape(str(node.get("kind")))}</code> '
-        f'{html.escape(str(node.get("id")))}</li>'
-        for node in nodes
+def _case_html(case: dict) -> str:
+    task = case["task"]
+    run = case["run"]
+    verification = case["evidence"].get("verification", {})
+    accepted = run.get("task_status") == "succeeded" and verification.get("status") == "PASS"
+    badge = PASS_BADGE if accepted else REJECT_BADGE
+    tone = "pass" if accepted else "fail"
+    extra = ""
+    if task["label"] == "B":
+        extra = (
+            "<p>The agent also wrote <code>tests/test_app.py</code> (a substring "
+            "check that would pass) and rewrote <code>sdf-checks.json</code>. "
+            "The sealed evaluator ignored both.</p>"
+        )
+    return f"""
+    <section class="col {tone}">
+      <h2>Task {html.escape(task['label'])} — {html.escape(task['name'])}</h2>
+      <p><span class="badge {tone}">{html.escape(badge)}</span></p>
+      <p><strong>Agent claimed:</strong> {html.escape(case['agent_claim'])}</p>
+      <p>Attempt status: {html.escape(str(run.get('attempt_status')))}<br>
+         Task status: {html.escape(str(run.get('task_status')))}</p>
+      <p><strong>Evaluator:</strong> {html.escape(str(verification.get('status')))}
+         from {html.escape(str(verification.get('verifier_identity')))}
+         on {html.escape(str(verification.get('criterion')))}</p>
+      {extra}
+      <pre>before: {html.escape(case['before'].strip())}
+after:  {html.escape(case['after'].strip())}</pre>
+    </section>
+    """
+
+
+def write_html(cases: list[dict], path: Path) -> None:
+    columns = "".join(_case_html(case) for case in cases)
+    both = len(cases) == 2
+    lede = (
+        "The same acceptance criterion, two agent claims. SDF accepted only the "
+        "edit the sealed evaluator could verify — not the one that merely looked done."
+        if both else
+        "SDF accepted or rejected this Task based on independent verification "
+        "Evidence, not the fake agent’s stdout."
     )
-    edge_html = "".join(
-        f'<li>{html.escape(str(edge.get("source_kind")))}:'
-        f'{html.escape(str(edge.get("source_id")))} '
-        f'<strong>{html.escape(str(edge.get("relation")))}</strong> '
-        f'{html.escape(str(edge.get("target_kind")))}:'
-        f'{html.escape(str(edge.get("target_id")))}</li>'
-        for edge in edges
-    )
-    passed = verification.get("status") == "PASS" and run.get("task_status") == "succeeded"
-    badge = PASS_BADGE if passed else "Did not accept"
     page = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -358,15 +497,16 @@ def write_html(result: dict, before: str, after: str, path: Path) -> None:
   <title>SDF demo — independent evidence</title>
   <style>
     :root {{ font-family: Georgia, "Times New Roman", serif; color: #1b1b1b; background: #f6f1e8; }}
-    body {{ max-width: 880px; margin: 2.5rem auto; padding: 0 1.25rem 4rem; line-height: 1.5; }}
+    body {{ max-width: 980px; margin: 2.5rem auto; padding: 0 1.25rem 4rem; line-height: 1.5; }}
     h1 {{ font-size: 2rem; margin-bottom: 0.25rem; }}
     .lede {{ font-size: 1.15rem; }}
-    .flow {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.5rem 0; }}
-    .card {{ background: white; border: 1px solid #d9cbb3; border-radius: 10px; padding: 0.85rem 1rem; min-width: 140px; flex: 1; }}
-    .card h2 {{ font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 0.35rem; color: #6b542e; }}
-    .pass {{ background: #e7f6e7; border-color: #3d8b40; }}
-    .exec {{ background: #f3f3f3; }}
-    .badge {{ display: inline-block; padding: 0.2rem 0.65rem; border-radius: 999px; background: #1f6b2c; color: white; font-size: 0.85rem; }}
+    .columns {{ display: flex; flex-wrap: wrap; gap: 1rem; margin: 1.5rem 0; }}
+    .col {{ background: white; border: 1px solid #d9cbb3; border-radius: 10px; padding: 0.85rem 1rem; flex: 1; min-width: 280px; }}
+    .col.pass {{ background: #e7f6e7; border-color: #3d8b40; }}
+    .col.fail {{ background: #fdecea; border-color: #a12622; }}
+    .badge {{ display: inline-block; padding: 0.2rem 0.65rem; border-radius: 999px; color: white; font-size: 0.85rem; }}
+    .badge.pass {{ background: #1f6b2c; }}
+    .badge.fail {{ background: #a12622; }}
     pre {{ background: #221f1a; color: #f6f1e8; padding: 0.9rem 1rem; border-radius: 8px; overflow: auto; }}
     code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }}
     .note {{ color: #5a5246; font-size: 0.95rem; }}
@@ -374,39 +514,13 @@ def write_html(result: dict, before: str, after: str, path: Path) -> None:
 </head>
 <body>
   <h1>An agent finishing is not success</h1>
-  <p class="lede">SDF accepted this Task only after an independent evaluator
-  checked the result. The fake agent’s own stdout did not count.</p>
-  <p><span class="badge">{html.escape(badge)}</span></p>
-  <div class="flow">
-    <div class="card"><h2>Intent</h2>Business context → Objective → Assumption → Task<br>
-      <em>Acceptance:</em> app.py prints updated</div>
-    <div class="card"><h2>Attempt</h2>Fake adapter rewrote <code>app.py</code>.<br>
-      Provider: {html.escape(str(run.get("provider")))}<br>
-      Mode: {html.escape(str(run.get("evidence_mode")))}</div>
-    <div class="card exec"><h2>Execution evidence</h2>The adapter ran.<br>
-      Producer: {html.escape(str(execution.get("producer_identity")))}<br>
-      <strong>Cannot accept the Task.</strong></div>
-    <div class="card pass"><h2>Verification evidence</h2>
-      Status: {html.escape(str(verification.get("status")))}<br>
-      Verifier: {html.escape(str(verification.get("verifier_identity")))}<br>
-      Criterion: {html.escape(str(verification.get("criterion")))}<br>
-      <strong>This is what accepted the Task.</strong></div>
-  </div>
-  <h2>What changed</h2>
-  <pre>before: {html.escape(before.strip())}
-after:  {html.escape(after.strip())}</pre>
-  <h2>Decision graph</h2>
-  <p>Nodes</p>
-  <ul>{node_html}</ul>
-  <p>Edges</p>
-  <ul>{edge_html}</ul>
+  <p class="lede">{html.escape(lede)}</p>
+  <div class="columns">{columns}</div>
   <p class="note">This demo used the built-in <code>FakeNativeAdapter</code>,
   fixture <code>fixtures/offline-evidence</code>, a temporary SQLite database,
   and <code>SDF_AUTH_DEV_INSECURE=1</code>. No E2B or model API key was required.
-  The sealed evaluator oracle (ADR 0039) currently produces a PASS only on
+  The sealed evaluator oracle (ADR 0039) currently produces a verdict only on
   Linux x86_64. This fixture loop is not production proof.</p>
-  <p class="note">task_status={html.escape(str(run.get("task_status")))}
-  attempt={html.escape(str(result["attempt_id"]))}</p>
 </body>
 </html>
 """
@@ -429,7 +543,50 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="open the HTML story page in a browser",
     )
+    parser.add_argument(
+        "--only",
+        choices=("accepted", "rejected"),
+        default=None,
+        help="run only the honest (accepted) task or only the rejected task",
+    )
     return parser.parse_args(argv)
+
+
+def selected_tasks(only: str | None) -> list[dict]:
+    if only == "accepted":
+        return [TASK_A]
+    if only == "rejected":
+        return [TASK_B]
+    return [TASK_A, TASK_B]
+
+
+def run_selected(
+    base: str, spec_path: Path, demo_dir: Path, root: Path, tasks: list[dict]
+) -> list[dict]:
+    seed_graph(base, tasks)
+    cases = []
+    for task in tasks:
+        if task["id"] == TASK_A["id"]:
+            write_fake_spec(spec_path, replacement=REPLACEMENT_A, stdout=CLAIM_A)
+            claim = CLAIM_A
+        else:
+            write_fake_spec(
+                spec_path,
+                replacement=REPLACEMENT_B,
+                stdout=CLAIM_B,
+                extra_files={
+                    "tests/test_app.py": weak_test_source(),
+                    "sdf-checks.json": weak_checks_source(),
+                },
+            )
+            claim = CLAIM_B
+        case = run_task(base, task)
+        before, after = workspace_app(demo_dir, root, case["attempt_id"])
+        case["before"] = before
+        case["after"] = after
+        case["agent_claim"] = claim
+        cases.append(case)
+    return cases
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -444,7 +601,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     os.chdir(root)
     demo_dir = Path(tempfile.mkdtemp(prefix="sdf-demo-"))
-    configure_env(demo_dir, root)
+    spec_path = configure_env(demo_dir, root)
+    write_fake_spec(spec_path, replacement=REPLACEMENT_A, stdout=CLAIM_A)
     out_dir = args.out.resolve() if args.out is not None else demo_dir / "story"
     html_path = out_dir / _HTML_NAME
     server = LocalApi(root)
@@ -457,10 +615,9 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _on_signal)
     try:
         base = server.start()
-        result = run_loop(base)
-        before, after = workspace_app(demo_dir, root, result["attempt_id"])
-        write_html(result, before, after, html_path)
-        print_story(result, before, after, html_path)
+        cases = run_selected(base, spec_path, demo_dir, root, selected_tasks(args.only))
+        write_html(cases, html_path)
+        print_story(cases, html_path)
         if args.open:
             webbrowser.open(html_path.resolve().as_uri())
         return 0
