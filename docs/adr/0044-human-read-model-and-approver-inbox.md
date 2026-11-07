@@ -386,7 +386,7 @@ the same comparison `decide_plan` uses, without loading every proposer.
 That comparison is `str.casefold`, not SQL `lower()`.
 
 `plans.proposed_by_casefold` stores `str.casefold(proposed_by)` at insert.
-Migration `0030_plan_casefold` backfills existing rows in Python, in batches,
+Migration `0032_plan_casefold` backfills existing rows in Python, in batches,
 and then rejects a missing fold. The inbox compares that column to
 `str.casefold` of the caller with a binary collation (`C` on PostgreSQL,
 `BINARY` on SQLite). It does not repair rows on GET. A missing fold or a
