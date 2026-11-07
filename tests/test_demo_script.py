@@ -123,25 +123,25 @@ def test_demo_script_supplies_its_own_mac_key_and_accepts_honest_edit(tmp_path):
     assert "verifier=sdf-evaluator" in stdout
 
 
-def test_configure_env_sets_a_fixture_mac_key_when_unset(tmp_path, monkeypatch):
+def test_configure_evidence_mac_key_sets_a_fixture_when_unset(monkeypatch):
     monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
-    demo.configure_env(tmp_path, REPO)
+    assert demo.configure_evidence_mac_key() == demo.DEMO_EVIDENCE_MAC_KEY
     assert os.environ["SDF_EVIDENCE_MAC_KEY"] == demo.DEMO_EVIDENCE_MAC_KEY
-    assert len(os.environ["SDF_EVIDENCE_MAC_KEY"]) >= demo.MIN_EVIDENCE_MAC_KEY_CHARS
+    assert len(demo.DEMO_EVIDENCE_MAC_KEY) >= demo.MIN_EVIDENCE_MAC_KEY_CHARS
 
 
-def test_configure_env_keeps_a_long_user_mac_key(tmp_path, monkeypatch):
+def test_configure_evidence_mac_key_keeps_a_long_user_key(monkeypatch):
     supplied = "user-supplied-evidence-mac-key-not-the-demo-fixture"
     assert len(supplied) >= demo.MIN_EVIDENCE_MAC_KEY_CHARS
     monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", supplied)
-    demo.configure_env(tmp_path, REPO)
+    assert demo.configure_evidence_mac_key() == supplied
     assert os.environ["SDF_EVIDENCE_MAC_KEY"] == supplied
 
 
-def test_configure_env_rejects_a_short_user_mac_key(tmp_path, monkeypatch):
+def test_configure_evidence_mac_key_rejects_a_short_user_key(monkeypatch):
     monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", "too-short")
     with pytest.raises(SystemExit) as caught:
-        demo.configure_env(tmp_path, REPO)
+        demo.configure_evidence_mac_key()
     assert caught.value.code == 2
     assert os.environ["SDF_EVIDENCE_MAC_KEY"] == "too-short"
 
