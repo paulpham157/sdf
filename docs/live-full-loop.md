@@ -104,6 +104,6 @@ SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 python -m sdf_core.cli runs show ATTEMPT-…
 ```
 
-`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`, which wraps it) uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). The fake adapter writes `app.py`; the registered check `app-updated` is what the evaluator runs. Evidence from that script is synthetic. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API and points at GitHub Codespaces.
+`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`, which wraps it) uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). It runs two tasks against the same sealed `app-updated` check: an honest `print('updated')` that verification accepts, and a near-miss `print('updated ')` (plus a weak test rewrite) that the agent claims succeeded and SDF rejects. Evidence from that script is synthetic. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API and points at GitHub Codespaces.
 
 See also `.env.example`, ADR 0023, and `tests/test_real_agent_loop_live.py`.

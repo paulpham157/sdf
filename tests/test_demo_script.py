@@ -41,7 +41,7 @@ def test_unsupported_host_message_points_to_codespaces():
 
 
 @pytest.mark.skipif(demo.unsupported_host_message() is not None, reason=_PLATFORM_REASON)
-def test_demo_script_accepts_task_via_verification(tmp_path):
+def test_demo_script_accepts_honest_edit_and_rejects_plausible_miss(tmp_path):
     out_dir = tmp_path / "story"
     env = os.environ.copy()
     for name in demo.PROVIDER_KEY_VARS:
@@ -54,7 +54,7 @@ def test_demo_script_accepts_task_via_verification(tmp_path):
         env=env,
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=90,
         check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
@@ -62,21 +62,33 @@ def test_demo_script_accepts_task_via_verification(tmp_path):
     assert "provider keys are set in this shell and were not used" in stdout
     assert "provider=fake" in stdout
     assert "evidence_mode=synthetic" in stdout
-    assert "task_status=succeeded" in stdout
-    assert "verification       : status=PASS" in stdout
+    assert demo.CLAIM_A in stdout
+    assert demo.CLAIM_B in stdout
+    assert "A accepted / B rejected, though the agent said done" in stdout
+    assert "Takeaway:" in stdout
+
+    assert "Task A: task_status=succeeded" in stdout
+    assert "Task A: verification status=PASS" in stdout
+    assert "Task B: task_status=" in stdout
+    assert "Task B: task_status=succeeded" not in stdout
+    assert "Task B: verification status=PASS" not in stdout
+    assert "Task B: verification status=" in stdout
     assert "verifier=sdf-evaluator" in stdout
+    assert "attempt_status=completed" in stdout
     assert "cannot accept the Task" in stdout
-    assert "verification Evidence PASS, not the agent's stdout" in stdout
 
     html_path = out_dir / "index.html"
     assert html_path.is_file()
     page = html_path.read_text(encoding="utf-8")
     assert demo.PASS_BADGE in page
-    assert "Cannot accept the Task." in page
-    assert "This is what accepted the Task." in page
+    assert demo.REJECT_BADGE in page
+    assert demo.CLAIM_A in unescape(page)
+    assert demo.CLAIM_B in unescape(page)
     assert "sdf-evaluator" in page
-    assert "print('old')" in unescape(page)
-    assert "print('updated')" in unescape(page)
+    plain = unescape(page)
+    assert "print('old')" in plain
+    assert "print('updated')" in plain
+    assert "print('updated ')" in plain
     assert str(html_path.resolve().as_uri()) in stdout
 
 

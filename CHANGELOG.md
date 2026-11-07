@@ -254,10 +254,14 @@
 ### Added
 
 - **One-command offline evidence demo.** `uv run scripts/demo.py` walks the
-  public fake-adapter HTTP loop, prints a four-beat story (intent, work,
-  independent check, outcome), and writes a local HTML page. No E2B or model
-  key is required. The sealed oracle still needs Linux x86_64 with Landlock
-  (ADR 0039); other hosts exit with a pointer to GitHub Codespaces.
+  public fake-adapter HTTP loop twice: an honest edit that verification
+  accepts, and a plausible-but-wrong edit the agent claims succeeded
+  (`print('updated ')` plus a weak test rewrite) that SDF rejects. It prints
+  a four-beat story (intent, the agent's claim for each task, the independent
+  check, and "A accepted / B rejected, though the agent said done") and writes
+  a two-column HTML page. `--only accepted|rejected` runs one task. No E2B or
+  model key is required. The sealed oracle still needs Linux x86_64 with
+  Landlock (ADR 0039); other hosts exit with a pointer to GitHub Codespaces.
   `scripts/demo-evidence.sh` remains as a wrapper. A Codespaces dev container
   lives in `.devcontainer/devcontainer.json`.
 
