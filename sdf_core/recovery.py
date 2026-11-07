@@ -288,7 +288,7 @@ def note_remote_effect_uncertain(db: Session, attempt_id: str, provider: str = "
     """Commit a durable ``creating`` sandbox row before the provider call.
 
     Returns the row id so the caller can attach the provider id after the
-    call returns. The in-memory create count is not the record.
+    call returns. The commit is the record. An in-process counter is not.
     """
 
     from .remote_effects import open_remote_sandbox
@@ -328,8 +328,9 @@ def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
     ``evidence_mode`` is not proof that effects were local. A synthetic row
     whose provider create was entered (``remote_effect=uncertain``, or any
     value other than NULL or ``stopped``) stays running. NULL means that
-    create call was not entered. ``stopped`` means this process confirmed the
-    provider resource is gone, which also clears a ``live`` promotion.
+    create call was not entered. ``stopped`` means every durable sandbox row
+    is ``absent``. That also clears a ``live`` promotion. A kill return
+    value is not ``absent``.
     """
 
     from sqlalchemy.orm import object_session

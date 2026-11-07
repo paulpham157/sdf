@@ -781,17 +781,16 @@ class Coordinator:
         sandbox_id = getattr(sandbox, "sandbox_id", None)
         if isinstance(sandbox_id, str) and sandbox_id.strip():
             from .recovery import note_remote_effect_uncertain
-            from .remote_effects import identify_remote_sandbox
+            from .remote_effects import identify_remote_sandbox, in_new_session
 
-            db = open_recovery()
-            try:
+            def record(db) -> None:
                 # The id is already known. Record it as identified so a later
                 # lookup can verify it. A creating row with no id would be an
                 # unknown create and could not be cleared.
                 effect_id = note_remote_effect_uncertain(db, attempt_id, provider="e2b")
                 identify_remote_sandbox(db, effect_id, sandbox_id)
-            finally:
-                db.close()
+
+            in_new_session(open_recovery, record)
 
     def _begin_attempt(self, run_id: str, sub: _Subtask, fixture: Path, spec: AgentSpec, parent: str | None,
                        *, evidence_mode: str, sandbox: AgentSandbox) -> None:

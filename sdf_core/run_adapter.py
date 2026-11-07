@@ -419,7 +419,7 @@ class LiveRunAdapter:
             kwargs["snapshot"] = self.image
         return self._transport_factory(**kwargs)
 
-    def _fence_provider_create(self, attempt_id: str) -> None:
+    def _fence_provider_create(self, attempt_id: str) -> str:
         """Commit ``uncertain`` before ``_ensure_sandbox`` calls the provider.
 
         Uses the run's own session. A second connection here deadlocks the
@@ -437,15 +437,10 @@ class LiveRunAdapter:
         identify_remote_sandbox(self.db, effect_id, sandbox_id)
 
     def _note_provider_stopped(self, attempt_id: str) -> None:
-        from .remote_effects import probe_from_environ, reconcile_attempt
+        from .remote_effects import release_verified_sandboxes
 
-        kill, absent = probe_from_environ(self.run_env)
-        if absent is None:
-            from .recovery import note_remote_effect_stopped
-
-            note_remote_effect_stopped(self.db, attempt_id)
-            return
-        reconcile_attempt(self.db, attempt_id, kill=kill, absent=absent)
+        # Same session as the run. release_verified_sandboxes commits on it.
+        release_verified_sandboxes(self.db, attempt_id, self.run_env)
 
     def _default_kill_by_id(self, sandbox_id: str) -> None:
         if self.provider == "e2b":
@@ -454,7 +449,7 @@ class LiveRunAdapter:
             opts = {"api_key": self.run_env["E2B_API_KEY"]}
             if self.run_env.get("E2B_DOMAIN"):
                 opts["domain"] = self.run_env["E2B_DOMAIN"]
-            Sandbox.kill(sandbox_id, **opts)  # False: already gone, which is fine
+            Sandbox.kill(sandbox_id, **opts)  # return value is not absence
             return
         from .daytona_herdr_transport import DaytonaHerdrTransport
 
@@ -499,9 +494,10 @@ class LiveRunAdapter:
 
         One-way and idempotent: ``synthetic`` -> ``live`` only, never back.
         Committed at once, so a process that dies mid-run leaves a ``live``
-        RUNNING Attempt exactly when a sandbox existed. Recovery will not
-        treat a later lease expiry as proof that sandbox has stopped, and it
-        will not start a provider kill from a process that no longer holds one.
+        RUNNING Attempt exactly when a sandbox existed. Lease recovery will
+        not treat expiry as proof that sandbox has stopped, and it will not
+        kill from a process that no longer holds one. A later reconcile of a
+        stored id is a separate call.
         """
 
         if not sandbox_id or self._live_confirmed == attempt_id:

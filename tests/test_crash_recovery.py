@@ -1271,12 +1271,18 @@ def test_heartbeat_refresh_does_not_touch_a_failed_attempt(tmp_path: Path) -> No
         db.close()
 
 
-def _fence_create(attempt_id: str) -> str:
+def _with_session(fn):
+    """One short session. The callback commits. The caller does not keep it."""
+
     db = SessionLocal()
     try:
-        return note_remote_effect_uncertain(db, attempt_id, provider="e2b")
+        return fn(db)
     finally:
         db.close()
+
+
+def _fence_create(attempt_id: str) -> str:
+    return _with_session(lambda db: note_remote_effect_uncertain(db, attempt_id, provider="e2b"))
 
 
 def _abandon_host(attempt_id: str) -> None:
@@ -1290,12 +1296,11 @@ def _abandon_host(attempt_id: str) -> None:
 
 
 def _row_effect(attempt_id: str):
-    db = SessionLocal()
-    try:
+    def read(db):
         row = db.get(AttemptRow, attempt_id)
         return row.evidence_mode, row.remote_effect, row.status
-    finally:
-        db.close()
+
+    return _with_session(read)
 
 
 def _refuse_new_dispatch(tmp_path: Path, task_id: str, attempt_id: str, fixture: Path) -> None:
@@ -1717,8 +1722,8 @@ def test_two_sandbox_creates_stay_uncertain_until_each_stop_is_confirmed(tmp_pat
 
     first = _fence_create(attempt_id)
     second = _fence_create(attempt_id)
-    side = SessionLocal()
-    try:
+
+    def check(side) -> None:
         identify_remote_sandbox(side, first, "sbx-a")
         identify_remote_sandbox(side, second, "sbx-b")
         assert verify_remote_sandbox_absent(side, first, absent=True) is True
@@ -1729,8 +1734,8 @@ def test_two_sandbox_creates_stay_uncertain_until_each_stop_is_confirmed(tmp_pat
         unknown = _fence_create(attempt_id)
         assert verify_remote_sandbox_absent(side, unknown, absent=True) is False
         assert _row_effect(attempt_id)[1] == "uncertain"
-    finally:
-        side.close()
+
+    _with_session(check)
     _db.close()
 
 
@@ -1782,8 +1787,7 @@ def test_reused_worker_sandbox_marks_the_new_attempt_uncertain(tmp_path: Path, m
     from sdf_core.db import AttemptRemoteSandboxRow
     from sdf_core.remote_effects import reconcile_attempt
 
-    side = SessionLocal()
-    try:
+    def check(side) -> None:
         row = side.query(AttemptRemoteSandboxRow).filter_by(attempt_id=attempt_id).one()
         assert row.phase == "identified"
         assert row.sandbox_id == "sbx-still-open"
@@ -1794,8 +1798,8 @@ def test_reused_worker_sandbox_marks_the_new_attempt_uncertain(tmp_path: Path, m
         )
         assert resolved.resolved is True
         assert resolved.blocked is None
-    finally:
-        side.close()
+
+    _with_session(check)
     assert _row_effect(attempt_id)[1] == "stopped"
     db.close()
 
@@ -1816,21 +1820,17 @@ def test_finished_attempt_with_a_known_sandbox_blocks_until_lookup(tmp_path: Pat
     task = db.get(TaskRow, task_id)
     task.status = TaskState.FAILED.value
     db.commit()
-    identify = SessionLocal()
-    try:
-        identify_remote_sandbox(identify, effect_id, "sbx-survived")
-    finally:
-        identify.close()
-    refused = SessionLocal()
-    try:
+    _with_session(lambda identify: identify_remote_sandbox(identify, effect_id, "sbx-survived"))
+
+    def refuse(refused) -> None:
         with pytest.raises(ValueError, match="not verified absent"):
             ExecutionService(
                 refused, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
             ).begin(task_id=task_id, dispatch_key=f"{task_id}-new", fixture=fixture, parent_attempt_id=attempt_id)
-    finally:
-        refused.close()
-    side = SessionLocal()
-    try:
+
+    _with_session(refuse)
+
+    def lookup(side) -> None:
         present = reconcile_attempt(
             side, attempt_id,
             kill=lambda _provider, _sandbox_id: None,
@@ -1843,16 +1843,16 @@ def test_finished_attempt_with_a_known_sandbox_blocks_until_lookup(tmp_path: Pat
             absent=lambda _provider, sandbox_id: sandbox_id == "sbx-survived",
         )
         assert cleared.resolved is True
-    finally:
-        side.close()
-    started = SessionLocal()
-    try:
+
+    _with_session(lookup)
+
+    def start(started) -> None:
         begun_again = ExecutionService(
             started, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
         ).begin(task_id=task_id, dispatch_key=f"{task_id}-new", fixture=fixture, parent_attempt_id=attempt_id)
         assert begun_again.attempt.id != attempt_id
-    finally:
-        started.close()
+
+    _with_session(start)
     db.close()
 
 
@@ -1883,8 +1883,7 @@ def test_reconcile_does_not_clear_an_unknown_create(tmp_path: Path, monkeypatch)
         body = observed.json()
         assert body["resolved"] is False
         assert body["blocked"] == "unknown_create"
-        phases = {row["phase"]: row["sandbox_id"] for row in body["sandboxes"]}
-        assert None in phases.values() or any(row["phase"] == "creating" for row in body["sandboxes"])
+        assert any(row["phase"] == "creating" and row["sandbox_id"] is None for row in body["sandboxes"])
         assert any(row["sandbox_id"] == "sbx-seen" and row["phase"] == "absent" for row in body["sandboxes"])
     assert _row_effect(attempt_id)[1] == "uncertain"
     db.close()

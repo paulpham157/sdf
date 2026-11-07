@@ -194,21 +194,16 @@ class E2BAgentSandbox:
 
             def before_create() -> str:
                 from .recovery import note_remote_effect_uncertain
+                from .remote_effects import in_new_session
 
-                db = open_session()
-                try:
-                    return note_remote_effect_uncertain(db, attempt_id, provider="e2b")
-                finally:
-                    db.close()
+                return in_new_session(
+                    open_session, lambda db: note_remote_effect_uncertain(db, attempt_id, provider="e2b"),
+                )
 
             def on_identified(effect_id: str, sandbox_id: str) -> None:
-                from .remote_effects import identify_remote_sandbox
+                from .remote_effects import identify_remote_sandbox, in_new_session
 
-                db = open_session()
-                try:
-                    identify_remote_sandbox(db, effect_id, sandbox_id)
-                finally:
-                    db.close()
+                in_new_session(open_session, lambda db: identify_remote_sandbox(db, effect_id, sandbox_id))
 
         self._transport, _ = create_credentialed_transport(
             agents=(self.spec.kind,), environ=self._environ, template=self._template,
@@ -350,22 +345,17 @@ class E2BAgentSandbox:
                         self._died = time.monotonic()
         finally:
             if sandbox_id and self._remote_attempt_id and self._recovery_session_factory is not None:
-                from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped
+                from .recovery import note_remote_effect_stop_failed
 
                 if not closed:
                     note_remote_effect_stop_failed(self._remote_attempt_id)
                 else:
-                    from .remote_effects import probe_from_environ, reconcile_attempt
+                    from .remote_effects import in_new_session, release_verified_sandboxes
 
-                    db = self._recovery_session_factory()
-                    try:
-                        kill, absent = probe_from_environ(self._environ)
-                        if absent is None:
-                            note_remote_effect_stopped(db, self._remote_attempt_id)
-                        else:
-                            reconcile_attempt(db, self._remote_attempt_id, kill=kill, absent=absent)
-                    finally:
-                        db.close()
+                    in_new_session(
+                        self._recovery_session_factory,
+                        lambda db: release_verified_sandboxes(db, self._remote_attempt_id, self._environ),
+                    )
 
 
 def e2b_factory(environ: Mapping[str, str], **kwargs: Any) -> AgentSandboxFactory:

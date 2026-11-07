@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TypeVar
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -26,6 +27,8 @@ REMOTE_STOPPED = "stopped"
 
 Kill = Callable[[str, str], None]
 Absent = Callable[[str, str], bool]
+SessionFactory = Callable[[], Session]
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -35,8 +38,23 @@ class ReconcileResult:
     sandboxes: tuple[dict[str, str | None], ...]
 
 
+def in_new_session(session_factory: SessionFactory, fn: Callable[[Session], _T]) -> _T:
+    """Open a session, run ``fn``, and close it.
+
+    ``fn`` commits its own writes. The factory must not be a session that
+    already holds a transaction on the same SQLite file. ``LiveRunAdapter``
+    keeps the run's session for that reason and does not call this.
+    """
+
+    db = session_factory()
+    try:
+        return fn(db)
+    finally:
+        db.close()
+
+
 def open_remote_sandbox(db: Session, attempt_id: str, provider: str) -> str:
-    """Commit a ``creating`` row before the provider call. Returns its id."""
+    """Commit a ``creating`` row on ``db`` before the provider call. Returns its id."""
 
     attempt = db.get(AttemptRow, attempt_id)
     if attempt is None:
@@ -143,6 +161,36 @@ def sandbox_rows(db: Session, attempt_id: str) -> list[AttemptRemoteSandboxRow]:
     ))
 
 
+def release_verified_sandboxes(db: Session, attempt_id: str, environ: Mapping[str, str] | None) -> None:
+    """After this process's own stop attempt, commit only verified absence.
+
+    Uses ``db`` and commits inside refresh or reconcile. When no lookup is
+    configured, rows that are not already ``absent`` stay as they are. The
+    kill return value is not written.
+    """
+
+    kill, absent = probe_from_environ(environ)
+    if absent is None:
+        from .recovery import note_remote_effect_stopped
+
+        note_remote_effect_stopped(db, attempt_id)
+        return
+    reconcile_attempt(db, attempt_id, kill=kill, absent=absent)
+
+
+def absence_for(environ: Mapping[str, str] | None, provider: str) -> Callable[[str], bool] | None:
+    """One-id lookup for ``provider``, or None when this process must not call out."""
+
+    _kill, lookup = probe_from_environ(environ)
+    if lookup is None:
+        return None
+
+    def absent(sandbox_id: str) -> bool:
+        return lookup(provider, sandbox_id)
+
+    return absent
+
+
 def reconcile_attempt(
     db: Session,
     attempt_id: str,
@@ -203,26 +251,26 @@ def probe_from_environ(environ: Mapping[str, str] | None = None) -> tuple[Kill |
         return None, None
     domain = (env.get("E2B_DOMAIN") or "").strip() or None
 
+    def call_kwargs() -> dict[str, str]:
+        opts = {"api_key": api_key}
+        if domain:
+            opts["domain"] = domain
+        return opts
+
     def kill(provider: str, sandbox_id: str) -> None:
         if provider not in {"e2b", "e2b-box"}:
             raise RuntimeError(f"no kill wired for provider {provider}")
         from e2b import Sandbox
 
-        opts: dict[str, str] = {"api_key": api_key}
-        if domain:
-            opts["domain"] = domain
-        Sandbox.kill(sandbox_id, **opts)
+        Sandbox.kill(sandbox_id, **call_kwargs())
 
     def absent(provider: str, sandbox_id: str) -> bool:
         if provider not in {"e2b", "e2b-box"}:
             return False
         from e2b import Sandbox, SandboxNotFoundException
 
-        opts = {"api_key": api_key}
-        if domain:
-            opts["domain"] = domain
         try:
-            Sandbox.get_info(sandbox_id, **opts)
+            Sandbox.get_info(sandbox_id, **call_kwargs())
         except SandboxNotFoundException:
             return True
         except Exception:

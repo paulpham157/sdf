@@ -220,21 +220,16 @@ class HerdrE2BNativeAdapter:
 
             def before_remote() -> str:
                 from .recovery import note_remote_effect_uncertain
+                from .remote_effects import in_new_session
 
-                db = open_session()
-                try:
-                    return note_remote_effect_uncertain(db, attempt_id, provider="e2b-box")
-                finally:
-                    db.close()
+                return in_new_session(
+                    open_session, lambda db: note_remote_effect_uncertain(db, attempt_id, provider="e2b-box"),
+                )
 
             def on_identified(effect_id: str, sandbox_id: str) -> None:
-                from .remote_effects import identify_remote_sandbox
+                from .remote_effects import identify_remote_sandbox, in_new_session
 
-                db = open_session()
-                try:
-                    identify_remote_sandbox(db, effect_id, sandbox_id)
-                finally:
-                    db.close()
+                in_new_session(open_session, lambda db: identify_remote_sandbox(db, effect_id, sandbox_id))
 
             def on_stop(confirmed: bool) -> None:
                 from .recovery import note_remote_effect_stop_failed
@@ -242,16 +237,16 @@ class HerdrE2BNativeAdapter:
                 if not confirmed:
                     note_remote_effect_stop_failed(attempt_id)
                     return
-                from .remote_effects import probe_from_environ, reconcile_attempt
+                from .remote_effects import in_new_session, probe_from_environ, reconcile_attempt
 
+                # Kill success without a lookup does not refresh the row.
                 kill, absent = probe_from_environ(self.adapter._environ)
                 if absent is None:
                     return
-                db = open_session()
-                try:
-                    reconcile_attempt(db, attempt_id, kill=kill, absent=absent)
-                finally:
-                    db.close()
+                in_new_session(
+                    open_session,
+                    lambda db: reconcile_attempt(db, attempt_id, kill=kill, absent=absent),
+                )
 
         result = self.adapter.execute(
             plan, live=self.live, before_remote=before_remote, on_identified=on_identified, on_stop=on_stop,

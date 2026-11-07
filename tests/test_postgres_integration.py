@@ -692,6 +692,7 @@ def test_postgresql_observed_lease_matches_and_a_committed_renewal_does_not(post
         ))
         db.commit()
 
+    # This transaction's UPDATE still sees the heartbeat it read, and commits.
     stable = _session(postgres_engine)
     try:
         attempt = stable.get(AttemptRow, "ATTEMPT-PG-STABLE")
@@ -704,6 +705,8 @@ def test_postgresql_observed_lease_matches_and_a_committed_renewal_does_not(post
     finally:
         stable.close()
 
+    # The reader keeps its snapshot. The writer commits a new heartbeat
+    # before the reader's UPDATE, so that UPDATE must match zero rows.
     reader = _session(postgres_engine)
     try:
         attempt = reader.get(AttemptRow, "ATTEMPT-PG-RENEW")

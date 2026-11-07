@@ -12,6 +12,8 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import create_engine, select
@@ -70,7 +72,7 @@ def _ask(port: int, command: str) -> str:
     return data.decode().strip()
 
 
-def _run_host(database: Path, port: int, attempt_id: str, ready: Path, *, identify: bool) -> subprocess.Popen[str]:
+def _run_host(database: Path, port: int, attempt_id: str, ready: Path, *, identify: bool) -> None:
     """Start the host and SIGKILL it after the durable write. No cleanup runs."""
 
     script = textwrap.dedent(
@@ -109,7 +111,6 @@ def _run_host(database: Path, port: int, attempt_id: str, ready: Path, *, identi
     process.kill()
     process.wait(timeout=5)
     assert process.returncode < 0
-    return process
 
 
 def _provider() -> tuple[subprocess.Popen[str], int]:
@@ -138,6 +139,19 @@ def _database(tmp_path: Path):
     return database, factory
 
 
+@contextmanager
+def _running_provider(tmp_path: Path) -> Iterator[tuple[Path, object, int]]:
+    """Database plus a provider process. The provider is stopped on the way out."""
+
+    database, factory = _database(tmp_path)
+    provider, port = _provider()
+    try:
+        yield database, factory, port
+    finally:
+        _ask(port, "STOP")
+        provider.wait(timeout=5)
+
+
 def _reconcile(factory, port: int):
     db = factory()
     try:
@@ -151,9 +165,7 @@ def _reconcile(factory, port: int):
 
 
 def test_host_exit_before_the_id_is_recorded_cannot_be_reconciled(tmp_path: Path) -> None:
-    database, factory = _database(tmp_path)
-    provider, port = _provider()
-    try:
+    with _running_provider(tmp_path) as (database, factory, port):
         _run_host(database, port, "ATTEMPT-PROCESS", tmp_path / "ready-unknown", identify=False)
         assert _ask(port, "GET sbx-orphan") == "running"
         result, effect = _reconcile(factory, port)
@@ -166,23 +178,15 @@ def test_host_exit_before_the_id_is_recorded_cannot_be_reconciled(tmp_path: Path
             assert row.phase == "creating" and row.sandbox_id is None
         finally:
             db.close()
-    finally:
-        _ask(port, "STOP")
-        provider.wait(timeout=5)
 
 
 def test_host_exit_after_the_id_is_recorded_resolves_only_when_the_provider_reports_absent(
     tmp_path: Path,
 ) -> None:
-    database, factory = _database(tmp_path)
-    provider, port = _provider()
-    try:
+    with _running_provider(tmp_path) as (database, factory, port):
         _run_host(database, port, "ATTEMPT-PROCESS", tmp_path / "ready-known", identify=True)
         assert _ask(port, "GET sbx-orphan") == "running"
         result, effect = _reconcile(factory, port)
         assert result.resolved is True and result.blocked is None
         assert effect == "stopped"
         assert _ask(port, "GET sbx-orphan") == "absent"
-    finally:
-        _ask(port, "STOP")
-        provider.wait(timeout=5)

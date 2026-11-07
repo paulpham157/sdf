@@ -266,11 +266,9 @@ class E2BContainmentBackend:
         self._recovery_session_factory = session_factory
 
     def _note_effect(self, note):
-        db = self._recovery_session_factory()
-        try:
-            return note(db, self._attempt_id)
-        finally:
-            db.close()
+        from .remote_effects import in_new_session
+
+        return in_new_session(self._recovery_session_factory, lambda db: note(db, self._attempt_id))
 
     def run(
         self,
@@ -328,22 +326,20 @@ class E2BContainmentBackend:
         )
         primary_error: Exception | None = None
         result: subprocess.CompletedProcess[str] | None = None
-        saw_id = False
+        sandbox_id: str | None = None
         try:
             synced = self._call(
                 (self.executable, "-t", self.template, "sync"), root, timeout_ms, cli_env, attempts=COMMAND_ATTEMPTS,
             )
             self._remember_sandbox(root, cli_env, synced)
-            seen = _sandbox_id_from_record(box_key(root), cli_env) or _sandbox_id_from_output(synced)
-            saw_id = seen or ""
-            if effect_id and saw_id:
-                from .remote_effects import identify_remote_sandbox
+            sandbox_id = _sandbox_id_from_record(box_key(root), cli_env) or _sandbox_id_from_output(synced)
+            if effect_id and sandbox_id:
+                from .remote_effects import identify_remote_sandbox, in_new_session
 
-                side = self._recovery_session_factory()
-                try:
-                    identify_remote_sandbox(side, effect_id, saw_id)
-                finally:
-                    side.close()
+                in_new_session(
+                    self._recovery_session_factory,
+                    lambda db: identify_remote_sandbox(db, effect_id, sandbox_id),
+                )
             raw = self._call(
                 (self.executable, "exec", "--timeout-ms", str(timeout_ms), remote),
                 root, timeout_ms, cli_env, attempts=COMMAND_ATTEMPTS,
@@ -354,26 +350,23 @@ class E2BContainmentBackend:
         kill_error = self._kill(root, timeout_ms, cli_env)
         absence = self._absence_probe
         if absence is None:
-            from .remote_effects import probe_from_environ
+            from .remote_effects import absence_for
 
-            _kill, lookup = probe_from_environ(self._environ)
-            if lookup is not None:
-                absence = lambda sandbox_id, lookup=lookup: lookup("e2b-box", sandbox_id)
-        if kill_error or not saw_id:
+            absence = absence_for(self._environ, "e2b-box")
+        if kill_error or not sandbox_id:
             note_remote_effect_stop_failed(self._attempt_id)
         elif effect_id and absence is not None:
             try:
-                gone = bool(absence(saw_id))
+                gone = bool(absence(sandbox_id))
             except Exception:
                 gone = False
             if gone:
-                from .remote_effects import verify_remote_sandbox_absent
+                from .remote_effects import in_new_session, verify_remote_sandbox_absent
 
-                side = self._recovery_session_factory()
-                try:
-                    verify_remote_sandbox_absent(side, effect_id, absent=True)
-                finally:
-                    side.close()
+                in_new_session(
+                    self._recovery_session_factory,
+                    lambda db: verify_remote_sandbox_absent(db, effect_id, absent=True),
+                )
         if result is not None:
             # A measured exit code is the verdict. Cleanup failure stays visible
             # and does not turn PASS/FAIL into INCONCLUSIVE.
