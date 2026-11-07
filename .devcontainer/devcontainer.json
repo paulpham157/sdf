@@ -1,0 +1,20 @@
+{
+  "name": "SDF Core",
+  "image": "mcr.microsoft.com/devcontainers/python:3.13",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/uv:1": {
+      "version": "latest"
+    }
+  },
+  "postCreateCommand": "uv sync --all-groups",
+  "postAttachCommand": "echo 'Try the SDF demo (no API keys): uv run scripts/demo.py'",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"],
+      "settings": {
+        "python.defaultInterpreterPath": "${containerWorkspaceFolder}/.venv/bin/python"
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}

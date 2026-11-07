@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -75,6 +76,28 @@ def _ordered(items: list[dict]) -> bool:
     return keys == sorted(keys)
 
 
+def _assert_cursor_is_last_item(body: dict) -> None:
+    """ADR 0044: the cursor is the last returned item, or null when the page is done.
+
+    An empty page is terminal. A continuation cursor never names a row the
+    response did not return.
+    """
+
+    from sdf_core.human_read import decode_cursor
+
+    items = body["items"]
+    cursor = body["next_cursor"]
+    if not items:
+        assert cursor is None
+        return
+    if cursor is None:
+        return
+    stamp, row_id = decode_cursor(cursor)
+    last = items[-1]
+    assert row_id == last["id"]
+    assert _aware(stamp.isoformat()) == _aware(last["created_at"])
+
+
 def _pages(client, path: str, *, limit: int, extra: dict | None = None) -> list[dict]:
     items: list[dict] = []
     cursor = None
@@ -89,6 +112,7 @@ def _pages(client, path: str, *, limit: int, extra: dict | None = None) -> list[
         assert set(body) == {"items", "next_cursor"}
         assert isinstance(body["items"], list)
         assert len(body["items"]) <= limit
+        _assert_cursor_is_last_item(body)
         items.extend(body["items"])
         cursor = body["next_cursor"]
         if cursor is None:
@@ -368,49 +392,55 @@ def test_task_and_attempt_detail_round_trip(tmp_path):
     assert viewer.get("/attempts/missing-attempt-xyz").status_code == 404
 
 
-def test_read_payloads_do_not_expose_held_out_oracle_output(tmp_path):
-    suffix = uuid.uuid4().hex
-    fixture_bytes = f"HELD-OUT-BYTES-{suffix}"
-    withheld_stdout = f"WITHHELD-STDOUT-{suffix}"
-    withheld_stderr = f"WITHHELD-STDERR-{suffix[:12]}"
-    hidden_name = f"hidden-oracle-{suffix[:12]}"
-    held = tmp_path / ".sdf-held-out"
-    held.mkdir()
-    (held / f"{hidden_name}.py").write_text(fixture_bytes, encoding="utf-8")
-    task_id = f"TASK-HELD-{suffix[:10]}"
-    attempt_id = f"ATTEMPT-HELD-{suffix[:10]}"
-    plan_id = f"PLAN-HELD-{suffix[:10]}"
-    objective_id = f"OBJ-HELD-{suffix[:10]}"
-    request_id = f"DREQ-HELD-{suffix[:10]}"
-    now = datetime.now(timezone.utc)
-    with SessionLocal() as db:
-        db.add(TaskRow(
-            id=task_id, title="visible task", status="created", idempotency_key=fixture_bytes,
-            acceptance_criteria=["visible criterion"], created_at=now,
-        ))
-        db.add(AttemptRow(
-            id=attempt_id, task_id=task_id, status="completed", dispatch_key=withheld_stdout,
-            agent="native", created_at=now, executor_id=withheld_stderr,
-            executor_heartbeat_at=now,
-        ))
-        db.add(PlanRow(
-            id=plan_id, title="visible plan", status="proposed", objective_id=objective_id,
-            content={"oracle": fixture_bytes, "stdout": withheld_stdout, "stderr": withheld_stderr,
-                     "path": f".sdf-held-out/{hidden_name}.py"},
-            content_sha256="d" * 64, proposed_by="someone", created_at=now, decision_request_id=request_id,
-        ))
-        db.add(DecisionRequestRow(
-            id=request_id, subject_kind="plan", subject_id=plan_id, question="Approve the visible plan?",
-            options=["approve", "reject"], status="pending", requested_by="someone", created_at=now,
-        ))
-        db.add(GraphNodeRow(
-            id=objective_id, kind="objective", title="visible objective", source="test", owner="product",
-            confidence=1.0, created_at=now,
-            metadata_json={"fixture": fixture_bytes, "stdout": withheld_stdout, "stderr": withheld_stderr},
-        ))
-        db.commit()
+def test_read_payloads_do_not_expose_held_out_oracle_output(tmp_path, monkeypatch):
+    """A real held-out evaluation (ADR 0040), then the read model.
 
-    viewer = client_as("viewer", "approver", principal=f"reader-{suffix[:8]}")
+    The fixture file still contains the oracle sentinel and the hidden
+    assertion. Pytest would reprint both on failure. The evaluator stores the
+    fixed withheld note instead, and these GET payloads do not carry the
+    sentinel, the assertion, or that note.
+    """
+
+    import os
+    import sys
+    from pathlib import Path
+
+    from sdf_core.db import ArtifactRow, EvidenceRow
+    from sdf_core.evaluator import HELD_OUT_OUTPUT
+    from tests.test_held_out_oracles import HARDCODE, SENTINEL, _fixture
+
+    monkeypatch.setenv("PATH", f"{os.path.dirname(sys.executable)}{os.pathsep}{os.environ.get('PATH', '')}")
+    hidden_assertion = "add(7, 11) == 18"
+    fixture = _fixture(tmp_path, HARDCODE)
+    source = (fixture / ".sdf-held-out" / "test_hidden.py").read_text(encoding="utf-8")
+    assert SENTINEL in source and hidden_assertion in source
+    operator = client_as("operator", principal=f"held-{uuid.uuid4().hex[:8]}")
+    task_id = f"TASK-HELD-{uuid.uuid4().hex[:8]}"
+    created = operator.post("/tasks", json={
+        "id": task_id, "title": "held-out read model", "idempotency_key": task_id,
+        "acceptance_criteria": ["held-out case"],
+    })
+    assert created.status_code == 201, created.text
+    run = operator.post(f"/tasks/{task_id}/run", json={
+        "fixture_dir": str(fixture),
+        "criterion_checks": {"held-out case": ["hidden-case"]},
+    })
+    assert run.status_code == 200, run.text
+    attempt_id = run.json()["attempt_id"]
+    with SessionLocal() as db:
+        evidence = list(db.scalars(select(EvidenceRow).where(EvidenceRow.attempt_id == attempt_id)))
+        held = [row for row in evidence if row.oracle_visibility == "held_out"]
+        assert held, [row.criterion for row in evidence]
+        assert all(SENTINEL not in (row.command or "") for row in held)
+        assert all(hidden_assertion not in (row.command or "") for row in held)
+        artifacts = list(db.scalars(select(ArtifactRow).where(ArtifactRow.attempt_id == attempt_id)))
+        outputs = [row for row in artifacts if row.kind == "evaluator_output"]
+        assert outputs
+        stored = "\n".join(Path(row.uri).read_text(encoding="utf-8") for row in outputs)
+    assert HELD_OUT_OUTPUT in stored
+    assert SENTINEL not in stored and hidden_assertion not in stored
+
+    viewer = client_as("viewer")
     blobs = [
         _pages_text(viewer, "/tasks"),
         viewer.get(f"/tasks/{task_id}").text,
@@ -421,7 +451,7 @@ def test_read_payloads_do_not_expose_held_out_oracle_output(tmp_path):
         _pages_text(viewer, "/inbox"),
     ]
     combined = "\n".join(blobs)
-    for secret in (fixture_bytes, withheld_stdout, withheld_stderr, hidden_name, ".sdf-held-out/"):
+    for secret in (SENTINEL, hidden_assertion, HELD_OUT_OUTPUT, ".sdf-held-out/"):
         assert secret not in combined
     attempt = viewer.get(f"/attempts/{attempt_id}").json()
     task = viewer.get(f"/tasks/{task_id}").json()
@@ -654,3 +684,339 @@ def test_read_payloads_redact_like_the_timeline(tmp_path):
     assert secret not in combined
     assert "Y" * 374 not in combined
     assert body not in combined
+
+
+def _pending_plan(db, *, plan_id: str, proposed_by: str, created_at: datetime, request_id: str | None = None) -> str:
+    request_id = request_id or f"DREQ-{plan_id}"
+    db.add(PlanRow(
+        id=plan_id, title=plan_id, status="proposed", content={"subtasks": []},
+        content_sha256="e" * 64, proposed_by=proposed_by, created_at=created_at,
+        decision_request_id=request_id,
+    ))
+    db.add(DecisionRequestRow(
+        id=request_id, subject_kind="plan", subject_id=plan_id, question="Approve?",
+        options=["approve", "reject"], status="pending", requested_by=proposed_by, created_at=created_at,
+    ))
+    return request_id
+
+
+def _decision_selects(statements: list[tuple]) -> list[tuple]:
+    selected = []
+    for statement, parameters in statements:
+        text = statement.lower()
+        if text.lstrip().startswith("select") and "decision_requests" in text:
+            selected.append((statement, parameters))
+    return selected
+
+
+def casefold_name(value: str) -> str:
+    from sdf_core.casefold import casefold
+
+    return casefold(value)
+
+
+def _bound_parameter(parameters) -> set:
+    values: list = []
+    if isinstance(parameters, dict):
+        values.extend(parameters.values())
+    elif isinstance(parameters, (list, tuple)):
+        values.extend(parameters)
+    else:
+        values.append(parameters)
+    flat: set = set()
+    for value in values:
+        if isinstance(value, (list, tuple)):
+            flat.update(value)
+        else:
+            flat.add(value)
+    return flat
+
+
+def test_inbox_page_is_bounded_across_self_proposed_plans():
+    """A long own-plan prefix is filtered in SQL, not loaded as proposer names."""
+
+    from sqlalchemy import event
+
+    suffix = uuid.uuid4().hex[:8]
+    proposer_name = f"bound-{suffix}"
+    proposer = client_as("approver", principal=proposer_name)
+    other_name = f"other-bound-{suffix}"
+    base = datetime(2016, 1, 1, tzinfo=timezone.utc)
+    own_ids = []
+    with SessionLocal() as db:
+        for index in range(250):
+            plan_id = f"P-OWN-{suffix}-{index:04d}"
+            own_ids.append(_pending_plan(
+                db, plan_id=plan_id, proposed_by=proposer_name,
+                created_at=base + timedelta(seconds=index),
+            ))
+        target = _pending_plan(
+            db, plan_id=f"P-OTHER-{suffix}", proposed_by=other_name,
+            created_at=base + timedelta(seconds=250),
+        )
+        for index in range(100):
+            _pending_plan(
+                db, plan_id=f"P-DIST-{suffix}-{index:04d}", proposed_by=f"dist-{suffix}-{index:04d}",
+                created_at=base + timedelta(seconds=300 + index),
+            )
+        db.commit()
+
+    bind = SessionLocal.kw["bind"]
+    captured: list[tuple] = []
+
+    def before(_conn, _cursor, statement, parameters, _context, _executemany):
+        captured.append((statement, parameters))
+
+    event.listen(bind, "before_cursor_execute", before)
+    try:
+        first = proposer.get("/inbox", params={"limit": 1})
+    finally:
+        event.remove(bind, "before_cursor_execute", before)
+    assert first.status_code == 200, first.text
+    _assert_cursor_is_last_item(first.json())
+    selects = _decision_selects(captured)
+    limited = [
+        (statement, parameters) for statement, parameters in selects
+        if "LIMIT" in statement.upper() and "ORDER BY" in statement.upper()
+    ]
+    assert len(limited) == 1, [statement[:300] for statement, _ in selects]
+    page_sql, page_params = limited[0]
+    assert "DISTINCT" not in page_sql.upper()
+    flat = _bound_parameter(page_params)
+    assert 2 in flat
+    assert casefold_name(proposer_name) in flat
+    assert other_name not in flat
+    assert not any(isinstance(value, str) and value.startswith(f"dist-{suffix}-") for value in flat)
+    assert len(first.json()["items"]) <= 1
+
+    seen_own = []
+    seen_target = 0
+    cursor = None
+    for _windows in range(1, 2001):
+        params = {"limit": 1}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = proposer.get("/inbox", params=params)
+        assert page.status_code == 200, page.text
+        body = page.json()
+        assert len(body["items"]) <= 1
+        _assert_cursor_is_last_item(body)
+        for item in body["items"]:
+            if item["id"] in set(own_ids):
+                seen_own.append(item["id"])
+            if item["id"] == target:
+                seen_target += 1
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+    else:
+        raise AssertionError("inbox cursor did not end")
+    assert seen_own == []
+    assert seen_target == 1
+
+
+def test_inbox_paginates_through_separation_gaps(monkeypatch):
+    """limit=1 walks [own, other, own, other], including a timestamp tie and Unicode casefold."""
+
+    suffix = uuid.uuid4().hex[:8]
+    # "strasse".casefold() == "Straße".casefold(); SQL lower() does not equate them.
+    # "ss".casefold() == "ß".casefold(); lower("ß") stays "ß".
+    proposer = client_as("approver", principal="strasse")
+    ess = client_as("approver", principal="ss")
+    base = datetime(2017, 1, 1, tzinfo=timezone.utc)
+    tie = datetime(2017, 6, 1, 12, 0, tzinfo=timezone.utc)
+    with SessionLocal() as db:
+        own_a = _pending_plan(db, plan_id=f"G-OWN-A-{suffix}", proposed_by="STRASSE", created_at=base)
+        other_a = _pending_plan(
+            db, plan_id=f"G-OTHER-A-{suffix}", proposed_by=f"other-{suffix}",
+            created_at=base + timedelta(seconds=1),
+        )
+        own_b = _pending_plan(
+            db, plan_id=f"G-OWN-B-{suffix}", proposed_by="Straße",
+            created_at=base + timedelta(seconds=2),
+        )
+        other_b = _pending_plan(
+            db, plan_id=f"G-OTHER-B-{suffix}", proposed_by="ß",
+            created_at=base + timedelta(seconds=3),
+        )
+        tie_other_lo = _pending_plan(
+            db, plan_id=f"G-TIE-A-{suffix}", proposed_by=f"tie-{suffix}", created_at=tie,
+        )
+        tie_own = _pending_plan(db, plan_id=f"G-TIE-B-{suffix}", proposed_by="strasse", created_at=tie)
+        tie_other_hi = _pending_plan(
+            db, plan_id=f"G-TIE-C-{suffix}", proposed_by=f"tie-{suffix}", created_at=tie,
+        )
+        db.commit()
+
+    ours = {own_a, other_a, own_b, other_b, tie_other_lo, tie_own, tie_other_hi}
+
+    def mine(client):
+        return [item["id"] for item in _pages(client, "/inbox", limit=1) if item["id"] in ours]
+
+    assert mine(proposer) == [other_a, other_b, tie_other_lo, tie_other_hi]
+    # "ß" is the caller's own plan under casefold; "Straße" is not ("strasse" != "ss").
+    assert mine(ess) == [own_a, other_a, own_b, tie_other_lo, tie_own, tie_other_hi]
+    assert other_b not in mine(ess)
+
+    monkeypatch.setenv("SDF_AUTH_SINGLE_USER", "1")
+    assert mine(proposer) == [own_a, other_a, own_b, other_b, tie_other_lo, tie_own, tie_other_hi]
+    monkeypatch.setenv("SDF_AUTH_SINGLE_USER", "")
+    assert own_a not in mine(proposer)
+
+
+def test_inbox_omits_a_plan_request_whose_plan_is_gone():
+    suffix = uuid.uuid4().hex[:8]
+    request_id = f"DREQ-GONE-{suffix}"
+    approver = client_as("approver", principal=f"gone-{suffix}")
+    with SessionLocal() as db:
+        db.add(DecisionRequestRow(
+            id=request_id, subject_kind="plan", subject_id=f"PLAN-MISSING-{suffix}",
+            question="Approve a plan that is not stored?", options=["approve", "reject"],
+            status="pending", requested_by="someone", created_at=datetime(2018, 1, 1, tzinfo=timezone.utc),
+        ))
+        db.commit()
+    inbox_ids = {item["id"] for item in _pages(approver, "/inbox", limit=100)}
+    assert request_id not in inbox_ids
+    listed = approver.get("/decision-requests")
+    assert listed.status_code == 200
+    body = listed.json()
+    assert isinstance(body, list)
+    match = next(item for item in body if item["id"] == request_id)
+    assert match["subject_kind"] == "plan" and match["status"] == "pending"
+    assert "actionable" not in match and "proposed_by" not in match
+
+
+@pytest.mark.skipif(not os.getenv("SDF_POSTGRES_TEST_URL"), reason="SDF_POSTGRES_TEST_URL is not set")
+def test_inbox_page_bound_and_casefold_on_postgresql():
+    """Eligible-row LIMIT and Python casefold, executed against PostgreSQL."""
+
+    import os
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import event
+    from sqlalchemy.orm import sessionmaker
+
+    from sdf_core.auth import Principal
+    from sdf_core.db import make_engine
+    from sdf_core.human_read import decode_cursor, inbox_page
+
+    url = os.environ["SDF_POSTGRES_TEST_URL"]
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    previous = os.environ.get("SDF_DATABASE_URL")
+    os.environ["SDF_DATABASE_URL"] = url
+    try:
+        command.upgrade(config, "head")
+    finally:
+        if previous is None:
+            os.environ.pop("SDF_DATABASE_URL", None)
+        else:
+            os.environ["SDF_DATABASE_URL"] = previous
+    engine = make_engine(url)
+    session_factory = sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid.uuid4().hex[:8]
+    proposer_name = f"pgbound-{suffix}"
+    principal = Principal(name=proposer_name, roles=frozenset({"approver"}), kind="human", token_id="t")
+    assert principal.can_approve
+    base = datetime(2015, 3, 1, tzinfo=timezone.utc)
+    with session_factory() as db:
+        own_ids = []
+        for index in range(250):
+            own_ids.append(_pending_plan(
+                db, plan_id=f"PG-OWN-{suffix}-{index:04d}", proposed_by=proposer_name,
+                created_at=base + timedelta(seconds=index),
+            ))
+        target = _pending_plan(
+            db, plan_id=f"PG-OTHER-{suffix}", proposed_by=f"pg-other-{suffix}",
+            created_at=base + timedelta(seconds=250),
+        )
+        folded = _pending_plan(
+            db, plan_id=f"PG-SS-{suffix}", proposed_by="Straße",
+            created_at=base + timedelta(seconds=251),
+        )
+        sharp = _pending_plan(
+            db, plan_id=f"PG-SZ-{suffix}", proposed_by="ß",
+            created_at=base + timedelta(seconds=252),
+        )
+        missing = f"DREQ-PG-GONE-{suffix}"
+        db.add(DecisionRequestRow(
+            id=missing, subject_kind="plan", subject_id=f"PG-MISSING-{suffix}",
+            question="Approve?", options=["approve", "reject"], status="pending",
+            requested_by="x", created_at=base + timedelta(seconds=253),
+        ))
+        db.commit()
+
+        captured: list[tuple] = []
+
+        def before(_conn, _cursor, statement, parameters, _context, _executemany):
+            captured.append((statement, parameters))
+
+        event.listen(engine, "before_cursor_execute", before)
+        try:
+            first_page, cursor = inbox_page(db, principal, 1, None)
+        finally:
+            event.remove(engine, "before_cursor_execute", before)
+        selects = _decision_selects(captured)
+        limited = [
+            (statement, parameters) for statement, parameters in selects
+            if "LIMIT" in statement.upper() and "ORDER BY" in statement.upper()
+        ]
+        assert len(limited) == 1, [statement[:300] for statement, _ in selects]
+        page_sql, page_params = limited[0]
+        assert "DISTINCT" not in page_sql.upper()
+        flat = _bound_parameter(page_params)
+        assert 2 in flat
+        assert casefold_name(proposer_name) in flat
+        assert f"pg-other-{suffix}" not in flat
+        assert "DISTINCT" not in page_sql.upper()
+        assert len(first_page) <= 1
+        if cursor is not None:
+            assert first_page
+            stamp, row_id = decode_cursor(cursor)
+            assert row_id == first_page[-1][0].id
+            assert _aware(stamp.isoformat()) == _aware(first_page[-1][0].created_at.isoformat())
+        elif not first_page:
+            assert cursor is None
+
+        def tally(window, counts):
+            assert len(window) <= 1
+            for row, _plan in window:
+                counts[row.id] = counts.get(row.id, 0) + 1
+
+        counts: dict[str, int] = {}
+        tally(first_page, counts)
+        for _ in range(2000):
+            if cursor is None:
+                break
+            window, cursor = inbox_page(db, principal, 1, cursor)
+            if not window:
+                assert cursor is None
+            elif cursor is not None:
+                stamp, row_id = decode_cursor(cursor)
+                assert row_id == window[-1][0].id
+            tally(window, counts)
+        else:
+            if cursor is not None:
+                raise AssertionError("postgres inbox cursor did not end")
+        assert counts.get(target, 0) == 1
+        assert counts.get(missing, 0) == 0
+        assert all(counts.get(own_id, 0) == 0 for own_id in own_ids)
+        # "Straße" does not casefold to this proposer.
+        assert counts.get(folded, 0) == 1
+        ess = Principal(name="ss", roles=frozenset({"approver"}), kind="human", token_id="t")
+        sharp_seen = folded_seen = 0
+        cursor = None
+        for _ in range(2000):
+            window, cursor = inbox_page(db, ess, 1, cursor)
+            for row, _plan in window:
+                if row.id == sharp:
+                    sharp_seen += 1
+                if row.id == folded:
+                    folded_seen += 1
+            if cursor is None:
+                break
+        else:
+            raise AssertionError("postgres inbox cursor did not end")
+        assert sharp_seen == 0 and folded_seen == 1
+    engine.dispose()

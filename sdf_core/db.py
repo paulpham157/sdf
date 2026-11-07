@@ -116,6 +116,30 @@ class AttemptRow(Base):
     remote_effect: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class AttemptRemoteSandboxRow(Base):
+    """One provider create attempted for an Attempt.
+
+    ``creating`` with a null ``sandbox_id`` means the create was entered and
+    the id was never recorded. That row cannot be marked ``absent``.
+    ``identified`` means the provider returned an id. ``absent`` is set only
+    after a separate lookup says that id is gone, not because kill() returned.
+    """
+
+    __tablename__ = "attempt_remote_sandboxes"
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN ('creating', 'identified', 'absent')",
+            name="ck_attempt_remote_sandboxes_phase",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(120), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    sandbox_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    phase: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ObjectiveMetricRow(Base):
     """One declared outcome metric per Objective. Without it, no business claim."""
 
@@ -387,7 +411,12 @@ class PlanRow(Base):
     """An implementation plan; its Tasks cannot start until a human approves it."""
 
     __tablename__ = "plans"
-    __table_args__ = (CheckConstraint("status IN ('proposed','approved','rejected')", name="ck_plans_status"),)
+    __table_args__ = (
+        CheckConstraint("status IN ('proposed','approved','rejected')", name="ck_plans_status"),
+        # Equality lookup of one caller's fold. It does not turn the inbox's
+        # ordered ``NOT (fold = :caller)`` scan into an index seek.
+        Index("ix_plans_proposed_by_casefold", "proposed_by_casefold"),
+    )
     id: Mapped[str] = mapped_column(String(120), primary_key=True)
     title: Mapped[str] = mapped_column(String(500))
     objective_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -396,6 +425,10 @@ class PlanRow(Base):
     content: Mapped[dict[str, Any]] = mapped_column(JSON)
     content_sha256: Mapped[str] = mapped_column(String(64))
     proposed_by: Mapped[str] = mapped_column(String(120))
+    # Pinned casefold of proposed_by (ADR 0044 amendment). NULL only before
+    # migration 0032 has backfilled the row. SQLite does not enforce the
+    # VARCHAR length; the trigger and the stamper do.
+    proposed_by_casefold: Mapped[str | None] = mapped_column(String(360), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     decision_request_id: Mapped[str] = mapped_column(String(120))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -528,6 +561,53 @@ class PlanGateError(ValueError):
     """An implementation Task/Attempt/run was started without an approved Plan."""
 
 
+SQLITE_PLAN_CASEFOLD_INSERT = """
+CREATE TRIGGER IF NOT EXISTS trg_plans_casefold_insert
+BEFORE INSERT ON plans
+FOR EACH ROW
+WHEN NEW.proposed_by_casefold IS NULL
+  OR length(NEW.proposed_by_casefold) > 360
+BEGIN
+  SELECT RAISE(ABORT, 'plans.proposed_by_casefold is required and must be at most 360 characters');
+END
+"""
+
+SQLITE_PLAN_CASEFOLD_UPDATE = """
+CREATE TRIGGER IF NOT EXISTS trg_plans_casefold_update
+BEFORE UPDATE ON plans
+FOR EACH ROW
+WHEN NEW.proposed_by <> OLD.proposed_by
+  OR NEW.proposed_by_casefold IS NULL
+  OR length(NEW.proposed_by_casefold) > 360
+  OR (OLD.proposed_by_casefold IS NOT NULL AND NEW.proposed_by_casefold <> OLD.proposed_by_casefold)
+BEGIN
+  SELECT RAISE(ABORT, 'plans.proposed_by and proposed_by_casefold are immutable once set');
+END
+"""
+
+
+def install_sqlite_plan_casefold_triggers(connection) -> None:
+    """Reject a missing or rewritten casefold key on SQLite.
+
+    VARCHAR length is not enforced by SQLite. A direct INSERT that supplies a
+    non-null but incorrect fold is not detected here; that write is unsupported.
+    The inbox refuses to list when a stored fold disagrees with the pin.
+    """
+
+    if connection.dialect.name != "sqlite":
+        return
+    from sqlalchemy import inspect as sa_inspect
+
+    tables = set(sa_inspect(connection).get_table_names())
+    if "plans" not in tables:
+        return
+    columns = {column["name"] for column in sa_inspect(connection).get_columns("plans")}
+    if "proposed_by_casefold" not in columns:
+        return
+    connection.execute(text(SQLITE_PLAN_CASEFOLD_INSERT))
+    connection.execute(text(SQLITE_PLAN_CASEFOLD_UPDATE))
+
+
 def make_engine(url: str = "sqlite+pysqlite:///:memory:"):
     kwargs = {"future": True}
     if url.startswith("sqlite") and ":memory:" in url:
@@ -575,7 +655,25 @@ class AuthAuditRow(Base):
 def make_session_factory(url: str = "sqlite+pysqlite:///:memory:"):
     engine = make_engine(url)
     Base.metadata.create_all(engine)
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            install_sqlite_plan_casefold_triggers(connection)
     return sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(PlanRow, "before_insert")
+def _stamp_plan_casefold(mapper: Any, connection: Any, target: PlanRow) -> None:
+    """Persist the pinned casefold for every ORM insert.
+
+    ``Session.execute(insert(PlanRow))`` and raw SQL do not pass through here.
+    Those writes are unsupported unless they store the pinned fold themselves.
+    SQLite triggers and the PostgreSQL NOT NULL check reject a missing value.
+    They cannot recompute the fold.
+    """
+
+    from .casefold import casefold
+
+    target.proposed_by_casefold = casefold(target.proposed_by or "")
 
 
 @event.listens_for(EvidenceRow, "before_insert")

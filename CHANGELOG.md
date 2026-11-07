@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Documentation
+
+- **Session import and history audit (ADR 0048, proposed).** `sdf import`
+  reads local agent session files the operator names and projects them as
+  self-reported Attempts and Claims. It never auto-accepts a Task.
+  `sdf audit` reports read-only git, pull request, CI and revert proxies.
+  Neither writes verification Evidence. The format survey is
+  [`docs/research/session-history-formats.md`](docs/research/session-history-formats.md).
+
 ### Security
 
 - **Workspace children are confined when they skip the Tool Proxy (ADR 0004).**
@@ -255,6 +264,18 @@
     `SDF_RUN_SANDBOX_USD_PER_S`; an invalid value returns `503`.
 
 ### Added
+
+- **One-command offline evidence demo.** `uv run scripts/demo.py` walks the
+  public fake-adapter HTTP loop twice: an honest edit that verification
+  accepts, and a plausible-but-wrong edit the agent claims succeeded
+  (`print('updated ')` plus a weak test rewrite) that SDF rejects. It prints
+  a four-beat story (intent, the agent's claim for each task, the independent
+  check, and "A accepted / B rejected, though the agent said done") and writes
+  a two-column HTML page. `--only accepted|rejected` runs one task. No E2B or
+  model key is required. The sealed oracle still needs Linux x86_64 with
+  Landlock (ADR 0039); other hosts exit with a pointer to GitHub Codespaces.
+  `scripts/demo-evidence.sh` remains as a wrapper. A Codespaces dev container
+  lives in `.devcontainer/devcontainer.json`.
 
 - **Human read model and approver inbox (ADR 0044).** Viewer `GET /tasks`,
   `/attempts`, `/plans` and `/objectives` list rows in keyset pages (50 by

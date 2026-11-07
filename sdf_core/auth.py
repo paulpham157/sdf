@@ -313,6 +313,8 @@ ROUTE_ROLES: dict[tuple[str, str], str] = {
     ("POST", "/tasks"): "operator",
     ("POST", "/tasks/{task_id}/run"): "operator",
     ("POST", "/attempts/{attempt_id}/actions"): "operator",
+    ("GET", "/attempts/{attempt_id}/remote-effects"): "operator",
+    ("POST", "/attempts/{attempt_id}/remote-effects/reconcile"): "admin",
     ("POST", "/objectives/{objective_id}/metric"): "operator",
     ("POST", "/objectives/{objective_id}/observations"): "operator",
     ("POST", "/plans"): "operator",

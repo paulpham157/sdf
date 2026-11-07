@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -37,19 +38,46 @@ class FakeNativeAdapter:
     # No real agent or sandbox: its Attempts and Evidence stay synthetic (ADR 0031).
     evidence_mode = "synthetic"
 
-    def __init__(self, relative_file: str, replacement: str):
+    def __init__(
+        self,
+        relative_file: str,
+        replacement: str,
+        *,
+        stdout: str | None = None,
+        extra_files: Mapping[str, str] | None = None,
+    ):
         self.relative_file = relative_file
         self.replacement = replacement
+        self.stdout_override = stdout
+        self.extra_files = dict(extra_files or {})
 
     def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
-        target = workspace / self.relative_file
-        target.write_text(self.replacement, encoding="utf-8")
+        changed: list[str] = []
+        self._write(workspace, self.relative_file, self.replacement)
+        changed.append(self.relative_file)
+        for relative, content in self.extra_files.items():
+            self._write(workspace, relative, content)
+            if relative not in changed:
+                changed.append(relative)
         return AdapterResult(
             attempt_id=attempt_id,
             status="completed",
-            changed_files=(self.relative_file,),
-            stdout=f"fake adapter applied: {instructions}",
+            changed_files=tuple(changed),
+            stdout=(
+                self.stdout_override
+                if self.stdout_override is not None
+                else f"fake adapter applied: {instructions}"
+            ),
         )
+
+    @staticmethod
+    def _write(workspace: Path, relative: str, content: str) -> None:
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"refusing to write outside the workspace: {relative!r}")
+        target = workspace / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
 
 
 class RuntimeAgentAdapter:

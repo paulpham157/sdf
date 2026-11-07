@@ -40,7 +40,7 @@ def postgres_engine():
 def clean_postgres(postgres_engine):
     with postgres_engine.begin() as connection:
         connection.execute(text(
-            "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, routing_decisions, "
+            "TRUNCATE TABLE attempt_remote_sandboxes, decision_edges, evidence, tool_audits, runtime_events, routing_decisions, "
             "artifacts, attempts, tasks, graph_nodes, objective_metrics, "
             "outcome_observations, agent_claims, agent_messages, agent_run_members, agent_runs, "
             "plan_tasks, plans, decision_requests, api_tokens, auth_audit, attempt_revisions RESTART IDENTITY CASCADE"
@@ -711,3 +711,143 @@ def test_postgresql_content_mac_verifies_and_rejects_a_null_mac(tmp_path: Path, 
         assert any("EVIDENCE-PG-MAC-NULL" in problem and "no current content mac" in problem for problem in report["problems"])
         stored = db.get(EvidenceRow, "EVIDENCE-PG-MAC-NULL")
         assert stored is not None and stored.content_mac is None and stored.content_mac_version is None
+
+
+def test_postgresql_observed_lease_matches_and_a_committed_renewal_does_not(postgres_engine):
+    """The recovery UPDATE matches the snapshot it read, and loses when that heartbeat changed.
+
+    Both sessions are real PostgreSQL transactions. The unchanged row is the
+    control: a type or binding mismatch must not look like a successful fence.
+    """
+
+    from datetime import timedelta
+
+    from sdf_core.db import AttemptRow, TaskRow
+    from sdf_core.model import AttemptState, utcnow
+    from sdf_core.recovery import LEASE_TTL, compare_and_swap_attempt
+
+    expired = utcnow() - LEASE_TTL - timedelta(seconds=5)
+    with _session(postgres_engine) as db:
+        db.add(TaskRow(
+            id="TASK-PG-LEASE", title="lease", status="running", idempotency_key="task-pg-lease",
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-STABLE", task_id="TASK-PG-LEASE", status="running",
+            dispatch_key="dispatch-pg-stable", agent="native", created_at=utcnow(),
+            executor_id="executor-stable", executor_heartbeat_at=expired,
+        ))
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-RENEW", task_id="TASK-PG-LEASE", status="running",
+            dispatch_key="dispatch-pg-renew", agent="native", created_at=utcnow(),
+            executor_id="executor-still-working", executor_heartbeat_at=expired,
+        ))
+        db.commit()
+
+    # This transaction's UPDATE still sees the heartbeat it read, and commits.
+    stable = _session(postgres_engine)
+    try:
+        attempt = stable.get(AttemptRow, "ATTEMPT-PG-STABLE")
+        won = compare_and_swap_attempt(
+            stable, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED,
+            observed_lease=(attempt.executor_id, attempt.executor_heartbeat_at),
+        )
+        assert won is True
+        stable.commit()
+    finally:
+        stable.close()
+
+    # The reader keeps its snapshot. The writer commits a new heartbeat
+    # before the reader's UPDATE, so that UPDATE must match zero rows.
+    reader = _session(postgres_engine)
+    try:
+        attempt = reader.get(AttemptRow, "ATTEMPT-PG-RENEW")
+        observed = (attempt.executor_id, attempt.executor_heartbeat_at)
+        writer = _session(postgres_engine)
+        try:
+            row = writer.get(AttemptRow, "ATTEMPT-PG-RENEW")
+            row.executor_heartbeat_at = utcnow()
+            writer.commit()
+        finally:
+            writer.close()
+        won = compare_and_swap_attempt(
+            reader, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED,
+            observed_lease=observed,
+        )
+        assert won is False
+        reader.rollback()
+    finally:
+        reader.close()
+    with _session(postgres_engine) as check:
+        settled = check.get(AttemptRow, "ATTEMPT-PG-STABLE")
+        assert settled.status == "failed"
+        fresh = check.get(AttemptRow, "ATTEMPT-PG-RENEW")
+        assert fresh.status == "running"
+        assert fresh.error_class is None
+        assert fresh.executor_heartbeat_at > expired
+
+
+def test_postgresql_lease_follows_the_database_clock_not_the_application_clock(postgres_engine, monkeypatch):
+    """clock_timestamp decides the lease. A skewed application clock does not.
+
+    The fresh heartbeat is committed in one transaction. Recovery runs in
+    another. The application clock is an hour ahead, then a second behind an
+    expired stamp, and neither reading is what the UPDATE uses.
+    """
+
+    from datetime import timedelta
+
+    from sdf_core.db import AttemptRow, TaskRow
+    from sdf_core.model import utcnow
+    from sdf_core.recovery import LEASE_TTL, lease_clock, recover_orphaned_attempts
+
+    with _session(postgres_engine) as db:
+        db.add(TaskRow(
+            id="TASK-PG-CLOCK", title="clock", status="running", idempotency_key="task-pg-clock",
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        fresh = lease_clock(db)
+        expired = fresh - LEASE_TTL - timedelta(seconds=5)
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-CLOCK-FRESH", task_id="TASK-PG-CLOCK", status="running",
+            dispatch_key="dispatch-pg-clock-fresh", agent="native", created_at=utcnow(),
+            executor_id="foreign-clock-fresh", executor_heartbeat_at=fresh,
+        ))
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-CLOCK-EXPIRED", task_id="TASK-PG-CLOCK", status="running",
+            dispatch_key="dispatch-pg-clock-expired", agent="native", created_at=utcnow(),
+            executor_id="foreign-clock-expired", executor_heartbeat_at=expired,
+            evidence_mode="synthetic",
+        ))
+        db.commit()
+        # One patched clock cannot describe both rows. Recovery must ignore it
+        # and read clock_timestamp for each comparison. Set it an hour ahead:
+        # that would reap the fresh row and still reap the expired row if the
+        # application clock were used for the fresh row only. The expired row
+        # is already old on the database, so reaping it is required either way.
+        # A second call below uses a clock that would spare the expired row.
+        monkeypatch.setattr("sdf_core.recovery.utcnow", lambda: fresh + timedelta(hours=1))
+
+    with _session(postgres_engine) as db:
+        recover_orphaned_attempts(db)
+    with _session(postgres_engine) as check:
+        assert check.get(AttemptRow, "ATTEMPT-PG-CLOCK-FRESH").status == "running"
+        assert check.get(AttemptRow, "ATTEMPT-PG-CLOCK-EXPIRED").status == "failed"
+
+    # The expired row is already settled. Plant another expired heartbeat and
+    # move the application clock to one second after it, which would look live.
+    with _session(postgres_engine) as db:
+        again = lease_clock(db) - LEASE_TTL - timedelta(seconds=5)
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-CLOCK-SLOW", task_id="TASK-PG-CLOCK", status="running",
+            dispatch_key="dispatch-pg-clock-slow", agent="native", created_at=utcnow(),
+            executor_id="foreign-clock-slow", executor_heartbeat_at=again,
+            evidence_mode="synthetic",
+        ))
+        db.commit()
+        monkeypatch.setattr("sdf_core.recovery.utcnow", lambda: again + timedelta(seconds=1))
+    with _session(postgres_engine) as db:
+        assert "ATTEMPT-PG-CLOCK-SLOW" in recover_orphaned_attempts(db)
+    with _session(postgres_engine) as check:
+        assert check.get(AttemptRow, "ATTEMPT-PG-CLOCK-SLOW").status == "failed"
+        assert check.get(AttemptRow, "ATTEMPT-PG-CLOCK-FRESH").status == "running"

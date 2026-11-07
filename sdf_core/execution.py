@@ -242,6 +242,13 @@ class ExecutionService:
                 raise ValueError(
                     f"attempt {blocker} is still running; lease expiry does not confirm its work has stopped"
                 )
+        from .remote_effects import unresolved_effect_id
+
+        unresolved = unresolved_effect_id(self.db, task_id)
+        if unresolved is not None:
+            raise ValueError(
+                f"remote sandbox {unresolved} is not verified absent; a new dispatch is refused"
+            )
         if cost_usd < 0:
             raise ValueError("cost_usd must not be negative")
         if latency_ms is not None and latency_ms < 0:

@@ -1,6 +1,19 @@
 # SDF Core
 
-**Software Decision Fabric Core** links business intent to engineering work and the independent evidence that validates or contradicts it.
+**Software Decision Fabric** links a business goal to engineering work and to independent Evidence that the work actually met the goal. An agent saying it is done is not success: a Task is accepted only by independent verification Evidence.
+
+## Quick start
+
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+. No E2B, cloud, or model API key. The sealed evaluator oracle currently produces a PASS only on Linux x86_64 ([ADR 0039](docs/adr/0039-evidence-independence.md)); on a Mac or another host, use GitHub Codespaces:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/paulpham157/sdf)
+
+```bash
+uv sync --all-groups
+uv run scripts/demo.py
+```
+
+You should see two tasks against the same criterion: an honest edit accepted because the evaluator verified that `app.py` prints `updated`, and a plausible-but-wrong edit the agent claimed was done (`print('updated ')` plus a weak test it rewrote) that SDF rejects. The local HTML story page (`file://`) shows both side by side. `scripts/demo-evidence.sh` is a wrapper for the same command. Pass `--only accepted` or `--only rejected` to run one task.
 
 ## What it provides
 
@@ -12,7 +25,7 @@
 - Policy-controlled, Attempt-bound tool actions with optional containment.
 - A FastAPI API, SQLAlchemy persistence, Alembic migrations, and PostgreSQL support.
 
-## Quick start
+## Develop
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
@@ -22,29 +35,60 @@ uv run pytest
 SDF_AUTH_DEV_INSECURE=1 uv run uvicorn sdf_core.api:app --reload --host 127.0.0.1
 ```
 
+The API starts with an in-memory SQLite database for local development. Swagger and ReDoc are off; `GET /` is not a UI. For the product loop, use `uv run scripts/demo.py` above.
+
 ### Offline evidence demo
 
-`scripts/demo-evidence.sh` walks the public HTTP loop with the default fake adapter: Business Context, Objective, Task, `POST /tasks/{id}/run`, then evaluator Evidence, the Attempt revision, the task trace, and `python -m sdf_core.cli runs show`. It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle that judges the fixture's `python -c` check runs nowhere else, and on any other host that check is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
+`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`) walks the public HTTP loop twice with the default fake adapter: Business Context, Objective, two Tasks, `POST /tasks/{id}/run` for each, then evaluator Evidence, the Attempt revision, and the task trace. It prints a four-beat story (intent, the agent's claim for A and B, the independent check for each, and the outcome) and writes a two-column HTML page (`--out DIR` to choose the directory; `--open` to open it; `--only accepted|rejected` to run one task). It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle that judges the fixture's `python -c` check runs nowhere else, and on any other host that check is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API and points at the Codespaces button above. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
+
+The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval. Provider keys in the environment are ignored and reported as unused.
+
+Both tasks reuse fixture `fixtures/offline-evidence` and the sealed `app-updated` check, which requires a single `print('updated')` with no trailing space. Task A is an honest `FakeNativeAdapter` write of `print('updated')`; verification Evidence from `sdf-evaluator` PASSes and the Task is accepted. Task B writes `print('updated ')` (trailing space), claims `Done! app.py updated, all tests pass`, and also writes a weak `tests/test_app.py` substring check plus a rewritten workspace `sdf-checks.json`. A naive CI run of those files would go green; the sealed oracle ignores workspace checks and FAILs Task B, so SDF does not accept it. Each run also writes execution Evidence (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)). Adapter stdout stays on the process-log artifact.
+
+The loop records these results:
+
+- Task A run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`. Task B: the adapter attempt is `completed` and the agent claimed success, but `task_status` is not `succeeded` and verification is a non-pass from `sdf-evaluator`.
+- `GET /evidence/{id}`: Task A `status=PASS`, Task B a non-pass; both `verifier_identity=sdf-evaluator`, with `revision_id` and `tree_sha256`.
+- `GET /attempts/{id}/revision`: `result_tree_sha256`. `base_commit` is null because this fixture records a tree id, not a git commit.
+- `GET /tasks/TASK-OFFLINE-001/trace` and `GET /tasks/TASK-OFFLINE-002/trace`: Business Context, Objective, Task, Attempt, and both Evidence rows. Only a verification PASS `validates` the Assumption. The fake adapter records no runtime events.
+- `python -m sdf_core.cli runs show <attempt id>` still prints the same timeline against `SDF_DATABASE_URL`. `usage_ledger` has no rows for this adapter. `cost_usd` is `0` on the Attempt. That zero is unmetered. It is not an invoice and not an `SDF_PRICE_*` or `SDF_E2B_USD_PER_SECOND` estimate.
+
+The state database is a temporary SQLite file. Workspaces and artifacts land in that temporary directory (not in the repo working tree).
+
+### API authentication ([ADR 0015](docs/adr/0015-api-authentication.md))
+
+Every route except `GET /healthz` needs `Authorization: Bearer <token>`; the
+API refuses to start without `SDF_AUTH_PEPPER` (32+ random characters, kept
+out of the database). Tokens are stored HMAC-hashed, expire (default 90 days)
+and are managed only from the CLI; the plaintext is printed once:
 
 ```bash
-scripts/demo-evidence.sh
+uv run python -m sdf_core.auth_cli create --principal hung --role operator --role approver
+uv run python -m sdf_core.auth_cli list
+uv run python -m sdf_core.auth_cli revoke <token-id>
 ```
 
-The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval.
+Roles: `viewer` (read), `operator` (create tasks/plans, start/cancel runs),
+`approver` (approve/reject plans, resolve decision requests, record Decisions,
+ADRs and outcome Evidence), `admin`. Outcome Evidence
+(`POST /objectives/{id}/evidence`) names a verifier who is neither the
+recording principal nor an agent that worked the Objective
+([ADR 0042](docs/adr/0042-evidence-classes.md)). The
+proposer, approver and run starter recorded in the Decision Graph are always
+the token's principal, never a request field. Nobody approves their own plan
+unless `SDF_AUTH_SINGLE_USER=1` (solo deployments; recorded as
+`self_approval`). Agent/sandbox names and `service` tokens can never approve.
+For local hacking only, `SDF_AUTH_DEV_INSECURE=1` serves header-less requests
+as admin `local-dev` from loopback only. Always bind to loopback unless a TLS
+reverse proxy sits in front:
 
-`FakeNativeAdapter` writes `app.py` as `print('updated')`. The check `app-updated` in `fixtures/offline-evidence/sdf-checks.json` parses that file. The PASS row is verification Evidence from `sdf-evaluator`, bound to the Attempt. The adapter stdout (`fake adapter applied: ...`) stays on the process-log artifact. The run also writes one execution Evidence row (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)).
+```bash
+uv run uvicorn sdf_core.api:app --host 127.0.0.1
+```
 
-The script prints these results:
+## Run for real
 
-- Run response: `task_status=succeeded`, `provider=fake`, `evidence_mode=synthetic`.
-- `GET /evidence/{id}`: `status=PASS`, `verifier_identity=sdf-evaluator`, `revision_id`, and `tree_sha256`.
-- `GET /attempts/{id}/revision`: `result_tree_sha256`. `base_commit` is null because this fixture records a tree id, not a git commit.
-- `GET /tasks/TASK-OFFLINE-001/trace`: Business Context, Objective, Task, Attempt, and both Evidence rows. Only the verification row `validates` the Assumption. The fake adapter records no runtime events.
-- `python -m sdf_core.cli runs show <attempt id>`: the same timeline. `usage_ledger` has no rows for this adapter. `cost_usd` is `0` on the Attempt. That zero is unmetered. It is not an invoice and not an `SDF_PRICE_*` or `SDF_E2B_USD_PER_SECOND` estimate.
-
-The state database is a temporary SQLite file. Workspaces and artifacts land in `.sdf-workspaces/` and `.sdf-artifacts/`.
-
-The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL and an Evidence MAC key of at least 32 characters. The server does not start, and does not stamp Evidence, without `SDF_EVIDENCE_MAC_KEY`. There is no silent fallback to the public development constant ([ADR 0043](docs/adr/0043-evidence-content-mac.md)). Rotation is an operator re-stamp of existing rows; the process does not rotate the key:
+For a persistent deployment, configure PostgreSQL and an Evidence MAC key of at least 32 characters. The server does not start, and does not stamp Evidence, without `SDF_EVIDENCE_MAC_KEY`. There is no silent fallback to the public development constant ([ADR 0043](docs/adr/0043-evidence-content-mac.md)). Rotation is an operator re-stamp of existing rows; the process does not rotate the key:
 
 ```bash
 export SDF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/sdf_core'
@@ -156,37 +200,6 @@ export SDF_TOOL_OUTCOME_DB=/var/lib/sdf/tool-outcomes.db
 cd go && go run ./cmd/sdf-orch
 ```
 
-### API authentication ([ADR 0015](docs/adr/0015-api-authentication.md))
-
-Every route except `GET /healthz` needs `Authorization: Bearer <token>`; the
-API refuses to start without `SDF_AUTH_PEPPER` (32+ random characters, kept
-out of the database). Tokens are stored HMAC-hashed, expire (default 90 days)
-and are managed only from the CLI; the plaintext is printed once:
-
-```bash
-uv run python -m sdf_core.auth_cli create --principal hung --role operator --role approver
-uv run python -m sdf_core.auth_cli list
-uv run python -m sdf_core.auth_cli revoke <token-id>
-```
-
-Roles: `viewer` (read), `operator` (create tasks/plans, start/cancel runs),
-`approver` (approve/reject plans, resolve decision requests, record Decisions,
-ADRs and outcome Evidence), `admin`. Outcome Evidence
-(`POST /objectives/{id}/evidence`) names a verifier who is neither the
-recording principal nor an agent that worked the Objective
-([ADR 0042](docs/adr/0042-evidence-classes.md)). The
-proposer, approver and run starter recorded in the Decision Graph are always
-the token's principal, never a request field. Nobody approves their own plan
-unless `SDF_AUTH_SINGLE_USER=1` (solo deployments; recorded as
-`self_approval`). Agent/sandbox names and `service` tokens can never approve.
-For local hacking only, `SDF_AUTH_DEV_INSECURE=1` serves header-less requests
-as admin `local-dev` from loopback only. Always bind to loopback unless a TLS
-reverse proxy sits in front:
-
-```bash
-uv run uvicorn sdf_core.api:app --host 127.0.0.1
-```
-
 Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 
@@ -204,6 +217,8 @@ An agent reporting completion is not success. A Task has an **Accepted Outcome**
 - `go/` — Go orchestration core (`sdf-orch`). Durable fence path: [docs/sdf-orch.md](docs/sdf-orch.md).
 - `tests/` — deterministic unit and integration tests.
 - `alembic/` — database migrations.
+- `scripts/demo.py` — one-command offline evidence demo.
+- `.devcontainer/` — GitHub Codespaces / VS Code dev container.
 - `CONTEXT.md` — canonical domain vocabulary.
 - `docs/adr/` — architecture decisions.
 - `docs/architecture.md` — current architectural overview.

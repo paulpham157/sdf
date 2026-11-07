@@ -185,25 +185,31 @@ class E2BAgentSandbox:
             # ADR-0017: validated before any sandbox exists.
             pi_extensions = resolve_pi_extensions(self._environ.get(PI_EXTENSIONS_ENV))
         before_create = None
+        on_identified = None
         if self._remote_attempt_id is not None:
             if self._recovery_session_factory is None:
                 raise RuntimeError("attempt is bound without a session factory; refusing to create a sandbox")
             attempt_id = self._remote_attempt_id
             open_session = self._recovery_session_factory
 
-            def before_create() -> None:
+            def before_create() -> str:
                 from .recovery import note_remote_effect_uncertain
+                from .remote_effects import in_new_session
 
-                db = open_session()
-                try:
-                    note_remote_effect_uncertain(db, attempt_id)
-                finally:
-                    db.close()
+                return in_new_session(
+                    open_session, lambda db: note_remote_effect_uncertain(db, attempt_id, provider="e2b"),
+                )
+
+            def on_identified(effect_id: str, sandbox_id: str) -> None:
+                from .remote_effects import identify_remote_sandbox, in_new_session
+
+                in_new_session(open_session, lambda db: identify_remote_sandbox(db, effect_id, sandbox_id))
 
         self._transport, _ = create_credentialed_transport(
             agents=(self.spec.kind,), environ=self._environ, template=self._template,
             timeout_seconds=self._sandbox_timeout_s, network=self._network,
             before_provider_create=before_create,
+            on_sandbox_identified=on_identified,
         )
         if self.spec.kind == "opencode":
             from .opencode_runtime import OpenCodeHeadlessRuntime
@@ -339,16 +345,17 @@ class E2BAgentSandbox:
                         self._died = time.monotonic()
         finally:
             if sandbox_id and self._remote_attempt_id and self._recovery_session_factory is not None:
-                from .recovery import note_remote_effect_stop_failed, note_remote_effect_stopped
+                from .recovery import note_remote_effect_stop_failed
 
                 if not closed:
                     note_remote_effect_stop_failed(self._remote_attempt_id)
                 else:
-                    db = self._recovery_session_factory()
-                    try:
-                        note_remote_effect_stopped(db, self._remote_attempt_id)
-                    finally:
-                        db.close()
+                    from .remote_effects import in_new_session, release_verified_sandboxes
+
+                    in_new_session(
+                        self._recovery_session_factory,
+                        lambda db: release_verified_sandboxes(db, self._remote_attempt_id, self._environ),
+                    )
 
 
 def e2b_factory(environ: Mapping[str, str], **kwargs: Any) -> AgentSandboxFactory:

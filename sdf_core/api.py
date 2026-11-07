@@ -1600,7 +1600,7 @@ def resolve_decision_request(request_id: str, payload: ResolveDecisionRequest, d
 # added to ``ROUTE_ROLES`` or ``PUBLIC_ROUTES``.
 
 from . import human_read  # noqa: E402
-from .human_read import CursorError  # noqa: E402
+from .human_read import CursorError, InboxNormalizationError  # noqa: E402
 
 _PageLimit = Annotated[int, Query(ge=1, le=100)]
 
@@ -1649,6 +1649,68 @@ def list_attempts(request: Request, db: Session = Depends(get_db), limit: _PageL
     return {"items": items, "next_cursor": next_cursor}
 
 
+@app.get("/attempts/{attempt_id}/remote-effects")
+def get_remote_effects(attempt_id: str, db: Session = Depends(get_db)):
+    """Sandbox rows for an Attempt. ``creating`` with a null id cannot be cleared."""
+
+    from .remote_effects import sandbox_rows
+
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    rows = sandbox_rows(db, attempt_id)
+    return {
+        "attempt_id": attempt_id,
+        "remote_effect": attempt.remote_effect,
+        "sandboxes": [
+            {"id": row.id, "provider": row.provider, "sandbox_id": row.sandbox_id, "phase": row.phase}
+            for row in rows
+        ],
+    }
+
+
+class RemoteReconcileRequest(BaseModel):
+    """Optional id an operator saw in the provider console.
+
+    Adding it does not resolve a ``creating`` row that never received an id.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    observe_sandbox_id: str | None = None
+    observe_provider: str | None = None
+
+
+@app.post("/attempts/{attempt_id}/remote-effects/reconcile")
+def reconcile_remote_effects(attempt_id: str, payload: RemoteReconcileRequest | None = None,
+                             db: Session = Depends(get_db)):
+    """Kill known sandbox ids, then mark them absent only if a separate lookup says so.
+
+    Does not accept a flag that sets ``remote_effect`` to ``stopped``.
+    """
+
+    from .remote_effects import observe_remote_sandbox, probe_from_environ, reconcile_attempt
+
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="attempt not found")
+    body = payload or RemoteReconcileRequest()
+    if body.observe_sandbox_id or body.observe_provider:
+        if not body.observe_sandbox_id or not body.observe_provider:
+            raise HTTPException(status_code=422, detail="observe_sandbox_id and observe_provider are both required")
+        try:
+            observe_remote_sandbox(db, attempt_id, body.observe_provider, body.observe_sandbox_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    kill, absent = probe_from_environ()
+    result = reconcile_attempt(db, attempt_id, kill=kill, absent=absent)
+    return {
+        "attempt_id": attempt_id,
+        "resolved": result.resolved,
+        "blocked": result.blocked,
+        "sandboxes": [dict(row) for row in result.sandboxes],
+    }
+
+
 @app.get("/attempts/{attempt_id}")
 def get_attempt(attempt_id: str, request: Request, db: Session = Depends(get_db)):
     attempt = db.get(AttemptRow, attempt_id)
@@ -1691,7 +1753,10 @@ def get_inbox(
     limit: _PageLimit = 50,
     cursor: str | None = None,
 ):
-    page, next_cursor = _read_page(lambda: human_read.inbox_page(db, principal, limit, cursor))
+    try:
+        page, next_cursor = _read_page(lambda: human_read.inbox_page(db, principal, limit, cursor))
+    except InboxNormalizationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     items = [human_read.inbox_item(db, row, plan) for row, plan in page]
     _human_read(request, len(items), cursor=cursor, actionable_count=len(items))
     return {"items": items, "next_cursor": next_cursor}

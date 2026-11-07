@@ -14,10 +14,11 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, collate, or_, select
 from sqlalchemy.orm import Session
 
 from .auth import Principal, single_user_mode
+from .casefold import casefold
 from .db import AttemptRow, DecisionRequestRow, GraphNodeRow, PlanRow, TaskRow
 from .decision_gate import material_payload
 from .observability import redact_value
@@ -174,73 +175,118 @@ def objective_item(row: GraphNodeRow) -> dict[str, Any]:
     })
 
 
-def _plans_for(db: Session, rows: list[DecisionRequestRow]) -> dict[str, PlanRow]:
-    ids = [row.subject_id for row in rows if row.subject_kind == "plan"]
-    if not ids:
-        return {}
-    return {plan.id: plan for plan in db.scalars(select(PlanRow).where(PlanRow.id.in_(ids)))}
+class InboxNormalizationError(RuntimeError):
+    """The inbox cannot be listed because a plan fold is missing or wrong.
+
+    The handler must not return a page. A partial list would look like a
+    complete inbox while omitting or mis-classifying plans.
+    """
 
 
-def _proposer_may_not_see(plan: PlanRow | None, principal: Principal) -> bool:
-    """Same casefold comparison ``decide_plan`` uses to refuse self-approval."""
+def _identity_collation(db: Session) -> str:
+    """Bytewise equality. A locale collation must not merge two folds."""
 
-    if plan is None or single_user_mode():
-        return False
-    return principal.name.casefold() == (plan.proposed_by or "").casefold()
+    name = db.get_bind().dialect.name
+    if name == "postgresql":
+        return "C"
+    if name == "sqlite":
+        return "BINARY"
+    raise InboxNormalizationError(f"unsupported database {name!r} for casefold identity")
+
+
+def _require_casefold_backfill(db: Session) -> None:
+    """One-row probe. A missing fold is a failed inbox, not a skipped plan."""
+
+    missing = db.scalar(select(PlanRow.id).where(PlanRow.proposed_by_casefold.is_(None)).limit(1))
+    if missing is not None:
+        raise InboxNormalizationError(
+            f"plan {missing} is missing proposed_by_casefold; inbox listing is unavailable "
+            "until migration 0033_plan_casefold has backfilled every plan"
+        )
+
+
+def _require_returned_fold(plan: PlanRow) -> None:
+    try:
+        expected = casefold(plan.proposed_by or "")
+    except ValueError as exc:
+        raise InboxNormalizationError(
+            f"plan {plan.id} proposer cannot be casefolded; inbox listing is unavailable"
+        ) from exc
+    if plan.proposed_by_casefold != expected:
+        raise InboxNormalizationError(
+            f"plan {plan.id} proposed_by_casefold does not match the pinned casefold; "
+            "inbox listing is unavailable"
+        )
 
 
 def inbox_page(
     db: Session, principal: Principal, limit: int, cursor: str | None,
 ) -> tuple[list[tuple[DecisionRequestRow, PlanRow | None]], str | None]:
-    """Pending requests this caller may approve or resolve.
+    """Pending requests this caller may approve, in ``(created_at, id)`` order.
 
-    A caller who cannot approve gets an empty page. A plan the caller proposed
-    is omitted unless single-user mode is on. The cursor is the last included
-    row, so a filtered plan does not consume a slot or stall the next page.
+    ``next_cursor`` is the last returned row, or null when no eligible row
+    remains. The database may read ineligible pending rows while it fills
+    ``LIMIT``. The application receives at most ``limit + 1`` of them and one
+    bound fold of the caller, not a list of proposers.
+
+    A missing plan row is not actionable. A missing or incorrect
+    ``proposed_by_casefold`` aborts the listing. Single-user mode does not
+    hide the caller's plans. A caller who cannot approve gets an empty page
+    after the missing-fold probe and does not run the page query.
     """
 
     if cursor:
         decode_cursor(cursor)  # 422 for everyone, including a caller who sees nothing
+    _require_casefold_backfill(db)
     if not principal.can_approve:
         return [], None
-    found: list[tuple[DecisionRequestRow, PlanRow | None]] = []
-    scanned: tuple[datetime, str] | None = decode_cursor(cursor) if cursor else None
-    seen: set[str] = set()
-    while len(found) <= limit:
-        query = select(DecisionRequestRow).where(DecisionRequestRow.status == "pending")
-        if scanned is not None:
-            query = query.where(_after(DecisionRequestRow, scanned[0], scanned[1]))
-        batch = list(db.scalars(query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(100)))
-        if not batch:
-            break
-        plans = _plans_for(db, batch)
-        advanced = False
-        for row in batch:
-            if row.id in seen:
-                batch = []
-                break
-            seen.add(row.id)
-            advanced = True
-            scanned = (row.created_at, row.id)
-            plan = plans.get(row.subject_id) if row.subject_kind == "plan" else None
-            if row.subject_kind == "plan" and _proposer_may_not_see(plan, principal):
-                continue
-            found.append((row, plan))
-            if len(found) > limit:
-                break
-        if not advanced or len(batch) < 100:
-            break
+    try:
+        caller_fold = casefold(principal.name)
+    except ValueError as exc:
+        raise InboxNormalizationError(
+            f"caller identity cannot be casefolded; inbox listing is unavailable: {exc}"
+        ) from exc
+    collation = _identity_collation(db)
+    has_plan = PlanRow.id.is_not(None)
+    if single_user_mode():
+        visible_plan = has_plan
+    else:
+        visible_plan = and_(
+            has_plan,
+            collate(PlanRow.proposed_by_casefold, collation) != caller_fold,
+        )
+    query = (
+        select(DecisionRequestRow, PlanRow)
+        .outerjoin(
+            PlanRow,
+            and_(
+                DecisionRequestRow.subject_kind == "plan",
+                DecisionRequestRow.subject_id == PlanRow.id,
+            ),
+        )
+        .where(DecisionRequestRow.status == "pending")
+        .where(or_(DecisionRequestRow.subject_kind != "plan", visible_plan))
+    )
+    if cursor:
+        created_at, row_id = decode_cursor(cursor)
+        query = query.where(_after(DecisionRequestRow, created_at, row_id))
+    rows = list(db.execute(
+        query.order_by(DecisionRequestRow.created_at, DecisionRequestRow.id).limit(limit + 1)
+    ).all())
+    for _request, plan in rows:
+        if plan is not None:
+            _require_returned_fold(plan)
     next_cursor = None
-    if len(found) > limit:
-        last = found[limit - 1][0]
+    if len(rows) > limit:
+        last = rows[limit - 1][0]
         next_cursor = encode_cursor(last.created_at, last.id)
-        found = found[:limit]
-    return found, next_cursor
+        rows = rows[:limit]
+    return [(request, plan) for request, plan in rows], next_cursor
 
 
 def inbox_item(db: Session, request: DecisionRequestRow, plan: PlanRow | None) -> dict[str, Any]:
     payload = {**decision_request_payload(request), **material_payload(db, request), "actionable": True}
-    if request.subject_kind == "plan":
-        payload["proposed_by"] = plan.proposed_by if plan is not None else None
-        payload["content_sha256"] = plan.content_sha256 if plan is not None else None
+    if request.subject_kind == "plan" and plan is not None:
+        payload["proposed_by"] = plan.proposed_by
+        payload["content_sha256"] = plan.content_sha256
     return redact_payload(payload)

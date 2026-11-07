@@ -186,8 +186,9 @@ a private mapping). A green unit suite without that gate is not live evidence.
   Landlock (ADR 0039). On macOS, on arm64, or in an emulated amd64 container
   without Landlock, every pytest, Python script or `python -c` check is a
   non-pass by design, and
-  `scripts/demo-evidence.sh` refuses to start. A PASS verdict needs a native
-  Linux x86_64 host, such as the CI runner.
+  `scripts/demo.py` (and its wrapper `scripts/demo-evidence.sh`) refuses to
+  start and points at GitHub Codespaces. A PASS verdict needs a native
+  Linux x86_64 host, such as the CI runner or a Codespace.
 - A green CI run is the same hermetic evidence on a clean runner (SQLite on
   py3.11/3.13, PostgreSQL 16 on py3.13); it is not live-provider evidence.
 - A template build proves that the image can start and pass its readiness command.
