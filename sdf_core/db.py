@@ -116,6 +116,30 @@ class AttemptRow(Base):
     remote_effect: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class AttemptRemoteSandboxRow(Base):
+    """One provider create attempted for an Attempt.
+
+    ``creating`` with a null ``sandbox_id`` means the create was entered and
+    the id was never recorded. That row cannot be marked ``absent``.
+    ``identified`` means the provider returned an id. ``absent`` is set only
+    after a separate lookup says that id is gone, not because kill() returned.
+    """
+
+    __tablename__ = "attempt_remote_sandboxes"
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN ('creating', 'identified', 'absent')",
+            name="ck_attempt_remote_sandboxes_phase",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(120), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    sandbox_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    phase: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ObjectiveMetricRow(Base):
     """One declared outcome metric per Objective. Without it, no business claim."""
 

@@ -55,9 +55,11 @@ def test_remote_effect_revision_upgrades_and_downgrades_on_sqlite(tmp_path, monk
     try:
         names = {column["name"] for column in inspect(engine).get_columns("attempts")}
         assert "remote_effect" in names
+        assert "attempt_remote_sandboxes" in inspect(engine).get_table_names()
         command.downgrade(config, "0029_evidence_content_mac")
         names = {column["name"] for column in inspect(engine).get_columns("attempts")}
         assert "remote_effect" not in names
+        assert "attempt_remote_sandboxes" not in inspect(engine).get_table_names()
         command.upgrade(config, "head")
         names = {column["name"] for column in inspect(engine).get_columns("attempts")}
         assert "remote_effect" in names
@@ -69,7 +71,7 @@ def test_alembic_has_a_single_head_and_every_revision_id_fits_alembic_version():
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert script.get_heads() == ["0030_attempt_remote_effect"]
+    assert script.get_heads() == ["0031_attempt_remote_sandboxes"]
     # alembic_version.version_num is VARCHAR(32) on PostgreSQL.
     assert all(len(rev.revision) <= 32 for rev in script.walk_revisions())
 

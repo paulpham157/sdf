@@ -410,7 +410,8 @@ class LiveRunAdapter:
         kwargs: dict[str, Any] = {"agents": (self.agent,), "environ": self.run_env, "provider": self.provider,
                                   "read_connection": PluginConnectionBridge(environ=self.run_env),
                                   "timeout_seconds": self.sandbox_timeout_s,
-                                  "before_provider_create": lambda: self._fence_provider_create(attempt_id)}
+                                  "before_provider_create": lambda: self._fence_provider_create(attempt_id),
+                                  "on_sandbox_identified": self._identify_provider_sandbox}
         if self.provider == "e2b":
             kwargs |= {"template": self.image, "network": self.network,
                        "metadata": {"sdf_attempt_id": attempt_id, "sdf_run": "tasks-run", "sdf_agent": self.agent}}
@@ -428,12 +429,23 @@ class LiveRunAdapter:
 
         from .recovery import note_remote_effect_uncertain
 
-        note_remote_effect_uncertain(self.db, attempt_id)
+        return note_remote_effect_uncertain(self.db, attempt_id, provider=self.provider)
+
+    def _identify_provider_sandbox(self, effect_id: str, sandbox_id: str) -> None:
+        from .remote_effects import identify_remote_sandbox
+
+        identify_remote_sandbox(self.db, effect_id, sandbox_id)
 
     def _note_provider_stopped(self, attempt_id: str) -> None:
-        from .recovery import note_remote_effect_stopped
+        from .remote_effects import probe_from_environ, reconcile_attempt
 
-        note_remote_effect_stopped(self.db, attempt_id)
+        kill, absent = probe_from_environ(self.run_env)
+        if absent is None:
+            from .recovery import note_remote_effect_stopped
+
+            note_remote_effect_stopped(self.db, attempt_id)
+            return
+        reconcile_attempt(self.db, attempt_id, kill=kill, absent=absent)
 
     def _default_kill_by_id(self, sandbox_id: str) -> None:
         if self.provider == "e2b":

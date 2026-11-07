@@ -40,7 +40,7 @@ def postgres_engine():
 def clean_postgres(postgres_engine):
     with postgres_engine.begin() as connection:
         connection.execute(text(
-            "TRUNCATE TABLE decision_edges, evidence, tool_audits, runtime_events, routing_decisions, "
+            "TRUNCATE TABLE attempt_remote_sandboxes, decision_edges, evidence, tool_audits, runtime_events, routing_decisions, "
             "artifacts, attempts, tasks, graph_nodes, objective_metrics, "
             "outcome_observations, agent_claims, agent_messages, agent_run_members, agent_runs, "
             "plan_tasks, plans, decision_requests, api_tokens, auth_audit, attempt_revisions RESTART IDENTITY CASCADE"
@@ -659,3 +659,74 @@ def test_material_decision_requests_are_fenced_and_0024_round_trips_on_postgresq
         connection.execute(text(
             "UPDATE decision_requests SET status = 'answered', resolver_kind = 'human', resolved_by = 'hung', "
             "resolution = 'keep', resolved_at = now() WHERE id = :id"), {"id": mat_id})
+
+
+def test_postgresql_observed_lease_matches_and_a_committed_renewal_does_not(postgres_engine):
+    """The recovery UPDATE matches the snapshot it read, and loses when that heartbeat changed.
+
+    Both sessions are real PostgreSQL transactions. The unchanged row is the
+    control: a type or binding mismatch must not look like a successful fence.
+    """
+
+    from datetime import timedelta
+
+    from sdf_core.db import AttemptRow, TaskRow
+    from sdf_core.model import AttemptState, utcnow
+    from sdf_core.recovery import LEASE_TTL, compare_and_swap_attempt
+
+    expired = utcnow() - LEASE_TTL - timedelta(seconds=5)
+    with _session(postgres_engine) as db:
+        db.add(TaskRow(
+            id="TASK-PG-LEASE", title="lease", status="running", idempotency_key="task-pg-lease",
+            acceptance_criteria=[], created_at=utcnow(),
+        ))
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-STABLE", task_id="TASK-PG-LEASE", status="running",
+            dispatch_key="dispatch-pg-stable", agent="native", created_at=utcnow(),
+            executor_id="executor-stable", executor_heartbeat_at=expired,
+        ))
+        db.add(AttemptRow(
+            id="ATTEMPT-PG-RENEW", task_id="TASK-PG-LEASE", status="running",
+            dispatch_key="dispatch-pg-renew", agent="native", created_at=utcnow(),
+            executor_id="executor-still-working", executor_heartbeat_at=expired,
+        ))
+        db.commit()
+
+    stable = _session(postgres_engine)
+    try:
+        attempt = stable.get(AttemptRow, "ATTEMPT-PG-STABLE")
+        won = compare_and_swap_attempt(
+            stable, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED,
+            observed_lease=(attempt.executor_id, attempt.executor_heartbeat_at),
+        )
+        assert won is True
+        stable.commit()
+    finally:
+        stable.close()
+
+    reader = _session(postgres_engine)
+    try:
+        attempt = reader.get(AttemptRow, "ATTEMPT-PG-RENEW")
+        observed = (attempt.executor_id, attempt.executor_heartbeat_at)
+        writer = _session(postgres_engine)
+        try:
+            row = writer.get(AttemptRow, "ATTEMPT-PG-RENEW")
+            row.executor_heartbeat_at = utcnow()
+            writer.commit()
+        finally:
+            writer.close()
+        won = compare_and_swap_attempt(
+            reader, attempt, from_status=AttemptState.RUNNING, to_status=AttemptState.FAILED,
+            observed_lease=observed,
+        )
+        assert won is False
+        reader.rollback()
+    finally:
+        reader.close()
+    with _session(postgres_engine) as check:
+        settled = check.get(AttemptRow, "ATTEMPT-PG-STABLE")
+        assert settled.status == "failed"
+        fresh = check.get(AttemptRow, "ATTEMPT-PG-RENEW")
+        assert fresh.status == "running"
+        assert fresh.error_class is None
+        assert fresh.executor_heartbeat_at > expired

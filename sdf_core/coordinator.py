@@ -778,12 +778,18 @@ class Coordinator:
         if not callable(bind_attempt):
             return
         bind_attempt(attempt_id, open_recovery)
-        if getattr(sandbox, "sandbox_id", None):
+        sandbox_id = getattr(sandbox, "sandbox_id", None)
+        if isinstance(sandbox_id, str) and sandbox_id.strip():
             from .recovery import note_remote_effect_uncertain
+            from .remote_effects import identify_remote_sandbox
 
             db = open_recovery()
             try:
-                note_remote_effect_uncertain(db, attempt_id)
+                # The id is already known. Record it as identified so a later
+                # lookup can verify it. A creating row with no id would be an
+                # unknown create and could not be cleared.
+                effect_id = note_remote_effect_uncertain(db, attempt_id, provider="e2b")
+                identify_remote_sandbox(db, effect_id, sandbox_id)
             finally:
                 db.close()
 

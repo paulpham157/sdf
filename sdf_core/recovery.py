@@ -284,29 +284,23 @@ def clear_remote_effect(attempt_id: str) -> None:
         _remote_effects.pop(attempt_id, None)
 
 
-def note_remote_effect_uncertain(db: Session, attempt_id: str) -> None:
-    """Commit ``uncertain`` before the provider create call.
+def note_remote_effect_uncertain(db: Session, attempt_id: str, provider: str = "unspecified") -> str:
+    """Commit a durable ``creating`` sandbox row before the provider call.
 
-    The commit is the fence. A crash after it, including during the provider
-    call and after the provider returns but before ``confirm_live``, leaves a
-    row recovery will not settle. Evidence mode is not consulted. Raises when
-    the Attempt row is missing so the caller does not create a sandbox that
-    cannot be fenced.
+    Returns the row id so the caller can attach the provider id after the
+    call returns. The in-memory create count is not the record.
     """
 
-    attempt = db.get(AttemptRow, attempt_id)
-    if attempt is None:
-        raise RuntimeError(f"cannot record a remote effect for missing attempt {attempt_id}")
-    with _lock:
-        _outstanding_effects[attempt_id] = _outstanding_effects.get(attempt_id, 0) + 1
-    attempt.remote_effect = REMOTE_EFFECT_UNCERTAIN
-    db.commit()
+    from .remote_effects import open_remote_sandbox
+
+    return open_remote_sandbox(db, attempt_id, provider)
 
 
 def note_remote_effect_stop_failed(attempt_id: str) -> None:
-    """A termination failed or the provider outcome is unknown.
+    """Remember in this process that a termination was not proven.
 
-    Later successes in this process must not mark the Attempt ``stopped``.
+    This does not clear or set the durable rows. A restart loses it; the
+    sandbox rows remain the authority.
     """
 
     with _lock:
@@ -314,32 +308,18 @@ def note_remote_effect_stop_failed(attempt_id: str) -> None:
 
 
 def note_remote_effect_stopped(db: Session, attempt_id: str) -> bool:
-    """Commit ``stopped`` only when every counted effect for this Attempt is confirmed gone.
+    """Set ``stopped`` only when every durable sandbox row is ``absent``.
 
-    One successful teardown does not cover a second sandbox, and it does not
-    erase an earlier failed or unknown termination. Returns False when the
-    row is left ``uncertain``. A stop with no matching create is not confirmation.
+    Calling this after kill() returned is not enough. Rows with no id, or
+    rows not yet verified by a separate lookup, stay unresolved.
     """
 
     with _lock:
         if attempt_id in _stop_blocked:
             return False
-        count = _outstanding_effects.get(attempt_id, 0)
-        if count > 1:
-            _outstanding_effects[attempt_id] = count - 1
-            return False
-        if count == 1:
-            _outstanding_effects.pop(attempt_id, None)
-        else:
-            return False
-    attempt = db.get(AttemptRow, attempt_id)
-    if attempt is None:
-        raise RuntimeError(f"cannot record remote-effect stop for missing attempt {attempt_id}")
-    if attempt.remote_effect != REMOTE_EFFECT_UNCERTAIN:
-        return False
-    attempt.remote_effect = REMOTE_EFFECT_STOPPED
-    db.commit()
-    return True
+    from .remote_effects import refresh_remote_effect
+
+    return refresh_remote_effect(db, attempt_id)
 
 
 def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
@@ -352,6 +332,14 @@ def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
     provider resource is gone, which also clears a ``live`` promotion.
     """
 
+    from sqlalchemy.orm import object_session
+
+    session = object_session(attempt)
+    if session is not None:
+        from .remote_effects import sandbox_rows
+
+        if any(row.phase != "absent" for row in sandbox_rows(session, attempt.id)):
+            return True
     if attempt.remote_effect not in (None, REMOTE_EFFECT_STOPPED):
         return True
     with _lock:

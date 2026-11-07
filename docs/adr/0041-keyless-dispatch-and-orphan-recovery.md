@@ -241,30 +241,44 @@ returns the existing Attempt for the same dispatch key and does not run the
 adapter again. A new dispatch key raises, and `POST /tasks/{id}/run` returns
 409. No new state-machine transition is added.
 
-This process does not call the sandbox provider during recovery. It does not
-list E2B or Daytona sandboxes, and it does not kill by id from a restarted
-process. `LiveRunAdapter.confirm_live` still records that a sandbox id was
-observed (`evidence_mode=live`). That write is later than the create fence. A
-`live` row that is not `stopped` stays `running`.
+`recover_orphaned_attempts` does not call a provider. It does not list E2B
+or Daytona, and it does not kill by id. It settles a `running` Attempt only
+when the durable rows already say every recorded sandbox is `absent`
+(`remote_effect=stopped`) or no create was entered. `LiveRunAdapter.confirm_live`
+still records that a sandbox id was observed (`evidence_mode=live`). That
+write is later than the create fence. A `live` row that is not `stopped`
+stays `running`.
 
 `E2BHerdrTransport._ensure_sandbox` and `DaytonaHerdrTransport._ensure_sandbox`
-commit `remote_effect=uncertain` through `before_provider_create` immediately
-before the provider factory, and only on a fresh create. Reconnect with an
-existing sandbox id does not call that factory. `LiveRunAdapter` and a
-coordinator worker sandbox (`E2BAgentSandbox.bind_attempt`) supply the
-callback. A worker Attempt that reuses an already-open sandbox is marked
-`uncertain` at begin. `E2BContainmentBackend.run` and live
+insert an `attempt_remote_sandboxes` row in phase `creating` immediately
+before the provider factory, and only on a fresh create. The provider id is
+written on that same row after the factory returns (`identified`). Reconnect
+with an existing sandbox id does not call that factory and does not insert
+another row. `LiveRunAdapter` and a coordinator worker sandbox
+(`E2BAgentSandbox.bind_attempt`) supply those callbacks. A worker Attempt
+that already holds a sandbox id records that id as `identified`. It does not
+open a `creating` row with a null id. `E2BContainmentBackend.run` and live
 `HerdrE2BAdapter.execute` refuse to call `e2b-box` unless an Attempt fence is
-bound, and they commit `uncertain` before the CLI command that can create a
-box.
+bound, and they commit the `creating` row before the CLI command that can
+create a box. A sandbox id seen in the CLI output is stored on that row.
 
-`uncertain` is not cleared because the factory or the CLI raised. `stopped`
-is committed only when every create counted in this process has a confirmed
-termination that saw a sandbox id. One successful kill does not cover a
-second sandbox. A failed or unknown termination blocks later successes in
-this process from marking `stopped`. Until then a new dispatch stays refused.
-There is still no reaper, so a crashed create blocks that Task until some
-later process can confirm stop. That is the availability cost of failing closed.
+`stopped` means every durable sandbox row for the Attempt is `absent`. One
+verified id does not cover a second. `Sandbox.kill` returning success is not
+`absent`. Absence is a separate lookup: for E2B and `e2b-box`,
+`Sandbox.get_info` raising not-found. Daytona has no lookup in this build, so
+a Daytona id stays `identified`. A `creating` row with a null id is never
+marked `absent`. An empty provider list is not proof that row's sandbox does
+not exist, because a timeout can leave a sandbox that was never tagged.
+
+There is no background reaper. Reconcile is explicit: the same process may
+run it after a kill when `E2B_API_KEY` is set and the suite is not hermetic,
+and an admin may call `POST /attempts/{id}/remote-effects/reconcile`. That
+call kills known ids best-effort, ignores the kill return value, and marks a
+row `absent` only when the lookup says the id is missing. An operator may
+add an id they found in the provider console. That adds an `identified` row.
+It does not delete or bless the `creating` row. The operator path and the
+rollout are in `docs/remote-recovery.md`. The application-clock lease is
+unchanged.
 
 A fake in-process adapter never enters `_ensure_sandbox`. Its `remote_effect`
 stays NULL, so a host crash between `begin` and `run` remains retryable.
@@ -277,12 +291,21 @@ Remaining limitations, which this ADR does not claim to close:
 - Any new provider create that skips `before_provider_create` or the CLI
   fence is not fenced.
   Evidence mode will not catch it while the row is still synthetic.
-- After a hard crash, `uncertain` stays set. This process will not list or
-  kill provider sandboxes to clear it.
+- A `creating` row with no sandbox id cannot be resolved by reconcile, by an
+  empty list, or by editing `remote_effect`. The Task stays blocked.
+- Reconcile does not list the provider to discover sandboxes this process
+  never named. Metadata on a successful E2B create is `sdf_attempt_id`,
+  `sdf_run`, and `sdf_agent`. A sandbox that died before those tags were
+  stored will not be found by that filter, and this build does not treat an
+  empty filter result as absence.
+- Daytona absence is not implemented. A Daytona id stays `identified`.
 - Recovery does not promise exactly-once behavior for arbitrary external side
   effects.
 - The lease clock is still the application clock (the open question below).
-- A process-local callback exists only in the process that registered it.
+- A process-local stop callback exists only in the process that registered
+  it. Durable rows are the authority after restart. `note_remote_effect_stopped`
+  still refuses while this process has recorded a failed stop, but a later
+  lookup that reports a known id missing can mark that row `absent`.
 
 ## Open question: lease clock
 
@@ -361,9 +384,25 @@ The create-window tests drive `E2BHerdrTransport._ensure_sandbox` or
 `DaytonaHerdrTransport._ensure_sandbox` with an injected factory. They do not
 call E2B or Daytona.
 - `tests/test_api.py::test_explicit_keyless_prefix_is_rejected` expects 422.
-- `tests/test_migrations.py` upgrades an empty SQLite database to head
-  `0027_attempt_executor_lease` and expects the two columns.
+- `tests/test_migrations.py` upgrades an empty SQLite database to head and
+  back. The sandbox inventory is `0031_attempt_remote_sandboxes`. It does not
+  rewrite `0027_attempt_executor_lease`.
 
-No live provider sandbox was killed or listed to prove section 5. The provider
-boundary there is what the code refuses to do, not a claim that E2B or Daytona
-was observed. PostgreSQL is not required for these hermetic tests.
+Durable rows and reconcile are also covered, still without a live provider:
+
+- `tests/test_crash_recovery.py` keeps a new dispatch refused until each
+  known sandbox id is reported absent, including after the Attempt is
+  `cancelled`, and keeps a `creating` row with no id in place when an
+  operator records a different id.
+- `tests/test_remote_recovery_process.py` SIGKILLs the host process after
+  the durable write. A separate localhost provider process is what the
+  parent reads. Reconcile resolves the Attempt only when that process
+  reports the id absent. A create that never stored an id leaves the
+  provider running.
+- `tests/test_postgres_integration.py::test_postgresql_observed_lease_matches_and_a_committed_renewal_does_not`
+  uses two PostgreSQL sessions. The unchanged snapshot matches. A heartbeat
+  committed by the other session makes the recovery UPDATE match zero rows.
+
+No live E2B or Daytona sandbox was created, killed, or listed for this
+proof. The E2B absence check in `probe_from_environ` is the SDK `get_info`
+not-found path. It was not executed against a provider.

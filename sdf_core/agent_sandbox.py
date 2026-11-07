@@ -185,18 +185,28 @@ class E2BAgentSandbox:
             # ADR-0017: validated before any sandbox exists.
             pi_extensions = resolve_pi_extensions(self._environ.get(PI_EXTENSIONS_ENV))
         before_create = None
+        on_identified = None
         if self._remote_attempt_id is not None:
             if self._recovery_session_factory is None:
                 raise RuntimeError("attempt is bound without a session factory; refusing to create a sandbox")
             attempt_id = self._remote_attempt_id
             open_session = self._recovery_session_factory
 
-            def before_create() -> None:
+            def before_create() -> str:
                 from .recovery import note_remote_effect_uncertain
 
                 db = open_session()
                 try:
-                    note_remote_effect_uncertain(db, attempt_id)
+                    return note_remote_effect_uncertain(db, attempt_id, provider="e2b")
+                finally:
+                    db.close()
+
+            def on_identified(effect_id: str, sandbox_id: str) -> None:
+                from .remote_effects import identify_remote_sandbox
+
+                db = open_session()
+                try:
+                    identify_remote_sandbox(db, effect_id, sandbox_id)
                 finally:
                     db.close()
 
@@ -204,6 +214,7 @@ class E2BAgentSandbox:
             agents=(self.spec.kind,), environ=self._environ, template=self._template,
             timeout_seconds=self._sandbox_timeout_s, network=self._network,
             before_provider_create=before_create,
+            on_sandbox_identified=on_identified,
         )
         if self.spec.kind == "opencode":
             from .opencode_runtime import OpenCodeHeadlessRuntime
@@ -344,9 +355,15 @@ class E2BAgentSandbox:
                 if not closed:
                     note_remote_effect_stop_failed(self._remote_attempt_id)
                 else:
+                    from .remote_effects import probe_from_environ, reconcile_attempt
+
                     db = self._recovery_session_factory()
                     try:
-                        note_remote_effect_stopped(db, self._remote_attempt_id)
+                        kill, absent = probe_from_environ(self._environ)
+                        if absent is None:
+                            note_remote_effect_stopped(db, self._remote_attempt_id)
+                        else:
+                            reconcile_attempt(db, self._remote_attempt_id, kill=kill, absent=absent)
                     finally:
                         db.close()
 
