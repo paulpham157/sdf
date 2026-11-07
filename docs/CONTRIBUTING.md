@@ -92,8 +92,10 @@ paseo script stop api --workspace <workspace-id>
 
 Configured names: `api` (uvicorn on `$PASEO_PORT`), `postgres` (compose up only;
 not `scripts/postgres-test.sh`, which also migrates, runs pytest, and tears down
-on EXIT), and `e2b-doctor`. Prefer `scripts/e2b-env.sh e2b-box up …` in an
-interactive terminal when you need a box attach — it is not wrapped here.
+on EXIT), and `e2b-doctor`. The `api` script does not set `SDF_EVIDENCE_MAC_KEY`;
+export a key of at least 32 characters first or the process will refuse to start.
+Prefer `scripts/e2b-env.sh e2b-box up …` in an interactive terminal when you need
+a box attach — it is not wrapped here.
 
 ## Live full loop (public run path)
 

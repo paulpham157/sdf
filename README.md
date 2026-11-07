@@ -32,16 +32,17 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 uv sync --all-groups
 uv run pytest
+export SDF_EVIDENCE_MAC_KEY='local-dev-evidence-mac-key-not-a-deployment-secret'
 SDF_AUTH_DEV_INSECURE=1 uv run uvicorn sdf_core.api:app --reload --host 127.0.0.1
 ```
 
-The API starts with an in-memory SQLite database for local development. Swagger and ReDoc are off; `GET /` is not a UI. For the product loop, use `uv run scripts/demo.py` above.
+The API starts with an in-memory SQLite database for local development. It refuses to start without `SDF_EVIDENCE_MAC_KEY` (at least 32 characters); there is no silent fallback to the public development constant. Swagger and ReDoc are off; `GET /` is not a UI. For the product loop, use `uv run scripts/demo.py` above.
 
 ### Offline evidence demo
 
 `uv run scripts/demo.py` (or `scripts/demo-evidence.sh`) walks the public HTTP loop twice with the default fake adapter: Business Context, Objective, two Tasks, `POST /tasks/{id}/run` for each, then evaluator Evidence, the Attempt revision, and the task trace. It prints a four-beat story (intent, the agent's claim for A and B, the independent check for each, and the outcome) and writes a two-column HTML page (`--out DIR` to choose the directory; `--open` to open it; `--only accepted|rejected` to run one task). It needs the install above and no E2B or model keys. `SDF_LIVE_FULL_LOOP` stays unset. It also needs a Linux x86_64 host with Landlock: the sealed oracle that judges the fixture's `python -c` check runs nowhere else, and on any other host that check is a non-pass ([ADR 0039](docs/adr/0039-evidence-independence.md)). On macOS, on arm64, or in an emulated amd64 container, the script stops before it starts the API and points at the Codespaces button above. This is the fixture loop in [docs/live-full-loop.md](docs/live-full-loop.md). This fixture loop is not production proof.
 
-The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval. Provider keys in the environment are ignored and reported as unused.
+The script binds the API to `127.0.0.1` with `SDF_AUTH_DEV_INSECURE=1`, sets `SDF_RUN_ADAPTER=fake` and `SDF_FIXTURES_ROOT` to `./fixtures`, and posts `fixture_dir=offline-evidence`. If `SDF_EVIDENCE_MAC_KEY` is unset, it sets a demo-only fixture key (not a deployment secret) so verification can accept Task A; a user-supplied key is kept when it is at least 32 characters, and a shorter value is rejected. That directory sits under the fixtures root. The default task run has no plan, so this path does not call `POST /plans/{id}/approve`. The script unsets `SDF_REQUIRE_PLAN_APPROVAL`. A task that already belongs to a plan still waits for approval. Provider keys in the environment are ignored and reported as unused.
 
 Both tasks reuse fixture `fixtures/offline-evidence` and the sealed `app-updated` check, which requires a single `print('updated')` with no trailing space. Task A is an honest `FakeNativeAdapter` write of `print('updated')`; verification Evidence from `sdf-evaluator` PASSes and the Task is accepted. Task B writes `print('updated ')` (trailing space), claims `Done! app.py updated, all tests pass`, and also writes a weak `tests/test_app.py` substring check plus a rewritten workspace `sdf-checks.json`. A naive CI run of those files would go green; the sealed oracle ignores workspace checks and FAILs Task B, so SDF does not accept it. Each run also writes execution Evidence (producer `native`, no verifier). That row records that the adapter ran, and it never accepts the Task ([ADR 0042](docs/adr/0042-evidence-classes.md)). Adapter stdout stays on the process-log artifact.
 
@@ -83,8 +84,11 @@ as admin `local-dev` from loopback only. Always bind to loopback unless a TLS
 reverse proxy sits in front:
 
 ```bash
+export SDF_EVIDENCE_MAC_KEY='local-dev-evidence-mac-key-not-a-deployment-secret'
 uv run uvicorn sdf_core.api:app --host 127.0.0.1
 ```
+
+The server also refuses to start without that key (at least 32 characters).
 
 ## Run for real
 

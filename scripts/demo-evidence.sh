@@ -4,6 +4,7 @@
 # Historical entry point for scripts/demo.py. Walks Business Context ->
 # Objective -> Assumption -> Task -> POST /tasks/{id}/run, then prints a
 # plain-language story and writes a local HTML page. No E2B or model keys.
+# demo.py sets a demo-only SDF_EVIDENCE_MAC_KEY fixture if you have not set one.
 # This fixture loop is not production proof (docs/live-full-loop.md).
 set -euo pipefail
 

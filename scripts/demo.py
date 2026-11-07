@@ -56,6 +56,10 @@ _HTML_NAME = "index.html"
 
 CLAIM_A = "Done. app.py now prints updated."
 CLAIM_B = "Done! app.py updated, all tests pass"
+# Demo-only fixture so verification can treat stored MACs as authentic.
+# Not a deployment secret and not the public development constant.
+DEMO_EVIDENCE_MAC_KEY = "demo-evidence-mac-key-not-a-deployment-secret"
+MIN_EVIDENCE_MAC_KEY_CHARS = 32
 REPLACEMENT_A = "print('updated')\n"
 REPLACEMENT_B = "print('updated ')\n"
 
@@ -144,6 +148,30 @@ def provider_keys_present(environ: dict[str, str] | None = None) -> bool:
     return any(env.get(name) for name in PROVIDER_KEY_VARS)
 
 
+def configure_evidence_mac_key() -> str:
+    """Keep a user-supplied key, or install the demo fixture key.
+
+    A configured key must be at least 32 characters; a shorter value is
+    rejected rather than replaced, so the process never silently uses the
+    public development constant. When the variable is unset, the labelled
+    demo fixture is used so Task A can be accepted via a verified PASS.
+    """
+
+    configured = os.environ.get("SDF_EVIDENCE_MAC_KEY")
+    if configured:
+        if len(configured) < MIN_EVIDENCE_MAC_KEY_CHARS:
+            print(
+                "SDF_EVIDENCE_MAC_KEY must be at least 32 characters. "
+                "The demo does not replace a short key and does not fall "
+                "back to the public development constant.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        return configured
+    os.environ["SDF_EVIDENCE_MAC_KEY"] = DEMO_EVIDENCE_MAC_KEY
+    return DEMO_EVIDENCE_MAC_KEY
+
+
 def configure_env(demo_dir: Path, root: Path) -> Path:
     os.environ["SDF_RUN_ADAPTER"] = "fake"
     os.environ["SDF_AUTH_DEV_INSECURE"] = "1"
@@ -153,6 +181,7 @@ def configure_env(demo_dir: Path, root: Path) -> Path:
     os.environ["SDF_ARTIFACT_ROOT"] = str(demo_dir / "artifacts")
     spec_path = demo_dir / "fake-spec.json"
     os.environ["SDF_DEMO_FAKE_SPEC"] = str(spec_path)
+    configure_evidence_mac_key()
     for name in _LIVE_ENV:
         os.environ.pop(name, None)
     return spec_path
@@ -518,7 +547,9 @@ def write_html(cases: list[dict], path: Path) -> None:
   <div class="columns">{columns}</div>
   <p class="note">This demo used the built-in <code>FakeNativeAdapter</code>,
   fixture <code>fixtures/offline-evidence</code>, a temporary SQLite database,
-  and <code>SDF_AUTH_DEV_INSECURE=1</code>. No E2B or model API key was required.
+  <code>SDF_AUTH_DEV_INSECURE=1</code>, and a demo-only
+  <code>SDF_EVIDENCE_MAC_KEY</code> fixture (not a deployment secret).
+  No E2B or model API key was required.
   The sealed evaluator oracle (ADR 0039) currently produces a verdict only on
   Linux x86_64. This fixture loop is not production proof.</p>
 </body>

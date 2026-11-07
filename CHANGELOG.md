@@ -275,7 +275,9 @@
   model key is required. The sealed oracle still needs Linux x86_64 with
   Landlock (ADR 0039); other hosts exit with a pointer to GitHub Codespaces.
   `scripts/demo-evidence.sh` remains as a wrapper. A Codespaces dev container
-  lives in `.devcontainer/devcontainer.json`.
+  lives in `.devcontainer/devcontainer.json`. The demo sets a labelled
+  fixture `SDF_EVIDENCE_MAC_KEY` when the variable is unset, so the API can
+  start and Task A can be accepted; a shorter user-supplied key is rejected.
 
 - **Human read model and approver inbox (ADR 0044).** Viewer `GET /tasks`,
   `/attempts`, `/plans` and `/objectives` list rows in keyset pages (50 by
