@@ -44,10 +44,11 @@ The script prints these results:
 
 The state database is a temporary SQLite file. Workspaces and artifacts land in `.sdf-workspaces/` and `.sdf-artifacts/`.
 
-The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL:
+The API starts with an in-memory SQLite database for local development. For a persistent deployment, configure PostgreSQL and an Evidence MAC key. Without `SDF_EVIDENCE_MAC_KEY` the server uses a fixed development key from the source, so a database writer can recompute the MAC of a rewritten verdict ([ADR 0043](docs/adr/0043-evidence-content-mac.md)):
 
 ```bash
 export SDF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/sdf_core'
+export SDF_EVIDENCE_MAC_KEY='<long random secret, kept out of the database>'
 uv run alembic upgrade head
 uv run uvicorn sdf_core.api:app --host 127.0.0.1
 ```
@@ -87,7 +88,11 @@ containing `.pi/` and gets write tools only in a fresh E2B sandbox
 Every agent turn runs in its own process session and cgroup v2 leaf; leftovers
 (detached, double-forked or reparented to PID 1) are killed (TERM, then KILL)
 when the turn ends, times out, or is cancelled
-([ADR 0019](docs/adr/0019-per-turn-process-containment.md)).
+([ADR 0019](docs/adr/0019-per-turn-process-containment.md)). On Linux, a
+child process started inside the Attempt workspace also runs under Landlock: it
+can write only inside the workspace, and credential-shaped environment
+variables that were not allow-listed are dropped
+([ADR 0004](docs/adr/0004-internal-runtime-and-enforced-tool-policy.md)).
 
 Qwen Code (`qwen`, `0.26.2`) and Goose (`goose`, `1.56.0`) are further
 headless kinds for any OpenAI-compatible endpoint (`QWEN_BASE_URL` /
@@ -165,7 +170,11 @@ uv run python -m sdf_core.auth_cli revoke <token-id>
 ```
 
 Roles: `viewer` (read), `operator` (create tasks/plans, start/cancel runs),
-`approver` (approve/reject plans, resolve decision requests), `admin`. The
+`approver` (approve/reject plans, resolve decision requests, record Decisions,
+ADRs and outcome Evidence), `admin`. Outcome Evidence
+(`POST /objectives/{id}/evidence`) names a verifier who is neither the
+recording principal nor an agent that worked the Objective
+([ADR 0042](docs/adr/0042-evidence-classes.md)). The
 proposer, approver and run starter recorded in the Decision Graph are always
 the token's principal, never a request field. Nobody approves their own plan
 unless `SDF_AUTH_SINGLE_USER=1` (solo deployments; recorded as
@@ -182,7 +191,8 @@ Use a bare E2B domain such as `e2b.dev` or `e2b.app`; the SDK adds the `api.`
 prefix itself.
 
 See [CHANGELOG.md](CHANGELOG.md) for breaking API changes (registered checks,
-server-measured telemetry and run prices).
+server-measured telemetry, run prices, keyless run replay, dead-executor
+recovery and Evidence classes).
 
 ## Core principle
 
@@ -197,6 +207,7 @@ An agent reporting completion is not success. A Task has an **Accepted Outcome**
 - `CONTEXT.md` — canonical domain vocabulary.
 - `docs/adr/` — architecture decisions.
 - `docs/architecture.md` — current architectural overview.
+- `docs/SDF Core Architecture.tldraw` — architecture, Task/Attempt lifecycle, run sequence and Evidence verification diagrams (tldraw; dashed means proposed or not built).
 - `docs/CONTRIBUTING.md` — contributor workflow, verification boundaries, and E2B/Herdr setup.
 
 ## License
