@@ -659,3 +659,55 @@ def test_material_decision_requests_are_fenced_and_0024_round_trips_on_postgresq
         connection.execute(text(
             "UPDATE decision_requests SET status = 'answered', resolver_kind = 'human', resolved_by = 'hung', "
             "resolution = 'keep', resolved_at = now() WHERE id = :id"), {"id": mat_id})
+
+
+@pytest.mark.skipif(not POSTGRES_URL, reason="SDF_POSTGRES_TEST_URL is not set")
+def test_postgresql_content_mac_verifies_and_rejects_a_null_mac(tmp_path: Path, postgres_engine):
+    """Real PostgreSQL: a stamped row verifies, UPDATE is append-only, a NULL MAC does not verify."""
+
+    from sdf_core.db import EvidenceRow
+    from sdf_core.revisions import revision_for_attempt, verify_attempt_revision
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "app.py").write_text("print('old')\n", encoding="utf-8")
+    with _session(postgres_engine) as db:
+        db.add(TaskRow(
+            id="TASK-PG-MAC", title="mac", status="created", idempotency_key="pg-mac",
+            acceptance_criteria=["tests pass"], created_at=utcnow(),
+        ))
+        db.commit()
+        attempt = ExecutionService(
+            db, workspace_root=tmp_path / "ws", artifact_root=tmp_path / "art",
+            adapter=FakeNativeAdapter("app.py", "print('mac')\n"),
+        ).run(
+            task_id="TASK-PG-MAC", dispatch_key="pg-mac", fixture=fixture, instructions="x",
+            commands=[], criterion_checks={"tests pass": [["python", "-c", "print('ok')"]]},
+        )
+        db.expire_all()
+        report = verify_attempt_revision(db, attempt.id)
+        assert report["status"] == "verified" and report["problems"] == [], report
+        evidence = db.query(EvidenceRow).filter_by(attempt_id=attempt.id, evidence_class="verification").one()
+        assert evidence.content_mac_version == 2 and evidence.content_mac
+        with pytest.raises(DBAPIError, match="append-only"):
+            db.execute(text(
+                "UPDATE evidence SET verifier_identity = 'forged-verifier' WHERE id = :id"
+            ), {"id": evidence.id})
+            db.commit()
+        db.rollback()
+        revision = revision_for_attempt(db, attempt.id)
+        attempt_id, revision_id, tree = attempt.id, revision.id, revision.result_tree_sha256
+
+    with postgres_engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO evidence (id, attempt_id, kind, status, command, confidence, evidence_mode, "
+            "created_at, revision_id, tree_sha256, evidence_class, content_mac, content_mac_version) "
+            "VALUES ('EVIDENCE-PG-MAC-NULL', :attempt, 'evaluation', 'PASS', 'c', 1.0, 'synthetic', "
+            "now(), :rev, :tree, 'verification', NULL, NULL)"
+        ), {"attempt": attempt_id, "rev": revision_id, "tree": tree})
+    with _session(postgres_engine) as db:
+        report = verify_attempt_revision(db, attempt_id)
+        assert report["status"] == "failed", report
+        assert any("EVIDENCE-PG-MAC-NULL" in problem and "no current content mac" in problem for problem in report["problems"])
+        stored = db.get(EvidenceRow, "EVIDENCE-PG-MAC-NULL")
+        assert stored is not None and stored.content_mac is None and stored.content_mac_version is None
