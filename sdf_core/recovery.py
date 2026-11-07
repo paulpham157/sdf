@@ -4,8 +4,9 @@ Liveness is a lease, not ``RuntimeController.recover`` (ADR 0029 only restores
 a runtime-event stream). This process treats an Attempt as live while the
 ``ExecutionService`` that started it is still alive. Another process is live
 while its heartbeat is newer than :data:`LEASE_TTL`. Lease expiry does not
-prove remote work has stopped: a ``live`` Attempt, or a registered effect
-that has not confirmed stop, stays ``running``.
+prove remote work has stopped. A provider create commits ``remote_effect``
+``uncertain`` before the provider call, and that row stays ``running`` until
+stop is confirmed. Evidence mode is not that proof.
 """
 
 from __future__ import annotations
@@ -34,6 +35,9 @@ from .state import transition_attempt, transition_task
 # its last heartbeat.
 LEASE_TTL = timedelta(seconds=30)
 _HEARTBEAT_INTERVAL_S = 10
+# Durable provider-create fence. NULL means create was not entered.
+REMOTE_EFFECT_UNCERTAIN = "uncertain"
+REMOTE_EFFECT_STOPPED = "stopped"
 
 def _mint_executor_id() -> str:
     """Unique after fork: the OS pid plus a random id.
@@ -273,9 +277,45 @@ def clear_remote_effect(attempt_id: str) -> None:
         _remote_effects.pop(attempt_id, None)
 
 
-def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
-    """True when this Attempt must not be failed merely because its lease expired."""
+def note_remote_effect_uncertain(db: Session, attempt_id: str) -> None:
+    """Commit ``uncertain`` before the provider create call.
 
+    The commit is the fence. A crash after it, including during the provider
+    call and after the provider returns but before ``confirm_live``, leaves a
+    row recovery will not settle. Evidence mode is not consulted. Raises when
+    the Attempt row is missing so the caller does not create a sandbox that
+    cannot be fenced.
+    """
+
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise RuntimeError(f"cannot record a remote effect for missing attempt {attempt_id}")
+    attempt.remote_effect = REMOTE_EFFECT_UNCERTAIN
+    db.commit()
+
+
+def note_remote_effect_stopped(db: Session, attempt_id: str) -> None:
+    """Commit ``stopped`` only after this process confirmed the provider resource is gone."""
+
+    attempt = db.get(AttemptRow, attempt_id)
+    if attempt is None:
+        raise RuntimeError(f"cannot record remote-effect stop for missing attempt {attempt_id}")
+    attempt.remote_effect = REMOTE_EFFECT_STOPPED
+    db.commit()
+
+
+def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
+    """True when this Attempt must not be failed merely because its lease expired.
+
+    ``evidence_mode`` is not proof that effects were local. A synthetic row
+    whose provider create was entered (``remote_effect=uncertain``, or any
+    value other than NULL or ``stopped``) stays running. NULL means that
+    create call was not entered. ``stopped`` means this process confirmed the
+    provider resource is gone, which also clears a ``live`` promotion.
+    """
+
+    if attempt.remote_effect not in (None, REMOTE_EFFECT_STOPPED):
+        return True
     with _lock:
         confirm_stopped = _remote_effects.get(attempt.id)
     if confirm_stopped is not None:
@@ -291,9 +331,10 @@ def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
             return True
         clear_remote_effect(attempt.id)
         return False
-    # confirm_live commits this before teardown. After the creating process is
-    # gone there is no sandbox id here and no provider call. Do not treat the
-    # lease timeout as proof the sandbox has stopped.
+    if attempt.remote_effect == REMOTE_EFFECT_STOPPED:
+        return False
+    # confirm_live commits live once a sandbox id was observed. A restarted
+    # process has no provider handle. Do not treat the lease as proof of stop.
     return attempt.evidence_mode == EvidenceMode.LIVE.value
 
 

@@ -21,8 +21,8 @@ from sdf_core.execution import ExecutionService
 from sdf_core.fixtures import resolve_fixture
 from sdf_core.model import utcnow
 from sdf_core.recovery import (
-    AttemptFenceError, LEASE_TTL, clear_remote_effect, recover_orphaned_attempts, register_remote_effect,
-    reset_recovery_state,
+    AttemptFenceError, LEASE_TTL, clear_remote_effect, note_remote_effect_stopped, note_remote_effect_uncertain,
+    recover_orphaned_attempts, register_remote_effect, reset_recovery_state,
 )
 from tests.auth_support import admin_client
 
@@ -1269,3 +1269,273 @@ def test_heartbeat_refresh_does_not_touch_a_failed_attempt(tmp_path: Path) -> No
     finally:
         _owners.pop(attempt_id, None)
         db.close()
+
+
+def _fence_create(attempt_id: str) -> None:
+    db = SessionLocal()
+    try:
+        note_remote_effect_uncertain(db, attempt_id)
+    finally:
+        db.close()
+
+
+def _abandon_host(attempt_id: str) -> None:
+    gc.collect()
+    reset_recovery_state()
+    db = SessionLocal()
+    try:
+        _expire_heartbeat(db, attempt_id)
+    finally:
+        db.close()
+
+
+def _row_effect(attempt_id: str):
+    db = SessionLocal()
+    try:
+        row = db.get(AttemptRow, attempt_id)
+        return row.evidence_mode, row.remote_effect, row.status
+    finally:
+        db.close()
+
+
+def _refuse_new_dispatch(tmp_path: Path, task_id: str, attempt_id: str, fixture: Path) -> None:
+    db = SessionLocal()
+    try:
+        service = ExecutionService(
+            db, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+        )
+        with pytest.raises(ValueError, match="still running"):
+            service.begin(
+                task_id=task_id, dispatch_key=f"{task_id}-new", fixture=fixture, parent_attempt_id=attempt_id,
+            )
+        assert db.get(AttemptRow, attempt_id).status == "running"
+        assert db.query(AttemptRow).filter_by(task_id=task_id).count() == 1
+    finally:
+        db.close()
+
+
+def test_crash_before_provider_create_still_allows_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """The provider factory is not called, so lease expiry may still settle the Attempt."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.e2b_herdr_transport import E2BHerdrTransport
+
+    task_id = "TASK-BEFORE-CREATE"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    called = {"factory": 0}
+
+    def factory(**_kwargs):
+        called["factory"] += 1
+        raise AssertionError("provider create must not run")
+
+    E2BHerdrTransport(
+        template="template", environ={"E2B_API_KEY": "unit-test-not-a-live-key"}, sandbox_factory=factory,
+        before_provider_create=lambda: _fence_create(attempt_id),
+    )
+    assert called["factory"] == 0
+    assert _row_effect(attempt_id) == ("synthetic", None, "running")
+    del service, begun
+    _abandon_host(attempt_id)
+    side = SessionLocal()
+    try:
+        assert attempt_id in recover_orphaned_attempts(side)
+    finally:
+        side.close()
+    retry = SessionLocal()
+    try:
+        started = ExecutionService(
+            retry, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+        ).begin(task_id=task_id, dispatch_key=f"{task_id}-new", fixture=fixture, parent_attempt_id=attempt_id)
+        assert started.attempt.id != attempt_id
+    finally:
+        retry.close()
+    db.close()
+
+
+def test_crash_during_provider_create_refuses_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """The fence is committed, then the provider factory is entered and does not return."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.e2b_herdr_transport import E2BHerdrTransport
+
+    task_id = "TASK-DURING-CREATE"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    entered = {"factory": 0}
+
+    def factory(**_kwargs):
+        entered["factory"] += 1
+        raise TimeoutError("provider create did not return")
+
+    transport = E2BHerdrTransport(
+        template="template", environ={"E2B_API_KEY": "unit-test-not-a-live-key"}, sandbox_factory=factory,
+        before_provider_create=lambda: _fence_create(attempt_id),
+    )
+    with pytest.raises(TimeoutError):
+        transport._ensure_sandbox()
+    assert entered["factory"] == 1
+    assert transport.sandbox_id is None
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    del service, begun
+    _abandon_host(attempt_id)
+    side = SessionLocal()
+    try:
+        assert recover_orphaned_attempts(side) == ()
+        assert recover_orphaned_attempts(side) == ()
+    finally:
+        side.close()
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    db.close()
+
+
+def test_sandbox_returned_before_confirm_live_refuses_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """The provider id is back and the row is still synthetic. A new key stays refused."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.e2b_herdr_transport import E2BHerdrTransport
+
+    task_id = "TASK-AFTER-RETURN"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+
+    class _Box:
+        sandbox_id = "sbx-before-live"
+        killed = False
+
+        def kill(self, **_kwargs):
+            self.killed = True
+
+    box = _Box()
+    transport = E2BHerdrTransport(
+        template="template", environ={"E2B_API_KEY": "unit-test-not-a-live-key"}, sandbox_factory=lambda **_kwargs: box,
+        before_provider_create=lambda: _fence_create(attempt_id),
+    )
+    assert transport._ensure_sandbox() is box
+    assert transport.sandbox_id == "sbx-before-live"
+    assert box.killed is False
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    del service, begun
+    _abandon_host(attempt_id)
+    side = SessionLocal()
+    try:
+        assert recover_orphaned_attempts(side) == ()
+    finally:
+        side.close()
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    assert box.killed is False
+    db.close()
+
+
+def test_unknown_provider_outcome_refuses_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """A factory exception after the fence is not proof that no sandbox exists."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.daytona_herdr_transport import DaytonaHerdrTransport
+
+    task_id = "TASK-UNKNOWN-CREATE"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+
+    def factory(**_kwargs):
+        raise RuntimeError("connection dropped; provider outcome unknown")
+
+    transport = DaytonaHerdrTransport(
+        snapshot="snap", sandbox_factory=factory, before_provider_create=lambda: _fence_create(attempt_id),
+    )
+    with pytest.raises(Exception, match="unknown"):
+        transport._ensure_sandbox()
+    assert transport.sandbox_id is None
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    del service, begun
+    _abandon_host(attempt_id)
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    db.close()
+
+
+def test_confirmed_provider_stop_allows_a_new_dispatch(tmp_path: Path, monkeypatch) -> None:
+    """A new key stays refused until stop is committed, including while evidence is synthetic."""
+
+    monkeypatch.chdir(tmp_path)
+    task_id = "TASK-CREATE-STOPPED"
+    db, service, begun, fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    _fence_create(attempt_id)
+    assert _row_effect(attempt_id)[1] == "uncertain"
+    del service, begun
+    _abandon_host(attempt_id)
+    _refuse_new_dispatch(tmp_path, task_id, attempt_id, fixture)
+    stopped = SessionLocal()
+    try:
+        note_remote_effect_stopped(stopped, attempt_id)
+        assert attempt_id in recover_orphaned_attempts(stopped)
+    finally:
+        stopped.close()
+    retry = SessionLocal()
+    try:
+        started = ExecutionService(
+            retry, workspace_root=tmp_path / ".sdf-workspaces", artifact_root=tmp_path / ".sdf-artifacts",
+        ).begin(task_id=task_id, dispatch_key=f"{task_id}-new", fixture=fixture, parent_attempt_id=attempt_id)
+        assert started.attempt.id != attempt_id
+        assert _row_effect(attempt_id)[0] == "synthetic"
+    finally:
+        retry.close()
+    db.close()
+
+
+def test_live_run_adapter_commits_the_create_fence_before_the_transport_returns(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """``/run`` passes the fence into transport construction. Invoking it does not promote evidence."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.run_adapter import configured_run_adapter
+
+    task_id = "TASK-ADAPTER-FENCE"
+    db, _service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    seen: dict[str, object] = {}
+
+    def factory(**kwargs):
+        seen["before"] = kwargs["before_provider_create"]
+        raise RuntimeError("stop before a sandbox exists")
+
+    adapter = configured_run_adapter(db, environ={
+        "SDF_RUN_ADAPTER": "live", "SDF_RUN_AGENT": "opencode", "E2B_API_KEY": "unit-test-not-a-live-key",
+    })
+    adapter._transport_factory = factory
+    with pytest.raises(RuntimeError, match="stop before"):
+        adapter._transport(attempt_id)
+    assert _row_effect(attempt_id) == ("synthetic", None, "running")
+    seen["before"]()
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    db.close()
+
+
+def test_worker_sandbox_start_passes_the_create_fence(tmp_path: Path, monkeypatch) -> None:
+    """A coordinator worker binds its Attempt so sandbox start can fence the create."""
+
+    monkeypatch.chdir(tmp_path)
+    from sdf_core.agent_sandbox import AgentSpec, E2BAgentSandbox
+
+    task_id = "TASK-WORKER-FENCE"
+    db, _service, begun, _fixture = _begun(tmp_path, task_id)
+    attempt_id = begun.attempt.id
+    captured: dict[str, object] = {}
+
+    def fake_create(**kwargs):
+        captured["before"] = kwargs.get("before_provider_create")
+        raise RuntimeError("stop before the provider factory")
+
+    monkeypatch.setattr("sdf_core.credential_injection.create_credentialed_transport", fake_create)
+    sandbox = E2BAgentSandbox(
+        AgentSpec("worker-1", "worker", "opencode", "model"),
+        environ={"OPENCODE_BASE_URL": "https://example.test"}, template="template", network={},
+    )
+    sandbox.bind_attempt(attempt_id, SessionLocal)
+    with pytest.raises(RuntimeError, match="stop before"):
+        sandbox.start(tmp_path)
+    assert _row_effect(attempt_id) == ("synthetic", None, "running")
+    captured["before"]()
+    assert _row_effect(attempt_id) == ("synthetic", "uncertain", "running")
+    db.close()

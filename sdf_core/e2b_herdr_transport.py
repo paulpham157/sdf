@@ -66,6 +66,7 @@ class E2BHerdrTransport:
         sandbox_id: str | None = None,
         network: Mapping[str, Any] | None = None,
         metadata: Mapping[str, str] | None = None,
+        before_provider_create: Callable[[], None] | None = None,
     ) -> None:
         if not template.strip():
             raise ValueError("E2B Herdr template must be non-empty")
@@ -91,6 +92,7 @@ class E2BHerdrTransport:
         )
         self._connector = sandbox_connector or Sandbox.connect
         self._sandbox_id = sandbox_id
+        self._before_provider_create = before_provider_create
         self._sandbox: Any = None
         self._sandbox_lock = threading.RLock()
         self._fresh_sandbox = False
@@ -298,6 +300,10 @@ class E2BHerdrTransport:
                         opts["network"] = dict(self._network)
                     if self._metadata:
                         opts["metadata"] = dict(self._metadata)
+                    # Commit the Attempt fence before the provider call. A crash
+                    # inside the factory is an unknown outcome and stays uncertain.
+                    if self._before_provider_create is not None:
+                        self._before_provider_create()
                     # ADR 0024: host-side span only; nothing about tracing reaches the sandbox.
                     with tracing.span("sdf.sandbox.create", sandbox__provider="e2b",
                                       sandbox__template=self.template) as create_span:

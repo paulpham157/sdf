@@ -226,10 +226,15 @@ Recovery may fail the Attempt and unstick the Task only when all of these hold:
 - The executor is not live under section 3, judged from the SELECT snapshot.
 - The UPDATE still sees that snapshot's `executor_id` and
   `executor_heartbeat_at`.
-- Remote effects are confirmed stopped. Confirmation is one of:
-  - the Attempt is not `live` and nothing in this process has registered an
-    outstanding effect (in-process synthetic work died with the executor);
-  - a process-local `confirm_stopped` callback returns True.
+- Remote effects are confirmed stopped. `evidence_mode` is not that proof.
+  A synthetic row can already have called the provider. Confirmation is:
+  - `remote_effect` is NULL (the provider create call was not entered) and
+    the Attempt is not `live`, and no process-local effect is still
+    outstanding; or
+  - `remote_effect` is `stopped` because this process confirmed the provider
+    resource is gone; or
+  - a process-local `confirm_stopped` callback returns True while the durable
+    value is not `uncertain`.
 
 Otherwise the Attempt and its Task stay `running`. `ExecutionService.begin`
 returns the existing Attempt for the same dispatch key and does not run the
@@ -238,21 +243,37 @@ adapter again. A new dispatch key raises, and `POST /tasks/{id}/run` returns
 
 This process does not call the sandbox provider during recovery. It does not
 list E2B or Daytona sandboxes, and it does not kill by id from a restarted
-process. `LiveRunAdapter.confirm_live` is what records that a sandbox existed
-(`evidence_mode=live`, committed before teardown). After that process is gone,
-the row stays `running` until some future terminator confirms stop. There is
-no such terminator in this change.
+process. `LiveRunAdapter.confirm_live` still records that a sandbox id was
+observed (`evidence_mode=live`). That write is later than the create fence. A
+`live` row that is not `stopped` stays `running`.
+
+`E2BHerdrTransport._ensure_sandbox` and `DaytonaHerdrTransport._ensure_sandbox`
+commit `remote_effect=uncertain` through `before_provider_create` immediately
+before the provider factory, and only on a fresh create. `LiveRunAdapter` and
+a coordinator worker sandbox (`E2BAgentSandbox.bind_attempt`) supply that
+callback. `uncertain` is not cleared because the factory raised: a timeout can
+mean the provider created a sandbox the client never observed. `stopped` is
+committed only after a teardown that both saw a sandbox id and reported
+success. Until then a new dispatch stays refused. There is still no reaper, so
+a crashed create blocks that Task until some later process can confirm stop.
+That is the availability cost of failing closed.
+
+A fake in-process adapter never enters `_ensure_sandbox`. Its `remote_effect`
+stays NULL, so a host crash between `begin` and `run` remains retryable.
 
 Remaining limitations, which this ADR does not claim to close:
 
-- A sandbox created before `confirm_live` commits is still `synthetic`. Lease
-  expiry can settle that row. The provider sandbox may still be running.
-- Effects that never register and never promote to `live` are treated as
-  in-process. Recovery does not promise exactly-once behavior for arbitrary
-  external side effects.
+- The coordinator lead sandbox has no Attempt, so this fence does not cover it.
+- `E2BContainmentBackend` provisions through the `e2b-box` CLI, not
+  `_ensure_sandbox`. An evaluator box is outside this Attempt fence.
+- Any new provider create that skips `before_provider_create` is not fenced.
+  Evidence mode will not catch it while the row is still synthetic.
+- After a hard crash, `uncertain` stays set. This process will not list or
+  kill provider sandboxes to clear it.
+- Recovery does not promise exactly-once behavior for arbitrary external side
+  effects.
 - The lease clock is still the application clock (the open question below).
-- A registered callback exists only in the process that registered it. It is
-  not durable.
+- A process-local callback exists only in the process that registered it.
 
 ## Open question: lease clock
 
@@ -319,6 +340,17 @@ Local tests (SQLite, no live provider):
 - `tests/test_crash_recovery.py::test_termination_failure_leaves_the_attempt_running`
 - `tests/test_crash_recovery.py::test_confirmed_stop_allows_settle_and_a_new_dispatch`
 - `tests/test_crash_recovery.py::test_stale_heartbeat_with_the_owner_still_alive_refuses_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_crash_before_provider_create_still_allows_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_crash_during_provider_create_refuses_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_sandbox_returned_before_confirm_live_refuses_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_unknown_provider_outcome_refuses_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_confirmed_provider_stop_allows_a_new_dispatch`
+- `tests/test_crash_recovery.py::test_live_run_adapter_commits_the_create_fence_before_the_transport_returns`
+- `tests/test_crash_recovery.py::test_worker_sandbox_start_passes_the_create_fence`
+
+The create-window tests drive `E2BHerdrTransport._ensure_sandbox` or
+`DaytonaHerdrTransport._ensure_sandbox` with an injected factory. They do not
+call E2B or Daytona.
 - `tests/test_api.py::test_explicit_keyless_prefix_is_rejected` expects 422.
 - `tests/test_migrations.py` upgrades an empty SQLite database to head
   `0027_attempt_executor_lease` and expects the two columns.

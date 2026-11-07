@@ -32,7 +32,7 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from .adapter import AdapterResult
 from .agent_messaging import ENVELOPE_NAME, MAX_ENVELOPE_BYTES, EnvelopeError, Member, MessageHub, delivery_payload
@@ -401,10 +401,14 @@ class Coordinator:
             # Attempts are created (gate-checked) before any sandbox exists, so
             # they start synthetic and take the factory's mode only once their
             # worker's sandbox has started (ADR 0031).
+            open_recovery = sessionmaker(bind=self.db.get_bind(), expire_on_commit=False)
             for sub in subtasks.values():
                 worker_agent = agents[sub.worker]
                 self._begin_attempt(run_id, sub, fixture, worker_agent.spec, parent=None,
                                     evidence_mode=EvidenceMode.SYNTHETIC.value, sandbox=worker_agent.sandbox)
+                bind_attempt = getattr(worker_agent.sandbox, "bind_attempt", None)
+                if callable(bind_attempt):
+                    bind_attempt(sub.attempt_id, open_recovery)
             lead_ws = self.workspace_root / f"{run_id}-lead"
             lead_ws.mkdir(parents=True, exist_ok=True)
             (lead_ws / "README.md").write_text("Lead workspace: coordinate via sdf messaging; no code here.\n")
