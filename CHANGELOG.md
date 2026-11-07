@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Documentation
+
+- **Session import and history audit (ADR 0048, proposed).** `sdf import`
+  reads local agent session files the operator names and projects them as
+  self-reported Attempts and Claims. It never auto-accepts a Task.
+  `sdf audit` reports read-only git, pull request, CI and revert proxies.
+  Neither writes verification Evidence. The format survey is
+  [`docs/research/session-history-formats.md`](docs/research/session-history-formats.md).
+
 ### Security
 
 - **Workspace children are confined when they skip the Tool Proxy (ADR 0004).**
