@@ -18,6 +18,19 @@ if ! command -v curl >/dev/null 2>&1; then
   printf 'curl is required\n' >&2
   exit 1
 fi
+# ADR 0039: the sealed oracle only runs on Linux x86_64, and host checks there
+# run under Landlock. Elsewhere the fixture's python -c check is a non-pass, so
+# this loop cannot reach PASS Evidence. Emulated amd64 containers on arm64
+# often lack Landlock.
+if [[ "$(uname -s)" != "Linux" || ! "$(uname -m)" =~ ^(x86_64|amd64)$ ]]; then
+  printf 'the sealed oracle needs Linux x86_64 (ADR 0039); this host is %s %s\n' \
+    "$(uname -s)" "$(uname -m)" >&2
+  exit 1
+fi
+if ! uv run python -c 'import ctypes, sys; sys.exit(ctypes.CDLL(None).syscall(444, None, 0, 1) < 1)'; then
+  printf 'host checks need Landlock (landlock_create_ruleset failed on this kernel)\n' >&2
+  exit 1
+fi
 
 # Force the offline path. A caller shell or repo .env must not turn this
 # into a live run. os.environ wins over .env.
@@ -127,10 +140,15 @@ if not attempt_id:
 
 trace = get(f"/tasks/TASK-OFFLINE-001/trace")
 (demo / "trace.json").write_text(json.dumps(trace, indent=2) + "\n", encoding="utf-8")
-evidence_ids = [node["id"] for node in trace["nodes"] if node.get("kind") == "evidence"]
-if len(evidence_ids) != 1:
-    problems.append(f"expected one evidence node, got {evidence_ids}")
-evidence = get(f"/evidence/{evidence_ids[0]}") if evidence_ids else {}
+rows = [get(f"/evidence/{node['id']}") for node in trace["nodes"] if node.get("kind") == "evidence"]
+by_class = {}
+for row in rows:
+    by_class.setdefault(row.get("evidence_class"), []).append(row)
+if sorted(by_class) != ["execution", "verification"] or any(len(v) != 1 for v in by_class.values()):
+    problems.append(f"expected one execution and one verification Evidence row, got "
+                    f"{[(row.get('id'), row.get('evidence_class')) for row in rows]}")
+evidence = (by_class.get("verification") or [{}])[0]
+execution = (by_class.get("execution") or [{}])[0]
 (demo / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
 revision = get(f"/attempts/{attempt_id}/revision")
 (demo / "revision.json").write_text(json.dumps(revision, indent=2) + "\n", encoding="utf-8")
@@ -145,6 +163,8 @@ if evidence.get("evidence_class") != "verification":
     problems.append(f"evidence_class {evidence.get('evidence_class')}")
 if not evidence.get("revision_id") or not evidence.get("tree_sha256"):
     problems.append("evidence has no revision binding")
+if execution and execution.get("verifier_identity"):
+    problems.append(f"execution Evidence names a verifier {execution.get('verifier_identity')!r}")
 edges = trace.get("edges") or []
 if not any(edge.get("source_id") == evidence.get("id") and edge.get("relation") == "validates"
            and edge.get("target_id") == "ASSUMPTION-OFFLINE-001" for edge in edges):
@@ -170,6 +190,9 @@ for key in ("id", "attempt_id", "status", "criterion", "evidence_class", "verifi
             "verifier_role", "producer_identity", "evidence_mode", "revision_id", "tree_sha256",
             "exit_code", "oracle_visibility"):
     print(f"{key}={evidence.get(key)}")
+print("--- execution evidence (the adapter ran; never a verdict) ---")
+for key in ("id", "status", "evidence_class", "producer_identity", "verifier_identity", "artifact_ref"):
+    print(f"{key}={execution.get(key)}")
 print("--- revision ---")
 for key in ("id", "repository", "tree_format", "base_tree_sha256", "result_tree_sha256",
             "base_commit", "base_commit_source", "evidence_mode"):

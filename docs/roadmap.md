@@ -63,6 +63,18 @@ workspace back; Daytona containment is not yet offered. The structured SDF `netw
 disabled in E2B containment mode while the coding agent retains E2B network
 egress. The live E2B process path has also verified an HTTPS request to the E2B
 endpoint; this is provider egress evidence, not a general outbound allowlist.
+Evaluator verdicts come from a sealed oracle with held-out and seeded checks
+(ADR 0039, ADR 0040); the oracle runs only on Linux x86_64, so a local PASS
+verdict needs that host. Evidence rows are classed as execution, verification
+or outcome, only verification accepts a Task, and every row carries a content
+MAC (ADR 0042, ADR 0043). A keyless `POST /tasks/{id}/run` replays its
+Attempt, and an Attempt whose executor lease lapsed is settled `failed`
+(ADR 0041). On Linux, workspace children of an agent turn run under Landlock.
+These close local parts of the P0 dispatch/recovery and P1 bypass items and
+are covered by local tests only. The human read model and approver inbox
+(ADR 0044) are built; human actions, live updates and the console
+(ADR 0045 to ADR 0047) are accepted and not built. The Go `sdf-orch`
+(ADR 0035 to ADR 0038) has no roadmap phase yet.
 The remaining milestone claims require external evidence: a disposable live
 Herdr session, verified cancellation/termination, and PostgreSQL
 concurrency/trigger proof. Until those gates pass, no real repository is
