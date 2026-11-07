@@ -577,7 +577,7 @@ def test_rejected_extensions_are_not_baked_or_allowlisted():
 def test_pi_lens_is_baked_by_default_for_write_turns_only():
     assert pir.DEFAULT_PI_EXTENSIONS == ("@cad0p/pi-steering", "@paulpham157/apply-patch", "pi-lens")
     lens = pir.PI_EXTENSIONS["pi-lens"]
-    assert (lens.version, lens.entry, lens.read_only) == ("4.4.6", "dist/index.js", False)
+    assert (lens.version, lens.entry, lens.read_only) == ("4.4.8", "dist/index.js", False)
     assert pir.resolve_pi_extensions("pi-lens") == ("pi-lens",)
     assert pir.extensions_for_turn(("pi-lens",), auto=False) == ()
 

@@ -125,10 +125,9 @@ def test_pi_extension_pins_match_the_runtime_allowlist():
     assert manifest["private"] is True
     # Exactly the allowlist, at exact versions, nothing else at the top level.
     assert manifest["dependencies"] == {name: ext.version for name, ext in PI_EXTENSIONS.items()}
-    # No scripts. The only extra key is an exact minimatch override: pi-lens
-    # 4.4.6 depends on minimatch ^10.2.6, which cannot select the
-    # GHSA-g3hv-75wg-m249 fix (>=11.0.1). A direct minimatch dependency would
-    # leave that nested 10.2.6 installed and would break the allowlist above.
+    # No scripts. overrides.minimatch is the exact installed copy of the
+    # GHSA-g3hv-75wg-m249 fix (>=11.0.1). pi-lens declares a range; the
+    # override is the single resolved minimatch, not an extra allowlist entry.
     assert set(manifest) <= {"name", "private", "description", "dependencies", "overrides"}
     assert "scripts" not in manifest
     override = manifest["overrides"]["minimatch"]

@@ -35,7 +35,7 @@ scripts.
 | --- | --- | --- |
 | `@cad0p/pi-steering` | `0.2.0` | write and read-only turns |
 | `@paulpham157/apply-patch` | `0.3.1` | write turns only |
-| `pi-lens` | `4.4.6` | write turns only |
+| `pi-lens` | `4.4.8` | write turns only |
 
 Pi 1.x resolves an extension's `@earendil-works/pi-*` imports to its own
 modules, so no peer is installed or linked; `verify-pins.mjs` fails the build
