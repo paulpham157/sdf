@@ -45,6 +45,36 @@ commitment that the rewrite in those columns does not update.
    that names the evidence id. File-digest and revision-binding checks are
    unchanged. A NULL MAC on a legacy row is not itself a failure.
 
+
+## MAC versions
+
+Migration `0031_evidence_mac_v2` adds `evidence.content_mac_version`. A NULL
+MAC is accepted only on a genuinely legacy row:
+
+- **NULL**: the row was written before migration 0029. It has no content
+  commitment. `verify_attempt_revision` does not treat a NULL MAC as a
+  failure on these rows.
+- **1**: the row was written after 0029 and before 0031, or was backfilled
+  because it already had a `content_mac`. Verification uses the v1 input
+  listed above.
+- **2**: the current write path. The v2 input is the v1 input plus
+  `mac_version` 2 and these acceptance columns: `verifier_identity`,
+  `verifier_role`, `expires_at`, `oracle_visibility`,
+  `subject_artifact_sha256`, `oracle_digest`, `evidence_class`,
+  `evidence_mode`, `producer_identity`, `producer_role`,
+  `environment_digest`, `collected_at`, and `input_seed`.
+
+A row whose version is set (1, 2, or any other non-NULL value) and whose
+`content_mac` is NULL or empty is `failed`. Clearing the MAC on a signed
+row cannot disguise it as a pre-0029 row, because the version column stays.
+An unknown version is also `failed`. Existing v1 MACs are not recomputed.
+New inserts stamp version 2.
+
+A writer who can set both `content_mac` and `content_mac_version` to NULL
+can still impersonate a legacy row. The version column is the per-row
+marker, not a second keyed commitment. That tradeoff keeps genuine pre-0029
+rows verifying without inventing a MAC for them.
+
 ## Consequences
 
 - A rewrite of the verdict, or of the artifact sha256 the verdict is bound
@@ -52,6 +82,12 @@ commitment that the rewrite in those columns does not update.
 - The append-only rules are unchanged. On PostgreSQL the trigger still
   rejects the `UPDATE`. The MAC is the check for engines and paths that
   allow the write.
-- Downgrade drops `content_mac`. Existing verdicts stay; their MACs are gone.
+- Downgrade of 0029 drops `content_mac`. Existing verdicts stay; their MACs are gone.
+- Downgrade of 0031 drops `content_mac_version`. The MACs remain. A later
+  upgrade classifies a remaining MAC as v1 again.
+- A rewrite of an acceptance column on a v2 row fails verification unless
+  the MAC is recomputed with the server key. A stored v1 row is still
+  verified with the v1 input, so those columns remain unsigned on v1 rows
+  until the row is rewritten through a process that stamps v2.
 - Rotating `SDF_EVIDENCE_MAC_KEY` makes previously stamped rows fail
   verification. Rotation is a deliberate re-stamp, not a silent change.

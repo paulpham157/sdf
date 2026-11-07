@@ -113,7 +113,7 @@ Every new Evidence row has an Evidence class
 - **verification**: an Evaluator verdict from a sealed oracle ([ADR 0039](adr/0039-evidence-independence.md), [ADR 0040](adr/0040-held-out-oracles.md)). A coverage gap is verification with status `INCONCLUSIVE` and no oracle digest. Only a verification `PASS` that passes the acceptance gate counts as a verified pass.
 - **outcome**: an Objective-level result recorded through `POST /objectives/{id}/evidence` by an approver, with a verifier who is neither that approver nor the agent of any Attempt under the Objective. It `measures` the Objective and never validates a Task.
 
-Each new row also carries `content_mac`, an HMAC-SHA256 over its verdict fields and the bound artifact digest ([ADR 0043](adr/0043-evidence-content-mac.md), proposed; migration `0029_evidence_content_mac`). The key is `SDF_EVIDENCE_MAC_KEY`; without it a fixed development key is used, so deployments must set it. `verify_attempt_revision` recomputes the MAC. Rows written before these migrations are not rewritten.
+Each new row also carries `content_mac`, an HMAC-SHA256 over its verdict fields, the bound artifact digest, and the acceptance columns ([ADR 0043](adr/0043-evidence-content-mac.md), proposed; migrations `0029_evidence_content_mac` and `0031_evidence_mac_v2`). `content_mac_version` is 2 on new rows, 1 on rows stamped under the original payload, and NULL on rows written before 0029. The key is `SDF_EVIDENCE_MAC_KEY`; without it a fixed development key is used, so deployments must set it. `verify_attempt_revision` recomputes the MAC for the stored version and rejects a versioned row whose MAC is missing. Rows written before these migrations are not rewritten.
 
 ## Go orchestration core
 
