@@ -19,8 +19,9 @@ if ! command -v curl >/dev/null 2>&1; then
   exit 1
 fi
 # ADR 0039: the sealed oracle only runs on Linux x86_64, and host checks there
-# run under Landlock. Elsewhere every check is a non-pass, so this loop cannot
-# reach PASS Evidence. Emulated amd64 containers on arm64 often lack Landlock.
+# run under Landlock. Elsewhere the fixture's python -c check is a non-pass, so
+# this loop cannot reach PASS Evidence. Emulated amd64 containers on arm64
+# often lack Landlock.
 if [[ "$(uname -s)" != "Linux" || ! "$(uname -m)" =~ ^(x86_64|amd64)$ ]]; then
   printf 'the sealed oracle needs Linux x86_64 (ADR 0039); this host is %s %s\n' \
     "$(uname -s)" "$(uname -m)" >&2
