@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .casefold import casefold
 from .db import (
     DecisionEdgeRow,
     DecisionRequestRow,
@@ -151,7 +152,8 @@ def propose_plan(db: Session, spec: PlanSpec) -> PlanRow:
     request_id = f"DREQ-{uuid4().hex[:12]}"
     plan = PlanRow(
         id=plan_id, title=spec.title, objective_id=spec.objective_id, status="proposed", content=content,
-        content_sha256=content_hash(content), proposed_by=spec.proposed_by, created_at=now,
+        content_sha256=content_hash(content), proposed_by=spec.proposed_by,
+        proposed_by_casefold=casefold(spec.proposed_by), created_at=now,
         decision_request_id=request_id,
     )
     db.add(plan)
@@ -210,7 +212,7 @@ def decide_plan(
         raise LookupError("plan not found")
     if plan.status != "proposed":
         raise PlanGateError(f"plan {plan_id} is already {plan.status}")
-    self_decision = actor.casefold() == (plan.proposed_by or "").casefold()
+    self_decision = casefold(actor) == casefold(plan.proposed_by or "")
     if approve and self_decision and not allow_self_approval:
         raise SeparationOfDutiesError(
             f"separation of duties: {actor} proposed plan {plan_id} and cannot approve it "
