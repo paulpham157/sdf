@@ -17,6 +17,7 @@ from .db import (
     OutcomeObservationRow,
     TaskRow,
 )
+from .evidence_mac import stored_content_mac_ok
 from .impact import (
     AttemptFact,
     EvidenceFact,
@@ -134,6 +135,7 @@ def load_scorecard_facts(db: Session) -> ScorecardFacts:
             subject_artifact_sha256=row.subject_artifact_sha256,
             oracle_digest=row.oracle_digest,
             expires_at=row.expires_at,
+            content_authentic=stored_content_mac_ok(row),
         )
         for row in db.scalars(select(EvidenceRow))
     )

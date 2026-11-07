@@ -40,7 +40,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .db import ArtifactRow, AttemptRevisionRow, AttemptRow, EvidenceRow, RevisionBindingError
-from .evidence_mac import CONTENT_MAC_VERSIONS, evidence_content_mac
+from .evidence_mac import (
+    CONTENT_MAC_CURRENT,
+    CONTENT_MAC_V1,
+    EvidenceMacKeyError,
+    evidence_content_mac,
+    evidence_mac_key_source,
+)
 from .fixtures import fixtures_root
 from .model import utcnow
 
@@ -245,9 +251,10 @@ def verify_attempt_revision(db: Session, attempt_id: str, *, check_files: bool =
     revision yet), ``verified`` or ``failed`` with the problems listed.
     This verifies the records, the stored artifact bytes, and each Evidence
     row's content MAC (ADR 0043). It does not re-run any check and is not
-    acceptance Evidence. A NULL MAC on a legacy row (``content_mac_version``
-    is NULL, written before migration 0029) is not itself a failure. A row
-    whose version requires a MAC and has none is ``failed``.
+    acceptance Evidence. A missing MAC, a NULL version, or format 1 is
+    ``failed`` and is not re-signed. ``verified`` requires a configured
+    ``SDF_EVIDENCE_MAC_KEY``. The public development key is not a pass.
+    The MAC does not prove that ``verifier_identity`` is an independent party.
     """
 
     revision = revision_for_attempt(db, attempt_id)
@@ -278,34 +285,44 @@ def verify_attempt_revision(db: Session, attempt_id: str, *, check_files: bool =
             elif actual != row.sha256:
                 problems.append(f"artifact {row.id} file digest does not match its recorded sha256")
     artifact_sha = {row.id: row.sha256 for row in artifacts}
-    for row in evidence:
-        version = getattr(row, "content_mac_version", None)
-        if not row.content_mac:
-            if version is None:
+    key_source = evidence_mac_key_source()
+    if evidence and key_source == "missing":
+        problems.append(
+            "evidence MAC key is not configured; set SDF_EVIDENCE_MAC_KEY to at least 32 characters"
+        )
+    else:
+        for row in evidence:
+            version = getattr(row, "content_mac_version", None)
+            mac = row.content_mac
+            if version == CONTENT_MAC_V1 and isinstance(mac, str) and mac:
+                problems.append(
+                    f"evidence {row.id} content mac is format 1 and was not re-signed"
+                )
                 continue
-            problems.append(
-                f"evidence {row.id} has content_mac_version {version} but no content mac"
-            )
-            continue
-        if version is None:
-            # A MAC without a version is the 0029 shape; verify it as v1.
-            version = 1
-        if version not in CONTENT_MAC_VERSIONS:
-            problems.append(
-                f"evidence {row.id} has unknown content_mac_version {version}"
-            )
-            continue
-        if row.artifact_ref and row.artifact_ref not in artifact_sha:
-            other = db.get(ArtifactRow, row.artifact_ref)
-            bound_sha = other.sha256 if other is not None else None
-        else:
-            bound_sha = artifact_sha.get(row.artifact_ref) if row.artifact_ref else None
-        expected = evidence_content_mac(row, artifact_sha256=bound_sha, version=version)
-        if not hmac.compare_digest(expected, row.content_mac):
-            problems.append(
-                f"evidence {row.id} content mac does not match its stored fields "
-                f"(content_mac_version {version})"
-            )
+            if version != CONTENT_MAC_CURRENT or not isinstance(mac, str) or len(mac) != 64:
+                problems.append(
+                    f"evidence {row.id} has no current content mac and is not authentic"
+                )
+                continue
+            if row.artifact_ref and row.artifact_ref not in artifact_sha:
+                other = db.get(ArtifactRow, row.artifact_ref)
+                bound_sha = other.sha256 if other is not None else None
+            else:
+                bound_sha = artifact_sha.get(row.artifact_ref) if row.artifact_ref else None
+            try:
+                expected = evidence_content_mac(row, artifact_sha256=bound_sha, version=CONTENT_MAC_CURRENT)
+            except EvidenceMacKeyError:
+                problems.append("evidence MAC key is not configured")
+                break
+            if not hmac.compare_digest(expected, mac):
+                problems.append(
+                    f"evidence {row.id} content mac does not match its stored fields "
+                    f"(content_mac_version {version})"
+                )
+            elif key_source == "insecure-development":
+                problems.append(
+                    f"evidence {row.id} content mac used the public development key and is not authentic"
+                )
     if problems:
         status = "failed"
     elif revision.result_tree_sha256 is None:

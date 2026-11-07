@@ -137,6 +137,7 @@ def test_disabled_mode_never_imports_the_sdk():
     completed = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True,
         env={"PATH": "/usr/bin:/bin", "SDF_AUTH_DEV_INSECURE": "1",
+             "SDF_EVIDENCE_MAC_KEY": "pytest-evidence-mac-key-not-a-deployment-secret",
              "SDF_DATABASE_URL": "sqlite+pysqlite:///:memory:",
              "FASTAPI_OTEL_AUTO_CONFIGURE": "true",
              "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:9",
@@ -223,6 +224,7 @@ def test_enabled_lifespan_has_one_pipeline_when_fastapi_auto_configure_is_set():
         [sys.executable, "-c", code], capture_output=True, text=True,
         env={"PATH": "/usr/bin:/bin", "SDF_AUTH_DEV_INSECURE": "1",
              "SDF_AUTH_PEPPER": "otel-probe-pepper-not-a-credential",
+             "SDF_EVIDENCE_MAC_KEY": "pytest-evidence-mac-key-not-a-deployment-secret",
              "SDF_DATABASE_URL": "sqlite+pysqlite:///:memory:",
              "SDF_OTEL_ENABLED": "1", "SDF_OTEL_EXPORTER": "console", "SDF_OTEL_DB": "1",
              "FASTAPI_OTEL_AUTO_CONFIGURE": "true",

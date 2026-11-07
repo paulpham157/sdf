@@ -74,7 +74,7 @@ Herdr in an E2B sandbox → independent Evaluator Evidence → `/trace` join.
 | `SDF_RUN_MAX_CONCURRENT` | Live runs per process (default `2`; more → 429) |
 | `SDF_HERDR_TIMEOUT_MS` / `SDF_RUN_TURN_TIMEOUT_S` | Herdr / headless turn timeouts (`240000` / `420`) |
 | `SDF_E2B_SANDBOX_TIMEOUT_SECONDS` | E2B sandbox lifetime (default `900`) |
-| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC (ADR 0043). Unset uses a fixed development key from the source; set a long random value in every deployment |
+| `SDF_EVIDENCE_MAC_KEY` | Secret for the Evidence content MAC, at least 32 characters (ADR 0043). Unset or shorter: the server does not start and does not stamp Evidence. Not logged. Rotation is an operator re-stamp, not an automatic rewrite |
 | `SDF_LOG_FORMAT` / `SDF_LOG_LEVEL` | `json` or `text` logs (redacted, with request/attempt ids) |
 | `SDF_PRICE_<MODEL>` / `SDF_E2B_USD_PER_SECOND` | Price overrides used for cost estimates |
 | `E2B_API_KEY` / `E2B_DOMAIN` | E2B provider credentials |

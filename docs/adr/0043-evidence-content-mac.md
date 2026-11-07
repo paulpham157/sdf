@@ -35,11 +35,13 @@ commitment that the rewrite in those columns does not update.
    result-tree sha256, and objective id (ADR 0042). The ORM stamps it on
    insert. It is not a column the
    application updates later.
-3. **The key is `SDF_EVIDENCE_MAC_KEY`.** When the variable is unset, insert
-   and verify use one fixed development key so hermetic tests agree. That key
-   is not stored in the database. Production deployments set
-   `SDF_EVIDENCE_MAC_KEY`. A writer who can change the row and
-   `artifacts.sha256` but does not have the key cannot produce a matching MAC.
+3. **The key is `SDF_EVIDENCE_MAC_KEY`, at least 32 characters.** It is not
+   stored in the database and it is not logged. If it is unset or shorter,
+   the process does not start, an Evidence insert is refused, and
+   verification does not use a fallback key. `SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY=1`
+   with no key set is the only opt-in for the public development constant,
+   and a match under that constant is not `verified`. The MAC binds the
+   stored verifier string. It does not prove the verifier is independent.
 4. **`verify_attempt_revision` recomputes the MAC** from the fields and the
    artifact sha256 as they stand now. A mismatch is `failed`, with a problem
    that names the evidence id. File-digest and revision-binding checks are
@@ -51,29 +53,25 @@ commitment that the rewrite in those columns does not update.
 Migration `0031_evidence_mac_v2` adds `evidence.content_mac_version`. A NULL
 MAC is accepted only on a genuinely legacy row:
 
-- **NULL**: the row was written before migration 0029. It has no content
-  commitment. `verify_attempt_revision` does not treat a NULL MAC as a
-  failure on these rows.
+- **NULL**: the row was written before migration 0029, or a writer cleared
+  both the MAC and the version. It is not authentic. Verification fails and
+  the row is not re-signed.
 - **1**: the row was written after 0029 and before 0031, or was backfilled
-  because it already had a `content_mac`. Verification uses the v1 input
-  listed above.
-- **2**: the current write path. The v2 input is the v1 input plus
-  `mac_version` 2 and these acceptance columns: `verifier_identity`,
-  `verifier_role`, `expires_at`, `oracle_visibility`,
-  `subject_artifact_sha256`, `oracle_digest`, `evidence_class`,
-  `evidence_mode`, `producer_identity`, `producer_role`,
-  `environment_digest`, `collected_at`, and `input_seed`.
+  because it already had a `content_mac`. The v1 input does not bind
+  acceptance columns, so verification fails and the row is not re-signed.
+- **2**: the current write path, and the only version that can verify. The
+  v2 input is the v1 input plus `mac_version` 2 and these acceptance
+  columns: `verifier_identity`, `verifier_role`, `expires_at`,
+  `oracle_visibility`, `subject_artifact_sha256`, `oracle_digest`,
+  `evidence_class`, `evidence_mode`, `producer_identity`,
+  `producer_role`, `environment_digest`, `collected_at`, and `input_seed`.
 
-A row whose version is set (1, 2, or any other non-NULL value) and whose
-`content_mac` is NULL or empty is `failed`. Clearing the MAC on a signed
-row cannot disguise it as a pre-0029 row, because the version column stays.
-An unknown version is also `failed`. Existing v1 MACs are not recomputed.
-New inserts stamp version 2.
-
-A writer who can set both `content_mac` and `content_mac_version` to NULL
-can still impersonate a legacy row. The version column is the per-row
-marker, not a second keyed commitment. That tradeoff keeps genuine pre-0029
-rows verifying without inventing a MAC for them.
+`created_at` and `measured_at` are not in the MAC. They are not an
+accept/reject input. Routing qualification and retry refusal require a
+current MAC on the evaluator rows they treat as PASS. They do not apply the
+independence or expiry policy. The scorecard loader sets `content_authentic`
+from that MAC. Timeline and API reads show stored columns and do not accept
+an artifact.
 
 ## Consequences
 

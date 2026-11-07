@@ -20,8 +20,11 @@
   payload. A NULL MAC is accepted only when `content_mac_version` is also
   NULL (a row written before 0029). `verify_attempt_revision` recomputes the
   MAC for the stored version and reports a mismatch or a missing MAC on a
-  versioned row as `failed`. Set `SDF_EVIDENCE_MAC_KEY` in deployments;
-  without it a fixed development key is used.
+  versioned row as `failed`. `SDF_EVIDENCE_MAC_KEY` (at least 32 characters)
+  is required to start and to stamp Evidence. A missing or short key is not
+  replaced with the public development constant. Format-1 and NULL MACs fail
+  verification and are not re-signed. Routing and retry treat a stored PASS
+  as success only when the current MAC matches.
 - **Verification Evidence is independent of the agent workspace (ADR 0039).**
   Checks run from a sealed oracle copied from the server fixture. Pytest and
   script verdicts are a result frame read by a non-dumpable notary, and subject

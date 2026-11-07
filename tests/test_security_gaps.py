@@ -530,8 +530,8 @@ def test_content_mac_binds_acceptance_column(tmp_path: Path, column: str):
         )
 
 
-def test_legacy_unsigned_row_without_mac_version_still_verifies(tmp_path: Path):
-    """A pre-0029 row (NULL MAC and NULL version) is not itself a MAC failure."""
+def test_legacy_unsigned_row_without_mac_version_is_not_verified(tmp_path: Path):
+    """A pre-0029 row (NULL MAC and NULL version) is not authentic and is not re-signed."""
 
     with _session() as db:
         attempt = _run_passing_attempt(db, tmp_path)
@@ -561,7 +561,21 @@ def test_legacy_unsigned_row_without_mac_version_still_verifies(tmp_path: Path):
         )
         db.commit()
         report = verify_attempt_revision(db, attempt.id)
-        assert report["status"] == "verified" and report["problems"] == [], report
+        assert report["status"] != "verified", report
+        legacy = db.get(EvidenceRow, "EV-LEGACY-UNSIGNED")
+        assert legacy is not None and legacy.content_mac is None and legacy.content_mac_version is None
+
+
+def test_insecure_development_key_is_not_verified(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
+    monkeypatch.setenv("SDF_EVIDENCE_MAC_ALLOW_INSECURE_DEV_KEY", "1")
+    with _session() as db:
+        attempt = _run_passing_attempt(db, tmp_path)
+        report = verify_attempt_revision(db, attempt.id)
+        text_problems = " ".join(report["problems"])
+        assert report["status"] != "verified", report
+        assert "development key" in text_problems
+        assert "sdf-evidence-mac-v1-development" not in text_problems
 
 
 def test_clearing_mac_and_version_is_not_a_legacy_pass(tmp_path: Path):
