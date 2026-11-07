@@ -3,8 +3,8 @@
 Liveness is a lease, not ``RuntimeController.recover`` (ADR 0029 only restores
 a runtime-event stream). This process treats an Attempt as live while the
 ``ExecutionService`` that started it is still alive. Another process is live
-while its heartbeat is newer than :data:`LEASE_TTL`. Lease expiry does not
-prove remote work has stopped. A provider create commits ``remote_effect``
+while its heartbeat is newer than :data:`LEASE_TTL` on the database clock.
+Lease expiry does not prove remote work has stopped. A provider create commits ``remote_effect``
 ``uncertain`` before the provider call, and that row stays ``running`` until
 stop is confirmed. Evidence mode is not that proof.
 """
@@ -19,8 +19,8 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session, object_session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from .db import AttemptRow, TaskRow
@@ -86,7 +86,9 @@ def claim_executor(owner: object, attempt: AttemptRow) -> None:
     with _lock:
         _owners[attempt.id] = owner
     attempt.executor_id = EXECUTOR_ID
-    attempt.executor_heartbeat_at = utcnow()
+    session = object_session(attempt)
+    # Stamp the database clock. The row is already flushed, so the session exists.
+    attempt.executor_heartbeat_at = lease_clock(session) if session is not None else utcnow()
 
 
 class AttemptFenceError(ValueError):
@@ -161,7 +163,8 @@ def executor_is_live(attempt: AttemptRow, *, now: datetime | None = None) -> boo
     A local owner that is still in ``_owners`` is authoritative for this
     process, even when its heartbeat is older than the lease (the refresher
     may be dead). A dropped local owner is dead even if the heartbeat is
-    fresh. Another process is live only while its heartbeat is inside the lease.
+    fresh.     Another process is live only while its heartbeat is inside the lease
+    measured on the clock passed in. Recovery passes the database clock.
     """
 
     now = now or utcnow()
@@ -284,29 +287,23 @@ def clear_remote_effect(attempt_id: str) -> None:
         _remote_effects.pop(attempt_id, None)
 
 
-def note_remote_effect_uncertain(db: Session, attempt_id: str) -> None:
-    """Commit ``uncertain`` before the provider create call.
+def note_remote_effect_uncertain(db: Session, attempt_id: str, provider: str = "unspecified") -> str:
+    """Commit a durable ``creating`` sandbox row before the provider call.
 
-    The commit is the fence. A crash after it, including during the provider
-    call and after the provider returns but before ``confirm_live``, leaves a
-    row recovery will not settle. Evidence mode is not consulted. Raises when
-    the Attempt row is missing so the caller does not create a sandbox that
-    cannot be fenced.
+    Returns the row id so the caller can attach the provider id after the
+    call returns. The commit is the record. An in-process counter is not.
     """
 
-    attempt = db.get(AttemptRow, attempt_id)
-    if attempt is None:
-        raise RuntimeError(f"cannot record a remote effect for missing attempt {attempt_id}")
-    with _lock:
-        _outstanding_effects[attempt_id] = _outstanding_effects.get(attempt_id, 0) + 1
-    attempt.remote_effect = REMOTE_EFFECT_UNCERTAIN
-    db.commit()
+    from .remote_effects import open_remote_sandbox
+
+    return open_remote_sandbox(db, attempt_id, provider)
 
 
 def note_remote_effect_stop_failed(attempt_id: str) -> None:
-    """A termination failed or the provider outcome is unknown.
+    """Remember in this process that a termination was not proven.
 
-    Later successes in this process must not mark the Attempt ``stopped``.
+    This does not clear or set the durable rows. A restart loses it; the
+    sandbox rows remain the authority.
     """
 
     with _lock:
@@ -314,32 +311,18 @@ def note_remote_effect_stop_failed(attempt_id: str) -> None:
 
 
 def note_remote_effect_stopped(db: Session, attempt_id: str) -> bool:
-    """Commit ``stopped`` only when every counted effect for this Attempt is confirmed gone.
+    """Set ``stopped`` only when every durable sandbox row is ``absent``.
 
-    One successful teardown does not cover a second sandbox, and it does not
-    erase an earlier failed or unknown termination. Returns False when the
-    row is left ``uncertain``. A stop with no matching create is not confirmation.
+    Calling this after kill() returned is not enough. Rows with no id, or
+    rows not yet verified by a separate lookup, stay unresolved.
     """
 
     with _lock:
         if attempt_id in _stop_blocked:
             return False
-        count = _outstanding_effects.get(attempt_id, 0)
-        if count > 1:
-            _outstanding_effects[attempt_id] = count - 1
-            return False
-        if count == 1:
-            _outstanding_effects.pop(attempt_id, None)
-        else:
-            return False
-    attempt = db.get(AttemptRow, attempt_id)
-    if attempt is None:
-        raise RuntimeError(f"cannot record remote-effect stop for missing attempt {attempt_id}")
-    if attempt.remote_effect != REMOTE_EFFECT_UNCERTAIN:
-        return False
-    attempt.remote_effect = REMOTE_EFFECT_STOPPED
-    db.commit()
-    return True
+    from .remote_effects import refresh_remote_effect
+
+    return refresh_remote_effect(db, attempt_id)
 
 
 def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
@@ -348,10 +331,19 @@ def _remote_effect_blocks_settle(attempt: AttemptRow) -> bool:
     ``evidence_mode`` is not proof that effects were local. A synthetic row
     whose provider create was entered (``remote_effect=uncertain``, or any
     value other than NULL or ``stopped``) stays running. NULL means that
-    create call was not entered. ``stopped`` means this process confirmed the
-    provider resource is gone, which also clears a ``live`` promotion.
+    create call was not entered. ``stopped`` means every durable sandbox row
+    is ``absent``. That also clears a ``live`` promotion. A kill return
+    value is not ``absent``.
     """
 
+    from sqlalchemy.orm import object_session
+
+    session = object_session(attempt)
+    if session is not None:
+        from .remote_effects import sandbox_rows
+
+        if any(row.phase != "absent" for row in sandbox_rows(session, attempt.id)):
+            return True
     if attempt.remote_effect not in (None, REMOTE_EFFECT_STOPPED):
         return True
     with _lock:
@@ -466,7 +458,9 @@ def recover_orphaned_attempts(db: Session, *, now: datetime | None = None) -> tu
     does not settle one it left running.
     """
 
-    now = now or utcnow()
+    # Callers may pass ``now`` to simulate expiry. Production uses the database
+    # clock, so one process's wall clock cannot reap or spare another.
+    now = lease_clock(db) if now is None else now
     running = list(db.scalars(select(AttemptRow).where(AttemptRow.status == AttemptState.RUNNING.value)))
     live_tasks: set[str] = set()
     settled: list[str] = []
@@ -568,7 +562,7 @@ def _write_heartbeats(db: Session) -> None:
         ids = list(_owners.keys())
     if not ids:
         return
-    now = utcnow()
+    now = lease_clock(db)
     for attempt_id in ids:
         with _lock:
             if attempt_id not in _owners:
@@ -584,6 +578,21 @@ def _write_heartbeats(db: Session) -> None:
             .execution_options(synchronize_session=False)
         )
     db.commit()
+
+
+def lease_clock(db: Session) -> datetime:
+    """Aware UTC time from the database, not from this process.
+
+    PostgreSQL uses ``clock_timestamp()`` (the statement clock, not the
+    transaction start). SQLite ``CURRENT_TIMESTAMP`` is UTC and naive; it is
+    treated as UTC. Other application timestamps stay on ``utcnow``.
+    """
+
+    dialect = db.get_bind().dialect.name
+    value = db.scalar(select(func.clock_timestamp() if dialect == "postgresql" else func.now()))
+    if not isinstance(value, datetime):
+        raise RuntimeError(f"database clock was {value!r}")
+    return _as_utc(value)
 
 
 def _as_utc(value: datetime) -> datetime:

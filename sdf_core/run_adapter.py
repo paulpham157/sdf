@@ -35,6 +35,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -410,7 +411,8 @@ class LiveRunAdapter:
         kwargs: dict[str, Any] = {"agents": (self.agent,), "environ": self.run_env, "provider": self.provider,
                                   "read_connection": PluginConnectionBridge(environ=self.run_env),
                                   "timeout_seconds": self.sandbox_timeout_s,
-                                  "before_provider_create": lambda: self._fence_provider_create(attempt_id)}
+                                  "before_provider_create": lambda: self._fence_provider_create(attempt_id),
+                                  "on_sandbox_identified": self._identify_provider_sandbox}
         if self.provider == "e2b":
             kwargs |= {"template": self.image, "network": self.network,
                        "metadata": {"sdf_attempt_id": attempt_id, "sdf_run": "tasks-run", "sdf_agent": self.agent}}
@@ -418,7 +420,7 @@ class LiveRunAdapter:
             kwargs["snapshot"] = self.image
         return self._transport_factory(**kwargs)
 
-    def _fence_provider_create(self, attempt_id: str) -> None:
+    def _fence_provider_create(self, attempt_id: str) -> str:
         """Commit ``uncertain`` before ``_ensure_sandbox`` calls the provider.
 
         Uses the run's own session. A second connection here deadlocks the
@@ -428,12 +430,18 @@ class LiveRunAdapter:
 
         from .recovery import note_remote_effect_uncertain
 
-        note_remote_effect_uncertain(self.db, attempt_id)
+        return note_remote_effect_uncertain(self.db, attempt_id, provider=self.provider)
+
+    def _identify_provider_sandbox(self, effect_id: str, sandbox_id: str) -> None:
+        from .remote_effects import identify_remote_sandbox
+
+        identify_remote_sandbox(self.db, effect_id, sandbox_id)
 
     def _note_provider_stopped(self, attempt_id: str) -> None:
-        from .recovery import note_remote_effect_stopped
+        from .remote_effects import release_verified_sandboxes
 
-        note_remote_effect_stopped(self.db, attempt_id)
+        # Same session as the run. release_verified_sandboxes commits on it.
+        release_verified_sandboxes(self.db, attempt_id, self.run_env)
 
     def _default_kill_by_id(self, sandbox_id: str) -> None:
         if self.provider == "e2b":
@@ -442,7 +450,7 @@ class LiveRunAdapter:
             opts = {"api_key": self.run_env["E2B_API_KEY"]}
             if self.run_env.get("E2B_DOMAIN"):
                 opts["domain"] = self.run_env["E2B_DOMAIN"]
-            Sandbox.kill(sandbox_id, **opts)  # False: already gone, which is fine
+            Sandbox.kill(sandbox_id, **opts)  # return value is not absence
             return
         from .daytona_herdr_transport import DaytonaHerdrTransport
 
@@ -487,9 +495,10 @@ class LiveRunAdapter:
 
         One-way and idempotent: ``synthetic`` -> ``live`` only, never back.
         Committed at once, so a process that dies mid-run leaves a ``live``
-        RUNNING Attempt exactly when a sandbox existed. Recovery will not
-        treat a later lease expiry as proof that sandbox has stopped, and it
-        will not start a provider kill from a process that no longer holds one.
+        RUNNING Attempt exactly when a sandbox existed. Lease recovery will
+        not treat expiry as proof that sandbox has stopped, and it will not
+        kill from a process that no longer holds one. A later reconcile of a
+        stored id is a separate call.
         """
 
         if not sandbox_id or self._live_confirmed == attempt_id:
@@ -615,13 +624,47 @@ class LiveRunAdapter:
             log.error("cleanup_event_not_recorded", extra={"error": type(exc).__name__})
 
 
+
+def fake_adapter_from_environ(environ: Mapping[str, str]) -> FakeNativeAdapter:
+    """Default fake adapter; ``SDF_DEMO_FAKE_SPEC`` may override it for the demo.
+
+    The spec is a JSON object with ``relative_file``, ``replacement``, and
+    optional ``stdout`` and ``extra_files`` (string-to-string). Unset keeps
+    the historical ``app.py`` / ``print('updated')`` behaviour. This is a
+    demo and test hook; it does not change live-adapter or oracle semantics.
+    """
+
+    spec_path = (environ.get("SDF_DEMO_FAKE_SPEC") or "").strip()
+    if not spec_path:
+        return FakeNativeAdapter("app.py", "print('updated')\n")
+    try:
+        spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RunAdapterConfigError(f"SDF_DEMO_FAKE_SPEC is not readable JSON: {exc}") from exc
+    if not isinstance(spec, dict):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC must be a JSON object")
+    relative_file = spec.get("relative_file") or "app.py"
+    replacement = spec.get("replacement")
+    if not isinstance(relative_file, str) or not isinstance(replacement, str):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC needs string relative_file and replacement")
+    stdout = spec.get("stdout")
+    extra = spec.get("extra_files") or {}
+    if stdout is not None and not isinstance(stdout, str):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC stdout must be a string")
+    if not isinstance(extra, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in extra.items()
+    ):
+        raise RunAdapterConfigError("SDF_DEMO_FAKE_SPEC extra_files must be an object of strings")
+    return FakeNativeAdapter(relative_file, replacement, stdout=stdout, extra_files=extra)
+
+
 def configured_run_adapter(db: Session, *, environ: Mapping[str, str] | None = None) -> NativeAdapter:
     """Select the NativeAdapter for ``POST /tasks/{id}/run`` (fail closed on config)."""
 
     env = environ if environ is not None else os.environ
     mode = (env.get("SDF_RUN_ADAPTER") or "fake").strip().lower()
     if mode in _FAKE_MODES:
-        return FakeNativeAdapter("app.py", "print('updated')\n")
+        return fake_adapter_from_environ(env)
     if mode not in _LIVE_MODES:
         raise RunAdapterConfigError(f"SDF_RUN_ADAPTER must be fake or live (alias herdr); got {mode!r}")
     agent = (env.get("SDF_RUN_AGENT") or _DEFAULT_AGENT).strip().lower() or _DEFAULT_AGENT

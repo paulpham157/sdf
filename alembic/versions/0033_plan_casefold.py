@@ -23,15 +23,15 @@ order. The engine may still read ineligible pending rows while it fills
 ``LIMIT``. ``ix_plans_casefold_null`` makes the missing-fold probe a lookup.
 
 Downgrade drops the key and restores the previous plan guard. Roll the
-application back in the same window. This revises ``0031_evidence_mac_v2``.
+application back in the same window. This revises ``0032_attempt_remote_sandboxes``.
 """
 
 from sqlalchemy import inspect, text
 
 from alembic import op
 
-revision = "0032_plan_casefold"
-down_revision = "0031_evidence_mac_v2"
+revision = "0033_plan_casefold"
+down_revision = "0032_attempt_remote_sandboxes"
 branch_labels = None
 depends_on = None
 

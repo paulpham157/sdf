@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -40,8 +41,41 @@ def _db():
 
 
 def test_defaults_to_fake():
-    assert isinstance(configured_run_adapter(_db(), environ={}), FakeNativeAdapter)
+    adapter = configured_run_adapter(_db(), environ={})
+    assert isinstance(adapter, FakeNativeAdapter)
+    assert adapter.relative_file == "app.py"
+    assert adapter.replacement == "print('updated')\n"
+    assert adapter.stdout_override is None
+    assert adapter.extra_files == {}
     assert isinstance(configured_run_adapter(_db(), environ={"SDF_RUN_ADAPTER": "fake"}), FakeNativeAdapter)
+
+
+def test_fake_adapter_reads_demo_spec(tmp_path: Path):
+    spec = tmp_path / "fake-spec.json"
+    spec.write_text(
+        json.dumps({
+            "relative_file": "app.py",
+            "replacement": "print('updated ')\n",
+            "stdout": "Done! app.py updated, all tests pass",
+            "extra_files": {"tests/test_app.py": "assert True\n"},
+        }),
+        encoding="utf-8",
+    )
+    adapter = configured_run_adapter(_db(), environ={"SDF_DEMO_FAKE_SPEC": str(spec)})
+    assert isinstance(adapter, FakeNativeAdapter)
+    assert adapter.replacement == "print('updated ')\n"
+    assert adapter.stdout_override == "Done! app.py updated, all tests pass"
+    assert adapter.extra_files == {"tests/test_app.py": "assert True\n"}
+
+
+def test_fake_adapter_rejects_unreadable_demo_spec(tmp_path: Path):
+    missing = tmp_path / "missing.json"
+    with pytest.raises(RunAdapterConfigError, match="SDF_DEMO_FAKE_SPEC"):
+        configured_run_adapter(_db(), environ={"SDF_DEMO_FAKE_SPEC": str(missing)})
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+    with pytest.raises(RunAdapterConfigError, match="SDF_DEMO_FAKE_SPEC"):
+        configured_run_adapter(_db(), environ={"SDF_DEMO_FAKE_SPEC": str(broken)})
 
 
 def test_rejects_unknown_mode_and_agent():

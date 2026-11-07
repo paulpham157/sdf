@@ -201,7 +201,7 @@ def _require_casefold_backfill(db: Session) -> None:
     if missing is not None:
         raise InboxNormalizationError(
             f"plan {missing} is missing proposed_by_casefold; inbox listing is unavailable "
-            "until migration 0032_plan_casefold has backfilled every plan"
+            "until migration 0033_plan_casefold has backfilled every plan"
         )
 
 
