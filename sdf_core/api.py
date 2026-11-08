@@ -65,11 +65,16 @@ from . import auth as _auth
 from . import fixtures as _fixtures
 from .fixtures import fixtures_root, server_write_roots  # noqa: F401 - re-exported
 from .db import AuthAuditRow, ToolAuditRow
+from .local_state import harden_sqlite_path, is_local_default_url, resolve_database_url, sqlite_path
 
 
-DATABASE_URL = os.getenv("SDF_DATABASE_URL", "sqlite+pysqlite:///:memory:")
+# Hermetic tests keep the in-memory database. A real process with no
+# SDF_DATABASE_URL uses the private local file shared with the token CLI.
+DATABASE_URL = resolve_database_url(create=os.getenv("SDF_TEST_HERMETIC") != "1")
 engine = make_engine(DATABASE_URL)
 Base.metadata.create_all(engine)
+if is_local_default_url(DATABASE_URL):
+    harden_sqlite_path(sqlite_path())
 SessionLocal = make_session_factory(DATABASE_URL)
 
 

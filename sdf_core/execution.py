@@ -101,6 +101,7 @@ class ExecutionService:
         model_tier: ModelTier | None = None,
         require_plan_approval: bool = False,
         principal: str | None = None,
+        agent: str = "native",
     ):
         """Run one Attempt end to end.
 
@@ -117,6 +118,7 @@ class ExecutionService:
                 require_plan_approval=require_plan_approval,
                 principal=principal,
                 evidence_mode=initial_evidence_mode(self.adapter).value,
+                agent=agent,
             )
             tracing.set_attributes(attempt_span, attempt_id=begun.attempt.id,
                                    evidence_mode=begun.attempt.evidence_mode)

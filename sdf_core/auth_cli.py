@@ -7,6 +7,8 @@
 ``create`` prints the plaintext token once, to stdout, for the operator to
 store; it is never stored or logged.  Uses ``SDF_DATABASE_URL`` and
 ``SDF_AUTH_PEPPER`` from the environment or the repo-root ``.env``.
+When ``SDF_DATABASE_URL`` is unset, this uses the same private local
+SQLite file as the API (``$XDG_DATA_HOME/sdf`` or ``~/.local/share/sdf``).
 """
 
 from __future__ import annotations
@@ -18,6 +20,13 @@ import sys
 
 from . import auth
 from .db import make_session_factory
+from .local_state import (
+    LocalStateError,
+    ensure_local_secrets,
+    hermetic,
+    is_local_default_url,
+    resolve_database_url,
+)
 
 
 def _actor() -> str:
@@ -43,7 +52,13 @@ def main(argv: list[str] | None = None) -> int:
     revoke.add_argument("token_id")
     args = parser.parse_args(argv)
 
-    url = auth.setting("SDF_DATABASE_URL")
+    try:
+        url = resolve_database_url(create=not hermetic())
+        if is_local_default_url(url):
+            ensure_local_secrets()
+    except LocalStateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if not url or ":memory:" in url:
         print("error: set SDF_DATABASE_URL to the server's database", file=sys.stderr)
         return 2

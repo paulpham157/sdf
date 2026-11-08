@@ -1,18 +1,20 @@
 """Operator CLI: ``python -m sdf_core.cli runs show <id> [--json]`` (ADR 0023).
 
 Reads the state store named by ``SDF_DATABASE_URL`` directly (the same
-read model as ``GET /runs/{id}/timeline``); it never writes.
+read model as ``GET /runs/{id}/timeline``). When that variable is unset and
+the private local database already exists, it reads that file. It never
+creates a database and it never writes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Sequence
 
 from .db import make_session_factory
+from .local_state import MEMORY_URL, resolve_database_url
 from .timeline import build_timeline, format_timeline
 
 
@@ -26,9 +28,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     show.add_argument("--database-url", default=None, help="defaults to SDF_DATABASE_URL")
     args = parser.parse_args(argv)
 
-    url = args.database_url or os.environ.get("SDF_DATABASE_URL")
-    if not url:
-        print("set SDF_DATABASE_URL (or --database-url) to the SDF Core state store", file=sys.stderr)
+    url = args.database_url or resolve_database_url(create=False)
+    if not url or url == MEMORY_URL or ":memory:" in url:
+        print(
+            "set SDF_DATABASE_URL (or --database-url), or create the local database with "
+            "uv run python -m sdf_core.verify",
+            file=sys.stderr,
+        )
         return 2
     db = make_session_factory(url)()
     try:
