@@ -349,10 +349,15 @@ class RunTaskRequest(BaseModel):
 
     @field_validator("dispatch_key")
     @classmethod
-    def _reject_reserved_keyless_prefix(cls, value: str | None) -> str | None:
-        # The derived key uses this prefix. A caller must not supply it.
+    def _reject_reserved_dispatch_prefix(cls, value: str | None) -> str | None:
+        # ``keyless-`` is the derived key. ``local-`` is ``python -m sdf_core.verify``.
+        # A caller must not supply either, or one principal could replay the other's Attempt.
         if value is not None and value.startswith("keyless-"):
             raise ValueError("dispatch_key must not use the reserved keyless- prefix; omit it to replay")
+        if value is not None and value.startswith("local-"):
+            raise ValueError(
+                "dispatch_key must not use the reserved local- prefix; it belongs to the local verify command"
+            )
         return value
     instructions: str = "complete the task"
     criterion_checks: dict[str, list[CheckId]] | None = Field(

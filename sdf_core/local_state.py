@@ -5,12 +5,15 @@ actually starting local mode call :func:`resolve_database_url` or
 :func:`ensure_local_database`. The hermetic suite (``SDF_TEST_HERMETIC=1``)
 keeps the in-memory database and never touches the data directory.
 
-When ``SDF_DATABASE_URL`` is unset and the process is not hermetic, the
-database is ``$XDG_DATA_HOME/sdf/sdf.sqlite`` (or ``~/.local/share/sdf/sdf.sqlite``).
-The directory is mode 0700. The database file and the generated runtime
-secret file are mode 0600. An explicit ``SDF_DATABASE_URL``, including
+When ``SDF_DATABASE_URL`` is absent from the process environment and the
+process is not hermetic, the database is ``$XDG_DATA_HOME/sdf/sdf.sqlite``
+(or ``~/.local/share/sdf/sdf.sqlite``). The directory is mode 0700. The
+database file and the generated runtime secret file are mode 0600. An
+explicit ``SDF_DATABASE_URL`` in the process environment, including
 PostgreSQL, is used as given and does not generate secrets and does not
-turn authentication off.
+turn authentication off. A URL that appears only in the repo-root ``.env``
+is not that variable: it does not select a database and it does not make
+an import run ``create_all``.
 
 ``SDF_AUTH_PEPPER`` and ``SDF_EVIDENCE_MAC_KEY`` are read from the
 environment first. When local mode needs one and it is unset, a random value
@@ -62,22 +65,17 @@ def is_local_default_url(url: str) -> bool:
 
 
 def explicit_database_url() -> str | None:
-    """The configured URL, or None when nothing was configured.
+    """The process environment's URL, or None when the variable is absent.
 
     An empty ``SDF_DATABASE_URL`` is returned as ``""`` so callers can reject
     it instead of treating it as the local default. The repo-root ``.env`` is
-    consulted only outside the hermetic suite, and only when the variable is
-    absent from the environment.
+    not consulted. Hermetic tests strip ambient ``SDF_*`` before this runs,
+    so a junk environment URL does not survive into the suite.
     """
 
     if "SDF_DATABASE_URL" in os.environ:
         return os.environ["SDF_DATABASE_URL"]
-    if hermetic():
-        return None
-    from .auth import setting
-
-    value = setting("SDF_DATABASE_URL")
-    return value if value else None
+    return None
 
 
 def resolve_database_url(*, create: bool) -> str:

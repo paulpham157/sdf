@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **One local command verifies your repository.** `uv run python -m sdf_core.verify /path/to/your/repository` snapshots that repository, runs an already logged-in Codex or Claude CLI under Landlock, and accepts the Task only from the project's frozen checks. The offline demo (`scripts/demo.py`, `scripts/demo-evidence.sh`, `fixtures/offline-evidence`) is removed. With `SDF_DATABASE_URL` unset, the API and `python -m sdf_core.auth_cli` share one private SQLite file and local mode generates the auth pepper and Evidence MAC key into a mode-0600 file. An explicit database URL, including PostgreSQL, does not turn authentication off.
+- **One local command verifies your repository.** `uv run python -m sdf_core.verify /path/to/your/repository` snapshots that repository, runs an already logged-in Codex or Claude CLI under Landlock, and accepts the Task only from the project's frozen checks. The offline demo (`scripts/demo.py`, `scripts/demo-evidence.sh`, `fixtures/offline-evidence`) is removed. With `SDF_DATABASE_URL` absent from the process environment, the API and `python -m sdf_core.auth_cli` share one private SQLite file and local mode generates the auth pepper and Evidence MAC key into a mode-0600 file. A URL present only in the repo-root `.env` does not select that database and does not run `create_all`. An explicit database URL, including PostgreSQL, does not turn authentication off.
 
 ### Documentation
 

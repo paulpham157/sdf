@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
 
 import pytest
 
+from sdf_core.adapter import AdapterResult
 from sdf_core.containment import ContainmentUnavailable
 from sdf_core.fixtures import FixtureError, resolve_fixture
 from sdf_core import verify
@@ -248,6 +251,112 @@ def test_own_repo_checks_are_evaluator_evidence_and_replay(tmp_path, monkeypatch
     assert second.attempt_id == first.attempt_id
     assert second.task_status == "succeeded"
     assert runs[0].read_text(encoding="utf-8").count("ran") == 1
+
+
+class _CountingRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.evidence_mode = "synthetic"
+        self.live_after_sandbox = False
+        self.provider = "test-runner"
+
+    def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
+        self.calls += 1
+        return AdapterResult(
+            attempt_id=attempt_id, status="completed", changed_files=(),
+            stdout="ran", stderr="", exit_code=0,
+        )
+
+
+def _local_ids(repo: Path, instruction: str, *, agent: str = "codex"):
+    """The task id and dispatch key ``run_verification`` derives for this tree."""
+
+    snapshot, _skipped = verify.snapshot_repository(repo)
+    criteria, checks, _policies = verify.freeze_checks(snapshot)
+    material = json.dumps(
+        {"tree": snapshot.parent.name, "agent": agent, "instruction": instruction, "checks": checks},
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return snapshot, criteria, checks, "TASK-LOCAL-" + digest[:16], "local-" + digest[:40], "local-" + digest[:32]
+
+
+def test_same_principal_replays_without_starting_the_runner_again(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(verify, "platform_refusal", lambda: None)
+    repo = _repo(tmp_path)
+    instruction = "Make the checks pass"
+    runner = _CountingRunner()
+    first = verify.run_verification(repo, instruction, agent="codex", runner=runner)
+    assert first.task_status == "succeeded", "\n".join(first.lines)
+    assert first.replayed is False
+    assert runner.calls == 1
+    second = verify.run_verification(repo, instruction, agent="codex", runner=runner)
+    assert second.replayed is True
+    assert second.attempt_id == first.attempt_id
+    assert second.task_status == "succeeded"
+    assert runner.calls == 1
+
+
+def test_other_principal_preseeded_dispatch_is_not_replayed(tmp_path, monkeypatch):
+    """Principal bob cannot plant a succeeded Attempt that this command replays.
+
+    The key is predictable from the snapshot. ``begin`` returns any row that
+    already holds it. A second principal's pass must not become this command's
+    result, and the stand-in runner must not be skipped in bob's favor.
+    """
+
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(verify, "platform_refusal", lambda: None)
+    repo = _repo(tmp_path)
+    instruction = "Make the checks pass"
+    snapshot, criteria, checks, task_id, dispatch_key, idempotency_key = _local_ids(
+        repo, instruction,
+    )
+    from sdf_core.adapter import FakeNativeAdapter
+    from sdf_core.db import Base, GraphNodeRow, TaskRow, make_engine, make_session_factory
+    from sdf_core.execution import ExecutionService
+    from sdf_core.model import utcnow
+
+    url = os.environ["SDF_DATABASE_URL"]
+    Base.metadata.create_all(make_engine(url))
+    session = make_session_factory(url)()
+    try:
+        session.add(GraphNodeRow(
+            id=task_id, kind="task", title="preseed", source="api", owner="sdf",
+            confidence=1.0, created_at=utcnow(),
+        ))
+        session.add(TaskRow(
+            id=task_id, title="preseed", status="created", idempotency_key=idempotency_key,
+            acceptance_criteria=criteria, created_at=utcnow(),
+        ))
+        session.commit()
+        planted = ExecutionService(
+            session,
+            workspace_root=tmp_path / "bob-workspaces",
+            artifact_root=tmp_path / "bob-artifacts",
+            adapter=FakeNativeAdapter("notes.txt", "bob\n"),
+        ).run(
+            task_id=task_id,
+            dispatch_key=dispatch_key,
+            fixture=snapshot,
+            instructions="bob's unrelated run",
+            commands=[],
+            criterion_checks=checks,
+            principal="bob",
+        )
+        session.refresh(planted)
+        task = session.get(TaskRow, task_id)
+        assert planted.principal == "bob"
+        assert planted.agent == "native"
+        assert task is not None and task.status == "succeeded"
+    finally:
+        session.close()
+
+    runner = _CountingRunner()
+    with pytest.raises(verify.VerifyError, match="bob"):
+        verify.run_verification(repo, instruction, agent="codex", runner=runner)
+    assert runner.calls == 0
 
 
 def test_platform_refusal_starts_nothing(tmp_path, monkeypatch):

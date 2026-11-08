@@ -511,7 +511,14 @@ def run_verification(
             )
             session.add(task)
             session.commit()
-        replayed = session.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key)) is not None
+        existing = session.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
+        if existing is not None and (existing.principal != _principal() or existing.agent != selected):
+            owner = existing.principal or "an unknown principal"
+            raise VerifyError(
+                f"verification key already belongs to {owner}; "
+                "refusing to replay it as this command's result"
+            )
+        replayed = existing is not None
         work = data_dir() / "workspaces"
         artifacts = data_dir() / "artifacts"
         adapter = runner if runner is not None else LocalCliAdapter(session, selected)

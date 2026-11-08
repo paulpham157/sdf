@@ -31,6 +31,67 @@ def test_hermetic_resolve_does_not_create_files(tmp_path, monkeypatch):
     assert not (tmp_path / "xdg").exists()
 
 
+def test_repo_dotenv_database_url_does_not_select_the_local_database(tmp_path, monkeypatch):
+    """A URL that exists only in the repo ``.env`` is not ``SDF_DATABASE_URL``.
+
+    The py3.13 canary writes that file and exports a junk URL. With the
+    variable absent from the process environment, local mode still creates
+    the private SQLite file, and importing the API must not connect to the
+    URL in ``.env``.
+    """
+
+    monkeypatch.delenv("SDF_TEST_HERMETIC", raising=False)
+    monkeypatch.delenv("SDF_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SDF_AUTH_PEPPER", raising=False)
+    monkeypatch.delenv("SDF_EVIDENCE_MAC_KEY", raising=False)
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text(
+        "SDF_DATABASE_URL=postgresql+psycopg://dotenv:dotenv@127.0.0.1:1/nope\n",
+        encoding="utf-8",
+    )
+    import sdf_core.credentials as credentials
+    from sdf_core import auth
+
+    monkeypatch.setattr(credentials, "REPO_ROOT", repo)
+    auth._dotenv.cache_clear()
+    try:
+        ensured = ensure_local_database()
+        resolved = resolve_database_url(create=False)
+    finally:
+        auth._dotenv.cache_clear()
+    assert ensured == resolved
+    assert ensured.startswith("sqlite+pysqlite:///")
+    assert "127.0.0.1" not in ensured
+    assert (xdg / "sdf" / "sdf.sqlite").is_file()
+    monkeypatch.setenv("SDF_AUTH_PEPPER", os.environ["SDF_AUTH_PEPPER"])
+    monkeypatch.setenv("SDF_EVIDENCE_MAC_KEY", os.environ["SDF_EVIDENCE_MAC_KEY"])
+
+    child_env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path / "home"),
+        "XDG_DATA_HOME": str(tmp_path / "child-xdg"),
+        "PYTHONPATH": str(REPO),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    (tmp_path / "home").mkdir()
+    child = subprocess.run(
+        [sys.executable, "-c", _CHILD_IMPORT_API, str(repo)],
+        cwd=REPO,
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip().startswith("sqlite+pysqlite:///")
+    assert "127.0.0.1" not in child.stdout
+    assert (tmp_path / "child-xdg" / "sdf" / "sdf.sqlite").is_file()
+
+
 def test_explicit_url_does_not_create_local_files_or_secrets(tmp_path, monkeypatch):
     monkeypatch.delenv("SDF_TEST_HERMETIC", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
@@ -136,6 +197,18 @@ def _facts(stdout: str) -> dict[str, str]:
             facts[key] = value
     return facts
 
+
+_CHILD_IMPORT_API = """
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+import sdf_core.credentials as credentials
+credentials.REPO_ROOT = root
+from sdf_core import auth
+auth._dotenv.cache_clear()
+import sdf_core.api as api
+print(api.DATABASE_URL)
+"""
 
 _CHILD_CREATE = """
 import hashlib, os
