@@ -13,6 +13,15 @@
 
 ### Fixed
 
+- **Offline evidence demo checks the evaluator's verification Evidence.**
+  `scripts/demo-evidence.sh` (via `scripts/demo.py`) no longer treats "one
+  Evidence node" as success. A run records execution Evidence (id suffix
+  `-EXEC`, no verifier) and verification Evidence. The script exits non-zero
+  unless the accepting row is verification from `sdf-evaluator`, status PASS,
+  bound to the attempt revision (`revision_id` / `tree_sha256`), and the
+  source of the Assumption `validates` edge. It prints that fake-adapter
+  `cost_usd` 0 is unmetered, not an invoice.
+
 - **Material-decision tests wait for the requester's report before a human resolves (#140).**
   Approving as soon as the request row exists (plus a short sleep) raced the
   coordinator: under load the human could approve before verification was

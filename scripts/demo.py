@@ -19,6 +19,7 @@ import os
 import platform
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,14 @@ _HTML_NAME = "index.html"
 
 CLAIM_A = "Done. app.py now prints updated."
 CLAIM_B = "Done! app.py updated, all tests pass"
+ASSUMPTION_ID = "ASSUMPTION-OFFLINE-001"
+COST_CAVEAT = (
+    "cost_usd is the unmetered fake adapter. It is not an invoice and not an "
+    "SDF_PRICE_* or SDF_E2B_USD_PER_SECOND estimate."
+)
+# The task trace has to carry the decision the demo is about. Execution
+# Evidence is extra and does not satisfy this list.
+_TRACE_KINDS = ("business_context", "objective", "assumption", "task", "attempt", "evidence")
 # Demo-only fixture so verification can treat stored MACs as authentic.
 # Not a deployment secret and not the public development constant.
 DEMO_EVIDENCE_MAC_KEY = "demo-evidence-mac-key-not-a-deployment-secret"
@@ -303,7 +312,7 @@ def seed_graph(base: str, tasks: list[dict]) -> None:
             "source": "demo",
         }),
         ("/assumptions", {
-            "id": "ASSUMPTION-OFFLINE-001",
+            "id": ASSUMPTION_ID,
             "title": "fake adapter writes print(updated)",
             "owner": "local-dev",
             "source": "demo",
@@ -330,29 +339,75 @@ def run_task(base: str, task: dict) -> dict:
         "instructions": task["instructions"],
         "criterion_checks": {"app.py prints updated": ["app-updated"]},
         "validation_target_kind": "assumption",
-        "validation_target_id": "ASSUMPTION-OFFLINE-001",
+        "validation_target_id": ASSUMPTION_ID,
     })
     if status != 200:
         raise SystemExit(f"/run {task['id']} failed: {status} {run}")
     attempt_id = run["attempt_id"]
     _, trace = _json_request("GET", base + f"/tasks/{task['id']}/trace")
-    evidence: dict[str, dict] = {}
-    for node in trace["nodes"]:
-        if node.get("kind") == "evidence":
-            _, row = _json_request("GET", base + f"/evidence/{node['id']}")
-            # A shared assumption's subgraph can include another task's Evidence.
-            if row.get("attempt_id") != attempt_id:
-                continue
-            evidence[row["evidence_class"]] = row
+    evidence, evidence_rows = _evidence_for_attempt(base, trace, attempt_id)
     _, revision = _json_request("GET", base + f"/attempts/{attempt_id}/revision")
     return {
         "task": task,
         "run": run,
         "trace": trace,
         "evidence": evidence,
+        "evidence_rows": evidence_rows,
         "revision": revision,
         "attempt_id": attempt_id,
+        "usage_ledger_rows": usage_ledger_count(attempt_id),
     }
+
+
+def _evidence_for_attempt(base: str, trace: dict, attempt_id: str) -> tuple[dict[str, dict], dict[str, list[dict]]]:
+    """Verification and execution rows for this Attempt only.
+
+    A shared Assumption pulls the other task's Evidence into the trace.
+    Rows are grouped by class. A class is exposed as the acceptance row
+    only when this Attempt has exactly one, so an execution PASS cannot
+    overwrite or stand in for verification.
+    """
+
+    evidence_rows: dict[str, list[dict]] = {}
+    seen: set[str] = set()
+    for node in trace.get("nodes") or []:
+        if node.get("kind") != "evidence":
+            continue
+        _, row = _json_request("GET", base + f"/evidence/{node['id']}")
+        if row.get("attempt_id") != attempt_id:
+            continue
+        evidence_id = row.get("id")
+        if not isinstance(evidence_id, str) or evidence_id in seen:
+            continue
+        seen.add(evidence_id)
+        evidence_rows.setdefault(row.get("evidence_class") or "", []).append(row)
+    evidence = {
+        cls: rows[0] for cls, rows in evidence_rows.items() if len(rows) == 1
+    }
+    return evidence, evidence_rows
+
+
+def usage_ledger_count(attempt_id: str) -> int:
+    """Rows in ``usage_ledger`` for this Attempt. The fake adapter writes none.
+
+    Reads the temporary SQLite file directly. ``scripts/demo.py`` is started
+    as a script, so ``sdf_core`` is not on this process's import path; the
+    API process is the one that imports the package.
+    """
+
+    url = os.environ.get("SDF_DATABASE_URL") or ""
+    prefix = "sqlite+pysqlite:///"
+    if not url.startswith(prefix):
+        raise SystemExit("demo cost check only reads the temporary SQLite database")
+    path = Path(url[len(prefix):])
+    if not path.is_file():
+        raise SystemExit(f"demo database is missing: {path}")
+    with sqlite3.connect(path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM usage_ledger WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+    return int(row[0] if row else 0)
 
 
 def workspace_app(demo_dir: Path, root: Path, attempt_id: str) -> tuple[str, str]:
@@ -369,16 +424,149 @@ def workspace_app(demo_dir: Path, root: Path, attempt_id: str) -> tuple[str, str
     return before, after
 
 
-def _case_ok(case: dict, expect_accept: bool) -> bool:
-    run = case["run"]
-    verification = case["evidence"].get("verification", {})
+def _edges_from(case: dict, source_id: str | None, relation: str) -> list[dict]:
+    if not source_id:
+        return []
+    return [
+        edge for edge in (case.get("trace") or {}).get("edges") or []
+        if edge.get("source_id") == source_id and edge.get("relation") == relation
+    ]
+
+
+def _assumption_edges(case: dict, source_id: str | None, relation: str) -> list[dict]:
+    return [
+        edge for edge in _edges_from(case, source_id, relation)
+        if edge.get("target_kind") == "assumption" and edge.get("target_id") == ASSUMPTION_ID
+    ]
+
+
+def trust_problems(case: dict, expect_accept: bool) -> list[str]:
+    """What this run fails to show about independent Evidence.
+
+    Acceptance is one verification row from ``sdf-evaluator``. An execution
+    row, including one whose id ends in ``-EXEC`` and whose status is PASS,
+    records that the adapter ran. It is not that check. Counting Evidence
+    nodes is not the check either: a shared Assumption's trace lists both.
+    """
+
+    problems: list[str] = []
+    run = case.get("run") or {}
+    rows = case.get("evidence_rows") or {}
+    verification_rows = list(rows.get("verification") or [])
+    execution_rows = list(rows.get("execution") or [])
+    label = (case.get("task") or {}).get("label", "?")
+    if len(verification_rows) != 1:
+        problems.append(
+            f"Task {label}: expected one verification Evidence row for this attempt, "
+            f"got {[row.get('id') for row in verification_rows]}"
+        )
+    if len(execution_rows) != 1:
+        problems.append(
+            f"Task {label}: expected one execution Evidence row for this attempt, "
+            f"got {[row.get('id') for row in execution_rows]}"
+        )
+    verification = verification_rows[0] if len(verification_rows) == 1 else {}
+    execution = execution_rows[0] if len(execution_rows) == 1 else {}
+    if verification:
+        if verification.get("evidence_class") != "verification":
+            problems.append(f"Task {label}: evidence_class {verification.get('evidence_class')!r}")
+        if (
+            verification.get("verifier_identity") != "sdf-evaluator"
+            or verification.get("verifier_role") != "evaluator"
+            or verification.get("producer_identity") != "sdf-evaluator"
+            or verification.get("producer_role") != "evaluator"
+        ):
+            problems.append(
+                f"Task {label}: verification Evidence is not from the independent evaluator "
+                f"(verifier {verification.get('verifier_identity')!r} "
+                f"{verification.get('verifier_role')!r}, "
+                f"producer {verification.get('producer_identity')!r} "
+                f"{verification.get('producer_role')!r})"
+            )
+        if verification.get("attempt_id") != case.get("attempt_id"):
+            problems.append(f"Task {label}: verification Evidence is not bound to this attempt")
+        revision = (case.get("revision") or {}).get("revision") or {}
+        checked = (case.get("revision") or {}).get("verification") or {}
+        if checked.get("status") != "verified":
+            problems.append(
+                f"Task {label}: revision verification {checked.get('status')!r}: "
+                f"{checked.get('problems')}"
+            )
+        if not verification.get("revision_id") or not verification.get("tree_sha256"):
+            problems.append(f"Task {label}: verification Evidence has no revision binding")
+        elif (
+            revision.get("id") != verification.get("revision_id")
+            or revision.get("result_tree_sha256") != verification.get("tree_sha256")
+        ):
+            problems.append(
+                f"Task {label}: verification Evidence is not bound to the attempt revision tree"
+            )
+    if execution and (execution.get("verifier_identity") or execution.get("verifier_role")):
+        problems.append(
+            f"Task {label}: execution Evidence names a verifier "
+            f"{execution.get('verifier_identity')!r} and cannot be the acceptance check"
+        )
+    if _edges_from(case, execution.get("id"), "validates"):
+        problems.append(f"Task {label}: execution Evidence is the source of a validates edge")
+    nodes = (case.get("trace") or {}).get("nodes") or []
+    kinds = {node.get("kind") for node in nodes}
+    missing = [kind for kind in _TRACE_KINDS if kind not in kinds]
+    if missing:
+        problems.append(f"Task {label}: trace is missing {', '.join(missing)}")
+    node_ids = {node.get("id") for node in nodes}
+    if verification and verification.get("id") not in node_ids:
+        problems.append(f"Task {label}: trace is missing the verification Evidence node")
+    if execution and execution.get("id") not in node_ids:
+        problems.append(f"Task {label}: trace is missing the execution Evidence node")
+    if run.get("provider") != "fake" or run.get("evidence_mode") != "synthetic":
+        problems.append(
+            f"Task {label}: expected the offline fake adapter, got "
+            f"provider={run.get('provider')!r} evidence_mode={run.get('evidence_mode')!r}"
+        )
+    if run.get("cost_usd") != 0:
+        problems.append(f"Task {label}: cost_usd={run.get('cost_usd')!r} (expected unmetered 0)")
+    if case.get("usage_ledger_rows") != 0:
+        problems.append(
+            f"Task {label}: usage_ledger_rows={case.get('usage_ledger_rows')!r} "
+            "(expected none for the fake adapter)"
+        )
+    validates = _assumption_edges(case, verification.get("id"), "validates")
     if expect_accept:
-        return run.get("task_status") == "succeeded" and verification.get("status") == "PASS"
+        if run.get("task_status") != "succeeded" or verification.get("status") != "PASS":
+            problems.append(f"Task {label}: did not reach a verification PASS from the evaluator")
+        if len(validates) != 1:
+            problems.append(
+                f"Task {label}: trace has no verification Evidence validates {ASSUMPTION_ID} edge"
+            )
+    else:
+        if run.get("task_status") == "succeeded" or verification.get("status") == "PASS":
+            problems.append(f"Task {label}: was not rejected by independent verification")
+        if run.get("attempt_status") != "completed":
+            problems.append(f"Task {label}: attempt_status={run.get('attempt_status')!r}")
+        if validates:
+            problems.append(f"Task {label}: non-pass verification Evidence validates {ASSUMPTION_ID}")
+        contradicts = _assumption_edges(case, verification.get("id"), "contradicts")
+        if verification and len(contradicts) != 1:
+            problems.append(
+                f"Task {label}: non-pass verification Evidence does not contradict {ASSUMPTION_ID}"
+            )
+    return problems
+
+
+def _accepted(case: dict) -> bool:
+    """True only when the evaluator's verification row accepts the Task."""
+
+    verification = (case.get("evidence") or {}).get("verification") or {}
+    run = case.get("run") or {}
     return (
-        run.get("task_status") != "succeeded"
-        and verification.get("status") != "PASS"
+        run.get("task_status") == "succeeded"
+        and verification.get("status") == "PASS"
+        and verification.get("evidence_class") == "verification"
         and verification.get("verifier_identity") == "sdf-evaluator"
-        and run.get("attempt_status") == "completed"
+        and verification.get("verifier_role") == "evaluator"
+        and verification.get("producer_identity") == "sdf-evaluator"
+        and verification.get("producer_role") == "evaluator"
+        and not trust_problems(case, True)
     )
 
 
@@ -428,12 +616,15 @@ def print_story(cases: list[dict], html_path: Path) -> None:
         execution = case["evidence"].get("execution", {})
         print(f"   Task {task['label']}")
         print(
-            f"     execution evidence : class={execution.get('evidence_class')} "
+            f"     execution evidence : id={execution.get('id')} "
+            f"class={execution.get('evidence_class')} "
             f"producer={execution.get('producer_identity')} "
+            f"verifier={execution.get('verifier_identity')} "
             f"(records that the adapter ran; cannot accept the Task)"
         )
         print(
-            f"     verification       : status={verification.get('status')} "
+            f"     verification       : id={verification.get('id')} "
+            f"status={verification.get('status')} "
             f"verifier={verification.get('verifier_identity')} "
             f"criterion={verification.get('criterion')!r}"
         )
@@ -446,8 +637,12 @@ def print_story(cases: list[dict], html_path: Path) -> None:
         task = case["task"]
         run = case["run"]
         verification = case["evidence"].get("verification", {})
-        accepted = run.get("task_status") == "succeeded" and verification.get("status") == "PASS"
+        accepted = _accepted(case)
         label = "accepted" if accepted else "rejected"
+        observed = _assumption_edges(case, verification.get("id"), "validates")
+        if len(observed) != 1:
+            observed = _assumption_edges(case, verification.get("id"), "contradicts")
+        relation = observed[0].get("relation") if len(observed) == 1 else "missing"
         print(
             f"   Task {task['label']}: task_status={run.get('task_status')}  "
             f"attempt_status={run.get('attempt_status')}  ({label})"
@@ -456,9 +651,26 @@ def print_story(cases: list[dict], html_path: Path) -> None:
             f"   Task {task['label']}: verification status={verification.get('status')} "
             f"verifier={verification.get('verifier_identity')}"
         )
+        print(
+            f"   Task {task['label']}: revision_id={verification.get('revision_id')} "
+            f"tree_sha256={verification.get('tree_sha256')}"
+        )
+        print(
+            f"   Task {task['label']}: assumption edge {relation} from {verification.get('id')}"
+        )
+        print(
+            f"   Task {task['label']}: cost_usd={run.get('cost_usd')} "
+            f"usage_ledger_rows={case.get('usage_ledger_rows')}"
+        )
         print(f"   Task {task['label']}: attempt {case['attempt_id']}")
-    if "A" in by_label and "B" in by_label:
+    if (
+        "A" in by_label
+        and "B" in by_label
+        and _accepted(by_label["A"])
+        and not trust_problems(by_label["B"], False)
+    ):
         print("   A accepted / B rejected, though the agent said done")
+    print(f"   {COST_CAVEAT}")
     print()
     takeaway = (
         "An agent can say it is done and even make a weak test go green; "
@@ -470,10 +682,9 @@ def print_story(cases: list[dict], html_path: Path) -> None:
     print()
 
     problems = []
-    if "A" in by_label and not _case_ok(by_label["A"], True):
-        problems.append("Task A did not reach a verification PASS.")
-    if "B" in by_label and not _case_ok(by_label["B"], False):
-        problems.append("Task B was not rejected by independent verification.")
+    for case in cases:
+        expect_accept = case["task"]["id"] == TASK_A["id"]
+        problems.extend(trust_problems(case, expect_accept))
     if problems:
         raise SystemExit("\n".join(problems))
 
@@ -482,7 +693,8 @@ def _case_html(case: dict) -> str:
     task = case["task"]
     run = case["run"]
     verification = case["evidence"].get("verification", {})
-    accepted = run.get("task_status") == "succeeded" and verification.get("status") == "PASS"
+    execution = case["evidence"].get("execution", {})
+    accepted = _accepted(case)
     badge = PASS_BADGE if accepted else REJECT_BADGE
     tone = "pass" if accepted else "fail"
     extra = ""
@@ -502,6 +714,10 @@ def _case_html(case: dict) -> str:
       <p><strong>Evaluator:</strong> {html.escape(str(verification.get('status')))}
          from {html.escape(str(verification.get('verifier_identity')))}
          on {html.escape(str(verification.get('criterion')))}</p>
+      <p>Revision <code>{html.escape(str(verification.get('revision_id')))}</code>
+         tree <code>{html.escape(str(verification.get('tree_sha256')))}</code>.
+         Execution evidence <code>{html.escape(str(execution.get('id')))}</code>
+         records that the adapter ran and does not accept the Task.</p>
       {extra}
       <pre>before: {html.escape(case['before'].strip())}
 after:  {html.escape(case['after'].strip())}</pre>
@@ -550,6 +766,7 @@ def write_html(cases: list[dict], path: Path) -> None:
   <code>SDF_AUTH_DEV_INSECURE=1</code>, and a demo-only
   <code>SDF_EVIDENCE_MAC_KEY</code> fixture (not a deployment secret).
   No E2B or model API key was required.
+  {html.escape(COST_CAVEAT)}
   The sealed evaluator oracle (ADR 0039) currently produces a verdict only on
   Linux x86_64. This fixture loop is not production proof.</p>
 </body>
