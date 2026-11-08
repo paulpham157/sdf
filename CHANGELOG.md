@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- **A local verify command does not present another principal's Attempt.** The refusal is checked again on the Attempt `ExecutionService.run` returns, so a dispatch key inserted by someone else after the first read, including the loser of the unique-key insert, is not reported as this command's result.
 - **Material-decision tests wait for the requester's report before a human resolves (#140).**
   Approving as soon as the request row exists (plus a short sleep) raced the
   coordinator: under load the human could approve before verification was

@@ -450,6 +450,21 @@ def _principal() -> str:
     return f"local-{user}"[:120]
 
 
+def _foreign_owner(attempt, principal: str, agent: str) -> str | None:
+    """The other owner when this Attempt is not this command's replay.
+
+    ``ExecutionService.begin`` returns whichever row holds the dispatch key,
+    including a row inserted after this command's first read and the loser of
+    the unique-key insert. Presenting that row is a foreign result.
+    """
+
+    if attempt is None:
+        return None
+    if attempt.principal == principal and attempt.agent == agent:
+        return None
+    return attempt.principal or "an unknown principal"
+
+
 def run_verification(
     repository: Path | str,
     instruction: str | None = None,
@@ -496,6 +511,7 @@ def run_verification(
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     task_id = "TASK-LOCAL-" + digest[:16]
     dispatch_key = "local-" + digest[:40]
+    principal = _principal()
     session = make_session_factory(url)()
     try:
         task = session.get(TaskRow, task_id)
@@ -512,10 +528,10 @@ def run_verification(
             session.add(task)
             session.commit()
         existing = session.scalar(select(AttemptRow).where(AttemptRow.dispatch_key == dispatch_key))
-        if existing is not None and (existing.principal != _principal() or existing.agent != selected):
-            owner = existing.principal or "an unknown principal"
+        foreign = _foreign_owner(existing, principal, selected)
+        if foreign is not None:
             raise VerifyError(
-                f"verification key already belongs to {owner}; "
+                f"verification key already belongs to {foreign}; "
                 "refusing to replay it as this command's result"
             )
         replayed = existing is not None
@@ -532,9 +548,17 @@ def run_verification(
             criterion_checks=checks,
             oracle_policies=policies,
             agent=selected,
-            principal=_principal(),
+            principal=principal,
         )
         session.refresh(attempt)
+        # The row may have been inserted by another principal after the read above,
+        # or this call may be the unique-key loser. Do not present that Attempt.
+        foreign = _foreign_owner(attempt, principal, selected)
+        if foreign is not None:
+            raise VerifyError(
+                f"verification key already belongs to {foreign}; "
+                "refusing to replay it as this command's result"
+            )
         task = session.get(TaskRow, task_id)
         lines = _report_lines(session, attempt, task, replayed=replayed)
         return VerifyResult(

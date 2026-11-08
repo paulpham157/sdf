@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -357,6 +358,192 @@ def test_other_principal_preseeded_dispatch_is_not_replayed(tmp_path, monkeypatc
     with pytest.raises(verify.VerifyError, match="bob"):
         verify.run_verification(repo, instruction, agent="codex", runner=runner)
     assert runner.calls == 0
+
+
+def test_same_principal_different_agent_is_not_replayed(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(verify, "platform_refusal", lambda: None)
+    repo = _repo(tmp_path)
+    instruction = "Make the checks pass"
+    _plant_attempt(repo, instruction, principal=verify._principal(), agent="claude", status="succeeded")
+    runner = _CountingRunner()
+    with pytest.raises(verify.VerifyError, match="refusing to replay"):
+        verify.run_verification(repo, instruction, agent="codex", runner=runner)
+    assert runner.calls == 0
+
+
+def test_same_principal_failed_attempt_replays_without_another_runner(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(verify, "platform_refusal", lambda: None)
+    repo = _repo(tmp_path)
+    instruction = "Make the checks pass"
+    runner = _CountingRunner()
+
+    class _FailOnce(_CountingRunner):
+        def run(self, *, attempt_id: str, workspace: Path, instructions: str) -> AdapterResult:
+            self.calls += 1
+            return AdapterResult(
+                attempt_id=attempt_id, status="failed", changed_files=(), stdout="", stderr="no", exit_code=1,
+            )
+
+    runner_fail = _FailOnce()
+    first = verify.run_verification(repo, instruction, agent="codex", runner=runner_fail)
+    assert first.replayed is False
+    assert first.task_status == "failed"
+    assert runner_fail.calls == 1
+    second = verify.run_verification(repo, instruction, agent="codex", runner=runner)
+    assert second.replayed is True
+    assert second.attempt_id == first.attempt_id
+    assert second.task_status == "failed"
+    assert runner.calls == 0
+
+
+def test_begin_sees_foreign_attempt_inserted_after_preflight(tmp_path, monkeypatch):
+    """The preflight read missed the row. ``begin`` then finds it and must not present it."""
+
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(verify, "platform_refusal", lambda: None)
+    repo = _repo(tmp_path)
+    instruction = "Make the checks pass"
+    from sdf_core.db import AttemptRow, make_session_factory
+    from sdf_core.execution import ExecutionService
+    from sdf_core.model import utcnow
+
+    real_begin = ExecutionService.begin
+    planted = {"done": False}
+
+    def begin(self, **kwargs):
+        if not planted["done"]:
+            planted["done"] = True
+            side = make_session_factory(os.environ["SDF_DATABASE_URL"])()
+            try:
+                side.add(AttemptRow(
+                    id="ATTEMPT-FOREIGN-SELECT", task_id=kwargs["task_id"], status="succeeded",
+                    dispatch_key=kwargs["dispatch_key"], agent="codex", principal="bob",
+                    created_at=utcnow(), evidence_mode="synthetic", model_tier="basic", cost_usd=0.0,
+                ))
+                side.commit()
+            finally:
+                side.close()
+        return real_begin(self, **kwargs)
+
+    monkeypatch.setattr(ExecutionService, "begin", begin)
+    runner = _CountingRunner()
+    with pytest.raises(verify.VerifyError, match="bob"):
+        verify.run_verification(repo, instruction, agent="codex", runner=runner)
+    assert runner.calls == 0
+    assert planted["done"] is True
+
+
+def test_unique_dispatch_loser_does_not_present_the_other_principal(tmp_path, monkeypatch):
+    """Both callers pass the preflight read. The unique-key loser must not adopt the winner."""
+
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(verify, "platform_refusal", lambda: None)
+    repo = _repo(tmp_path)
+    instruction = "Make the checks pass"
+    snapshot, criteria, _checks, task_id, _dispatch_key, idempotency_key = _local_ids(repo, instruction)
+    monkeypatch.setattr(verify, "snapshot_repository", lambda _source: (snapshot, ()))
+    from sdf_core.db import AttemptRow, GraphNodeRow, TaskRow, make_session_factory
+    from sdf_core.model import utcnow
+    from sqlalchemy.orm import Session
+
+    url = os.environ["SDF_DATABASE_URL"]
+    session = make_session_factory(url)()
+    try:
+        session.add(GraphNodeRow(
+            id=task_id, kind="task", title="shared", source="local", owner="sdf",
+            confidence=1.0, created_at=utcnow(),
+        ))
+        session.add(TaskRow(
+            id=task_id, title="shared", status="created", idempotency_key=idempotency_key,
+            acceptance_criteria=criteria, created_at=utcnow(),
+        ))
+        session.commit()
+    finally:
+        session.close()
+
+    barrier = threading.Barrier(2)
+    identities = threading.local()
+    original_flush = Session.flush
+
+    def flush(self, objects=None):
+        attempts = [obj for obj in self.new if isinstance(obj, AttemptRow)]
+        if attempts and not getattr(identities, "gated", False):
+            identities.gated = True
+            barrier.wait(timeout=20)
+        return original_flush(self, objects)
+
+    monkeypatch.setattr(Session, "flush", flush)
+    names = {"alice": "local-alice", "bob": "local-bob"}
+
+    def principal():
+        return names[identities.who]
+
+    monkeypatch.setattr(verify, "_principal", principal)
+    outcomes: dict[str, tuple] = {}
+
+    def run_as(who: str) -> None:
+        identities.who = who
+        identities.gated = False
+        runner = _CountingRunner()
+        try:
+            result = verify.run_verification(repo, instruction, agent="codex", runner=runner)
+        except verify.VerifyError as exc:
+            outcomes[who] = ("refused", str(exc), runner.calls)
+        except Exception as exc:  # noqa: BLE001 - the test reports the real failure
+            outcomes[who] = ("error", f"{type(exc).__name__}: {exc}", runner.calls)
+        else:
+            outcomes[who] = ("ok", result.attempt_id, runner.calls, result.task_status)
+
+    threads = [threading.Thread(target=run_as, args=(who,)) for who in ("alice", "bob")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    assert all(not thread.is_alive() for thread in threads), outcomes
+    assert set(outcomes) == {"alice", "bob"}, outcomes
+    oks = [who for who, item in outcomes.items() if item[0] == "ok"]
+    refused = [who for who, item in outcomes.items() if item[0] == "refused"]
+    assert len(oks) == 1 and len(refused) == 1, outcomes
+    winner, loser = oks[0], refused[0]
+    assert outcomes[winner][2] == 1
+    assert outcomes[loser][2] == 0
+    assert names[winner] in outcomes[loser][1]
+    side = make_session_factory(url)()
+    try:
+        row = side.get(AttemptRow, outcomes[winner][1])
+        assert row is not None
+        assert row.principal == names[winner]
+        assert row.agent == "codex"
+    finally:
+        side.close()
+
+
+def _plant_attempt(repo: Path, instruction: str, *, principal: str, agent: str, status: str) -> None:
+    from sdf_core.db import AttemptRow, GraphNodeRow, TaskRow, make_session_factory
+    from sdf_core.model import utcnow
+
+    snapshot, criteria, _checks, task_id, dispatch_key, idempotency_key = _local_ids(repo, instruction)
+    del snapshot
+    session = make_session_factory(os.environ["SDF_DATABASE_URL"])()
+    try:
+        session.add(GraphNodeRow(
+            id=task_id, kind="task", title="planted", source="local", owner="sdf",
+            confidence=1.0, created_at=utcnow(),
+        ))
+        session.add(TaskRow(
+            id=task_id, title="planted", status="created", idempotency_key=idempotency_key,
+            acceptance_criteria=criteria, created_at=utcnow(),
+        ))
+        session.add(AttemptRow(
+            id=f"ATTEMPT-PLANTED-{agent}", task_id=task_id, status=status, dispatch_key=dispatch_key,
+            agent=agent, principal=principal, created_at=utcnow(), evidence_mode="synthetic",
+            model_tier="basic", cost_usd=0.0,
+        ))
+        session.commit()
+    finally:
+        session.close()
 
 
 def test_platform_refusal_starts_nothing(tmp_path, monkeypatch):

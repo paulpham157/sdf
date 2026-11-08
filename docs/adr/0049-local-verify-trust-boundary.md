@@ -156,8 +156,11 @@ not this variable. It does not select the shared file or another server,
 and importing the API does not run `create_all` against it. Sharing the
 file means they see the same rows. It does not add migrations, and it does
 not by itself make Evidence harder to forge. The command also refuses to
-replay an Attempt whose principal or agent is not this command's own. That
-does not make the local path an independent verifier.
+replay an Attempt whose principal or agent is not this command's own,
+including when that row appears after the first read or this call loses
+the unique dispatch-key insert. That does not make the local path an
+independent verifier. The HTTP API still replays one dispatch key to
+whichever caller presents it. That exactly-once rule is unchanged.
 
 `create_all` is not Alembic. An explicit PostgreSQL URL is left as given.
 That URL does not generate the local secrets and does not turn HTTP
