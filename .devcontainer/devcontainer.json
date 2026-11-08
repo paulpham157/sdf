@@ -7,7 +7,7 @@
     }
   },
   "postCreateCommand": "uv sync --all-groups",
-  "postAttachCommand": "echo 'Try the SDF demo (no API keys): uv run scripts/demo.py'",
+  "postAttachCommand": "echo 'See README.md. The user command is: uv run python -m sdf_core.verify /path/to/your/repository'",
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python"],

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **One local command verifies your repository.** `uv run python -m sdf_core.verify /path/to/your/repository` snapshots that repository, runs an already logged-in Codex or Claude CLI under Landlock, and accepts the Task only from the project's frozen checks. The offline demo (`scripts/demo.py`, `scripts/demo-evidence.sh`, `fixtures/offline-evidence`) is removed. With `SDF_DATABASE_URL` absent from the process environment, the API and `python -m sdf_core.auth_cli` share one private SQLite file and local mode generates the auth pepper and Evidence MAC key into a mode-0600 file. A URL present only in the repo-root `.env` does not select that database and does not run `create_all`. An explicit database URL, including PostgreSQL, does not turn authentication off.
+
 ### Documentation
 
 - **Session import and history audit (ADR 0048, proposed).** `sdf import`
@@ -13,6 +17,7 @@
 
 ### Fixed
 
+- **A local verify command does not present another principal's Attempt.** The refusal is checked again on the Attempt `ExecutionService.run` returns, so a dispatch key inserted by someone else after the first read, including the loser of the unique-key insert, is not reported as this command's result.
 - **Material-decision tests wait for the requester's report before a human resolves (#140).**
   Approving as soon as the request row exists (plus a short sleep) raced the
   coordinator: under load the human could approve before verification was

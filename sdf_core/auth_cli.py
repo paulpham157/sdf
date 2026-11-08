@@ -5,8 +5,13 @@
     python -m sdf_core.auth_cli revoke <token-id>
 
 ``create`` prints the plaintext token once, to stdout, for the operator to
-store; it is never stored or logged.  Uses ``SDF_DATABASE_URL`` and
-``SDF_AUTH_PEPPER`` from the environment or the repo-root ``.env``.
+store; it is never stored or logged.  ``SDF_DATABASE_URL`` in the process
+environment selects the database. A repo-root ``.env`` entry does not.
+When that variable is absent, this uses the same private local SQLite file
+as the API (``$XDG_DATA_HOME/sdf`` or ``~/.local/share/sdf``).
+``SDF_AUTH_PEPPER`` in the environment is used when it is long enough;
+otherwise local mode loads or generates the key in the secret file. An
+explicit database URL does not generate that file.
 """
 
 from __future__ import annotations
@@ -18,6 +23,13 @@ import sys
 
 from . import auth
 from .db import make_session_factory
+from .local_state import (
+    LocalStateError,
+    ensure_local_secrets,
+    hermetic,
+    is_local_default_url,
+    resolve_database_url,
+)
 
 
 def _actor() -> str:
@@ -43,7 +55,13 @@ def main(argv: list[str] | None = None) -> int:
     revoke.add_argument("token_id")
     args = parser.parse_args(argv)
 
-    url = auth.setting("SDF_DATABASE_URL")
+    try:
+        url = resolve_database_url(create=not hermetic())
+        if is_local_default_url(url):
+            ensure_local_secrets()
+    except LocalStateError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if not url or ":memory:" in url:
         print("error: set SDF_DATABASE_URL to the server's database", file=sys.stderr)
         return 2

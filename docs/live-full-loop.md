@@ -92,11 +92,6 @@ sandboxes tagged with its own `sdf_attempt_id`, and evaluator boxes `e2b-box` cr
 # deterministic suite (no live keys)
 uv run pytest -q
 
-# one public HTTP walk with the fake adapter (no paid keys; not production proof)
-uv run scripts/demo.py
-# historical alias:
-scripts/demo-evidence.sh
-
 # live public-path proof (keys from env / .env; never echo them)
 SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 
@@ -104,6 +99,6 @@ SDF_LIVE_FULL_LOOP=1 uv run pytest -q tests/test_live_full_loop_http.py
 python -m sdf_core.cli runs show ATTEMPT-…
 ```
 
-`uv run scripts/demo.py` (or `scripts/demo-evidence.sh`, which wraps it) uses fixture `fixtures/offline-evidence` (`fixture_dir=offline-evidence` under `SDF_FIXTURES_ROOT`). It runs two tasks against the same sealed `app-updated` check: an honest `print('updated')` that verification accepts, and a near-miss `print('updated ')` (plus a weak test rewrite) that the agent claims succeeded and SDF rejects. Evidence from that script is synthetic. If `SDF_EVIDENCE_MAC_KEY` is unset, the script sets a demo-only fixture key so verification can accept the honest edit; a user-supplied key is kept when it is at least 32 characters. Starting the API any other way (including `uvicorn` or the Paseo `api` script) requires you to set `SDF_EVIDENCE_MAC_KEY` yourself; the server does not start without it. The script needs a native Linux x86_64 host with Landlock, because the sealed oracle that judges that check runs nowhere else (ADR 0039); on any other host it stops before it starts the API and points at GitHub Codespaces.
+The user-facing command is `uv run python -m sdf_core.verify /path/to/your/repository` (see the README). It is not this HTTP loop, it does not use the fake adapter, and `fixture_dir` stays under `SDF_FIXTURES_ROOT`. The sealed oracle still produces a pass only on Linux x86_64 with Landlock (ADR 0039).
 
 See also `.env.example`, ADR 0023, and `tests/test_real_agent_loop_live.py`.

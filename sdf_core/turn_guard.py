@@ -2,9 +2,9 @@
 
 Every agent turn runs in its own process session and, where the sandbox
 allows it, its own cgroup v2 leaf; descendants also inherit a
-``SDF_TURN_ID=<id>`` environment tag.  A turn's members are the union of
+``SDF_TURN_ID=<process>--<id>`` environment tag.  A turn's members are the union of
 
-* the processes in its cgroup (``/sys/fs/cgroup/sdf-turns/<id>``) - nothing a
+* the processes in its cgroup (``/sys/fs/cgroup/sdf-turns/<process>/<id>``) - nothing a
   non-root process does (``setsid``, double fork, re-exec, clearing its
   environment, reparenting to PID 1) leaves it;
 * the processes in its session (``setsid`` leader recorded at start);
@@ -33,24 +33,34 @@ cancel and terminate.
 
 from __future__ import annotations
 
+import os
 import re
+import secrets
 from typing import Sequence
 
-TURN_DIR = "/tmp/sdf-turns"
-CGROUP_DIR = "/sys/fs/cgroup/sdf-turns"
+# One directory per process. Turn ids are reused across test processes and
+# across local runners (``pi-ATTEMPT-1-1-t1``). A shared record lets one
+# process's sweep read the other's session id and SIGTERM it; the shell then
+# reports ``Terminated`` and exits 143. The cgroup leaf stays ``<turn-id>``
+# under this process's parent, so a sweep still kills only this process's turn.
+_OWNER = f"p{os.getpid()}x{secrets.token_hex(4)}"
+TURN_ROOT = "/tmp/sdf-turns"
+CGROUP_ROOT = "/sys/fs/cgroup/sdf-turns"
+TURN_DIR = f"{TURN_ROOT}/{_OWNER}"
+CGROUP_DIR = f"{CGROUP_ROOT}/{_OWNER}"
 TAG_ENV = "SDF_TURN_ID"
 GRACE_S = 3
 _ID = re.compile(r"[A-Za-z0-9_-]{1,120}")
 
 # POSIX sh helpers shared by every script below.
 _LIB = (
-    'R=' + TURN_DIR + '; CG=' + CGROUP_DIR + '\n'
+    'R=' + TURN_DIR + '; CG=' + CGROUP_DIR + '; OWN=' + _OWNER + '\n'
     # Candidate member pids of turn $1, minus descendants of pid $2 (if set).
     'sdf_members() {\n'
     '  _d=$R/$1; _cg=$(cat "$_d/cgroup" 2>/dev/null); _sid=$(cat "$_d/sid" 2>/dev/null)\n'
     '  _m=$( { [ -n "$_cg" ] && cat "$_cg/cgroup.procs" 2>/dev/null\n'
     '    [ -n "$_sid" ] && ps -e -o pid=,sid= 2>/dev/null | awk -v s="$_sid" \'$2==s {print $1}\'\n'
-    '    grep -lsxz "' + TAG_ENV + '=$1" /proc/[0-9]*/environ 2>/dev/null | sed -n \'s|^/proc/\\([0-9]*\\)/environ$|\\1|p\'\n'
+    '    grep -lsxz "' + TAG_ENV + '=$OWN--$1" /proc/[0-9]*/environ 2>/dev/null | sed -n \'s|^/proc/\\([0-9]*\\)/environ$|\\1|p\'\n'
     '  } | sort -un | grep -vx -e 1 -e "$$" )\n'
     '  [ -n "$_m" ] || return 0\n'
     '  if [ -z "$2" ]; then printf "%s\\n" "$_m"; return 0; fi\n'
@@ -75,7 +85,9 @@ _LIB = (
     '  done\n'
     '  [ -z "$_p" ]\n'
     '}\n'
-    'sdf_finish() { _cg=$(cat "$R/$1/cgroup" 2>/dev/null); [ -n "$_cg" ] && sudo -n rmdir "$_cg" 2>/dev/null; rm -rf "$R/$1"; return 0; }\n'
+    'sdf_finish() { _cg=$(cat "$R/$1/cgroup" 2>/dev/null); '
+    'if [ -n "$_cg" ]; then sudo -n rmdir "$_cg" 2>/dev/null; sudo -n rmdir "$(dirname "$_cg")" 2>/dev/null; fi; '
+    'rm -rf "$R/$1"; rmdir "$R" 2>/dev/null; return 0; }\n'
     # Create turn $1's record and, when possible, its cgroup.
     'sdf_open() {\n'
     '  (umask 077; mkdir -p "$R/$1") || return 1\n'
@@ -92,7 +104,7 @@ _GUARD = _LIB + (
     'sdf_open "$id" || { echo "sdf: cannot create turn record" >&2; exit 125; }\n'
     'cg=$(cat "$R/$id/cgroup" 2>/dev/null)\n'
     'trap \'sdf_kill "$id" "$g"; sdf_finish "$id"; exit 143\' TERM HUP INT\n'
-    + TAG_ENV + '=$id setsid -w sh -c \'echo $$ > "$1/sid"; if [ -n "$2" ]; then echo $$ | sudo -n tee "$2/cgroup.procs" >/dev/null 2>&1; fi; '
+    + TAG_ENV + '=$OWN--$id setsid -w sh -c \'echo $$ > "$1/sid"; if [ -n "$2" ]; then echo $$ | sudo -n tee "$2/cgroup.procs" >/dev/null 2>&1; fi; '
     'shift 2; exec "$@"\' sdf-turn "$R/$id" "$cg" "$@" &\n'
     'wait $!; rc=$?\n'
     'sdf_kill "$id" "$g"; sdf_finish "$id"\n'
@@ -139,6 +151,16 @@ def _check_id(value: str) -> str:
     if not _ID.fullmatch(value):
         raise ValueError("turn id must be 1-120 letters, digits, underscores or hyphens")
     return value
+
+
+def turn_tag(turn_id: str) -> str:
+    """``SDF_TURN_ID`` value for ``turn_id`` in this process.
+
+    The process token keeps a host-wide ``/proc`` scan from treating another
+    runner's turn, which reused the same id, as a member of this one.
+    """
+
+    return f"{_OWNER}--{_check_id(turn_id)}"
 
 
 def guard_argv(turn_id: str, argv: Sequence[str], *, grace_s: int = GRACE_S) -> list[str]:

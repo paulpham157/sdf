@@ -500,6 +500,24 @@ def test_run_retry_without_dispatch_key_does_not_create_second_attempt(tmp_path,
     assert adapter.calls == 2
 
 
+def test_explicit_local_verify_prefix_is_rejected(tmp_path):
+    """``local-`` is the verify command's key. Another principal cannot submit it."""
+
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    created = client.post("/tasks", json={
+        "id": "TASK-LOCAL-PREFIX", "title": "prefix", "idempotency_key": "task-local-prefix",
+        "acceptance_criteria": [],
+    })
+    assert created.status_code == 201, created.text
+    response = client.post("/tasks/TASK-LOCAL-PREFIX/run", json={
+        "fixture_dir": str(fixture),
+        "dispatch_key": "local-" + ("ab" * 20),
+    })
+    assert response.status_code == 422, response.text
+    assert "local-" in response.text
+
+
 def test_explicit_keyless_prefix_is_rejected(tmp_path):
     fixture = tmp_path / "fixture"
     fixture.mkdir()
