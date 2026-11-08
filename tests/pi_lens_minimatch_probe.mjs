@@ -1,46 +1,27 @@
-// Bounded GHSA-g3hv-75wg-m249 probe for the pi-lens tarball SDF loads.
-// Prints one JSON object. Does not walk the filesystem with a hostile glob
-// and refuses a preprocessor that grows past PART_CAP.
+// Executes GHSA-g3hv-75wg-m249 against two algorithms:
+// the published minimatch 10.2.6 (uncapped) and every firstPhasePreProcess
+// copy inside the installed pi-lens package (entry and MCP chunks).
+// A push cap aborts a preprocessor that grows without bound.
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const PART_CAP = 16;
 const PATTERN = "**/../a/b/**/../a/b/**/../a/b";
-const ALLOWED_OPTION_KEYS = new Set(["dot", "nocase"]);
+const OUTER_CAP = 32;
+const SEGMENTS = ["**", "..", "a", "b"];
 
-const args = process.argv.slice(2);
 function arg(name) {
-  const i = args.indexOf(name);
-  if (i < 0 || !args[i + 1]) throw new Error(`missing ${name}`);
-  return args[i + 1];
+  const index = process.argv.indexOf(name);
+  if (index < 0 || !process.argv[index + 1]) throw new Error(`missing ${name}`);
+  return process.argv[index + 1];
 }
 
 const lensRoot = arg("--lens");
 const minimatchRoot = arg("--minimatch");
-const entry = fs.readFileSync(path.join(lensRoot, "dist/index.js"), "utf8");
-const published = fs.readFileSync(path.join(minimatchRoot, "dist/esm/index.js"), "utf8");
 
-function extractBetween(source, startSig, endSig) {
-  const idx = source.indexOf(startSig);
-  if (idx < 0) return null;
-  const end = source.indexOf(endSig, idx + startSig.length);
-  if (end < 0) return null;
-  return source.slice(idx, end);
-}
-
-function normalize(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/(^|[^:\\])\/\/.*$/gm, "$1")
-    .replace(/["']/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function skipString(source, i) {
-  const quote = source[i];
-  i += 1;
+function skipString(source, index) {
+  const quote = source[index];
+  let i = index + 1;
   while (i < source.length) {
     if (source[i] === "\\") {
       i += 2;
@@ -90,27 +71,28 @@ function extractArgs(source, openParen) {
 }
 
 function objectKeys(literal) {
-  if (!literal.startsWith("{") || !literal.endsWith("}")) {
-    throw new Error(`not an object literal: ${literal.slice(0, 80)}`);
+  const compact = literal.replace(/\s+/g, " ").trim();
+  if (!compact.startsWith("{") || !compact.endsWith("}")) {
+    throw new Error(`not an object literal: ${compact.slice(0, 80)}`);
   }
-  if (literal.includes("...")) return { spread: true, keys: [] };
+  if (compact.includes("...")) return { spread: true, keys: [] };
   const keys = [];
   let i = 1;
   let depth = 1;
-  while (i < literal.length - 1 && depth > 0) {
-    const ch = literal[i];
+  while (i < compact.length - 1 && depth > 0) {
+    const ch = compact[i];
     if (ch === "'" || ch === '"' || ch === "`") {
-      i = skipString(literal, i);
+      i = skipString(compact, i);
       continue;
     }
     if (ch === "{" || ch === "(" || ch === "[") depth += 1;
     else if (ch === "}" || ch === ")" || ch === "]") depth -= 1;
     else if (depth === 1 && /[A-Za-z_$]/.test(ch)) {
-      const match = /^[A-Za-z_$][\w$]*/.exec(literal.slice(i));
+      const match = /^[A-Za-z_$][\w$]*/.exec(compact.slice(i));
       const key = match[0];
       let j = i + key.length;
-      while (/\s/.test(literal[j])) j += 1;
-      if (literal[j] === ":") keys.push(key);
+      while (/\s/.test(compact[j])) j += 1;
+      if (compact[j] === ":") keys.push(key);
       i = j;
       continue;
     }
@@ -125,12 +107,18 @@ function resolveOptions(source, callIndex, raw) {
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
     throw new Error(`unresolved minimatch options: ${name.slice(0, 80)}`);
   }
-  const marker = `const ${name} = {`;
-  const at = source.lastIndexOf(marker, callIndex);
-  if (at < 0 || callIndex - at > 2500) {
-    throw new Error(`no nearby literal for options identifier ${name}`);
+  const marker = new RegExp(`(?:const\\s+)?(?<![\\w$])${name}\\s*=\\s*\\{`, "g");
+  let brace = -1;
+  let distance = Infinity;
+  for (const match of source.matchAll(marker)) {
+    const candidate = match.index + match[0].length - 1;
+    const gap = Math.abs(candidate - callIndex);
+    if (gap < distance) {
+      distance = gap;
+      brace = candidate;
+    }
   }
-  const brace = at + marker.length - 1;
+  if (brace < 0) throw new Error(`no object literal for options identifier ${name}`);
   let depth = 0;
   for (let i = brace; i < source.length; i += 1) {
     const ch = source[i];
@@ -158,57 +146,102 @@ function callsIn(source, needle) {
   return found;
 }
 
-const libraryEnd = entry.indexOf("// dist/clients/path-utils.js");
-if (libraryEnd < 0) throw new Error("pi-lens entry has no path-utils boundary");
-const application = entry.slice(libraryEnd);
-const calls = [
-  ...callsIn(application, "(?<![\\w$.])minimatch\\s*\\(").map((call) => ({ ...call, kind: "minimatch" })),
-  ...callsIn(application, "new\\s+Minimatch\\s*\\(").map((call) => ({ ...call, kind: "Minimatch" })),
-];
-const entryCalls = calls.map((call) => {
-  const raw = call.args[2] ?? call.args[1];
-  if (!raw) throw new Error(`${call.kind} call is missing options and pattern`);
-  const literal = resolveOptions(application, call.index, raw);
-  const parsed = objectKeys(literal.replace(/\s+/g, " ").trim());
-  return { kind: call.kind, keys: parsed.keys, spread: parsed.spread };
-});
-
-const levelSites = [...entry.matchAll(/const \{ optimizationLevel = 1 \} = this\.options;/g)].length;
-const levelMentions = [];
-for (const match of entry.matchAll(/optimizationLevel/g)) {
-  const around = entry.slice(Math.max(0, match.index - 16), match.index + 28);
-  const kind = around.includes("{ optimizationLevel = 1 }")
-    ? "default"
-    : around.includes("if (optimizationLevel >= 2)")
-      ? "gate2"
-      : around.includes("(optimizationLevel >= 1)")
-        ? "gate1"
-        : null;
-  levelMentions.push(kind ?? around.replace(/\s+/g, " "));
+function methodText(source, signature, nextSignature) {
+  const start = source.indexOf(signature);
+  if (start < 0) return null;
+  const end = source.indexOf(nextSignature, start + signature.length);
+  if (end < 0) return null;
+  const slice = source.slice(start, end);
+  const close = slice.lastIndexOf("}");
+  if (close < 0) return null;
+  return slice.slice(0, close + 1).trim();
 }
-const firstPhaseAt = entry.indexOf("this.firstPhasePreProcess(");
-const firstPhaseGated = /if \(optimizationLevel >= 2\) \{\s*globParts = $/.test(
-  entry.slice(Math.max(0, firstPhaseAt - 120), firstPhaseAt),
-);
-const bundledPhase = extractBetween(entry, "firstPhasePreProcess(globParts) {", "secondPhasePreProcess(");
-const publishedPhase = extractBetween(published, "firstPhasePreProcess(globParts) {", "secondPhasePreProcess(");
-if (!bundledPhase || !publishedPhase) throw new Error("missing firstPhasePreProcess");
+
+function loadPackagedPhase(source) {
+  const phase = methodText(source, "firstPhasePreProcess(globParts) {", "secondPhasePreProcess(");
+  const root = methodText(source, "#rootIndex(row) {", "hasMagic(");
+  if (!phase || !root) throw new Error("packaged minimatch phase is incomplete");
+  const Factory = new Function(`return class PackagedPhase {\n${root}\n${phase}\n};`);
+  return { phase, cls: Factory() };
+}
+
+function runPackaged(source, braceExpandMax) {
+  const { phase, cls } = loadPackagedPhase(source);
+  const globParts = [[...SEGMENTS, ...SEGMENTS, ...SEGMENTS]];
+  let outerCapHit = false;
+  const push = globParts.push.bind(globParts);
+  globParts.push = (...items) => {
+    if (globParts.length + items.length > OUTER_CAP) {
+      outerCapHit = true;
+      throw new Error(`outer cap ${OUTER_CAP}`);
+    }
+    return push(...items);
+  };
+  const self = Object.assign(new cls(), {
+    preserveMultipleSlashes: false,
+    isWindows: false,
+    options: braceExpandMax === undefined ? {} : { braceExpandMax },
+  });
+  const started = process.hrtime.bigint();
+  let length = null;
+  let error = null;
+  try {
+    length = self.firstPhasePreProcess(globParts).length;
+  } catch (err) {
+    error = err.message;
+  }
+  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+  return {
+    hasCap: phase.includes("globParts.length >= braceExpandMax") && phase.includes("braceExpandMax = 1e5"),
+    length,
+    outerCapHit,
+    error,
+    ms: Math.round(ms * 1000) / 1000,
+  };
+}
+
+function walkJs(dir, out = []) {
+  for (const name of fs.readdirSync(dir)) {
+    const full = path.join(dir, name);
+    if (fs.statSync(full).isDirectory()) walkJs(full, out);
+    else if (name.endsWith(".js") || name.endsWith(".mjs")) out.push(full);
+  }
+  return out;
+}
+
+const copies = [];
+for (const file of walkJs(lensRoot)) {
+  const source = fs.readFileSync(file, "utf8");
+  if (!source.includes("firstPhasePreProcess(globParts) {")) continue;
+  const capped = runPackaged(source, 4);
+  const unbound = runPackaged(source, undefined);
+  copies.push({
+    file: path.relative(lensRoot, file),
+    hasCap: capped.hasCap,
+    cappedLength: capped.length,
+    defaultLength: unbound.length,
+    outerCapHit: capped.outerCapHit || unbound.outerCapHit,
+    error: capped.error || unbound.error,
+    cappedMs: capped.ms,
+    defaultMs: unbound.ms,
+  });
+}
 
 const require = createRequire(path.join(minimatchRoot, "package.json"));
 const { Minimatch } = require(minimatchRoot);
 
-function run(options) {
+function runPublished(options) {
   let entered = 0;
   let maxParts = 0;
-  let capped = false;
+  let outerCapHit = false;
   const original = Minimatch.prototype.firstPhasePreProcess;
   Minimatch.prototype.firstPhasePreProcess = function probe(globParts) {
     entered += 1;
     const push = globParts.push.bind(globParts);
     globParts.push = (...items) => {
-      if (globParts.length + items.length > PART_CAP) {
-        capped = true;
-        throw new Error(`part cap ${PART_CAP}`);
+      if (globParts.length + items.length > OUTER_CAP) {
+        outerCapHit = true;
+        throw new Error(`outer cap ${OUTER_CAP}`);
       }
       return push(...items);
     };
@@ -231,42 +264,69 @@ function run(options) {
     Minimatch.prototype.firstPhasePreProcess = original;
   }
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
-  return { entered, maxParts, setLen, capped, error, ms: Math.round(ms * 1000) / 1000 };
+  return { entered, maxParts, setLen, outerCapHit, error, ms: Math.round(ms * 1000) / 1000 };
 }
+
+const entry = fs.readFileSync(path.join(lensRoot, "dist/index.js"), "utf8");
+const libraryEnd = entry.indexOf("// dist/clients/path-utils.js");
+if (libraryEnd < 0) throw new Error("pi-lens entry has no path-utils boundary");
+const application = entry.slice(libraryEnd);
+const entryCalls = [
+  ...callsIn(application, "(?<![\\w$.])minimatch\\s*\\(").map((call) => ({ ...call, kind: "minimatch" })),
+  ...callsIn(application, "new\\s+Minimatch\\s*\\(").map((call) => ({ ...call, kind: "Minimatch" })),
+].map((call) => {
+  const raw = call.args[2] ?? call.args[1];
+  if (!raw) throw new Error(`${call.kind} call is missing an options argument`);
+  const parsed = objectKeys(resolveOptions(application, call.index, raw));
+  return { kind: call.kind, keys: parsed.keys, spread: parsed.spread };
+});
+
+const optimizationLevelMentions = [];
+for (const match of entry.matchAll(/optimizationLevel/g)) {
+  const around = entry.slice(Math.max(0, match.index - 16), match.index + 28);
+  const wider = entry.slice(Math.max(0, match.index - 40), match.index + 40);
+  const kind = around.includes("{ optimizationLevel = 1 }") || wider.includes("optimizationLevel ?? 1")
+    ? "default"
+    : around.includes("if (optimizationLevel >= 2)")
+      ? "gate2"
+      : around.includes("(optimizationLevel >= 1)")
+        ? "gate1"
+        : null;
+  optimizationLevelMentions.push(kind ?? around.replace(/\s+/g, " "));
+}
+const firstPhaseAt = entry.indexOf("this.firstPhasePreProcess(");
+const firstPhaseGated = /if \(optimizationLevel >= 2\) \{\s*globParts = $/.test(
+  entry.slice(Math.max(0, firstPhaseAt - 120), firstPhaseAt),
+);
+
+const analyze = fs.readFileSync(path.join(lensRoot, "scripts/analyze-pi-lens-logs.mjs"), "utf8");
+const analyzeCalls = callsIn(analyze, "(?<![\\w$.])minimatch\\s*\\(").map((call) => (
+  objectKeys(call.args[2])
+));
 
 const concreteOptions = [
   { dot: true },
   { dot: true, nocase: true },
   { dot: true, nocase: false },
 ];
-const analyzePath = path.join(lensRoot, "scripts/analyze-pi-lens-logs.mjs");
-const analyze = fs.readFileSync(analyzePath, "utf8");
-const analyzeImportsPackage = /from\s+["']minimatch["']/.test(analyze);
-const analyzeCalls = callsIn(analyze, "(?<![\\w$.])minimatch\\s*\\(").map((call) => {
-  const literal = call.args[2];
-  return objectKeys(literal.replace(/\s+/g, " ").trim());
-});
 
-const report = {
-  partCap: PART_CAP,
+process.stdout.write(`${JSON.stringify({
   pattern: PATTERN,
-  allowedOptionKeys: [...ALLOWED_OPTION_KEYS],
+  outerCap: OUTER_CAP,
+  copies,
+  vulnerable: {
+    level2IgnoringCap: runPublished({ optimizationLevel: 2, dot: true, braceExpandMax: 4 }),
+    level2: runPublished({ optimizationLevel: 2, dot: true }),
+    callSiteOptions: concreteOptions.map((options) => ({ options, ...runPublished(options) })),
+  },
+  entryCalls,
+  optimizationLevelMentions,
+  firstPhaseGated,
+  firstPhaseCalls: entry.split("this.firstPhasePreProcess(").length - 1,
   entryImportsChunk: /from\s+["']\.\/chunk-/.test(entry),
   entryMentionsMcpBin: entry.includes("dist/mcp/"),
-  optimizationLevelSites: levelSites,
-  optimizationLevelMentions: levelMentions,
-  firstPhaseGated: firstPhaseGated,
-  firstPhaseCalls: entry.split("this.firstPhasePreProcess(").length - 1,
-  firstPhaseEqual: normalize(bundledPhase) === normalize(publishedPhase),
-  bundledHasCap: bundledPhase.includes("braceExpandMax") || /globParts\.length\s*>=/.test(bundledPhase),
-  entryCalls,
-  behavior: {
-    level2: run({ optimizationLevel: 2, dot: true }),
-    callSiteOptions: concreteOptions.map((options) => ({ options, ...run(options) })),
-  },
   analyzeScript: {
-    importsPackage: analyzeImportsPackage,
+    importsPackage: /from\s+["']minimatch["']/.test(analyze),
     calls: analyzeCalls,
   },
-};
-process.stdout.write(`${JSON.stringify(report)}\n`);
+})}\n`);

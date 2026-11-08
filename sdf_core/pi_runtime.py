@@ -112,8 +112,8 @@ PI_EXTENSIONS: dict[str, PiExtension] = {
     # installs are off (see ``_PI_LENS_ENV``); Pi's ``--no-approve`` makes it
     # refuse project-local binaries and language servers.
     "pi-lens": PiExtension(
-        "4.4.6",
-        "sha512-Hlf4YJuLNpzOnIUj0MMobtsG2mH4n3fkgjdywQhVvwmetUpkgr0J4n9NJKMhRaDszyTshQ4itJtkyd3nUKfktw==",
+        "4.4.8",
+        "sha512-SfUKD8VbYdgOq9tBvEgO2BvY8aoN8HG242RSm4gMl5/nhOiid35UJKDCyC/WMQ0Q+FuFgknlNkF3XtDDZsd4WA==",
         "dist/index.js", read_only=False,
     ),
 }

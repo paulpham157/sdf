@@ -1,14 +1,15 @@
-"""GHSA-g3hv-75wg-m249 in the minimatch copy inlined by pi-lens.
+"""GHSA-g3hv-75wg-m249 in the minimatch copy packaged inside pi-lens.
 
-pi-lens 4.4.6's ``dist/index.js`` (the only file ``PiRuntime`` loads) inlines
-minimatch 10.2.6. That algorithm's ``firstPhasePreProcess`` doubles glob
-parts on ``**/..`` and is what the advisory describes. It runs only when
-``optimizationLevel >= 2``. The default is 1, and the entry never sets the
-option. The external log script imports the installed ``minimatch`` package
-(the lockfile override, 11.0.5), which is not this bundle.
+pi-lens 4.4.6 inlined minimatch 10.2.6. Its ``firstPhasePreProcess`` doubles
+glob parts for ``**/..`` whenever ``optimizationLevel >= 2``, and it ignores
+``braceExpandMax``. pi-lens 4.4.8 is the first published tarball whose entry
+and MCP chunk inline the capped preprocessor (``braceExpandMax`` default
+``1e5``, stop when ``globParts.length`` reaches it). Peers of
+``@earendil-works`` stay optional, so ``npm ci --legacy-peer-deps`` still
+installs no second Pi.
 
-The reference algorithm is the published minimatch 10.2.6 tarball, pinned by
-its registry integrity. A part cap keeps the level-2 repro bounded.
+This runs ``npm ci`` and executes both algorithms on the same bounded
+pattern. The part cap aborts a preprocessor that does not stop.
 """
 
 import base64
@@ -24,15 +25,22 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCK = ROOT / "infra/e2b/herdr-agents/pi-extensions/package-lock.json"
+EXT = ROOT / "infra/e2b/herdr-agents/pi-extensions"
+LOCK = EXT / "package-lock.json"
 PROBE = Path(__file__).with_name("pi_lens_minimatch_probe.mjs")
-# Published algorithm inlined by pi-lens 4.4.6. Not a runtime dependency.
+VERIFY = EXT / "verify-pins.mjs"
 MINIMATCH_10_2_6 = (
     "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz",
     "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==",
 )
-PATTERN_PARTS = 8
-PART_CAP = 16
+LIBC_PACKAGES = (
+    "node_modules/@ast-grep/cli-linux-arm64-gnu",
+    "node_modules/@ast-grep/cli-linux-x64-gnu",
+    "node_modules/@ast-grep/napi-linux-arm64-gnu",
+    "node_modules/@ast-grep/napi-linux-arm64-musl",
+    "node_modules/@ast-grep/napi-linux-x64-gnu",
+    "node_modules/@ast-grep/napi-linux-x64-musl",
+)
 
 
 def _sri(blob: bytes) -> str:
@@ -72,40 +80,71 @@ def _extract_npm(blob: bytes, dest: Path) -> None:
             target.write_bytes(source.read())
 
 
-def _lock_package(name: str) -> dict:
-    lock = json.loads(LOCK.read_text())
-    return lock["packages"][f"node_modules/{name}"]
+def _lock():
+    return json.loads(LOCK.read_text())
 
 
-def test_inlined_minimatch_ghsa_is_present_but_not_reachable(tmp_path):
+def test_packaged_pi_lens_minimatch_is_capped_and_one_pi(tmp_path):
     node = shutil.which("node")
-    if node is None:
-        pytest.fail("node is required to execute the pinned minimatch algorithm")
+    npm = shutil.which("npm")
+    if node is None or npm is None:
+        pytest.fail("node and npm are required to install and execute the pinned pi-lens tarball")
 
     from sdf_core.pi_runtime import PI_EXTENSIONS
 
     lens_pin = PI_EXTENSIONS["pi-lens"]
-    assert (lens_pin.version, lens_pin.entry) == ("4.4.6", "dist/index.js")
-    locked = _lock_package("pi-lens")
+    assert (lens_pin.version, lens_pin.entry) == ("4.4.8", "dist/index.js")
+    lock = _lock()
+    locked = lock["packages"]["node_modules/pi-lens"]
     assert (locked["version"], locked["integrity"]) == (lens_pin.version, lens_pin.integrity)
-    minimatch = _lock_package("minimatch")
-    assert minimatch["version"] == "11.0.5"
+    assert locked["dependencies"]["minimatch"] == "^11.0.1"
+    assert lock["packages"]["node_modules/minimatch"]["version"] == "11.0.5"
     assert not any(
-        key != "node_modules/minimatch" and key.endswith("/minimatch")
-        for key in json.loads(LOCK.read_text())["packages"]
+        key != "node_modules/minimatch" and key.endswith("/minimatch") for key in lock["packages"]
     )
+    for key in LIBC_PACKAGES:
+        assert lock["packages"][key]["libc"] in (["glibc"], ["musl"])
+    for key in lock["packages"]:
+        assert "@earendil-works/" not in key and "@mariozechner/" not in key
 
-    lens_root = tmp_path / "pi-lens"
-    lens_root.mkdir()
-    _extract_npm(_download(locked["resolved"], locked["integrity"]), lens_root)
-    assert json.loads((lens_root / "package.json").read_text())["version"] == "4.4.6"
+    install = tmp_path / "ext"
+    install.mkdir()
+    for name in ("package.json", "package-lock.json"):
+        (install / name).write_text((EXT / name).read_text())
+    subprocess.run(
+        [npm, "ci", "--ignore-scripts", "--legacy-peer-deps", "--no-fund", "--no-audit"],
+        cwd=install, check=True, capture_output=True, text=True, timeout=120,
+    )
+    subprocess.run(
+        [node, str(VERIFY), str(install)],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    installed = []
+    for path in (install / "node_modules").rglob("package.json"):
+        if path.parent.name == "node_modules":
+            continue
+        installed.append(path.parent.relative_to(install / "node_modules").as_posix())
+    assert "minimatch" in installed
+    assert "pi-lens" in installed
+    assert not any("earendil" in name or "mariozechner" in name for name in installed)
+    assert not (
+        "@ast-grep/napi-linux-x64-gnu" in installed and "@ast-grep/napi-linux-x64-musl" in installed
+    )
+    lens_root = install / "node_modules" / "pi-lens"
+    assert json.loads((lens_root / "package.json").read_text())["version"] == "4.4.8"
 
     modules = tmp_path / "node_modules"
     modules.mkdir()
     for name, (url, integrity) in {
         "minimatch": MINIMATCH_10_2_6,
-        "brace-expansion": (_lock_package("brace-expansion")["resolved"], _lock_package("brace-expansion")["integrity"]),
-        "balanced-match": (_lock_package("balanced-match")["resolved"], _lock_package("balanced-match")["integrity"]),
+        "brace-expansion": (
+            lock["packages"]["node_modules/brace-expansion"]["resolved"],
+            lock["packages"]["node_modules/brace-expansion"]["integrity"],
+        ),
+        "balanced-match": (
+            lock["packages"]["node_modules/balanced-match"]["resolved"],
+            lock["packages"]["node_modules/balanced-match"]["integrity"],
+        ),
     }.items():
         dest = modules / name
         dest.mkdir()
@@ -116,33 +155,45 @@ def test_inlined_minimatch_ghsa_is_present_but_not_reachable(tmp_path):
         check=True, capture_output=True, text=True, timeout=30,
     ).stdout)
 
-    assert report["firstPhaseEqual"] is True
-    assert report["bundledHasCap"] is False
-    assert report["firstPhaseCalls"] == 1
+    assert report["copies"]
+    files = {copy["file"] for copy in report["copies"]}
+    assert "dist/index.js" in files
+    assert any(name.startswith("dist/chunk-") for name in files)
+    for copy in report["copies"]:
+        assert copy["hasCap"] is True
+        assert copy["cappedLength"] == 4
+        assert copy["defaultLength"] == 8
+        assert copy["outerCapHit"] is False
+        assert copy["error"] is None
+        assert copy["cappedMs"] < 1000
+        assert copy["defaultMs"] < 1000
+
+    ignored = report["vulnerable"]["level2IgnoringCap"]
+    assert ignored["entered"] == 1
+    assert ignored["maxParts"] == 8
+    assert ignored["outerCapHit"] is False
+    assert ignored["error"] is None
+    assert ignored["ms"] < 1000
+    assert report["vulnerable"]["level2"]["maxParts"] == 8
+
     assert report["firstPhaseGated"] is True
-    assert report["optimizationLevelMentions"] == ["default", "gate2", "gate1", "default", "gate2"]
+    assert report["firstPhaseCalls"] == 1
+    assert set(report["optimizationLevelMentions"]) <= {"default", "gate1", "gate2"}
+    assert "gate2" in report["optimizationLevelMentions"]
     assert report["entryImportsChunk"] is False
     assert report["entryMentionsMcpBin"] is False
-    assert len(report["entryCalls"]) == 8
+    kinds = {call["kind"] for call in report["entryCalls"]}
+    assert {"minimatch", "Minimatch"} <= kinds
     for call in report["entryCalls"]:
         assert call["spread"] is False
         assert set(call["keys"]) <= {"dot", "nocase"}
         assert call["keys"]
-
-    level2 = report["behavior"]["level2"]
-    assert level2 == {
-        "entered": 1, "maxParts": PATTERN_PARTS, "setLen": PATTERN_PARTS,
-        "capped": False, "error": None, "ms": level2["ms"],
-    }
-    assert level2["ms"] < 1000
-    assert PATTERN_PARTS < PART_CAP == report["partCap"]
-    assert report["behavior"]["callSiteOptions"]
-    for result in report["behavior"]["callSiteOptions"]:
+    for result in report["vulnerable"]["callSiteOptions"]:
         assert set(result["options"]) <= {"dot", "nocase"}
         assert result["entered"] == 0
         assert result["maxParts"] == 0
         assert result["setLen"] == 1
-        assert result["capped"] is False
+        assert result["outerCapHit"] is False
         assert result["error"] is None
         assert result["ms"] < 1000
 
