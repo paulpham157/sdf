@@ -855,6 +855,11 @@ class Coordinator:
         for name, size in names:
             if name.startswith("."):
                 continue
+            if size == 0:
+                # A client may create the file before writing bytes (non-atomic
+                # drop). Consuming a 0-byte in-progress request deletes it
+                # without a response, so the agent waits until it times out.
+                continue
             try:
                 raw = b"" if not REQUEST_NAME.fullmatch(name) or size > MAX_REQUEST_BYTES \
                     else ag.sandbox.read_core_request(name)

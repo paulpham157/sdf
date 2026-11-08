@@ -143,6 +143,38 @@ def test_query_cap(db, two_runs, monkeypatch):
     assert [svc.handle(_raw("run_status"), sandbox_id=None)["ok"] for _ in range(3)] == [True, True, False]
 
 
+def test_empty_in_progress_core_request_is_left_for_the_next_poll(tmp_path):
+    """A 0-byte drop is still being written; consuming it would leave no reply."""
+
+    req = tmp_path / "req"
+    req.mkdir()
+    rid = uuid.uuid4().hex
+    path = req / f"{rid}.json"
+    path.write_bytes(b"")
+
+    class Box:
+        sandbox_id = "sbx-empty"
+
+        def list_core_requests(self):
+            return [(p.name, p.stat().st_size) for p in req.iterdir() if p.is_file()]
+
+        def read_core_request(self, name):
+            return (req / name).read_bytes()
+
+        def remove_core_request(self, name):
+            (req / name).unlink()
+
+        def write_core_response(self, name, data):
+            raise AssertionError("must not answer an empty in-progress request")
+
+    from types import SimpleNamespace
+    violations: list = []
+    Coordinator._serve_core(
+        object.__new__(Coordinator), "worker-1", SimpleNamespace(sandbox=Box()), None, [], violations)
+    assert path.exists() and path.stat().st_size == 0
+    assert violations == []
+
+
 def test_relay_end_to_end_with_real_shim_and_message_visibility(db, tmp_path):
     fixture = make_fixture(tmp_path / "f")
     plan = _approved(db, fixture, "PLAN-E2E")
@@ -155,15 +187,21 @@ def test_relay_end_to_end_with_real_shim_and_message_visibility(db, tmp_path):
             seen["cross"] = fake.core("get_task", json.dumps({"task_id": "PLAN-OTHER--add"}))
             seen["approve"] = fake.core("approve_plan")  # refused by the shim itself
             # A forged request that bypasses the shim is refused by the host.
+            # Drop it the same way the shim does (temp + rename) so the relay
+            # never sees a 0-byte in-progress file as the complete request.
             rid = uuid.uuid4().hex
             req = fake.core_dir / "req"
-            (req / f"{rid}.json").write_text(json.dumps({"id": rid, "tool": "approve_plan",
-                                                         "args": {"plan_id": plan.id}}))
+            req.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps({"id": rid, "tool": "approve_plan", "args": {"plan_id": plan.id}})
+            part = req / f".{rid}.json.tmp"
+            part.write_text(payload)
+            part.rename(req / f"{rid}.json")
             resp = fake.core_dir / "resp" / f"{rid}.json"
-            for _ in range(2000):
-                if resp.exists():
-                    break
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and not resp.exists():
                 time.sleep(0.01)
+            if not resp.exists():
+                raise TimeoutError(f"host did not answer forged request {rid}")
             seen["forged"] = resp.read_text()
             seen["msgs"] = fake.core("list_messages")
         worker_behavior()(fake, prompt, turn)
