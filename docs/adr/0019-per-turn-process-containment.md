@@ -23,15 +23,20 @@ E2B `sdf-herdr-agents` sandboxes (probed): kernel 6.1, cgroup v2 at
 
 `sdf_core/turn_guard.py` contains every agent turn. A turn's **members** are the union of
 
-1. processes in its cgroup v2 leaf `/sys/fs/cgroup/sdf-turns/<turn-id>`
+1. processes in its cgroup v2 leaf `/sys/fs/cgroup/sdf-turns/<process>/<turn-id>`
    (created with `sudo -n`; a non-root process cannot leave it by `setsid`,
    double fork, re-exec, clearing its environment or reparenting);
 2. processes in its session (the `setsid` leader is recorded);
-3. processes whose initial environment contains `SDF_TURN_ID=<turn-id>`.
+3. processes whose initial environment contains `SDF_TURN_ID=<process>--<turn-id>`.
+   The process token is the same one used in the record directory, so a
+   host-wide scan cannot take another runner's reused turn id as a member.
 
-Records live in `/tmp/sdf-turns/<turn-id>/` (mode 0700: `cgroup`, `sid`,
-`root`, `swept`). **Kill** = `SIGTERM`, a 3 s grace period (polled), then
-`SIGKILL` plus `cgroup.kill` until no member is left (at most 10 rounds).
+Records live in `/tmp/sdf-turns/<process>/<turn-id>/` (mode 0700: `cgroup`, `sid`,
+`root`, `swept`). `<process>` is chosen once per OS process, so two runners on
+one host that reuse a turn id do not share a session record. A sweep still
+kills only that process's own turn. **Kill** = `SIGTERM`, a 3 s grace period
+(polled), then `SIGKILL` plus `cgroup.kill` until no member is left (at most
+10 rounds).
 
 - **Headless kinds (qwen, goose, pi, opencode).** Every turn is
   `guard_argv(<session>-t<n>, argv)`. The guard is outside the turn's cgroup and

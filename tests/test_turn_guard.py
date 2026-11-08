@@ -28,7 +28,7 @@ sleep "$2"
 
 def _tagged(turn_id: str) -> list[int]:
     out = []
-    needle = f"{tg.TAG_ENV}={turn_id}".encode()
+    needle = f"{tg.TAG_ENV}={tg.turn_tag(turn_id)}".encode()
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
             continue
@@ -51,6 +51,40 @@ def _quiet(path: Path, seconds: float = 1.0) -> bool:
 
 def _id() -> str:
     return f"pytest-{uuid.uuid4().hex[:10]}-t1"
+
+
+def test_same_turn_id_in_another_process_is_not_terminated():
+    """Two processes may reuse a turn id. Each sweep must stay in its own records.
+
+    A shared ``/tmp/sdf-turns/<id>`` lets the first process's exit sweep read the
+    second process's session id and SIGTERM it. The shell reports ``Terminated``
+    and exits 143, which the headless runtimes surface as ``HerdrRuntimeError``.
+    """
+
+    script = (
+        "import os, sys, subprocess\n"
+        "sys.path.insert(0, os.environ['PYTHONPATH'])\n"
+        "from sdf_core import turn_guard as tg\n"
+        "turn = 'shared-turn-id'\n"
+        "proc = subprocess.run(\n"
+        "    tg.guard_argv(turn, ['sh', '-c', 'echo START; sleep 2; echo DONE'], grace_s=1),\n"
+        "    capture_output=True, text=True, timeout=30)\n"
+        "sys.stdout.write(f'{sys.argv[1]} RC {proc.returncode}\\n')\n"
+        "sys.stdout.write(proc.stdout)\n"
+        "sys.stdout.write(proc.stderr)\n"
+        "raise SystemExit(proc.returncode)\n"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    first = subprocess.Popen([sys.executable, "-c", script, "first"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    time.sleep(0.4)
+    second = subprocess.Popen([sys.executable, "-c", script, "second"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    first_out = first.stdout.read() if first.stdout is not None else ""
+    second_out = second.stdout.read() if second.stdout is not None else ""
+    assert first.wait(timeout=30) == 0, first_out
+    assert second.wait(timeout=30) == 0, second_out
+    assert "DONE" in first_out and "DONE" in second_out
+    assert "Terminated" not in first_out and "Terminated" not in second_out
 
 
 def test_argv_builders_validate_input():
@@ -136,7 +170,7 @@ def test_enter_and_sweep_keep_the_long_lived_root(tmp_path):
         assert mode.stdout.strip() in {"cgroup", "session"}
         # A leftover in the root's session that is not its descendant (reparented orphan).
         leftover = subprocess.Popen(
-            ["sh", "-c", f'( ( exec env {tg.TAG_ENV}={turn} sh -c "while :; do date >> {tmp_path}/o.txt; sleep 0.2; done" ) & ) '],
+            ["sh", "-c", f'( ( exec env {tg.TAG_ENV}={tg.turn_tag(turn)} sh -c "while :; do date >> {tmp_path}/o.txt; sleep 0.2; done" ) & ) '],
         )
         leftover.wait(timeout=10)
         time.sleep(0.5)

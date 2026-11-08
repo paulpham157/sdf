@@ -108,7 +108,8 @@ def _kill_agent_script(kind: str) -> str:
         return f"for p in $(pgrep -x {kind}; pgrep -f 'bin/{kind}( |$)'); do sudo kill -9 $p; done; echo KILLED"
     # Headless: SIGKILL the turn's session leader and the agent processes in
     # its session (not the probe's own shell / sleeps).
-    return ("for f in /tmp/sdf-turns/*/sid; do s=$(cat $f); "
+    return ("for f in /tmp/sdf-turns/*/sid /tmp/sdf-turns/*/*/sid; do "
+            "[ -f \"$f\" ] || continue; s=$(cat \"$f\"); "
             "for p in $(ps -eo pid=,sid=,args= | awk -v s=$s '$2==s' "
             "| grep -vE '^ *[0-9]+ +[0-9]+ +((/bin/)?sleep [0-9]+|sh [^ ]*tick[.]sh.*|sh spawn[.]sh)$' "
             "| awk '{print $1}'); do sudo kill -9 $p; done; done; echo KILLED")
