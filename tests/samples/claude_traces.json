@@ -1,0 +1,49 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "claude-code"}},
+          {"key": "session.id", "value": {"stringValue": "sample-claude-1"}},
+          {"key": "sdf.fixture", "value": {"stringValue": "sample"}}
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "name": "claude_code.interaction",
+              "startTimeUnixNano": "1000000000",
+              "endTimeUnixNano": "3000000000",
+              "attributes": [
+                {"key": "model", "value": {"stringValue": "claude-sonnet-5"}},
+                {"key": "session.id", "value": {"stringValue": "sample-claude-1"}},
+                {"key": "span.type", "value": {"stringValue": "claude_code.interaction"}}
+              ]
+            },
+            {
+              "name": "claude_code.tool",
+              "startTimeUnixNano": "1200000000",
+              "endTimeUnixNano": "1450000000",
+              "attributes": [
+                {"key": "tool_name", "value": {"stringValue": "Bash"}},
+                {"key": "tool_use_id", "value": {"stringValue": "toolu_bash"}},
+                {"key": "session.id", "value": {"stringValue": "sample-claude-1"}}
+              ]
+            },
+            {
+              "name": "claude_code.tool",
+              "startTimeUnixNano": "1500000000",
+              "endTimeUnixNano": "1600000000",
+              "attributes": [
+                {"key": "tool_name", "value": {"stringValue": "Read"}},
+                {"key": "tool_use_id", "value": {"stringValue": "toolu_read"}},
+                {"key": "session.id", "value": {"stringValue": "sample-claude-1"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

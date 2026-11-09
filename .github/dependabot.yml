@@ -13,10 +13,3 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Hold sqlalchemy below 2.1 until opentelemetry-instrumentation-sqlalchemy
-    # accepts it. pyproject.toml pins sqlalchemy>=2.0,<2.1 for the same reason
-    # (0.66b2 still requires sqlalchemy<2.1; open-telemetry-python-contrib#5120
-    # is merged upstream but not on PyPI).
-    ignore:
-      - dependency-name: sqlalchemy
-        versions: [">=2.1"]

@@ -1,0 +1,44 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "claude-code"}},
+          {"key": "session.id", "value": {"stringValue": "sample-claude-1"}},
+          {"key": "sdf.fixture", "value": {"stringValue": "sample"}}
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1500000000",
+              "body": {"stringValue": "claude_code.api_request"},
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "api_request"}},
+                {"key": "model", "value": {"stringValue": "claude-sonnet-5"}},
+                {"key": "session.id", "value": {"stringValue": "sample-claude-1"}},
+                {"key": "input_tokens", "value": {"intValue": "999"}},
+                {"key": "output_tokens", "value": {"intValue": "999"}},
+                {"key": "cost_usd", "value": {"doubleValue": 9}},
+                {"key": "duration_ms", "value": {"intValue": "999"}}
+              ]
+            },
+            {
+              "timeUnixNano": "1800000000",
+              "body": {"stringValue": "claude_code.tool_result"},
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "tool_result"}},
+                {"key": "session.id", "value": {"stringValue": "sample-claude-1"}},
+                {"key": "tool_name", "value": {"stringValue": "Bash"}},
+                {"key": "tool_use_id", "value": {"stringValue": "toolu_bash"}},
+                {"key": "success", "value": {"stringValue": "true"}},
+                {"key": "duration_ms", "value": {"intValue": "250"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

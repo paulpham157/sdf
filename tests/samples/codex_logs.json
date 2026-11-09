@@ -1,0 +1,60 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "codex-cli"}},
+          {"key": "sdf.fixture", "value": {"stringValue": "sample"}}
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1000000000",
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "codex.conversation_starts"}},
+                {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}},
+                {"key": "model", "value": {"stringValue": "gpt-5.1"}},
+                {"key": "originator", "value": {"stringValue": "codex_cli_rs"}}
+              ]
+            },
+            {
+              "timeUnixNano": "2000000000",
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "codex.sse_event"}},
+                {"key": "event.kind", "value": {"stringValue": "response.completed"}},
+                {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}},
+                {"key": "model", "value": {"stringValue": "gpt-5.1"}},
+                {"key": "input_token_count", "value": {"intValue": "9999"}},
+                {"key": "output_token_count", "value": {"intValue": "9999"}},
+                {"key": "cached_token_count", "value": {"intValue": "9999"}},
+                {"key": "reasoning_token_count", "value": {"intValue": "9999"}}
+              ]
+            },
+            {
+              "timeUnixNano": "3000000000",
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "codex.tool_result"}},
+                {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}},
+                {"key": "model", "value": {"stringValue": "gpt-5.1"}},
+                {"key": "tool_name", "value": {"stringValue": "shell"}},
+                {"key": "call_id", "value": {"stringValue": "call-1"}},
+                {"key": "success", "value": {"stringValue": "true"}},
+                {"key": "duration_ms", "value": {"intValue": "90"}}
+              ]
+            },
+            {
+              "timeUnixNano": "4000000000",
+              "attributes": [
+                {"key": "event.name", "value": {"stringValue": "codex.turn_cost"}},
+                {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}},
+                {"key": "usage.estimated_usd", "value": {"stringValue": "9"}}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {"key": "service.name", "value": {"stringValue": "codex-cli"}},
+          {"key": "service.version", "value": {"stringValue": "0.0.0-sample"}},
+          {"key": "sdf.fixture", "value": {"stringValue": "sample"}}
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "name": "codex.turn.token_usage",
+              "histogram": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "5000000000",
+                    "count": "1",
+                    "sum": 200,
+                    "attributes": [
+                      {"key": "token_type", "value": {"stringValue": "input"}},
+                      {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}},
+                      {"key": "model", "value": {"stringValue": "gpt-5.1"}}
+                    ]
+                  },
+                  {
+                    "timeUnixNano": "5000000000",
+                    "count": "1",
+                    "sum": 30,
+                    "attributes": [
+                      {"key": "token_type", "value": {"stringValue": "output"}},
+                      {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "codex.turn.cost_microusd",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "5000000000",
+                    "asInt": "5000",
+                    "attributes": [
+                      {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}},
+                      {"key": "turn.id", "value": {"stringValue": "turn-sample-1"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "codex.turn.e2e_duration_ms",
+              "histogram": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "5000000000",
+                    "count": "1",
+                    "sum": 2500,
+                    "attributes": [
+                      {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "codex.tool.call",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "5000000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {"key": "tool", "value": {"stringValue": "should-not-appear"}},
+                      {"key": "conversation.id", "value": {"stringValue": "sample-codex-conv-1"}}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "codex.websocket.event",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "5000000000",
+                    "asInt": "3",
+                    "attributes": [
+                      {"key": "kind", "value": {"stringValue": "sample"}}
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
