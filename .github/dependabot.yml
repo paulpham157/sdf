@@ -1,4 +1,4 @@
-# Action SHAs and uv.lock. Dependabot opens update PRs; it does not change pins by itself.
+# Action SHAs and Go modules. Dependabot opens update PRs; it does not change pins by itself.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -9,7 +9,7 @@ updates:
       codeql-action:
         patterns:
           - "github/codeql-action*"
-  - package-ecosystem: uv
+  - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
