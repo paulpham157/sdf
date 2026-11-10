@@ -264,6 +264,41 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
+## One-step setup
+
+`sdf init` prints the exporter settings for one agent. It does not change a
+file unless you pass `--write`. An existing file is copied to a sibling
+ending in `.sdf-bak` before it is changed. A file that is not valid JSON is
+left untouched. An existing Codex `[otel]` table is left untouched.
+
+```bash
+sdf init claude-code
+sdf init claude-code --write
+sdf init codex --write
+sdf init opencode --write
+sdf init pi --write
+sdf init pi --install
+sdf init --check
+```
+
+`--check` GETs `http://127.0.0.1:4318/health` and opens a TCP connection to
+`127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
+counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
+
+The settings are the ones in the sections below. Claude Code's variables are
+from the [monitoring doc](https://code.claude.com/docs/en/monitoring-usage)
+and are written to `~/.claude/settings.json`, not to a repository settings
+file. Codex's `[otel]` table is from the
+[config reference](https://developers.openai.com/codex/config-reference) and
+is written to `$CODEX_HOME/config.toml`. OpenCode v2 only needs
+`OTEL_EXPORTER_OTLP_ENDPOINT`; `--write` saves a snippet you source, because
+OpenCode does not load that file itself. Pi needs `pi install npm:pi-otel`
+(the extension checked here is 0.3.0). `--install` is what runs that command.
+`--write` updates `.pi/settings.json` in the current directory, which pi-otel
+0.3.0 reads before `~/.pi/agent/settings.json`. The protocol in that file is
+`http/json`. pi-otel's own default is gRPC on port 4317, which this receiver
+also accepts.
+
 ## Point Claude Code at it
 
 Set these in the shell that launches `claude`, or in `~/.claude/settings.json`.

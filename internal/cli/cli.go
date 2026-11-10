@@ -17,6 +17,7 @@ import (
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
+	"github.com/paulpham157/sdf/internal/setup"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
 )
@@ -29,7 +30,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices> [flags]")
+		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -39,8 +40,10 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdSummary(args[1:], stdout, stderr)
 	case "prices":
 		return cmdPrices(args[1:], stdout, stderr)
+	case "init":
+		return cmdInit(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices> [flags]")
+		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init> [flags]")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
@@ -319,6 +322,111 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "wrote %d models from %s retrieved %s to %s\n", len(snap.Catalog.Models), snap.Catalog.Source, snap.Catalog.RetrievedAtRaw, outPath)
 	return 0
+}
+
+func cmdInit(args []string, stdout, stderr io.Writer) int {
+	host := "127.0.0.1"
+	port := 4318
+	grpcPort := 4317
+	write := false
+	install := false
+	check := false
+	agent := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [claude-code|codex|opencode|pi] [--write] [--install]")
+			return 0
+		case arg == "--write":
+			write = true
+		case arg == "--install":
+			install = true
+		case arg == "--check":
+			check = true
+		case arg == "--host":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf init: --host requires a value")
+				return 2
+			}
+			host = v
+		case strings.HasPrefix(arg, "--host="):
+			host = strings.TrimPrefix(arg, "--host=")
+		case arg == "--port":
+			v, ok := take(&i, args)
+			n, err := parsePort(v, ok)
+			if err != nil {
+				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				return 2
+			}
+			port = n
+		case strings.HasPrefix(arg, "--port="):
+			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			if err != nil {
+				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				return 2
+			}
+			port = n
+		case arg == "--grpc-port":
+			v, ok := take(&i, args)
+			n, err := parsePort(v, ok)
+			if err != nil {
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				return 2
+			}
+			grpcPort = n
+		case strings.HasPrefix(arg, "--grpc-port="):
+			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			if err != nil {
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				return 2
+			}
+			grpcPort = n
+		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi":
+			if agent != "" {
+				fmt.Fprintf(stderr, "sdf init: extra agent %s\n", arg)
+				return 2
+			}
+			agent = arg
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	if agent == "" && !check {
+		fmt.Fprintln(stderr, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [claude-code|codex|opencode|pi] [--write] [--install]")
+		return 2
+	}
+	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
+	code := 0
+	if check {
+		probed := setup.Probe(ep)
+		fmt.Fprint(stdout, probed.Text)
+		if agent != "" {
+			text, err := setup.Configured(setup.Request{Agent: agent, Endpoint: ep})
+			if err != nil {
+				fmt.Fprintf(stderr, "sdf init: %v\n", err)
+				return 1
+			}
+			fmt.Fprint(stdout, text)
+		}
+		if !probed.Reachable {
+			code = 1
+		}
+	}
+	if agent == "" {
+		return code
+	}
+	res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install})
+	if res.Text != "" {
+		fmt.Fprint(stdout, res.Text)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf init: %v\n", err)
+		return 1
+	}
+	return code
 }
 
 func parsePort(v string, ok bool) (int, error) {
