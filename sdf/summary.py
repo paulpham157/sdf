@@ -1,8 +1,8 @@
 """Summarize collected sessions from telemetry that is actually present.
 
-Codex and Claude Code do not emit the same signals. Every number names the
-signal it came from. A signal that did not arrive is listed as missing, with
-the reason when the telemetry itself explains it.
+Claude Code, Codex, OpenCode, and Pi do not emit the same signals. Every
+number names the signal it came from. A signal that did not arrive is listed
+as missing, with the reason when the telemetry itself explains it.
 """
 
 from __future__ import annotations
@@ -43,6 +43,33 @@ _CODEX_SPANS = {
 _TOOL_SPANS = {"claude_code.tool", "exec_command", "unified_exec.exec_command"}
 _WAIT_SPANS = {"claude_code.tool.blocked_on_user", "codex.tool_blocking"}
 _EXEC_SPANS = {"claude_code.tool.execution", "unified_exec.exec_command"}
+_OPENCODE_SPANS = {
+    "SessionRunner.drain",
+    "SessionRunner.runStep",
+    "SessionStep.attempt",
+    "Tool.execute",
+    "FileWrite.write",
+    "POST",
+}
+_PI_SPAN_HEADS = {"invoke_agent", "pi.turn", "chat", "execute_tool"}
+_PI_TOKEN_METRIC = "gen_ai.client.token.usage"
+_PI_LOGS = {"pi.session.start", "pi.session.end"}
+_CUMULATIVE_USAGE = {
+    "input_tokens",
+    "cache_read.input_tokens",
+    "cache_read_input_tokens",
+    "cache_write.input_tokens",
+    "cache_write_input_tokens",
+}
+_USAGE_ORDER = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read.input_tokens",
+    "cache_read_input_tokens",
+    "cache_write.input_tokens",
+    "cache_write_input_tokens",
+    "reasoning_tokens",
+)
 _SESSION_CODEX_METRICS = (
     "codex.turn.token_usage",
     "codex.turn.cost_microusd",
@@ -211,8 +238,9 @@ def format_summary(report: SummaryReport) -> str:
         for node in session.spans:
             _format_span(lines, node, indent=2)
         if session.spans_hidden:
+            noun = "span" if session.spans_hidden == 1 else "spans"
             lines.append(
-                f"    ({session.spans_hidden} internal spans hidden; rerun with --all-spans)"
+                f"    ({session.spans_hidden} internal {noun} hidden; rerun with --all-spans)"
             )
         lines.append("  logs:")
         if session.log_events:
@@ -262,6 +290,7 @@ def tool_of(record: Record) -> str:
     body = record.body or ""
     origin = str(record.attributes.get("originator") or record.resource.get("originator") or "")
     event = str(record.attributes.get("event.name") or "")
+    system = _gen_ai_system(record)
     if (
         service.startswith("claude-code")
         or name.startswith("claude_code.")
@@ -277,7 +306,19 @@ def tool_of(record: Record) -> str:
         or event.startswith("codex.")
     ):
         return "codex"
+    if service == "opencode":
+        return "opencode"
+    if service == "pi" or system == "pi" or name.startswith("pi.session.") or event.startswith("pi.session."):
+        return "pi"
     return "unknown"
+
+
+def _gen_ai_system(record: Record) -> str:
+    for source in (record.attributes, record.resource):
+        text = _text(source.get("gen_ai.system"))
+        if text:
+            return text.lower()
+    return ""
 
 
 def _attribute(
@@ -324,6 +365,11 @@ def _match_session(record, trace_keys, span_keys, bounds):
         if keys and len(keys) == 1:
             return next(iter(keys))
     tool = tool_of(record)
+    # OpenCode startup spans and process logs overlap a session in time but
+    # are not that session. Pi metrics have no session id and still use the
+    # time window below. Pi logs carry pi.session.id and are scoped at ingest.
+    if tool == "opencode" and record.signal in {"logs", "traces"}:
+        return None
     stamps = _stamps(record)
     if not stamps or tool == "unknown":
         return None
@@ -449,12 +495,18 @@ def _interesting_span(record: Record) -> bool:
     name = record.name or ""
     if name in _CLAUDE_SPANS or name in _CODEX_SPANS or name.startswith("claude_code."):
         return True
-    return _call_id(record) is not None or _text(record.attributes.get("tool_name")) is not None
+    if name in _OPENCODE_SPANS or _span_head(name) in _PI_SPAN_HEADS:
+        return True
+    return _call_id(record) is not None or _tool_name(record) is not None
+
+
+def _span_head(name: str) -> str:
+    return name.split(" ", 1)[0] if name else ""
 
 
 def _span_node(record: Record, children: list[SpanNode], logs: dict[str, Record], spans: list[Record]) -> SpanNode:
     call_id = _call_id(record)
-    tool_name = _text(record.attributes.get("tool_name"))
+    tool_name = _tool_name(record)
     success = None
     success_source = None
     wait_ms = wait_source = execution_ms = execution_source = None
@@ -467,6 +519,10 @@ def _span_node(record: Record, children: list[SpanNode], logs: dict[str, Record]
             success_source = f"logs {log.name}"
         wait_ms, wait_source = _child_duration(record, spans, _WAIT_SPANS)
         execution_ms, execution_source = _child_duration(record, spans, _EXEC_SPANS)
+    elif _is_direct_tool_span(record.name or ""):
+        success = _reported_success(record)
+        if success and success != "unknown":
+            success_source = "traces"
     return SpanNode(
         name=record.name or "(unnamed)",
         duration_ms=_span_ms(record),
@@ -520,6 +576,12 @@ def _duration(records: list[Record], points: list[_Point]) -> tuple[float | None
     ]
     if turns:
         return sum(turns), "traces run_turn"
+    invoke = _sum_span_ms(records, lambda name: _span_head(name) == "invoke_agent")
+    if invoke is not None:
+        return invoke, "traces invoke_agent"
+    drain = _sum_span_ms(records, lambda name: name == "SessionRunner.drain")
+    if drain is not None:
+        return drain, "traces SessionRunner.drain"
     active = [point.value for point in points if point.name == _CLAUDE_ACTIVE_METRIC]
     if active:
         return sum(active) * 1000, f"metrics {_CLAUDE_ACTIVE_METRIC}"
@@ -564,7 +626,94 @@ def _tokens(records: list[Record], points: list[_Point]) -> tuple[dict[str, floa
     ]
     if events:
         return _codex_sse_tokens(events)
+    opencode = _genai_usage(records, lambda name: name == "SessionStep.attempt", cumulative_prefix=True)
+    if opencode is not None:
+        totals, method = opencode
+        return totals, "traces SessionStep.attempt", method
+    pi = _genai_usage(
+        records,
+        lambda name: _span_head(name) == "chat",
+        cumulative_prefix=False,
+        only=("input_tokens", "output_tokens"),
+    )
+    if pi is not None:
+        totals, method = pi
+        return totals, "traces chat", method
+    pi_metrics = [point for point in points if point.name == _PI_TOKEN_METRIC]
+    if pi_metrics:
+        return (
+            _sum_by(pi_metrics, "gen_ai.token.type"),
+            f"metrics {_PI_TOKEN_METRIC}",
+            "sum of delta points; a cumulative series keeps its latest point",
+        )
     return {}, None, None
+
+
+def _genai_usage(records, match, *, cumulative_prefix: bool, only: tuple[str, ...] | None = None):
+    """Aggregate gen_ai.usage.* on the spans ``match`` accepts.
+
+    OpenCode ``SessionStep.attempt`` input and cache counts already include
+    the conversation prefix, so those use the max (the same rule as Codex
+    ``response.completed``). Output is new and is summed. Pi ``chat`` input
+    and output are per turn and additive; they are summed, and they are not
+    added again to ``gen_ai.client.token.usage``.
+    """
+    rows: list[dict[str, float]] = []
+    for record in records:
+        if record.signal != "traces" or not match(record.name or ""):
+            continue
+        amounts: dict[str, float] = {}
+        for key, value in record.attributes.items():
+            if not isinstance(key, str) or not key.startswith("gen_ai.usage."):
+                continue
+            label = key[len("gen_ai.usage.") :]
+            if only is not None and label not in only:
+                continue
+            amount = _number(value)
+            if amount is None:
+                continue
+            amounts[label] = amount
+        if amounts:
+            rows.append(amounts)
+    if not rows:
+        return None
+    labels: list[str] = []
+    for row in rows:
+        for label in row:
+            if label not in labels:
+                labels.append(label)
+    labels.sort(key=lambda label: (_USAGE_ORDER.index(label) if label in _USAGE_ORDER else len(_USAGE_ORDER), label))
+    totals: dict[str, float] = {}
+    for label in labels:
+        values = [row[label] for row in rows if label in row]
+        if cumulative_prefix and label in _CUMULATIVE_USAGE:
+            totals[label] = max(values)
+        else:
+            totals[label] = sum(values)
+    if cumulative_prefix:
+        method = (
+            "input and cache counts use the max because each request resends the "
+            "conversation prefix; output is summed"
+        )
+    else:
+        method = (
+            "sum of per-turn input_tokens and output_tokens; they are additive "
+            "and are not added to gen_ai.client.token.usage"
+        )
+    return totals, method
+
+
+def _sum_span_ms(records: list[Record], match) -> float | None:
+    found = []
+    for record in records:
+        if record.signal != "traces" or not match(record.name or ""):
+            continue
+        elapsed = _span_ms(record)
+        if elapsed is not None:
+            found.append(elapsed)
+    if not found:
+        return None
+    return sum(found)
 
 
 def _codex_sse_tokens(events: list[Record]) -> tuple[dict[str, float], str, str]:
@@ -629,6 +778,18 @@ def _cost(records, points, tool: str) -> tuple[float | None, str | None, str | N
         source = source or label
     if found:
         return total, source, note
+    pi_total = 0.0
+    pi_found = False
+    for record in records:
+        if record.signal != "traces" or _span_head(record.name or "") != "chat":
+            continue
+        amount = _number(record.attributes.get("pi.cost.usd"))
+        if amount is None:
+            continue
+        pi_total += amount
+        pi_found = True
+    if pi_found:
+        return pi_total, "traces chat pi.cost.usd", None
     return None, None, None
 
 
@@ -639,7 +800,7 @@ def _tool_calls(records: list[Record], points: list[_Point]) -> list[ToolCall]:
     primary = []
     seen: set[str] = set()
     for record in spans:
-        if record.name not in {"claude_code.tool", "exec_command"}:
+        if not _is_direct_tool_span(record.name or ""):
             continue
         call_id = _call_id(record)
         if call_id:
@@ -692,7 +853,7 @@ def _call_from_span(record: Record, log: Record | None, spans: list[Record]) -> 
     execution_ms, execution_source = _child_duration(record, spans, _EXEC_SPANS)
     duration = execution_ms if execution_ms is not None else _span_ms(record)
     source = f"traces {record.name}"
-    success = _text(record.attributes.get("success"))
+    success = _reported_success(record)
     if log is not None:
         source = f"{source}; logs {log.name}"
         if _text(log.attributes.get("success")):
@@ -700,7 +861,7 @@ def _call_from_span(record: Record, log: Record | None, spans: list[Record]) -> 
         if duration is None:
             duration = _number(log.attributes.get("duration_ms"))
     return ToolCall(
-        name=_text(record.attributes.get("tool_name")) or record.name,
+        name=_tool_name(record) or record.name,
         call_id=_call_id(record),
         success=success,
         duration_ms=duration,
@@ -751,7 +912,18 @@ def _metric_lines(points: list[_Point]) -> list[MetricLine]:
     lines = []
     for point in points:
         detail_parts = []
-        for key in ("type", "token_type", "model", "tool", "decision", "success"):
+        for key in (
+            "type",
+            "token_type",
+            "gen_ai.token.type",
+            "model",
+            "gen_ai.request.model",
+            "tool",
+            "gen_ai.tool.name",
+            "gen_ai.operation.name",
+            "decision",
+            "success",
+        ):
             text = _text(point.attributes.get(key))
             if text:
                 detail_parts.append(f"{key}={text}")
@@ -785,6 +957,13 @@ def _missing(tool: str, records: list[Record], points: list[_Point], failures: l
             reason = "no spans exported. Beta traces need CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1 and OTEL_TRACES_EXPORTER=otlp."
         elif tool == "codex":
             reason = "no spans exported. Set otel.trace_exporter to an otlp-http endpoint ending in /v1/traces."
+        elif tool == "opencode":
+            reason = "no spans exported. OpenCode v2 exports traces when OTEL_EXPORTER_OTLP_ENDPOINT is set."
+        elif tool == "pi":
+            reason = (
+                "no spans exported. Pi has no built-in OTLP exporter; install pi-otel "
+                "and set OTEL_EXPORTER_OTLP_PROTOCOL=http/json."
+            )
         else:
             reason = "no spans exported for this session."
         missing.append(Missing("traces", reason))
@@ -793,9 +972,26 @@ def _missing(tool: str, records: list[Record], points: list[_Point], failures: l
             reason = "no log events exported. Set OTEL_LOGS_EXPORTER=otlp."
         elif tool == "codex":
             reason = "no log events exported. otel.exporter defaults to none."
+        elif tool == "opencode":
+            reason = (
+                "OpenCode v2 does not export per-session logs. Its OTLP logs are process "
+                "events without session.id, so none are attributed to this session."
+            )
+        elif tool == "pi":
+            reason = (
+                "pi-otel logs only session start and end (pi.session.start, pi.session.end) "
+                "and only when PI_OTEL_LOGS=1. None are attributed to this session."
+            )
         else:
             reason = "no log events exported for this session."
         missing.append(Missing("logs", reason))
+    elif tool == "pi" and all((record.name or "") in _PI_LOGS for record in records if record.signal == "logs"):
+        missing.append(
+            Missing(
+                "log catalog",
+                "pi-otel logs only session start and end, not tool results or per-turn events.",
+            )
+        )
     present = {point.name for point in points}
     failed = {name for name, _model in failures}
     session_failed = [name for name in _SESSION_CODEX_METRICS if name in failed and name not in present]
@@ -820,6 +1016,13 @@ def _missing(tool: str, records: list[Record], points: list[_Point], failures: l
                 "no metrics exported. otel.metrics_exporter defaults to statsig, which does not "
                 "send to this receiver."
             )
+        elif tool == "opencode":
+            reason = "OpenCode v2 does not export OTLP metrics."
+        elif tool == "pi":
+            reason = (
+                "pi-otel metrics have no session id and are off unless PI_OTEL_METRICS=1. "
+                "None were attributed by trace, span, or this session's time window."
+            )
         else:
             reason = "no metrics exported for this session."
         missing.append(Missing("metrics", reason))
@@ -831,7 +1034,9 @@ def _models(records: list[Record], points: list[_Point]) -> list[str]:
     for record in records:
         if record.signal == "logs" and record.name in _MODEL_LOGS:
             _add_model(found, record.attributes)
-        elif record.signal == "traces" and record.name in _MODEL_SPANS:
+        elif record.signal == "traces" and (
+            (record.name or "") in _MODEL_SPANS or _text(record.attributes.get("gen_ai.request.model"))
+        ):
             _add_model(found, record.attributes)
     for point in points:
         _add_model(found, point.attributes)
@@ -912,6 +1117,51 @@ def _add_fields(totals: dict[str, float], record: Record, keys: tuple[str, ...])
 
 def _call_id(record: Record) -> str | None:
     return _first(record.attributes, ("call_id", "tool_use_id", "gen_ai.tool.call.id"))
+
+
+def _tool_name(record: Record) -> str | None:
+    return _first(record.attributes, ("tool_name", "gen_ai.tool.name"))
+
+
+def _is_direct_tool_span(name: str) -> bool:
+    return name in {"claude_code.tool", "exec_command", "Tool.execute"} or _span_head(name) == "execute_tool"
+
+
+def _reported_success(record: Record) -> str | None:
+    """Success for a tool span.
+
+    Pi sets ``pi.tool.is_error``. OpenCode ``Tool.execute`` has no success
+    attribute, so the result is unknown. Claude and Codex keep their own
+    ``success`` attribute (and the log can still override it).
+    """
+    if "pi.tool.is_error" in record.attributes:
+        flag = _boolish(record.attributes.get("pi.tool.is_error"))
+        if flag is None:
+            return "unknown"
+        return "false" if flag else "true"
+    text = _text(record.attributes.get("success"))
+    if text:
+        return text
+    name = record.name or ""
+    if name == "Tool.execute" or _span_head(name) == "execute_tool":
+        return "unknown"
+    return None
+
+
+def _boolish(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = _text(value)
+    if text is None:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "1"}:
+        return True
+    if lowered in {"false", "0"}:
+        return False
+    return None
 
 
 def _unattributed_label(record: Record) -> str:
@@ -1040,14 +1290,21 @@ def _format_call(call: ToolCall) -> str:
 def _format_span(lines: list[str], node: SpanNode, indent: int) -> None:
     pad = "  " * indent
     bits = [node.name]
-    if node.tool_name and node.tool_name != node.name:
+    if (
+        node.tool_name
+        and node.tool_name != node.name
+        and not node.name.endswith(" " + node.tool_name)
+    ):
         bits.append(node.tool_name)
     if node.call_id:
         bits.append(f"call_id={node.call_id}")
     if node.duration_ms is not None:
         bits.append(f"{_fmt(node.duration_ms)}ms")
     if node.success:
-        bits.append(f"success={node.success} ({node.success_source})")
+        if node.success_source:
+            bits.append(f"success={node.success} ({node.success_source})")
+        else:
+            bits.append(f"success={node.success}")
     if node.wait_ms is not None:
         bits.append(f"wait={_fmt(node.wait_ms)}ms ({node.wait_source})")
     if node.execution_ms is not None:

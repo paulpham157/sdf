@@ -245,9 +245,20 @@ def _event_name(body: str | None, attributes: dict, resource: dict) -> str | Non
     return attr or body
 
 
+# First match wins. Pi spans set session.id together with pi.session.id and
+# gen_ai.conversation.id. Pi logs set only pi.session.id. OpenCode runner
+# spans set session.id, the same key Claude Code uses.
+_SESSION_KEYS = (
+    "session.id",
+    "conversation.id",
+    "pi.session.id",
+    "gen_ai.conversation.id",
+)
+
+
 def _session_id(attributes: dict, resource: dict) -> str | None:
     for source in (attributes, resource):
-        for key in ("session.id", "conversation.id"):
+        for key in _SESSION_KEYS:
             text = _text(source.get(key))
             if text:
                 return text

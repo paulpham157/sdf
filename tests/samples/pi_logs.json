@@ -1,0 +1,86 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "pi"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "10001000000",
+              "body": {
+                "stringValue": "pi session 2026-01-01T00-00-00-000Z_sample-pi-session started"
+              },
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "pi.session.start"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "pi"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.cwd",
+                  "value": {
+                    "stringValue": "/tmp/sample"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "17200000000",
+              "body": {
+                "stringValue": "pi session 2026-01-01T00-00-00-000Z_sample-pi-session ended"
+              },
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "pi.session.end"
+                  }
+                },
+                {
+                  "key": "gen_ai.system",
+                  "value": {
+                    "stringValue": "pi"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

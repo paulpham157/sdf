@@ -1,0 +1,685 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "pi"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          },
+          {
+            "key": "service.instance.id",
+            "value": {
+              "stringValue": "sample-pi-instance"
+            }
+          },
+          {
+            "key": "telemetry.sdk.name",
+            "value": {
+              "stringValue": "opentelemetry"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "spans": [
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000001",
+              "name": "invoke_agent pi",
+              "startTimeUnixNano": "10000000000",
+              "endTimeUnixNano": "17252420000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "pi"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                },
+                {
+                  "key": "pi.turn_count",
+                  "value": {
+                    "intValue": "4"
+                  }
+                },
+                {
+                  "key": "pi.tool_count",
+                  "value": {
+                    "intValue": "3"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000002",
+              "name": "pi.turn",
+              "startTimeUnixNano": "10010000000",
+              "endTimeUnixNano": "14160340000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000001"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000003",
+              "name": "chat recursive/flint-v1.0:free",
+              "startTimeUnixNano": "10020000000",
+              "endTimeUnixNano": "14147230000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openrouter"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "recursive/flint-v1.0:free"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "975"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "530"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read_input_tokens",
+                  "value": {
+                    "intValue": "384"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_write_input_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.reasoning_tokens",
+                  "value": {
+                    "intValue": "573"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "toolUse"
+                  }
+                },
+                {
+                  "key": "pi.cost.usd",
+                  "value": {
+                    "doubleValue": 0
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000002"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000004",
+              "name": "execute_tool bash",
+              "startTimeUnixNano": "14148000000",
+              "endTimeUnixNano": "14158643000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "bash"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_bash_1"
+                  }
+                },
+                {
+                  "key": "pi.tool.is_error",
+                  "value": {
+                    "boolValue": false
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000002"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000005",
+              "name": "pi.turn",
+              "startTimeUnixNano": "14200000000",
+              "endTimeUnixNano": "14761211000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000001"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000006",
+              "name": "chat recursive/flint-v1.0:free",
+              "startTimeUnixNano": "14201000000",
+              "endTimeUnixNano": "14754855000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openrouter"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "recursive/flint-v1.0:free"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "103"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "33"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read_input_tokens",
+                  "value": {
+                    "intValue": "1792"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_write_input_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.reasoning_tokens",
+                  "value": {
+                    "intValue": "9"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "toolUse"
+                  }
+                },
+                {
+                  "key": "pi.cost.usd",
+                  "value": {
+                    "doubleValue": 0
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000005"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000007",
+              "name": "execute_tool read",
+              "startTimeUnixNano": "14755000000",
+              "endTimeUnixNano": "14760280000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "read"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_read_1"
+                  }
+                },
+                {
+                  "key": "pi.tool.is_error",
+                  "value": {
+                    "boolValue": false
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000005"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000008",
+              "name": "pi.turn",
+              "startTimeUnixNano": "14800000000",
+              "endTimeUnixNano": "15872650000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000001"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c100000000000009",
+              "name": "chat recursive/flint-v1.0:free",
+              "startTimeUnixNano": "14801000000",
+              "endTimeUnixNano": "15865950000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openrouter"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "recursive/flint-v1.0:free"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "15"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "99"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read_input_tokens",
+                  "value": {
+                    "intValue": "1920"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_write_input_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.reasoning_tokens",
+                  "value": {
+                    "intValue": "89"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "toolUse"
+                  }
+                },
+                {
+                  "key": "pi.cost.usd",
+                  "value": {
+                    "doubleValue": 0
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000008"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c10000000000000a",
+              "name": "execute_tool bash",
+              "startTimeUnixNano": "15866000000",
+              "endTimeUnixNano": "15871815000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "bash"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_bash_2"
+                  }
+                },
+                {
+                  "key": "pi.tool.is_error",
+                  "value": {
+                    "boolValue": false
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000008"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c10000000000000b",
+              "name": "pi.turn",
+              "startTimeUnixNano": "15900000000",
+              "endTimeUnixNano": "17252420000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000001"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c10000000000000c",
+              "name": "chat recursive/flint-v1.0:free",
+              "startTimeUnixNano": "15901000000",
+              "endTimeUnixNano": "17251710000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "pi.session.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "openrouter"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "recursive/flint-v1.0:free"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "152"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "170"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read_input_tokens",
+                  "value": {
+                    "intValue": "1920"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_write_input_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.reasoning_tokens",
+                  "value": {
+                    "intValue": "128"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "stringValue": "stop"
+                  }
+                },
+                {
+                  "key": "pi.cost.usd",
+                  "value": {
+                    "doubleValue": 0
+                  }
+                }
+              ],
+              "parentSpanId": "c10000000000000b"
+            },
+            {
+              "traceId": "33333333333333333333333333333333",
+              "spanId": "c10000000000000d",
+              "name": "resolve_tools",
+              "startTimeUnixNano": "10000001000",
+              "endTimeUnixNano": "10000002000",
+              "attributes": [
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "2026-01-01T00-00-00-000Z_sample-pi-session"
+                  }
+                }
+              ],
+              "parentSpanId": "c100000000000001"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

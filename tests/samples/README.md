@@ -13,3 +13,8 @@ summary tests can run without either CLI.
 (Codex `service.name=codex_exec`, `exec_command` spans, and a metric-tag
 rejection for a model id containing `:`). It is not that capture: the ids are
 fake and there is no prompt text.
+
+`opencode_*.json` and `pi_*.json` follow the attribute names seen from
+OpenCode v2 (`@opencode/cli`) and from Pi with the `pi-otel` extension.
+They are hand-written too: session ids, span ids, and tool call ids are
+fake, and there is no prompt text and no credential.

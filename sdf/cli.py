@@ -12,7 +12,7 @@ from sdf.summary import SummaryReport, format_summary, summarize
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="sdf",
-        description="Collect OpenTelemetry from Codex CLI and Claude Code.",
+        description="Collect OpenTelemetry from coding agents and summarize a session.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

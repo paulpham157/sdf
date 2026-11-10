@@ -7,12 +7,16 @@ Codex or Claude Code. Each resource is marked sdf.fixture=sample.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
+    ExportLogsServiceRequest,
+)
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
@@ -20,6 +24,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
 )
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
+from opentelemetry.proto.logs.v1.logs_pb2 import LogRecord, ResourceLogs, ScopeLogs
 from opentelemetry.proto.metrics.v1.metrics_pb2 import (
     AggregationTemporality,
     Metric,
@@ -200,6 +205,196 @@ def test_malformed_payload_is_rejected(receiver):
         urlopen(request)
     assert caught.value.code == 400
     assert store.load() == []
+
+
+def test_chunked_bodies_are_stored_for_json_and_protobuf(receiver, tmp_path, capsys):
+    base, store = receiver
+    posts = [
+        ("/v1/traces", "opencode_traces.json", "application/json"),
+        ("/v1/logs", "opencode_logs.json", "application/json"),
+        ("/v1/traces", "pi_traces.json", "application/json"),
+        ("/v1/logs", "pi_logs.json", "application/json"),
+        ("/v1/metrics", "pi_metrics.json", "application/json"),
+    ]
+    for path, name, content_type in posts:
+        status, body = _post_chunked(base, path, (SAMPLES / name).read_bytes(), content_type)
+        assert status == 200
+        assert body == b"{}"
+
+    # A stated Content-Length of 0 must not hide a chunked body.
+    status, body = _post_chunked(
+        base,
+        "/v1/traces",
+        b'{"resourceSpans":[]}',
+        "application/json",
+        extra_headers="Content-Length: 0\r\n",
+    )
+    assert status == 200
+    assert body == b"{}"
+
+    rows = store.load()
+    opencode = [row for row in rows if row.service_name == "opencode" and row.signal == "traces"]
+    assert {row.session_id for row in opencode} == {"ses_sampleopencode0001", None}
+    pi_logs = [row for row in rows if row.name == "pi.session.start"]
+    assert len(pi_logs) == 1
+    assert pi_logs[0].session_id == "2026-01-01T00-00-00-000Z_sample-pi-session"
+    assert "session.id" not in pi_logs[0].attributes
+    pi_metrics = [row for row in rows if row.name == "gen_ai.client.token.usage"]
+    assert pi_metrics
+    assert all(row.session_id is None for row in pi_metrics)
+
+    report = summarize(rows)
+    sessions = {item.session_id: item for item in report.sessions}
+    assert sessions["ses_sampleopencode0001"].tool == "opencode"
+    assert sessions["ses_sampleopencode0001"].tokens["input_tokens"] == 5822
+    assert sessions["ses_sampleopencode0001"].tokens["output_tokens"] == 306
+    assert sessions["ses_sampleopencode0001"].logs == 0
+    pi = sessions["2026-01-01T00-00-00-000Z_sample-pi-session"]
+    assert pi.tool == "pi"
+    assert pi.tokens == {"input_tokens": 1245, "output_tokens": 832}
+    assert pi.metrics == 6
+    assert pi.logs == 2
+
+    db = tmp_path / "telemetry.sqlite"
+    assert main(["summary", "--db", str(db), "--json", "--session", pi.session_id]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    calls = printed["sessions"][0]["tool_calls"]
+    assert [call["name"] for call in calls] == ["bash", "read", "bash"]
+    assert calls[0]["success"] == "true"
+    assert calls[0]["call_id"] == "call_sample_bash_1"
+
+    assert _post_chunked(base, "/v1/traces", _chunk_trace(), "application/x-protobuf") == (200, b"")
+    assert _post_chunked(base, "/v1/metrics", _counter(4, "3000"), "application/x-protobuf") == (200, b"")
+    assert _post_chunked(base, "/v1/logs", _pi_log(), "application/x-protobuf") == (200, b"")
+    assert any(row.service_name == "pi" and row.name == "chat sample-model" for row in store.load())
+
+
+def test_bad_chunked_bodies_are_rejected(receiver):
+    base, store = receiver
+    status, body = _post_chunked(base, "/v1/traces", b"zzzz\r\n", "application/json", frame=False)
+    assert status == 400
+    assert body == b"invalid chunk size"
+    status, body = _post_chunked(
+        base,
+        "/v1/metrics",
+        b"7a1201\r\n",
+        "application/json",
+        frame=False,
+    )
+    assert status == 413
+    assert body == b"payload too large"
+    status, body = _post_chunked(
+        base,
+        "/v1/logs",
+        b"{}",
+        "application/json",
+        transfer="gzip, chunked",
+        frame=False,
+    )
+    assert status == 400
+    assert body == b"unsupported transfer encoding"
+    assert store.load() == []
+
+
+def _post_chunked(base, path, payload, content_type, *, extra_headers="", transfer="chunked", frame=True):
+    host, port = base.removeprefix("http://").split(":")
+    framed = _encode_chunked(payload) if frame else payload
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Transfer-Encoding: {transfer}\r\n"
+        f"{extra_headers}"
+        f"Connection: close\r\n"
+        f"\r\n"
+    ).encode() + framed
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(request)
+        data = b""
+        while True:
+            chunk = sock.recv(8192)
+            if not chunk:
+                break
+            data += chunk
+    header, _, rest = data.partition(b"\r\n\r\n")
+    status = int(header.split(b"\r\n", 1)[0].split()[1])
+    length = None
+    for line in header.split(b"\r\n")[1:]:
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1].strip())
+    body = rest if length is None else rest[:length]
+    return status, body
+
+
+def _encode_chunked(payload: bytes) -> bytes:
+    """Small chunks, with an extension and leading zeros, then a trailer."""
+    out = bytearray()
+    step = 9
+    first = True
+    for offset in range(0, len(payload), step):
+        part = payload[offset : offset + step]
+        size = f"{len(part):04x}" if first else f"{len(part):x}"
+        extension = ";sample=1" if first else ""
+        first = False
+        out += f"{size}{extension}\r\n".encode() + part + b"\r\n"
+    out += b"0\r\nfixture: sample\r\n\r\n"
+    return bytes(out)
+
+
+def _chunk_trace() -> bytes:
+    span = Span(
+        trace_id=bytes.fromhex("12" * 16),
+        span_id=bytes.fromhex("34" * 8),
+        name="chat sample-model",
+        start_time_unix_nano=10,
+        end_time_unix_nano=20,
+        attributes=[
+            KeyValue(key="session.id", value=AnyValue(string_value="proto-chunk-session")),
+            KeyValue(key="gen_ai.request.model", value=AnyValue(string_value="sample-model")),
+            KeyValue(key="sdf.fixture", value=AnyValue(string_value="sample")),
+        ],
+    )
+    payload = ExportTraceServiceRequest(
+        resource_spans=[
+            ResourceSpans(
+                resource=Resource(
+                    attributes=[
+                        KeyValue(key="service.name", value=AnyValue(string_value="pi")),
+                        KeyValue(key="sdf.fixture", value=AnyValue(string_value="sample")),
+                    ]
+                ),
+                scope_spans=[ScopeSpans(spans=[span])],
+            )
+        ]
+    )
+    return payload.SerializeToString()
+
+
+def _pi_log() -> bytes:
+    record = LogRecord(
+        time_unix_nano=10,
+        body=AnyValue(string_value="pi session proto-chunk-session started"),
+        attributes=[
+            KeyValue(key="event.name", value=AnyValue(string_value="pi.session.start")),
+            KeyValue(key="pi.session.id", value=AnyValue(string_value="proto-chunk-session")),
+            KeyValue(key="gen_ai.system", value=AnyValue(string_value="pi")),
+            KeyValue(key="sdf.fixture", value=AnyValue(string_value="sample")),
+        ],
+    )
+    payload = ExportLogsServiceRequest(
+        resource_logs=[
+            ResourceLogs(
+                resource=Resource(
+                    attributes=[
+                        KeyValue(key="service.name", value=AnyValue(string_value="pi")),
+                        KeyValue(key="sdf.fixture", value=AnyValue(string_value="sample")),
+                    ]
+                ),
+                scope_logs=[ScopeLogs(log_records=[record])],
+            )
+        ]
+    )
+    return payload.SerializeToString()
 
 
 def _counter(value: int, time_nano: str) -> bytes:
