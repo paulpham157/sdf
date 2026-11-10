@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -149,12 +150,19 @@ type sessionKey struct {
 }
 
 // Summarize groups records into sessions. allSpans keeps internal span names
-// in the tree; the default view hides them.
+// in the tree; the default view hides them. Cost is priced from the bundled
+// OpenRouter table.
 func Summarize(records []record.Record, allSpans bool) Report {
+	return SummarizeWith(records, allSpans, pricing.Bundled())
+}
+
+// SummarizeWith is Summarize with an explicit price catalog. A nil catalog
+// leaves computed cost unknown.
+func SummarizeWith(records []record.Record, allSpans bool, prices *pricing.Catalog) Report {
 	attributed, leftover := attribute(records)
 	sessions := make([]SessionSummary, 0, len(attributed))
 	for key, grouped := range attributed {
-		sessions = append(sessions, summarizeBucket(key.tool, key.id, grouped, allSpans))
+		sessions = append(sessions, summarizeBucket(key.tool, key.id, grouped, allSpans, prices))
 	}
 	sort.SliceStable(sessions, func(i, j int) bool {
 		if sessions[i].Tool != sessions[j].Tool {
@@ -348,35 +356,45 @@ func unattributed(records []record.Record) []Unattributed {
 	return groups
 }
 
-func summarizeBucket(tool, sessionID string, records []record.Record, allSpans bool) SessionSummary {
+func summarizeBucket(tool, sessionID string, records []record.Record, allSpans bool, prices *pricing.Catalog) SessionSummary {
 	points := reduce(pointsOf(records))
 	spans, hidden := spanTree(records, allSpans)
 	durationMS, durationSource := duration(records, points)
 	tokens, tokensSource, tokensMethod := tokensOf(records, points)
 	costUSD, costSource, costNote := costOf(records, points, tool)
+	modelList := models(records, points)
+	computed := pricing.Price(prices, pricing.Usage{
+		Models: modelList,
+		Tokens: tokenMap(tokens),
+		Source: deref(tokensSource),
+	})
 	failures := metricFailures(records)
 	return SessionSummary{
-		SessionID:      sessionID,
-		Tool:           tool,
-		ServiceNames:   serviceNames(records),
-		Models:         models(records, points),
-		Traces:         countSignal(records, "traces"),
-		Logs:           countSignal(records, "logs"),
-		Metrics:        countSignal(records, "metrics"),
-		DurationMS:     durationMS,
-		DurationSource: durationSource,
-		Tokens:         tokens,
-		TokensSource:   tokensSource,
-		TokensMethod:   tokensMethod,
-		CostUSD:        costUSD,
-		CostSource:     costSource,
-		CostNote:       costNote,
-		Spans:          nonNilSpans(spans),
-		SpansHidden:    hidden,
-		LogEvents:      nonNilLogs(logLines(records)),
-		MetricLines:    nonNilMetrics(metricLines(points)),
-		Missing:        nonNilMissing(missing(tool, records, points, failures)),
-		ToolCalls:      nonNilCalls(toolCalls(records, points)),
+		SessionID:               sessionID,
+		Tool:                    tool,
+		ServiceNames:            serviceNames(records),
+		Models:                  modelList,
+		Traces:                  countSignal(records, "traces"),
+		Logs:                    countSignal(records, "logs"),
+		Metrics:                 countSignal(records, "metrics"),
+		DurationMS:              durationMS,
+		DurationSource:          durationSource,
+		Tokens:                  tokens,
+		TokensSource:            tokensSource,
+		TokensMethod:            tokensMethod,
+		CostUSD:                 costUSD,
+		CostSource:              costSource,
+		CostNote:                costNote,
+		AgentReportedCostUSD:    costUSD,
+		AgentReportedCostSource: costSource,
+		AgentReportedCostNote:   costNote,
+		ComputedCost:            &computed,
+		Spans:                   nonNilSpans(spans),
+		SpansHidden:             hidden,
+		LogEvents:               nonNilLogs(logLines(records)),
+		MetricLines:             nonNilMetrics(metricLines(points)),
+		Missing:                 nonNilMissing(missing(tool, records, points, failures)),
+		ToolCalls:               nonNilCalls(toolCalls(records, points)),
 	}
 }
 
@@ -633,6 +651,17 @@ func duration(records []record.Record, points []point) (*float64, *string) {
 		return record.Float(float64(maxS-minS) / 1_000_000), record.Str("observed_window")
 	}
 	return nil, nil
+}
+
+func tokenMap(tokens OrderedFloats) map[string]float64 {
+	if tokens.Len() == 0 {
+		return nil
+	}
+	out := make(map[string]float64, tokens.Len())
+	for _, key := range tokens.Keys {
+		out[key] = tokens.Vals[key]
+	}
+	return out
 }
 
 func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, *string) {

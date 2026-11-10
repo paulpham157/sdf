@@ -5,7 +5,11 @@
 // listed as missing, with the reason when the telemetry itself explains it.
 package summary
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/paulpham157/sdf/internal/pricing"
+)
 
 // ToolCall is one tool invocation joined from a span and, when present, a log.
 type ToolCall struct {
@@ -62,27 +66,33 @@ type Missing struct {
 
 // SessionSummary is one real session.
 type SessionSummary struct {
-	SessionID      string        `json:"session_id"`
-	Tool           string        `json:"tool"`
-	ServiceNames   []string      `json:"service_names"`
-	Models         []string      `json:"models"`
-	Traces         int           `json:"traces"`
-	Logs           int           `json:"logs"`
-	Metrics        int           `json:"metrics"`
-	DurationMS     *float64      `json:"duration_ms"`
-	DurationSource *string       `json:"duration_source"`
-	Tokens         OrderedFloats `json:"tokens"`
-	TokensSource   *string       `json:"tokens_source"`
-	TokensMethod   *string       `json:"tokens_method"`
-	CostUSD        *float64      `json:"cost_usd"`
-	CostSource     *string       `json:"cost_source"`
-	CostNote       *string       `json:"cost_note"`
-	Spans          []SpanNode    `json:"spans"`
-	SpansHidden    int           `json:"spans_hidden"`
-	LogEvents      []LogLine     `json:"log_events"`
-	MetricLines    []MetricLine  `json:"metric_lines"`
-	Missing        []Missing     `json:"missing"`
-	ToolCalls      []ToolCall    `json:"tool_calls"`
+	SessionID               string        `json:"session_id"`
+	Tool                    string        `json:"tool"`
+	ServiceNames            []string      `json:"service_names"`
+	Models                  []string      `json:"models"`
+	Traces                  int           `json:"traces"`
+	Logs                    int           `json:"logs"`
+	Metrics                 int           `json:"metrics"`
+	DurationMS              *float64      `json:"duration_ms"`
+	DurationSource          *string       `json:"duration_source"`
+	Tokens                  OrderedFloats `json:"tokens"`
+	TokensSource            *string       `json:"tokens_source"`
+	TokensMethod            *string       `json:"tokens_method"`
+	CostUSD                 *float64      `json:"cost_usd"`
+	CostSource              *string       `json:"cost_source"`
+	CostNote                *string       `json:"cost_note"`
+	AgentReportedCostUSD    *float64      `json:"agent_reported_cost_usd"`
+	AgentReportedCostSource *string       `json:"agent_reported_cost_source"`
+	AgentReportedCostNote   *string       `json:"agent_reported_cost_note"`
+	// ComputedCost is SDF's price for the summarized token counts.
+	// A nil USD inside it means the price is unknown, not zero.
+	ComputedCost *pricing.Cost `json:"computed_cost_usd"`
+	Spans        []SpanNode    `json:"spans"`
+	SpansHidden  int           `json:"spans_hidden"`
+	LogEvents    []LogLine     `json:"log_events"`
+	MetricLines  []MetricLine  `json:"metric_lines"`
+	Missing      []Missing     `json:"missing"`
+	ToolCalls    []ToolCall    `json:"tool_calls"`
 }
 
 // Unattributed is records that could not be joined to exactly one session.

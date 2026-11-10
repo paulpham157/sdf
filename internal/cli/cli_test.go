@@ -3,18 +3,50 @@ package cli_test
 import (
 	"bytes"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/cli"
+	"github.com/paulpham157/sdf/internal/pricing"
 )
 
 func TestSummaryOfANewDatabase(t *testing.T) {
 	out := run(t, "summary", "--db", filepath.Join(t.TempDir(), "empty.sqlite"))
 	if out.code != 0 || out.stdout != "No telemetry sessions in the store.\n" {
 		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestPricesRefreshWritesACatalogWithoutCallingOpenRouter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Fatal("authorization header")
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"vendor/priced","pricing":{"prompt":"0.000001","completion":"0.000002"}}]}`))
+	}))
+	defer server.Close()
+	outPath := filepath.Join(t.TempDir(), "prices.json")
+	out := run(t, "prices", "refresh", "--url", server.URL, "--out", outPath)
+	if out.code != 0 {
+		t.Fatal(out.stderr)
+	}
+	if !strings.Contains(out.stdout, "wrote 1 models") || !strings.Contains(out.stdout, pricing.SourceURL) {
+		t.Fatal(out.stdout)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "0.000001") || !strings.Contains(string(body), pricing.SourceURL) {
+		t.Fatal(string(body))
+	}
+	missing := run(t, "summary", "--db", filepath.Join(t.TempDir(), "empty.sqlite"), "--prices", filepath.Join(t.TempDir(), "nope.json"))
+	if missing.code != 1 || !strings.Contains(missing.stderr, "price catalog") {
+		t.Fatalf("%d %s", missing.code, missing.stderr)
 	}
 }
 

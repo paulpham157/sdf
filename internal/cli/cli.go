@@ -2,14 +2,19 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
@@ -23,7 +28,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary> [flags]")
+		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -31,8 +36,10 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdServe(args[1:], stdout, stderr)
 	case "summary":
 		return cmdSummary(args[1:], stdout, stderr)
+	case "prices":
+		return cmdPrices(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary> [flags]")
+		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices> [flags]")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
@@ -139,11 +146,12 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	var session *string
 	asJSON := false
 	allSpans := false
+	pricesSpec := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans]")
+			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH]")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -168,10 +176,24 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 			asJSON = true
 		case arg == "--all-spans":
 			allSpans = true
+		case arg == "--prices":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf summary: --prices requires bundled or a path")
+				return 2
+			}
+			pricesSpec = v
+		case strings.HasPrefix(arg, "--prices="):
+			pricesSpec = strings.TrimPrefix(arg, "--prices=")
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
+	}
+	prices, err := pricing.ResolveCatalog(pricesSpec)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		return 1
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -184,7 +206,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
 	}
-	report := summary.Summarize(records, allSpans)
+	report := summary.SummarizeWith(records, allSpans, prices)
 	if session != nil {
 		filtered := report.Sessions[:0:0]
 		for _, item := range report.Sessions {
@@ -205,6 +227,71 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprint(stdout, summary.Format(report))
+	return 0
+}
+
+func cmdPrices(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || (args[0] != "refresh" && args[0] != "--help" && args[0] != "-h") {
+		fmt.Fprintln(stderr, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		return 2
+	}
+	if args[0] == "--help" || args[0] == "-h" {
+		fmt.Fprintln(stdout, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		return 0
+	}
+	pageURL := ""
+	outPath := ""
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--url":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf prices refresh: --url requires a value")
+				return 2
+			}
+			pageURL = v
+		case strings.HasPrefix(arg, "--url="):
+			pageURL = strings.TrimPrefix(arg, "--url=")
+		case arg == "--out":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf prices refresh: --out requires a value")
+				return 2
+			}
+			outPath = v
+		case strings.HasPrefix(arg, "--out="):
+			outPath = strings.TrimPrefix(arg, "--out=")
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	if outPath == "" {
+		path, err := pricing.CachePath()
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+			return 1
+		}
+		outPath = path
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 30 * time.Second}
+	snap, err := pricing.Fetch(ctx, client, pageURL)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		return 1
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(outPath, snap.Body, 0o644); err != nil {
+		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "wrote %d models from %s retrieved %s to %s\n", len(snap.Catalog.Models), snap.Catalog.Source, snap.Catalog.RetrievedAtRaw, outPath)
 	return 0
 }
 
