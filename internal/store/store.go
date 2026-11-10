@@ -1,10 +1,11 @@
 // Package store is a SQLite file of flattened OTLP records.
 //
 // The schema matches the Python receiver, including the trace_id, span_id,
-// and parent_span_id columns added by its migration. Files written by that
-// receiver stay readable: this driver is modernc.org/sqlite, a pure-Go
-// SQLite, and attribute JSON is ordinary JSON (Python wrote it with
-// sort_keys and spaces; both forms decode here).
+// and parent_span_id columns added by its migration, plus status_code and
+// status_message. Files written by that receiver stay readable: this driver
+// is modernc.org/sqlite, a pure-Go SQLite, and attribute JSON is ordinary
+// JSON (Python wrote it with sort_keys and spaces; both forms decode here).
+// A missing status_code on a span is UNSET.
 package store
 
 import (
@@ -39,7 +40,9 @@ CREATE TABLE IF NOT EXISTS records (
     body TEXT,
     trace_id TEXT,
     span_id TEXT,
-    parent_span_id TEXT
+    parent_span_id TEXT,
+    status_code TEXT,
+    status_message TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_records_session ON records(session_id);
 CREATE INDEX IF NOT EXISTS idx_records_signal_name ON records(signal, name);
@@ -96,7 +99,7 @@ func (s *Store) migrate() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, col := range []string{"trace_id", "span_id", "parent_span_id"} {
+	for _, col := range []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"} {
 		if !present[col] {
 			if _, err := s.db.Exec(`ALTER TABLE records ADD COLUMN ` + col + ` TEXT`); err != nil {
 				return err
@@ -132,8 +135,9 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 			start_unix_nano, end_unix_nano, time_unix_nano, value,
 			metric_unit, metric_temporality, metric_kind,
 			attributes_json, resource_json, body,
-			trace_id, span_id, parent_span_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			trace_id, span_id, parent_span_id,
+			status_code, status_message
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -170,6 +174,8 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 			nullString(rec.TraceID),
 			nullString(rec.SpanID),
 			nullString(rec.ParentSpanID),
+			statusCodeValue(rec),
+			statusMessageValue(rec),
 		); err != nil {
 			_ = tx.Rollback()
 			return 0, err
@@ -190,7 +196,8 @@ func (s *Store) Load() ([]record.Record, error) {
 		       start_unix_nano, end_unix_nano, time_unix_nano, value,
 		       metric_unit, metric_temporality, metric_kind,
 		       attributes_json, resource_json, body,
-		       trace_id, span_id, parent_span_id
+		       trace_id, span_id, parent_span_id,
+		       status_code, status_message
 		FROM records
 		ORDER BY id
 	`)
@@ -202,6 +209,7 @@ func (s *Store) Load() ([]record.Record, error) {
 	for rows.Next() {
 		var rec record.Record
 		var service, session, name, unit, temp, kind, body, trace, span, parent sql.NullString
+		var statusCode, statusMessage sql.NullString
 		var start, end, when sql.NullInt64
 		var value sql.NullFloat64
 		var attrs, res string
@@ -211,6 +219,7 @@ func (s *Store) Load() ([]record.Record, error) {
 			&unit, &temp, &kind,
 			&attrs, &res, &body,
 			&trace, &span, &parent,
+			&statusCode, &statusMessage,
 		); err != nil {
 			return nil, err
 		}
@@ -228,6 +237,13 @@ func (s *Store) Load() ([]record.Record, error) {
 		rec.TraceID = fromNullString(trace)
 		rec.SpanID = fromNullString(span)
 		rec.ParentSpanID = fromNullString(parent)
+		if rec.Signal == "traces" {
+			rec.StatusCode = "UNSET"
+			if statusCode.Valid && statusCode.String != "" {
+				rec.StatusCode = statusCode.String
+			}
+			rec.StatusMessage = fromNullString(statusMessage)
+		}
 		parsedAttrs, err := unmarshalJSON(attrs)
 		if err != nil {
 			return nil, err
@@ -302,6 +318,25 @@ func normalizeJSON(v any) any {
 	default:
 		return v
 	}
+}
+
+func statusCodeValue(rec record.Record) any {
+	if rec.Signal != "traces" {
+		return nil
+	}
+	switch rec.StatusCode {
+	case "OK", "ERROR", "UNSET":
+		return rec.StatusCode
+	default:
+		return "UNSET"
+	}
+}
+
+func statusMessageValue(rec record.Record) any {
+	if rec.Signal != "traces" {
+		return nil
+	}
+	return nullString(rec.StatusMessage)
 }
 
 func nullString(v *string) any {

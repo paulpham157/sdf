@@ -46,8 +46,10 @@ for local Desktop Code-tab sessions.
 
 OTLP protocol is `grpc`, `http/protobuf`, or `http/json`. Claude Code has no
 default protocol, so set one. This receiver accepts all three. HTTP JSON and
-HTTP protobuf use port 4318. gRPC uses port 4317. `Content-Encoding: gzip` is
-not decoded.
+HTTP protobuf use port 4318. gRPC uses port 4317. `Content-Encoding: gzip`
+is inflated, including on a chunked body. The decompressed payload has the
+same 8,000,000 byte cap as the raw body. Any other content encoding is
+rejected with HTTP 415. gRPC `grpc-encoding: gzip` is accepted.
 
 Metrics (unit in parentheses when the docs attach one):
 
@@ -244,11 +246,15 @@ port; keep the bind address on localhost. Override with `--host`, `--port`
 `application/x-protobuf`. The body may use `Content-Length` or
 `Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
 are chunked and omit `Content-Length`. When both headers are present, chunked
-encoding wins. `Content-Encoding: gzip` is not decoded. gRPC clients call the
-OTLP `TraceService`, `MetricsService`, and `LogsService` `Export` RPCs.
+encoding wins. `Content-Encoding: gzip` is inflated after the body is
+framed, and the decompressed size is capped at 8,000,000 bytes. Any other
+content encoding gets HTTP 415. gRPC clients call the OTLP `TraceService`,
+`MetricsService`, and `LogsService` `Export` RPCs, and may gzip the message.
 
-Rows are one span, one metric point, or one log record. Inspect them with
-SQLite:
+Rows are one span, one metric point, or one log record. A span also stores
+`status_code` (`UNSET`, `OK`, or `ERROR`) and `status_message`. Databases
+written before those columns existed still open; the columns are added on
+open, and a missing code is `UNSET`. Inspect them with SQLite:
 
 ```bash
 sqlite3 sdf-telemetry.sqlite \
@@ -495,8 +501,14 @@ Tool calls join `exec_command` or `claude_code.tool` to `codex.tool_result` /
 come from `Tool.execute` (`gen_ai.tool.name`, `gen_ai.tool.call.id`). Pi tool
 calls come from `execute_tool` (`gen_ai.tool.name`, `gen_ai.tool.call.id`,
 `pi.tool.is_error`). Success comes from the log when the span has none. An
-OpenCode tool span has no success flag, so the call is `unknown`. Duration
-prefers the execution child span, then the tool span, then the log.
+OpenCode tool span has no success flag, so the call is `unknown`, unless the
+span status is `ERROR`. An `ERROR` span is marked in the text tree
+(`status=ERROR`, plus the status message when one was exported). `--json`
+includes `status_code` and `status_message` on every span; a span with no
+status is `UNSET`. A tool-call span whose status is `ERROR` and that has no
+`success` attribute, no `pi.tool.is_error`, and no joined tool-result log is
+`success=false`. An explicit flag still wins. Duration prefers the execution
+child span, then the tool span, then the log.
 
 Precedence, so the same numbers are not added twice:
 
@@ -546,9 +558,10 @@ checks; the ids are fake.
 
 ## Gaps
 
-- `Content-Encoding: gzip` is not decoded. Send identity bodies. Chunked
-  HTTP and `Content-Length` are both accepted, and gRPC is a separate
-  listener on port 4317.
+- Content encodings other than `identity` and `gzip` are rejected with
+  HTTP 415. Gzip is inflated only up to 8,000,000 decompressed bytes.
+  Chunked HTTP and `Content-Length` are both accepted, and gRPC is a
+  separate listener on port 4317. gRPC gzip uses the standard compressor.
 - Codex's published config reference does not catalog events or metrics. The
   Codex lists in this file can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places

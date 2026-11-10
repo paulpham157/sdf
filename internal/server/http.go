@@ -2,6 +2,8 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
@@ -92,21 +94,11 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		}
 		body, err := readBody(reader, headers)
 		if err != nil {
-			status := 400
-			msg := "invalid chunked body"
-			if bs, ok := err.(*bodyStatus); ok {
-				status = bs.status
-				msg = bs.message
-				if bs.status == 400 && (strings.Contains(bs.message, "chunk") || bs.message == "incomplete body" || bs.message == "unsupported transfer encoding") {
-					closeAfter = true
-				}
-				if bs.message == "invalid chunk size" || bs.message == "invalid chunked body" || bs.message == "incomplete chunked body" || bs.message == "payload too large" || bs.message == "unsupported transfer encoding" || bs.message == "incomplete body" {
-					closeAfter = true
-				}
-			}
-			writeResponse(writer, status, "text/plain", []byte(msg), closeAfter)
-			s.logRequest(method, path, status)
-			return true, nil
+			return s.writeBodyError(writer, method, path, err, closeAfter)
+		}
+		body, err = decodeContentEncoding(body, headers)
+		if err != nil {
+			return s.writeBodyError(writer, method, path, err, closeAfter)
 		}
 		contentType := headerGet(headers, "Content-Type")
 		records, err := otlp.Decode(signal, body, contentType)
@@ -131,6 +123,71 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		writeResponse(writer, 501, "text/plain", []byte("unsupported method"), true)
 		return true, nil
 	}
+}
+
+func (s *Server) writeBodyError(writer *bufio.Writer, method, path string, err error, closeAfter bool) (bool, error) {
+	status := 400
+	msg := "invalid chunked body"
+	if bs, ok := err.(*bodyStatus); ok {
+		status = bs.status
+		msg = bs.message
+		if bs.status == 400 && (strings.Contains(bs.message, "chunk") || bs.message == "incomplete body" || bs.message == "unsupported transfer encoding" || bs.message == "invalid gzip body") {
+			closeAfter = true
+		}
+		if bs.message == "invalid chunk size" || bs.message == "invalid chunked body" || bs.message == "incomplete chunked body" || bs.message == "payload too large" || bs.message == "unsupported transfer encoding" || bs.message == "incomplete body" {
+			closeAfter = true
+		}
+	}
+	writeResponse(writer, status, "text/plain", []byte(msg), closeAfter)
+	s.logRequest(method, path, status)
+	return true, nil
+}
+
+func decodeContentEncoding(body []byte, headers []header) ([]byte, error) {
+	var codings []string
+	for _, h := range headers {
+		if !strings.EqualFold(h.name, "Content-Encoding") {
+			continue
+		}
+		for _, part := range strings.Split(h.value, ",") {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part != "" {
+				codings = append(codings, part)
+			}
+		}
+	}
+	// Content-Encoding lists codings in the order they were applied.
+	for i := len(codings) - 1; i >= 0; i-- {
+		switch codings[i] {
+		case "identity":
+			continue
+		case "gzip":
+			next, err := gunzipLimited(body, otlp.MaxBodyBytes)
+			if err != nil {
+				return nil, err
+			}
+			body = next
+		default:
+			return nil, &bodyStatus{415, "unsupported content encoding"}
+		}
+	}
+	return body, nil
+}
+
+func gunzipLimited(body []byte, limit int) ([]byte, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, &bodyStatus{400, "invalid gzip body"}
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(io.LimitReader(zr, int64(limit)+1))
+	if err != nil {
+		return nil, &bodyStatus{400, "invalid gzip body"}
+	}
+	if len(out) > limit {
+		return nil, &bodyStatus{413, "payload too large"}
+	}
+	return out, nil
 }
 
 func (s *Server) logRequest(method, path string, status int) {
@@ -330,6 +387,8 @@ func reason(status int) string {
 		return "Not Found"
 	case 413:
 		return "Content Too Large"
+	case 415:
+		return "Unsupported Media Type"
 	case 500:
 		return "Internal Server Error"
 	case 501:

@@ -86,6 +86,85 @@ func TestMigrationAddsIDColumnsAndReadsPythonJSON(t *testing.T) {
 	}
 }
 
+func TestStatusColumnsMigrateAndMissingMeansUnset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "before-status.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE records (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			received_at TEXT NOT NULL,
+			signal TEXT NOT NULL,
+			service_name TEXT,
+			session_id TEXT,
+			name TEXT,
+			start_unix_nano INTEGER,
+			end_unix_nano INTEGER,
+			time_unix_nano INTEGER,
+			value REAL,
+			metric_unit TEXT,
+			metric_temporality TEXT,
+			metric_kind TEXT,
+			attributes_json TEXT NOT NULL,
+			resource_json TEXT NOT NULL,
+			body TEXT,
+			trace_id TEXT,
+			span_id TEXT,
+			parent_span_id TEXT
+		);
+		INSERT INTO records (
+			received_at, signal, service_name, session_id, name,
+			start_unix_nano, end_unix_nano,
+			attributes_json, resource_json, trace_id, span_id
+		) VALUES (
+			'2026-11-10T00:00:00+00:00', 'traces', 'claude-code', 'old',
+			'claude_code.tool', 1, 2,
+			'{"tool_name":"Bash"}', '{"service.name":"claude-code"}',
+			'abcd', 'ef01'
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	opened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if _, err := opened.Insert([]record.Record{{
+		Signal:        "traces",
+		ServiceName:   record.Str("opencode"),
+		SessionID:     record.Str("new"),
+		Name:          record.Str("Tool.execute"),
+		StatusCode:    "ERROR",
+		StatusMessage: record.Str("write failed"),
+		Attributes:    map[string]any{},
+		Resource:      map[string]any{"service.name": "opencode"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := opened.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("%d rows", len(rows))
+	}
+	if rows[0].StatusCode != "UNSET" || rows[0].StatusMessage != nil || deref(rows[0].Name) != "claude_code.tool" {
+		t.Fatalf("old span %+v %s", rows[0].StatusCode, deref(rows[0].StatusMessage))
+	}
+	if rows[1].StatusCode != "ERROR" || deref(rows[1].StatusMessage) != "write failed" {
+		t.Fatalf("new span %s %s", rows[1].StatusCode, deref(rows[1].StatusMessage))
+	}
+	if rows[0].Signal == "traces" && rows[1].StatusCode == "" {
+		t.Fatal("status was not stored")
+	}
+}
+
 func TestPythonWrittenDatabaseRemainsReadable(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {

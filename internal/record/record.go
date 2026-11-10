@@ -24,6 +24,10 @@ type Record struct {
 	TraceID           *string
 	SpanID            *string
 	ParentSpanID      *string
+	// StatusCode is UNSET, OK, or ERROR for a span. Empty means the row is
+	// not a span. A missing column in an older database is UNSET.
+	StatusCode    string
+	StatusMessage *string
 }
 
 // WithSession returns a copy tagged with sessionID. Maps are shared.

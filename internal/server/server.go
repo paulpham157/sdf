@@ -2,10 +2,13 @@
 //
 // HTTP listens for JSON and protobuf on /v1/traces, /v1/metrics, and /v1/logs.
 // A body may use Content-Length or Transfer-Encoding: chunked. Chunked wins
-// when both are present. Content-Encoding: gzip is not decoded.
+// when both are present. Content-Encoding: gzip is inflated after the body
+// is read; the decompressed size shares the same limit as the raw body.
+// Any other content encoding is rejected with 415.
 //
 // gRPC listens on a separate port for the OTLP TraceService, MetricsService,
 // and LogsService Export RPCs. pi-otel's default endpoint is this port.
+// The gzip compressor is registered so clients can send grpc-encoding: gzip.
 package server
 
 import (
@@ -18,6 +21,7 @@ import (
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
+	_ "google.golang.org/grpc/encoding/gzip"
 
 	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/store"

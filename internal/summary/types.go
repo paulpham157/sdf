@@ -33,6 +33,8 @@ type SpanNode struct {
 	WaitSource      *string    `json:"wait_source"`
 	ExecutionMS     *float64   `json:"execution_ms"`
 	ExecutionSource *string    `json:"execution_source"`
+	StatusCode      string     `json:"status_code"`
+	StatusMessage   *string    `json:"status_message"`
 	Children        []SpanNode `json:"children"`
 }
 

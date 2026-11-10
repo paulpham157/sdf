@@ -201,6 +201,13 @@ func formatSpan(lines *[]string, node SpanNode, indent int) {
 	if node.DurationMS != nil {
 		bits = append(bits, fmtNum(*node.DurationMS)+"ms")
 	}
+	if node.StatusCode == "ERROR" {
+		if node.StatusMessage != nil && *node.StatusMessage != "" {
+			bits = append(bits, "status=ERROR ("+*node.StatusMessage+")")
+		} else {
+			bits = append(bits, "status=ERROR")
+		}
+	}
 	if node.Success != nil && *node.Success != "" {
 		if node.SuccessSource != nil && *node.SuccessSource != "" {
 			bits = append(bits, "success="+*node.Success+" ("+*node.SuccessSource+")")

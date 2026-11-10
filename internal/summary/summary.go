@@ -509,13 +509,14 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 				successSource = record.Str("logs " + deref(log.Name))
 			}
 		}
+		if success == nil && rec.StatusCode == "ERROR" {
+			success = record.Str("false")
+			successSource = record.Str("traces status")
+		}
 		waitMS, waitSource = childDuration(rec, spans, waitSpans)
 		execMS, execSource = childDuration(rec, spans, execSpans)
 	} else if isDirectToolSpan(name) {
-		success = reportedSuccess(rec)
-		if success != nil && *success != "unknown" {
-			successSource = record.Str("traces")
-		}
+		success, successSource = reportedSuccess(rec)
 	}
 	if children == nil {
 		children = []SpanNode{}
@@ -535,6 +536,8 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 		WaitSource:      waitSource,
 		ExecutionMS:     execMS,
 		ExecutionSource: execSource,
+		StatusCode:      statusCodeOf(rec),
+		StatusMessage:   rec.StatusMessage,
 		Children:        children,
 	}
 }
@@ -1016,7 +1019,7 @@ func callFromSpan(rec record.Record, log *record.Record, spans []record.Record) 
 		duration = execMS
 	}
 	source := "traces " + deref(rec.Name)
-	success := reportedSuccess(rec)
+	success, _ := reportedSuccess(rec)
 	if log != nil {
 		source = source + "; logs " + deref(log.Name)
 		if text := record.SummaryText(log.Attributes["success"]); text != nil {
@@ -1396,25 +1399,44 @@ func isDirectToolSpan(name string) bool {
 	return name == "claude_code.tool" || name == "exec_command" || name == "Tool.execute" || spanHead(name) == "execute_tool"
 }
 
-func reportedSuccess(rec record.Record) *string {
+func isToolCallSpan(name string) bool {
+	return isDirectToolSpan(name) || name == "unified_exec.exec_command"
+}
+
+func statusCodeOf(rec record.Record) string {
+	switch rec.StatusCode {
+	case "OK", "ERROR", "UNSET":
+		return rec.StatusCode
+	default:
+		return "UNSET"
+	}
+}
+
+// reportedSuccess returns the success flag and, when the flag should be
+// labeled, the source. An explicit success attribute or pi.tool.is_error wins.
+// A tool-call span with OTLP status ERROR and no explicit flag is false.
+func reportedSuccess(rec record.Record) (*string, *string) {
 	if _, ok := rec.Attributes["pi.tool.is_error"]; ok {
 		flag, parsed := record.Boolish(rec.Attributes["pi.tool.is_error"])
 		if !parsed {
-			return record.Str("unknown")
+			return record.Str("unknown"), nil
 		}
 		if flag {
-			return record.Str("false")
+			return record.Str("false"), record.Str("traces")
 		}
-		return record.Str("true")
+		return record.Str("true"), record.Str("traces")
 	}
 	if text := record.SummaryText(rec.Attributes["success"]); text != nil {
-		return text
+		return text, record.Str("traces")
+	}
+	if rec.StatusCode == "ERROR" && isToolCallSpan(deref(rec.Name)) {
+		return record.Str("false"), record.Str("traces status")
 	}
 	name := deref(rec.Name)
 	if name == "Tool.execute" || spanHead(name) == "execute_tool" {
-		return record.Str("unknown")
+		return record.Str("unknown"), nil
 	}
-	return nil
+	return nil, nil
 }
 
 func unattributedLabel(rec record.Record) string {

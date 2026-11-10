@@ -23,6 +23,7 @@ import (
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -111,16 +112,19 @@ func traces(msg *coltracepb.ExportTraceServiceRequest) []record.Record {
 		for _, ss := range rs.GetScopeSpans() {
 			for _, span := range ss.GetSpans() {
 				attrs := attributesOf(span.GetAttributes())
+				code, message := spanStatus(span)
 				out = append(out, makeRecord(recordParts{
-					signal:       "traces",
-					resource:     resource,
-					attributes:   attrs,
-					name:         emptyAsNil(span.GetName()),
-					start:        nano(span.GetStartTimeUnixNano()),
-					end:          nano(span.GetEndTimeUnixNano()),
-					traceID:      otelID(span.GetTraceId()),
-					spanID:       otelID(span.GetSpanId()),
-					parentSpanID: otelID(span.GetParentSpanId()),
+					signal:        "traces",
+					resource:      resource,
+					attributes:    attrs,
+					name:          emptyAsNil(span.GetName()),
+					start:         nano(span.GetStartTimeUnixNano()),
+					end:           nano(span.GetEndTimeUnixNano()),
+					traceID:       otelID(span.GetTraceId()),
+					spanID:        otelID(span.GetSpanId()),
+					parentSpanID:  otelID(span.GetParentSpanId()),
+					statusCode:    code,
+					statusMessage: message,
 				}))
 			}
 		}
@@ -203,21 +207,23 @@ func logs(msg *collogspb.ExportLogsServiceRequest) []record.Record {
 }
 
 type recordParts struct {
-	signal       string
-	resource     map[string]any
-	attributes   map[string]any
-	name         *string
-	start        *int64
-	end          *int64
-	when         *int64
-	body         *string
-	value        *float64
-	unit         *string
-	temporality  *string
-	kind         *string
-	traceID      *string
-	spanID       *string
-	parentSpanID *string
+	signal        string
+	resource      map[string]any
+	attributes    map[string]any
+	name          *string
+	start         *int64
+	end           *int64
+	when          *int64
+	body          *string
+	value         *float64
+	unit          *string
+	temporality   *string
+	kind          *string
+	traceID       *string
+	spanID        *string
+	parentSpanID  *string
+	statusCode    string
+	statusMessage *string
 }
 
 func makeRecord(p recordParts) record.Record {
@@ -245,7 +251,27 @@ func makeRecord(p recordParts) record.Record {
 		TraceID:           p.traceID,
 		SpanID:            p.spanID,
 		ParentSpanID:      p.parentSpanID,
+		StatusCode:        p.statusCode,
+		StatusMessage:     p.statusMessage,
 	}
+}
+
+func spanStatus(span *tracepb.Span) (string, *string) {
+	st := span.GetStatus()
+	if st == nil {
+		return "UNSET", nil
+	}
+	code := "UNSET"
+	switch st.GetCode() {
+	case tracepb.Status_STATUS_CODE_OK:
+		code = "OK"
+	case tracepb.Status_STATUS_CODE_ERROR:
+		code = "ERROR"
+	}
+	if st.GetMessage() == "" {
+		return code, nil
+	}
+	return code, record.Str(st.GetMessage())
 }
 
 func attributesOf(items []*commonpb.KeyValue) map[string]any {
