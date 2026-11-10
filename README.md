@@ -7,9 +7,8 @@ It does not launch, route, or sandbox agents. Codex CLI, Claude Code, and
 OpenCode v2 export their own telemetry. Pi does not; its section uses the
 community `pi-otel` extension. SDF listens.
 
-The previous implementation is preserved at the git tag **`legacy-v1`**
-(commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3` on `main` at the time of the
-tag). That tag is the last snapshot of the orchestrator. This tree is a new v0.
+Repository history from before this collector is preserved at the git tag
+`legacy-v1` (commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3`).
 
 Checked against the docs and the Codex sources below on 2026-11-09. Codex
 source citations are from `openai/codex` commit `8703d32`. OpenCode and Pi
