@@ -62,7 +62,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/staticcheck.tgz" -C "$RUNNER_TEMP" --strip-components=1 staticcheck/staticcheck
       - name: staticcheck
         # -tags e2e includes tests/e2e, which `go test ./...` does not build.
-        run: "$RUNNER_TEMP/staticcheck" -tags e2e ./...
+        run: |
+          "$RUNNER_TEMP/staticcheck" -tags e2e ./...
 
   # Job name is the ruleset check context ("gitleaks (full history)").
   # The scan is base..head for this pull request. --full-history in the
