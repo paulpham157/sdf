@@ -5,7 +5,11 @@
 // listed as missing, with the reason when the telemetry itself explains it.
 package summary
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/paulpham157/sdf/internal/pricing"
+)
 
 // ToolCall is one tool invocation joined from a span and, when present, a log.
 type ToolCall struct {
@@ -62,27 +66,94 @@ type Missing struct {
 
 // SessionSummary is one real session.
 type SessionSummary struct {
-	SessionID      string        `json:"session_id"`
-	Tool           string        `json:"tool"`
-	ServiceNames   []string      `json:"service_names"`
-	Models         []string      `json:"models"`
-	Traces         int           `json:"traces"`
-	Logs           int           `json:"logs"`
-	Metrics        int           `json:"metrics"`
-	DurationMS     *float64      `json:"duration_ms"`
-	DurationSource *string       `json:"duration_source"`
-	Tokens         OrderedFloats `json:"tokens"`
-	TokensSource   *string       `json:"tokens_source"`
-	TokensMethod   *string       `json:"tokens_method"`
-	CostUSD        *float64      `json:"cost_usd"`
-	CostSource     *string       `json:"cost_source"`
-	CostNote       *string       `json:"cost_note"`
-	Spans          []SpanNode    `json:"spans"`
-	SpansHidden    int           `json:"spans_hidden"`
-	LogEvents      []LogLine     `json:"log_events"`
-	MetricLines    []MetricLine  `json:"metric_lines"`
-	Missing        []Missing     `json:"missing"`
-	ToolCalls      []ToolCall    `json:"tool_calls"`
+	SessionID               string        `json:"session_id"`
+	Tool                    string        `json:"tool"`
+	ServiceNames            []string      `json:"service_names"`
+	Models                  []string      `json:"models"`
+	Traces                  int           `json:"traces"`
+	Logs                    int           `json:"logs"`
+	Metrics                 int           `json:"metrics"`
+	DurationMS              *float64      `json:"duration_ms"`
+	DurationSource          *string       `json:"duration_source"`
+	Tokens                  OrderedFloats `json:"tokens"`
+	TokensSource            *string       `json:"tokens_source"`
+	TokensMethod            *string       `json:"tokens_method"`
+	CostUSD                 *float64      `json:"cost_usd"`
+	CostSource              *string       `json:"cost_source"`
+	CostNote                *string       `json:"cost_note"`
+	AgentReportedCostUSD    *float64      `json:"agent_reported_cost_usd"`
+	AgentReportedCostSource *string       `json:"agent_reported_cost_source"`
+	AgentReportedCostNote   *string       `json:"agent_reported_cost_note"`
+	// ComputedCost is SDF's price for the summarized token counts.
+	// A nil USD inside it means the price is unknown, not zero.
+	ComputedCost *pricing.Cost   `json:"computed_cost_usd"`
+	Spans        []SpanNode      `json:"spans"`
+	SpansHidden  int             `json:"spans_hidden"`
+	LogEvents    []LogLine       `json:"log_events"`
+	MetricLines  []MetricLine    `json:"metric_lines"`
+	Missing      []Missing       `json:"missing"`
+	ToolCalls    []ToolCall      `json:"tool_calls"`
+	Repository   RepositoryFacts `json:"repository"`
+	Outcome      *SessionOutcome `json:"outcome,omitempty"`
+}
+
+// RepositoryFacts is what the agent exported about where the session ran.
+// Paths and commit ids come only from those attributes.
+type RepositoryFacts struct {
+	WorkDirs            []string `json:"work_dirs"`
+	CommitSHAs          []string `json:"commit_shas"`
+	RepositoryURL       string   `json:"repository_url,omitempty"`
+	Owner               string   `json:"owner,omitempty"`
+	RepositoryName      string   `json:"repository_name,omitempty"`
+	Provider            string   `json:"provider,omitempty"`
+	AmbiguousWorkDirs   bool     `json:"ambiguous_work_dirs,omitempty"`
+	AmbiguousRepository bool     `json:"ambiguous_repository,omitempty"`
+	StartUnixNano       *int64   `json:"start_unix_nano,omitempty"`
+	EndUnixNano         *int64   `json:"end_unix_nano,omitempty"`
+}
+
+// SessionOutcome is the git result attached to one session.
+// Match is "exact" or "heuristic" when Status is "linked".
+// Accepted is nil when merge status was not established.
+type SessionOutcome struct {
+	Status         string         `json:"status"`
+	Match          string         `json:"match,omitempty"`
+	Reason         string         `json:"reason,omitempty"`
+	Repo           string         `json:"repo,omitempty"`
+	Commits        []LinkedCommit `json:"commits,omitempty"`
+	PullRequest    *PullRequest   `json:"pull_request,omitempty"`
+	CI             string         `json:"ci,omitempty"`
+	Accepted       *bool          `json:"accepted"`
+	AcceptedReason string         `json:"accepted_reason,omitempty"`
+}
+
+// LinkedCommit is one commit the linker attached to a session.
+type LinkedCommit struct {
+	SHA           string `json:"sha"`
+	Subject       string `json:"subject,omitempty"`
+	CommitterUnix int64  `json:"committer_unix,omitempty"`
+}
+
+// PullRequest is a GitHub pull request that contains the linked commits.
+type PullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"url,omitempty"`
+	State  string `json:"state,omitempty"`
+	Merged bool   `json:"merged"`
+}
+
+// CostPerAccepted is computed cost divided by the number of merged outcomes.
+// Status "unknown" leaves USD empty.
+type CostPerAccepted struct {
+	Status           string `json:"status"`
+	USD              string `json:"usd,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	Note             string `json:"note,omitempty"`
+	AcceptedOutcomes int    `json:"accepted_outcomes,omitempty"`
+	AcceptedCostUSD  string `json:"accepted_cost_usd,omitempty"`
+	Sessions         int    `json:"sessions"`
+	UnknownCost      int    `json:"unknown_cost"`
+	UnknownOutcome   int    `json:"unknown_outcome"`
 }
 
 // Unattributed is records that could not be joined to exactly one session.
@@ -97,8 +168,9 @@ type Unattributed struct {
 
 // Report is the full summary.
 type Report struct {
-	Sessions     []SessionSummary `json:"sessions"`
-	Unattributed []Unattributed   `json:"unattributed"`
+	Sessions        []SessionSummary `json:"sessions"`
+	Unattributed    []Unattributed   `json:"unattributed"`
+	CostPerAccepted *CostPerAccepted `json:"cost_per_accepted_outcome,omitempty"`
 }
 
 // OrderedFloats is a JSON object that keeps insertion order. Python dicts

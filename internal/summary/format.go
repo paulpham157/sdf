@@ -6,6 +6,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/pricing"
 )
 
 // Format renders the text summary. It always ends with a newline.
@@ -25,6 +27,10 @@ func Format(report Report) string {
 		lines = append(lines, "  duration_ms: "+field(session.DurationMS, session.DurationSource))
 		lines = append(lines, "  tokens: "+formatTokens(session))
 		lines = append(lines, "  cost_usd: "+formatCost(session))
+		if session.ComputedCost != nil {
+			lines = append(lines, "  agent_reported_cost_usd: "+formatCost(session))
+			lines = append(lines, "  computed_cost_usd: "+formatComputed(session.ComputedCost))
+		}
 		if len(session.Spans) > 0 {
 			lines = append(lines, "  spans:")
 		} else {
@@ -84,6 +90,9 @@ func Format(report Report) string {
 		} else {
 			lines = append(lines, "  missing: (none)")
 		}
+		if session.Outcome != nil {
+			lines = append(lines, "  outcome: "+formatOutcome(session.Outcome))
+		}
 	}
 	if len(report.Unattributed) > 0 {
 		lines = append(lines, "unattributed:")
@@ -96,6 +105,9 @@ func Format(report Report) string {
 				lines = append(lines, "    - "+name)
 			}
 		}
+	}
+	if report.CostPerAccepted != nil {
+		lines = append(lines, "cost_per_accepted_outcome_usd: "+formatPerAccepted(report.CostPerAccepted))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -162,6 +174,119 @@ func formatCost(session SessionSummary) string {
 		return rendered + "; " + *session.CostNote
 	}
 	return rendered
+}
+
+func formatComputed(cost *pricing.Cost) string {
+	if cost == nil || cost.Status == "" {
+		return "(not computed)"
+	}
+	meta := cost.PriceSource
+	if cost.PriceDate != "" {
+		if meta != "" {
+			meta += " retrieved " + cost.PriceDate
+		} else {
+			meta = "retrieved " + cost.PriceDate
+		}
+	}
+	if cost.PriceTable != "" {
+		if meta != "" {
+			meta += ", table " + cost.PriceTable
+		} else {
+			meta = "table " + cost.PriceTable
+		}
+	}
+	if cost.Status != "known" {
+		reason := cost.Reason
+		if reason == "" {
+			reason = "unknown"
+		}
+		if meta != "" {
+			return "unknown (" + reason + "; " + meta + ")"
+		}
+		return "unknown (" + reason + ")"
+	}
+	detail := meta
+	if cost.CatalogID != "" {
+		piece := "model " + cost.CatalogID
+		if cost.MatchedBy != "" && cost.MatchedBy != "exact" {
+			piece += " matched by " + cost.MatchedBy
+		}
+		if detail != "" {
+			detail = piece + "; " + detail
+		} else {
+			detail = piece
+		}
+	}
+	if cost.Note != "" {
+		if detail != "" {
+			detail += "; " + cost.Note
+		} else {
+			detail = cost.Note
+		}
+	}
+	if detail == "" {
+		return cost.USD
+	}
+	return cost.USD + " (" + detail + ")"
+}
+
+func formatOutcome(outcome *SessionOutcome) string {
+	if outcome.Status != "linked" {
+		reason := outcome.Reason
+		if reason == "" {
+			reason = "unlinked"
+		}
+		return "unlinked (" + reason + ")"
+	}
+	parts := []string{outcome.Match}
+	if outcome.Repo != "" {
+		parts = append(parts, "repo="+outcome.Repo)
+	}
+	for _, commit := range outcome.Commits {
+		bit := commit.SHA
+		if commit.Subject != "" {
+			bit += " " + commit.Subject
+		}
+		parts = append(parts, bit)
+	}
+	text := strings.Join(parts, " ")
+	if outcome.PullRequest != nil {
+		state := "not merged"
+		if outcome.PullRequest.Merged {
+			state = "merged"
+		}
+		text += "; pr #" + itoa(outcome.PullRequest.Number) + " " + state
+	}
+	if outcome.CI != "" {
+		text += "; ci=" + outcome.CI
+	}
+	switch {
+	case outcome.Accepted == nil:
+		text += "; accepted=unknown"
+		if outcome.AcceptedReason != "" {
+			text += " (" + outcome.AcceptedReason + ")"
+		}
+	case *outcome.Accepted:
+		text += "; accepted=true"
+	default:
+		text += "; accepted=false"
+	}
+	return text
+}
+
+func formatPerAccepted(cost *CostPerAccepted) string {
+	if cost.Status != "known" {
+		reason := cost.Reason
+		if reason == "" {
+			reason = "unknown"
+		}
+		return "unknown (" + reason + ")"
+	}
+	text := cost.USD + " (accepted_outcomes=" + itoa(cost.AcceptedOutcomes) + ", accepted_cost_usd=" + cost.AcceptedCostUSD + ")"
+	if cost.Note != "" {
+		text += "; " + cost.Note
+	}
+	return text
 }
 
 func formatCall(call ToolCall) string {

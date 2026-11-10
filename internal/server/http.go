@@ -140,7 +140,10 @@ func (s *Server) writeBodyError(writer *bufio.Writer, method, path string, err e
 	}
 	writeResponse(writer, status, "text/plain", []byte(msg), closeAfter)
 	s.logRequest(method, path, status)
-	return true, nil
+	// Close only when the response says Connection: close. A 415 still has a
+	// fully read body, and closing without that header makes the client reuse
+	// the socket and see a reset.
+	return closeAfter, nil
 }
 
 func decodeContentEncoding(body []byte, headers []header) ([]byte, error) {
