@@ -1,41 +1,29 @@
 [project]
-name = "sdf-core"
-version = "0.1.0"
-description = "Software Decision Fabric Core vertical slice"
+name = "sdf"
+version = "0.0.0"
+description = "Collect OpenTelemetry from Codex CLI and Claude Code and summarize a session."
+readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi>=0.162,<1",
-  "uvicorn>=0.32,<1",
-  # Hold below 2.1 until opentelemetry-instrumentation-sqlalchemy accepts it.
-  # 0.66b2 requires sqlalchemy<2.1 (open-telemetry/opentelemetry-python-contrib#5120 is merged, not on PyPI).
-  "sqlalchemy>=2.0,<2.1",
-  "alembic>=1.14,<2",
-  "psycopg[binary]>=3.2,<4",
-  "e2b>=2,<3",
-  "daytona>=0.100,<1",
+    "opentelemetry-proto>=1.27,<2",
 ]
 
-[project.optional-dependencies]
-otel = [
-    "opentelemetry-api>=1.45.0,<1.46",
-    "opentelemetry-exporter-otlp-proto-http>=1.45.0,<1.46",
-    "opentelemetry-instrumentation-fastapi==0.66b2",
-    "opentelemetry-instrumentation-sqlalchemy==0.66b2",
-    "opentelemetry-sdk>=1.45.0,<1.46",
-]
+[project.scripts]
+sdf = "sdf.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3,<10",
-    "httpx>=0.27,<1",
-    "opentelemetry-sdk>=1.45.0,<1.46",
-    "opentelemetry-exporter-otlp-proto-http>=1.45.0,<1.46",
-    "opentelemetry-instrumentation-fastapi==0.66b2",
-    "opentelemetry-instrumentation-sqlalchemy==0.66b2",
+    "pytest>=8,<10",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sdf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-pythonpath = ["."]
