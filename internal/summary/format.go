@@ -90,6 +90,9 @@ func Format(report Report) string {
 		} else {
 			lines = append(lines, "  missing: (none)")
 		}
+		if session.Outcome != nil {
+			lines = append(lines, "  outcome: "+formatOutcome(session.Outcome))
+		}
 	}
 	if len(report.Unattributed) > 0 {
 		lines = append(lines, "unattributed:")
@@ -102,6 +105,9 @@ func Format(report Report) string {
 				lines = append(lines, "    - "+name)
 			}
 		}
+	}
+	if report.CostPerAccepted != nil {
+		lines = append(lines, "cost_per_accepted_outcome_usd: "+formatPerAccepted(report.CostPerAccepted))
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -222,6 +228,65 @@ func formatComputed(cost *pricing.Cost) string {
 		return cost.USD
 	}
 	return cost.USD + " (" + detail + ")"
+}
+
+func formatOutcome(outcome *SessionOutcome) string {
+	if outcome.Status != "linked" {
+		reason := outcome.Reason
+		if reason == "" {
+			reason = "unlinked"
+		}
+		return "unlinked (" + reason + ")"
+	}
+	parts := []string{outcome.Match}
+	if outcome.Repo != "" {
+		parts = append(parts, "repo="+outcome.Repo)
+	}
+	for _, commit := range outcome.Commits {
+		bit := commit.SHA
+		if commit.Subject != "" {
+			bit += " " + commit.Subject
+		}
+		parts = append(parts, bit)
+	}
+	text := strings.Join(parts, " ")
+	if outcome.PullRequest != nil {
+		state := "not merged"
+		if outcome.PullRequest.Merged {
+			state = "merged"
+		}
+		text += "; pr #" + itoa(outcome.PullRequest.Number) + " " + state
+	}
+	if outcome.CI != "" {
+		text += "; ci=" + outcome.CI
+	}
+	switch {
+	case outcome.Accepted == nil:
+		text += "; accepted=unknown"
+		if outcome.AcceptedReason != "" {
+			text += " (" + outcome.AcceptedReason + ")"
+		}
+	case *outcome.Accepted:
+		text += "; accepted=true"
+	default:
+		text += "; accepted=false"
+	}
+	return text
+}
+
+func formatPerAccepted(cost *CostPerAccepted) string {
+	if cost.Status != "known" {
+		reason := cost.Reason
+		if reason == "" {
+			reason = "unknown"
+		}
+		return "unknown (" + reason + ")"
+	}
+	text := cost.USD + " (accepted_outcomes=" + itoa(cost.AcceptedOutcomes) + ", accepted_cost_usd=" + cost.AcceptedCostUSD + ")"
+	if cost.Note != "" {
+		text += "; " + cost.Note
+	}
+	return text
 }
 
 func formatCall(call ToolCall) string {

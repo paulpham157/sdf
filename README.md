@@ -613,6 +613,46 @@ cache-read tokens stays `unknown` rather than treating the missing cache
 price as zero. The agent's `$0.065` on that model is still shown as
 `agent_reported_cost_usd`.
 
+## Git outcomes
+
+Telemetry says a tool call succeeded. It does not say the change was merged.
+`sdf summary` attaches an outcome from the local checkout, and stops when the
+match would be a guess. Nothing in this step calls the network unless you
+pass `--github`.
+
+A link is **exact** when `claude_code.tool_result` carries
+`vcs.ref.head.revision` or a full 40-character `git_commit_id` (including one
+inside `tool_parameters`). Claude Code adds those only when
+`OTEL_LOG_TOOL_DETAILS=1`, and an abbreviated id is ignored. The SHA has to
+exist in the checkout. If it does not, the session stays unlinked. SDF does
+not substitute a different commit from the same window.
+
+A link is **heuristic** when there is no exported SHA, the session has one
+absolute working directory (`pi.cwd` from pi-otel, or a single
+`workspace.host_paths` value from Claude Code), that directory is a git
+checkout on this machine, and exactly one commit has a committer time inside
+the session window widened by two seconds. Zero commits, or more than one,
+stays unlinked. The same commit in two sessions' windows unlinks both.
+`--repo PATH` supplies a checkout when the telemetry has no directory. If it
+disagrees with a directory the agent did export, the session stays unlinked.
+
+Codex and OpenCode do not export a working directory or a commit SHA on the
+signals this receiver stores, so those sessions stay unlinked unless you pass
+`--repo` and the time window contains one commit.
+
+`--github` asks for the pull request and CI status of a commit that is already
+linked. It uses `gh` when `gh` is on `PATH`, and otherwise `GH_TOKEN` or
+`GITHUB_TOKEN` against `api.github.com`. The token is a header, not an
+argument. The remote has to be `github.com`. No pull request means not
+accepted. Several pull requests, or a failed query, means accepted is unknown.
+CI is `success`, `pending`, `failure`, or `none`.
+
+`cost_per_accepted_outcome_usd` is the sum of `computed_cost_usd` for sessions
+whose pull request is merged, divided by how many such sessions there are.
+It is `unknown`, not zero, when any session in the set has no known outcome,
+when an accepted session has unknown computed cost, when the same commit is
+accepted on two sessions, or when nothing was merged.
+
 ## Tests
 
 ```bash

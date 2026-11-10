@@ -395,6 +395,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		MetricLines:             nonNilMetrics(metricLines(points)),
 		Missing:                 nonNilMissing(missing(tool, records, points, failures)),
 		ToolCalls:               nonNilCalls(toolCalls(records, points)),
+		Repository:              repositoryFacts(records),
 	}
 }
 

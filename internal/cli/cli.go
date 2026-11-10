@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
 	"github.com/paulpham157/sdf/internal/store"
@@ -147,11 +148,13 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	asJSON := false
 	allSpans := false
 	pricesSpec := ""
+	repoPath := ""
+	github := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH]")
+			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH] [--repo PATH] [--github]")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -185,6 +188,17 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 			pricesSpec = v
 		case strings.HasPrefix(arg, "--prices="):
 			pricesSpec = strings.TrimPrefix(arg, "--prices=")
+		case arg == "--repo":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf summary: --repo requires a path")
+				return 2
+			}
+			repoPath = v
+		case strings.HasPrefix(arg, "--repo="):
+			repoPath = strings.TrimPrefix(arg, "--repo=")
+		case arg == "--github":
+			github = true
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
@@ -207,6 +221,17 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	report := summary.SummarizeWith(records, allSpans, prices)
+	gitOpt := outcome.Options{Repo: repoPath}
+	if github {
+		lookup, err := outcome.NewGitHub()
+		if err != nil {
+			gitOpt.GitHubNote = err.Error()
+			fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		} else {
+			gitOpt.Lookup = lookup
+		}
+	}
+	outcome.Attach(&report, gitOpt)
 	if session != nil {
 		filtered := report.Sessions[:0:0]
 		for _, item := range report.Sessions {
@@ -217,7 +242,8 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		if filtered == nil {
 			filtered = []summary.SessionSummary{}
 		}
-		report = summary.Report{Sessions: filtered, Unattributed: []summary.Unattributed{}}
+		rolled := outcome.CostPerAccepted(filtered)
+		report = summary.Report{Sessions: filtered, Unattributed: []summary.Unattributed{}, CostPerAccepted: &rolled}
 	}
 	if asJSON {
 		if err := summary.WriteJSON(stdout, report); err != nil {
