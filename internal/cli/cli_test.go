@@ -2,6 +2,8 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -11,9 +13,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paulpham157/sdf/internal/cli"
+	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/pricing"
+	"github.com/paulpham157/sdf/internal/samplepath"
+	"github.com/paulpham157/sdf/internal/store"
+	"github.com/paulpham157/sdf/internal/ui"
 )
 
 func TestSummaryOfANewDatabase(t *testing.T) {
@@ -85,6 +92,169 @@ func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
 	closed := run(t, "init", "--check", "--host", "127.0.0.1", "--port", "1", "--grpc-port", "1")
 	if closed.code != 1 || !strings.Contains(closed.stdout, "not reachable") {
 		t.Fatalf("%d %s", closed.code, closed.stdout)
+	}
+}
+
+func TestServeHelpMentionsTheLocalUI(t *testing.T) {
+	out := run(t, "serve", "--help")
+	if out.code != 0 || !strings.Contains(out.stdout, "--no-ui") || !strings.Contains(out.stdout, "127.0.0.1:4320") || !strings.Contains(out.stdout, "--host does not change it") {
+		t.Fatalf("%d %s", out.code, out.stdout)
+	}
+	bad := run(t, "serve", "--ui-addr")
+	if bad.code != 2 || !strings.Contains(bad.stderr, "--ui-addr") {
+		t.Fatalf("%d %s", bad.code, bad.stderr)
+	}
+	worse := run(t, "serve", "--ui-addr", "not-an-address")
+	if worse.code != 2 {
+		t.Fatalf("%d %s", worse.code, worse.stderr)
+	}
+}
+
+func TestUISummaryMatchesTheSummaryCommandOnSamples(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "samples.sqlite")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadSamples(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	text := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled")
+	if text.code != 0 {
+		t.Fatal(text.stderr)
+	}
+	db, err = store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	srv, err := ui.Start(ui.Config{Addr: "127.0.0.1:0", Store: db, Prices: "bundled"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(context.Background())
+	summaryBody := httpGet(t, srv.URL()+"api/summary")
+	if summaryBody != text.stdout {
+		t.Fatalf("api and sdf summary --json differ\napi %s\nsummary %s", summaryBody, text.stdout)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(text.stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	var snap map[string]any
+	if err := json.Unmarshal([]byte(httpGet(t, srv.URL()+"api/snapshot")), &snap); err != nil {
+		t.Fatal(err)
+	}
+	rawSessions, _ := report["sessions"].([]any)
+	rawViews, _ := snap["sessions"].([]any)
+	if len(rawSessions) == 0 || len(rawViews) != len(rawSessions) {
+		t.Fatalf("sessions report %d snapshot %d", len(rawSessions), len(rawViews))
+	}
+	byID := map[string]map[string]any{}
+	for _, item := range rawSessions {
+		session := item.(map[string]any)
+		byID[session["session_id"].(string)] = session
+	}
+	for _, item := range rawViews {
+		view := item.(map[string]any)
+		summarySession := view["summary"].(map[string]any)
+		id := summarySession["session_id"].(string)
+		if !reflectDeepEqual(summarySession, byID[id]) {
+			t.Fatalf("session %s\napi %#v\nsummary %#v", id, summarySession, byID[id])
+		}
+		assertCostField(t, id, summarySession["computed_cost_usd"], view["computed_cost_usd"])
+		assertAgentField(t, id, summarySession["agent_reported_cost_usd"], view["agent_reported_cost_usd"])
+	}
+	if !reflectDeepEqual(report["cost_per_accepted_outcome"], snap["cost_per_accepted_outcome"]) {
+		t.Fatalf("cost per accepted\napi %#v\nsummary %#v", snap["cost_per_accepted_outcome"], report["cost_per_accepted_outcome"])
+	}
+}
+
+func assertCostField(t *testing.T, id string, summaryCost, viewCost any) {
+	t.Helper()
+	view := viewCost.(map[string]any)
+	raw, _ := summaryCost.(map[string]any)
+	if raw == nil || raw["status"] != "known" || raw["usd"] == nil || raw["usd"] == "" {
+		if view["status"] != "unknown" || view["value"] != nil {
+			t.Fatalf("%s computed view %#v summary %#v", id, view, raw)
+		}
+		return
+	}
+	if view["status"] != "known" || view["value"] != raw["usd"] {
+		t.Fatalf("%s computed view %#v summary %#v", id, view, raw)
+	}
+}
+
+func assertAgentField(t *testing.T, id string, summaryCost, viewCost any) {
+	t.Helper()
+	view := viewCost.(map[string]any)
+	if summaryCost == nil {
+		if view["status"] != "unknown" || view["value"] != nil {
+			t.Fatalf("%s agent view %#v", id, view)
+		}
+		return
+	}
+	if view["status"] != "known" || view["value"] == nil || view["value"] == "" {
+		t.Fatalf("%s agent view %#v summary %#v", id, view, summaryCost)
+	}
+}
+
+func reflectDeepEqual(a, b any) bool {
+	ab, _ := json.Marshal(a)
+	bb, _ := json.Marshal(b)
+	return bytes.Equal(ab, bb)
+}
+
+func loadSamples(t *testing.T, db *store.Store) {
+	t.Helper()
+	dir := samplepath.Dir()
+	files := [][2]string{
+		{"metrics", "claude_metrics.json"},
+		{"logs", "claude_logs.json"},
+		{"traces", "claude_traces.json"},
+		{"metrics", "codex_metrics.json"},
+		{"logs", "codex_logs.json"},
+		{"logs", "opencode_logs.json"},
+		{"traces", "opencode_traces.json"},
+		{"logs", "pi_logs.json"},
+		{"metrics", "pi_metrics.json"},
+		{"traces", "pi_traces.json"},
+	}
+	for _, item := range files {
+		body, err := os.ReadFile(filepath.Join(dir, item[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := otlp.Decode(item[0], body, "application/json")
+		if err != nil {
+			t.Fatalf("%s: %v", item[1], err)
+		}
+		if _, err := db.Insert(records); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func httpGet(t *testing.T, url string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last error
+	for {
+		resp, err := http.Get(url)
+		if err == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != 200 {
+				t.Fatalf("%s %d %s", url, resp.StatusCode, body)
+			}
+			return string(body)
+		}
+		last = err
+		if time.Now().After(deadline) {
+			t.Fatal(last)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
