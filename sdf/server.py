@@ -1,8 +1,9 @@
 """Local OTLP/HTTP receiver.
 
 Speaks the JSON and protobuf encodings on ``/v1/traces``, ``/v1/metrics``,
-and ``/v1/logs``. gRPC is intentionally not implemented: both Codex and
-Claude Code can export OTLP/HTTP.
+and ``/v1/logs``. A body may arrive with ``Content-Length`` or
+``Transfer-Encoding: chunked`` (no ``Content-Length``). gRPC is intentionally
+not implemented.
 """
 
 from __future__ import annotations
@@ -17,6 +18,15 @@ _SIGNALS = {
     "/v1/metrics": "metrics",
     "/v1/logs": "logs",
 }
+_MAX_CHUNK_LINE = 4096
+_MAX_TRAILERS = 65_536
+
+
+class _BodyStatus(Exception):
+    def __init__(self, status: int, message: bytes):
+        super().__init__(message.decode("ascii", "replace"))
+        self.status = status
+        self.message = message
 
 
 class TelemetryServer(ThreadingHTTPServer):
@@ -40,14 +50,10 @@ def make_server(host: str, port: int, store: Store, *, quiet: bool = False) -> T
                 self._reply(404, b"not found", "text/plain")
                 return
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                self._reply(400, b"invalid content length", "text/plain")
+                body = self._read_body()
+            except _BodyStatus as exc:
+                self._reply(exc.status, exc.message, "text/plain")
                 return
-            if length < 0 or length > MAX_BODY_BYTES:
-                self._reply(413, b"payload too large", "text/plain")
-                return
-            body = self.rfile.read(length)
             content_type = self.headers.get("Content-Type")
             try:
                 records = decode_export(signal, body, content_type)
@@ -59,6 +65,76 @@ def make_server(host: str, port: int, store: Store, *, quiet: bool = False) -> T
                 self._reply(200, b"{}", "application/json")
             else:
                 self._reply(200, b"", "application/x-protobuf")
+
+        def _read_body(self) -> bytes:
+            # Chunked overrides Content-Length (RFC 9112). OpenCode traces and
+            # pi-otel posts omit Content-Length and send chunked JSON.
+            encodings = [
+                part.strip().lower()
+                for part in (self.headers.get("Transfer-Encoding") or "").split(",")
+                if part.strip()
+            ]
+            if encodings:
+                if encodings != ["chunked"]:
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"unsupported transfer encoding")
+                return self._read_chunked()
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise _BodyStatus(400, b"invalid content length") from exc
+            if length < 0 or length > MAX_BODY_BYTES:
+                raise _BodyStatus(413, b"payload too large")
+            if length == 0:
+                return b""
+            body = self.rfile.read(length)
+            if len(body) != length:
+                self.close_connection = True
+                raise _BodyStatus(400, b"incomplete body")
+            return body
+
+        def _read_chunked(self) -> bytes:
+            body = bytearray()
+            while True:
+                line = self.rfile.readline(_MAX_CHUNK_LINE)
+                if not line.endswith(b"\n"):
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"invalid chunked body")
+                size_token = line.split(b";", 1)[0].strip()
+                try:
+                    size = int(size_token, 16)
+                except ValueError as exc:
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"invalid chunk size") from exc
+                if size < 0:
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"invalid chunk size")
+                if size == 0:
+                    self._discard_trailers()
+                    return bytes(body)
+                if size > MAX_BODY_BYTES or len(body) + size > MAX_BODY_BYTES:
+                    self.close_connection = True
+                    raise _BodyStatus(413, b"payload too large")
+                chunk = self.rfile.read(size)
+                if len(chunk) != size:
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"incomplete chunked body")
+                body.extend(chunk)
+                delimiter = self.rfile.read(2)
+                if delimiter != b"\r\n":
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"invalid chunked body")
+
+        def _discard_trailers(self) -> None:
+            seen = 0
+            while True:
+                line = self.rfile.readline(_MAX_CHUNK_LINE)
+                seen += len(line)
+                if seen > _MAX_TRAILERS or not line.endswith(b"\n"):
+                    self.close_connection = True
+                    raise _BodyStatus(400, b"invalid chunked body")
+                if line in (b"\r\n", b"\n"):
+                    return
 
         def log_message(self, fmt: str, *args) -> None:
             if not quiet:

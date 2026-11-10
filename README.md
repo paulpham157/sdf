@@ -1,22 +1,32 @@
 # SDF
 
-SDF collects traces of coding-agent work from the OpenTelemetry support built
-into the agents, and summarizes a session from that telemetry.
+SDF collects traces of coding-agent work from OpenTelemetry exported by the
+agents, and summarizes a session from that telemetry.
 
-It does not launch, route, or sandbox agents. Codex CLI and Claude Code export
-their own telemetry. SDF listens for it.
+It does not launch, route, or sandbox agents. Codex CLI, Claude Code, and
+OpenCode v2 export their own telemetry. Pi does not; its section uses the
+community `pi-otel` extension. SDF listens.
 
 The previous implementation is preserved at the git tag **`legacy-v1`**
 (commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3` on `main` at the time of the
 tag). That tag is the last snapshot of the orchestrator. This tree is a new v0.
 
 Checked against the docs and the Codex sources below on 2026-11-09. Codex
-source citations are from `openai/codex` commit `8703d32`.
+source citations are from `openai/codex` commit `8703d32`. OpenCode and Pi
+attribute names were checked on 2026-11-10 against `@opencode/cli` 2.2.6 and
+`pi-otel` 0.3.0 on `@earendil-works/pi-coding-agent` 1.5.1.
 
 ## What each tool actually exports
 
-The two tools do not emit the same signals. A field the summary cannot find
-is reported as not present. SDF does not estimate tokens, cost, or duration.
+The tools do not emit the same signals. A field the summary cannot find is
+reported as not present. SDF does not estimate tokens, cost, or duration.
+
+| Tool | Traces | Logs | Metrics | Limitation |
+| --- | --- | --- | --- | --- |
+| Claude Code | Beta spans when `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` and `OTEL_TRACES_EXPORTER=otlp` | Event catalog when `OTEL_LOGS_EXPORTER=otlp` | Counters, including tokens and cost, with `session.id` by default | Traces are off unless both flags are set. gRPC is not accepted. |
+| Codex CLI | Process spans when `otel.trace_exporter` is an OTLP/HTTP URL | Session record (`codex.sse_event`, `codex.tool_result`, and the other `codex.*` events) | Large catalog. Turn metrics carry `conversation.id` only when every tag is valid | Does not read `OTEL_*`. `metrics_exporter` defaults to `statsig`. A model id containing `:` drops the turn metrics. |
+| OpenCode v2 (`@opencode/cli`) | Built in. Chunked OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Runner spans set `session.id` | Process logs only (`cli starting`, watcher, shutdown). No `session.id` | Not exported | No per-session log catalog and no metrics. npm `opencode-ai` is v1, not this CLI. |
+| Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC, which this receiver does not speak. |
 
 ### Claude Code
 
@@ -209,7 +219,10 @@ authentication; keep the bind address on localhost. Override with `--host`,
 
 `GET /health` returns `{"status":"ok"}`. Exports are `POST /v1/traces`,
 `POST /v1/metrics`, and `POST /v1/logs`, `Content-Type: application/json` or
-`application/x-protobuf`.
+`application/x-protobuf`. The body may use `Content-Length` or
+`Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel posts are
+chunked and omit `Content-Length`. When both headers are present, chunked
+encoding wins.
 
 Rows are one span, one metric point, or one log record. Inspect them with
 SQLite:
@@ -277,12 +290,14 @@ sqlite3 sdf-telemetry.sqlite \
   "select name, session_id from records where name like 'codex.%'"
 ```
 
-`session_id` in that table is `conversation.id` for Codex and `session.id` for
-Claude Code, taken from the datapoint attributes or the resource.
+`session_id` in that table is the first present key among `session.id`,
+`conversation.id`, `pi.session.id`, and `gen_ai.conversation.id`, taken from
+the datapoint attributes or the resource. Codex uses `conversation.id`.
+Claude Code and OpenCode use `session.id`. Pi logs set only `pi.session.id`.
 
 ## OpenRouter
 
-Both tools can call a free OpenRouter model. The id is the provider slug,
+Claude Code and Codex can call a free OpenRouter model. The id is the provider slug,
 including the `:free` suffix. Do not put the key in a settings file.
 
 Claude Code, in the shell that launches `claude` (and the telemetry variables
@@ -331,6 +346,82 @@ the colon reason above. The summary says so and uses `run_turn` for duration
 and `codex.sse_event` / `response.completed` for tokens. No `codex.turn_cost`
 log was emitted for this model in the 2026-11-10 capture, so cost stays unset.
 
+## Point OpenCode v2 at it
+
+OpenCode v2 is the `@opencode/cli` package, not npm `opencode-ai` (that package
+is still v1). v1's `experimental.openTelemetry` flag is ignored by v2. Export
+turns on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. That is the only variable
+this receiver needs:
+
+```bash
+npm install -g @opencode/cli
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+opencode run --model "openrouter/recursive/flint-v1.0:free" "..."
+```
+
+The bundled exporter posts traces to `${endpoint}/v1/traces` and logs to
+`${endpoint}/v1/logs` as `application/json`. Trace batches use
+`Transfer-Encoding: chunked` and omit `Content-Length`. There is no metrics
+exporter. `service.name` is `opencode`.
+
+Session spans (`SessionRunner.drain`, `SessionRunner.runStep`,
+`SessionStep.attempt`, `Tool.execute`) carry `session.id`. Startup spans and
+the process logs do not, so the summary leaves them unattributed instead of
+attaching them because the timestamps overlap. `SessionStep.attempt` carries
+`gen_ai.request.model` and `gen_ai.usage.*`. Input and cache counts already
+include the conversation prefix, so the summary takes the max. Output is
+summed. OpenCode does not emit a cost attribute. `Tool.execute` carries
+`gen_ai.tool.name` and `gen_ai.tool.call.id` and no success flag, so the tool
+call is `unknown`.
+
+## Point Pi at it
+
+Pi's own CLI does not export OpenTelemetry. `PI_TELEMETRY` only toggles an
+install ping and provider attribution headers. The official
+`@earendil-works/pi-telemetry` package is an in-process contract with no
+exporter. The package to install is `@earendil-works/pi-coding-agent` (the
+older `@mariozechner/pi-coding-agent` name is retired).
+
+Traces, logs, and metrics in this section come from the community extension
+`pi-otel`, not from Pi itself. `pi-otel` 0.3.0 defaults to traces on, metrics
+and logs off, and gRPC at `http://127.0.0.1:4317`. This receiver does not
+speak gRPC. Set HTTP JSON explicitly:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pi install npm:pi-otel
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export PI_OTEL_METRICS=1
+export PI_OTEL_LOGS=1
+export PI_OTEL_SPAN_NAMING=genai
+pi --print --provider openrouter --model "recursive/flint-v1.0:free" "..."
+```
+
+`PI_OTEL_DISABLED=1` turns the extension off. The same switches can be set in
+`.pi/agent/settings.json` under `otel` (`protocol`, `signals.traces`,
+`signals.metrics`, `signals.logs`, `spanNaming`, `serviceName`). Leave content
+capture off; the summary does not need prompts or tool arguments.
+
+With `PI_OTEL_SPAN_NAMING=genai`, `service.name` is `pi` and the span names
+are `invoke_agent <agent>`, `pi.turn`, `chat <model>`, and
+`execute_tool <tool>`. Spans set `session.id`, `pi.session.id`, and
+`gen_ai.conversation.id` to the same id. Logs set only `pi.session.id` (plus
+`gen_ai.system=pi`) and are only `pi.session.start` and `pi.session.end`.
+Metrics (`gen_ai.client.token.usage`, `gen_ai.client.operation.duration`,
+`gen_ai.client.tool.calls`, `gen_ai.client.tool_calls_per_operation`) have no
+session id. The summary attaches a Pi metric when its timestamp falls inside
+exactly one Pi session; otherwise the metric stays unattributed.
+
+`chat` spans carry `gen_ai.request.model`, `gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, and `pi.cost.usd`. On the 2026-11-10 capture the
+per-turn input and output were additive (975+103+15+152 input and
+530+33+99+170 output, matching `gen_ai.client.token.usage` of 1245 and 832).
+The summary sums those span counts and does not add the metric again. Cache
+and reasoning attributes stay out of that total. `execute_tool` carries
+`gen_ai.tool.name`, `gen_ai.tool.call.id`, and `pi.tool.is_error` (false means
+the call succeeded).
+
 ## Summarize a session
 
 ```bash
@@ -340,8 +431,9 @@ uv run sdf summary --json
 uv run sdf summary --all-spans
 ```
 
-One block per real session (`session.id` or `conversation.id`), then an
-`unattributed` block for records that could not be joined. Each block has:
+One block per real session (`session.id`, `conversation.id`,
+`pi.session.id`, or `gen_ai.conversation.id`), then an `unattributed` block
+for records that could not be joined. Each block has:
 
 - signal counts (`traces`, `logs`, `metrics`)
 - duration, tokens, and cost, each labeled with the signal it came from
@@ -351,29 +443,45 @@ One block per real session (`session.id` or `conversation.id`), then an
 - the metric points that arrived
 - `missing`, naming any signal or Codex session metric that is absent and why
 
-The default span tree keeps Claude's `claude_code.*` spans and the Codex
-spans `run_turn`, `codex.sampling`, `codex.turn_input`, `exec_command`,
-`unified_exec.exec_command`, and `codex.tool_blocking`, plus any other span
-that carries `call_id` or `tool_name`. Internal names such as `append_items`
-stay in the count and out of the tree. `--all-spans` prints them.
+The default span tree keeps Claude's `claude_code.*` spans, the Codex spans
+`run_turn`, `codex.sampling`, `codex.turn_input`, `exec_command`,
+`unified_exec.exec_command`, and `codex.tool_blocking`, OpenCode's
+`SessionRunner.drain`, `SessionRunner.runStep`, `SessionStep.attempt`,
+`Tool.execute`, `FileWrite.write`, and `POST`, and Pi's `invoke_agent`,
+`pi.turn`, `chat`, and `execute_tool` (the span name may continue with the
+agent, model, or tool). Any other span that carries a call id or tool name
+is kept too. Internal names such as `append_items`, `LLM.compile`, and
+`Plugin.load` stay in the count and out of the tree. `--all-spans` prints
+them.
 
 Tool calls join `exec_command` or `claude_code.tool` to `codex.tool_result` /
-`claude_code.tool_result` on `call_id` or `tool_use_id`. Success comes from
-the log when the span has none. Duration prefers the execution child span,
-then the tool span, then the log.
+`claude_code.tool_result` on `call_id` or `tool_use_id`. OpenCode tool calls
+come from `Tool.execute` (`gen_ai.tool.name`, `gen_ai.tool.call.id`). Pi tool
+calls come from `execute_tool` (`gen_ai.tool.name`, `gen_ai.tool.call.id`,
+`pi.tool.is_error`). Success comes from the log when the span has none. An
+OpenCode tool span has no success flag, so the call is `unknown`. Duration
+prefers the execution child span, then the tool span, then the log.
 
 Precedence, so the same numbers are not added twice:
 
 - Duration: sum of `claude_code.interaction` spans, else `codex.turn.e2e_duration_ms`,
-  else sum of `run_turn` spans, else `claude_code.active_time.total` (active
-  seconds, not wall clock), else the min-to-max timestamp (`observed_window`).
+  else sum of `run_turn` spans, else sum of Pi `invoke_agent` spans, else sum
+  of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
+  (active seconds, not wall clock), else the min-to-max timestamp
+  (`observed_window`).
 - Tokens: `claude_code.token.usage` by `type`, else `codex.turn.token_usage`
   by `token_type`, else the sum of Claude `api_request` token attributes,
-  else Codex `response.completed` with the rule below.
+  else Codex `response.completed` with the rule below, else OpenCode
+  `SessionStep.attempt` `gen_ai.usage.*` (input and cache use the max, output
+  is summed), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
+  `output_tokens`. That Pi sum is not added to `gen_ai.client.token.usage`.
+  If the chat spans have no usage attributes, the Pi token metric is the
+  fallback.
 - Cost: `claude_code.cost.usage` (USD), else `codex.turn.cost_microusd`
   divided by 1,000,000, else `cost_usd` on `claude_code.api_request`, else
-  `usage.estimated_usd` on `codex.turn_cost`. Claude's figure is labeled as
-  the agent's estimate, not the provider price.
+  `usage.estimated_usd` on `codex.turn_cost`, else the sum of `pi.cost.usd`
+  on Pi `chat` spans. Claude's figure is labeled as the agent's estimate,
+  not the provider price. OpenCode emits no cost.
 
 Codex `response.completed` token fields are not all additive. `input_token_count`,
 `cached_token_count`, and `cache_write_token_count` already include the
@@ -397,11 +505,15 @@ uv run pytest
 
 `tests/samples/` is sample OTLP, marked `sdf.fixture=sample` and described in
 `tests/samples/README.md`. Nothing there was captured from a live agent.
+The OpenCode and Pi files follow the attribute names from the 2026-11-10
+checks; the ids are fake.
 
 ## Gaps
 
-- OTLP/HTTP only. gRPC clients, including Claude's quick-start `grpc` snippet
-  and Codex `otlp-grpc`, will not connect. Use the HTTP setup above.
+- OTLP/HTTP only. gRPC clients, including Claude's quick-start `grpc` snippet,
+  Codex `otlp-grpc`, and pi-otel's default gRPC endpoint, will not connect.
+  Use the HTTP setup above. pi-otel needs
+  `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`.
 - Codex's published config reference does not catalog events or metrics. The
   Codex lists in this file can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places
@@ -410,21 +522,37 @@ uv run pytest
   allowlist from the spans observed on Codex 0.167.0 (`run_turn`,
   `exec_command`, `codex.sampling`, `codex.tool_blocking`, and
   `unified_exec.exec_command`), not a promise that those names stay stable.
+  The OpenCode and Pi names in the default tree are the ones observed on
+  `@opencode/cli` 2.2.6 and `pi-otel` 0.3.0 with `PI_OTEL_SPAN_NAMING=genai`.
   `--all-spans` shows the rest.
 - Codex session metrics are not emitted for a model id that contains `:`.
   That includes OpenRouter `:free` slugs. No config alias was found that
   changes only the metric tag. Process metrics can still arrive, and the
   summary falls back to logs and spans for tokens and duration.
 - Records with no session id are attached by trace id, span id, or a
-  timestamp that sits inside exactly one session. The rest are unattributed.
-  Two overlapping sessions leave an ambiguous span unattributed.
+  timestamp that sits inside exactly one session of the same tool. The rest
+  are unattributed. Two overlapping sessions leave an ambiguous record
+  unattributed. OpenCode process logs and startup spans are not attached by
+  timestamp; they have no session id and are not a session catalog. Pi
+  metrics have no session id and use that time window. Pi logs are attached
+  by `pi.session.id`.
+- OpenCode v2.2.6 exports no OTLP metrics. Its logs are process events. The
+  summary says so on the `missing` lines instead of claiming the session
+  exported nothing.
+- Pi has no built-in OTLP exporter. `pi-otel` logs only session start and
+  end, and only when `PI_OTEL_LOGS=1`. The summary keeps those two events
+  and names that limit. Metrics stay unattributed when they do not fall
+  inside exactly one Pi session.
 - Retried delta exports can be double-counted. Cumulative series use the
-  latest point. Codex input tokens use the max, not the sum, as described
-  above.
+  latest point. Codex and OpenCode input tokens use the max, not the sum, as
+  described above. Pi per-turn input and output are summed, and that sum is
+  not added to `gen_ai.client.token.usage`.
 - Cost figures are whatever the tool put on the wire (Claude USD, Codex
-  micro-USD or `usage.estimated_usd`). They are not an invoice, and they are
-  not OpenRouter's price.
+  micro-USD or `usage.estimated_usd`, Pi `pi.cost.usd`). They are not an
+  invoice, and they are not OpenRouter's price. OpenCode does not emit one.
 - Prompt and tool content are not requested by the setup above. If you turn
   those flags on, the text is stored in this local SQLite file.
-- No live capture from either CLI is part of this v0. The tests use the
-  sample payloads only.
+- No live capture is committed in this tree. The tests use the sample
+  payloads only. OpenCode and Pi behavior above is from the 2026-11-10
+  checks of the named package versions, not from a fixture that was copied
+  out of a live SQLite file.

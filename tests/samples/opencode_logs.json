@@ -1,0 +1,54 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "opencode"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          },
+          {
+            "key": "opencode.client",
+            "value": {
+              "stringValue": "cli"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "11500000000",
+              "body": {
+                "stringValue": "['cli starting']"
+              },
+              "attributes": [
+                {
+                  "key": "role",
+                  "value": {
+                    "stringValue": "cli"
+                  }
+                },
+                {
+                  "key": "effect.fiberId",
+                  "value": {
+                    "stringValue": "1"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

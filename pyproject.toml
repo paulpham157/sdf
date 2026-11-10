@@ -1,7 +1,7 @@
 [project]
 name = "sdf"
 version = "0.0.0"
-description = "Collect OpenTelemetry from Codex CLI and Claude Code and summarize a session."
+description = "Collect OpenTelemetry from coding agents and summarize a session."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"

@@ -1,0 +1,182 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "pi"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "metrics": [
+            {
+              "name": "gen_ai.client.token.usage",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "17000000000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "recursive/flint-v1.0:free"
+                        }
+                      }
+                    ],
+                    "asInt": "1245"
+                  },
+                  {
+                    "timeUnixNano": "17000000000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "recursive/flint-v1.0:free"
+                        }
+                      }
+                    ],
+                    "asInt": "832"
+                  },
+                  {
+                    "timeUnixNano": "22252420000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "recursive/flint-v1.0:free"
+                        }
+                      }
+                    ],
+                    "asInt": "9999"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.operation.duration",
+              "unit": "s",
+              "histogram": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "17000000000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "recursive/flint-v1.0:free"
+                        }
+                      }
+                    ],
+                    "sum": 7.207,
+                    "count": 4
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.tool.calls",
+              "unit": "{call}",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "17000000000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "bash"
+                        }
+                      }
+                    ],
+                    "asInt": "2"
+                  },
+                  {
+                    "timeUnixNano": "17000000000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "read"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.tool_calls_per_operation",
+              "unit": "{call}",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "17000000000",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "recursive/flint-v1.0:free"
+                        }
+                      }
+                    ],
+                    "asInt": "3"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
