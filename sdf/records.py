@@ -21,4 +21,7 @@ class Record:
     attributes: dict = field(default_factory=dict)
     resource: dict = field(default_factory=dict)
     body: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    parent_span_id: str | None = None
     id: int = 0

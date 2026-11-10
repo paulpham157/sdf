@@ -6,7 +6,7 @@ import sys
 
 from sdf.server import make_server
 from sdf.store import Store
-from sdf.summary import format_summary, summarize
+from sdf.summary import SummaryReport, format_summary, summarize
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,11 +25,16 @@ def main(argv: list[str] | None = None) -> int:
     summary.add_argument("--db", default="sdf-telemetry.sqlite")
     summary.add_argument("--session", help="only this session.id or conversation.id")
     summary.add_argument("--json", action="store_true", help="print JSON instead of text")
+    summary.add_argument(
+        "--all-spans",
+        action="store_true",
+        help="include internal spans in the tree (default hides them)",
+    )
 
     args = parser.parse_args(argv)
     if args.command == "serve":
         return _serve(args.host, args.port, args.db)
-    return _summary(args.db, args.session, args.json)
+    return _summary(args.db, args.session, args.json, args.all_spans)
 
 
 def _serve(host: str, port: int, db: str) -> int:
@@ -53,18 +58,20 @@ def _serve(host: str, port: int, db: str) -> int:
     return 0
 
 
-def _summary(db: str, session: str | None, as_json: bool) -> int:
+def _summary(db: str, session: str | None, as_json: bool, all_spans: bool) -> int:
     store = Store(db)
     try:
         records = store.load()
     finally:
         store.close()
+    report = summarize(records, all_spans=all_spans)
     if session is not None:
-        records = [record for record in records if record.session_id == session]
-    sessions = summarize(records)
+        report = SummaryReport(
+            sessions=[item for item in report.sessions if item.session_id == session]
+        )
     if as_json:
-        json.dump([item.as_dict() for item in sessions], sys.stdout, indent=2)
+        json.dump(report.as_dict(), sys.stdout, indent=2)
         sys.stdout.write("\n")
     else:
-        sys.stdout.write(format_summary(sessions))
+        sys.stdout.write(format_summary(report))
     return 0

@@ -16,6 +16,9 @@ import pytest
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+)
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.metrics.v1.metrics_pb2 import (
     AggregationTemporality,
@@ -26,6 +29,7 @@ from opentelemetry.proto.metrics.v1.metrics_pb2 import (
     Sum,
 )
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
+from opentelemetry.proto.trace.v1.trace_pb2 import ResourceSpans, ScopeSpans, Span
 
 from sdf.cli import main
 from sdf.server import make_server
@@ -101,33 +105,38 @@ def test_receiver_stores_sample_payloads_and_summary_uses_only_present_fields(re
     # The unscoped Codex counter is stored, but it is not a session.
     assert any(row.name == "codex.websocket.event" and row.session_id is None for row in rows)
 
-    sessions = {item.session_id: item for item in summarize(rows)}
+    report = summarize(rows)
+    sessions = {item.session_id: item for item in report.sessions}
     assert set(sessions) == {"sample-claude-1", "sample-codex-conv-1"}
+    assert report.unattributed == []
 
     claude = sessions["sample-claude-1"]
     assert claude.tool == "claude-code"
     assert claude.service_names == ["claude-code"]
     assert claude.models == ["claude-sonnet-5"]
     assert claude.duration_ms == 2000
-    assert claude.duration_source == "claude_code.interaction"
+    assert claude.duration_source == "traces claude_code.interaction"
     assert claude.tokens == {"input": 100, "output": 40, "cacheRead": 10, "cacheCreation": 4}
-    assert claude.tokens_source == "claude_code.token.usage"
+    assert claude.tokens_source == "metrics claude_code.token.usage"
     assert claude.cost_usd == 0.5
-    assert claude.cost_source == "claude_code.cost.usage"
-    assert [(call.name, call.call_id, call.source, call.duration_ms) for call in claude.tool_calls] == [
-        ("Bash", "toolu_bash", "claude_code.tool_result", 250),
-        ("Read", "toolu_read", "claude_code.tool", 100),
+    assert claude.cost_source == "metrics claude_code.cost.usage"
+    assert claude.traces and claude.logs and claude.metrics
+    assert [(call.name, call.call_id, call.duration_ms) for call in claude.tool_calls] == [
+        ("Bash", "toolu_bash", 250),
+        ("Read", "toolu_read", 100),
     ]
+    assert "logs claude_code.tool_result" in claude.tool_calls[0].source
+    assert any(node.name == "claude_code.interaction" for node in claude.spans)
 
     codex = sessions["sample-codex-conv-1"]
     assert codex.tool == "codex"
     assert codex.models == ["gpt-5.1"]
     assert codex.duration_ms == 2500
-    assert codex.duration_source == "codex.turn.e2e_duration_ms"
+    assert codex.duration_source == "metrics codex.turn.e2e_duration_ms"
     assert codex.tokens == {"input": 200, "output": 30}
-    assert codex.tokens_source == "codex.turn.token_usage"
+    assert codex.tokens_source == "metrics codex.turn.token_usage"
     assert codex.cost_usd == pytest.approx(0.005)
-    assert codex.cost_source == "codex.turn.cost_microusd"
+    assert codex.cost_source == "metrics codex.turn.cost_microusd"
     assert [(call.name, call.call_id, call.success, call.duration_ms) for call in codex.tool_calls] == [
         ("shell", "call-1", "true", 90)
     ]
@@ -137,7 +146,7 @@ def test_protobuf_cumulative_counter_keeps_the_latest_point(receiver, tmp_path, 
     base, store = receiver
     _post(base, "/v1/metrics", _counter(10, "1000"), "application/x-protobuf")
     assert _post(base, "/v1/metrics", _counter(25, "2000"), "application/x-protobuf") == b""
-    sessions = summarize(store.load())
+    sessions = summarize(store.load()).sessions
     assert len(sessions) == 1
     assert sessions[0].session_id == "proto-session"
     assert sessions[0].tokens == {"input": 25}
@@ -145,8 +154,42 @@ def test_protobuf_cumulative_counter_keeps_the_latest_point(receiver, tmp_path, 
     db = tmp_path / "telemetry.sqlite"
     assert main(["summary", "--db", str(db), "--session", "proto-session", "--json"]) == 0
     printed = json.loads(capsys.readouterr().out)
-    assert printed[0]["session_id"] == "proto-session"
-    assert printed[0]["cost_usd"] is None
+    assert printed["sessions"][0]["session_id"] == "proto-session"
+    assert printed["sessions"][0]["cost_usd"] is None
+
+
+def test_protobuf_span_ids_are_stored_as_hex(receiver):
+    base, store = receiver
+    span = Span(
+        trace_id=bytes.fromhex("ab" * 16),
+        span_id=bytes.fromhex("cd" * 8),
+        parent_span_id=bytes.fromhex("ef" * 8),
+        name="claude_code.interaction",
+        start_time_unix_nano=1_000_000_000,
+        end_time_unix_nano=2_000_000_000,
+        attributes=[
+            KeyValue(key="session.id", value=AnyValue(string_value="span-session")),
+            KeyValue(key="sdf.fixture", value=AnyValue(string_value="sample")),
+        ],
+    )
+    payload = ExportTraceServiceRequest(
+        resource_spans=[
+            ResourceSpans(
+                resource=Resource(
+                    attributes=[
+                        KeyValue(key="service.name", value=AnyValue(string_value="claude-code")),
+                        KeyValue(key="sdf.fixture", value=AnyValue(string_value="sample")),
+                    ]
+                ),
+                scope_spans=[ScopeSpans(spans=[span])],
+            )
+        ]
+    )
+    assert _post(base, "/v1/traces", payload.SerializeToString(), "application/x-protobuf") == b""
+    stored = store.load()
+    assert stored[0].trace_id == "ab" * 16
+    assert stored[0].span_id == "cd" * 8
+    assert stored[0].parent_span_id == "ef" * 8
 
 
 def test_malformed_payload_is_rejected(receiver):

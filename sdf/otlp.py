@@ -7,6 +7,9 @@ so the two encodings share one shape.
 
 from __future__ import annotations
 
+import base64
+import binascii
+
 from google.protobuf.json_format import MessageToDict, Parse, ParseError
 from google.protobuf.message import DecodeError
 from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
@@ -78,6 +81,9 @@ def _traces(payload: dict) -> list[Record]:
                         start=_nano(span.get("start_time_unix_nano")),
                         end=_nano(span.get("end_time_unix_nano")),
                         body=None,
+                        trace_id=_otel_id(span.get("trace_id")),
+                        span_id=_otel_id(span.get("span_id")),
+                        parent_span_id=_otel_id(span.get("parent_span_id")),
                     )
                 )
     return records
@@ -134,6 +140,8 @@ def _logs(payload: dict) -> list[Record]:
                         end=None,
                         when=_nano(record.get("time_unix_nano")),
                         body=body,
+                        trace_id=_otel_id(record.get("trace_id")),
+                        span_id=_otel_id(record.get("span_id")),
                     )
                 )
     return records
@@ -153,6 +161,9 @@ def _record(
     unit: str | None = None,
     temporality: str | None = None,
     kind: str | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
 ) -> Record:
     service = _text(resource.get("service.name"))
     return Record(
@@ -170,6 +181,9 @@ def _record(
         attributes=attributes,
         resource=resource,
         body=body,
+        trace_id=trace_id,
+        span_id=span_id,
+        parent_span_id=parent_span_id,
     )
 
 
@@ -286,6 +300,28 @@ def _int_or_raw(value):
         return int(value)
     except (TypeError, ValueError):
         return value
+
+
+def _otel_id(value) -> str | None:
+    """Normalize an OTLP trace or span id to lowercase hex.
+
+    Protobuf JSON encodes these bytes as base64. A 16 or 32 character hex
+    string is kept as hex so it is not mistaken for base64.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) in {16, 32} and all(char in "0123456789abcdefABCDEF" for char in text):
+        return text.lower()
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if not raw:
+        return None
+    return raw.hex()
 
 
 def _text(value) -> str | None:

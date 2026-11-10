@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS records (
     metric_kind TEXT,
     attributes_json TEXT NOT NULL,
     resource_json TEXT NOT NULL,
-    body TEXT
+    body TEXT,
+    trace_id TEXT,
+    span_id TEXT,
+    parent_span_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_records_session ON records(session_id);
 CREATE INDEX IF NOT EXISTS idx_records_signal_name ON records(signal, name);
@@ -40,6 +43,17 @@ class Store:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate()
+        self._conn.commit()
+
+    def _migrate(self) -> None:
+        present = {row[1] for row in self._conn.execute("PRAGMA table_info(records)")}
+        if "trace_id" not in present:
+            self._conn.execute("ALTER TABLE records ADD COLUMN trace_id TEXT")
+        if "span_id" not in present:
+            self._conn.execute("ALTER TABLE records ADD COLUMN span_id TEXT")
+        if "parent_span_id" not in present:
+            self._conn.execute("ALTER TABLE records ADD COLUMN parent_span_id TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -66,6 +80,9 @@ class Store:
                 json.dumps(record.attributes, sort_keys=True),
                 json.dumps(record.resource, sort_keys=True),
                 record.body,
+                record.trace_id,
+                record.span_id,
+                record.parent_span_id,
             )
             for record in records
         ]
@@ -76,8 +93,9 @@ class Store:
                     received_at, signal, service_name, session_id, name,
                     start_unix_nano, end_unix_nano, time_unix_nano, value,
                     metric_unit, metric_temporality, metric_kind,
-                    attributes_json, resource_json, body
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    attributes_json, resource_json, body,
+                    trace_id, span_id, parent_span_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -91,7 +109,8 @@ class Store:
                 SELECT id, signal, service_name, session_id, name,
                        start_unix_nano, end_unix_nano, time_unix_nano, value,
                        metric_unit, metric_temporality, metric_kind,
-                       attributes_json, resource_json, body
+                       attributes_json, resource_json, body,
+                       trace_id, span_id, parent_span_id
                 FROM records
                 ORDER BY id
                 """
@@ -117,4 +136,7 @@ def _row_to_record(row: sqlite3.Row) -> Record:
         attributes=json.loads(row["attributes_json"]),
         resource=json.loads(row["resource_json"]),
         body=row["body"],
+        trace_id=row["trace_id"],
+        span_id=row["span_id"],
+        parent_span_id=row["parent_span_id"],
     )

@@ -126,10 +126,13 @@ Set `metrics_exporter` explicitly or the metrics never arrive here. HTTP
 receiver does not speak it.
 
 Resource attributes are `service.name`, `service.version`, and `env` (from
-`otel.environment`, default `dev`). The crate's own examples and loopback test
-use `service.name = codex-cli`. Log events also carry `originator` (the CLI's
-originator is `codex_cli_rs`), `conversation.id`, `model`, `app.version`,
-`auth_mode`, `terminal.type`, and `slug`. `host.name` is attached on logs only.
+`otel.environment`, default `dev`). What `service.name` is depends on which
+Codex binary is running. Codex 0.167.0 `codex exec` exports
+`service.name=codex_exec`. The otel crate's examples and loopback test use
+`codex-cli`. Both classify as tool `codex`. Log events also carry `originator`
+(the CLI's originator is `codex_cli_rs`; `codex exec` uses `codex_exec`),
+`conversation.id`, `model`, `app.version`, `auth_mode`, `terminal.type`, and
+`slug`. `host.name` is attached on logs only.
 
 Logs are the supported session record. Every log from `SessionTelemetry`
 includes `conversation.id` and `model`. Event names:
@@ -164,9 +167,27 @@ Names include `codex.turn.e2e_duration_ms`, `codex.turn.token_usage`
 (counter, micro-USD, and this one is tagged with `conversation.id`),
 `codex.tool.call`, `codex.tool.call.duration_ms`, `codex.api_request`, and
 `codex.websocket.event`. The full list is `names.rs`. Many of those metrics
-do not carry `conversation.id`, so they cannot be joined back to a
-conversation. SDF attaches a metric to a session only when `session.id` or
-`conversation.id` is on the datapoint or the resource.
+do not carry `conversation.id`. SDF still stores them. It attaches one to a
+session when the datapoint or resource has `session.id` or `conversation.id`,
+or when its trace id (or span id) is already on exactly one session, or when
+its timestamp falls inside exactly one session of the same tool. Anything
+left over is reported as unattributed, not as `session (none)`.
+
+Session metrics are recorded only if every tag passes
+`validate_tag_value` in Codex 0.167.0
+(`codex-rs/otel/src/metrics/validation.rs` at `rust-v0.167.0`, commit
+`086ccc83`). A tag value may contain ASCII letters, digits, `.`, `_`, `-`,
+`/`, and `+`. A colon is rejected. `SessionMetricTagValues` puts the wire
+`model` on those instruments and does not run it through
+`sanitize_metric_tag_value`. There is no config key that keeps the provider
+model id for the API call and substitutes a different string on the metric
+tag: `model` is that id. An OpenRouter slug such as
+`recursive/flint-v1.0:free` therefore drops `codex.turn.token_usage`,
+`codex.turn.cost_microusd`, and `codex.turn.e2e_duration_ms`. Codex logs
+`metrics histogram [codex.turn.token_usage] failed: tag value contains invalid
+characters: ...` instead. A slash-only id such as `openai/gpt-4.1-mini` passes
+the check. Process metrics that do not carry the model tag, such as
+`codex.process.start`, can still arrive.
 
 `tool_token_count` on `codex.sse_event` / `response.completed` is recorded from
 `total_tokens` in `session_telemetry.rs` at the cited commit. The summary
@@ -259,46 +280,114 @@ sqlite3 sdf-telemetry.sqlite \
 `session_id` in that table is `conversation.id` for Codex and `session.id` for
 Claude Code, taken from the datapoint attributes or the resource.
 
+## OpenRouter
+
+Both tools can call a free OpenRouter model. The id is the provider slug,
+including the `:free` suffix. Do not put the key in a settings file.
+
+Claude Code, in the shell that launches `claude` (and the telemetry variables
+from the section above):
+
+```bash
+export ANTHROPIC_BASE_URL=https://openrouter.ai/api
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export ANTHROPIC_API_KEY=""
+export ANTHROPIC_DEFAULT_SONNET_MODEL="recursive/flint-v1.0:free"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="recursive/flint-v1.0:free"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="recursive/flint-v1.0:free"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="recursive/flint-v1.0:free"
+export CLAUDE_CODE_SUBAGENT_MODEL="recursive/flint-v1.0:free"
+claude -p --model "recursive/flint-v1.0:free" "..."
+```
+
+`ANTHROPIC_API_KEY=""` keeps Claude from also sending a first-party key.
+Claude will warn that the slug is not an Anthropic model. Its `cost_usd` is
+Claude Code's own estimate, not OpenRouter's price. A `:free` model is $0 at
+OpenRouter.
+
+Codex, in `$CODEX_HOME/config.toml`:
+
+```toml
+model = "recursive/flint-v1.0:free"
+model_provider = "openrouter"
+
+[model_providers.openrouter]
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+env_key = "OPENROUTER_API_KEY"
+supports_websockets = false
+
+[otel]
+environment = "dev"
+log_user_prompt = false
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
+```
+
+Run with `codex exec`. Traces and logs arrive. The turn metrics do not, for
+the colon reason above. The summary says so and uses `run_turn` for duration
+and `codex.sse_event` / `response.completed` for tokens. No `codex.turn_cost`
+log was emitted for this model in the 2026-11-10 capture, so cost stays unset.
+
 ## Summarize a session
 
 ```bash
 uv run sdf summary
 uv run sdf summary --session sample-claude-1
 uv run sdf summary --json
+uv run sdf summary --all-spans
 ```
 
-One block per session:
+One block per real session (`session.id` or `conversation.id`), then an
+`unattributed` block for records that could not be joined. Each block has:
 
-- tool (`claude-code` or `codex`)
-- service name, as exported
-- model, from a `model` or `gen_ai.request.model` attribute
-- duration, and which signal it came from
-- token breakdown, and which signal it came from
-- cost in USD, only when a cost metric or cost attribute was exported
-- tool calls (`tool_name`, id, success, duration) when a tool-result log or
-  Claude tool span was exported
+- signal counts (`traces`, `logs`, `metrics`)
+- duration, tokens, and cost, each labeled with the signal it came from
+- a span tree (turn or interaction, then model requests, then tool calls with
+  wait and execution when those child spans exist)
+- log events, with `codex.sse_event` collapsed to a count
+- the metric points that arrived
+- `missing`, naming any signal or Codex session metric that is absent and why
+
+The default span tree keeps Claude's `claude_code.*` spans and the Codex
+spans `run_turn`, `codex.sampling`, `codex.turn_input`, `exec_command`,
+`unified_exec.exec_command`, and `codex.tool_blocking`, plus any other span
+that carries `call_id` or `tool_name`. Internal names such as `append_items`
+stay in the count and out of the tree. `--all-spans` prints them.
+
+Tool calls join `exec_command` or `claude_code.tool` to `codex.tool_result` /
+`claude_code.tool_result` on `call_id` or `tool_use_id`. Success comes from
+the log when the span has none. Duration prefers the execution child span,
+then the tool span, then the log.
 
 Precedence, so the same numbers are not added twice:
 
-- Duration: Claude `claude_code.interaction` span, else Codex
-  `codex.turn.e2e_duration_ms`, else Claude `claude_code.active_time.total`
-  (active seconds, not wall clock), else the min-to-max timestamp across the
-  session (`observed_window`).
+- Duration: sum of `claude_code.interaction` spans, else `codex.turn.e2e_duration_ms`,
+  else sum of `run_turn` spans, else `claude_code.active_time.total` (active
+  seconds, not wall clock), else the min-to-max timestamp (`observed_window`).
 - Tokens: `claude_code.token.usage` by `type`, else `codex.turn.token_usage`
-  by `token_type`, else Claude `api_request` token attributes, else Codex
-  `codex.sse_event` / `response.completed` token counts.
+  by `token_type`, else the sum of Claude `api_request` token attributes,
+  else Codex `response.completed` with the rule below.
 - Cost: `claude_code.cost.usage` (USD), else `codex.turn.cost_microusd`
   divided by 1,000,000, else `cost_usd` on `claude_code.api_request`, else
-  `usage.estimated_usd` on `codex.turn_cost`.
-- Tool calls: `claude_code.tool_result` and `codex.tool_result` logs. A
-  `claude_code.tool` span is added when its id is not already in those logs.
-  If neither exists, `codex.tool.call` counts are listed.
+  `usage.estimated_usd` on `codex.turn_cost`. Claude's figure is labeled as
+  the agent's estimate, not the provider price.
 
-Delta points are summed. Cumulative points and gauges keep the latest point
-for that attribute set. A metric with no `session.id` and no `conversation.id`
-is not folded into a session that happens to be open. It is reported on its
-own only when it actually carries model, token, cost, duration, or tool-call
-data.
+Codex `response.completed` token fields are not all additive. `input_token_count`,
+`cached_token_count`, and `cache_write_token_count` already include the
+conversation prefix, which the next request sends again. The summary takes
+the max of those. `output_token_count` and `reasoning_token_count` are new
+tokens and are summed. When `turn.id` is present, only the last
+`response.completed` in that turn is used, so a retry does not add the
+attempt again. `tool_token_count` is ignored: at the cited Codex commit it is
+recorded from `total_tokens`.
+
+Delta metric points are summed. Cumulative points and gauges keep the latest
+point for that attribute set. A Codex model id that contains `:` leaves the
+turn metrics missing; the summary quotes the exporter error and uses the log
+and span fallbacks above.
 
 ## Tests
 
@@ -317,14 +406,24 @@ uv run pytest
   Codex lists in this file can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places
   (several attributes require a stated minimum version).
-- Codex traces have no stable span names. The summary does not pretend they do.
-- Codex metrics often omit `conversation.id`. Those points stay unscoped.
-  `codex.turn.cost_microusd` is an exception in the current sources: it is
-  tagged with `conversation.id`.
+- Codex has no documented product span schema. The default tree is an
+  allowlist from the spans observed on Codex 0.167.0 (`run_turn`,
+  `exec_command`, `codex.sampling`, `codex.tool_blocking`, and
+  `unified_exec.exec_command`), not a promise that those names stay stable.
+  `--all-spans` shows the rest.
+- Codex session metrics are not emitted for a model id that contains `:`.
+  That includes OpenRouter `:free` slugs. No config alias was found that
+  changes only the metric tag. Process metrics can still arrive, and the
+  summary falls back to logs and spans for tokens and duration.
+- Records with no session id are attached by trace id, span id, or a
+  timestamp that sits inside exactly one session. The rest are unattributed.
+  Two overlapping sessions leave an ambiguous span unattributed.
 - Retried delta exports can be double-counted. Cumulative series use the
-  latest point.
+  latest point. Codex input tokens use the max, not the sum, as described
+  above.
 - Cost figures are whatever the tool put on the wire (Claude USD, Codex
-  micro-USD or `usage.estimated_usd`). They are not an invoice.
+  micro-USD or `usage.estimated_usd`). They are not an invoice, and they are
+  not OpenRouter's price.
 - Prompt and tool content are not requested by the setup above. If you turn
   those flags on, the text is stored in this local SQLite file.
 - No live capture from either CLI is part of this v0. The tests use the
