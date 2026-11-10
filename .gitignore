@@ -1,13 +1,7 @@
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
 *.sqlite
 *.sqlite3
 sdf-telemetry.sqlite
 dist/
-build/
-*.egg-info/
 
 # Local static binary from `make build`.
 /sdf

@@ -6,7 +6,7 @@ import (
 	"runtime"
 )
 
-// Dir is tests/samples, next to the Python fixtures this port reuses.
+// Dir is tests/samples, the hand-written OTLP JSON fixtures.
 func Dir() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {

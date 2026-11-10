@@ -35,12 +35,3 @@ func (r Record) WithSession(sessionID string) Record {
 	r.SessionID = &sessionID
 	return r
 }
-
-// Attr returns an attribute value.
-func (r Record) Attr(key string) (any, bool) {
-	if r.Attributes == nil {
-		return nil, false
-	}
-	v, ok := r.Attributes[key]
-	return v, ok
-}

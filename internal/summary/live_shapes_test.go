@@ -8,7 +8,6 @@ import (
 )
 
 var (
-	sample = map[string]any{"sdf.fixture": "sample"}
 	claude = "sample-claude-live"
 	codex  = "sample-codex-live"
 	model  = "recursive/flint-v1.0:free"
