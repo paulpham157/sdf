@@ -1,0 +1,86 @@
+# Pre-merge CI. Fast checks that can gate a pull request.
+# The ruleset on main requires the job name "gitleaks (full history)".
+# That name stays here. The scan itself is the pull request commit range,
+# not every branch. There are no path filters: a required check must report
+# on every pull request.
+name: PR CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: go (${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["oldstable", "stable"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+      - name: Vet
+        run: make vet
+      - name: Test
+        run: make test
+
+  lint:
+    name: lint (gofmt, staticcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: gofmt
+        # One toolchain decides formatting. stable is that toolchain.
+        run: make fmt-check
+      - name: Install staticcheck (pinned, checksum-verified)
+        # 2026.2.2 is honnef.co/go/tools v0.8.2, the same module `make staticcheck` runs.
+        # ubuntu-latest is x64, matching the gitleaks binary pin.
+        env:
+          STATICCHECK_VERSION: "2026.2.2"
+          STATICCHECK_SHA256: "14c081e0f0d05b5a4d4c53fd3d357d4a5af9d20501465fefc9024ee828d3aa5c"
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/staticcheck.tgz" \
+            "https://github.com/dominikh/go-tools/releases/download/${STATICCHECK_VERSION}/staticcheck_linux_amd64.tar.gz"
+          echo "${STATICCHECK_SHA256}  $RUNNER_TEMP/staticcheck.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/staticcheck.tgz" -C "$RUNNER_TEMP" --strip-components=1 staticcheck/staticcheck
+      - name: staticcheck
+        # -tags e2e includes tests/e2e, which `go test ./...` does not build.
+        run: "$RUNNER_TEMP/staticcheck" -tags e2e ./...
+
+  # Job name is the ruleset check context ("gitleaks (full history)").
+  # The scan is base..head for this pull request. --full-history in the
+  # log options is gitleaks' default walk flag, not an all-branch scan.
+  gitleaks:
+    name: gitleaks (full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # fetch-depth 0 would download every branch. Depth 1 plus the
+          # unshallow in the scan fetches this event's commit and its
+          # ancestors, and no other ref.
+          fetch-depth: 1
+      - name: Scan this pull request
+        env:
+          GITLEAKS_EVENT: pull_request
+          GITLEAKS_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITLEAKS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/gitleaks-scan.sh

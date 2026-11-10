@@ -227,8 +227,8 @@ make build
 The same command with `GOOS` and `GOARCH` set to `linux`, `darwin`, or
 `windows` and `amd64` or `arm64` cross-compiles a static binary. `.goreleaser.yaml`
 lists those six targets. `release.disable` is set, so Goreleaser does not
-publish a release. `goreleaser build --snapshot --clean` only writes local
-archives under `dist/`.
+publish a release. `goreleaser release --snapshot --clean` writes local
+archives under `dist/` and does not publish.
 
 ## Run the receiver
 
@@ -697,6 +697,18 @@ go test ./...
 `tests/samples/README.md`. Nothing there was captured from a live agent.
 The OpenCode and Pi files follow the attribute names from the 2026-11-10
 checks; the ids are fake.
+
+## Continuous integration
+
+Pull requests and pushes to `main` do not run the same jobs. Nothing in these
+workflows deploys or publishes a release. Details and the local commands are
+in `CONTRIBUTING.md`.
+
+| Workflow | When | Why |
+| --- | --- | --- |
+| PR CI (`.github/workflows/pr.yml`) | `pull_request` opened, updated, or reopened | Merge feedback: `gofmt`, staticcheck, `go vet`, `go test` on oldstable and stable, and gitleaks on that pull request's commits. |
+| Main CI (`.github/workflows/main.yml`) | `push` to `main` | After merge: one stable `go test`, `go test -race`, an end-to-end `sdf serve` of `tests/samples` over HTTP and gRPC plus `sdf summary`, a Goreleaser snapshot artifact, CodeQL, and gitleaks on main's history. |
+| Scheduled (`.github/workflows/schedule.yml`) | Mondays 03:17 UTC | Not tied to a commit: `govulncheck` against the current vulnerability database, and gitleaks across every branch. |
 
 ## Gaps
 

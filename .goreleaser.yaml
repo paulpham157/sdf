@@ -32,8 +32,10 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# The only tag in this repo is legacy-v1, which is not semver, so incpatch
+# cannot name a snapshot. This template does not read the tag.
 snapshot:
-  version_template: "{{ incpatch .Version }}-next"
+  version_template: "0.0.0-{{ .ShortCommit }}"
 
 changelog:
   disable: true

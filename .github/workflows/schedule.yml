@@ -1,0 +1,46 @@
+# Weekly jobs that depend on the clock, not on a new commit.
+# govulncheck reads the Go vulnerability database. The gitleaks job walks
+# every branch, which pull requests and the main push deliberately do not.
+name: Scheduled
+
+on:
+  schedule:
+    # Monday 03:17 UTC. Same slot the previous security workflow used.
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: schedule-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Scan for known vulnerabilities
+        # Fails when a vulnerable symbol is reachable from this module.
+        run: make vuln
+
+  # Not a required check. Findings fail this run so they show up in Actions.
+  # They do not fail the pull-request check "gitleaks (full history)".
+  gitleaks-all-branches:
+    name: gitleaks (all branches, scheduled)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Scan every fetched branch
+        env:
+          GITLEAKS_EVENT: schedule
+        run: bash .github/scripts/gitleaks-scan.sh
