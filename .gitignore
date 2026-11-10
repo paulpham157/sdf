@@ -8,3 +8,7 @@ sdf-telemetry.sqlite
 dist/
 build/
 *.egg-info/
+
+# Local static binary from `make build`.
+/sdf
+*.exe

@@ -23,10 +23,10 @@ reported as not present. SDF does not estimate tokens, cost, or duration.
 
 | Tool | Traces | Logs | Metrics | Limitation |
 | --- | --- | --- | --- | --- |
-| Claude Code | Beta spans when `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` and `OTEL_TRACES_EXPORTER=otlp` | Event catalog when `OTEL_LOGS_EXPORTER=otlp` | Counters, including tokens and cost, with `session.id` by default | Traces are off unless both flags are set. gRPC is not accepted. |
+| Claude Code | Beta spans when `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` and `OTEL_TRACES_EXPORTER=otlp` | Event catalog when `OTEL_LOGS_EXPORTER=otlp` | Counters, including tokens and cost, with `session.id` by default | Traces are off unless both flags are set. HTTP is port 4318. gRPC is port 4317. |
 | Codex CLI | Process spans when `otel.trace_exporter` is an OTLP/HTTP URL | Session record (`codex.sse_event`, `codex.tool_result`, and the other `codex.*` events) | Large catalog. Turn metrics carry `conversation.id` only when every tag is valid | Does not read `OTEL_*`. `metrics_exporter` defaults to `statsig`. A model id containing `:` drops the turn metrics. |
 | OpenCode v2 (`@opencode/cli`) | Built in. Chunked OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Runner spans set `session.id` | Process logs only (`cli starting`, watcher, shutdown). No `session.id` | Not exported | No per-session log catalog and no metrics. npm `opencode-ai` is v1, not this CLI. |
-| Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC, which this receiver does not speak. |
+| Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC on port 4317, which this receiver accepts. |
 
 ### Claude Code
 
@@ -45,8 +45,9 @@ traces are separate exporters. Traces are beta.
 for local Desktop Code-tab sessions.
 
 OTLP protocol is `grpc`, `http/protobuf`, or `http/json`. Claude Code has no
-default protocol, so set one. This receiver accepts HTTP JSON and HTTP
-protobuf, not gRPC.
+default protocol, so set one. This receiver accepts all three. HTTP JSON and
+HTTP protobuf use port 4318. gRPC uses port 4317. `Content-Encoding: gzip` is
+not decoded.
 
 Metrics (unit in parentheses when the docs attach one):
 
@@ -132,8 +133,9 @@ Each signal has its own exporter, and the defaults are not the same:
 
 `statsig` sends metrics to Codex's built-in destination, not to this receiver.
 Set `metrics_exporter` explicitly or the metrics never arrive here. HTTP
-`protocol` is `binary` (protobuf) or `json`. gRPC exists (`otlp-grpc`); this
-receiver does not speak it.
+`protocol` is `binary` (protobuf) or `json`. gRPC (`otlp-grpc`) is accepted on
+port 4317. The HTTP setup below is the one checked against Codex; point an
+`otlp-grpc` endpoint at `http://127.0.0.1:4317` if you use that exporter.
 
 Resource attributes are `service.name`, `service.version`, and `env` (from
 `otel.environment`, default `dev`). What `service.name` is depends on which
@@ -203,26 +205,47 @@ the check. Process metrics that do not carry the model tag, such as
 `total_tokens` in `session_telemetry.rs` at the cited commit. The summary
 does not add that field on top of the input and output counts.
 
-## Run the receiver
+## Install
+
+Go 1.26 or newer. The SQLite driver is pure Go (`modernc.org/sqlite`), so the
+build does not need cgo or a C compiler. A database written by the previous
+Python receiver, including one from before the `trace_id` columns existed,
+still opens. Attribute JSON is ordinary JSON either way.
 
 From this repository:
 
 ```bash
-uv sync
-uv run sdf serve
+make build
+./sdf serve
 ```
 
-That listens on `http://127.0.0.1:4318` and writes `sdf-telemetry.sqlite` in
-the current directory. The port is the OTLP/HTTP default. There is no
-authentication; keep the bind address on localhost. Override with `--host`,
-`--port`, and `--db`.
+`make build` is `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o sdf ./cmd/sdf`.
+The same command with `GOOS` and `GOARCH` set to `linux`, `darwin`, or
+`windows` and `amd64` or `arm64` cross-compiles a static binary. `.goreleaser.yaml`
+lists those six targets. `release.disable` is set, so Goreleaser does not
+publish a release. `goreleaser build --snapshot --clean` only writes local
+archives under `dist/`.
 
-`GET /health` returns `{"status":"ok"}`. Exports are `POST /v1/traces`,
+## Run the receiver
+
+```bash
+./sdf serve
+```
+
+That listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
+`127.0.0.1:4317`, and writes `sdf-telemetry.sqlite` in the current directory.
+4318 is the OTLP/HTTP default. 4317 is the OTLP/gRPC default, which is where
+pi-otel exports unless you change it. There is no authentication on either
+port; keep the bind address on localhost. Override with `--host`, `--port`
+(HTTP), `--grpc-port`, and `--db`.
+
+`GET /health` returns `{"status":"ok"}`. HTTP exports are `POST /v1/traces`,
 `POST /v1/metrics`, and `POST /v1/logs`, `Content-Type: application/json` or
 `application/x-protobuf`. The body may use `Content-Length` or
-`Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel posts are
-chunked and omit `Content-Length`. When both headers are present, chunked
-encoding wins.
+`Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
+are chunked and omit `Content-Length`. When both headers are present, chunked
+encoding wins. `Content-Encoding: gzip` is not decoded. gRPC clients call the
+OTLP `TraceService`, `MetricsService`, and `LogsService` `Export` RPCs.
 
 Rows are one span, one metric point, or one log record. Inspect them with
 SQLite:
@@ -252,6 +275,10 @@ export OTEL_METRIC_EXPORT_INTERVAL=10000
 export OTEL_LOGS_EXPORT_INTERVAL=5000
 export OTEL_TRACES_EXPORT_INTERVAL=5000
 ```
+
+`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal
+URLs above are not used in that mode; gRPC does not append `/v1/traces`.
 
 Metrics and logs do not need `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`. Traces do.
 The metric interval defaults to 60 seconds; the shorter value above is so a
@@ -384,18 +411,27 @@ older `@mariozechner/pi-coding-agent` name is retired).
 
 Traces, logs, and metrics in this section come from the community extension
 `pi-otel`, not from Pi itself. `pi-otel` 0.3.0 defaults to traces on, metrics
-and logs off, and gRPC at `http://127.0.0.1:4317`. This receiver does not
-speak gRPC. Set HTTP JSON explicitly:
+and logs off, and gRPC at `http://127.0.0.1:4317`. With `sdf serve` already
+running, that default reaches the gRPC port. Metrics and logs stay off until
+you turn them on:
 
 ```bash
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 pi install npm:pi-otel
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+export OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 export PI_OTEL_METRICS=1
 export PI_OTEL_LOGS=1
 export PI_OTEL_SPAN_NAMING=genai
 pi --print --provider openrouter --model "recursive/flint-v1.0:free" "..."
+```
+
+HTTP JSON still works if you would rather not use gRPC. Point the endpoint at
+port 4318 and set the protocol:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
 `PI_OTEL_DISABLED=1` turns the extension off. The same switches can be set in
@@ -425,10 +461,10 @@ the call succeeded).
 ## Summarize a session
 
 ```bash
-uv run sdf summary
-uv run sdf summary --session sample-claude-1
-uv run sdf summary --json
-uv run sdf summary --all-spans
+./sdf summary
+./sdf summary --session sample-claude-1
+./sdf summary --json
+./sdf summary --all-spans
 ```
 
 One block per real session (`session.id`, `conversation.id`,
@@ -500,7 +536,7 @@ and span fallbacks above.
 ## Tests
 
 ```bash
-uv run pytest
+go test ./...
 ```
 
 `tests/samples/` is sample OTLP, marked `sdf.fixture=sample` and described in
@@ -510,10 +546,9 @@ checks; the ids are fake.
 
 ## Gaps
 
-- OTLP/HTTP only. gRPC clients, including Claude's quick-start `grpc` snippet,
-  Codex `otlp-grpc`, and pi-otel's default gRPC endpoint, will not connect.
-  Use the HTTP setup above. pi-otel needs
-  `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`.
+- `Content-Encoding: gzip` is not decoded. Send identity bodies. Chunked
+  HTTP and `Content-Length` are both accepted, and gRPC is a separate
+  listener on port 4317.
 - Codex's published config reference does not catalog events or metrics. The
   Codex lists in this file can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places
