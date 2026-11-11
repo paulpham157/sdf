@@ -43,7 +43,7 @@ func TestSummaryLinksCommitsFromGitHooks(t *testing.T) {
 		piShort    = "sample-pi-session"
 		threadID   = "019d2bae-7c39-7c73-b058-7b45e6aabef7"
 		rootID     = "root-session-not-the-thread"
-		secret     = "secret-subject-should-not-be-posted"
+		commitText = "commit-message-not-posted"
 	)
 	base := "http://" + srv.HTTPAddress()
 	postSpan(t, base, "opencode", "session.id", opencodeID, "11111111111111111111111111111111", "2222222222222222")
@@ -52,7 +52,7 @@ func TestSummaryLinksCommitsFromGitHooks(t *testing.T) {
 	postSpan(t, base, "codex", "conversation.id", threadID, "77777777777777777777777777777777", "8888888888888888")
 	postSpan(t, base, "codex", "conversation.id", rootID, "99999999999999999999999999999999", "aaaaaaaaaaaaaaaa")
 
-	oc := hookCommit(t, dir, secret, false, "OPENCODE_SESSION_ID="+opencodeID)
+	oc := hookCommit(t, dir, commitText, false, "OPENCODE_SESSION_ID="+opencodeID)
 	pi := hookCommit(t, dir, "pi change", false, "PI_SESSION_FILE=/tmp/pi dir/"+piStem+".jsonl", "PI_SESSION_ID="+piShort)
 	cx := hookCommit(t, dir, "codex change", false, "CODEX_THREAD_ID="+threadID, "CODEX_SESSION_ID="+rootID)
 	human := hookCommit(t, dir, "human change", false)
@@ -63,7 +63,7 @@ func TestSummaryLinksCommitsFromGitHooks(t *testing.T) {
 	}
 	for _, rec := range records {
 		blob := string(mustJSON(t, rec.Attributes)) + deref(rec.Body)
-		if strings.Contains(blob, secret) {
+		if strings.Contains(blob, commitText) {
 			t.Fatalf("stored the commit message: %s", blob)
 		}
 	}
@@ -82,7 +82,7 @@ func TestSummaryLinksCommitsFromGitHooks(t *testing.T) {
 	for _, session := range report.Sessions {
 		byID[session.SessionID] = session
 	}
-	assertHook(t, byID[opencodeID], oc, secret)
+	assertHook(t, byID[opencodeID], oc, commitText)
 	assertHook(t, byID[piStem], pi, "pi change")
 	assertHook(t, byID[threadID], cx, "codex change")
 	if byID[piShort].Outcome == nil || byID[piShort].Outcome.Status != "unlinked" {

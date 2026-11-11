@@ -58,7 +58,7 @@ func TestGitHookInstallChainsAndUninstalls(t *testing.T) {
 			t.Fatalf("%s not executable", name)
 		}
 	}
-	sha := commitIn(t, dir, "SECRET_SUBJECT", "SDF_CHAIN_PROOF="+proof, "OPENCODE_SESSION_ID=ses_payload")
+	sha := commitIn(t, dir, "commit-message-not-posted", "SDF_CHAIN_PROOF="+proof, "OPENCODE_SESSION_ID=ses_payload")
 	proofBody, err := os.ReadFile(proof)
 	if err != nil || !strings.Contains(string(proofBody), "chained") {
 		t.Fatalf("previous hook did not run: %s %v", proofBody, err)
@@ -71,7 +71,7 @@ func TestGitHookInstallChainsAndUninstalls(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("posts %d", len(bodies))
 	}
-	if strings.Contains(string(bodies[0]), "SECRET_SUBJECT") {
+	if strings.Contains(string(bodies[0]), "commit-message-not-posted") {
 		t.Fatalf("payload contained the commit message: %s", bodies[0])
 	}
 	attrs := payloadAttrs(t, bodies[0])
