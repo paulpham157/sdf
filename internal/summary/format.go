@@ -352,6 +352,11 @@ func formatSpan(lines *[]string, node SpanNode, indent int) {
 	}
 }
 
+// FormatNumber renders a summary quantity the way the text report does.
+func FormatNumber(value float64) string {
+	return fmtNum(value)
+}
+
 // fmtNum matches Python's _fmt: an integer when the value is within 1e-9 of
 // a whole number, otherwise six significant digits.
 func fmtNum(value float64) string {

@@ -72,6 +72,16 @@ func TestSampleFilesAreMarked(t *testing.T) {
 	}
 }
 
+func TestUIIsNotMountedOnTheOTLPPort(t *testing.T) {
+	base, _ := start(t)
+	for _, path := range []string{"/", "/api/summary", "/api/snapshot", "/app.js"} {
+		resp := get(t, base+path)
+		if resp.status != 404 {
+			t.Fatalf("GET %s on the OTLP port = %d body %q", path, resp.status, resp.body)
+		}
+	}
+}
+
 func TestReceiverStoresSamples(t *testing.T) {
 	base, db := start(t)
 	health := get(t, base+"/health")
