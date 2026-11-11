@@ -1,7 +1,8 @@
 // Package outcome attaches a summarized session to a git commit, and optionally
 // to a GitHub pull request. It does not call the network unless Options.Lookup
-// is set. A session with no exported working directory or commit id stays
-// unlinked.
+// is set. A session stays unlinked when the only candidate would be a guess.
+// An sdf git hook event or an SDF-Session trailer names the session. The
+// time-window heuristic runs only when neither one does.
 package outcome
 
 import (
@@ -41,9 +42,11 @@ func Attach(report *summary.Report, opt Options) {
 		slack = opt.Slack
 	}
 	linked := make([]*summary.SessionOutcome, len(report.Sessions))
+	scan := &trailerScan{}
 	for i := range report.Sessions {
-		linked[i] = linkSession(report.Sessions[i], opt, slack)
+		linked[i] = linkSession(report.Sessions[i], opt, slack, scan)
 	}
+	dropHeuristicsClaimedByStronger(report.Sessions, linked)
 	dropSharedHeuristics(report.Sessions, linked)
 	for i := range report.Sessions {
 		if opt.Lookup != nil && linked[i].Status == "linked" {
@@ -62,6 +65,32 @@ func offlineReason(opt Options) string {
 		return opt.GitHubNote
 	}
 	return "merge status was not requested; pass --github to query pull requests"
+}
+
+func dropHeuristicsClaimedByStronger(sessions []summary.SessionSummary, linked []*summary.SessionOutcome) {
+	claimed := map[string]string{}
+	for i, item := range linked {
+		if item == nil || item.Status != "linked" || item.Match == "heuristic" {
+			continue
+		}
+		for _, commit := range item.Commits {
+			claimed[item.Repo+"\x00"+commit.SHA] = sessions[i].SessionID
+		}
+	}
+	for i, item := range linked {
+		if item == nil || item.Status != "linked" || item.Match != "heuristic" || len(item.Commits) != 1 {
+			continue
+		}
+		owner, ok := claimed[item.Repo+"\x00"+item.Commits[0].SHA]
+		if !ok || owner == sessions[i].SessionID {
+			continue
+		}
+		linked[i] = &summary.SessionOutcome{
+			Status:         "unlinked",
+			AcceptedReason: "commit is attributed to another session",
+			Reason:         "commit " + item.Commits[0].SHA + " is attributed to " + owner,
+		}
+	}
 }
 
 func dropSharedHeuristics(sessions []summary.SessionSummary, linked []*summary.SessionOutcome) {

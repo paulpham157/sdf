@@ -19,26 +19,43 @@ type gitCommit struct {
 	CommitterUnix int64
 }
 
-func linkSession(session summary.SessionSummary, opt Options, slack time.Duration) *summary.SessionOutcome {
+func linkSession(session summary.SessionSummary, opt Options, slack time.Duration, scan *trailerScan) *summary.SessionOutcome {
 	facts := session.Repository
+	if _, err := exec.LookPath("git"); err != nil {
+		return unlinked("git is not installed")
+	}
+	if len(facts.CommitSHAs) > 0 {
+		if facts.AmbiguousWorkDirs {
+			return unlinked("session reports more than one workspace path")
+		}
+		if facts.AmbiguousRepository {
+			return unlinked("session reports more than one repository identity")
+		}
+		toplevel, reason := resolveRepo(facts.WorkDirs, opt.Repo)
+		return linkExact(facts, toplevel, reason)
+	}
+	if len(facts.HookCommits) > 0 {
+		hooked := linkHook(facts, opt)
+		if hooked.Status == "linked" {
+			return hooked
+		}
+		if trailer := scan.link(session.SessionID, trailerRepos(facts, opt)); trailer != nil {
+			return trailer
+		}
+		return hooked
+	}
 	if facts.AmbiguousWorkDirs {
 		return unlinked("session reports more than one workspace path")
 	}
 	if facts.AmbiguousRepository {
 		return unlinked("session reports more than one repository identity")
 	}
-	if _, err := exec.LookPath("git"); err != nil {
-		return unlinked("git is not installed")
-	}
 	toplevel, reason := resolveRepo(facts.WorkDirs, opt.Repo)
-	if reason != "" && len(facts.CommitSHAs) == 0 {
-		return unlinked(reason)
-	}
-	if len(facts.CommitSHAs) > 0 {
-		return linkExact(facts, toplevel, reason)
-	}
 	if reason != "" {
 		return unlinked(reason)
+	}
+	if trailer := scan.link(session.SessionID, []string{toplevel}); trailer != nil {
+		return trailer
 	}
 	if facts.StartUnixNano == nil || facts.EndUnixNano == nil {
 		return unlinked("session has no timestamps")
@@ -49,7 +66,17 @@ func linkSession(session summary.SessionSummary, opt Options, slack time.Duratio
 	if err != nil {
 		return unlinked(err.Error())
 	}
-	switch len(commits) {
+	claimed := scan.claimed(toplevel)
+	var open []gitCommit
+	for _, commit := range commits {
+		if !claimed[commit.SHA] {
+			open = append(open, commit)
+		}
+	}
+	if len(open) == 0 && len(commits) > 0 {
+		return unlinked("commits in the session window name another session in an SDF-Session trailer")
+	}
+	switch len(open) {
 	case 0:
 		return unlinked("no commit with committer time inside the session window")
 	case 1:
@@ -59,15 +86,15 @@ func linkSession(session summary.SessionSummary, opt Options, slack time.Duratio
 			Repo:   toplevel,
 			Reason: "one commit whose committer time falls in the session window",
 			Commits: []summary.LinkedCommit{{
-				SHA: commits[0].SHA, Subject: commits[0].Subject, CommitterUnix: commits[0].CommitterUnix,
+				SHA: open[0].SHA, Subject: open[0].Subject, CommitterUnix: open[0].CommitterUnix,
 			}},
 		}
 	default:
-		ids := make([]string, len(commits))
-		for i, commit := range commits {
+		ids := make([]string, len(open))
+		for i, commit := range open {
 			ids[i] = commit.SHA[:12]
 		}
-		return unlinked(fmt.Sprintf("%d commits in the session window; not choosing one (%s)", len(commits), strings.Join(ids, ", ")))
+		return unlinked(fmt.Sprintf("%d commits in the session window; not choosing one (%s)", len(open), strings.Join(ids, ", ")))
 	}
 }
 
@@ -110,6 +137,251 @@ func linkExact(facts summary.RepositoryFacts, toplevel, repoReason string) *summ
 		Reason:  "commit SHA was exported by the agent and exists in the checkout",
 		Commits: commits,
 	}
+}
+
+func linkHook(facts summary.RepositoryFacts, opt Options) *summary.SessionOutcome {
+	kept := keptHookSHAs(facts.HookCommits)
+	if len(kept) == 0 {
+		return unlinked("hook commit was rewritten and the replacement is missing")
+	}
+	tops, missing := hookTops(kept)
+	if len(tops) > 1 {
+		return unlinked("hook events name more than one repository")
+	}
+	workDirs := facts.WorkDirs
+	if facts.AmbiguousWorkDirs {
+		workDirs = nil
+	}
+	var toplevel, reason string
+	switch len(tops) {
+	case 1:
+		toplevel, reason = resolveRepo(workDirs, tops[0])
+	default:
+		toplevel, reason = resolveRepo(workDirs, opt.Repo)
+		if reason != "" && missing {
+			return unlinked("hook repository is not on this machine")
+		}
+	}
+	if reason != "" {
+		return unlinked(reason)
+	}
+	var commits []summary.LinkedCommit
+	for _, commit := range kept {
+		kind, err := git(toplevel, "cat-file", "-t", commit.SHA)
+		if err != nil || strings.TrimSpace(kind) != "commit" {
+			continue
+		}
+		subject, _ := git(toplevel, "log", "-1", "--format=%s", commit.SHA)
+		when, _ := git(toplevel, "log", "-1", "--format=%ct", commit.SHA)
+		unix, _ := strconv.ParseInt(strings.TrimSpace(when), 10, 64)
+		commits = append(commits, summary.LinkedCommit{
+			SHA: commit.SHA, Subject: oneLine(subject, 120), CommitterUnix: unix,
+		})
+	}
+	if len(commits) == 0 {
+		return unlinked("hook commit is not in " + toplevel)
+	}
+	return &summary.SessionOutcome{
+		Status:  "linked",
+		Match:   "hook",
+		Repo:    toplevel,
+		Reason:  "sdf git hook reported this commit for the session",
+		Commits: commits,
+	}
+}
+
+func keptHookSHAs(commits []summary.HookCommit) []summary.HookCommit {
+	present := map[string]bool{}
+	for _, commit := range commits {
+		if commit.SHA != "" {
+			present[commit.SHA] = true
+		}
+	}
+	rewritten := map[string]bool{}
+	for _, commit := range commits {
+		if commit.RewrittenFrom != "" && present[commit.SHA] {
+			rewritten[commit.RewrittenFrom] = true
+		}
+	}
+	var out []summary.HookCommit
+	seen := map[string]bool{}
+	for _, commit := range commits {
+		if commit.SHA == "" || rewritten[commit.SHA] || seen[commit.SHA] {
+			continue
+		}
+		seen[commit.SHA] = true
+		out = append(out, commit)
+	}
+	return out
+}
+
+func hookTops(commits []summary.HookCommit) (tops []string, missing bool) {
+	for _, commit := range commits {
+		if commit.Repo == "" {
+			continue
+		}
+		top, err := git(commit.Repo, "rev-parse", "--show-toplevel")
+		if err != nil {
+			missing = true
+			continue
+		}
+		tops = append(tops, filepath.Clean(strings.TrimSpace(top)))
+	}
+	return unique(tops), missing
+}
+
+func trailerRepos(facts summary.RepositoryFacts, opt Options) []string {
+	var repos []string
+	for _, commit := range facts.HookCommits {
+		if commit.Repo != "" {
+			repos = append(repos, commit.Repo)
+		}
+	}
+	if opt.Repo != "" {
+		repos = append(repos, opt.Repo)
+	}
+	return repos
+}
+
+// trailerScan caches SDF-Session trailers per checkout. A commit that names a
+// session is not offered to the time-window heuristic.
+type trailerScan struct {
+	byRepo map[string]map[string][]gitCommit
+}
+
+func (s *trailerScan) link(sessionID string, repos []string) *summary.SessionOutcome {
+	if sessionID == "" {
+		return nil
+	}
+	var (
+		commits []summary.LinkedCommit
+		topUsed string
+		seenTop = map[string]bool{}
+		seenSHA = map[string]bool{}
+	)
+	for _, repo := range repos {
+		top, err := canonicalizeRepo(repo)
+		if err != nil || seenTop[top] {
+			continue
+		}
+		seenTop[top] = true
+		idx, err := s.index(top)
+		if err != nil {
+			continue
+		}
+		for _, commit := range idx[sessionID] {
+			if seenSHA[commit.SHA] {
+				continue
+			}
+			if topUsed != "" && topUsed != top {
+				return unlinked("SDF-Session trailer appears in more than one repository")
+			}
+			seenSHA[commit.SHA] = true
+			topUsed = top
+			commits = append(commits, summary.LinkedCommit{
+				SHA: commit.SHA, Subject: commit.Subject, CommitterUnix: commit.CommitterUnix,
+			})
+		}
+	}
+	if len(commits) == 0 {
+		return nil
+	}
+	return &summary.SessionOutcome{
+		Status:  "linked",
+		Match:   "trailer",
+		Repo:    topUsed,
+		Reason:  "commit message trailer SDF-Session names this session",
+		Commits: commits,
+	}
+}
+
+func (s *trailerScan) claimed(toplevel string) map[string]bool {
+	idx, err := s.index(toplevel)
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, list := range idx {
+		for _, commit := range list {
+			out[commit.SHA] = true
+		}
+	}
+	return out
+}
+
+func (s *trailerScan) index(toplevel string) (map[string][]gitCommit, error) {
+	if s.byRepo == nil {
+		s.byRepo = map[string]map[string][]gitCommit{}
+	}
+	if idx, ok := s.byRepo[toplevel]; ok {
+		return idx, nil
+	}
+	idx, err := readTrailers(toplevel)
+	if err != nil {
+		return nil, err
+	}
+	s.byRepo[toplevel] = idx
+	return idx, nil
+}
+
+func readTrailers(toplevel string) (map[string][]gitCommit, error) {
+	format := "%H%x1f%ct%x1f%s%x1f%(trailers:key=SDF-Session,valueonly,separator=%x1f)"
+	text, err := git(toplevel, "log", "--all", "--grep=SDF-Session:", "--pretty=format:"+format)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not have any commits") {
+			return map[string][]gitCommit{}, nil
+		}
+		return nil, err
+	}
+	idx := map[string][]gitCommit{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "\x1f")
+		if len(parts) < 4 || !fullHex(parts[0]) {
+			continue
+		}
+		when, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		commit := gitCommit{SHA: strings.ToLower(parts[0]), Subject: oneLine(parts[2], 120), CommitterUnix: when}
+		seen := map[string]bool{}
+		for _, raw := range parts[3:] {
+			id := strings.TrimSpace(raw)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			idx[id] = append(idx[id], commit)
+		}
+	}
+	return idx, nil
+}
+
+func canonicalizeRepo(path string) (string, error) {
+	if path == "" || strings.HasPrefix(path, "-") {
+		return "", fmt.Errorf("not a path")
+	}
+	top, err := git(path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(strings.TrimSpace(top)), nil
+}
+
+func fullHex(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, c := range value {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func unlinked(reason string) *summary.SessionOutcome {

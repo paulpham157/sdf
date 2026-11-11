@@ -102,21 +102,34 @@ type SessionSummary struct {
 // RepositoryFacts is what the agent exported about where the session ran.
 // Paths and commit ids come only from those attributes.
 type RepositoryFacts struct {
-	WorkDirs            []string `json:"work_dirs"`
-	CommitSHAs          []string `json:"commit_shas"`
-	RepositoryURL       string   `json:"repository_url,omitempty"`
-	Owner               string   `json:"owner,omitempty"`
-	RepositoryName      string   `json:"repository_name,omitempty"`
-	Provider            string   `json:"provider,omitempty"`
-	AmbiguousWorkDirs   bool     `json:"ambiguous_work_dirs,omitempty"`
-	AmbiguousRepository bool     `json:"ambiguous_repository,omitempty"`
-	StartUnixNano       *int64   `json:"start_unix_nano,omitempty"`
-	EndUnixNano         *int64   `json:"end_unix_nano,omitempty"`
+	WorkDirs            []string     `json:"work_dirs"`
+	CommitSHAs          []string     `json:"commit_shas"`
+	RepositoryURL       string       `json:"repository_url,omitempty"`
+	Owner               string       `json:"owner,omitempty"`
+	RepositoryName      string       `json:"repository_name,omitempty"`
+	Provider            string       `json:"provider,omitempty"`
+	AmbiguousWorkDirs   bool         `json:"ambiguous_work_dirs,omitempty"`
+	AmbiguousRepository bool         `json:"ambiguous_repository,omitempty"`
+	StartUnixNano       *int64       `json:"start_unix_nano,omitempty"`
+	EndUnixNano         *int64       `json:"end_unix_nano,omitempty"`
+	HookCommits         []HookCommit `json:"hook_commits,omitempty"`
+}
+
+// HookCommit is one sdf.git.commit event already attributed to this session.
+// RewrittenFrom is the previous SHA when post-rewrite reported a replacement.
+type HookCommit struct {
+	SHA           string `json:"sha"`
+	Repo          string `json:"repo,omitempty"`
+	RewrittenFrom string `json:"rewritten_from,omitempty"`
 }
 
 // SessionOutcome is the git result attached to one session.
-// Match is "exact" or "heuristic" when Status is "linked".
-// Accepted is nil when merge status was not established.
+// Match is "exact", "hook", "trailer", or "heuristic" when Status is "linked".
+// exact is a SHA the agent exported. hook is an sdf git hook event for this
+// session. trailer is an SDF-Session line in a commit message. heuristic is
+// the single-commit time window. Accepted is nil when merge status was not
+// established. hook and trailer are attributions, not guesses: a UI that
+// counts only exact and heuristic should still treat them as linked.
 type SessionOutcome struct {
 	Status         string         `json:"status"`
 	Match          string         `json:"match,omitempty"`

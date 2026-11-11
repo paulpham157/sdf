@@ -16,3 +16,8 @@ bcea168d7ab1cefa4aeb5658480fc89775ce426c:tests/test_opencode_agent.py:generic-ap
 c9e236995d759681fafbeadd65590063c2772d3d:tests/test_openai_compatible_agents.py:generic-api-key:33
 # Same fake vk-test fixture. gitleaks v8.30.1 reports the introducing commit, not bcea168d (tests/test_opencode_agent.py).
 183d36df8eac94931b79aa9fe7d2d89548c8c42e:tests/test_opencode_agent.py:generic-api-key:29
+# Fake commit-message marker in the introducing commit of the git-hook tests.
+# The line was SECRET_SUBJECT next to SDF_CHAIN_PROOF=; generic-api-key treated
+# that as an assignment. The follow-up commit renames the marker. This entry
+# is that one commit, file, rule, and line.
+2de3a4086ff96354bec64d815bff7c161edf7f5e:internal/setup/githook_test.go:generic-api-key:61
