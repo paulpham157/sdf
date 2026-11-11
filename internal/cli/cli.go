@@ -419,32 +419,49 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi] [--write] [--global] [--install]"
+
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	host := "127.0.0.1"
 	port := 4318
 	grpcPort := 4317
 	write := false
 	install := false
+	global := false
 	check := false
 	gitHooks := false
 	uninstallHooks := false
+	gitTemplate := false
+	uninstallTemplate := false
+	setTemplateDir := false
+	unsetTemplateDir := false
 	agent := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [claude-code|codex|opencode|pi] [--write] [--install]")
+			fmt.Fprintln(stdout, initUsage)
 			return 0
 		case arg == "--write":
 			write = true
 		case arg == "--install":
 			install = true
+		case arg == "--global":
+			global = true
 		case arg == "--check":
 			check = true
 		case arg == "--git-hooks":
 			gitHooks = true
 		case arg == "--uninstall-git-hooks":
 			uninstallHooks = true
+		case arg == "--git-template":
+			gitTemplate = true
+		case arg == "--uninstall-git-template":
+			uninstallTemplate = true
+		case arg == "--set-template-dir":
+			setTemplateDir = true
+		case arg == "--unset-template-dir":
+			unsetTemplateDir = true
 		case arg == "--host":
 			v, ok := take(&i, args)
 			if !ok {
@@ -499,8 +516,24 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "sdf init: --git-hooks and --uninstall-git-hooks cannot be combined")
 		return 2
 	}
-	if agent == "" && !check && !gitHooks && !uninstallHooks {
-		fmt.Fprintln(stderr, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [claude-code|codex|opencode|pi] [--write] [--install]")
+	if uninstallTemplate && gitTemplate {
+		fmt.Fprintln(stderr, "sdf init: --git-template and --uninstall-git-template cannot be combined")
+		return 2
+	}
+	if setTemplateDir && !gitTemplate {
+		fmt.Fprintln(stderr, "sdf init: --set-template-dir requires --git-template")
+		return 2
+	}
+	if unsetTemplateDir && !uninstallTemplate {
+		fmt.Fprintln(stderr, "sdf init: --unset-template-dir requires --uninstall-git-template")
+		return 2
+	}
+	if global && agent != "pi" {
+		fmt.Fprintln(stderr, "sdf init: --global applies to pi")
+		return 2
+	}
+	if agent == "" && !check && !gitHooks && !uninstallHooks && !gitTemplate && !uninstallTemplate {
+		fmt.Fprintln(stderr, initUsage)
 		return 2
 	}
 	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
@@ -521,7 +554,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if agent != "" {
-		res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install})
+		res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install, Global: global})
 		if res.Text != "" {
 			fmt.Fprint(stdout, res.Text)
 		}
@@ -542,6 +575,26 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 	if gitHooks {
 		res, err := setup.InstallGitHooks("", ep)
+		if res.Text != "" {
+			fmt.Fprint(stdout, res.Text)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf init: %v\n", err)
+			return 1
+		}
+	}
+	if uninstallTemplate {
+		res, err := setup.UninstallGitTemplate(setup.TemplateOptions{UnsetConfig: unsetTemplateDir})
+		if res.Text != "" {
+			fmt.Fprint(stdout, res.Text)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf init: %v\n", err)
+			return 1
+		}
+	}
+	if gitTemplate {
+		res, err := setup.InstallGitTemplate(setup.TemplateOptions{SetConfig: setTemplateDir}, ep)
 		if res.Text != "" {
 			fmt.Fprint(stdout, res.Text)
 		}

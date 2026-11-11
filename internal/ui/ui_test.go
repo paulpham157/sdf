@@ -21,6 +21,68 @@ import (
 	"github.com/paulpham157/sdf/internal/ui"
 )
 
+func TestHookAndTrailerCountAsLinked(t *testing.T) {
+	report := summary.Report{Sessions: []summary.SessionSummary{
+		{Tool: "codex", SessionID: "hooked", Outcome: &summary.SessionOutcome{Status: "linked", Match: "hook", Reason: "git hook"}},
+		{Tool: "codex", SessionID: "trailed", Outcome: &summary.SessionOutcome{Status: "linked", Match: "trailer", Reason: "SDF-Session"}},
+		{Tool: "pi", SessionID: "exact", Outcome: &summary.SessionOutcome{Status: "linked", Match: "exact", Reason: "exported sha"}},
+		{Tool: "pi", SessionID: "guessed", Outcome: &summary.SessionOutcome{Status: "linked", Match: "heuristic", Reason: "one commit in the window"}},
+		{Tool: "opencode", SessionID: "open", Outcome: &summary.SessionOutcome{Status: "unlinked", Reason: "no commit"}},
+		{Tool: "opencode", SessionID: "odd", Outcome: &summary.SessionOutcome{Status: "linked", Match: "guess", Reason: "not a link method"}},
+	}}
+	snap := ui.BuildSnapshot(report, ui.SnapshotMeta{})
+	byID := map[string]string{}
+	for _, view := range snap.Sessions {
+		byID[view.Summary.SessionID] = view.LinkMethod
+		if view.LinkMethod == "none" && view.LinkReason == "" {
+			t.Fatalf("missing reason for %s", view.Summary.SessionID)
+		}
+	}
+	if byID["hooked"] != "hook" || byID["trailed"] != "trailer" || byID["exact"] != "exact" || byID["guessed"] != "heuristic" || byID["open"] != "none" || byID["odd"] != "none" {
+		t.Fatalf("%v", byID)
+	}
+	if snap.Totals.Linked != 4 || snap.Totals.Unlinked != 2 || snap.Totals.LinkedExact != 1 || snap.Totals.LinkedHook != 1 || snap.Totals.LinkedTrailer != 1 || snap.Totals.LinkedHeuristic != 1 {
+		t.Fatalf("%+v", snap.Totals)
+	}
+	if len(snap.Agents) != 3 {
+		t.Fatalf("%d agents", len(snap.Agents))
+	}
+	for _, agent := range snap.Agents {
+		switch agent.Tool {
+		case "codex":
+			if agent.Linked != 2 || agent.LinkedHook != 1 || agent.LinkedTrailer != 1 || agent.LinkedExact != 0 || agent.LinkedHeuristic != 0 {
+				t.Fatalf("codex %+v", agent)
+			}
+		case "pi":
+			if agent.Linked != 2 || agent.LinkedExact != 1 || agent.LinkedHeuristic != 1 || agent.LinkedHook != 0 || agent.LinkedTrailer != 0 {
+				t.Fatalf("pi %+v", agent)
+			}
+		case "opencode":
+			if agent.Linked != 0 || agent.Unlinked != 2 {
+				t.Fatalf("opencode %+v", agent)
+			}
+		default:
+			t.Fatalf("tool %s", agent.Tool)
+		}
+	}
+	script := readAsset(t, "app.js")
+	if !strings.Contains(script, `const LINK_METHODS = ["exact", "hook", "trailer", "heuristic"];`) {
+		t.Fatal("app.js link order")
+	}
+	if strings.Count(script, "linkName(view.link_method)") != 2 {
+		t.Fatal("link cell and detail should both use linkName")
+	}
+	if strings.Contains(script, `view.link_method === "exact"`) || !strings.Contains(script, `totals.linked_hook`) || !strings.Contains(script, `totals.linked_trailer`) {
+		t.Fatal("app.js still drops hook or trailer")
+	}
+	hookAt := strings.Index(script, `totals.linked_hook`)
+	trailerAt := strings.Index(script, `totals.linked_trailer`)
+	heuristicAt := strings.Index(script, `totals.linked_heuristic`)
+	if hookAt < 0 || trailerAt < hookAt || heuristicAt < trailerAt {
+		t.Fatal("link phrase order")
+	}
+}
+
 func TestEmptyDatabaseMatchesSummaryAndPointsAtInit(t *testing.T) {
 	db := openDB(t)
 	srv := startUI(t, db)

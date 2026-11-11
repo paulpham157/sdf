@@ -172,12 +172,12 @@ func CostPerAccepted(sessions []summary.SessionSummary) summary.CostPerAccepted 
 		}
 	}
 	if unknownAccepted := countAcceptedUnknown(sessions); unknownAccepted > 0 {
-		out.Reason = fmt.Sprintf("%d accepted sessions have unknown computed cost", unknownAccepted)
+		out.Reason = acceptedSessionsHave(unknownAccepted, "unknown computed cost")
 		out.USD = ""
 		return out
 	}
 	if out.UnknownOutcome > 0 {
-		out.Reason = fmt.Sprintf("%d sessions have no known outcome", out.UnknownOutcome)
+		out.Reason = sessionsHave(out.UnknownOutcome, "no known outcome", "no known outcome")
 		return out
 	}
 	for _, n := range shas {
@@ -207,9 +207,30 @@ func CostPerAccepted(sessions []summary.SessionSummary) summary.CostPerAccepted 
 	out.AcceptedCostUSD = total
 	out.Reason = ""
 	if out.UnknownCost > 0 {
-		out.Note = joinNote(out.Note, fmt.Sprintf("%d sessions have unknown computed cost and are not accepted", out.UnknownCost))
+		out.Note = joinNote(out.Note, sessionsAreNotAccepted(out.UnknownCost))
 	}
 	return out
+}
+
+func sessionsHave(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 session has " + singular
+	}
+	return fmt.Sprintf("%d sessions have %s", n, plural)
+}
+
+func acceptedSessionsHave(n int, rest string) string {
+	if n == 1 {
+		return "1 accepted session has " + rest
+	}
+	return fmt.Sprintf("%d accepted sessions have %s", n, rest)
+}
+
+func sessionsAreNotAccepted(n int) string {
+	if n == 1 {
+		return "1 session has unknown computed cost and is not accepted"
+	}
+	return fmt.Sprintf("%d sessions have unknown computed cost and are not accepted", n)
 }
 
 func countAcceptedUnknown(sessions []summary.SessionSummary) int {

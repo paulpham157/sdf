@@ -72,6 +72,48 @@ func TestInitPrintsWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestInitGlobalAndGitTemplateFlags(t *testing.T) {
+	home := t.TempDir()
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(cfg, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	flags := run(t, "init", "--set-template-dir")
+	if flags.code != 2 || !strings.Contains(flags.stderr, "--set-template-dir requires --git-template") {
+		t.Fatalf("%d %s", flags.code, flags.stderr)
+	}
+	other := run(t, "init", "claude-code", "--global")
+	if other.code != 2 || !strings.Contains(other.stderr, "--global applies to pi") {
+		t.Fatalf("%d %s", other.code, other.stderr)
+	}
+	held := run(t, "init", "--git-template")
+	if held.code != 1 || !strings.Contains(held.stdout, "--set-template-dir") || !strings.Contains(held.stdout, "did not change git config") {
+		t.Fatalf("%d %s %s", held.code, held.stdout, held.stderr)
+	}
+	if strings.Contains(string(mustRead(t, cfg)), "templateDir") {
+		t.Fatal(mustRead(t, cfg))
+	}
+	printed := run(t, "init", "pi", "--global")
+	if printed.code != 0 || !strings.Contains(printed.stdout, filepath.Join(home, ".pi", "agent", "settings.json")) || !strings.Contains(printed.stdout, "not written") {
+		t.Fatalf("%d %s %s", printed.code, printed.stdout, printed.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".pi")); !os.IsNotExist(err) {
+		t.Fatal("global pi settings were written")
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
 func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

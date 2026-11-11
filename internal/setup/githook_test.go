@@ -126,7 +126,7 @@ func TestGitHookSessionIDsAndSilence(t *testing.T) {
 		t.Fatalf("pi %+v", pi)
 	}
 	codex := payloadAttrs(t, bodies[1])
-	if codex["conversation.id"] != "019d2bae-7c39-7c73-b058-7b45e6aabef7" || codex["sdf.git.agent"] != "codex" || codex["resource.service.name"] != "codex" {
+	if codex["conversation.id"] != "019d2bae-7c39-7c73-b058-7b45e6aabef7" || codex["sdf.git.agent"] != "codex" || codex["resource.service.name"] != "codex_exec" {
 		t.Fatalf("codex %+v", codex)
 	}
 	if _, ok := codex["session.id"]; ok {
@@ -165,6 +165,62 @@ func TestGitHookSessionIDsAndSilence(t *testing.T) {
 	rewritten := payloadAttrs(t, got.all()[2])
 	if rewritten["session.id"] != "ses_rewrite" || rewritten["vcs.ref.head.revision"] != next || rewritten["sdf.git.rewritten_from"] != old {
 		t.Fatalf("%+v", rewritten)
+	}
+}
+
+func TestCodexHookServiceNameFollowsTheParent(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	// A checkout whose path ends in /codex must not be classified as the Codex CLI.
+	named := filepath.Join(t.TempDir(), "codex")
+	if err := os.MkdirAll(named, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, named, "init")
+	runGit(t, named, "config", "user.email", "sdf-test@example.com")
+	runGit(t, named, "config", "user.name", "sdf test")
+	runGit(t, named, "config", "commit.gpgsign", "false")
+	srv, got := recordingServer(t)
+	if _, err := InstallGitHooks(dir, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallGitHooks(named, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	thread := "019d2bae-7c39-7c73-b058-7b45e6aabef7"
+	commitAsCodex(t, dir, "exec", "CODEX_THREAD_ID="+thread, "CODEX_SESSION_ID="+thread)
+	commitAsCodex(t, dir, "exec", "CODEX_THREAD_ID="+thread, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=custom.client")
+	commitAsCodex(t, dir, "exec", "CODEX_THREAD_ID="+thread, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=bad name")
+	commitAsCodex(t, dir, "", "CODEX_THREAD_ID="+thread, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=custom.client")
+	commitIn(t, named, "path named codex", "CODEX_THREAD_ID="+thread)
+	bodies := got.all()
+	if len(bodies) != 5 {
+		t.Fatalf("posts %d", len(bodies))
+	}
+	want := []string{"codex_exec", "custom.client", "codex_exec", "codex-app-server", "codex_exec"}
+	for i, name := range want {
+		attrs := payloadAttrs(t, bodies[i])
+		if attrs["resource.service.name"] != name || attrs["conversation.id"] != thread || attrs["sdf.git.agent"] != "codex" {
+			t.Fatalf("body %d %+v", i, attrs)
+		}
+	}
+}
+
+func commitAsCodex(t *testing.T, dir, mode string, extra ...string) {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\ncd \"$SDF_REPO\" || exit 1\ngit commit --allow-empty -m \"codex parent commit\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{}
+	if mode != "" {
+		args = append(args, mode)
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(gitEnv(extra...), "SDF_REPO="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("codex %s: %v %s", mode, err, out)
 	}
 }
 
@@ -223,7 +279,7 @@ func TestGitHookDoesNotTouchHusky(t *testing.T) {
 	if err != ErrHooksNotActivated {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Text, "did not change core.hooksPath") || !strings.Contains(res.Text, ".husky/post-commit") {
+	if !strings.Contains(res.Text, "did not change core.hooksPath") || !strings.Contains(res.Text, ".husky/post-commit") || !strings.Contains(res.Text, "before any exit 0") {
 		t.Fatal(res.Text)
 	}
 	got, err := os.ReadFile(filepath.Join(husky, "post-commit"))
@@ -437,7 +493,7 @@ func isolateGit(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
-	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "AI_AGENT"} {
+	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "AI_AGENT"} {
 		t.Setenv(key, "")
 	}
 }
@@ -445,7 +501,7 @@ func isolateGit(t *testing.T) {
 func gitEnv(extra ...string) []string {
 	drop := map[string]bool{
 		"PI_SESSION_FILE": true, "PI_SESSION_ID": true, "OPENCODE_SESSION_ID": true,
-		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "AI_AGENT": true,
+		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE": true, "AI_AGENT": true,
 	}
 	var out []string
 	for _, env := range os.Environ() {

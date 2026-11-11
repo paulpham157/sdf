@@ -52,6 +52,9 @@ type Request struct {
 	Endpoint   Endpoint
 	Write      bool
 	Install    bool
+	// Global writes Pi's ~/.pi/agent/settings.json instead of .pi/settings.json.
+	// It applies only to pi. Project settings stay untouched.
+	Global bool
 	// RunInstall replaces `pi install` in tests. Nil runs pi on PATH.
 	RunInstall func(ctx context.Context) (string, error)
 }
@@ -85,6 +88,9 @@ func Run(req Request) (Result, error) {
 func normalize(req *Request) error {
 	if req.Install && req.Agent != "pi" && req.Agent != "" {
 		return errors.New("--install applies to pi")
+	}
+	if req.Global && req.Agent != "pi" {
+		return errors.New("--global applies to pi")
 	}
 	if req.Endpoint.Host == "" {
 		req.Endpoint.Host = "127.0.0.1"
@@ -273,6 +279,10 @@ func opencode(req Request) (Result, error) {
 func pi(req Request) (Result, error) {
 	path := filepath.Join(req.ProjectDir, ".pi", "settings.json")
 	global := filepath.Join(req.Home, ".pi", "agent", "settings.json")
+	target := path
+	if req.Global {
+		target = global
+	}
 	otel := piOtel(req.Endpoint)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Pi does not export OTLP. Install the community extension pi-otel (the setup checked here is 0.3.0):\n\n")
@@ -280,14 +290,19 @@ func pi(req Request) (Result, error) {
 	fmt.Fprintf(&b, "pi-otel defaults to grpc at http://127.0.0.1:4317. sdf serve accepts that.\n")
 	fmt.Fprintf(&b, "The variables below select http/json on the HTTP receiver instead.\n")
 	fmt.Fprintf(&b, "Metrics and logs are off unless PI_OTEL_METRICS and PI_OTEL_LOGS are set.\n")
-	fmt.Fprintf(&b, "Project config is %s. Global config is %s. Environment overrides both.\n", path, global)
+	fmt.Fprintf(&b, "Project config is %s. Global config is %s. pi-otel reads the project file first, then the global file. Environment overrides both.\n", path, global)
+	if req.Global {
+		fmt.Fprintf(&b, "--write --global updates %s and does not change the project file.\n", global)
+	} else {
+		fmt.Fprintf(&b, "--write updates %s. Pass --global to update %s instead.\n", path, global)
+	}
 	fmt.Fprintf(&b, "https://github.com/NikiforovAll/pi-otel\n\n")
 	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
 	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n")
 	fmt.Fprintf(&b, "export PI_OTEL_METRICS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_LOGS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_SPAN_NAMING=genai\n\n")
-	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
+	status, err := mergeJSON(target, req.Write, func(root map[string]any) (bool, error) {
 		return mergeAnyMap(root, "otel", otel)
 	})
 	if err != nil {
@@ -458,7 +473,7 @@ func piConfigured(req Request) string {
 	global := filepath.Join(req.Home, ".pi", "agent", "settings.json")
 	want := req.Endpoint.base()
 	envHit := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == want && os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL") == "http/json"
-	return fmt.Sprintf("pi process env points at %s with http/json: %t; %s: %t; %s: %t\n",
+	return fmt.Sprintf("pi process env points at %s with http/json: %t; %s: %t; %s: %t\nProject settings are sdf init pi --write. Global settings are sdf init pi --write --global.\n",
 		want, envHit, project, jsonPointsAt(project, want), global, jsonPointsAt(global, want))
 }
 

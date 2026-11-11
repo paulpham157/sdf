@@ -395,3 +395,56 @@ func TestParseGitHubRemoteDropsCredentials(t *testing.T) {
 		t.Fatal("failure")
 	}
 }
+
+func TestCostReasonsUseSingularForOneSession(t *testing.T) {
+	yes := true
+	no := false
+	unknown := summary.SessionSummary{SessionID: "only", Outcome: &summary.SessionOutcome{Status: "unlinked"}}
+	got := CostPerAccepted([]summary.SessionSummary{unknown})
+	if got.Reason != "1 session has no known outcome" {
+		t.Fatal(got.Reason)
+	}
+	got = CostPerAccepted([]summary.SessionSummary{unknown, {SessionID: "other", Outcome: &summary.SessionOutcome{Status: "unlinked"}}})
+	if got.Reason != "2 sessions have no known outcome" {
+		t.Fatal(got.Reason)
+	}
+	landed := summary.SessionSummary{
+		SessionID:    "landed",
+		ComputedCost: &pricing.Cost{Status: "unknown", Reason: "no price"},
+		Outcome:      &summary.SessionOutcome{Status: "linked", Accepted: &yes, Commits: []summary.LinkedCommit{{SHA: "abc"}}},
+	}
+	got = CostPerAccepted([]summary.SessionSummary{landed})
+	if got.Reason != "1 accepted session has unknown computed cost" {
+		t.Fatal(got.Reason)
+	}
+	got = CostPerAccepted([]summary.SessionSummary{landed, {
+		SessionID:    "landed-2",
+		ComputedCost: &pricing.Cost{Status: "unknown"},
+		Outcome:      &summary.SessionOutcome{Status: "linked", Accepted: &yes, Commits: []summary.LinkedCommit{{SHA: "def"}}},
+	}})
+	if got.Reason != "2 accepted sessions have unknown computed cost" {
+		t.Fatal(got.Reason)
+	}
+	known := summary.SessionSummary{
+		SessionID:    "ok",
+		ComputedCost: &pricing.Cost{Status: "known", USD: "2"},
+		Outcome:      &summary.SessionOutcome{Status: "linked", Accepted: &yes, Commits: []summary.LinkedCommit{{SHA: strings.Repeat("b", 40)}}},
+	}
+	idle := summary.SessionSummary{
+		SessionID:    "idle",
+		ComputedCost: &pricing.Cost{Status: "unknown"},
+		Outcome:      &summary.SessionOutcome{Status: "unlinked", Accepted: &no},
+	}
+	got = CostPerAccepted([]summary.SessionSummary{known, idle})
+	if got.Status != "known" || got.Note != "1 session has unknown computed cost and is not accepted" {
+		t.Fatalf("%+v", got)
+	}
+	got = CostPerAccepted([]summary.SessionSummary{known, idle, {
+		SessionID:    "idle-2",
+		ComputedCost: &pricing.Cost{Status: "unknown"},
+		Outcome:      &summary.SessionOutcome{Status: "unlinked", Accepted: &no},
+	}})
+	if got.Status != "known" || !strings.Contains(got.Note, "2 sessions have unknown computed cost and are not accepted") {
+		t.Fatalf("%+v", got)
+	}
+}

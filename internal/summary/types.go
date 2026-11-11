@@ -127,9 +127,9 @@ type HookCommit struct {
 // Match is "exact", "hook", "trailer", or "heuristic" when Status is "linked".
 // exact is a SHA the agent exported. hook is an sdf git hook event for this
 // session. trailer is an SDF-Session line in a commit message. heuristic is
-// the single-commit time window. Accepted is nil when merge status was not
-// established. hook and trailer are attributions, not guesses: a UI that
-// counts only exact and heuristic should still treat them as linked.
+// the single-commit time window. The order is exact, hook, trailer, heuristic.
+// Accepted is nil when merge status was not established. hook and trailer are
+// attributions, not guesses.
 type SessionOutcome struct {
 	Status         string         `json:"status"`
 	Match          string         `json:"match,omitempty"`
