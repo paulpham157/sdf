@@ -29,8 +29,10 @@ sdf_json_escape() {
 # 0.3.0 uses basename of the session file with a trailing .jsonl removed.
 # PI_SESSION_ID is the short id and does not match. OpenCode's
 # OPENCODE_SESSION_ID matches session.id. Codex's CODEX_THREAD_ID matches
-# conversation.id; CODEX_SESSION_ID is a different value and is ignored.
-# More than one of these set means the commit is not attributed.
+# conversation.id. On a Codex 0.167.0 root thread CODEX_SESSION_ID is that
+# same id; a subagent can set CODEX_SESSION_ID to the root id instead, so
+# this script does not read CODEX_SESSION_ID. More than one of Pi, OpenCode,
+# and Codex set means the commit is not attributed.
 sdf_session() {
   pi_id=''
   oc_id=''
@@ -113,6 +115,86 @@ sdf_post() {
   return 0
 }
 
+# Codex 0.167.0 service.name is the originator, except the app server passes
+# service_name_override codex-app-server. codex exec sets the originator to
+# codex_exec before OTEL init. CODEX_INTERNAL_ORIGINATOR_OVERRIDE replaces
+# that exec name and does not rename the app server. A parent that is not
+# Codex uses codex_exec, which is the live exec name.
+sdf_codex_mode() {
+  printf '%s\n' "$1" | awk '
+    function base(p,    n, a) {
+      n = split(p, a, "/")
+      return a[n]
+    }
+    BEGIN {
+      interps["sh"] = 1
+      interps["bash"] = 1
+      interps["dash"] = 1
+      interps["env"] = 1
+    }
+    {
+      if (NF < 1) exit
+      start = 1
+      b = base($1)
+      if (interps[b] && NF >= 2) {
+        start = 2
+        b = base($2)
+      }
+      if (b == "codex" || b == "codex.exe") {
+        for (j = start + 1; j <= NF; j++) {
+          if ($j ~ /^-/) continue
+          if ($j == "exec") { print "exec"; exit }
+          print "app"; exit
+        }
+        print "app"; exit
+      }
+      if (b == "codex-exec" || b == "codex_exec") { print "exec"; exit }
+      if (b == "codex-tui" || b == "codex-app-server" || b == "codex_app_server") { print "app"; exit }
+    }
+  '
+}
+
+sdf_codex_exec_name() {
+  override=${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}
+  case "$override" in
+    ""|*[!A-Za-z0-9._-]*) printf '%s' "codex_exec" ;;
+    *)
+      if [ "${#override}" -le 64 ]; then
+        printf '%s' "$override"
+      else
+        printf '%s' "codex_exec"
+      fi
+      ;;
+  esac
+}
+
+sdf_codex_service() {
+  pid=$$
+  hops=0
+  while [ "$hops" -lt 20 ]; do
+    hops=$((hops + 1))
+    args=$(ps -o args= -p "$pid" 2>/dev/null || true)
+    mode=$(sdf_codex_mode "$args" || true)
+    case "$mode" in
+      exec)
+        sdf_codex_exec_name
+        return
+        ;;
+      app)
+        printf '%s' "codex-app-server"
+        return
+        ;;
+    esac
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null || true)
+    ppid=$(printf '%s' "$ppid" | tr -cd '0-9')
+    if [ -z "$ppid" ] || [ "$ppid" = "0" ] || [ "$ppid" = "1" ] || [ "$ppid" = "$pid" ]; then
+      break
+    fi
+    pid=$ppid
+  done
+  sdf_codex_exec_name
+}
+
 sdf_send_one() {
   sha=$1
   rewritten=$2
@@ -161,7 +243,10 @@ sdf_send_one() {
       sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
       ;;
     codex)
-      service=codex
+      service=$(sdf_codex_service)
+      case "$service" in
+        ""|*[!A-Za-z0-9._-]*) service=codex_exec ;;
+      esac
       sess=$(printf '%s' "{\"key\":\"conversation.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
       ;;
     *)

@@ -51,6 +51,8 @@ type Totals struct {
 	OutputTokens         Amount `json:"output_tokens"`
 	Linked               int    `json:"linked"`
 	LinkedExact          int    `json:"linked_exact"`
+	LinkedHook           int    `json:"linked_hook"`
+	LinkedTrailer        int    `json:"linked_trailer"`
 	LinkedHeuristic      int    `json:"linked_heuristic"`
 	Unlinked             int    `json:"unlinked"`
 	Merged               int    `json:"merged"`
@@ -70,6 +72,8 @@ type AgentRollup struct {
 	OutputTokens         Amount                  `json:"output_tokens"`
 	Linked               int                     `json:"linked"`
 	LinkedExact          int                     `json:"linked_exact"`
+	LinkedHook           int                     `json:"linked_hook"`
+	LinkedTrailer        int                     `json:"linked_trailer"`
 	LinkedHeuristic      int                     `json:"linked_heuristic"`
 	Unlinked             int                     `json:"unlinked"`
 	Merged               int                     `json:"merged"`
@@ -223,13 +227,23 @@ func linkMethod(o *summary.SessionOutcome) (string, string) {
 	if o == nil {
 		return "none", "outcome was not attached"
 	}
-	if o.Status == "linked" && (o.Match == "exact" || o.Match == "heuristic") {
+	if o.Status == "linked" && knownLink(o.Match) {
 		return o.Match, o.Reason
 	}
 	if o.Reason != "" {
 		return "none", o.Reason
 	}
 	return "none", "unlinked"
+}
+
+// knownLink is the link order summary uses: exact, hook, trailer, heuristic.
+func knownLink(method string) bool {
+	switch method {
+	case "exact", "hook", "trailer", "heuristic":
+		return true
+	default:
+		return false
+	}
 }
 
 func tokenAmount(tokens summary.OrderedFloats, keys []string, missing string) Amount {
@@ -400,14 +414,16 @@ func totals(sessions []summary.SessionSummary) Totals {
 		InputTokens:          sumTokens(sessions, inputKeys, "input"),
 		OutputTokens:         sumTokens(sessions, outputKeys, "output"),
 	}
-	linked, exact, heuristic, unlinked, merged, notMerged, acceptedUnknown := classify(sessions)
-	out.Linked = linked
-	out.LinkedExact = exact
-	out.LinkedHeuristic = heuristic
-	out.Unlinked = unlinked
-	out.Merged = merged
-	out.NotMerged = notMerged
-	out.AcceptedUnknown = acceptedUnknown
+	counted := classify(sessions)
+	out.Linked = counted.linked
+	out.LinkedExact = counted.exact
+	out.LinkedHook = counted.hook
+	out.LinkedTrailer = counted.trailer
+	out.LinkedHeuristic = counted.heuristic
+	out.Unlinked = counted.unlinked
+	out.Merged = counted.merged
+	out.NotMerged = counted.notMerged
+	out.AcceptedUnknown = counted.acceptedUnknown
 	return out
 }
 
@@ -424,7 +440,7 @@ func rollups(sessions []summary.SessionSummary) []AgentRollup {
 	out := make([]AgentRollup, 0, len(tools))
 	for _, tool := range tools {
 		group := grouped[tool]
-		linked, exact, heuristic, unlinked, merged, notMerged, acceptedUnknown := classify(group)
+		counted := classify(group)
 		out = append(out, AgentRollup{
 			Tool:                 tool,
 			Sessions:             len(group),
@@ -433,41 +449,55 @@ func rollups(sessions []summary.SessionSummary) []AgentRollup {
 			AgentReportedCostUSD: sumAgent(group),
 			InputTokens:          sumTokens(group, inputKeys, "input"),
 			OutputTokens:         sumTokens(group, outputKeys, "output"),
-			Linked:               linked,
-			LinkedExact:          exact,
-			LinkedHeuristic:      heuristic,
-			Unlinked:             unlinked,
-			Merged:               merged,
-			NotMerged:            notMerged,
-			AcceptedUnknown:      acceptedUnknown,
+			Linked:               counted.linked,
+			LinkedExact:          counted.exact,
+			LinkedHook:           counted.hook,
+			LinkedTrailer:        counted.trailer,
+			LinkedHeuristic:      counted.heuristic,
+			Unlinked:             counted.unlinked,
+			Merged:               counted.merged,
+			NotMerged:            counted.notMerged,
+			AcceptedUnknown:      counted.acceptedUnknown,
 		})
 	}
 	return out
 }
 
-func classify(sessions []summary.SessionSummary) (linked, exact, heuristic, unlinked, merged, notMerged, acceptedUnknown int) {
+type linkCounts struct {
+	linked, exact, hook, trailer, heuristic, unlinked int
+	merged, notMerged, acceptedUnknown                int
+}
+
+func classify(sessions []summary.SessionSummary) linkCounts {
+	var counted linkCounts
 	for _, session := range sessions {
 		o := session.Outcome
 		switch {
 		case o != nil && o.Status == "linked" && o.Match == "exact":
-			linked++
-			exact++
+			counted.linked++
+			counted.exact++
+		case o != nil && o.Status == "linked" && o.Match == "hook":
+			counted.linked++
+			counted.hook++
+		case o != nil && o.Status == "linked" && o.Match == "trailer":
+			counted.linked++
+			counted.trailer++
 		case o != nil && o.Status == "linked" && o.Match == "heuristic":
-			linked++
-			heuristic++
+			counted.linked++
+			counted.heuristic++
 		default:
-			unlinked++
+			counted.unlinked++
 		}
 		switch {
 		case o == nil || o.Accepted == nil:
-			acceptedUnknown++
+			counted.acceptedUnknown++
 		case *o.Accepted:
-			merged++
+			counted.merged++
 		default:
-			notMerged++
+			counted.notMerged++
 		}
 	}
-	return
+	return counted
 }
 
 func sumComputed(sessions []summary.SessionSummary) Amount {

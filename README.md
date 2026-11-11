@@ -143,12 +143,18 @@ port 4317. The HTTP setup below is the one checked against Codex; point an
 
 Resource attributes are `service.name`, `service.version`, and `env` (from
 `otel.environment`, default `dev`). What `service.name` is depends on which
-Codex binary is running. Codex 0.167.0 `codex exec` exports
-`service.name=codex_exec`. The otel crate's examples and loopback test use
-`codex-cli`. Both classify as tool `codex`. Log events also carry `originator`
-(the CLI's originator is `codex_cli_rs`; `codex exec` uses `codex_exec`),
-`conversation.id`, `model`, `app.version`, `auth_mode`, `terminal.type`, and
-`slug`. `host.name` is attached on logs only.
+Codex process exports. Checked against the Codex 0.167.0 tag
+(`rust-v0.167.0`): `codex exec` calls `set_default_originator("codex_exec")`
+and passes no service-name override, so it exports `service.name=codex_exec`.
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, when set, replaces that originator and
+therefore the exec service name. The interactive CLI's exporter is the app
+server, which passes a service-name override of `codex-app-server`, so the
+override does not rename it. The otel crate's examples and loopback test use
+`codex-cli`. The CLI's default originator, when nothing overrides it, is
+`codex_cli_rs`. Log events also carry `originator` (`codex_cli_rs` for the
+CLI, `codex_exec` for `codex exec`), `conversation.id`, `model`,
+`app.version`, `auth_mode`, `terminal.type`, and `slug`. `host.name` is
+attached on logs only. All of these names classify as tool `codex`.
 
 Logs are the supported session record. Every log from `SessionTelemetry`
 includes `conversation.id` and `model`. Event names:
@@ -281,8 +287,8 @@ The page has three views. Overview is the total across sessions and the cost
 per accepted outcome, including that figure per agent. Sessions lists every
 stored session, newest first, with the agent, start time, duration, models,
 input and output tokens, computed cost, the cost the agent reported, the
-linked commit or pull request, and whether the link was exact, heuristic, or
-none. Filter the list by agent, or click a column to sort it. A session
+linked commit or pull request, and whether the link was exact, hook, trailer,
+heuristic, or none. Filter the list by agent, or click a column to sort it. A session
 opens onto the totals, the token buckets, a per-model note, tool-call counts,
 the two costs side by side, and the outcome. A field the summary could not
 establish says `unknown` and gives the reason (no published price, no working
@@ -334,7 +340,9 @@ sdf init claude-code --write
 sdf init codex --write
 sdf init opencode --write
 sdf init pi --write
+sdf init pi --write --global
 sdf init pi --install
+sdf init --git-template --set-template-dir
 sdf init --check
 ```
 
@@ -351,10 +359,15 @@ is written to `$CODEX_HOME/config.toml`. OpenCode v2 only needs
 `OTEL_EXPORTER_OTLP_ENDPOINT`; `--write` saves a snippet you source, because
 OpenCode does not load that file itself. Pi needs `pi install npm:pi-otel`
 (the extension checked here is 0.3.0). `--install` is what runs that command.
-`--write` updates `.pi/settings.json` in the current directory, which pi-otel
-0.3.0 reads before `~/.pi/agent/settings.json`. The protocol in that file is
-`http/json`. pi-otel's own default is gRPC on port 4317, which this receiver
-also accepts.
+`--write` updates `.pi/settings.json` in the current directory. `--write
+--global` updates `~/.pi/agent/settings.json` instead and leaves the project
+file alone. pi-otel 0.3.0 reads the project file first, then the global file.
+Environment overrides both. Either write copies an existing file to a
+`.sdf-bak` sibling and leaves a file that is not valid JSON untouched. The
+protocol in that file is `http/json`. pi-otel's own default is gRPC on port
+4317, which this receiver also accepts. `sdf init --check pi` reports whether
+the process environment, the project file, and the global file point at this
+receiver.
 
 ## Git hooks
 
@@ -385,15 +398,57 @@ lines to add. It does not edit those tools' files.
 
 ```bash
 # husky: add to .husky/post-commit and .husky/post-rewrite
+# Put these lines before any exit 0, or at the top of the file.
 sh /path/to/.git/sdf-hooks/post-commit
 # and to .husky/prepare-commit-msg
 sh /path/to/.git/sdf-hooks/prepare-commit-msg "$@"
 ```
 
-Lefthook gets the same commands in `lefthook.yml`. pre-commit does not run
-`post-commit` unless you add a hook that calls the script. If `.husky`,
-`lefthook.yml`, or `.pre-commit-config.yaml` is present but `core.hooksPath`
-is unset, Git is not using them yet; the install says so.
+Put each line before any `exit 0`, or at the top of the file. Lines after
+`exit 0` never run, and the commit still succeeds. Lefthook gets the same
+commands in `lefthook.yml`. pre-commit does not run `post-commit` unless you
+add a hook that calls the script. A shell script that lefthook or pre-commit
+calls has the same rule: the sdf line has to run before any `exit 0`. If
+`.husky`, `lefthook.yml`, or `.pre-commit-config.yaml` is present but
+`core.hooksPath` is unset, Git is not using them yet; the install says so.
+
+`sdf init --git-hooks` changes one repository. To give every future clone and
+`git init` the same hooks, install them into Git's template directory:
+
+```bash
+sdf init --git-template --set-template-dir
+```
+
+`--set-template-dir` creates `~/.config/sdf/git-template`, copies Git's
+default template into it when the directory is empty (so new repositories
+still get the stock sample hooks and `info/exclude`), installs the sdf hooks
+there, and runs `git config --global init.templateDir` to that path. The
+command prints the previous value, which is unset the first time.
+`sdf init --git-template` alone does not change git config.
+
+If `init.templateDir` is already set, `sdf init --git-template` installs into
+that directory and does not change git config, including when
+`--set-template-dir` is also passed. `GIT_TEMPLATE_DIR`, when set, is the
+directory Git actually uses and overrides `init.templateDir`. The command
+installs there and does not write git config. An existing hook is chained or
+refused the same way as in a repository. A template you already have is not
+replaced.
+
+```bash
+sdf init --uninstall-git-template
+sdf init --uninstall-git-template --unset-template-dir
+```
+
+Uninstall removes the sdf hooks from the template directory in use.
+`--unset-template-dir` unsets `init.templateDir` only when that value is
+`~/.config/sdf/git-template`, and it prints the previous value. A template
+you configured yourself is left in git config. The directory is left on disk.
+
+Existing repositories are unchanged. Run `sdf init --git-hooks` in each one,
+or re-run `git init` there. `git init` copies template hooks that are missing
+and does not replace a hook that already exists. A new clone, and `git init`
+of a new directory, pick the template up. `GIT_TEMPLATE_DIR` still overrides
+the config value.
 
 The hook is POSIX `sh`. It uses `curl` when that is on `PATH`, otherwise
 `wget`. A missing client, a refused connection, or a slow receiver does not
@@ -414,7 +469,7 @@ The id has to be the one the agent's telemetry already uses:
 | --- | --- | --- |
 | Pi | `PI_SESSION_FILE` | File name with a trailing `.jsonl` removed. pi-otel 0.3.0 does `basename(file, ".jsonl")`. `PI_SESSION_ID` is only the short trailing id and is not used. An ephemeral session has no file, exports no session id, and is not linked. |
 | OpenCode | `OPENCODE_SESSION_ID` | `session.id` on runner spans. Taken from the OpenCode shell-tool change; not run live here. |
-| Codex | `CODEX_THREAD_ID` | `conversation.id`, which Codex documents as the emitting thread. `CODEX_SESSION_ID` is a different value and is ignored. Not run live here. |
+| Codex | `CODEX_THREAD_ID` | `conversation.id`, the emitting thread. In Codex 0.167.0 a root thread sets `CODEX_SESSION_ID` to that same id (`SessionId::from(thread_id)` in `codex-rs/core/src/session/session.rs` on tag `rust-v0.167.0`). A subagent can set `CODEX_SESSION_ID` to the root id instead, so the hook reads `CODEX_THREAD_ID` and does not read `CODEX_SESSION_ID`. |
 
 Pi was checked against pi-otel 0.3.0's source (`sessionIdRef = basename(file, ".jsonl")`) and the session file name `<timestamp>_<id>.jsonl`. The hook behavior below does not start an agent.
 
@@ -435,7 +490,25 @@ is the whole session until OpenCode exports a trace with the same
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
 session JSONL path (the stem is what pi-otel exports) rather than only
 `PI_SESSION_ID`. For Codex, set `CODEX_THREAD_ID` to the thread id from
-`conversation.id`.
+`conversation.id`. On a Codex 0.167.0 root thread that value is also
+`CODEX_SESSION_ID`.
+
+The hook's `service.name` matches the Codex process that committed, so one
+session does not show two names. A parent command of `codex exec` (or
+`codex-exec`) is `codex_exec`. If `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` is a
+short token of letters, digits, `.`, `_`, and `-`, that token is the exec
+service name instead, which is what Codex 0.167.0 uses for `codex exec`. A
+parent `codex`, `codex-tui`, or `codex-app-server` is `codex-app-server`. If
+the parent chain is not Codex, the hook uses `codex_exec`. The interactive
+name is from the 0.167.0 source and was not re-checked against a live TUI.
+
+Codex's default `workspace-write` sandbox mounts `.git` read-only. Checked
+in the 0.167.0 source: `FileSystemSandboxPolicy::workspace_write` adds `.git`
+unless an explicit write rule already covers that path. A commit from the
+agent then fails, the hook does not run, and no outcome is recorded. Run
+Codex with `--sandbox danger-full-access`, or add the checkout's `.git`
+directory to `sandbox_workspace_write.writable_roots`. The writable-roots
+exception is what that source does; it was not live-verified on 0.167.0.
 
 `post-rewrite` runs on `git commit --amend` and `git rebase`. The replacement
 SHA is stored, and the previous SHA from that rewrite is not linked once the

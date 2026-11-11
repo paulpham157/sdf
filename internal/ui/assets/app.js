@@ -92,11 +92,22 @@
     };
   }
 
+  const LINK_METHODS = ["exact", "hook", "trailer", "heuristic"];
+
+  function linkName(method) {
+    for (let i = 0; i < LINK_METHODS.length; i++) {
+      if (LINK_METHODS[i] === method) return method;
+    }
+    return "none";
+  }
+
   function linkPhrase(totals) {
     if (!totals) return "unknown";
     if (!totals.linked) return "none";
     const parts = [];
     if (totals.linked_exact) parts.push(totals.linked_exact + " exact");
+    if (totals.linked_hook) parts.push(totals.linked_hook + " hook");
+    if (totals.linked_trailer) parts.push(totals.linked_trailer + " trailer");
     if (totals.linked_heuristic) parts.push(totals.linked_heuristic + " heuristic");
     return parts.join(", ") || String(totals.linked);
   }
@@ -431,7 +442,7 @@
   }
 
   function linkCell(view) {
-    const method = view.link_method === "exact" || view.link_method === "heuristic" ? view.link_method : "none";
+    const method = linkName(view.link_method);
     return h("div", { class: "amount" }, [
       h("div", null, [method]),
       view.link_reason ? h("div", { class: "reason" }, [view.link_reason]) : null,
@@ -564,7 +575,7 @@
       kids.push(inlineAmount({ status: "unknown", reason: view.link_reason || "outcome was not attached" }));
       return h("section", { class: "section" }, kids);
     }
-    const method = view.link_method === "exact" || view.link_method === "heuristic" ? view.link_method : "none";
+    const method = linkName(view.link_method);
     kids.push(h("div", { class: "dl" }, [
       row("Link", document.createTextNode(method)),
       row("Why", document.createTextNode(view.link_reason || outcome.reason || "not stated")),

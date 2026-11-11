@@ -180,6 +180,62 @@ func TestPiWriteMergesProjectSettingsAndInstallIsOptIn(t *testing.T) {
 	}
 }
 
+func TestPiGlobalWritesTheHomeFileAndLeavesTheProjectAlone(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	projectPath := filepath.Join(project, ".pi", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(projectPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projectBody := []byte("{\"theme\":\"keep-project\"}\n")
+	if err := os.WriteFile(projectPath, projectBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	global := filepath.Join(home, ".pi", "agent", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(global), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{\"theme\":\"dark\",\"other\":1}\n")
+	if err := os.WriteFile(global, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	printed, err := Run(Request{Agent: "pi", Home: home, ProjectDir: project, Global: true, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || printed.Wrote || !strings.Contains(printed.Text, global) || !strings.Contains(printed.Text, "not written") {
+		t.Fatal(err, printed.Wrote, printed.Text)
+	}
+	res, err := Run(Request{Agent: "pi", Home: home, ProjectDir: project, Global: true, Write: true, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || !res.Wrote || !strings.Contains(res.Text, "backup ") {
+		t.Fatal(err, res.Text)
+	}
+	body, err := os.ReadFile(global)
+	if err != nil || !strings.Contains(string(body), `"theme": "dark"`) || !strings.Contains(string(body), `"protocol": "http/json"`) || !strings.Contains(string(body), `"other": 1`) {
+		t.Fatal(string(body), err)
+	}
+	backup, err := os.ReadFile(global + ".sdf-bak")
+	if err != nil || string(backup) != string(original) {
+		t.Fatalf("backup %s %v", backup, err)
+	}
+	left, err := os.ReadFile(projectPath)
+	if err != nil || string(left) != string(projectBody) {
+		t.Fatalf("project file changed: %s", left)
+	}
+	broken := []byte("{not json")
+	if err := os.WriteFile(global, broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Run(Request{Agent: "pi", Home: home, ProjectDir: project, Global: true, Write: true})
+	if err == nil || !strings.Contains(err.Error(), "not JSON") {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(global)
+	if err != nil || string(got) != string(broken) {
+		t.Fatalf("invalid JSON was changed: %s %v", got, err)
+	}
+	if _, err := Run(Request{Agent: "claude-code", Home: home, Global: true}); err == nil || !strings.Contains(err.Error(), "--global applies to pi") {
+		t.Fatal(err)
+	}
+}
+
 func TestProbeReportsHTTPAndLeavesGRPCClosed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {

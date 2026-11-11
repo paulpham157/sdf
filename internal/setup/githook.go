@@ -51,18 +51,9 @@ func InstallGitHooks(dir string, ep Endpoint) (Result, error) {
 		b.WriteString(managerInstructions(manager, configPath, chain))
 		return Result{Text: b.String()}, ErrHooksNotActivated
 	}
-	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		return Result{}, err
-	}
-	changed := false
-	for _, name := range hookNames {
-		did, err := installOne(filepath.Join(hooksDir, name), hookScript(url, name))
-		if err != nil {
-			return Result{Text: b.String()}, err
-		}
-		if did {
-			changed = true
-		}
+	changed, err := installHookFiles(hooksDir, url)
+	if err != nil {
+		return Result{Text: b.String()}, err
 	}
 	if changed {
 		fmt.Fprintf(&b, "installed sdf git hooks in %s\n", hooksDir)
@@ -206,6 +197,23 @@ func uninstallOne(path string) (string, error) {
 	return "removed " + path + "\n", nil
 }
 
+func installHookFiles(dir, url string) (bool, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+	changed := false
+	for _, name := range hookNames {
+		did, err := installOne(filepath.Join(dir, name), hookScript(url, name))
+		if err != nil {
+			return changed, err
+		}
+		if did {
+			changed = true
+		}
+	}
+	return changed, nil
+}
+
 func writeChainScripts(top, url string) (string, error) {
 	dir := chainDir(top)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -259,13 +267,14 @@ func managerInstructions(manager, configPath, chain string) string {
 		}
 		fmt.Fprintf(&b, "  sh %s\n", script)
 	}
+	b.WriteString("Put each line before any exit 0, or at the top of the file. Lines after exit 0 never run, and the commit still succeeds.\n")
 	switch manager {
 	case "husky":
 		b.WriteString("Put them in the husky files you edit (.husky/post-commit, .husky/post-rewrite, and .husky/prepare-commit-msg), not in the generated .husky/_ copies.\n")
 	case "lefthook":
-		b.WriteString("Point the matching lefthook.yml commands at those scripts. Re-run lefthook install if it rewrites the active hooks.\n")
+		b.WriteString("Point the matching lefthook.yml commands at those scripts. A shell script those commands call has the same exit 0 rule. Re-run lefthook install if it rewrites the active hooks.\n")
 	case "pre-commit":
-		b.WriteString("pre-commit does not run post-commit unless you add a hook. Call the scripts from the hook files pre-commit installed, or from a local hook entry.\n")
+		b.WriteString("pre-commit does not run post-commit unless you add a hook. Call the scripts from the hook files pre-commit installed, or from a local hook entry. A shell script that calls them has the same exit 0 rule.\n")
 	}
 	b.WriteString("The scripts post only to loopback. They send the commit SHA, checkout path, branch, and agent session id, not the diff or the commit message.\n")
 	return b.String()
