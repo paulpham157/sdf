@@ -6,7 +6,9 @@
 package summary
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/paulpham157/sdf/internal/pricing"
 )
@@ -227,6 +229,50 @@ func (o *OrderedFloats) ensure() {
 	if o.Vals == nil {
 		o.Vals = map[string]float64{}
 	}
+}
+
+// UnmarshalJSON reads an object and keeps the key order from the payload.
+func (o *OrderedFloats) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		*o = OrderedFloats{}
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("tokens: expected an object")
+	}
+	o.Keys = nil
+	o.Vals = map[string]float64{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return fmt.Errorf("tokens: expected a string key")
+		}
+		var value float64
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+		if _, exists := o.Vals[key]; !exists {
+			o.Keys = append(o.Keys, key)
+		}
+		o.Vals[key] = value
+	}
+	end, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := end.(json.Delim); !ok || delim != '}' {
+		return fmt.Errorf("tokens: expected the end of the object")
+	}
+	return nil
 }
 
 // MarshalJSON writes an object in insertion order. An empty value is {}.

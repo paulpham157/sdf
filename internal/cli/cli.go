@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/paulpham157/sdf/internal/setup"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
+	"github.com/paulpham157/sdf/internal/ui"
 )
 
 // Main runs sdf with args, which do not include the program name.
@@ -56,11 +58,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	port := 4318
 	grpcPort := 4317
 	dbPath := "sdf-telemetry.sqlite"
+	uiOn := true
+	uiAddr := ui.DefaultAddr
+	pricesSpec := ""
+	repoPath := ""
+	github := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github]")
+			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -110,13 +118,60 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			dbPath = v
 		case strings.HasPrefix(arg, "--db="):
 			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--no-ui":
+			uiOn = false
+		case arg == "--ui-addr":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --ui-addr requires HOST:PORT")
+				return 2
+			}
+			parsed, err := parseUIAddr(v)
+			if err != nil {
+				fmt.Fprintln(stderr, "sdf serve: --ui-addr requires HOST:PORT")
+				return 2
+			}
+			uiAddr = parsed
+		case strings.HasPrefix(arg, "--ui-addr="):
+			parsed, err := parseUIAddr(strings.TrimPrefix(arg, "--ui-addr="))
+			if err != nil {
+				fmt.Fprintln(stderr, "sdf serve: --ui-addr requires HOST:PORT")
+				return 2
+			}
+			uiAddr = parsed
+		case arg == "--prices":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --prices requires bundled or a path")
+				return 2
+			}
+			pricesSpec = v
+		case strings.HasPrefix(arg, "--prices="):
+			pricesSpec = strings.TrimPrefix(arg, "--prices=")
+		case arg == "--repo":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --repo requires a path")
+				return 2
+			}
+			repoPath = v
+		case strings.HasPrefix(arg, "--repo="):
+			repoPath = strings.TrimPrefix(arg, "--repo=")
+		case arg == "--github":
+			github = true
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
 	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts when the agent is opted in")
+		fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+	}
+	if uiOn {
+		if _, err := pricing.ResolveCatalog(pricesSpec); err != nil {
+			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			return 1
+		}
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -135,14 +190,54 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer srv.Shutdown()
+	var uiSrv *ui.Server
+	if uiOn {
+		uiSrv, err = ui.Start(ui.Config{
+			Addr:   uiAddr,
+			Store:  db,
+			Prices: pricesSpec,
+			Repo:   repoPath,
+			GitHub: github,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			return 1
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = uiSrv.Shutdown(ctx)
+		}()
+		if warning := uiSrv.BindWarning(); warning != "" {
+			fmt.Fprintln(stderr, "warning: "+warning)
+		}
+	}
 	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), dbPath)
 	fmt.Fprintf(stdout, "OTLP/gRPC listening on %s\n", srv.GRPCAddress())
+	if uiSrv != nil {
+		fmt.Fprintf(stdout, "UI listening on %s\n", uiSrv.URL())
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sig)
 	<-sig
 	fmt.Fprintln(stderr, "\nstopped")
 	return 0
+}
+
+func parseUIAddr(v string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(v))
+	if err != nil {
+		return "", err
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n > 65535 {
+		return "", strconv.ErrSyntax
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n)), nil
 }
 
 func cmdSummary(args []string, stdout, stderr io.Writer) int {

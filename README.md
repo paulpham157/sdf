@@ -243,6 +243,11 @@ pi-otel exports unless you change it. There is no authentication on either
 port; keep the bind address on localhost. Override with `--host`, `--port`
 (HTTP), `--grpc-port`, and `--db`.
 
+The same process serves a read-only UI at `http://127.0.0.1:4320/` unless
+you pass `--no-ui`. `--ui-addr` moves the UI. `--host` does not: the page
+stays on localhost when the receivers are bound wider. `--prices`, `--repo`,
+and `--github` match `sdf summary` and apply to the page. See Open the UI.
+
 `GET /health` returns `{"status":"ok"}`. HTTP exports are `POST /v1/traces`,
 `POST /v1/metrics`, and `POST /v1/logs`, `Content-Type: application/json` or
 `application/x-protobuf`. The body may use `Content-Length` or
@@ -262,6 +267,59 @@ open, and a missing code is `UNSET`. Inspect them with SQLite:
 sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
+
+## Open the UI
+
+```bash
+./sdf serve
+```
+
+The process prints `UI listening on http://127.0.0.1:4320/` (the default).
+Open that URL on the same machine.
+
+The page has three views. Overview is the total across sessions and the cost
+per accepted outcome, including that figure per agent. Sessions lists every
+stored session, newest first, with the agent, start time, duration, models,
+input and output tokens, computed cost, the cost the agent reported, the
+linked commit or pull request, and whether the link was exact, heuristic, or
+none. Filter the list by agent, or click a column to sort it. A session
+opens onto the totals, the token buckets, a per-model note, tool-call counts,
+the two costs side by side, and the outcome. A field the summary could not
+establish says `unknown` and gives the reason (no published price, no working
+directory or commit, merge status not requested).
+
+Those numbers are the `sdf summary` report. The page does not price tokens
+again. `GET /api/summary` on the UI port is the same document as
+`sdf summary --json` for that database, including `--prices` and `--repo`.
+`GET /api/snapshot` is that report newest-first, plus the per-agent totals.
+Both are read-only. There is no route that writes or deletes.
+
+A known `0` is a published price of zero, such as a `:free` model whose
+token buckets are all priced. It is not a stand-in for a missing price. If
+any session in a total has an unknown computed cost, the total is unknown
+too. The summary does not split one session's tokens across several models,
+so the page does not either: several models stay unknown, with the session
+total still shown as a session total.
+
+`--github` asks whether a linked commit's pull request merged, on each
+refresh, the same way `sdf summary --github` does. Without it, accepted
+stays unknown because merge status was not requested. The cost per accepted
+outcome uses that answer. It is unknown, not zero, when nothing merged or
+when a session has no known outcome.
+
+The UI is on by default so a local demo is `sdf serve` and a browser.
+`--no-ui` leaves the OTLP ports only. It is a second listener, embedded in
+the sdf binary (HTML, CSS, and script). The page does not load fonts,
+scripts, or anything else from the network.
+
+`sdf serve --host 0.0.0.0` exposes the OTLP receivers on every interface.
+Those payloads can include prompts and filesystem paths when the agent is
+opted in, and the receiver has no authentication. The UI still binds to
+`127.0.0.1` in that case. `--ui-addr 0.0.0.0:4320` exposes the same
+telemetry in a browser and prints a warning. Do not do that on a network
+you do not trust.
+
+An empty database shows an empty state that points at `sdf init`.
 
 ## One-step setup
 
