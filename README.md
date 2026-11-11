@@ -298,6 +298,98 @@ OpenCode does not load that file itself. Pi needs `pi install npm:pi-otel`
 `http/json`. pi-otel's own default is gRPC on port 4317, which this receiver
 also accepts.
 
+## Git hooks
+
+Pi, OpenCode, and Codex do not export a commit SHA. `sdf init --git-hooks`
+installs `post-commit`, `post-rewrite`, and `prepare-commit-msg` into the
+hooks directory Git actually runs (`git rev-parse --git-path hooks`). On
+Git 2.43 that directory is shared by linked worktrees, so one install covers
+them. The event records the toplevel of the worktree that committed.
+
+Run `sdf serve` first. In the checkout the agent will commit in:
+
+```bash
+sdf init --git-hooks
+```
+
+`--host`, `--port` match `sdf serve`. The hook posts only to
+`http://127.0.0.1:<port>/v1/logs` (or `[::1]`). Any other host is rejected.
+`http_proxy` is ignored. Re-running with the same port leaves an existing
+install in place. `sdf init --uninstall-git-hooks` removes the sdf scripts
+and puts back a hook they had chained.
+
+An existing hook is not overwritten. An executable script is renamed to
+`<name>.sdf-previous` and run first. A symlink, or a file that is not
+executable, is left untouched and the command fails. `core.hooksPath` is
+never changed. If it already points at husky, lefthook, or pre-commit, sdf
+writes chain scripts under the common git dir's `sdf-hooks/` and prints the
+lines to add. It does not edit those tools' files.
+
+```bash
+# husky: add to .husky/post-commit and .husky/post-rewrite
+sh /path/to/.git/sdf-hooks/post-commit
+# and to .husky/prepare-commit-msg
+sh /path/to/.git/sdf-hooks/prepare-commit-msg "$@"
+```
+
+Lefthook gets the same commands in `lefthook.yml`. pre-commit does not run
+`post-commit` unless you add a hook that calls the script. If `.husky`,
+`lefthook.yml`, or `.pre-commit-config.yaml` is present but `core.hooksPath`
+is unset, Git is not using them yet; the install says so.
+
+The hook is POSIX `sh`. It uses `curl` when that is on `PATH`, otherwise
+`wget`. A missing client, a refused connection, or a slow receiver does not
+fail the commit (`--connect-timeout 1 --max-time 1`). The POST body is an
+OTLP log named `sdf.git.commit` with the commit SHA, the checkout toplevel,
+the branch name, and the agent session id. It does not include the diff or
+the commit message. `sdf summary` reads the subject from the local git
+object after the link, the same way it does for a SHA the agent exported.
+
+`prepare-commit-msg` appends an `SDF-Session: <id>` trailer only when a
+session id is present. A commit made outside an agent gets neither a trailer
+nor an event. If two agents' ids are set at once, the commit is not
+attributed.
+
+The id has to be the one the agent's telemetry already uses:
+
+| Agent | Variable | Stored session id |
+| --- | --- | --- |
+| Pi | `PI_SESSION_FILE` | File name with a trailing `.jsonl` removed. pi-otel 0.3.0 does `basename(file, ".jsonl")`. `PI_SESSION_ID` is only the short trailing id and is not used. An ephemeral session has no file, exports no session id, and is not linked. |
+| OpenCode | `OPENCODE_SESSION_ID` | `session.id` on runner spans. Taken from the OpenCode shell-tool change; not run live here. |
+| Codex | `CODEX_THREAD_ID` | `conversation.id`, which Codex documents as the emitting thread. `CODEX_SESSION_ID` is a different value and is ignored. Not run live here. |
+
+Pi was checked against pi-otel 0.3.0's source (`sessionIdRef = basename(file, ".jsonl")`) and the session file name `<timestamp>_<id>.jsonl`. The hook behavior below does not start an agent.
+
+Try it without a model call. From the checkout, with `sdf serve` writing
+its database in this directory:
+
+```bash
+sdf init --git-hooks
+export OPENCODE_SESSION_ID=ses_demo
+git commit --allow-empty -m "try sdf git hook"
+unset OPENCODE_SESSION_ID
+sdf summary
+```
+
+Summary shows session `ses_demo`, tool `opencode`, match `hook`. That commit
+is the whole session until OpenCode exports a trace with the same
+`session.id`; the trace joins it. A later commit in this shell with the
+variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
+session JSONL path (the stem is what pi-otel exports) rather than only
+`PI_SESSION_ID`. For Codex, set `CODEX_THREAD_ID` to the thread id from
+`conversation.id`.
+
+`post-rewrite` runs on `git commit --amend` and `git rebase`. The replacement
+SHA is stored, and the previous SHA from that rewrite is not linked once the
+new object is in the checkout. A GitHub squash merge does not run a local
+hook. The `SDF-Session` trailer survives only when the squash commit message
+keeps it. GitHub's default squash message is the pull request title, not the
+commit trailers, so this does not happen unless the message is edited to
+include the trailer (or the merge method keeps the commit messages). When
+the hook SHA is gone and the trailer is still in a local commit, summary
+links that commit with match `trailer`. A trailer for one session is not
+given to another session by the time-window heuristic.
+
 ## Point Claude Code at it
 
 Set these in the shell that launches `claude`, or in `~/.claude/settings.json`.
@@ -659,20 +751,40 @@ A link is **exact** when `claude_code.tool_result` carries
 inside `tool_parameters`). Claude Code adds those only when
 `OTEL_LOG_TOOL_DETAILS=1`, and an abbreviated id is ignored. The SHA has to
 exist in the checkout. If it does not, the session stays unlinked. SDF does
-not substitute a different commit from the same window.
+not substitute a hook commit or a different commit from the same window.
 
-A link is **heuristic** when there is no exported SHA, the session has one
+A link is **hook** when an `sdf.git.commit` log from `sdf init --git-hooks`
+is already on this session. The hook copied the session id the agent put in
+the environment, so the SHA is that session's commit. Several commits in one
+session are all kept. A `post-rewrite` event drops the SHA it replaced.
+The checkout path on the event is used to verify the object. If it disagrees
+with a working directory the agent exported, the session stays unlinked.
+A hook SHA that is not in this checkout can still match an `SDF-Session`
+trailer in a commit that is. A missing exported SHA does not fall through
+to the hook.
+
+A link is **trailer** when a commit message has an `SDF-Session` trailer
+whose value is this session id. That is how a squash merge can stay
+attributed after the original SHA is gone, and only when the squash message
+still contains the trailer. See Git hooks above.
+
+A link is **heuristic** when none of those fired, the session has one
 absolute working directory (`pi.cwd` from pi-otel, or a single
 `workspace.host_paths` value from Claude Code), that directory is a git
 checkout on this machine, and exactly one commit has a committer time inside
 the session window widened by two seconds. Zero commits, or more than one,
 stays unlinked. The same commit in two sessions' windows unlinks both.
+A commit that carries an `SDF-Session` trailer, or that a hook already
+attributed to another session, is not given out by the heuristic.
 `--repo PATH` supplies a checkout when the telemetry has no directory. If it
 disagrees with a directory the agent did export, the session stays unlinked.
 
-Codex and OpenCode do not export a working directory or a commit SHA on the
-signals this receiver stores, so those sessions stay unlinked unless you pass
-`--repo` and the time window contains one commit.
+Without the git hooks, Codex and OpenCode do not export a working directory
+or a commit SHA on the signals this receiver stores, so those sessions stay
+unlinked unless you pass `--repo` and the time window contains one commit.
+Pi exports `pi.cwd` and can use the heuristic, and the hook when the
+session file stem matches `pi.session.id`. A commit with no session id is
+not attached to a session by the hook.
 
 `--github` asks for the pull request and CI status of a commit that is already
 linked. It uses `gh` when `gh` is on `PATH`, and otherwise `GH_TOKEN` or
@@ -758,6 +870,11 @@ in `CONTRIBUTING.md`.
   added.
 - Prompt and tool content are not requested by the setup above. If you turn
   those flags on, the text is stored in this local SQLite file.
+- The git hook sends the commit SHA, checkout path, and branch to the local
+  receiver. It does not send the diff or the message. The `SDF-Session`
+  trailer stays in the git object. A GitHub squash merge keeps that trailer
+  only when the squash commit message includes it. Husky, lefthook, and
+  pre-commit are not edited; `core.hooksPath` is left as it was.
 - No live capture is committed in this tree. The tests use the sample
   payloads only. OpenCode and Pi behavior above is from the 2026-11-10
   checks of the named package versions, not from a fixture that was copied

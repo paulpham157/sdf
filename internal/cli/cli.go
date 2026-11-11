@@ -331,12 +331,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	write := false
 	install := false
 	check := false
+	gitHooks := false
+	uninstallHooks := false
 	agent := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [claude-code|codex|opencode|pi] [--write] [--install]")
+			fmt.Fprintln(stdout, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [claude-code|codex|opencode|pi] [--write] [--install]")
 			return 0
 		case arg == "--write":
 			write = true
@@ -344,6 +346,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			install = true
 		case arg == "--check":
 			check = true
+		case arg == "--git-hooks":
+			gitHooks = true
+		case arg == "--uninstall-git-hooks":
+			uninstallHooks = true
 		case arg == "--host":
 			v, ok := take(&i, args)
 			if !ok {
@@ -394,8 +400,12 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	if agent == "" && !check {
-		fmt.Fprintln(stderr, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [claude-code|codex|opencode|pi] [--write] [--install]")
+	if uninstallHooks && gitHooks {
+		fmt.Fprintln(stderr, "sdf init: --git-hooks and --uninstall-git-hooks cannot be combined")
+		return 2
+	}
+	if agent == "" && !check && !gitHooks && !uninstallHooks {
+		fmt.Fprintln(stderr, "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [claude-code|codex|opencode|pi] [--write] [--install]")
 		return 2
 	}
 	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
@@ -415,16 +425,35 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			code = 1
 		}
 	}
-	if agent == "" {
-		return code
+	if agent != "" {
+		res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install})
+		if res.Text != "" {
+			fmt.Fprint(stdout, res.Text)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf init: %v\n", err)
+			code = 1
+		}
 	}
-	res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install})
-	if res.Text != "" {
-		fmt.Fprint(stdout, res.Text)
+	if uninstallHooks {
+		res, err := setup.UninstallGitHooks("")
+		if res.Text != "" {
+			fmt.Fprint(stdout, res.Text)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf init: %v\n", err)
+			return 1
+		}
 	}
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf init: %v\n", err)
-		return 1
+	if gitHooks {
+		res, err := setup.InstallGitHooks("", ep)
+		if res.Text != "" {
+			fmt.Fprint(stdout, res.Text)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf init: %v\n", err)
+			return 1
+		}
 	}
 	return code
 }

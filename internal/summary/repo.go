@@ -2,6 +2,7 @@ package summary
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -11,6 +12,9 @@ import (
 
 // fullSHA is a commit id that can be looked up without expanding an abbreviation.
 var fullSHA = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
+
+// gitHookEvent is the log name written by the hooks from `sdf init --git-hooks`.
+const gitHookEvent = "sdf.git.commit"
 
 // repositoryFacts reads working directories and produced commits from attributes
 // the agents actually export.
@@ -23,6 +27,10 @@ var fullSHA = regexp.MustCompile(`(?i)^[0-9a-f]{40}$`)
 // vcs.repository.* is the session repository when
 // OTEL_METRICS_INCLUDE_REPOSITORY=true. Those keys are documented at
 // https://code.claude.com/docs/en/monitoring-usage
+//
+// sdf.git.commit is the local git hook from `sdf init --git-hooks`. It is
+// already scoped to this session by the receiver's session id, so its SHA is
+// a hook commit and not an agent-exported SHA.
 func repositoryFacts(records []record.Record) RepositoryFacts {
 	facts := RepositoryFacts{WorkDirs: []string{}, CommitSHAs: []string{}}
 	var (
@@ -56,6 +64,11 @@ func repositoryFacts(records []record.Record) RepositoryFacts {
 		}
 		if rec.Signal == "logs" && deref(rec.Name) == "claude_code.tool_result" {
 			shas = append(shas, commitSHAs(rec.Attributes)...)
+		}
+		if rec.Signal == "logs" && deref(rec.Name) == gitHookEvent {
+			if commit, ok := hookCommitOf(rec.Attributes); ok {
+				facts.HookCommits = append(facts.HookCommits, commit)
+			}
 		}
 	}
 	if seen {
@@ -179,6 +192,32 @@ func fullCommit(value string) (string, bool) {
 		return "", false
 	}
 	return strings.ToLower(value), true
+}
+
+func hookCommitOf(attributes map[string]any) (HookCommit, bool) {
+	sha, ok := fullCommit(textAt(attributes, "vcs.ref.head.revision"))
+	if !ok {
+		return HookCommit{}, false
+	}
+	commit := HookCommit{SHA: sha}
+	if repo := hookRepo(textAt(attributes, "sdf.git.repo")); repo != "" {
+		commit.Repo = repo
+	}
+	if old, ok := fullCommit(textAt(attributes, "sdf.git.rewritten_from")); ok {
+		commit.RewrittenFrom = old
+	}
+	return commit, true
+}
+
+func hookRepo(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || !filepath.IsAbs(value) || strings.HasPrefix(value, "-") {
+		return ""
+	}
+	if strings.ContainsAny(value, "\r\n") {
+		return ""
+	}
+	return value
 }
 
 func uniqueStrings(values []string) []string {

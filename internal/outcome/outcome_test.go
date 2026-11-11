@@ -164,6 +164,111 @@ func TestUnmergedAndMissingCostStayUnknown(t *testing.T) {
 	}
 }
 
+func TestHookLinkIgnoresOtherCommitsInTheWindow(t *testing.T) {
+	dir := gitRepo(t)
+	hooked := commitAt(t, dir, 1_700_000_000, "from the agent")
+	commitAt(t, dir, 1_700_000_010, "someone else")
+	session := sess("ses_hook", dir, 1_700_000_000, 1_700_000_020, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: hooked, Repo: dir}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Slack: -1})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "hook" || len(got.Commits) != 1 || got.Commits[0].SHA != hooked || got.Commits[0].Subject != "from the agent" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestHookDoesNotStealACommitForAnotherSession(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "hooked")
+	owner := sess("ses_hook", dir, 1_700_000_000, 1_700_000_005, "1")
+	owner.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir}}
+	other := sess("ses_other", dir, 1_700_000_000, 1_700_000_005, "1")
+	report := &summary.Report{Sessions: []summary.SessionSummary{owner, other}}
+	Attach(report, Options{})
+	if report.Sessions[0].Outcome.Match != "hook" || report.Sessions[0].Outcome.Commits[0].SHA != sha {
+		t.Fatalf("owner %+v", report.Sessions[0].Outcome)
+	}
+	got := report.Sessions[1].Outcome
+	if got.Status != "unlinked" || !strings.Contains(got.Reason, "ses_hook") {
+		t.Fatalf("other %+v", got)
+	}
+}
+
+func TestRewrittenHookKeepsTheReplacement(t *testing.T) {
+	dir := gitRepo(t)
+	old := commitAt(t, dir, 1_700_000_000, "old subject")
+	next := commitAt(t, dir, 1_700_000_010, "new subject")
+	session := sess("ses_hook", "", 1, 2, "1")
+	session.Repository.HookCommits = []summary.HookCommit{
+		{SHA: old, Repo: dir},
+		{SHA: next, Repo: dir, RewrittenFrom: old},
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "hook" || len(got.Commits) != 1 || got.Commits[0].SHA != next || got.Commits[0].Subject != "new subject" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestMissingExportedSHADoesNotUseTheHook(t *testing.T) {
+	dir := gitRepo(t)
+	real := commitAt(t, dir, 1_700_000_000, "real")
+	session := sess("ses_hook", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.CommitSHAs = []string{strings.Repeat("ab", 20)}
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: real, Repo: dir}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "unlinked" || !strings.Contains(got.Reason, "is not in") || len(got.Commits) != 0 {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestTrailerLinksAndIsNotAHeuristicForSomeoneElse(t *testing.T) {
+	dir := gitRepo(t)
+	named := commitMessage(t, dir, 1_700_000_000, "landed\n\nSDF-Session: ses_named\n")
+	otherSHA := commitAt(t, dir, 1_700_000_010, "untagged")
+	namedSession := sess("ses_named", dir, 1_700_000_000, 1_700_000_020, "1")
+	other := sess("ses_other", dir, 1_700_000_000, 1_700_000_020, "1")
+	report := &summary.Report{Sessions: []summary.SessionSummary{namedSession, other}}
+	Attach(report, Options{Slack: -1})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "trailer" || len(got.Commits) != 1 || got.Commits[0].SHA != named {
+		t.Fatalf("named %+v", got)
+	}
+	otherGot := report.Sessions[1].Outcome
+	if otherGot.Status != "linked" || otherGot.Match != "heuristic" || otherGot.Commits[0].SHA != otherSHA {
+		t.Fatalf("other %+v", otherGot)
+	}
+}
+
+func TestTrailerOnlyCommitIsNotHeuristicForAnotherSession(t *testing.T) {
+	dir := gitRepo(t)
+	commitMessage(t, dir, 1_700_000_000, "only\n\nSDF-Session: ses_named\n")
+	other := sess("ses_other", dir, 1_700_000_000, 1_700_000_005, "1")
+	report := &summary.Report{Sessions: []summary.SessionSummary{other}}
+	Attach(report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "unlinked" || !strings.Contains(got.Reason, "SDF-Session") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestMissingHookSHACanUseTheTrailer(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitMessage(t, dir, 1_700_000_000, "squashed locally\n\nSDF-Session: ses_named\n")
+	session := sess("ses_named", "", 1, 2, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: strings.Repeat("ab", 20), Repo: dir}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "trailer" || len(got.Commits) != 1 || got.Commits[0].SHA != sha {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestMissingWorkDirStaysUnlinked(t *testing.T) {
 	// The Pi sample exports pi.cwd=/tmp/sample. A directory that is not on
 	// this machine is left unlinked rather than matched to some other repo.
@@ -235,7 +340,22 @@ func gitRepo(t *testing.T) string {
 
 func commitAt(t *testing.T, dir string, unix int64, subject string) string {
 	t.Helper()
-	cmd := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", subject)
+	return commitMessage(t, dir, unix, subject)
+}
+
+func commitMessage(t *testing.T, dir string, unix int64, message string) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "msg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(message); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-F", file.Name())
 	stamp := strconv.FormatInt(unix, 10) + " +0000"
 	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+stamp, "GIT_COMMITTER_DATE="+stamp)
 	if out, err := cmd.CombinedOutput(); err != nil {

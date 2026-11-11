@@ -47,6 +47,42 @@ func TestRepositoryFactsUseOnlyExportedAttributes(t *testing.T) {
 	}
 }
 
+func TestHookCommitIsSeparateFromAnExportedSHA(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	facts := repositoryFacts([]record.Record{{
+		Signal: "logs", Name: record.Str("sdf.git.commit"),
+		Attributes: map[string]any{
+			"vcs.ref.head.revision":  sha,
+			"git_commit_id":          "abc123",
+			"sdf.git.repo":           "/tmp/demo",
+			"sdf.git.rewritten_from": strings.Repeat("cd", 20),
+		},
+	}})
+	if len(facts.CommitSHAs) != 0 {
+		t.Fatal(facts.CommitSHAs)
+	}
+	if len(facts.HookCommits) != 1 || facts.HookCommits[0].SHA != sha || facts.HookCommits[0].Repo != "/tmp/demo" || facts.HookCommits[0].RewrittenFrom != strings.Repeat("cd", 20) {
+		t.Fatalf("%+v", facts.HookCommits)
+	}
+	relative := repositoryFacts([]record.Record{{
+		Signal: "logs", Name: record.Str("sdf.git.commit"),
+		Attributes: map[string]any{
+			"vcs.ref.head.revision": sha,
+			"sdf.git.repo":          "relative/path",
+		},
+	}})
+	if len(relative.HookCommits) != 1 || relative.HookCommits[0].Repo != "" || relative.HookCommits[0].SHA != sha {
+		t.Fatalf("%+v", relative.HookCommits)
+	}
+	short := repositoryFacts([]record.Record{{
+		Signal: "logs", Name: record.Str("sdf.git.commit"),
+		Attributes: map[string]any{"vcs.ref.head.revision": "abc123", "sdf.git.repo": "/tmp/demo"},
+	}})
+	if len(short.HookCommits) != 0 {
+		t.Fatal(short.HookCommits)
+	}
+}
+
 func TestSeveralWorkspacePathsAreAmbiguous(t *testing.T) {
 	facts := repositoryFacts([]record.Record{{
 		Signal: "logs", Name: record.Str("claude_code.tool_result"),
