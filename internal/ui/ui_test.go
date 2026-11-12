@@ -81,6 +81,9 @@ func TestHookAndTrailerCountAsLinked(t *testing.T) {
 	if hookAt < 0 || trailerAt < hookAt || heuristicAt < trailerAt {
 		t.Fatal("link phrase order")
 	}
+	if !strings.Contains(script, `function pullState`) || !strings.Contains(script, "closed without merging") || !strings.Contains(script, "outcome.accepted_reason") {
+		t.Fatal("app.js should show a closed unmerged pull request")
+	}
 }
 
 func TestEmptyDatabaseMatchesSummaryAndPointsAtInit(t *testing.T) {

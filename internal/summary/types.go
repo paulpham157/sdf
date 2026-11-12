@@ -117,9 +117,11 @@ type RepositoryFacts struct {
 
 // HookCommit is one sdf.git.commit event already attributed to this session.
 // RewrittenFrom is the previous SHA when post-rewrite reported a replacement.
+// Branch is sdf.git.branch. Detached HEAD is not stored.
 type HookCommit struct {
 	SHA           string `json:"sha"`
 	Repo          string `json:"repo,omitempty"`
+	Branch        string `json:"branch,omitempty"`
 	RewrittenFrom string `json:"rewritten_from,omitempty"`
 }
 

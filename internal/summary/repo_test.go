@@ -55,14 +55,38 @@ func TestHookCommitIsSeparateFromAnExportedSHA(t *testing.T) {
 			"vcs.ref.head.revision":  sha,
 			"git_commit_id":          "abc123",
 			"sdf.git.repo":           "/tmp/demo",
+			"sdf.git.branch":         "scenario-e",
 			"sdf.git.rewritten_from": strings.Repeat("cd", 20),
 		},
 	}})
 	if len(facts.CommitSHAs) != 0 {
 		t.Fatal(facts.CommitSHAs)
 	}
-	if len(facts.HookCommits) != 1 || facts.HookCommits[0].SHA != sha || facts.HookCommits[0].Repo != "/tmp/demo" || facts.HookCommits[0].RewrittenFrom != strings.Repeat("cd", 20) {
+	if len(facts.HookCommits) != 1 || facts.HookCommits[0].SHA != sha || facts.HookCommits[0].Repo != "/tmp/demo" || facts.HookCommits[0].Branch != "scenario-e" || facts.HookCommits[0].RewrittenFrom != strings.Repeat("cd", 20) {
 		t.Fatalf("%+v", facts.HookCommits)
+	}
+	for _, branch := range []string{"HEAD", "-flag", "feature/../main", "has space"} {
+		dropped := repositoryFacts([]record.Record{{
+			Signal: "logs", Name: record.Str("sdf.git.commit"),
+			Attributes: map[string]any{
+				"vcs.ref.head.revision": sha,
+				"sdf.git.repo":          "/tmp/demo",
+				"sdf.git.branch":        branch,
+			},
+		}})
+		if len(dropped.HookCommits) != 1 || dropped.HookCommits[0].Branch != "" {
+			t.Fatalf("branch %q stored as %+v", branch, dropped.HookCommits)
+		}
+	}
+	nested := repositoryFacts([]record.Record{{
+		Signal: "logs", Name: record.Str("sdf.git.commit"),
+		Attributes: map[string]any{
+			"vcs.ref.head.revision": sha,
+			"sdf.git.branch":        "feature/scenario-e",
+		},
+	}})
+	if len(nested.HookCommits) != 1 || nested.HookCommits[0].Branch != "feature/scenario-e" {
+		t.Fatalf("%+v", nested.HookCommits)
 	}
 	relative := repositoryFacts([]record.Record{{
 		Signal: "logs", Name: record.Str("sdf.git.commit"),

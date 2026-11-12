@@ -427,8 +427,7 @@
       bits.push(commit.subject ? commit.sha.slice(0, 12) + " " + commit.subject : commit.sha);
     });
     if (outcome.pull_request) {
-      const state = outcome.pull_request.merged ? "merged" : "not merged";
-      bits.push("PR #" + outcome.pull_request.number + " " + state);
+      bits.push("PR #" + outcome.pull_request.number + " " + pullState(outcome.pull_request));
     }
     const head = bits.join(" · ");
     if (outcome.accepted == null) {
@@ -438,7 +437,19 @@
         h("div", { class: "reason" }, [outcome.accepted_reason || "merge status was not established"]),
       ]);
     }
-    return h("div", null, [head || (outcome.accepted ? "merged" : "not merged")]);
+    if (outcome.accepted === false) {
+      return h("div", { class: "amount" }, [
+        h("div", null, [head || "not merged"]),
+        outcome.accepted_reason ? h("div", { class: "reason" }, [outcome.accepted_reason]) : null,
+      ]);
+    }
+    return h("div", null, [head || "merged"]);
+  }
+
+  function pullState(pr) {
+    if (pr.merged) return "merged";
+    if (pr.state === "closed") return "closed without merging";
+    return "not merged";
   }
 
   function linkCell(view) {
@@ -589,7 +600,7 @@
     });
     if (outcome.pull_request) {
       const pr = outcome.pull_request;
-      const label = "PR #" + pr.number + (pr.merged ? " merged" : " not merged") + (pr.url ? " " + pr.url : "");
+      const label = "PR #" + pr.number + " " + pullState(pr) + (pr.url ? " " + pr.url : "");
       kids.push(h("p", null, [label]));
     }
     return h("section", { class: "section" }, kids);
@@ -599,7 +610,10 @@
     if (outcome.accepted == null) {
       return inlineAmount({ status: "unknown", reason: outcome.accepted_reason || "merge status was not established" });
     }
-    return document.createTextNode(outcome.accepted ? "merged" : "not merged");
+    if (outcome.accepted) {
+      return document.createTextNode("merged");
+    }
+    return document.createTextNode(outcome.accepted_reason || "not merged");
   }
 
   function row(label, value) {

@@ -20,7 +20,10 @@ import (
 // Lookup is a GitHub read of pull requests and checks for one commit.
 // Implementations must not put a token on the command line.
 type Lookup interface {
-	Pulls(ctx context.Context, owner, repo, sha string) ([]summary.PullRequest, error)
+	// Pulls lists pull requests that contain sha. When that list is empty
+	// and branch is the head branch the hook recorded, it also lists pull
+	// requests opened from that branch and keeps those whose head SHA is sha.
+	Pulls(ctx context.Context, owner, repo, sha, branch string) ([]summary.PullRequest, error)
 	Checks(ctx context.Context, owner, repo, sha string) (string, error)
 }
 
@@ -43,7 +46,7 @@ func NewGitHub() (Lookup, error) {
 	if token == "" {
 		return nil, errors.New("--github needs gh on PATH or GH_TOKEN or GITHUB_TOKEN")
 	}
-	return &httpGitHub{token: token, client: &http.Client{Timeout: 15 * time.Second}}, nil
+	return &httpGitHub{token: token, client: &http.Client{Timeout: 15 * time.Second}, base: "https://api.github.com"}, nil
 }
 
 func enrich(out *summary.SessionOutcome, facts summary.RepositoryFacts, lookup Lookup) {
@@ -60,7 +63,7 @@ func enrich(out *summary.SessionOutcome, facts summary.RepositoryFacts, lookup L
 		states  []string
 	)
 	for _, commit := range out.Commits {
-		pulls, err := lookup.Pulls(ctx, owner, repo, commit.SHA)
+		pulls, err := lookup.Pulls(ctx, owner, repo, commit.SHA, branchFor(facts, commit.SHA))
 		if err != nil {
 			out.AcceptedReason = "github: " + redact(err.Error())
 			return
@@ -106,8 +109,28 @@ func enrich(out *summary.SessionOutcome, facts summary.RepositoryFacts, lookup L
 	merged := chosen.Merged
 	out.Accepted = &merged
 	if !merged {
-		out.AcceptedReason = "pull request is not merged"
+		if strings.EqualFold(chosen.State, "closed") {
+			out.AcceptedReason = "pull request was closed without merging"
+		} else {
+			out.AcceptedReason = "pull request is not merged"
+		}
 	}
+}
+
+// branchFor is the hook branch recorded for sha. Two different branches
+// for the same SHA are not a guess.
+func branchFor(facts summary.RepositoryFacts, sha string) string {
+	branch := ""
+	for _, commit := range facts.HookCommits {
+		if !strings.EqualFold(commit.SHA, sha) || commit.Branch == "" {
+			continue
+		}
+		if branch != "" && !strings.EqualFold(branch, commit.Branch) {
+			return ""
+		}
+		branch = commit.Branch
+	}
+	return branch
 }
 
 func githubRepo(toplevel string, facts summary.RepositoryFacts) (string, string, string) {
@@ -184,12 +207,8 @@ type ghClient struct {
 	path string
 }
 
-func (g ghClient) Pulls(ctx context.Context, owner, repo, sha string) ([]summary.PullRequest, error) {
-	body, err := g.api(ctx, fmt.Sprintf("repos/%s/%s/commits/%s/pulls", owner, repo, sha))
-	if err != nil {
-		return nil, err
-	}
-	return decodePulls(body)
+func (g ghClient) Pulls(ctx context.Context, owner, repo, sha, branch string) ([]summary.PullRequest, error) {
+	return pullsByCommitOrBranch(ctx, g.api, owner, repo, sha, branch)
 }
 
 func (g ghClient) Checks(ctx context.Context, owner, repo, sha string) (string, error) {
@@ -225,14 +244,37 @@ func (g ghClient) api(ctx context.Context, path string) ([]byte, error) {
 type httpGitHub struct {
 	token  string
 	client *http.Client
+	base   string
 }
 
-func (h *httpGitHub) Pulls(ctx context.Context, owner, repo, sha string) ([]summary.PullRequest, error) {
-	body, err := h.get(ctx, fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", owner, repo, sha))
+func (h *httpGitHub) Pulls(ctx context.Context, owner, repo, sha, branch string) ([]summary.PullRequest, error) {
+	return pullsByCommitOrBranch(ctx, func(ctx context.Context, path string) ([]byte, error) {
+		return h.get(ctx, "/"+path)
+	}, owner, repo, sha, branch)
+}
+
+// pullsByCommitOrBranch uses the commit's pull request list, then the hook
+// branch. GitHub's commit list omits a closed pull request that was not
+// merged. The branch list includes it; a row counts only when its head SHA
+// is the commit.
+func pullsByCommitOrBranch(ctx context.Context, get func(context.Context, string) ([]byte, error), owner, repo, sha, branch string) ([]summary.PullRequest, error) {
+	body, err := get(ctx, fmt.Sprintf("repos/%s/%s/commits/%s/pulls", owner, repo, sha))
 	if err != nil {
 		return nil, err
 	}
-	return decodePulls(body)
+	pulls, err := decodePulls(body)
+	if err != nil || len(pulls) > 0 || !usableBranch(branch) {
+		return pulls, err
+	}
+	q := url.Values{}
+	q.Set("state", "all")
+	q.Set("head", owner+":"+branch)
+	q.Set("per_page", "100")
+	body, err = get(ctx, fmt.Sprintf("repos/%s/%s/pulls?%s", owner, repo, q.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	return decodePullsForSHA(body, sha)
 }
 
 func (h *httpGitHub) Checks(ctx context.Context, owner, repo, sha string) (string, error) {
@@ -251,7 +293,11 @@ func (h *httpGitHub) get(ctx context.Context, path string) ([]byte, error) {
 	if err := validateGitHubPath(strings.TrimPrefix(path, "/")); err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com"+path, nil)
+	base := h.base
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -275,29 +321,97 @@ func (h *httpGitHub) get(ctx context.Context, path string) ([]byte, error) {
 }
 
 func validateGitHubPath(path string) error {
-	parts := strings.Split(path, "/")
+	rawPath, query, _ := strings.Cut(path, "?")
+	parts := strings.Split(rawPath, "/")
 	// repos/{owner}/{repo}/commits/{sha}/...
-	if len(parts) < 5 || parts[0] != "repos" || parts[3] != "commits" {
+	if len(parts) >= 5 && parts[0] == "repos" && parts[3] == "commits" {
+		if query != "" {
+			return errors.New("refusing github path")
+		}
+		if !ownerPattern.MatchString(parts[1]) || !ownerPattern.MatchString(parts[2]) || !shaPattern.MatchString(parts[4]) {
+			return errors.New("refusing github path")
+		}
+		return nil
+	}
+	// repos/{owner}/{repo}/pulls?state=all&head={owner}:{branch}&per_page=100
+	if len(parts) == 4 && parts[0] == "repos" && parts[3] == "pulls" {
+		if !ownerPattern.MatchString(parts[1]) || !ownerPattern.MatchString(parts[2]) {
+			return errors.New("refusing github path")
+		}
+		return validateHeadQuery(parts[1], query)
+	}
+	return errors.New("refusing github path")
+}
+
+func validateHeadQuery(owner, query string) error {
+	values, err := url.ParseQuery(query)
+	if err != nil || values.Get("state") != "all" || values.Get("per_page") != "100" {
 		return errors.New("refusing github path")
 	}
-	if !ownerPattern.MatchString(parts[1]) || !ownerPattern.MatchString(parts[2]) || !shaPattern.MatchString(parts[4]) {
+	head := values.Get("head")
+	prefix := owner + ":"
+	if !strings.HasPrefix(head, prefix) || !usableBranch(strings.TrimPrefix(head, prefix)) {
 		return errors.New("refusing github path")
+	}
+	for key := range values {
+		switch key {
+		case "state", "head", "per_page":
+		default:
+			return errors.New("refusing github path")
+		}
 	}
 	return nil
 }
 
+// usableBranch is a head ref that can go in the pulls query. Detached
+// HEAD and flag-like names are not pull request branches.
+func usableBranch(branch string) bool {
+	if branch == "" || len(branch) > 250 || strings.EqualFold(branch, "HEAD") {
+		return false
+	}
+	if strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.Contains(branch, "@{") {
+		return false
+	}
+	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") {
+		return false
+	}
+	for i, r := range branch {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case i > 0 && (r == '.' || r == '_' || r == '/' || r == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func decodePulls(body []byte) ([]summary.PullRequest, error) {
+	return decodePullBodies(body, "")
+}
+
+func decodePullsForSHA(body []byte, sha string) ([]summary.PullRequest, error) {
+	return decodePullBodies(body, sha)
+}
+
+func decodePullBodies(body []byte, headSHA string) ([]summary.PullRequest, error) {
 	var rows []struct {
 		Number   int     `json:"number"`
 		HTMLURL  string  `json:"html_url"`
 		State    string  `json:"state"`
 		MergedAt *string `json:"merged_at"`
+		Head     struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	}
 	if err := json.Unmarshal(body, &rows); err != nil {
 		return nil, err
 	}
 	out := make([]summary.PullRequest, 0, len(rows))
 	for _, row := range rows {
+		if headSHA != "" && !strings.EqualFold(row.Head.SHA, headSHA) {
+			continue
+		}
 		out = append(out, summary.PullRequest{
 			Number: row.Number,
 			URL:    row.HTMLURL,
@@ -310,7 +424,9 @@ func decodePulls(body []byte) ([]summary.PullRequest, error) {
 
 func decodeChecks(statusBody, runsBody []byte) (string, error) {
 	var status struct {
-		State string `json:"state"`
+		State      string            `json:"state"`
+		TotalCount int               `json:"total_count"`
+		Statuses   []json.RawMessage `json:"statuses"`
 	}
 	if len(bytesTrim(statusBody)) > 0 {
 		if err := json.Unmarshal(statusBody, &status); err != nil {
@@ -328,7 +444,12 @@ func decodeChecks(statusBody, runsBody []byte) (string, error) {
 			return "", err
 		}
 	}
-	states := []string{normalizeStatus(status.State)}
+	// Combined status is "pending" with total_count 0 when the commit has
+	// no statuses. That is not a check waiting to finish.
+	var states []string
+	if !(status.State == "pending" && status.TotalCount == 0 && len(status.Statuses) == 0) {
+		states = append(states, normalizeStatus(status.State))
+	}
 	for _, run := range runs.CheckRuns {
 		states = append(states, normalizeRun(run.Status, run.Conclusion))
 	}
