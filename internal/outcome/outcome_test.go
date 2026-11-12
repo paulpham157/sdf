@@ -2,6 +2,8 @@ package outcome
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -269,6 +271,302 @@ func TestMissingHookSHACanUseTheTrailer(t *testing.T) {
 	}
 }
 
+func TestSquashCoAuthorLineStillLinksWhenHookSHAIsGone(t *testing.T) {
+	dir := gitRepo(t)
+	message := "squashed (#2)\n\n* feature\n\nSDF-Session: ses_named\n\nCo-authored-by: Example User <user@example.com>\n"
+	sha := commitMessage(t, dir, 1_700_000_000, message)
+	session := sess("ses_named", "", 1, 2, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: strings.Repeat("ab", 20), Repo: dir, Branch: "feature"}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "trailer" || len(got.Commits) != 1 || got.Commits[0].SHA != sha {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestSubjectMentionIsNotASessionLine(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitMessage(t, dir, 1_700_000_000, "see SDF-Session: ses_named\n")
+	session := sess("ses_named", dir, 1_700_000_000, 1_700_000_005, "1")
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "heuristic" || got.Commits[0].SHA != sha {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestExplicitRepoOverridesAnExistingHookCheckout(t *testing.T) {
+	hookDir := gitRepo(t)
+	sha := commitAt(t, hookDir, 1_700_000_000, "from the agent")
+	parent := t.TempDir()
+	other := filepath.Join(parent, "clone")
+	gitCmd(t, hookDir, "clone", hookDir, other)
+	session := sess("ses_hook", "", 1, 2, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: hookDir, Branch: "main"}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Repo: other})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "hook" || len(got.Commits) != 1 || got.Commits[0].SHA != sha {
+		t.Fatalf("%+v", got)
+	}
+	top, _ := filepath.EvalSymlinks(got.Repo)
+	want, _ := filepath.EvalSymlinks(other)
+	if top != want {
+		t.Fatalf("repo %s want %s", got.Repo, want)
+	}
+}
+
+func TestExplicitRepoDoesNotUseTheHookCheckout(t *testing.T) {
+	hookDir := gitRepo(t)
+	original := commitMessage(t, hookDir, 1_700_000_000, "feature\n\nSDF-Session: ses_named\n")
+	fresh := gitRepo(t)
+	message := "squashed (#2)\n\n* feature\n\nSDF-Session: ses_named\n\nCo-authored-by: Example User <user@example.com>\n"
+	squash := commitMessage(t, fresh, 1_700_000_100, message)
+	session := sess("ses_named", "", 1, 2, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: original, Repo: hookDir, Branch: "feature"}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Repo: fresh})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "trailer" || len(got.Commits) != 1 || got.Commits[0].SHA != squash {
+		t.Fatalf("%+v", got)
+	}
+	top, _ := filepath.EvalSymlinks(got.Repo)
+	want, _ := filepath.EvalSymlinks(fresh)
+	if top != want {
+		t.Fatalf("repo %s want %s", got.Repo, want)
+	}
+}
+
+func TestClosedUnmergedPullRequestIsReported(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "not merged")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_closed", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-e"}}
+	script := &githubScript{
+		commitPulls: "[]",
+		branchPulls: `[{"number":5,"html_url":"https://github.com/example/demo/pull/5","state":"closed","merged_at":null,"head":{"sha":"` + sha + `"}}]`,
+		status:      `{"state":"pending","statuses":[],"total_count":0}`,
+		runs:        `{"check_runs":[]}`,
+		wantHead:    "example:scenario-e",
+	}
+	lookup := script.server(t)
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: lookup})
+	got := report.Sessions[0].Outcome
+	if !script.sawCommitPulls || !script.sawBranch {
+		t.Fatalf("commit pulls %v branch pulls %v", script.sawCommitPulls, script.sawBranch)
+	}
+	if got.Accepted == nil || *got.Accepted || got.PullRequest == nil || got.PullRequest.Number != 5 || got.PullRequest.Merged {
+		t.Fatalf("%+v", got)
+	}
+	if got.AcceptedReason != "pull request was closed without merging" || got.CI != "none" {
+		t.Fatalf("%+v", got)
+	}
+	text := summary.Format(*report)
+	if !strings.Contains(text, "pr #5 closed without merging") || !strings.Contains(text, "pull request was closed without merging") || !strings.Contains(text, "ci=none") {
+		t.Fatal(text)
+	}
+}
+
+func TestOpenPullRequestStaysNotMerged(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "still open")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_open", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-d"}}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	lookup := &scriptedLookup{pulls: map[string][]summary.PullRequest{
+		sha: {{Number: 4, URL: "https://github.com/example/demo/pull/4", State: "open"}},
+	}, checks: "pending"}
+	Attach(report, Options{Lookup: lookup})
+	got := report.Sessions[0].Outcome
+	if got.Accepted == nil || *got.Accepted || got.PullRequest == nil || got.PullRequest.Number != 4 {
+		t.Fatalf("%+v", got)
+	}
+	if got.AcceptedReason != "pull request is not merged" || got.CI != "pending" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestNoPullRequestStaysUnaccepted(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "no pr")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_none", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-f"}}
+	script := &githubScript{
+		commitPulls: "[]",
+		branchPulls: "[]",
+		status:      `{"state":"pending","statuses":[],"total_count":0}`,
+		runs:        `{"check_runs":[]}`,
+		wantHead:    "example:scenario-f",
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: script.server(t)})
+	got := report.Sessions[0].Outcome
+	if !script.sawBranch || got.Accepted == nil || *got.Accepted || got.PullRequest != nil {
+		t.Fatalf("%+v branch %v", got, script.sawBranch)
+	}
+	if got.AcceptedReason != "no pull request contains the linked commit" || got.CI != "none" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestBranchFallbackIgnoresADifferentHead(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "moved")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_moved", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-e"}}
+	script := &githubScript{
+		commitPulls: "[]",
+		branchPulls: `[{"number":9,"html_url":"https://github.com/example/demo/pull/9","state":"closed","merged_at":null,"head":{"sha":"` + strings.Repeat("cd", 20) + `"}}]`,
+		status:      `{"state":"success","total_count":1,"statuses":[{}]}`,
+		runs:        `{"check_runs":[]}`,
+		wantHead:    "example:scenario-e",
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: script.server(t)})
+	got := report.Sessions[0].Outcome
+	if got.Accepted == nil || *got.Accepted || got.PullRequest != nil || got.AcceptedReason != "no pull request contains the linked commit" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestSeveralBranchPullsStayUnknown(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "two prs")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_two", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-e"}}
+	row := `"state":"closed","merged_at":null,"head":{"sha":"` + sha + `"}`
+	script := &githubScript{
+		commitPulls: "[]",
+		branchPulls: `[{"number":5,"html_url":"https://github.com/example/demo/pull/5",` + row + `},{"number":6,"html_url":"https://github.com/example/demo/pull/6",` + row + `}]`,
+		status:      `{"state":"pending","total_count":0,"statuses":[]}`,
+		runs:        `{"check_runs":[]}`,
+		wantHead:    "example:scenario-e",
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: script.server(t)})
+	got := report.Sessions[0].Outcome
+	if got.Accepted != nil || got.PullRequest != nil || !strings.Contains(got.AcceptedReason, "more than one pull request") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestBranchQueryFailureStaysUnknown(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "query failed")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_err", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-e"}}
+	script := &githubScript{
+		commitPulls:  "[]",
+		status:       `{"state":"pending","total_count":0,"statuses":[]}`,
+		runs:         `{"check_runs":[]}`,
+		wantHead:     "example:scenario-e",
+		branchStatus: http.StatusInternalServerError,
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: script.server(t)})
+	got := report.Sessions[0].Outcome
+	if got.Accepted != nil || got.PullRequest != nil || !strings.Contains(got.AcceptedReason, "github:") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestCommitPullsSkipTheBranchQuery(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "merged")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_merged", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir, Branch: "scenario-a"}}
+	script := &githubScript{
+		commitPulls: `[{"number":1,"html_url":"https://github.com/example/demo/pull/1","state":"closed","merged_at":"2026-11-11T00:00:00Z","head":{"sha":"` + sha + `"}}]`,
+		status:      `{"state":"success","total_count":1,"statuses":[{"state":"success"}]}`,
+		runs:        `{"check_runs":[]}`,
+		wantHead:    "example:scenario-a",
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: script.server(t)})
+	got := report.Sessions[0].Outcome
+	if script.sawBranch {
+		t.Fatal("branch list was queried after the commit list returned a pull request")
+	}
+	if got.Accepted == nil || !*got.Accepted || got.PullRequest == nil || got.PullRequest.Number != 1 || got.CI != "success" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestNoBranchDoesNotListPullsByHead(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_000, "detached")
+	gitCmd(t, dir, "remote", "add", "origin", "https://github.com/example/demo.git")
+	session := sess("ses_detached", dir, 1_700_000_000, 1_700_000_005, "1")
+	session.Repository.HookCommits = []summary.HookCommit{{SHA: sha, Repo: dir}}
+	script := &githubScript{
+		commitPulls: "[]",
+		status:      `{"state":"pending","total_count":0,"statuses":[]}`,
+		runs:        `{"check_runs":[]}`,
+	}
+	report := &summary.Report{Sessions: []summary.SessionSummary{session}}
+	Attach(report, Options{Lookup: script.server(t)})
+	got := report.Sessions[0].Outcome
+	if script.sawBranch || got.PullRequest != nil || got.AcceptedReason != "no pull request contains the linked commit" {
+		t.Fatalf("%+v branch %v", got, script.sawBranch)
+	}
+}
+
+func TestDecodeChecks(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		runs   string
+		want   string
+	}{
+		{"no statuses", `{"state":"pending","statuses":[],"total_count":0}`, `{"check_runs":[]}`, "none"},
+		{"pending status", `{"state":"pending","total_count":1,"statuses":[{"state":"pending"}]}`, `{"check_runs":[]}`, "pending"},
+		{"success check and empty status", `{"state":"pending","total_count":0,"statuses":[]}`, `{"check_runs":[{"status":"completed","conclusion":"success"}]}`, "success"},
+		{"pending check", `{"state":"pending","total_count":0}`, `{"check_runs":[{"status":"in_progress"}]}`, "pending"},
+		{"failure wins", `{"state":"success","total_count":1,"statuses":[{}]}`, `{"check_runs":[{"status":"completed","conclusion":"failure"}]}`, "failure"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeChecks([]byte(tc.status), []byte(tc.runs))
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q err %v", got, err)
+			}
+		})
+	}
+}
+
+func TestGitHubPathAllowsTheBranchFallbackOnly(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	if err := validateGitHubPath("repos/example/demo/commits/" + sha + "/pulls"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateGitHubPath("repos/example/demo/pulls?head=example%3Ascenario-e&per_page=100&state=all"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateGitHubPath("repos/example/demo/pulls?head=example%3Afeature%2Fscenario-e&per_page=100&state=all"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		"repos/example/demo/pulls?state=open&head=example:scenario-e&per_page=100",
+		"repos/example/demo/pulls?state=all&head=other:scenario-e&per_page=100",
+		"repos/example/demo/pulls?state=all&head=example:HEAD&per_page=100",
+		"search/issues?q=repo:example/demo",
+	} {
+		if err := validateGitHubPath(path); err == nil {
+			t.Fatalf("accepted %s", path)
+		}
+	}
+}
+
 func TestMissingWorkDirStaysUnlinked(t *testing.T) {
 	// The Pi sample exports pi.cwd=/tmp/sample. A directory that is not on
 	// this machine is left unlinked rather than matched to some other repo.
@@ -296,7 +594,7 @@ type scriptedLookup struct {
 	calls  int
 }
 
-func (s *scriptedLookup) Pulls(_ context.Context, _, _, sha string) ([]summary.PullRequest, error) {
+func (s *scriptedLookup) Pulls(_ context.Context, _, _, sha, _ string) ([]summary.PullRequest, error) {
 	s.calls++
 	return s.pulls[sha], nil
 }
@@ -304,6 +602,56 @@ func (s *scriptedLookup) Pulls(_ context.Context, _, _, sha string) ([]summary.P
 func (s *scriptedLookup) Checks(context.Context, string, string, string) (string, error) {
 	s.calls++
 	return s.checks, nil
+}
+
+type githubScript struct {
+	commitPulls    string
+	branchPulls    string
+	status         string
+	runs           string
+	wantHead       string
+	branchStatus   int
+	sawCommitPulls bool
+	sawBranch      bool
+}
+
+func (s *githubScript) server(t *testing.T) *httpGitHub {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" || strings.Contains(r.URL.String(), "test-token") {
+			t.Errorf("authorization %q url %s", r.Header.Get("Authorization"), r.URL.String())
+		}
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/status"):
+			writeJSON(w, s.status)
+		case strings.HasSuffix(path, "/check-runs"):
+			writeJSON(w, s.runs)
+		case strings.Contains(path, "/commits/") && strings.HasSuffix(path, "/pulls"):
+			s.sawCommitPulls = true
+			writeJSON(w, s.commitPulls)
+		case strings.HasSuffix(path, "/pulls"):
+			s.sawBranch = true
+			if r.URL.Query().Get("state") != "all" || r.URL.Query().Get("per_page") != "100" || r.URL.Query().Get("head") != s.wantHead {
+				t.Errorf("query %s", r.URL.RawQuery)
+			}
+			if s.branchStatus != 0 {
+				w.WriteHeader(s.branchStatus)
+				return
+			}
+			writeJSON(w, s.branchPulls)
+		default:
+			t.Errorf("unexpected %s", r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &httpGitHub{token: "test-token", client: srv.Client(), base: srv.URL}
+}
+
+func writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
 }
 
 func sess(id, dir string, start, end int64, usd string) summary.SessionSummary {

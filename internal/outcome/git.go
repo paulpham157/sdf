@@ -144,22 +144,28 @@ func linkHook(facts summary.RepositoryFacts, opt Options) *summary.SessionOutcom
 	if len(kept) == 0 {
 		return unlinked("hook commit was rewritten and the replacement is missing")
 	}
-	tops, missing := hookTops(kept)
-	if len(tops) > 1 {
-		return unlinked("hook events name more than one repository")
-	}
 	workDirs := facts.WorkDirs
 	if facts.AmbiguousWorkDirs {
 		workDirs = nil
 	}
+	// An explicit --repo is the checkout, including when the path recorded
+	// by the hook still exists on disk.
 	var toplevel, reason string
-	switch len(tops) {
-	case 1:
-		toplevel, reason = resolveRepo(workDirs, tops[0])
-	default:
+	if opt.Repo != "" {
 		toplevel, reason = resolveRepo(workDirs, opt.Repo)
-		if reason != "" && missing {
-			return unlinked("hook repository is not on this machine")
+	} else {
+		tops, missing := hookTops(kept)
+		if len(tops) > 1 {
+			return unlinked("hook events name more than one repository")
+		}
+		switch len(tops) {
+		case 1:
+			toplevel, reason = resolveRepo(workDirs, tops[0])
+		default:
+			toplevel, reason = resolveRepo(workDirs, "")
+			if reason != "" && missing {
+				return unlinked("hook repository is not on this machine")
+			}
 		}
 	}
 	if reason != "" {
@@ -231,14 +237,14 @@ func hookTops(commits []summary.HookCommit) (tops []string, missing bool) {
 }
 
 func trailerRepos(facts summary.RepositoryFacts, opt Options) []string {
+	if opt.Repo != "" {
+		return []string{opt.Repo}
+	}
 	var repos []string
 	for _, commit := range facts.HookCommits {
 		if commit.Repo != "" {
 			repos = append(repos, commit.Repo)
 		}
-	}
-	if opt.Repo != "" {
-		repos = append(repos, opt.Repo)
 	}
 	return repos
 }
@@ -324,9 +330,13 @@ func (s *trailerScan) index(toplevel string) (map[string][]gitCommit, error) {
 	return idx, nil
 }
 
+// readTrailers indexes commits that contain an SDF-Session line.
+// Git's trailer parser keeps only the last trailer block, so a squash
+// message that inserts a blank line before Co-authored-by hides
+// SDF-Session from %(trailers). The line scan still sees it.
 func readTrailers(toplevel string) (map[string][]gitCommit, error) {
-	format := "%H%x1f%ct%x1f%s%x1f%(trailers:key=SDF-Session,valueonly,separator=%x1f)"
-	text, err := git(toplevel, "log", "--all", "--grep=SDF-Session:", "--pretty=format:"+format)
+	format := "%H%x1f%ct%x1f%s%x1e%B"
+	text, err := git(toplevel, "log", "--all", "--grep=SDF-Session:", "-z", "--pretty=format:"+format)
 	if err != nil {
 		if strings.Contains(err.Error(), "does not have any commits") {
 			return map[string][]gitCommit{}, nil
@@ -334,13 +344,17 @@ func readTrailers(toplevel string) (map[string][]gitCommit, error) {
 		return nil, err
 	}
 	idx := map[string][]gitCommit{}
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == "" {
+	for _, rec := range strings.Split(text, "\x00") {
+		rec = strings.TrimRight(rec, "\r\n")
+		if rec == "" {
 			continue
 		}
-		parts := strings.Split(line, "\x1f")
-		if len(parts) < 4 || !fullHex(parts[0]) {
+		header, message, ok := strings.Cut(rec, "\x1e")
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(header, "\x1f", 3)
+		if len(parts) < 3 || !fullHex(parts[0]) {
 			continue
 		}
 		when, err := strconv.ParseInt(parts[1], 10, 64)
@@ -349,9 +363,8 @@ func readTrailers(toplevel string) (map[string][]gitCommit, error) {
 		}
 		commit := gitCommit{SHA: strings.ToLower(parts[0]), Subject: oneLine(parts[2], 120), CommitterUnix: when}
 		seen := map[string]bool{}
-		for _, raw := range parts[3:] {
-			id := strings.TrimSpace(raw)
-			if id == "" || seen[id] {
+		for _, id := range sessionIDs(message) {
+			if seen[id] {
 				continue
 			}
 			seen[id] = true
@@ -359,6 +372,40 @@ func readTrailers(toplevel string) (map[string][]gitCommit, error) {
 		}
 	}
 	return idx, nil
+}
+
+// sessionIDs returns SDF-Session values that start a line. The hook writes
+// ids of letters, digits, and . _ : - and refuses anything longer than 256.
+func sessionIDs(message string) []string {
+	var ids []string
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimRight(line, "\r")
+		rest, ok := strings.CutPrefix(line, "SDF-Session:")
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(rest)
+		if !sessionID(id) {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func sessionID(id string) bool {
+	if id == "" || len(id) > 256 {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == ':' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalizeRepo(path string) (string, error) {

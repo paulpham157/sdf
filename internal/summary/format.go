@@ -252,8 +252,11 @@ func formatOutcome(outcome *SessionOutcome) string {
 	text := strings.Join(parts, " ")
 	if outcome.PullRequest != nil {
 		state := "not merged"
-		if outcome.PullRequest.Merged {
+		switch {
+		case outcome.PullRequest.Merged:
 			state = "merged"
+		case strings.EqualFold(outcome.PullRequest.State, "closed"):
+			state = "closed without merging"
 		}
 		text += "; pr #" + itoa(outcome.PullRequest.Number) + " " + state
 	}
@@ -270,6 +273,9 @@ func formatOutcome(outcome *SessionOutcome) string {
 		text += "; accepted=true"
 	default:
 		text += "; accepted=false"
+		if outcome.AcceptedReason != "" {
+			text += " (" + outcome.AcceptedReason + ")"
+		}
 	}
 	return text
 }

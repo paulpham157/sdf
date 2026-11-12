@@ -545,10 +545,11 @@ new object is in the checkout. A GitHub squash merge does not run a local
 hook. The `SDF-Session` trailer survives only when the squash commit message
 keeps it. GitHub's default squash message is the pull request title, not the
 commit trailers, so this does not happen unless the message is edited to
-include the trailer (or the merge method keeps the commit messages). When
-the hook SHA is gone and the trailer is still in a local commit, summary
-links that commit with match `trailer`. A trailer for one session is not
-given to another session by the time-window heuristic.
+include the trailer (or the merge method keeps the commit messages). GitHub
+then adds a blank line and `Co-authored-by`. Summary still matches the
+`SDF-Session` line. When the hook SHA is gone and the line is still in a
+local commit, summary links that commit with match `trailer`. A trailer for
+one session is not given to another session by the time-window heuristic.
 
 ## Point Claude Code at it
 
@@ -917,16 +918,21 @@ A link is **hook** when an `sdf.git.commit` log from `sdf init --git-hooks`
 is already on this session. The hook copied the session id the agent put in
 the environment, so the SHA is that session's commit. Several commits in one
 session are all kept. A `post-rewrite` event drops the SHA it replaced.
-The checkout path on the event is used to verify the object. If it disagrees
-with a working directory the agent exported, the session stays unlinked.
-A hook SHA that is not in this checkout can still match an `SDF-Session`
-trailer in a commit that is. A missing exported SHA does not fall through
-to the hook.
+The checkout path on the event is used to verify the object when `--repo`
+is not set. `--repo PATH` is that checkout instead, including when the path
+on the hook event still exists on disk. If `--repo` or the hook path
+disagrees with a working directory the agent exported, the session stays
+unlinked. A hook SHA that is not in this checkout can still match an
+`SDF-Session` line in a commit that is. A missing exported SHA does not fall
+through to the hook.
 
-A link is **trailer** when a commit message has an `SDF-Session` trailer
-whose value is this session id. That is how a squash merge can stay
-attributed after the original SHA is gone, and only when the squash message
-still contains the trailer. See Git hooks above.
+A link is **trailer** when a commit message has a line `SDF-Session: <id>`
+for this session id. Summary reads that line from the message. It does not
+use git's trailer block, which keeps only the last block: a GitHub squash
+message often puts a blank line and then `Co-authored-by` after the session
+line, and that block would hide `SDF-Session`. The line is how a squash
+merge can stay attributed after the original SHA is gone, and only when the
+squash message still contains it. See Git hooks above.
 
 A link is **heuristic** when none of those fired, the session has one
 absolute working directory (`pi.cwd` from pi-otel, or a single
@@ -936,7 +942,8 @@ the session window widened by two seconds. Zero commits, or more than one,
 stays unlinked. The same commit in two sessions' windows unlinks both.
 A commit that carries an `SDF-Session` trailer, or that a hook already
 attributed to another session, is not given out by the heuristic.
-`--repo PATH` supplies a checkout when the telemetry has no directory. If it
+`--repo PATH` supplies a checkout when the telemetry has no directory, and
+it is the checkout used for a hook or trailer link when you pass it. If it
 disagrees with a directory the agent did export, the session stays unlinked.
 
 Without the git hooks, Codex and OpenCode do not export a working directory
@@ -951,9 +958,18 @@ read-only. See Git hooks.
 `--github` asks for the pull request and CI status of a commit that is already
 linked. It uses `gh` when `gh` is on `PATH`, and otherwise `GH_TOKEN` or
 `GITHUB_TOKEN` against `api.github.com`. The token is a header, not an
-argument. The remote has to be `github.com`. No pull request means not
-accepted. Several pull requests, or a failed query, means accepted is unknown.
-CI is `success`, `pending`, `failure`, or `none`.
+argument. The remote has to be `github.com`. The commit's pull request list
+is `GET /repos/{owner}/{repo}/commits/{sha}/pulls`. That list is empty for a
+closed pull request that was not merged. When it is empty and the hook
+recorded a branch for that commit, summary lists
+`GET /repos/{owner}/{repo}/pulls?state=all&head={owner}:{branch}` and keeps
+a pull request whose head is that commit. A closed, unmerged pull request
+is then reported, `accepted` is false, and the reason says the pull request
+was closed without merging. No pull request means not accepted. Several
+pull requests, or a failed query, means accepted is unknown. CI is
+`success`, `pending`, `failure`, or `none`. GitHub's combined status is
+`pending` with `total_count` 0 when the commit has no statuses. That is
+`none` when there are no check runs either, not a pending check.
 
 `cost_per_accepted_outcome_usd` is the sum of `computed_cost_usd` for sessions
 whose pull request is merged, divided by how many such sessions there are.

@@ -203,10 +203,35 @@ func hookCommitOf(attributes map[string]any) (HookCommit, bool) {
 	if repo := hookRepo(textAt(attributes, "sdf.git.repo")); repo != "" {
 		commit.Repo = repo
 	}
+	if branch := hookBranch(textAt(attributes, "sdf.git.branch")); branch != "" {
+		commit.Branch = branch
+	}
 	if old, ok := fullCommit(textAt(attributes, "sdf.git.rewritten_from")); ok {
 		commit.RewrittenFrom = old
 	}
 	return commit, true
+}
+
+func hookBranch(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "HEAD") || strings.HasPrefix(value, "-") {
+		return ""
+	}
+	if len(value) > 250 || strings.Contains(value, "..") || strings.Contains(value, "//") || strings.Contains(value, "@{") {
+		return ""
+	}
+	if strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") || strings.HasSuffix(value, ".") {
+		return ""
+	}
+	for i, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case i > 0 && (r == '.' || r == '_' || r == '/' || r == '-'):
+		default:
+			return ""
+		}
+	}
+	return value
 }
 
 func hookRepo(value string) string {
