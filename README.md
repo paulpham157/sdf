@@ -146,6 +146,8 @@ Resource attributes are `service.name`, `service.version`, and `env` (from
 Codex process exports. Checked against the Codex 0.167.0 tag
 (`rust-v0.167.0`): `codex exec` calls `set_default_originator("codex_exec")`
 and passes no service-name override, so it exports `service.name=codex_exec`.
+A live `codex exec` on 2026-11-11 exported `codex_exec`. The git-hook event
+for that commit used the same name.
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, when set, replaces that originator and
 therefore the exec service name. The interactive CLI's exporter is the app
 server, which passes a service-name override of `codex-app-server`, so the
@@ -469,7 +471,7 @@ The id has to be the one the agent's telemetry already uses:
 | --- | --- | --- |
 | Pi | `PI_SESSION_FILE` | File name with a trailing `.jsonl` removed. pi-otel 0.3.0 does `basename(file, ".jsonl")`. `PI_SESSION_ID` is only the short trailing id and is not used. An ephemeral session has no file, exports no session id, and is not linked. |
 | OpenCode | `OPENCODE_SESSION_ID` | `session.id` on runner spans. Taken from the OpenCode shell-tool change; not run live here. |
-| Codex | `CODEX_THREAD_ID` | `conversation.id`, the emitting thread. In Codex 0.167.0 a root thread sets `CODEX_SESSION_ID` to that same id (`SessionId::from(thread_id)` in `codex-rs/core/src/session/session.rs` on tag `rust-v0.167.0`). A subagent can set `CODEX_SESSION_ID` to the root id instead, so the hook reads `CODEX_THREAD_ID` and does not read `CODEX_SESSION_ID`. |
+| Codex | `CODEX_THREAD_ID` | `conversation.id`, the emitting thread. On Codex 0.167.0, `CODEX_SESSION_ID` equaled `CODEX_THREAD_ID` for a live `codex exec` (`SessionId::from(thread_id)` in `codex-rs/core/src/session/session.rs` on tag `rust-v0.167.0` sets them equal on a root thread). A subagent can set `CODEX_SESSION_ID` to the root id instead, so the hook reads `CODEX_THREAD_ID` and does not read `CODEX_SESSION_ID`. |
 
 Pi was checked against pi-otel 0.3.0's source (`sessionIdRef = basename(file, ".jsonl")`) and the session file name `<timestamp>_<id>.jsonl`. The hook behavior below does not start an agent.
 
@@ -490,25 +492,52 @@ is the whole session until OpenCode exports a trace with the same
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
 session JSONL path (the stem is what pi-otel exports) rather than only
 `PI_SESSION_ID`. For Codex, set `CODEX_THREAD_ID` to the thread id from
-`conversation.id`. On a Codex 0.167.0 root thread that value is also
-`CODEX_SESSION_ID`.
+`conversation.id`. On Codex 0.167.0, `CODEX_SESSION_ID` equaled
+`CODEX_THREAD_ID` for a live `codex exec`.
 
 The hook's `service.name` matches the Codex process that committed, so one
 session does not show two names. A parent command of `codex exec` (or
-`codex-exec`) is `codex_exec`. If `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` is a
-short token of letters, digits, `.`, `_`, and `-`, that token is the exec
-service name instead, which is what Codex 0.167.0 uses for `codex exec`. A
-parent `codex`, `codex-tui`, or `codex-app-server` is `codex-app-server`. If
-the parent chain is not Codex, the hook uses `codex_exec`. The interactive
-name is from the 0.167.0 source and was not re-checked against a live TUI.
+`codex-exec`) is `codex_exec`. On a live `codex exec` on 2026-11-11, the
+hook event and Codex telemetry both used `service.name` `codex_exec`. If
+`CODEX_INTERNAL_ORIGINATOR_OVERRIDE` is a short token of letters, digits,
+`.`, `_`, and `-`, that token is the exec service name instead, which is
+what Codex 0.167.0 uses for `codex exec`. A parent `codex`, `codex-tui`, or
+`codex-app-server` is `codex-app-server`. If the parent chain is not Codex,
+the hook uses `codex_exec`. The interactive name is from the 0.167.0 source
+and was not re-checked against a live TUI.
 
-Codex's default `workspace-write` sandbox mounts `.git` read-only. Checked
-in the 0.167.0 source: `FileSystemSandboxPolicy::workspace_write` adds `.git`
-unless an explicit write rule already covers that path. A commit from the
-agent then fails, the hook does not run, and no outcome is recorded. Run
-Codex with `--sandbox danger-full-access`, or add the checkout's `.git`
-directory to `sandbox_workspace_write.writable_roots`. The writable-roots
-exception is what that source does; it was not live-verified on 0.167.0.
+Codex's default `workspace-write` sandbox mounts `.git` read-only.
+`FileSystemSandboxPolicy::workspace_write` in Codex 0.167.0 adds `.git`
+unless an explicit write rule already covers that path. The agent cannot
+`git add` or `git commit`, the hooks never run, and no outcome is recorded.
+That default was verified on 2026-11-11 (Asia/Bangkok) with Codex 0.167.0,
+model `mistralai/mistral-nemo` via OpenRouter, and sdf built from `3f0a35a`.
+
+The preferred option is the narrower one: keep `workspace-write` and list
+the checkout `.git` in `sandbox_workspace_write.writable_roots`. That was
+live-verified on the same Codex. The banner listed the `.git` path as
+writable, the commit succeeded, and sdf linked it with match `hook`. The
+`SDF-Session` trailer matched `CODEX_THREAD_ID` and `conversation.id`.
+`CODEX_SESSION_ID` equaled `CODEX_THREAD_ID`. A human commit with no agent
+session variables set stayed unlinked.
+
+```bash
+codex exec -C <repo> -s workspace-write \
+  -c 'sandbox_workspace_write.writable_roots=["<repo>/.git"]'
+```
+
+The same setting in `config.toml`:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ["<repo>/.git"]
+```
+
+A linked worktree also needs the common git dir on `writable_roots`
+(`git rev-parse --git-common-dir`). That path was not live-tested.
+
+`--sandbox danger-full-access` also committed and linked on that run. It
+is broader than a `.git` writable root.
 
 `post-rewrite` runs on `git commit --amend` and `git rebase`. The replacement
 SHA is stored, and the previous SHA from that rewrite is not linked once the
@@ -915,7 +944,9 @@ or a commit SHA on the signals this receiver stores, so those sessions stay
 unlinked unless you pass `--repo` and the time window contains one commit.
 Pi exports `pi.cwd` and can use the heuristic, and the hook when the
 session file stem matches `pi.session.id`. A commit with no session id is
-not attached to a session by the hook.
+not attached to a session by the hook. Under Codex's default
+`workspace-write` sandbox the hook does not run, because `.git` is
+read-only. See Git hooks.
 
 `--github` asks for the pull request and CI status of a commit that is already
 linked. It uses `gh` when `gh` is on `PATH`, and otherwise `GH_TOKEN` or
