@@ -1,0 +1,38 @@
+{
+  "id": "unknown-price",
+  "field": "sessions.0.computed_cost_usd.usd",
+  "expect": "0",
+  "otlp": {
+    "signal": "logs",
+    "body": {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {"key": "service.name", "value": {"stringValue": "claude-code"}},
+              {"key": "session.id", "value": {"stringValue": "unknown-price"}},
+              {"key": "sdf.fixture", "value": {"stringValue": "check"}}
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1000000000",
+                  "body": {"stringValue": "claude_code.api_request"},
+                  "attributes": [
+                    {"key": "event.name", "value": {"stringValue": "api_request"}},
+                    {"key": "model", "value": {"stringValue": "not-a-catalog/model"}},
+                    {"key": "session.id", "value": {"stringValue": "unknown-price"}},
+                    {"key": "input_tokens", "value": {"intValue": "10"}},
+                    {"key": "output_tokens", "value": {"intValue": "2"}}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

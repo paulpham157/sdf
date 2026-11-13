@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -32,7 +33,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init> [flags]")
+		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -44,8 +45,10 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdPrices(args[1:], stdout, stderr)
 	case "init":
 		return cmdInit(args[1:], stdout, stderr)
+	case "check":
+		return cmdCheck(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init> [flags]")
+		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check> [flags]")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
@@ -351,6 +354,41 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprint(stdout, summary.Format(report))
+	return 0
+}
+
+func cmdCheck(args []string, stdout, stderr io.Writer) int {
+	dir := check.DefaultDir()
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, "usage: sdf check [--cases DIR]")
+			return 0
+		case arg == "--cases":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf check: --cases requires a directory")
+				return 2
+			}
+			dir = v
+		case strings.HasPrefix(arg, "--cases="):
+			dir = strings.TrimPrefix(arg, "--cases=")
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	cases, err := check.Load(dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf check: %v\n", err)
+		return 1
+	}
+	report := check.Run(cases)
+	fmt.Fprint(stdout, check.Format(report))
+	if report.Failed > 0 {
+		return 1
+	}
 	return 0
 }
 

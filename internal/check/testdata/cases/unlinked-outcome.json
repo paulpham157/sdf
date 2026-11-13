@@ -1,0 +1,35 @@
+{
+  "id": "unlinked-outcome",
+  "field": "sessions.0.outcome.accepted",
+  "expect": true,
+  "otlp": {
+    "signal": "logs",
+    "body": {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {"key": "service.name", "value": {"stringValue": "claude-code"}},
+              {"key": "session.id", "value": {"stringValue": "unlinked-outcome"}},
+              {"key": "sdf.fixture", "value": {"stringValue": "check"}}
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1000000000",
+                  "body": {"stringValue": "claude_code.user_prompt"},
+                  "attributes": [
+                    {"key": "event.name", "value": {"stringValue": "user_prompt"}},
+                    {"key": "session.id", "value": {"stringValue": "unlinked-outcome"}}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

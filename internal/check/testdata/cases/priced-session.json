@@ -1,0 +1,38 @@
+{
+  "id": "priced-session",
+  "field": "sessions.0.computed_cost_usd.usd",
+  "expect": "0.011988",
+  "otlp": {
+    "signal": "logs",
+    "body": {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {"key": "service.name", "value": {"stringValue": "claude-code"}},
+              {"key": "session.id", "value": {"stringValue": "priced-session"}},
+              {"key": "sdf.fixture", "value": {"stringValue": "check"}}
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1500000000",
+                  "body": {"stringValue": "claude_code.api_request"},
+                  "attributes": [
+                    {"key": "event.name", "value": {"stringValue": "api_request"}},
+                    {"key": "model", "value": {"stringValue": "claude-sonnet-5"}},
+                    {"key": "session.id", "value": {"stringValue": "priced-session"}},
+                    {"key": "input_tokens", "value": {"intValue": "999"}},
+                    {"key": "output_tokens", "value": {"intValue": "999"}}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "summary-session",
+  "field": "sessions.0.session_id",
+  "expect": "already-summarized",
+  "summary": {
+    "sessions": [
+      {
+        "session_id": "already-summarized",
+        "tool": "claude-code",
+        "service_names": ["claude-code"],
+        "models": [],
+        "traces": 0,
+        "logs": 1,
+        "metrics": 0,
+        "tokens": {},
+        "spans": [],
+        "spans_hidden": 0,
+        "log_events": [],
+        "metric_lines": [],
+        "missing": [],
+        "tool_calls": [],
+        "repository": {"work_dirs": [], "commit_shas": []}
+      }
+    ],
+    "unattributed": []
+  }
+}
