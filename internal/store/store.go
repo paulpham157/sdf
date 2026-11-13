@@ -393,9 +393,11 @@ func (s *Store) KnownSession(id string) (bool, error) {
 }
 
 // KnownCommit reports whether telemetry already names this full commit SHA.
-// A SHA is known from an sdf.git.commit hook event, or from vcs.ref.head.revision
-// or git_commit_id on a claude_code.tool_result log. This reads the telemetry;
-// it does not copy it.
+// A SHA is known from an sdf.git.commit hook event, or from a
+// claude_code.tool_result log: vcs.ref.head.revision, git_commit_id, or a
+// git_commit_id nested inside tool_parameters. tool_parameters is read both
+// as an object and as a JSON string, matching how the outcome linker reads
+// it. This reads the telemetry; it does not copy it.
 func (s *Store) KnownCommit(sha string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -407,9 +409,11 @@ func (s *Store) KnownCommit(sha string) (bool, error) {
 			OR (name = 'claude_code.tool_result' AND (
 				json_extract(attributes_json, '$."vcs.ref.head.revision"') = ?
 				OR json_extract(attributes_json, '$.git_commit_id') = ?
+				OR json_extract(attributes_json, '$.tool_parameters.git_commit_id') = ?
+				OR json_extract(json_extract(attributes_json, '$.tool_parameters'), '$.git_commit_id') = ?
 			))
 		)
-	`, sha, sha, sha).Scan(&n)
+	`, sha, sha, sha, sha, sha).Scan(&n)
 	return n > 0, err
 }
 

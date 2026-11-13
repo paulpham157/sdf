@@ -195,6 +195,40 @@ func TestKnownCommitOnToolResult(t *testing.T) {
 	}
 }
 
+func TestKnownCommitNestedInToolParameters(t *testing.T) {
+	db := openDB(t)
+	if _, err := db.Insert([]record.Record{
+		{
+			Signal:     "logs",
+			SessionID:  record.Str("sess-1"),
+			Name:       record.Str("claude_code.tool_result"),
+			Attributes: map[string]any{"tool_parameters": map[string]any{"git_commit_id": sha}},
+			Resource:   map[string]any{},
+		},
+		{
+			Signal:     "logs",
+			SessionID:  record.Str("sess-2"),
+			Name:       record.Str("claude_code.tool_result"),
+			Attributes: map[string]any{"tool_parameters": `{"git_commit_id":"` + sha + `"}`},
+			Resource:   map[string]any{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "Recorded.", Status: decision.StatusDecision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelValidates,
+		From:     decision.Endpoint{Kind: decision.KindCommit, Ref: sha},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "d"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRejectedFields(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{
