@@ -10,7 +10,9 @@
 // same report arranged for the page. GET /api/decisions reads the append-only
 // decision records; it is empty when none have been recorded, and it is not
 // part of the summary. Computed cost the summary marks unknown is returned
-// without a USD value. There is no route that writes the store.
+// without a USD value. A budget file, when one is configured, adds a
+// comparison of computed session cost with one local ceiling. The comparison
+// is reported only. There is no route that writes the store.
 package ui
 
 import (
@@ -43,12 +45,15 @@ var assetFS embed.FS
 // Config is the read-only view over one store.
 // Prices, Repo, and GitHub match the sdf summary flags of the same names.
 // GitHub false does not query pull requests; accepted stays unknown.
+// Budget is a path to one local ceiling file. Empty means no budget, and
+// the report stays as it is without one.
 type Config struct {
 	Addr   string
 	Store  *store.Store
 	Prices string
 	Repo   string
 	GitHub bool
+	Budget string
 }
 
 // Server is the UI listener.
@@ -78,6 +83,7 @@ func Start(cfg Config) (*Server, error) {
 		prices: cfg.Prices,
 		repo:   cfg.Repo,
 		github: cfg.GitHub,
+		budget: cfg.Budget,
 		mux:    http.NewServeMux(),
 	}
 	h.routes()
@@ -149,6 +155,7 @@ type handler struct {
 	prices string
 	repo   string
 	github bool
+	budget string
 	mux    *http.ServeMux
 }
 
@@ -268,6 +275,11 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 		}
 	}
 	outcome.Attach(&report, opt)
+	budget, err := summary.LoadBudget(h.budget)
+	if err != nil {
+		return summary.Report{}, nil, err
+	}
+	summary.ApplyBudget(&report, budget)
 	return report, cat, nil
 }
 

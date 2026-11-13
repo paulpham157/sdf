@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/paulpham157/sdf/internal/pricing"
 )
@@ -159,6 +160,30 @@ type PullRequest struct {
 	Merged bool   `json:"merged"`
 }
 
+// Budget is one ceiling in USD over one window.
+// Window is "store" for every session, or "day" for one calendar day.
+// CeilingUSD is a decimal string. Day is UTC when Window is "day".
+type Budget struct {
+	CeilingUSD string
+	Window     string
+	Day        time.Time
+}
+
+// BudgetStatus is computed session cost compared with one local ceiling.
+// Status is "within", "over", or "unknown".
+// TotalUSD is empty when Status is "unknown": an unknown cost is not summed.
+// UnknownCost counts sessions whose computed cost is nil or not known.
+type BudgetStatus struct {
+	Status      string `json:"status"`
+	TotalUSD    string `json:"total_usd,omitempty"`
+	CeilingUSD  string `json:"ceiling_usd"`
+	Window      string `json:"window"`
+	Day         string `json:"day,omitempty"`
+	Sessions    int    `json:"sessions"`
+	UnknownCost int    `json:"unknown_cost"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 // CostPerAccepted is computed cost divided by the number of merged outcomes.
 // Status "unknown" leaves USD empty.
 type CostPerAccepted struct {
@@ -188,6 +213,9 @@ type Report struct {
 	Sessions        []SessionSummary `json:"sessions"`
 	Unattributed    []Unattributed   `json:"unattributed"`
 	CostPerAccepted *CostPerAccepted `json:"cost_per_accepted_outcome,omitempty"`
+	// Budget is set only when a budget file was passed in. Nil leaves the
+	// report identical to a report with no budget configured.
+	Budget *BudgetStatus `json:"budget,omitempty"`
 }
 
 // OrderedFloats is a JSON object that keeps insertion order. Python dicts

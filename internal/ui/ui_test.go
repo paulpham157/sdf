@@ -358,6 +358,7 @@ type agentRollup struct {
 type snapshotDoc struct {
 	Sessions        []sessionView           `json:"sessions"`
 	CostPerAccepted summary.CostPerAccepted `json:"cost_per_accepted_outcome"`
+	Budget          *summary.BudgetStatus   `json:"budget"`
 	Totals          struct {
 		ComputedCostUSD      ui.Amount `json:"computed_cost_usd"`
 		AgentReportedCostUSD ui.Amount `json:"agent_reported_cost_usd"`

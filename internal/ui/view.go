@@ -32,6 +32,7 @@ type Snapshot struct {
 	Sessions        []SessionView           `json:"sessions"`
 	Unattributed    []summary.Unattributed  `json:"unattributed"`
 	CostPerAccepted summary.CostPerAccepted `json:"cost_per_accepted_outcome"`
+	Budget          *summary.BudgetStatus   `json:"budget,omitempty"`
 	Totals          Totals                  `json:"totals"`
 	Agents          []AgentRollup           `json:"agents"`
 	GitHub          bool                    `json:"github"`
@@ -152,6 +153,7 @@ func BuildSnapshot(report summary.Report, meta SnapshotMeta) Snapshot {
 		Sessions:        views,
 		Unattributed:    unattributed,
 		CostPerAccepted: *cost,
+		Budget:          report.Budget,
 		Totals:          totals(report.Sessions),
 		Agents:          agents,
 		GitHub:          meta.GitHub,
