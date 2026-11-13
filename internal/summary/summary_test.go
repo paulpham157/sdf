@@ -206,3 +206,20 @@ func TestEmptyStore(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+func TestEmptyStoreWithBudgetStillPrintsTheBudget(t *testing.T) {
+	report := Report{
+		Budget: &BudgetStatus{
+			Status:     "unknown",
+			Reason:     "no sessions",
+			CeilingUSD: "5",
+			Window:     "store",
+		},
+	}
+	got := Format(report)
+	want := "No telemetry sessions in the store.\n" +
+		"budget: " + formatBudget(report.Budget) + "\n"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
