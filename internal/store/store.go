@@ -46,6 +46,23 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE INDEX IF NOT EXISTS idx_records_session ON records(session_id);
 CREATE INDEX IF NOT EXISTS idx_records_signal_name ON records(signal, name);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY,
+    statement TEXT NOT NULL,
+    status TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    source TEXT
+);
+CREATE TABLE IF NOT EXISTS decision_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    relation TEXT NOT NULL,
+    from_kind TEXT NOT NULL,
+    from_ref TEXT NOT NULL,
+    to_kind TEXT NOT NULL,
+    to_ref TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
 `
 
 // Store is one SQLite file. A mutex serializes use of the single connection,
@@ -260,6 +277,151 @@ func (s *Store) Load() ([]record.Record, error) {
 		out = []record.Record{}
 	}
 	return out, rows.Err()
+}
+
+// Decision is one append-only decision record. Status is "hypothesis" or
+// "decision". Source is empty when the record named none.
+type Decision struct {
+	ID         string
+	Statement  string
+	Status     string
+	RecordedAt string
+	Source     string
+}
+
+// DecisionEdge is one directed edge. Kind is "decision", "session", or
+// "commit". Relation is one of constrains, implements, supersedes,
+// validates, contradicts.
+type DecisionEdge struct {
+	Relation   string
+	FromKind   string
+	FromRef    string
+	ToKind     string
+	ToRef      string
+	RecordedAt string
+}
+
+// InsertDecision appends one decision. The caller has already checked the
+// fields. A repeated id is rejected by the primary key.
+func (s *Store) InsertDecision(d Decision) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO decisions (id, statement, status, recorded_at, source)
+		VALUES (?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source))
+	return err
+}
+
+// LoadDecisions returns every decision in insertion order.
+func (s *Store) LoadDecisions() ([]Decision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+		SELECT id, statement, status, recorded_at, source
+		FROM decisions
+		ORDER BY rowid
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Decision
+	for rows.Next() {
+		var d Decision
+		var source sql.NullString
+		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source); err != nil {
+			return nil, err
+		}
+		if source.Valid {
+			d.Source = source.String
+		}
+		out = append(out, d)
+	}
+	if out == nil {
+		out = []Decision{}
+	}
+	return out, rows.Err()
+}
+
+// InsertDecisionEdge appends one edge. The caller has already checked that
+// both endpoints name something the store knows.
+func (s *Store) InsertDecisionEdge(e DecisionEdge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO decision_edges (relation, from_kind, from_ref, to_kind, to_ref, recorded_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, e.Relation, e.FromKind, e.FromRef, e.ToKind, e.ToRef, e.RecordedAt)
+	return err
+}
+
+// LoadDecisionEdges returns every edge in insertion order.
+func (s *Store) LoadDecisionEdges() ([]DecisionEdge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`
+		SELECT relation, from_kind, from_ref, to_kind, to_ref, recorded_at
+		FROM decision_edges
+		ORDER BY id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DecisionEdge
+	for rows.Next() {
+		var e DecisionEdge
+		if err := rows.Scan(&e.Relation, &e.FromKind, &e.FromRef, &e.ToKind, &e.ToRef, &e.RecordedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if out == nil {
+		out = []DecisionEdge{}
+	}
+	return out, rows.Err()
+}
+
+// KnownSession reports whether any telemetry row carries this session id.
+func (s *Store) KnownSession(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM records WHERE session_id = ?`, id).Scan(&n)
+	return n > 0, err
+}
+
+// KnownCommit reports whether telemetry already names this full commit SHA.
+// A SHA is known from an sdf.git.commit hook event, or from a
+// claude_code.tool_result log: vcs.ref.head.revision, git_commit_id, or a
+// git_commit_id nested inside tool_parameters. tool_parameters is read both
+// as an object and as a JSON string, matching how the outcome linker reads
+// it. This reads the telemetry; it does not copy it.
+func (s *Store) KnownCommit(sha string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM records
+		WHERE signal = 'logs' AND (
+			(name = 'sdf.git.commit' AND json_extract(attributes_json, '$."vcs.ref.head.revision"') = ?)
+			OR (name = 'claude_code.tool_result' AND (
+				json_extract(attributes_json, '$."vcs.ref.head.revision"') = ?
+				OR json_extract(attributes_json, '$.git_commit_id') = ?
+				OR json_extract(attributes_json, '$.tool_parameters.git_commit_id') = ?
+				OR json_extract(json_extract(attributes_json, '$.tool_parameters'), '$.git_commit_id') = ?
+			))
+		)
+	`, sha, sha, sha, sha, sha).Scan(&n)
+	return n > 0, err
+}
+
+func nullText(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 func marshalSorted(v map[string]any) ([]byte, error) {

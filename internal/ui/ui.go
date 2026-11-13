@@ -7,8 +7,10 @@
 //
 // GET /api/summary is the sdf summary JSON document: summary.SummarizeWith
 // with the default span view, then outcome.Attach. GET /api/snapshot is that
-// same report arranged for the page. Computed cost the summary marks unknown
-// is returned without a USD value. There is no route that writes the store.
+// same report arranged for the page. GET /api/decisions reads the append-only
+// decision records; it is empty when none have been recorded, and it is not
+// part of the summary. Computed cost the summary marks unknown is returned
+// without a USD value. There is no route that writes the store.
 package ui
 
 import (
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/store"
@@ -155,6 +158,7 @@ func (h *handler) routes() {
 	h.mux.HandleFunc("GET /app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
 	h.mux.HandleFunc("GET /api/summary", h.summary)
 	h.mux.HandleFunc("GET /api/snapshot", h.snapshot)
+	h.mux.HandleFunc("GET /api/decisions", h.decisions)
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -226,6 +230,22 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(snap)
+}
+
+func (h *handler) decisions(w http.ResponseWriter, r *http.Request) {
+	graph, err := decision.Load(h.store)
+	if err != nil {
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := decision.WriteJSON(w, graph); err != nil {
+		return
+	}
 }
 
 func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
