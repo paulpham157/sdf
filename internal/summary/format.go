@@ -109,6 +109,9 @@ func Format(report Report) string {
 	if report.CostPerAccepted != nil {
 		lines = append(lines, "cost_per_accepted_outcome_usd: "+formatPerAccepted(report.CostPerAccepted))
 	}
+	if report.Budget != nil {
+		lines = append(lines, "budget: "+formatBudget(report.Budget))
+	}
 	return strings.Join(lines, "\n") + "\n"
 }
 
@@ -276,6 +279,24 @@ func formatOutcome(outcome *SessionOutcome) string {
 		if outcome.AcceptedReason != "" {
 			text += " (" + outcome.AcceptedReason + ")"
 		}
+	}
+	return text
+}
+
+func formatBudget(budget *BudgetStatus) string {
+	head := budget.Status
+	if budget.Status == "unknown" {
+		reason := budget.Reason
+		if reason == "" {
+			reason = "unknown"
+		}
+		head = "unknown (" + reason + ")"
+	} else {
+		head = budget.Status + " (total_usd=" + budget.TotalUSD + ")"
+	}
+	text := head + " ceiling_usd=" + budget.CeilingUSD + " window=" + budget.Window
+	if budget.Day != "" {
+		text += " day=" + budget.Day
 	}
 	return text
 }
