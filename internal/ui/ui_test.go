@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/record"
@@ -435,6 +436,64 @@ func apiSnapshot(t *testing.T, srv *ui.Server) string {
 		t.Fatalf("snapshot %d %s", status, body)
 	}
 	return body
+}
+
+func TestDecisionsRoute(t *testing.T) {
+	db := openDB(t)
+	srv := startUI(t, db)
+	status, _, body := get(t, srv.URL()+"api/decisions")
+	if status != 200 {
+		t.Fatalf("status %d %s", status, body)
+	}
+	if body != "{\n  \"decisions\": [],\n  \"edges\": []\n}\n" {
+		t.Fatalf("empty graph %q", body)
+	}
+	before := apiSummary(t, srv)
+
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "h", Statement: "Maybe.", Status: decision.StatusHypothesis,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "Settled.", Status: decision.StatusDecision, Source: "notes",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if apiSummary(t, srv) != before {
+		t.Fatal("summary changed after a decision was recorded")
+	}
+	status, _, body = get(t, srv.URL()+"api/decisions")
+	if status != 200 {
+		t.Fatalf("status %d %s", status, body)
+	}
+	var doc struct {
+		Decisions []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(body), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Decisions) != 2 || doc.Decisions[0].Status != "hypothesis" || doc.Decisions[1].Status != "decision" {
+		t.Fatalf("%+v", doc.Decisions)
+	}
+	post, _, posted := getPost(t, srv.URL()+"api/decisions")
+	if post != 405 && post != 404 {
+		t.Fatalf("write route answered %d %s", post, posted)
+	}
+}
+
+func getPost(t *testing.T, url string) (int, http.Header, string) {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, string(raw)
 }
 
 func decodeSnapshot(t *testing.T, body string) snapshotDoc {
