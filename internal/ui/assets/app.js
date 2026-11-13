@@ -313,7 +313,9 @@
   }
 
   function sessions() {
-    if (isEmpty()) return emptyState();
+    if (isEmpty()) {
+      return h("div", null, [budgetSection(), emptyState(), decisionsSection()]);
+    }
     const tools = [];
     snapshot.sessions.forEach(function (view) {
       const tool = (view.summary && view.summary.tool) || "unknown";
@@ -325,6 +327,7 @@
     ].concat(tools.map(function (tool) { return filterButton(tool, tool); })));
     const rows = sorted(filtered());
     return h("div", null, [
+      budgetSection(),
       h("p", { class: "kicker" }, ["Sessions"]),
       filters,
       h("div", { class: "table-scroll" }, [
@@ -344,6 +347,7 @@
           h("tbody", null, rows.map(sessionRow)),
         ]),
       ]),
+      decisionsSection(),
     ]);
   }
 
@@ -518,19 +522,26 @@
   }
 
   function detail(id) {
-    if (isEmpty()) return emptyState();
+    if (isEmpty()) {
+      return h("div", null, [budgetSection(), emptyState(), decisionsSection()]);
+    }
     const view = (snapshot.sessions || []).filter(function (item) {
       return item.summary && item.summary.session_id === id;
     })[0];
     if (!view) {
-      return h("section", { class: "empty" }, [
-        h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
-        h("h2", null, ["No session with that id."]),
-        h("p", null, [id || ""]),
+      return h("div", null, [
+        budgetSection(),
+        h("section", { class: "empty" }, [
+          h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
+          h("h2", null, ["No session with that id."]),
+          h("p", null, [id || ""]),
+        ]),
+        decisionsSection(),
       ]);
     }
     const summary = view.summary;
     return h("div", null, [
+      budgetSection(),
       h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
       h("p", { class: "kicker" }, [summary.tool || "unknown"]),
       h("h2", { class: "id" }, [summary.session_id || ""]),
@@ -550,6 +561,7 @@
       toolSection(view),
       outcomeSection(view),
       missingSection(summary),
+      decisionsSection(),
     ]);
   }
 

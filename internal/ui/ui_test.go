@@ -343,6 +343,30 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	}
 }
 
+func TestSessionsAndDetailShowDecisionsAndBudgetWhenEmpty(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "keep-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	for _, hash := range []string{"#/sessions", "#/sessions/missing"} {
+		page := renderedPageAt(t, srv, hash)
+		if !decisionShown(page) || !strings.Contains(page, "Keep the collector store in SQLite.") {
+			t.Fatalf("%s did not render the decision:\n%s", hash, page)
+		}
+		// A window with no sessions is unknown, not a comparison. It names the
+		// reason and draws neither total nor ceiling.
+		if !strings.Contains(page, "unknown") || !strings.Contains(page, "no sessions") {
+			t.Fatalf("%s did not render the unknown budget:\n%s", hash, page)
+		}
+		if budgetShown(page, "within", "", "") || budgetShown(page, "over", "", "") {
+			t.Fatalf("%s rendered a comparison:\n%s", hash, page)
+		}
+	}
+}
+
 func TestPageOmitsDecisionsAndBudgetWhenAbsent(t *testing.T) {
 	db := openDB(t)
 	srv := startUI(t, db)
@@ -639,11 +663,13 @@ func budgetShown(page, status, total, ceiling string) bool {
 	return (total == "" || found[1] == total) && (ceiling == "" || found[2] == ceiling)
 }
 
-// decisionShown reports a decision record as its own word. The navigation
-// always contains "Overview", so the substrings "over" and "decision" are not
-// a record.
+// decisionShown reports a decision record. The navigation always contains
+// "Overview", so the substrings "over" and "decision" are not a record, and
+// neither is "indecision". The heading "Decisions" is followed immediately by
+// the status word "decision", so the match starts at a word and does not
+// require a boundary after the optional s.
 func decisionShown(page string) bool {
-	return regexp.MustCompile(`(?i)\bdecision\b`).MatchString(page)
+	return regexp.MustCompile(`(?i)\bdecisions?`).MatchString(page)
 }
 
 // renderedPage is the text of the page after its own script has drawn it.
@@ -651,15 +677,20 @@ func decisionShown(page string) bool {
 // result is the text a reader sees, not the JSON the routes return.
 func renderedPage(t *testing.T, srv *ui.Server) string {
 	t.Helper()
+	return renderedPageAt(t, srv, "")
+}
+
+func renderedPageAt(t *testing.T, srv *ui.Server, hash string) string {
+	t.Helper()
 	status, _, html := get(t, srv.URL())
 	if status != 200 {
 		t.Fatalf("page %d", status)
 	}
 	_, _, script := get(t, srv.URL()+"app.js")
-	return runPage(t, srv.URL(), html, script)
+	return runPage(t, srv.URL(), html, script, hash)
 }
 
-func runPage(t *testing.T, base, html, script string) string {
+func runPage(t *testing.T, base, html, script, hash string) string {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -673,7 +704,7 @@ func runPage(t *testing.T, base, html, script string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, page)
-	cmd.Stdin = strings.NewReader(base + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
+	cmd.Stdin = strings.NewReader(base + "\n" + hash + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("render: %v\n%s", err, out)
@@ -774,11 +805,14 @@ lines.on("close", async () => {
   const splitAt = raw.indexOf("\n");
   const base = raw.slice(0, splitAt);
   const rest = raw.slice(splitAt + 1);
+  const hashAt = rest.indexOf("\n");
+  const hash = rest.slice(0, hashAt);
+  const page = rest.slice(hashAt + 1);
   const marker = "\n/*SDF_PAGE_SPLIT*/\n";
-  const cut = rest.indexOf(marker);
-  const script = rest.slice(cut + marker.length);
+  const cut = page.indexOf(marker);
+  const script = page.slice(cut + marker.length);
   const app = new Element("div");
-  const location = { hash: "" };
+  const location = { hash: hash };
   const document = {
     getElementById: function () { return app; },
     createElement: function (tag) { return new Element(tag); },
