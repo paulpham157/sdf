@@ -397,7 +397,9 @@ func (s *Store) KnownSession(id string) (bool, error) {
 // claude_code.tool_result log: vcs.ref.head.revision, git_commit_id, or a
 // git_commit_id nested inside tool_parameters. tool_parameters is read both
 // as an object and as a JSON string, matching how the outcome linker reads
-// it. This reads the telemetry; it does not copy it.
+// it. The comparison ignores case, so a SHA stored in its original case
+// still matches the lowercase ref the decision endpoint passes in. This
+// reads the telemetry; it does not copy it or rewrite a stored attribute.
 func (s *Store) KnownCommit(sha string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -405,12 +407,12 @@ func (s *Store) KnownCommit(sha string) (bool, error) {
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM records
 		WHERE signal = 'logs' AND (
-			(name = 'sdf.git.commit' AND json_extract(attributes_json, '$."vcs.ref.head.revision"') = ?)
+			(name = 'sdf.git.commit' AND json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE)
 			OR (name = 'claude_code.tool_result' AND (
-				json_extract(attributes_json, '$."vcs.ref.head.revision"') = ?
-				OR json_extract(attributes_json, '$.git_commit_id') = ?
-				OR json_extract(attributes_json, '$.tool_parameters.git_commit_id') = ?
-				OR json_extract(json_extract(attributes_json, '$.tool_parameters'), '$.git_commit_id') = ?
+				json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE
+				OR json_extract(attributes_json, '$.git_commit_id') = ? COLLATE NOCASE
+				OR json_extract(attributes_json, '$.tool_parameters.git_commit_id') = ? COLLATE NOCASE
+				OR json_extract(json_extract(attributes_json, '$.tool_parameters'), '$.git_commit_id') = ? COLLATE NOCASE
 			))
 		)
 	`, sha, sha, sha, sha, sha).Scan(&n)
