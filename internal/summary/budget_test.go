@@ -87,6 +87,33 @@ func TestBudgetDayWindowUsesSessionStart(t *testing.T) {
 	}
 }
 
+func TestBudgetDayWindowAllSessionsUnplaced(t *testing.T) {
+	day := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
+	sessions := []SessionSummary{
+		{SessionID: "a", ComputedCost: &pricing.Cost{Status: "known", USD: "1"}},
+		{SessionID: "b", ComputedCost: &pricing.Cost{Status: "known", USD: "2"}},
+	}
+	got := evaluateBudget(sessions, &Budget{CeilingUSD: "5", Window: "day", Day: day})
+	if got.Status != "unknown" || got.TotalUSD != "" || got.UnknownCost != 2 || got.Sessions != 2 {
+		t.Fatalf("%+v", got)
+	}
+	if got.Reason == "no sessions" || got.Reason != unknownCostPhrase(2) {
+		t.Fatalf("reason %q", got.Reason)
+	}
+	one := evaluateBudget(sessions[:1], &Budget{CeilingUSD: "5", Window: "day", Day: day})
+	if one.Status != "unknown" || one.TotalUSD != "" || one.UnknownCost != 1 || one.Sessions != 1 || one.Reason != unknownCostPhrase(1) {
+		t.Fatalf("single unplaced %+v", one)
+	}
+	none := evaluateBudget(nil, &Budget{CeilingUSD: "5", Window: "day", Day: day})
+	if none.Status != "unknown" || none.TotalUSD != "" || none.UnknownCost != 0 || none.Sessions != 0 || none.Reason != "no sessions" {
+		t.Fatalf("empty window %+v", none)
+	}
+	store := evaluateBudget(nil, &Budget{CeilingUSD: "5", Window: "store"})
+	if store.Status != "unknown" || store.TotalUSD != "" || store.UnknownCost != 0 || store.Sessions != 0 || store.Reason != "no sessions" {
+		t.Fatalf("empty store %+v", store)
+	}
+}
+
 func TestNoBudgetLeavesTheReportUnchanged(t *testing.T) {
 	report := Report{
 		Sessions: []SessionSummary{{

@@ -88,7 +88,14 @@ func evaluateBudget(sessions []SessionSummary, budget *Budget) BudgetStatus {
 	out.Sessions = len(windowed) + unplaced
 	out.UnknownCost = unplaced
 	if len(windowed) == 0 {
-		out.Reason = "no sessions"
+		// "no sessions" is only true when nothing was in the window.
+		// A day window whose sessions all lack a start time has sessions;
+		// none of them can be placed, so the cost is unknown, not absent.
+		if unplaced > 0 {
+			out.Reason = unknownCostPhrase(unplaced)
+		} else {
+			out.Reason = "no sessions"
+		}
 		return out
 	}
 	ceiling, ok := new(big.Rat).SetString(budget.CeilingUSD)
