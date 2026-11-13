@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/paulpham157/sdf/internal/check"
+	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -33,7 +34,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check> [flags]")
+		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -47,8 +48,10 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdInit(args[1:], stdout, stderr)
 	case "check":
 		return cmdCheck(args[1:], stdout, stderr)
+	case "decision":
+		return cmdDecision(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check> [flags]")
+		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
@@ -355,6 +358,204 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprint(stdout, summary.Format(report))
 	return 0
+}
+
+const decisionUsage = "usage: sdf decision <add|link> [flags]"
+
+func cmdDecision(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, decisionUsage)
+		return 2
+	}
+	switch args[0] {
+	case "add":
+		return cmdDecisionAdd(args[1:], stdout, stderr)
+	case "link":
+		return cmdDecisionLink(args[1:], stdout, stderr)
+	case "--help", "-h":
+		fmt.Fprintln(stdout, decisionUsage)
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
+		return 2
+	}
+}
+
+func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	id := ""
+	statement := ""
+	status := ""
+	source := ""
+	idSet, statementSet, statusSet := false, false, false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--id":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --id requires a value")
+				return 2
+			}
+			id, idSet = v, true
+		case strings.HasPrefix(arg, "--id="):
+			id, idSet = strings.TrimPrefix(arg, "--id="), true
+		case arg == "--statement":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --statement requires a value")
+				return 2
+			}
+			statement, statementSet = v, true
+		case strings.HasPrefix(arg, "--statement="):
+			statement, statementSet = strings.TrimPrefix(arg, "--statement="), true
+		case arg == "--status":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --status requires a value")
+				return 2
+			}
+			status, statusSet = v, true
+		case strings.HasPrefix(arg, "--status="):
+			status, statusSet = strings.TrimPrefix(arg, "--status="), true
+		case arg == "--source":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --source requires a value")
+				return 2
+			}
+			source = v
+		case strings.HasPrefix(arg, "--source="):
+			source = strings.TrimPrefix(arg, "--source=")
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	if !idSet || !statementSet || !statusSet {
+		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+		return 2
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID:        id,
+		Statement: statement,
+		Status:    status,
+		Source:    source,
+	}); err != nil {
+		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	relation := ""
+	from := ""
+	to := ""
+	relationSet, fromSet, toSet := false, false, false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, "usage: sdf decision link --relation REL --from KIND:REF --to KIND:REF [--db PATH]")
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision link: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--relation":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision link: --relation requires a value")
+				return 2
+			}
+			relation, relationSet = v, true
+		case strings.HasPrefix(arg, "--relation="):
+			relation, relationSet = strings.TrimPrefix(arg, "--relation="), true
+		case arg == "--from":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision link: --from requires KIND:REF")
+				return 2
+			}
+			from, fromSet = v, true
+		case strings.HasPrefix(arg, "--from="):
+			from, fromSet = strings.TrimPrefix(arg, "--from="), true
+		case arg == "--to":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision link: --to requires KIND:REF")
+				return 2
+			}
+			to, toSet = v, true
+		case strings.HasPrefix(arg, "--to="):
+			to, toSet = strings.TrimPrefix(arg, "--to="), true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	if !relationSet || !fromSet || !toSet {
+		fmt.Fprintln(stderr, "usage: sdf decision link --relation REL --from KIND:REF --to KIND:REF [--db PATH]")
+		return 2
+	}
+	fromEnd, err := parseEndpoint(from)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision link: --from %v\n", err)
+		return 2
+	}
+	toEnd, err := parseEndpoint(to)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision link: --to %v\n", err)
+		return 2
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: relation,
+		From:     fromEnd,
+		To:       toEnd,
+	}); err != nil {
+		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func parseEndpoint(v string) (decision.Endpoint, error) {
+	kind, ref, ok := strings.Cut(v, ":")
+	if !ok || kind == "" || ref == "" {
+		return decision.Endpoint{}, fmt.Errorf("requires KIND:REF")
+	}
+	return decision.Endpoint{Kind: kind, Ref: ref}, nil
 }
 
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
