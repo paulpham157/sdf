@@ -5,7 +5,13 @@
 ./sdf summary --session sample-claude-1
 ./sdf summary --json
 ./sdf summary --all-spans
+./sdf summary --budget PATH
 ```
+
+`--budget` reads one local ceiling and compares it with computed session cost.
+The report then has a `budget` with status `within`, `over`, or `unknown`.
+Without the flag the field is absent. A file that fails to load exits non-zero
+and prints no report. The comparison itself is in [docs/outcomes.md](outcomes.md).
 
 One block per real session (`session.id`, `conversation.id`,
 `pi.session.id`, or `gen_ai.conversation.id`), then an `unattributed` block

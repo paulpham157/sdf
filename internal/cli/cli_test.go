@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -292,6 +293,239 @@ func httpGet(t *testing.T, url string) string {
 				t.Fatalf("%s %d %s", url, resp.StatusCode, body)
 			}
 			return string(body)
+		}
+		last = err
+		if time.Now().After(deadline) {
+			t.Fatal(last)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// pricedSessionUSD is the computed cost of the hand-written log in
+// loadPricedSession. It is the same figure internal/check expects.
+const pricedSessionUSD = "0.011988"
+
+func TestSummaryBudgetComparesComputedCostWithTheCeiling(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "priced.sqlite")
+	loadPricedSession(t, dbPath)
+	budgetPath := writeBudget(t, `{"ceiling_usd":"1","window":"store"}`)
+
+	out := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled", "--budget", budgetPath)
+	if out.code != 0 {
+		t.Fatalf("code %d\n%s%s", out.code, out.stdout, out.stderr)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(out.stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := report["budget"].(map[string]any)
+	if budget["status"] != "within" || budget["total_usd"] != pricedSessionUSD || budget["ceiling_usd"] != "1" || budget["window"] != "store" {
+		t.Fatalf("%#v", budget)
+	}
+	sessions, _ := report["sessions"].([]any)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions %d", len(sessions))
+	}
+
+	overPath := writeBudget(t, `{"ceiling_usd":"0.01","window":"store"}`)
+	over := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled", "--budget", overPath)
+	if over.code != 0 {
+		t.Fatalf("code %d\n%s%s", over.code, over.stdout, over.stderr)
+	}
+	var overReport map[string]any
+	if err := json.Unmarshal([]byte(over.stdout), &overReport); err != nil {
+		t.Fatal(err)
+	}
+	overBudget, _ := overReport["budget"].(map[string]any)
+	if overBudget["status"] != "over" || overBudget["total_usd"] != pricedSessionUSD || overBudget["ceiling_usd"] != "0.01" {
+		t.Fatalf("%#v", overBudget)
+	}
+
+	text := run(t, "summary", "--db", dbPath, "--prices", "bundled", "--budget", budgetPath)
+	if text.code != 0 || !strings.Contains(text.stdout, "budget: within (total_usd="+pricedSessionUSD+") ceiling_usd=1 window=store\n") {
+		t.Fatalf("%d %s%s", text.code, text.stdout, text.stderr)
+	}
+}
+
+func TestSummaryWithoutBudgetOmitsTheBudgetField(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "priced.sqlite")
+	loadPricedSession(t, dbPath)
+
+	plain := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled")
+	if plain.code != 0 {
+		t.Fatal(plain.stderr)
+	}
+	if bytes.Contains([]byte(plain.stdout), []byte(`"budget"`)) {
+		t.Fatalf("budget field without a flag: %s", plain.stdout)
+	}
+	withFlag := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled", "--budget", writeBudget(t, `{"ceiling_usd":"1","window":"store"}`))
+	if withFlag.code != 0 {
+		t.Fatal(withFlag.stderr)
+	}
+	if plain.stdout == withFlag.stdout {
+		t.Fatal("a budget file left the report unchanged")
+	}
+	var plainReport, flagged map[string]any
+	if err := json.Unmarshal([]byte(plain.stdout), &plainReport); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(withFlag.stdout), &flagged); err != nil {
+		t.Fatal(err)
+	}
+	delete(flagged, "budget")
+	if !reflectDeepEqual(plainReport, flagged) {
+		t.Fatalf("budget changed more than the budget field\nplain %s\nflagged %s", plain.stdout, withFlag.stdout)
+	}
+}
+
+func TestSummaryBadBudgetFileExitsWithoutAReport(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "priced.sqlite")
+	loadPricedSession(t, dbPath)
+	cases := []string{
+		`{"ceiling_usd":"-1","window":"store"}`,
+		`{"ceiling_usd":"1","window":"week"}`,
+		`{"ceiling_usd":"1","window":"day","day":"not-a-day"}`,
+	}
+	for _, body := range cases {
+		out := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled", "--budget", writeBudget(t, body))
+		if out.code == 0 {
+			t.Fatalf("bad budget %s exited 0\n%s", body, out.stdout)
+		}
+		if strings.Contains(out.stdout, "session ") || strings.Contains(out.stdout, `"sessions"`) {
+			t.Fatalf("bad budget %s produced a report: %s", body, out.stdout)
+		}
+		// The flag has to be recognized. An unrecognized --budget exits before
+		// the file is read, which is not this failure.
+		if strings.Contains(out.stderr, "unrecognized") || !strings.Contains(strings.ToLower(out.stderr), "budget") {
+			t.Fatalf("bad budget %s stderr %q", body, out.stderr)
+		}
+	}
+	missing := run(t, "summary", "--db", dbPath, "--json", "--prices", "bundled", "--budget", filepath.Join(t.TempDir(), "missing.json"))
+	if missing.code == 0 || strings.Contains(missing.stderr, "unrecognized") || !strings.Contains(strings.ToLower(missing.stderr), "budget") {
+		t.Fatalf("missing file code %d stderr %q", missing.code, missing.stderr)
+	}
+	if strings.Contains(missing.stdout, `"sessions"`) {
+		t.Fatalf("missing budget file produced a report: %s", missing.stdout)
+	}
+}
+
+func TestServeBudgetReachesTheSummaryAPI(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "priced.sqlite")
+	loadPricedSession(t, dbPath)
+	budgetPath := writeBudget(t, `{"ceiling_usd":"1","window":"store"}`)
+	uiAddr := freeLoopback(t)
+
+	// Leave stdout and stderr alone. "sdf serve" writes its listening lines and
+	// then blocks on a signal, so a pipe nobody keeps reading fills and the
+	// write never returns. The UI listener starts only after those writes.
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Main([]string{"serve", "--db", dbPath, "--prices", "bundled", "--budget", budgetPath, "--ui-addr", uiAddr, "--port", "0", "--grpc-port", "0"})
+	}()
+	// An unrecognized --budget returns before the UI listens. Stop there,
+	// instead of waiting out a server that was never going to start.
+	select {
+	case code := <-done:
+		t.Fatalf("serve exited %d before GET /api/summary", code)
+	case <-time.After(200 * time.Millisecond):
+	}
+	base := "http://" + uiAddr + "/"
+	defer stopServe(t, done)
+	waitForListener(t, base)
+	body := httpGet(t, base+"api/summary")
+	var report map[string]any
+	if err := json.Unmarshal([]byte(body), &report); err != nil {
+		t.Fatal(err)
+	}
+	budget, _ := report["budget"].(map[string]any)
+	if budget["status"] != "within" || budget["total_usd"] != pricedSessionUSD || budget["ceiling_usd"] != "1" || budget["window"] != "store" {
+		t.Fatalf("%#v\n%s", budget, body)
+	}
+
+}
+
+func stopServe(t *testing.T, done <-chan int) {
+	t.Helper()
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		t.Error(err)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Errorf("serve exited %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("serve did not stop")
+	}
+}
+
+func loadPricedSession(t *testing.T, dbPath string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(check.DefaultDir(), "priced-session.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		OTLP struct {
+			Signal string          `json:"signal"`
+			Body   json.RawMessage `json:"body"`
+		} `json:"otlp"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	records, err := otlp.Decode(doc.OTLP.Signal, doc.OTLP.Body, "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Insert(records); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeBudget(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "budget.json")
+	if err := os.WriteFile(path, []byte(body+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func freeLoopback(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func waitForListener(t *testing.T, url string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last error
+	for {
+		resp, err := http.Get(url)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return
 		}
 		last = err
 		if time.Now().After(deadline) {

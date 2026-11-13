@@ -13,7 +13,11 @@ import (
 // Format renders the text summary. It always ends with a newline.
 func Format(report Report) string {
 	if len(report.Sessions) == 0 && len(report.Unattributed) == 0 {
-		return "No telemetry sessions in the store.\n"
+		text := "No telemetry sessions in the store.\n"
+		if report.Budget != nil {
+			text += "budget: " + formatBudget(report.Budget) + "\n"
+		}
+		return text
 	}
 	var lines []string
 	for _, session := range report.Sessions {
