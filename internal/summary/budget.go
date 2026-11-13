@@ -176,19 +176,30 @@ func budgetDecimal(rat *big.Rat) (string, bool) {
 	if rat.Sign() == 0 {
 		return "0", true
 	}
+	// The fraction terminates exactly when the denominator's only prime
+	// factors are 2 and 5, and the decimal then needs as many digits as the
+	// larger of those two counts. FloatString rounds at a fixed width, which
+	// would reject a terminating value that needs more places than that width.
 	den := new(big.Int).Set(rat.Denom())
 	two, five, zero := big.NewInt(2), big.NewInt(5), big.NewInt(0)
 	tmp := new(big.Int)
+	twos, fives := 0, 0
 	for tmp.Mod(den, two).Cmp(zero) == 0 {
 		den.Quo(den, two)
+		twos++
 	}
 	for tmp.Mod(den, five).Cmp(zero) == 0 {
 		den.Quo(den, five)
+		fives++
 	}
 	if den.Cmp(big.NewInt(1)) != 0 {
 		return "", false
 	}
-	text := strings.TrimRight(rat.FloatString(24), "0")
+	places := twos
+	if fives > places {
+		places = fives
+	}
+	text := strings.TrimRight(rat.FloatString(places), "0")
 	text = strings.TrimRight(text, ".")
 	if text == "" {
 		return "", false

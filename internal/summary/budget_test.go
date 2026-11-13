@@ -3,6 +3,7 @@ package summary
 import (
 	"bytes"
 	"encoding/json"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
@@ -111,6 +112,24 @@ func TestBudgetDayWindowAllSessionsUnplaced(t *testing.T) {
 	store := evaluateBudget(nil, &Budget{CeilingUSD: "5", Window: "store"})
 	if store.Status != "unknown" || store.TotalUSD != "" || store.UnknownCost != 0 || store.Sessions != 0 || store.Reason != "no sessions" {
 		t.Fatalf("empty store %+v", store)
+	}
+}
+
+func TestBudgetDecimalKeepsALongTerminatingValue(t *testing.T) {
+	// 25 fractional digits. A fixed-width rendering rounds this and the
+	// round trip would reject a value that terminates exactly.
+	usd := "0.0000000000000000000000001"
+	rat, ok := new(big.Rat).SetString(usd)
+	if !ok {
+		t.Fatal(usd)
+	}
+	got, ok := budgetDecimal(rat)
+	if !ok || got != usd {
+		t.Fatalf("ok=%v got %q", ok, got)
+	}
+	// 1/3 does not terminate in base 10, so it is not a cost to print.
+	if text, ok := budgetDecimal(big.NewRat(1, 3)); ok {
+		t.Fatalf("1/3 rendered as %q", text)
 	}
 }
 
