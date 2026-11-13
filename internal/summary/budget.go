@@ -81,10 +81,12 @@ func evaluateBudget(sessions []SessionSummary, budget *Budget) BudgetStatus {
 		out.Day = budget.Day.UTC().Format("2006-01-02")
 	}
 	windowed := sessions
+	var unplaced int
 	if budget.Window == "day" {
-		windowed = sessionsOnDay(sessions, budget.Day)
+		windowed, unplaced = sessionsOnDay(sessions, budget.Day)
 	}
-	out.Sessions = len(windowed)
+	out.Sessions = len(windowed) + unplaced
+	out.UnknownCost = unplaced
 	if len(windowed) == 0 {
 		out.Reason = "no sessions"
 		return out
@@ -129,12 +131,18 @@ func evaluateBudget(sessions []SessionSummary, budget *Budget) BudgetStatus {
 	return out
 }
 
-func sessionsOnDay(sessions []SessionSummary, day time.Time) []SessionSummary {
+// sessionsOnDay returns the sessions that start inside day, and how many
+// sessions have no start time at all. A session with no start cannot be
+// placed in a day, so the caller treats that count as unknown rather than
+// dropping it from the total.
+func sessionsOnDay(sessions []SessionSummary, day time.Time) ([]SessionSummary, int) {
 	start := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 0, 1)
 	var out []SessionSummary
+	unplaced := 0
 	for _, session := range sessions {
 		if session.Repository.StartUnixNano == nil {
+			unplaced++
 			continue
 		}
 		when := time.Unix(0, *session.Repository.StartUnixNano).UTC()
@@ -142,7 +150,7 @@ func sessionsOnDay(sessions []SessionSummary, day time.Time) []SessionSummary {
 			out = append(out, session)
 		}
 	}
-	return out
+	return out, unplaced
 }
 
 func unknownCostPhrase(n int) string {

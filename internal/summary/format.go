@@ -284,7 +284,7 @@ func formatOutcome(outcome *SessionOutcome) string {
 }
 
 func formatBudget(budget *BudgetStatus) string {
-	head := budget.Status
+	var head string
 	if budget.Status == "unknown" {
 		reason := budget.Reason
 		if reason == "" {

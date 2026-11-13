@@ -61,11 +61,17 @@ func TestBudgetDayWindowUsesSessionStart(t *testing.T) {
 	sessions := []SessionSummary{
 		{SessionID: "today", ComputedCost: &pricing.Cost{Status: "known", USD: "3"}, Repository: RepositoryFacts{StartUnixNano: &inside}},
 		{SessionID: "yesterday", ComputedCost: &pricing.Cost{Status: "known", USD: "9"}, Repository: RepositoryFacts{StartUnixNano: &before}},
-		{SessionID: "untimed", ComputedCost: &pricing.Cost{Status: "known", USD: "9"}},
 	}
 	got := evaluateBudget(sessions, &Budget{CeilingUSD: "5", Window: "day", Day: day})
 	if got.Status != "within" || got.TotalUSD != "3" || got.Sessions != 1 || got.Day != "2026-11-12" || got.Window != "day" {
 		t.Fatalf("%+v", got)
+	}
+	// A session with no start time cannot be placed in the day, so it
+	// excludes the comparison instead of disappearing from the total.
+	untimed := append(sessions, SessionSummary{SessionID: "untimed", ComputedCost: &pricing.Cost{Status: "known", USD: "9"}})
+	placed := evaluateBudget(untimed, &Budget{CeilingUSD: "5", Window: "day", Day: day})
+	if placed.Status != "unknown" || placed.TotalUSD != "" || placed.UnknownCost != 1 || placed.Sessions != 2 {
+		t.Fatalf("unplaced session %+v", placed)
 	}
 	over := evaluateBudget(sessions, &Budget{CeilingUSD: "2", Window: "day", Day: day})
 	if over.Status != "over" || over.TotalUSD != "3" {
