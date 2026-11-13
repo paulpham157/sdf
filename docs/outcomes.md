@@ -95,8 +95,10 @@ telemetry. A commit SHA is matched without regard to case, so a SHA the agent
 exported in uppercase still matches the lowercase ref the edge stores.
 
 `GET /api/decisions` returns the records and edges in insertion order. An empty
-store returns empty lists. There is no command that adds a record, and no route
-that writes one.
+store returns empty lists. `sdf decision add` writes one record. It needs an id,
+a statement, and a status of `hypothesis` or `decision`. `sdf decision link`
+writes one edge. It needs a relation and two `KIND:REF` endpoints. No route
+writes a record.
 
 ## Local budget
 
