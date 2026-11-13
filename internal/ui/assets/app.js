@@ -162,12 +162,15 @@
   }
 
   function overview() {
-    if (isEmpty()) return emptyState();
-    const cost = heroCost(snapshot.cost_per_accepted_outcome);
-    const totals = snapshot.totals || {};
     const kids = [
       budgetSection(),
-      h("section", { class: "hero" }, [
+    ];
+    if (isEmpty()) {
+      kids.push(emptyState());
+    } else {
+      const cost = heroCost(snapshot.cost_per_accepted_outcome);
+      const totals = snapshot.totals || {};
+      kids.push(h("section", { class: "hero" }, [
         h("div", null, [
           h("p", { class: "kicker" }, ["Cost per accepted outcome"]),
           cost.value,
@@ -184,12 +187,12 @@
           stat("Input tokens", inlineAmount(totals.input_tokens)),
           stat("Output tokens", inlineAmount(totals.output_tokens)),
         ]),
-      ]),
-      h("section", { class: "section" }, [
+      ]));
+      kids.push(h("section", { class: "section" }, [
         h("h2", null, ["By agent"]),
         agentTable(snapshot.agents || []),
-      ]),
-    ];
+      ]));
+    }
     if (snapshot.unattributed && snapshot.unattributed.length) kids.push(unattributedBlock(snapshot.unattributed));
     kids.push(decisionsSection());
     return h("div", null, kids);

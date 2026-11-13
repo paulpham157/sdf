@@ -364,7 +364,7 @@ func TestPageRendersOverAndUnknownBudgets(t *testing.T) {
 	if !strings.Contains(unknownPage, "unknown") {
 		t.Fatalf("unknown budget not rendered:\n%s", unknownPage)
 	}
-	if strings.Contains(unknownPage, "within") || strings.Contains(unknownPage, "over") {
+	if budgetShown(unknownPage, "within", "", "") || budgetShown(unknownPage, "over", "", "") {
 		t.Fatalf("unknown budget rendered a comparison:\n%s", unknownPage)
 	}
 }
@@ -631,7 +631,12 @@ func budgetShown(page, status, total, ceiling string) bool {
 		`.*?total\s*(\d+(?:\.\d+)?)` +
 		`.*?ceiling\s*(\d+(?:\.\d+)?)`
 	found := regexp.MustCompile(pattern).FindStringSubmatch(page)
-	return found != nil && found[1] == total && found[2] == ceiling
+	if found == nil {
+		return false
+	}
+	// An empty figure matches any number, so a caller can reject a comparison
+	// without naming the total. A named figure must be that number.
+	return (total == "" || found[1] == total) && (ceiling == "" || found[2] == ceiling)
 }
 
 // decisionShown reports a decision record as its own word. The navigation
