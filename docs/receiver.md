@@ -48,7 +48,7 @@ the two costs side by side, and the outcome. A field the summary could not
 establish says `unknown` and gives the reason (no published price, no working
 directory or commit, merge status not requested).
 
-Those numbers are the `sdf summary` report. The page does not price tokens
+Those numbers are the `sdf summary` report. The decision records and the budget are drawn on every view, the overview, the session list, and the session detail, and both are drawn even when the store has no sessions. The page does not price tokens
 again. `GET /api/summary` on the UI port is the same document as
 `sdf summary --json` for that database, including `--prices` and `--repo`.
 `GET /api/snapshot` is that report newest-first, plus the per-agent totals.

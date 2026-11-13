@@ -1,6 +1,8 @@
 (function () {
   const app = document.getElementById("app");
   let snapshot = null;
+  let decisions = null;
+  let budget = undefined;
   let loadError = "";
   let agentFilter = "all";
   let sortKey = "started";
@@ -160,11 +162,15 @@
   }
 
   function overview() {
-    if (isEmpty()) return emptyState();
-    const cost = heroCost(snapshot.cost_per_accepted_outcome);
-    const totals = snapshot.totals || {};
     const kids = [
-      h("section", { class: "hero" }, [
+      budgetSection(),
+    ];
+    if (isEmpty()) {
+      kids.push(emptyState());
+    } else {
+      const cost = heroCost(snapshot.cost_per_accepted_outcome);
+      const totals = snapshot.totals || {};
+      kids.push(h("section", { class: "hero" }, [
         h("div", null, [
           h("p", { class: "kicker" }, ["Cost per accepted outcome"]),
           cost.value,
@@ -181,14 +187,65 @@
           stat("Input tokens", inlineAmount(totals.input_tokens)),
           stat("Output tokens", inlineAmount(totals.output_tokens)),
         ]),
-      ]),
-      h("section", { class: "section" }, [
+      ]));
+      kids.push(h("section", { class: "section" }, [
         h("h2", null, ["By agent"]),
         agentTable(snapshot.agents || []),
-      ]),
-    ];
+      ]));
+    }
     if (snapshot.unattributed && snapshot.unattributed.length) kids.push(unattributedBlock(snapshot.unattributed));
+    kids.push(decisionsSection());
     return h("div", null, kids);
+  }
+
+  function budgetSection() {
+    if (budget == null) return null;
+    const status = budget.status || "unknown";
+    const note = [];
+    if (status === "unknown") {
+      note.push(budget.reason || "unknown");
+    } else {
+      note.push("total " + (budget.total_usd || "") + " USD");
+      note.push("ceiling " + (budget.ceiling_usd || "") + " USD");
+    }
+    if (budget.window) note.push("window " + budget.window);
+    if (budget.day) note.push(budget.day);
+    return h("section", { class: "section budget" }, [
+      h("h2", null, ["Budget"]),
+      h("p", { class: status === "unknown" ? "figure-value unknown" : "figure-value budget-status" }, [status]),
+      h("p", { class: "detail" }, [note.join(" · ")]),
+    ]);
+  }
+
+  function decisionsSection() {
+    const records = decisions && decisions.decisions ? decisions.decisions : [];
+    const edges = decisions && decisions.edges ? decisions.edges : [];
+    if (!records.length && !edges.length) return null;
+    const kids = [h("h2", null, ["Decisions"])];
+    if (!records.length) {
+      kids.push(h("p", null, ["no decision"]));
+    } else {
+      records.forEach(function (record) {
+        kids.push(h("p", { class: "decision" }, [
+          h("span", { class: "status" }, [record.status || "unknown"]),
+          document.createTextNode(record.statement || ""),
+        ]));
+      });
+    }
+    edges.forEach(function (edge) {
+      kids.push(h("p", { class: "detail" }, [
+        endpointText(edge.from) + " " + (edge.relation || "") + " " + endpointText(edge.to),
+      ]));
+    });
+    return h("section", { class: "section" }, kids);
+  }
+
+  function endpointText(endpoint) {
+    if (!endpoint) return "";
+    const kind = endpoint.kind || "";
+    const ref = endpoint.ref || "";
+    if (kind === "commit" && ref.length > 12) return kind + " " + ref.slice(0, 12);
+    return (kind + " " + ref).trim();
   }
 
   function agentTable(agents) {
@@ -256,7 +313,9 @@
   }
 
   function sessions() {
-    if (isEmpty()) return emptyState();
+    if (isEmpty()) {
+      return h("div", null, [budgetSection(), emptyState(), decisionsSection()]);
+    }
     const tools = [];
     snapshot.sessions.forEach(function (view) {
       const tool = (view.summary && view.summary.tool) || "unknown";
@@ -268,6 +327,7 @@
     ].concat(tools.map(function (tool) { return filterButton(tool, tool); })));
     const rows = sorted(filtered());
     return h("div", null, [
+      budgetSection(),
       h("p", { class: "kicker" }, ["Sessions"]),
       filters,
       h("div", { class: "table-scroll" }, [
@@ -287,6 +347,7 @@
           h("tbody", null, rows.map(sessionRow)),
         ]),
       ]),
+      decisionsSection(),
     ]);
   }
 
@@ -461,19 +522,26 @@
   }
 
   function detail(id) {
-    if (isEmpty()) return emptyState();
+    if (isEmpty()) {
+      return h("div", null, [budgetSection(), emptyState(), decisionsSection()]);
+    }
     const view = (snapshot.sessions || []).filter(function (item) {
       return item.summary && item.summary.session_id === id;
     })[0];
     if (!view) {
-      return h("section", { class: "empty" }, [
-        h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
-        h("h2", null, ["No session with that id."]),
-        h("p", null, [id || ""]),
+      return h("div", null, [
+        budgetSection(),
+        h("section", { class: "empty" }, [
+          h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
+          h("h2", null, ["No session with that id."]),
+          h("p", null, [id || ""]),
+        ]),
+        decisionsSection(),
       ]);
     }
     const summary = view.summary;
     return h("div", null, [
+      budgetSection(),
       h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
       h("p", { class: "kicker" }, [summary.tool || "unknown"]),
       h("h2", { class: "id" }, [summary.session_id || ""]),
@@ -493,6 +561,7 @@
       toolSection(view),
       outcomeSection(view),
       missingSection(summary),
+      decisionsSection(),
     ]);
   }
 
@@ -661,16 +730,27 @@
     shell(current.name, body);
   }
 
+  function readJSON(url, label) {
+    return fetch(url, { headers: { Accept: "application/json" } }).then(function (response) {
+      if (!response.ok) throw new Error(label + " request failed (" + response.status + ")");
+      return response.json();
+    });
+  }
+
   function load(manual) {
     if (manual) loadError = "";
-    fetch("/api/snapshot", { headers: { Accept: "application/json" } })
-      .then(function (response) {
-        if (!response.ok) throw new Error("summary request failed (" + response.status + ")");
-        return response.json();
-      })
-      .then(function (body) {
-        snapshot = body;
+    Promise.all([
+      readJSON("/api/snapshot", "summary"),
+      readJSON("/api/decisions", "decisions"),
+      readJSON("/api/summary", "summary"),
+    ])
+      .then(function (bodies) {
+        snapshot = bodies[0];
         if (!snapshot.sessions) snapshot.sessions = [];
+        decisions = bodies[1] || { decisions: [], edges: [] };
+        if (!decisions.decisions) decisions.decisions = [];
+        if (!decisions.edges) decisions.edges = [];
+        budget = bodies[2] && Object.prototype.hasOwnProperty.call(bodies[2], "budget") ? bodies[2].budget : null;
         loadError = "";
         render();
       })
