@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/cli"
 	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/pricing"
@@ -297,6 +298,53 @@ func httpGet(t *testing.T, url string) string {
 			t.Fatal(last)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCheckReportsAGoodCaseAndABadCase(t *testing.T) {
+	dir := t.TempDir()
+	committed := check.DefaultDir()
+	copyCase(t, committed, dir, "priced-session.json")
+	bad := filepath.Join(dir, "priced-wrong.json")
+	body, err := os.ReadFile(filepath.Join(committed, "priced-session.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := strings.Replace(string(body), `"expect": "0.011988"`, `"expect": "0"`, 1)
+	rewritten = strings.Replace(rewritten, `"id": "priced-session"`, `"id": "priced-wrong"`, 1)
+	if rewritten == string(body) {
+		t.Fatal("case fixture did not contain the expected cost")
+	}
+	if err := os.WriteFile(bad, []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := run(t, "check", "--cases", dir)
+	if out.code != 1 {
+		t.Fatalf("code %d\n%s%s", out.code, out.stdout, out.stderr)
+	}
+	if !strings.Contains(out.stdout, "priced-session pass\n") || !strings.Contains(out.stdout, "priced-wrong fail ") {
+		t.Fatalf("%s", out.stdout)
+	}
+	if !strings.Contains(out.stdout, "1 passed, 1 failed, 0 not_checked\n") {
+		t.Fatalf("%s", out.stdout)
+	}
+	unchecked := run(t, "check", "--cases", committed)
+	if unchecked.code != 0 || !strings.Contains(unchecked.stdout, "unknown-price not_checked") || !strings.Contains(unchecked.stdout, "unlinked-outcome not_checked") {
+		t.Fatalf("code %d\n%s%s", unchecked.code, unchecked.stdout, unchecked.stderr)
+	}
+	if strings.Contains(unchecked.stdout, " fail ") {
+		t.Fatal(unchecked.stdout)
+	}
+}
+
+func copyCase(t *testing.T, from, to, name string) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(from, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(to, name), body, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
