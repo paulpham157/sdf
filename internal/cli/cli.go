@@ -66,11 +66,12 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	pricesSpec := ""
 	repoPath := ""
 	github := false
+	budgetPath := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
 			return 0
 		case arg == "--host":
@@ -162,6 +163,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			repoPath = strings.TrimPrefix(arg, "--repo=")
 		case arg == "--github":
 			github = true
+		case arg == "--budget":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --budget requires a path")
+				return 2
+			}
+			budgetPath = v
+		case strings.HasPrefix(arg, "--budget="):
+			budgetPath = strings.TrimPrefix(arg, "--budget=")
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
@@ -169,6 +179,10 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
 		fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+	}
+	if _, err := summary.LoadBudget(budgetPath); err != nil {
+		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		return 1
 	}
 	if uiOn {
 		if _, err := pricing.ResolveCatalog(pricesSpec); err != nil {
@@ -201,6 +215,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			Prices: pricesSpec,
 			Repo:   repoPath,
 			GitHub: github,
+			Budget: budgetPath,
 		})
 		if err != nil {
 			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
@@ -251,11 +266,12 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	pricesSpec := ""
 	repoPath := ""
 	github := false
+	budgetPath := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH] [--repo PATH] [--github]")
+			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -300,10 +316,24 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 			repoPath = strings.TrimPrefix(arg, "--repo=")
 		case arg == "--github":
 			github = true
+		case arg == "--budget":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf summary: --budget requires a path")
+				return 2
+			}
+			budgetPath = v
+		case strings.HasPrefix(arg, "--budget="):
+			budgetPath = strings.TrimPrefix(arg, "--budget=")
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
+	}
+	budget, err := summary.LoadBudget(budgetPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		return 1
 	}
 	prices, err := pricing.ResolveCatalog(pricesSpec)
 	if err != nil {
@@ -346,6 +376,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		rolled := outcome.CostPerAccepted(filtered)
 		report = summary.Report{Sessions: filtered, Unattributed: []summary.Unattributed{}, CostPerAccepted: &rolled}
 	}
+	summary.ApplyBudget(&report, budget)
 	if asJSON {
 		if err := summary.WriteJSON(stdout, report); err != nil {
 			fmt.Fprintf(stderr, "sdf summary: %v\n", err)

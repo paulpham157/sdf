@@ -10,7 +10,8 @@ port; keep the bind address on localhost. Override with `--host`, `--port`
 The same process serves a read-only UI at `http://127.0.0.1:4320/` unless
 you pass `--no-ui`. `--ui-addr` moves the UI. `--host` does not: the page
 stays on localhost when the receivers are bound wider. `--prices`, `--repo`,
-and `--github` match `sdf summary` and apply to the page.
+`--github`, and `--budget` match `sdf summary` and apply to the page. `--budget`
+names one local ceiling file; without it the page has no budget.
 
 `GET /health` returns `{"status":"ok"}`. HTTP exports are `POST /v1/traces`,
 `POST /v1/metrics`, and `POST /v1/logs`, `Content-Type: application/json` or

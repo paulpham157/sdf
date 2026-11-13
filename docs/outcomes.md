@@ -116,6 +116,8 @@ total that is not a terminating decimal. A window with no sessions at all says
 `no sessions`. A day window whose sessions all lack a start time does not: it
 has sessions, and the cost is unknown.
 
-The budget is applied when a summary is built with a budget file. Without one,
-the report is unchanged and the `budget` field is absent. The page reads the
-summary, so a budget that is in the report is in `GET /api/summary`.
+The budget is applied when a summary is built with a budget file. `sdf summary
+--budget PATH` and `sdf serve --budget PATH` pass that file. Without one, the
+report is unchanged and the `budget` field is absent. A file that fails to load
+exits non-zero and prints no report. The page reads the summary, so a budget
+that is in the report is in `GET /api/summary`.
