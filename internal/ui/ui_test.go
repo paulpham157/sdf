@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -278,6 +280,95 @@ func TestPerAgentAcceptedCostUsesTheOutcomeRule(t *testing.T) {
 	}
 }
 
+func TestPageRendersDecisionsAndBudget(t *testing.T) {
+	db := openDB(t)
+	if _, err := db.Insert([]record.Record{{
+		Signal: "traces", ServiceName: record.Str("pi"), SessionID: record.Str("sess-1"),
+		Name: record.Str("chat flint"), StartUnixNano: record.Int64(5_000_000_000), EndUnixNano: record.Int64(6_000_000_000),
+		Attributes: map[string]any{
+			"gen_ai.request.model":       "recursive/flint-v1.0:free",
+			"gen_ai.usage.input_tokens":  10,
+			"gen_ai.usage.output_tokens": 4,
+			"pi.cost.usd":                0,
+		},
+		Resource: map[string]any{},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "keep-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "pure-go", Statement: "The driver stays pure Go.", Status: decision.StatusHypothesis,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelImplements,
+		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "pure-go"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelValidates,
+		From:     decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	budgetPath := filepath.Join(t.TempDir(), "budget.json")
+	if err := os.WriteFile(budgetPath, []byte("{\"ceiling_usd\":\"2\",\"window\":\"store\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, budgetPath)
+
+	page := renderedPage(t, srv)
+	if !strings.Contains(page, "Keep the collector store in SQLite.") || !strings.Contains(page, "decision") {
+		t.Fatalf("decision record not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "The driver stays pure Go.") || !strings.Contains(page, "hypothesis") {
+		t.Fatalf("hypothesis record not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "implements") || !strings.Contains(page, "pure-go") || !strings.Contains(page, "keep-sqlite") {
+		t.Fatalf("decision edge not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "validates") || !strings.Contains(page, "sess-1") {
+		t.Fatalf("session edge not rendered:\n%s", page)
+	}
+	if !budgetShown(page, "within", "0", "2") {
+		t.Fatalf("within budget not rendered:\n%s", page)
+	}
+}
+
+func TestPageOmitsDecisionsAndBudgetWhenAbsent(t *testing.T) {
+	db := openDB(t)
+	srv := startUI(t, db)
+	page := renderedPage(t, srv)
+	if strings.Contains(page, "hypothesis") || decisionShown(page) {
+		t.Fatalf("empty page rendered a decision:\n%s", page)
+	}
+	if strings.Contains(page, "ceiling") {
+		t.Fatalf("empty page rendered a budget:\n%s", page)
+	}
+}
+
+func TestPageRendersOverAndUnknownBudgets(t *testing.T) {
+	overPage := renderedPage(t, startUIWithBudget(t, pricedDB(t), writeBudget(t, "0.5")))
+	if !budgetShown(overPage, "over", "1", "0.5") {
+		t.Fatalf("over budget not rendered:\n%s", overPage)
+	}
+	unknownPage := renderedPage(t, startUIWithBudget(t, unpricedDB(t), writeBudget(t, "2")))
+	if !strings.Contains(unknownPage, "unknown") {
+		t.Fatalf("unknown budget not rendered:\n%s", unknownPage)
+	}
+	if strings.Contains(unknownPage, "within") || strings.Contains(unknownPage, "over") {
+		t.Fatalf("unknown budget rendered a comparison:\n%s", unknownPage)
+	}
+}
+
 func TestReadOnlyAndLoopback(t *testing.T) {
 	db := openDB(t)
 	srv := startUI(t, db)
@@ -397,7 +488,12 @@ func openDB(t *testing.T) *store.Store {
 
 func startUI(t *testing.T, db *store.Store) *ui.Server {
 	t.Helper()
-	srv, err := ui.Start(ui.Config{Addr: "127.0.0.1:0", Store: db, Prices: "bundled"})
+	return startUIWithBudget(t, db, "")
+}
+
+func startUIWithBudget(t *testing.T, db *store.Store, budget string) *ui.Server {
+	t.Helper()
+	srv, err := ui.Start(ui.Config{Addr: "127.0.0.1:0", Store: db, Prices: "bundled", Budget: budget})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,6 +620,219 @@ func get(t *testing.T, url string) (int, http.Header, string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// budgetShown reports whether the rendered page states a budget. The status
+// comes first. The page then names the two figures, with words between the
+// numbers and no gap after the status: "withintotal 0 USD · ceiling 2 USD".
+// Each figure is the whole number after its own word, so 0 is not 0.50 and a
+// session count earlier on the page is not the total.
+func budgetShown(page, status, total, ceiling string) bool {
+	pattern := `(?s)` + regexp.QuoteMeta(status) +
+		`.*?total\s*(\d+(?:\.\d+)?)` +
+		`.*?ceiling\s*(\d+(?:\.\d+)?)`
+	found := regexp.MustCompile(pattern).FindStringSubmatch(page)
+	return found != nil && found[1] == total && found[2] == ceiling
+}
+
+// decisionShown reports a decision record as its own word. The navigation
+// always contains "Overview", so the substrings "over" and "decision" are not
+// a record.
+func decisionShown(page string) bool {
+	return regexp.MustCompile(`(?i)\bdecision\b`).MatchString(page)
+}
+
+// renderedPage is the text of the page after its own script has drawn it.
+// The server is the one under test: the script fetches this server, and the
+// result is the text a reader sees, not the JSON the routes return.
+func renderedPage(t *testing.T, srv *ui.Server) string {
+	t.Helper()
+	status, _, html := get(t, srv.URL())
+	if status != 200 {
+		t.Fatalf("page %d", status)
+	}
+	_, _, script := get(t, srv.URL()+"app.js")
+	return runPage(t, srv.URL(), html, script)
+}
+
+func runPage(t *testing.T, base, html, script string) string {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	page := filepath.Join(dir, "page.cjs")
+	if err := os.WriteFile(page, []byte(pageRunner), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, node, page)
+	cmd.Stdin = strings.NewReader(base + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+func pricedDB(t *testing.T) *store.Store {
+	t.Helper()
+	db := openDB(t)
+	if _, err := db.Insert([]record.Record{{
+		Signal: "logs", ServiceName: record.Str("claude-code"), SessionID: record.Str("priced"),
+		Name: record.Str("claude_code.api_request"), TimeUnixNano: record.Int64(1_000_000_000),
+		Attributes: map[string]any{
+			"model": "anthropic/claude-haiku-4.5", "input_tokens": 1000000, "output_tokens": 0,
+		},
+		Resource: map[string]any{},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func unpricedDB(t *testing.T) *store.Store {
+	t.Helper()
+	db := openDB(t)
+	if _, err := db.Insert([]record.Record{{
+		Signal: "logs", ServiceName: record.Str("claude-code"), SessionID: record.Str("unpriced"),
+		Name: record.Str("claude_code.api_request"), TimeUnixNano: record.Int64(1_000_000_000),
+		Attributes: map[string]any{
+			"model": "not-a-real-model", "input_tokens": 5, "output_tokens": 2,
+		},
+		Resource: map[string]any{},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func writeBudget(t *testing.T, ceiling string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "budget.json")
+	body := "{\"ceiling_usd\":\"" + ceiling + "\",\"window\":\"store\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// pageRunner executes the page script the browser would, then prints the text
+// of the drawn page. It implements only the DOM surface app.js uses:
+// createElement, setAttribute, className, addEventListener, append,
+// replaceChildren, and textContent. fetch is pointed at the server under test.
+const pageRunner = `"use strict";
+const { createInterface } = require("node:readline");
+
+function textOf(node) {
+  if (node.nodeType === 3) return node.text;
+  return (node.children || []).map(textOf).join("");
+}
+
+class Node {
+  constructor() { this.children = []; }
+  append() {
+    for (const kid of arguments) this.children.push(kid);
+  }
+}
+class Element extends Node {
+  constructor(tag) {
+    super();
+    this.nodeType = 1;
+    this.tag = tag;
+    this.className = "";
+    this.attrs = {};
+    this.listeners = {};
+  }
+  setAttribute(key, value) { this.attrs[key] = String(value); }
+  addEventListener(type, fn) { this.listeners[type] = fn; }
+  replaceChildren() {
+    this.children = [];
+    this.append.apply(this, arguments);
+  }
+  get textContent() { return textOf(this); }
+}
+class Text extends Node {
+  constructor(value) {
+    super();
+    this.nodeType = 3;
+    this.text = String(value);
+  }
+}
+
+const lines = createInterface({ input: process.stdin });
+const chunks = [];
+lines.on("line", (line) => chunks.push(line));
+lines.on("close", async () => {
+  const raw = chunks.join("\n");
+  const splitAt = raw.indexOf("\n");
+  const base = raw.slice(0, splitAt);
+  const rest = raw.slice(splitAt + 1);
+  const marker = "\n/*SDF_PAGE_SPLIT*/\n";
+  const cut = rest.indexOf(marker);
+  const script = rest.slice(cut + marker.length);
+  const app = new Element("div");
+  const location = { hash: "" };
+  const document = {
+    getElementById: function () { return app; },
+    createElement: function (tag) { return new Element(tag); },
+    createTextNode: function (value) { return new Text(value); },
+  };
+  const window = {
+    document: document,
+    location: location,
+    addEventListener: function () {},
+    fetch: async function (url) {
+      const response = await fetch(new URL(url, base));
+      const body = await response.text();
+      return {
+        ok: response.ok,
+        status: response.status,
+        json: async () => JSON.parse(body),
+        text: async () => body,
+      };
+    },
+  };
+  // The page fetches /api/snapshot, /api/decisions, and /api/summary before it
+  // draws. Those responses are not back within a fixed number of turns, so
+  // count each fetch the page starts and read the page only once a whole turn
+  // both starts and ends with none of them left in flight. That covers the
+  // draw their callbacks queue, and a callback that starts another fetch.
+  const pending = new Set();
+  let idle = function () {};
+  function fetching(url, options) {
+    let finish;
+    const done = new Promise((resolve) => { finish = resolve; });
+    pending.add(done);
+    return Promise.resolve(window.fetch(url, options)).finally(() => {
+      finish();
+      pending.delete(done);
+      idle();
+    });
+  }
+  const run = new Function("window", "document", "location", "fetch", "Node", script);
+  run(window, document, location, fetching, Node);
+  await new Promise((resolve) => {
+    let quiet = false;
+    function drain() {
+      if (pending.size !== 0) {
+        quiet = false;
+        idle = drain;
+        return;
+      }
+      if (!quiet) {
+        quiet = true;
+        setImmediate(drain);
+        return;
+      }
+      resolve();
+    }
+    setImmediate(drain);
+  });
+  process.stdout.write(app.textContent);
+});
+`
 
 func readAsset(t *testing.T, name string) string {
 	t.Helper()

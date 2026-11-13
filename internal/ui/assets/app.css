@@ -286,6 +286,19 @@ h2.id {
 
 .figure-value.unknown { font-size: 36px; }
 
+.budget { margin-top: 22px; }
+.budget-status { font-size: 32px; }
+
+.decision { margin: 0 0 8px; }
+.status {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
 .crumb { margin: 18px 0 0; font-size: 13px; }
 .crumb a { color: var(--ink-soft); }
 
