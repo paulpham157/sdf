@@ -82,7 +82,11 @@ func TestGitHookInstallChainsAndUninstalls(t *testing.T) {
 		t.Fatal("opencode payload set conversation.id")
 	}
 	off, err := UninstallGitHooks(dir)
-	if err != nil || !strings.Contains(off.Text, "restored "+filepath.Join(hooks, "post-commit")) {
+	restoredHook := filepath.Join(hooks, "post-commit")
+	if real, e := filepath.EvalSymlinks(restoredHook); e == nil {
+		restoredHook = real
+	}
+	if err != nil || !strings.Contains(off.Text, "restored "+restoredHook) {
 		t.Fatalf("%v %s", err, off.Text)
 	}
 	restored, err := os.ReadFile(filepath.Join(hooks, "post-commit"))
@@ -343,8 +347,8 @@ func TestGitHookWorksFromALinkedWorktree(t *testing.T) {
 	if gotRepo != wantRepo {
 		t.Fatalf("repo %s want %s", attrs["sdf.git.repo"], wt)
 	}
-	mainHooks := hooksPath(t, dir)
-	wtHooks := hooksPath(t, wt)
+	mainHooks, _ := filepath.EvalSymlinks(hooksPath(t, dir))
+	wtHooks, _ := filepath.EvalSymlinks(hooksPath(t, wt))
 	if mainHooks != wtHooks {
 		t.Fatalf("worktree hooks dir %s main %s", wtHooks, mainHooks)
 	}
@@ -391,7 +395,11 @@ func TestGitHookEscapesTheCheckoutPath(t *testing.T) {
 		t.Fatalf("posts %d", len(got.all()))
 	}
 	attrs := payloadAttrs(t, got.all()[0])
-	if attrs["sdf.git.repo"] != dir || attrs["session.id"] != "ses_quote" {
+	// git rev-parse resolves the /var -> /private/var symlink on macOS, so
+	// compare the real paths. The quote in the directory name is the point.
+	gotRepo, _ := filepath.EvalSymlinks(attrs["sdf.git.repo"])
+	wantRepo, _ := filepath.EvalSymlinks(dir)
+	if gotRepo != wantRepo || attrs["session.id"] != "ses_quote" {
 		t.Fatalf("%+v", attrs)
 	}
 }
