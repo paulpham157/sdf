@@ -184,7 +184,7 @@ func ToolOf(rec record.Record) string {
 	if strings.HasPrefix(service, "claude-code") || strings.HasPrefix(name, "claude_code.") || strings.HasPrefix(body, "claude_code.") || strings.HasPrefix(event, "claude_code.") {
 		return "claude-code"
 	}
-	if strings.Contains(service, "codex") || strings.HasPrefix(strings.ToLower(origin), "codex") || strings.HasPrefix(name, "codex.") || strings.HasPrefix(body, "codex.") || strings.HasPrefix(event, "codex.") {
+	if service == "codex" || strings.Contains(service, "codex") || strings.HasPrefix(strings.ToLower(origin), "codex") || strings.HasPrefix(name, "codex.") || strings.HasPrefix(body, "codex.") || strings.HasPrefix(event, "codex.") {
 		return "codex"
 	}
 	if service == "opencode" {
@@ -220,6 +220,11 @@ func attribute(records []record.Record) (map[sessionKey][]record.Record, []recor
 	spanKeys := map[string]map[sessionKey]struct{}{}
 	bounds := map[sessionKey][2]int64{}
 	boundsSet := map[sessionKey]bool{}
+	// A session that reported its own edge keeps that window instead of the
+	// one inferred from its records. The close is optional: a session that
+	// opened and never closed is still open, so its window has no end.
+	opened := map[sessionKey]int64{}
+	closed := map[sessionKey]int64{}
 	for key, grouped := range scoped {
 		for _, rec := range grouped {
 			if rec.TraceID != nil && *rec.TraceID != "" {
@@ -227,6 +232,20 @@ func attribute(records []record.Record) (map[sessionKey][]record.Record, []recor
 			}
 			if rec.SpanID != nil && *rec.SpanID != "" {
 				addKey(spanKeys, *rec.SpanID, key)
+			}
+			switch deref(rec.Name) {
+			case "sdf.session.open":
+				if stamp := rec.TimeUnixNano; stamp != nil {
+					if prev, ok := opened[key]; !ok || *stamp < prev {
+						opened[key] = *stamp
+					}
+				}
+			case "sdf.session.close":
+				if stamp := rec.TimeUnixNano; stamp != nil {
+					if prev, ok := closed[key]; !ok || *stamp > prev {
+						closed[key] = *stamp
+					}
+				}
 			}
 			for _, stamp := range stamps(rec) {
 				if !boundsSet[key] {
@@ -244,6 +263,16 @@ func attribute(records []record.Record) (map[sessionKey][]record.Record, []recor
 				bounds[key] = lohi
 			}
 		}
+	}
+	for key, open := range opened {
+		end, ok := closed[key]
+		if !ok {
+			// No close arrived. MaxInt64 keeps the window open, so a record
+			// that lands after the last telemetry still belongs to it.
+			end = math.MaxInt64
+		}
+		bounds[key] = [2]int64{open, end}
+		boundsSet[key] = true
 	}
 	var leftover []record.Record
 	for _, rec := range unscoped {
@@ -297,7 +326,13 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 		if key.tool != tool {
 			continue
 		}
-		if lohi[0]-timeSlackNS <= stamp && stamp <= lohi[1]+timeSlackNS {
+		// A recorded close is exact, so no slack past it. A session with no
+		// close uses MaxInt64 as its end, and adding the slack would overflow.
+		hi := lohi[1]
+		if hi < math.MaxInt64-timeSlackNS {
+			hi += timeSlackNS
+		}
+		if lohi[0]-timeSlackNS <= stamp && stamp <= hi {
 			matches = append(matches, key)
 		}
 	}

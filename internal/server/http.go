@@ -86,6 +86,9 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		s.logRequest(method, path, 200)
 		return closeAfter, nil
 	case "POST":
+		if path == "/v1/sessions" {
+			return s.handleSession(reader, writer, headers, method, path, closeAfter)
+		}
 		signal, ok := signals[path]
 		if !ok {
 			writeResponse(writer, 404, "text/plain", []byte("not found"), closeAfter)

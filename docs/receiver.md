@@ -107,6 +107,18 @@ sdf init --check
 `127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
 counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
 
+`--write` also installs a session hook for that agent. The hook posts to
+`POST /v1/sessions` when a session opens and, where the agent has such an
+event, when it closes. The collector stores each as a log named
+`sdf.session.open` or `sdf.session.close` and uses those as the session's
+window instead of inferring one from the records. A session with no close
+stays open. An agent with no hook keeps the inferred window. The hook exits
+without effect when the collector is not running, so it never blocks the
+agent. Codex posts only for the root thread, because a descendant's hook
+reports the shared session id while its spans carry the thread id. OpenCode
+has no close event, so only the open is posted. Pi reads the session id from
+the session manager rather than from the file name pi-otel exports.
+
 The settings are the ones in [docs/agents.md](agents.md). Claude Code's variables are
 from the [monitoring doc](https://code.claude.com/docs/en/monitoring-usage)
 and are written to `~/.claude/settings.json`, not to a repository settings

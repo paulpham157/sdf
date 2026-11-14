@@ -102,7 +102,10 @@ in `openai/codex` at `8703d32` (2026-11-09):
 Codex does not use the standard `OTEL_EXPORTER_OTLP_*` environment variables
 for its own export. Put an `[otel]` table in the user config
 (`$CODEX_HOME/config.toml`, `~/.codex/config.toml` by default). A project-local
-`.codex/config.toml` cannot set `otel`; Codex ignores it there.
+`.codex/config.toml` cannot set `otel`; Codex ignores it there. `sdf init codex
+--write` also writes `hooks.json` with a `SessionStart` and `SessionEnd` hook.
+The hook posts only when the session id equals the thread id, so a descendant
+thread reports nothing.
 
 Each signal has its own exporter, and the defaults are not the same:
 
@@ -198,7 +201,9 @@ does not add that field on top of the input and output counts.
 
 OpenCode v2 is the `@opencode/cli` package, not npm `opencode-ai` (that package
 is still v1). v1's `experimental.openTelemetry` flag is ignored by v2. Export
-turns on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+turns on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `sdf init opencode --write`
+also installs a plugin that posts when a session is created. OpenCode has no
+event for a session ending.
 
 The bundled exporter posts traces to `${endpoint}/v1/traces` and logs to
 `${endpoint}/v1/logs` as `application/json`. Trace batches use
@@ -230,6 +235,12 @@ default reaches the gRPC port. Metrics and logs stay off until you turn them
 on with `PI_OTEL_METRICS=1` and `PI_OTEL_LOGS=1`. `PI_OTEL_DISABLED=1` turns
 the extension off.
 
+The session id pi-otel exports is the session file's name, which is a
+timestamp joined to the id. `sdf init pi --write` installs an extension that
+reads the id from the session manager instead and posts the open and the close.
+A `session_shutdown` fired because the session was replaced, on `reload`,
+`new`, `resume`, or `fork`, is not a close and is not posted.
+
 The same switches can be set in `.pi/agent/settings.json` under `otel`
 (`protocol`, `signals.traces`, `signals.metrics`, `signals.logs`,
 `spanNaming`, `serviceName`). Leave content capture off; the summary does not
@@ -258,7 +269,8 @@ the call succeeded).
 
 Set these in the shell that launches `claude`, or in `~/.claude/settings.json`.
 A repository `.claude/settings.json` cannot turn these exporters on; Claude
-Code ignores the exporter variables there.
+Code ignores the exporter variables there. `sdf init claude-code --write` also
+adds a `SessionStart` and `SessionEnd` hook that reports the session boundary.
 
 ```bash
 export CLAUDE_CODE_ENABLE_TELEMETRY=1

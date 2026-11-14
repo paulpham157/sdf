@@ -137,7 +137,15 @@ func claude(req Request) (Result, error) {
 		fmt.Fprintf(&b, "export %s=%s\n", key, env[key])
 	}
 	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
-		return mergeStringMap(root, "env", env)
+		envChanged, err := mergeStringMap(root, "env", env)
+		if err != nil {
+			return false, err
+		}
+		hooksChanged, err := mergeAnyMap(root, "hooks", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
+		if err != nil {
+			return false, err
+		}
+		return envChanged || hooksChanged, nil
 	})
 	if err != nil {
 		return Result{}, err
@@ -224,6 +232,11 @@ func codex(req Request) (Result, error) {
 	}
 	b.WriteString("\n")
 	b.WriteString(wrote(path, backup))
+	hookStatus, err := writeBytes(filepath.Join(req.CodexHome, "hooks.json"), []byte(codexHooks(req.Endpoint.base()+"/v1/sessions")), true)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(hookStatus)
 	return Result{Text: b.String(), Wrote: true}, nil
 }
 
@@ -273,7 +286,13 @@ func opencode(req Request) (Result, error) {
 		return Result{}, err
 	}
 	b.WriteString(status)
-	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
+	plugin := filepath.Join(req.Home, ".config", "opencode", "plugins", "sdf-session.js")
+	hookStatus, err := writeBytes(plugin, []byte(opencodePlugin(req.Endpoint.base()+"/v1/sessions")), req.Write)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(hookStatus)
+	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ") || strings.HasPrefix(hookStatus, "wrote ")}, nil
 }
 
 func pi(req Request) (Result, error) {
@@ -309,6 +328,15 @@ func pi(req Request) (Result, error) {
 		return Result{}, err
 	}
 	b.WriteString(status)
+	piDir := filepath.Join(req.ProjectDir, ".pi", "extensions")
+	if req.Global {
+		piDir = filepath.Join(req.Home, ".pi", "agent", "extensions")
+	}
+	extStatus, err := writeBytes(filepath.Join(piDir, "sdf-session.js"), []byte(piExtension(req.Endpoint.base()+"/v1/sessions")), req.Write)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(extStatus)
 	if req.Install {
 		out, err := runPiInstall(req)
 		b.WriteString("\n")
