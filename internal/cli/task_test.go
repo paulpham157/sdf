@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/cli"
+	"github.com/paulpham157/sdf/internal/ledger/ledgertest"
 	"github.com/paulpham157/sdf/internal/task"
 )
 
@@ -49,7 +50,7 @@ func TestTaskDeclareAndShow(t *testing.T) {
 	repo := taskRepo(t)
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
-	l := task.NewMemLedger(nil)
+	l := ledgertest.New(t)
 	defer cli.SetTaskLedger(l)()
 
 	args := []string{"task", "declare", "--repo", repo, "--write",
@@ -79,7 +80,7 @@ func TestTaskDeclareAndShow(t *testing.T) {
 		!strings.Contains(out.stdout, "written ledger\n") {
 		t.Fatalf("stdout %q", out.stdout)
 	}
-	if spec.Criteria[0].Name != "accept" || spec.Criteria[0].TimeoutS != 120 || len(l.Entries()) != 2 {
+	if spec.Criteria[0].Name != "accept" || spec.Criteria[0].TimeoutS != 120 || ledgertest.Entries(t, l) != 2 {
 		t.Fatalf("%+v", spec)
 	}
 
