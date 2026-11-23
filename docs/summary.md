@@ -78,8 +78,10 @@ The UI session page draws that same span tree with a render depth cap of
 limit 32).` and does not draw deeper children. A `status=ERROR` span
 deeper than the cap still appears in the session error banner, because
 the banner is collected from the full tree. `GET /api/summary` and
-`GET /api/snapshot` currently serve the full tree; trees deep enough to
-break that response are tracked in issue #267.
+`GET /api/snapshot` serve the tree nested to the same depth of 32; deeper
+spans are listed flat under the span at that depth, counted by
+`flattened_descendants` (see [Deep span trees](#deep-span-trees),
+issue #267).
 
 ## Precedence
 
