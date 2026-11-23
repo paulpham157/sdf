@@ -33,6 +33,18 @@
   end, and only when `PI_OTEL_LOGS=1`. The summary keeps those two events
   and names that limit. Metrics stay unattributed when they do not fall
   inside exactly one Pi session.
+- Grok CLI's external stream exports no traces. Startup metrics
+  (`grok_code.startup.*`) in the 2026-11-23 capture had no `session.id` and
+  stay unattributed. The CLI sends no working-directory attribute, and the
+  git hook does not read a Grok session id, so those sessions are not linked
+  to a commit.
+- GitHub Copilot CLI has no log signal; its lifecycle events
+  (`github.copilot.session.shutdown` with `total_premium_requests`,
+  exceptions, hooks) are span events, which sdf does not store. Its metrics
+  carry no session id. It reports AI units and a billing multiplier, not
+  USD, and sdf deliberately does not price its tokens, so both cost fields
+  are unknown. The mapping and the `copilot_*.json` samples come from
+  the docs and `copilot help monitoring` (1.0.114), not a live session.
 - Retried delta exports can be double-counted. Cumulative series use the
   latest point of each process run and add the runs up (see
   [docs/summary.md](summary.md)). That is still wrong in these cases:
@@ -60,6 +72,17 @@
   It is not an invoice either: conditional overrides are refused, a missing
   component price is unknown, and per-request or web-search fees are not
   added.
+- Gemini CLI reports no cost, and `internal/pricing` has no rule for its
+  token sources yet, so both cost fields are unknown for a Gemini CLI session.
+  Its tool-call logs carry no call id, so a `tool_call` span and its log are
+  not joined; tool calls come from the logs. The Gemini CLI mapping and the
+  `gemini_*.json` samples come from the published docs and source, not from a
+  live session.
+- `gemini --resume` reuses the `session.id`, but the new process restarts its
+  cumulative counters at 0, and cumulative series keep only their latest
+  point, so a resumed session undercounts cumulative tokens (1000 then 500
+  reads as 500) until [#191](https://github.com/paulpham157/sdf/pull/191)
+  merges.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
   SQLite file. The exception is tool arguments: Qwen Code sends the full

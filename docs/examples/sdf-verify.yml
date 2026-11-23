@@ -1,0 +1,37 @@
+# Demo of .github/actions/sdf-verify on this repository's own pull requests.
+# To enable it, copy this file to .github/workflows/sdf-verify.yml.
+#
+# It runs only when a pull request has a label sdf-task:<id> naming a task
+# declared in .sdf/tasks on the base branch. Without that label the job is
+# skipped, so it cannot block or slow the existing checks, and it is not a
+# required check. See docs/action.md for the threat model.
+name: sdf verify
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+# Read-only token. No secrets are referenced anywhere in this workflow.
+permissions:
+  contents: read
+
+concurrency:
+  group: sdf-verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: sdf verify
+    if: contains(join(github.event.pull_request.labels.*.name, ' '), 'sdf-task:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # The action and the verifier it builds come from the base commit, not
+      # from the pull request. In another repository, use instead:
+      #   uses: paulpham157/sdf/.github/actions/sdf-verify@<full commit sha>
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: ./trusted/.github/actions/sdf-verify
