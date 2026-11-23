@@ -521,6 +521,149 @@
     ]);
   }
 
+  const SPAN_SIBLING_LIMIT = 40;
+  const SPAN_OPEN_DEPTH = 2;
+  const SPAN_ERROR_BANNER_LIMIT = 8;
+
+  function collectSpanErrors(nodes, out) {
+    (nodes || []).forEach(function (node) {
+      if (node && node.status_code === "ERROR") {
+        out.push({ name: node.name || "(unnamed)", message: node.status_message || "" });
+      }
+      collectSpanErrors(node && node.children, out);
+    });
+  }
+
+  function spanHasError(node) {
+    if (!node) return false;
+    if (node.status_code === "ERROR") return true;
+    const kids = node.children || [];
+    for (let i = 0; i < kids.length; i++) {
+      if (spanHasError(kids[i])) return true;
+    }
+    return false;
+  }
+
+  function formatSpanNum(value) {
+    const n = Number(value);
+    if (!isFinite(n)) return String(value);
+    const rounded = Math.round(n);
+    if (Math.abs(n - rounded) < 1e-9) return String(rounded);
+    return String(n);
+  }
+
+  function spanErrorBanner(summary) {
+    const errors = [];
+    collectSpanErrors(summary && summary.spans, errors);
+    if (!errors.length) return null;
+    const heading = errors.length === 1
+      ? "This session has a span with status=ERROR."
+      : "This session has " + errors.length + " spans with status=ERROR.";
+    const kids = [h("p", null, [heading])];
+    const shown = errors.slice(0, SPAN_ERROR_BANNER_LIMIT);
+    shown.forEach(function (err) {
+      const text = err.message ? err.name + ": " + err.message : err.name + ": status=ERROR";
+      kids.push(h("p", { class: "span-error-message" }, [text]));
+    });
+    if (errors.length > shown.length) {
+      kids.push(h("p", { class: "detail" }, [
+        "And " + (errors.length - shown.length) + " more in the span tree below.",
+      ]));
+    }
+    return h("div", { class: "callout span-errors", role: "status" }, kids);
+  }
+
+  function spanLine(node) {
+    const name = (node && node.name) || "(unnamed)";
+    const kids = [h("span", { class: "span-name" }, [name])];
+    const tool = node && node.tool_name;
+    if (tool && tool !== name && name.slice(-(String(tool).length + 1)) !== " " + tool) {
+      kids.push(document.createTextNode(" " + tool));
+    }
+    if (node && node.call_id) {
+      kids.push(document.createTextNode(" call_id=" + node.call_id));
+    }
+    if (node && node.duration_ms != null && node.duration_ms !== "") {
+      kids.push(h("span", { class: "span-duration" }, [" " + formatSpanNum(node.duration_ms) + "ms"]));
+    }
+    if (node && node.status_code === "ERROR") {
+      let status = "status=ERROR";
+      if (node.status_message) status += " (" + node.status_message + ")";
+      kids.push(document.createTextNode(" "));
+      kids.push(h("span", { class: "span-status" }, [status]));
+    }
+    if (node && node.success != null && node.success !== "") {
+      let success = "success=" + node.success;
+      if (node.success_source) success += " (" + node.success_source + ")";
+      kids.push(document.createTextNode(" " + success));
+    }
+    if (node && node.wait_ms != null && node.wait_ms !== "") {
+      let wait = "wait=" + formatSpanNum(node.wait_ms) + "ms";
+      if (node.wait_source) wait += " (" + node.wait_source + ")";
+      kids.push(document.createTextNode(" " + wait));
+    }
+    if (node && node.execution_ms != null && node.execution_ms !== "") {
+      let exec = "execution=" + formatSpanNum(node.execution_ms) + "ms";
+      if (node.execution_source) exec += " (" + node.execution_source + ")";
+      kids.push(document.createTextNode(" " + exec));
+    }
+    return h("span", { class: "span-line" }, kids);
+  }
+
+  function spanForest(nodes, depth) {
+    const list = nodes || [];
+    const visible = list.slice(0, SPAN_SIBLING_LIMIT);
+    const rest = list.slice(SPAN_SIBLING_LIMIT);
+    const items = visible.map(function (node) {
+      return spanItem(node, depth);
+    });
+    if (rest.length) {
+      items.push(h("li", { class: "span-more" }, [
+        h("details", null, [
+          h("summary", null, ["Show " + rest.length + " more spans"]),
+          h("ul", { class: "span-tree" }, rest.map(function (node) {
+            return spanItem(node, depth);
+          })),
+        ]),
+      ]));
+    }
+    return h("ul", { class: "span-tree" }, items);
+  }
+
+  function spanItem(node, depth) {
+    const kids = (node && node.children) || [];
+    const className = node && node.status_code === "ERROR" ? "span-node span-error" : "span-node";
+    const line = spanLine(node);
+    if (!kids.length) {
+      return h("li", { class: className }, [line]);
+    }
+    const props = {};
+    if (depth < SPAN_OPEN_DEPTH || spanHasError(node)) props.open = true;
+    return h("li", { class: className }, [
+      h("details", props, [
+        h("summary", null, [line]),
+        spanForest(kids, depth + 1),
+      ]),
+    ]);
+  }
+
+  function spanSection(summary) {
+    const spans = (summary && summary.spans) || [];
+    const kids = [h("h2", null, ["Spans"])];
+    if (!spans.length) {
+      kids.push(h("p", { class: "detail" }, ["none in the default view"]));
+    } else {
+      kids.push(spanForest(spans, 0));
+    }
+    if (summary && summary.spans_hidden) {
+      const noun = summary.spans_hidden === 1 ? "span" : "spans";
+      kids.push(h("p", { class: "detail" }, [
+        summary.spans_hidden + " internal " + noun + " hidden, same as sdf summary without --all-spans",
+      ]));
+    }
+    return h("section", { class: "section" }, kids);
+  }
+
   function detail(id) {
     if (isEmpty()) {
       return h("div", null, [budgetSection(), emptyState(), decisionsSection()]);
@@ -553,12 +696,14 @@
           "traces " + summary.traces + " · logs " + summary.logs + " · metrics " + summary.metrics
         )]),
       ]),
+      spanErrorBanner(summary),
       h("section", { class: "section cards" }, [
         costCard("Computed cost", view.computed_cost_usd, summary.computed_cost_usd, true),
         costCard("Agent-reported cost", view.agent_reported_cost_usd, null, false),
       ]),
       tokenSection(view),
       toolSection(view),
+      spanSection(summary),
       outcomeSection(view),
       missingSection(summary),
       decisionsSection(),
@@ -699,9 +844,6 @@
     missing.forEach(function (item) {
       kids.push(h("p", null, [(item.signal || "signal") + ": " + (item.reason || "unknown")]));
     });
-    if (summary.spans_hidden) {
-      kids.push(h("p", { class: "detail" }, [summary.spans_hidden + " internal spans hidden, same as sdf summary without --all-spans"]));
-    }
     return h("section", { class: "section" }, kids);
   }
 

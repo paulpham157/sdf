@@ -37,8 +37,8 @@ A task id, and each criterion name, is 1 to 128 ASCII letters, digits,
 `.`, `_`, or `-`, starting with a letter or digit. Case is kept (a ULID is a
 valid id), but declaring an id that differs only by case from a task already
 in `.sdf/tasks` or the data dir is refused. Such an id is also valid UTF-8
-with no newline or control character, which the planned ledger will require
-of every id.
+with no newline or control character, which the ledger
+([docs/ledger.md](ledger.md)) requires of every id.
 
 `--repo` may be any directory inside the work tree; the task file goes under
 the repository's top level.
@@ -110,8 +110,10 @@ it, so protect the copy you trust (review on the protected branch).
   repository. Files are written to a temporary name and then linked into
   place, so a copy is never half written and never replaced.
   `--data-dir DIR` moves it, `--no-data-dir` skips it.
-- The SDF ledger, an append-only store for tasks, evidence, and verdicts,
-  is not in this build. When it lands, declare writes there as well.
+- The SDF ledger ([docs/ledger.md](ledger.md)), the hash-chained store for
+  tasks, evidence, and verdicts. The task code uses its types and rules,
+  but `sdf task declare` does not open a ledger file yet; writing there is
+  a follow-up.
 
 Every place is read before anything is written. If any one already holds
 the id with a different hash, nothing is written. `sdf task show` reads

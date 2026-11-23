@@ -33,8 +33,34 @@
   end, and only when `PI_OTEL_LOGS=1`. The summary keeps those two events
   and names that limit. Metrics stay unattributed when they do not fall
   inside exactly one Pi session.
+- Grok CLI's external stream exports no traces. Startup metrics
+  (`grok_code.startup.*`) in the 2026-11-23 capture had no `session.id` and
+  stay unattributed. The CLI sends no working-directory attribute, and the
+  git hook does not read a Grok session id, so those sessions are not linked
+  to a commit.
+- GitHub Copilot CLI has no log signal; its lifecycle events
+  (`github.copilot.session.shutdown` with `total_premium_requests`,
+  exceptions, hooks) are span events, which sdf does not store. Its metrics
+  carry no session id. It reports AI units and a billing multiplier, not
+  USD, and sdf deliberately does not price its tokens, so both cost fields
+  are unknown. The mapping and the `copilot_*.json` samples come from
+  the docs and `copilot help monitoring` (1.0.114), not a live session.
 - Retried delta exports can be double-counted. Cumulative series use the
-  latest point. Codex and OpenCode input tokens use the max, not the sum, as
+  latest point of each process run and add the runs up (see
+  [docs/summary.md](summary.md)). That is still wrong in these cases:
+  - Two processes exporting the same series at once with the same start
+    time are read as one run, so the total is whichever reported last
+    instead of the sum. The resource does not separate them, because runs
+    with a start time are keyed by start time alone.
+  - Without a start time, two processes with the same resource interleave
+    and their drops read as resets, which over-counts.
+  - Without a start time, a new run whose first value is not lower than the
+    last value of the run before is not seen as a reset, which
+    under-counts (100, then a restart that first reports 150, is 150, not
+    250).
+  - A cumulative UpDownCounter without a start time that goes down reads as
+    a reset.
+- Codex and OpenCode input tokens use the max, not the sum, as
   described in [docs/summary.md](summary.md). Pi per-turn input and output are summed, and that sum is
   not added to `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
@@ -44,9 +70,48 @@
   It is not an invoice either: conditional overrides are refused, a missing
   component price is unknown, and per-request or web-search fees are not
   added.
+- Gemini CLI reports no cost, and `internal/pricing` has no rule for its
+  token sources yet, so both cost fields are unknown for a Gemini CLI session.
+  Its tool-call logs carry no call id, so a `tool_call` span and its log are
+  not joined; tool calls come from the logs. The Gemini CLI mapping and the
+  `gemini_*.json` samples come from the published docs and source, not from a
+  live session.
+- `gemini --resume` reuses the `session.id`, but the new process restarts its
+  cumulative counters at 0, and cumulative series keep only their latest
+  point, so a resumed session undercounts cumulative tokens (1000 then 500
+  reads as 500) until [#191](https://github.com/paulpham157/sdf/pull/191)
+  merges.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
-  SQLite file.
+  SQLite file. The exception is tool arguments: Qwen Code sends the full
+  arguments of every tool call (`function_args`: shell commands, the content
+  of `write_file` and `edit`) and the tool's error text on
+  `qwen-code.tool_call` whatever `logPrompts` says, and Gemini CLI sends
+  `function_args` when its `logPrompts` is on. sdf drops `function_args`
+  from every record, and `error` / `error.message` from Qwen and Gemini
+  tool-call records and Qwen tool spans (whose status message becomes
+  "tool error"), before anything is stored. It keeps the tool name, call
+  id, duration, success, and error type, the dropped sizes
+  (`function_args_bytes`, `error_bytes`), and the dropped keys in
+  `sdf.redacted`.
+- Qwen Code reports no cost, and `internal/pricing` has no rule for its
+  token sources, so both cost fields are unknown. Its token totals include
+  subagents and the background memory extractor. Its metrics carry no
+  session id by default. Span events and the log-to-span bridge (used with
+  HTTP when only a traces endpoint is set) are not modelled. Tokens come from
+  per-response logs, which a resumed session (`qwen --resume`) does not
+  reset. The `qwen-code.token.usage` fallback is a per-process cumulative
+  counter: its points are placed by their own time, each process run is
+  added up (the same rule as
+  [#191](https://github.com/paulpham157/sdf/pull/191), done in the Qwen code
+  so it does not wait for #191), and when the process started more than
+  10 s before the session (an earlier session in that process, after
+  `/clear`) the run's first point in the session is subtracted. Tokens used
+  before that first export are lost, and a `/clear` within 10 s of launch
+  is missed. With `telemetry.metrics.includeSessionId` the points are the
+  session's own and nothing is subtracted. The mapping and
+  the `qwen_*.json` samples come from the v0.28.4 docs and source, not a
+  live session.
 - The git hook sends the commit SHA, checkout path, and branch to the local
   receiver. It does not send the diff or the message. The `SDF-Session`
   trailer stays in the git object. A GitHub squash merge keeps that trailer

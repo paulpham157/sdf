@@ -97,8 +97,15 @@ exported in uppercase still matches the lowercase ref the edge stores.
 `GET /api/decisions` returns the records and edges in insertion order. An empty
 store returns empty lists. `sdf decision add` writes one record. It needs an id,
 a statement, and a status of `hypothesis` or `decision`. `sdf decision link`
-writes one edge. It needs a relation and two `KIND:REF` endpoints. No route
-writes a record.
+writes one edge. It needs a relation and two `KIND:REF` endpoints, where
+`KIND` is `decision`, `session`, or `commit`. No route writes a record.
+
+```bash
+sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
+  --status decision [--source TEXT] [--db PATH]
+sdf decision link --relation implements --from session:SESSION_ID \
+  --to decision:use-sqlite [--db PATH]
+```
 
 ## Local budget
 

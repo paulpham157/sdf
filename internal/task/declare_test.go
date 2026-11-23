@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/paulpham157/sdf/internal/ledger/ledgertest"
 )
 
 func writeFile(dir, p, content string) error {
@@ -18,7 +20,7 @@ func TestDeclareIsWriteOnceAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	dir, _ := testRepo(t, repoFiles)
 	data := t.TempDir()
-	l := NewMemLedger(nil)
+	l := ledgertest.New(t)
 	st := Store{RepoDir: dir, WriteRepo: true, DataDir: data, Ledger: l}
 
 	s, err := Build(ctx, dir, sampleInput())
@@ -66,7 +68,7 @@ func TestDeclareIsWriteOnceAndIdempotent(t *testing.T) {
 			t.Fatalf("%+v", again.Copies)
 		}
 	}
-	if *again.Entry != *d.Entry || len(l.Entries()) != 2 {
+	if *again.Entry != *d.Entry || ledgertest.Entries(t, l) != 2 {
 		t.Fatal("ledger changed on an identical declaration")
 	}
 
@@ -81,7 +83,7 @@ func TestDeclareIsWriteOnceAndIdempotent(t *testing.T) {
 		t.Fatalf("redeclare: %v", err)
 	}
 	b2, _ := os.ReadFile(repoFile)
-	if string(b2) != string(b) || len(l.Entries()) != 2 {
+	if string(b2) != string(b) || ledgertest.Entries(t, l) != 2 {
 		t.Fatal("conflicting declaration wrote something")
 	}
 
@@ -107,7 +109,7 @@ func TestDeclareRefusesWhenAnyOneCopyDiffers(t *testing.T) {
 	for name, first := range map[string]func(t *testing.T) Store{
 		"repo file": func(t *testing.T) Store { return Store{RepoDir: dir, WriteRepo: true} },
 		"data dir":  func(t *testing.T) Store { return Store{DataDir: t.TempDir()} },
-		"ledger":    func(t *testing.T) Store { return Store{Ledger: NewMemLedger(nil)} },
+		"ledger":    func(t *testing.T) Store { return Store{Ledger: ledgertest.New(t)} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			st := first(t)
@@ -127,11 +129,11 @@ func TestDeclareRefusesWhenAnyOneCopyDiffers(t *testing.T) {
 	if _, err := Declare(ctx, s, Store{RepoDir: dir, WriteRepo: true}); err != nil {
 		t.Fatal(err)
 	}
-	l := NewMemLedger(nil)
+	l := ledgertest.New(t)
 	if _, err := Declare(ctx, other, Store{RepoDir: dir, Ledger: l}); !errors.Is(err, ErrDeclaredDifferently) {
 		t.Fatalf("%v", err)
 	}
-	if len(l.Entries()) != 0 {
+	if ledgertest.Entries(t, l) != 0 {
 		t.Fatal("ledger written despite a conflicting repo file")
 	}
 }

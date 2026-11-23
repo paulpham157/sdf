@@ -1,0 +1,1066 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "gemini-cli"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v22.20.0"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "gemini-cli"
+          },
+          "metrics": [
+            {
+              "name": "gemini_cli.session.count",
+              "description": "Count of CLI sessions started.",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gemini_cli.token.usage",
+              "description": "Counts the total number of tokens used.",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      }
+                    ],
+                    "asInt": "17543"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      }
+                    ],
+                    "asInt": "305"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "cache"
+                        }
+                      }
+                    ],
+                    "asInt": "12288"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "thought"
+                        }
+                      }
+                    ],
+                    "asInt": "640"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "tool"
+                        }
+                      }
+                    ],
+                    "asInt": "0"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      }
+                    ],
+                    "asInt": "27354"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      }
+                    ],
+                    "asInt": "369"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "cache"
+                        }
+                      }
+                    ],
+                    "asInt": "20480"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "thought"
+                        }
+                      }
+                    ],
+                    "asInt": "640"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "tool"
+                        }
+                      }
+                    ],
+                    "asInt": "0"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gemini_cli.api.request.count",
+              "description": "Counts API requests.",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      }
+                    ],
+                    "asInt": "2"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      }
+                    ],
+                    "asInt": "3"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "status_code",
+                        "value": {
+                          "intValue": "429"
+                        }
+                      },
+                      {
+                        "key": "error_type",
+                        "value": {
+                          "stringValue": "ApiError"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gemini_cli.tool.call.count",
+              "description": "Counts tool calls.",
+              "sum": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000010100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "read_file"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "read_file"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "replace"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "run_shell_command"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": false
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ],
+                    "asInt": "1"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.token.usage",
+              "description": "Number of input and output tokens used.",
+              "unit": "token",
+              "histogram": {
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "generate_content"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "gcp.gen_ai"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      }
+                    ],
+                    "count": "3",
+                    "sum": 27354.0,
+                    "min": 8123.0,
+                    "max": 9811.0,
+                    "bucketCounts": [],
+                    "explicitBounds": []
+                  },
+                  {
+                    "startTimeUnixNano": "1800000000100000000",
+                    "timeUnixNano": "1800000020100000000",
+                    "attributes": [
+                      {
+                        "key": "session.id",
+                        "value": {
+                          "stringValue": "sample-gemini-1"
+                        }
+                      },
+                      {
+                        "key": "installation.id",
+                        "value": {
+                          "stringValue": "00000000-0000-4000-8000-000000000001"
+                        }
+                      },
+                      {
+                        "key": "interactive",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "auth_type",
+                        "value": {
+                          "stringValue": "gemini-api-key"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "generate_content"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "gcp.gen_ai"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "gemini-2.5-pro"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.token.type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      }
+                    ],
+                    "count": "3",
+                    "sum": 369.0,
+                    "min": 64.0,
+                    "max": 210.0,
+                    "bucketCounts": [],
+                    "explicitBounds": []
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

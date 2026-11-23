@@ -29,8 +29,9 @@ in --repo, for committing. The data dir copy is $XDG_DATA_HOME/sdf/tasks.`
 
 const taskShowUsage = "usage: sdf task show ID [--repo DIR] [--data-dir DIR | --no-data-dir] [--json]"
 
-// taskLedger is the ledger sdf task writes to. It is nil until the ledger
-// package lands; tests set it.
+// taskLedger is the ledger sdf task writes to (an internal/ledger Store).
+// The command does not open one by default yet, so it is nil outside tests;
+// opening ledger.DefaultPath here is a follow-up.
 var taskLedger task.Ledger
 
 func cmdTask(args []string, stdout, stderr io.Writer) int {
