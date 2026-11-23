@@ -76,7 +76,7 @@ needs no API key or network connection.
 | `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
 | `sdf init` | Print or write the settings that point an agent at the receiver |
 | `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, or retract decisions (`add`, `link`, `list`, `retract`); links include `supersedes`, `refines`, `blocks`, and `conflicts_with`, and `list` shows blocked and conflicted records |
+| `sdf decision` | Record, link, list, retract, or check decisions (`add`, `link`, `list`, `retract`, `check`). `check` exits 1 when an in-force decision forbids `push`, `merge`, `release`, `deploy`, or an architecture change. Links include `supersedes`, `refines`, `blocks`, and `conflicts_with`, and `list` shows blocked and conflicted records |
 | `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
 | `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
 | `sdf verify` | Run a declared task's checks against a commit |
@@ -132,7 +132,7 @@ keeps its rows until you run `sdf redact --db PATH`. See
 | [docs/receiver.md](docs/receiver.md) | The receiver, content storage, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
-| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record user and agent choices with `sdf decision` |
+| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record choices, and run `sdf decision check` before a push, merge, release, deploy, or architecture change |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
 | [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |

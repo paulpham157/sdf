@@ -352,6 +352,7 @@ sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
 sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
+sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
 ```
 
 ```text
@@ -432,6 +433,79 @@ decision by its stored status and edges, without the retraction. A file that
 cannot be written, such as a read-only copy, is opened without the table and
 reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
+
+### Checking an action
+
+`sdf decision check <action>` answers whether an in-force decision forbids
+an action. An agent runs it before a push, merge, release, deploy, or an
+architecture change, and stops when it exits non-zero. It reads the same
+graph as `sdf decision list` and does not write: a missing file in an
+existing directory is an empty store (allowed, exit 0) and is not created.
+A missing directory exits 3.
+
+`<action>` is one argument. `push`, `merge`, `release`, and `deploy` are
+named actions, compared case-insensitively after trimming. Any other text,
+including `git push` or `replace sqlite`, is an architecture change.
+
+A decision forbids the action only when it is still in force and its
+**statement** matches. In force means `status` is `decision` (a hypothesis
+does not forbid), `effective_status` is `active` (superseded does not), and
+it is not retracted. `blocked`, `conflicted`, and `challenged` do not clear
+a forbid: a settled "do not push" still forbids push while a blocker is
+open. The id, the reason, the source, and the edges are not matched.
+`supersedes` and `retract` matter only because they take the record out of
+force.
+
+The match is case-insensitive, on whole words:
+
+- A tag `forbid:push`, `forbid:merge`, `forbid:release`, `forbid:deploy`, or
+  `forbid:architecture`. The tag is a token, so `forbid:pushing` does not
+  match `push`.
+- A phrase whose cue is immediately followed by the action word. The cues are
+  `do not`, `don't`, `dont`, `never`, `must not`, `forbidden to`, and
+  `forbid`. `Do not push until the user says so.` forbids `push`.
+- `no push` (and the same for the other named actions) only when that action
+  ends the statement or is followed by `.` `,` `;` or `:`. `no push notification`
+  does not forbid `push`.
+- An architecture change matches `forbid:architecture`, the phrase
+  `no architecture change` (or `changes`), or a cue followed within four
+  words by the word `architecture` (`Do not change the architecture.`).
+  A named-action forbid does not cover an architecture change, and an
+  architecture forbid does not cover a named action.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Allowed. Nothing in force forbids the action. |
+| 1 | Forbidden. Stdout lists each blocking decision. |
+| 2 | Usage. Missing action, an extra argument, or a bad flag. |
+| 3 | The store could not be read, or the verdict could not be written. |
+
+Text is one verdict line, then a header and one row per decision. The
+columns are separated by tabs. A cell is quoted the way `sdf decision list`
+quotes one. An empty decided-by prints as `-`. An architecture change names
+the class so the rule that fired is obvious:
+
+```text
+forbidden: push
+ID	DECIDED BY	MATCH	STATEMENT
+dont-push	user	do not push	Do not push until the user says so.
+```
+
+```text
+allowed: replace sqlite (architecture)
+```
+
+`--json` is one object, `action`, `kind` (`push`, `merge`, `release`,
+`deploy`, or `architecture`), `allowed`, and `blocking`. Each blocking entry
+is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
+or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
+exit code is still 1 when it is forbidden.
+
+The rows are the query's order, which for this command is insertion order.
+The read goes through one function, `decision.Query.Active`, so a later
+decision query can replace that read without a second copy of the match.
 
 ## Local budget
 

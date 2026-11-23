@@ -493,7 +493,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|retract> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list|retract|check> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -509,6 +509,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionList(args[1:], stdout, stderr)
 	case "retract":
 		return cmdDecisionRetract(args[1:], stdout, stderr)
+	case "check":
+		return cmdDecisionCheck(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
 		return 0
@@ -848,6 +850,81 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 	defer db.Close()
 	if _, err := decision.Retract(db, decision.RetractInput{ID: id, Reason: reason, RetractedBy: by}); err != nil {
 		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const decisionCheckUsage = "usage: sdf decision check <action> [--db PATH] [--json]"
+
+// cmdDecisionCheck reports whether an in-force decision forbids an action.
+// Exit 0 is allowed, 1 is forbidden (the blocking decisions are on stdout),
+// 2 is a usage error, and 3 is a store or write error. A missing store file
+// in an existing directory is an empty store, which is allowed: the command
+// opens the file read-only and does not create it. The action is one of
+// push, merge, release, deploy, or any other text, which is an architecture
+// change. Matching is decision.CheckAction.
+func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	var action string
+	actionSet := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionCheckUsage)
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision check: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		default:
+			if actionSet {
+				fmt.Fprintln(stderr, decisionCheckUsage)
+				return 2
+			}
+			action, actionSet = arg, true
+		}
+	}
+	if !actionSet || strings.TrimSpace(action) == "" {
+		fmt.Fprintln(stderr, decisionCheckUsage)
+		return 2
+	}
+	db, err := store.OpenReadOnly(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	verdict, err := decision.CheckAction(decision.NewQuery(db), action)
+	_ = db.Close()
+	if errors.Is(err, decision.ErrEmptyAction) {
+		fmt.Fprintln(stderr, decisionCheckUsage)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	write := decision.WriteCheckText
+	if asJSON {
+		write = decision.WriteCheckJSON
+	}
+	if err := write(stdout, verdict); err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	if !verdict.Allowed {
 		return 1
 	}
 	return 0
