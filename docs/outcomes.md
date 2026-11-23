@@ -512,8 +512,9 @@ architecture change, and stops when it exits non-zero. There is no git hook:
 the `sdf-decisions` skill makes this check a mandatory step, and a non-zero
 exit is what blocks the action. It does not write: a missing file in an
 existing directory is an empty store (allowed, exit 0) and is not created.
-A missing directory exits 3. It opens the store read-only with the store's
-usual busy timeout, not the shorter budget `sdf decision brief` uses.
+A missing directory exits 3. It opens the store read-only with the same
+200ms `busy_timeout` as `sdf decision brief`. The 500ms load deadline brief
+uses is not applied here.
 
 `<action>` is one argument. `push`, `merge`, `release`, and `deploy` are
 named actions, compared case-insensitively after trimming. Any other text,
