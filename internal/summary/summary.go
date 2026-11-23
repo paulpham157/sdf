@@ -3,6 +3,7 @@ package summary
 import (
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,9 @@ const (
 	grokSessionEnd      = "grok_code.session_end"
 	grokTurnCompleted   = "grok_code.turn_completed"
 	grokToolResult      = "grok_code.tool_result"
+	geminiTokenMetric   = "gemini_cli.token.usage"
+	geminiAPIResponse   = "gemini_cli.api_response"
+	geminiToolCall      = "gemini_cli.tool_call"
 )
 
 var (
@@ -37,6 +41,7 @@ var (
 		"claude_code.tool_result": true,
 		"codex.tool_result":       true,
 		"grok_code.tool_result":   true,
+		"gemini_cli.tool_call":    true,
 	}
 	claudeSpans = map[string]bool{
 		"claude_code.interaction":          true,
@@ -92,6 +97,18 @@ var (
 		"cache_write.input_tokens": true,
 		"cache_write_input_tokens": true,
 	}
+	// usageAliases folds gen_ai.usage.* labels that name the same quantity
+	// into one key. GenAI semconv v0.1.0 renamed
+	// gen_ai.usage.cache_creation.input_tokens to
+	// gen_ai.usage.cache_write.input_tokens and removed the old name;
+	// OpenCode still sends the old one. reasoning_tokens is the pre-v0.1.0
+	// spelling of reasoning.output_tokens. When a span carries more than one
+	// of them, the largest value is kept; they are never added.
+	usageAliases = map[string]string{
+		"cache_creation.input_tokens": "cache_write.input_tokens",
+		"cache_creation_input_tokens": "cache_write.input_tokens",
+		"reasoning_tokens":            "reasoning.output_tokens",
+	}
 	usageOrder = []string{
 		"input_tokens",
 		"output_tokens",
@@ -99,6 +116,7 @@ var (
 		"cache_read_input_tokens",
 		"cache_write.input_tokens",
 		"cache_write_input_tokens",
+		"reasoning.output_tokens",
 		"reasoning_tokens",
 	}
 	sessionCodexMetrics = []string{
@@ -127,6 +145,10 @@ var (
 		"grok_code.api_error":            true,
 		"grok_code.turn_completed":       true,
 		"grok_code.model_switched":       true,
+		"gemini_cli.config":              true,
+		"gemini_cli.api_request":         true,
+		"gemini_cli.api_response":        true,
+		"gemini_cli.api_error":           true,
 	}
 	modelSpans = map[string]bool{
 		"claude_code.interaction":          true,
@@ -157,6 +179,11 @@ type point struct {
 	order       int64
 	unit        *string
 	attributes  map[string]any
+	// start is the point's StartTimeUnixNano, 0 when it was not sent.
+	// resource is the frozen resource. Both only split cumulative series
+	// into the runs of one process; see cumulativeTotal.
+	start    int64
+	resource string
 }
 
 type sessionKey struct {
@@ -188,7 +215,8 @@ func SummarizeWith(records []record.Record, allSpans bool, prices *pricing.Catal
 	return Report{Sessions: sessions, Unattributed: unattributed(leftover)}
 }
 
-// ToolOf classifies a record as claude-code, codex, opencode, pi, grok-cli, or unknown.
+// ToolOf classifies a record as claude-code, codex, opencode, gemini-cli, pi,
+// grok-cli, or unknown.
 func ToolOf(rec record.Record) string {
 	service := strings.ToLower(deref(rec.ServiceName))
 	name := deref(rec.Name)
@@ -202,8 +230,17 @@ func ToolOf(rec record.Record) string {
 	if service == "codex" || strings.Contains(service, "codex") || strings.HasPrefix(strings.ToLower(origin), "codex") || strings.HasPrefix(name, "codex.") || strings.HasPrefix(body, "codex.") || strings.HasPrefix(event, "codex.") {
 		return "codex"
 	}
+	if isQwenRecord(service, name, event) {
+		return "qwen-code"
+	}
 	if service == "opencode" {
 		return "opencode"
+	}
+	// Gemini CLI sets service.name=gemini-cli on the resource and names every
+	// log in the event.name attribute (gemini_cli.*). Its metrics also record
+	// gen_ai.client.token.usage, so it is classified before Pi.
+	if service == "gemini-cli" || strings.HasPrefix(name, "gemini_cli.") || strings.HasPrefix(event, "gemini_cli.") {
+		return "gemini-cli"
 	}
 	if service == "pi" || system == "pi" || strings.HasPrefix(name, "pi.session.") || strings.HasPrefix(event, "pi.session.") {
 		return "pi"
@@ -405,6 +442,7 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 		return sessionKey{}, false
 	}
 	st := stamps(rec)
+	st = qwenStamps(tool, rec, st)
 	if len(st) == 0 || tool == "unknown" {
 		return sessionKey{}, false
 	}
@@ -492,7 +530,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Source: deref(tokensSource),
 	})
 	failures := metricFailures(records)
-	return SessionSummary{
+	summary := SessionSummary{
 		SessionID:               sessionID,
 		Tool:                    tool,
 		ServiceNames:            serviceNames(records),
@@ -520,6 +558,10 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		ToolCalls:               nonNilCalls(toolCalls(records, points)),
 		Repository:              repositoryFacts(records),
 	}
+	if tool == "qwen-code" {
+		summary = qwenSummary(summary, records, points, prices)
+	}
+	return summary
 }
 
 func spanTree(records []record.Record, allSpans bool) ([]SpanNode, int) {
@@ -612,6 +654,9 @@ func shownParent(rec record.Record, byID map[string]record.Record, shownIDs map[
 func interestingSpan(rec record.Record) bool {
 	name := deref(rec.Name)
 	if claudeSpans[name] || codexSpans[name] || strings.HasPrefix(name, "claude_code.") {
+		return true
+	}
+	if strings.HasPrefix(name, qwenPrefix) && ToolOf(rec) == "qwen-code" {
 		return true
 	}
 	if opencodeSpans[name] || piSpanHeads[spanHead(name)] {
@@ -787,6 +832,9 @@ func duration(records []record.Record, points []point) (*float64, *string) {
 	if len(turnDur) > 0 {
 		return record.Float(sum(turnDur)), record.Str("logs " + grokTurnCompleted)
 	}
+	if window := geminiWindow(records); window != nil {
+		return window, record.Str("logs and traces gemini_cli window")
+	}
 	var stampsAll []int64
 	for _, rec := range records {
 		stampsAll = append(stampsAll, stamps(rec)...)
@@ -828,7 +876,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(claude) > 0 {
-		return sumBy(claude, "type"), record.Str("metrics " + claudeTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+		return sumBy(claude, "type"), record.Str("metrics " + claudeTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var codex []point
 	for _, p := range points {
@@ -837,7 +885,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(codex) > 0 {
-		return sumBy(codex, "token_type"), record.Str("metrics " + codexTokenMetric), record.Str("sum of delta histogram points; a cumulative series keeps its latest point")
+		return sumBy(codex, "token_type"), record.Str("metrics " + codexTokenMetric), record.Str("sum of delta histogram points; a cumulative series adds up the latest point of each process run")
 	}
 	var claudeLogs []record.Record
 	for _, rec := range records {
@@ -864,6 +912,9 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 	if len(events) > 0 {
 		return codexSSETokens(events)
 	}
+	if gemini, source, method, ok := geminiTokens(records, points); ok {
+		return gemini, source, method
+	}
 	if opencode, method, ok := genAIUsage(records, func(name string) bool { return name == "SessionStep.attempt" }, true, nil); ok {
 		return opencode, record.Str("traces SessionStep.attempt"), method
 	}
@@ -877,7 +928,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(piMetrics) > 0 {
-		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var grok []point
 	for _, p := range points {
@@ -886,7 +937,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(grok) > 0 {
-		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
+		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
 	}
 	var grokLogs []record.Record
 	for _, rec := range records {
@@ -923,11 +974,17 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				continue
 			}
 			label := strings.TrimPrefix(key, "gen_ai.usage.")
+			if canonical, ok := usageAliases[label]; ok {
+				label = canonical
+			}
 			if len(only) > 0 && !onlySet[label] {
 				continue
 			}
 			amount := record.Number(value)
 			if amount == nil {
+				continue
+			}
+			if prev, ok := amounts[label]; ok && prev >= *amount {
 				continue
 			}
 			amounts[label] = *amount
@@ -975,7 +1032,7 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				values = append(values, v)
 			}
 		}
-		if cumulativePrefix && cumulativeUsage[label] {
+		if cumulativePrefix && (cumulativeUsage[label] || modalityInput(label)) {
 			totals.Set(label, maxFloat(values))
 		} else {
 			totals.Set(label, sum(values))
@@ -988,6 +1045,13 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 		method = "sum of per-turn input_tokens and output_tokens; they are additive and are not added to gen_ai.client.token.usage"
 	}
 	return totals, record.Str(method), true
+}
+
+// modalityInput reports whether label is a per-modality input breakdown such
+// as text.input_tokens or text.cache_read.input_tokens. Like input_tokens,
+// it repeats the conversation prefix on every request, so it takes the max.
+func modalityInput(label string) bool {
+	return pricing.IsModalityUsage(label) && strings.HasSuffix(label, "input_tokens")
 }
 
 func sumSpanMS(records []record.Record, match func(string) bool) *float64 {
@@ -1214,7 +1278,7 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 			continue
 		}
 		calls = append(calls, ToolCall{
-			Name:       record.SummaryText(rec.Attributes["tool_name"]),
+			Name:       logToolName(rec),
 			CallID:     id,
 			Success:    record.SummaryText(rec.Attributes["success"]),
 			DurationMS: record.Number(rec.Attributes["duration_ms"]),
@@ -1317,7 +1381,7 @@ func logLines(records []record.Record) []LogLine {
 		} else if toolLogs[name] && len(group) == 1 {
 			rec := group[0]
 			var parts []string
-			if text := record.SummaryText(rec.Attributes["tool_name"]); text != nil {
+			if text := logToolName(rec); text != nil {
 				parts = append(parts, *text)
 			}
 			if text := record.SummaryText(rec.Attributes["success"]); text != nil {
@@ -1398,6 +1462,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "no spans exported. Pi has no built-in OTLP exporter; install pi-otel and set OTEL_EXPORTER_OTLP_PROTOCOL=http/json."
 		case "grok-cli":
 			reason = "Grok CLI's external OTEL stream exports logs and metrics only (no traces). Documented in xAI monitoring-usage (alpha, grok_code.schema.version=v1)."
+		case "gemini-cli":
+			reason = "no spans attributed to this session. Gemini CLI spans carry gen_ai.conversation.id and are exported once telemetry.enabled is true and otlpEndpoint is set."
 		default:
 			reason = "no spans exported for this session."
 		}
@@ -1416,6 +1482,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "pi-otel logs only session start and end (pi.session.start, pi.session.end) and only when PI_OTEL_LOGS=1. None are attributed to this session."
 		case "grok-cli":
 			reason = "no log events attributed to this session. Set GROK_EXTERNAL_OTEL=1 and OTEL_LOGS_EXPORTER=otlp. Events carry session.id once a session exists."
+		case "gemini-cli":
+			reason = "no log events attributed to this session. Set telemetry.enabled=true and telemetry.otlpEndpoint in ~/.gemini/settings.json; telemetry.outfile overrides the endpoint."
 		default:
 			reason = "no log events exported for this session."
 		}
@@ -1476,10 +1544,18 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "pi-otel metrics have no session id and are off unless PI_OTEL_METRICS=1. None were attributed by trace, span, or this session's time window."
 		case "grok-cli":
 			reason = "no metrics attributed to this session. Set GROK_EXTERNAL_OTEL=1 and OTEL_METRICS_EXPORTER=otlp. session.id is on metrics by default (OTEL_METRICS_INCLUDE_SESSION_ID=1)."
+		case "gemini-cli":
+			reason = "no metrics attributed to this session. Gemini CLI exports cumulative metrics every 10 seconds, so a run shorter than one interval may end before the first export."
 		default:
 			reason = "no metrics exported for this session."
 		}
 		out = append(out, Missing{Signal: "metrics", Reason: reason})
+	}
+	if tool == "gemini-cli" {
+		out = append(out, Missing{
+			Signal: "agent cost",
+			Reason: "Gemini CLI exports no cost metric or cost attribute (docs/cli/telemetry.md). Agent-reported cost stays unknown; computed cost is shown only when a pricing rule covers the token source.",
+		})
 	}
 	return out
 }
@@ -1540,6 +1616,10 @@ func pointsOf(records []record.Record) []point {
 		if attrs == nil {
 			attrs = map[string]any{}
 		}
+		start := int64(0)
+		if rec.StartUnixNano != nil {
+			start = *rec.StartUnixNano
+		}
 		points = append(points, point{
 			name:        deref(rec.Name),
 			kind:        kind,
@@ -1549,6 +1629,8 @@ func pointsOf(records []record.Record) []point {
 			order:       rec.ID,
 			unit:        rec.MetricUnit,
 			attributes:  attrs,
+			start:       start,
+			resource:    freeze(rec.Resource),
 		})
 	}
 	return points
@@ -1571,9 +1653,12 @@ func reduce(points []point) []point {
 		if group[0].kind == "gauge" || group[0].temporality == "cumulative" {
 			best := group[0]
 			for _, item := range group[1:] {
-				if item.time > best.time || (item.time == best.time && item.order > best.order) {
+				if later(item, best) {
 					best = item
 				}
+			}
+			if group[0].kind != "gauge" {
+				best.value = cumulativeTotal(group)
 			}
 			reduced = append(reduced, best)
 			continue
@@ -1597,6 +1682,105 @@ func reduce(points []point) []point {
 		reduced = append(reduced, first)
 	}
 	return reduced
+}
+
+func later(a, b point) bool {
+	return a.time > b.time || (a.time == b.time && a.order > b.order)
+}
+
+// cumulativeTotal is the session total of one cumulative series (same name,
+// kind, and attributes). A cumulative counter restarts at 0 when its process
+// restarts, for example after `gemini --resume` reuses the session.id. Each
+// run is one segment, and the total is the sum of every segment's last value:
+// 1000 in the first run and 500 after a resume is 1500, not 500.
+//
+// Points with a StartTimeUnixNano are keyed by start time only. The OTel SDK
+// keeps one start time for the life of a cumulative stream, so a new start
+// time is a new run, and two processes exporting at once with different start
+// times are each counted once. Within one start time the latest point (by
+// time, then storage order) is the run's value; a lower value is not a reset,
+// because a cumulative UpDownCounter may go down (5, 3, 4 is 4). The resource
+// is not part of the key, so a resource that gains an attribute mid-run (for
+// example process.pid) does not split the run.
+//
+// A point without a start time (start 0) joins the run with the latest start
+// time at or before its own time among the runs its own resource reported, if
+// there is one. A startless point from another resource is another process (a
+// resume whose exporter sends no start time, for example), so it never joins
+// a run it did not report. Otherwise it is grouped by resource, ordered by
+// time, and a value lower than the previous one starts a
+// new segment; that is the only way to see a reset from an exporter that
+// sends no start time. Points of one group with the same time are one point:
+// the one stored last wins.
+//
+// Known limits (docs/gaps.md): two concurrent processes with the same start
+// time (or no start time and the same resource) are read as one run or as
+// resets; a restart without a start time whose first value is not lower than
+// the last one is not seen, which undercounts.
+func cumulativeTotal(group []point) float64 {
+	var starts []int64
+	byStart := map[int64]point{}
+	// startsOf lists, per resource, the start times its points carry.
+	startsOf := map[string][]int64{}
+	for _, p := range group {
+		if p.start == 0 {
+			continue
+		}
+		best, ok := byStart[p.start]
+		if !ok {
+			starts = append(starts, p.start)
+		}
+		if !ok || later(p, best) {
+			byStart[p.start] = p
+		}
+		if !slices.Contains(startsOf[p.resource], p.start) {
+			startsOf[p.resource] = append(startsOf[p.resource], p.start)
+		}
+	}
+	for _, list := range startsOf {
+		slices.Sort(list)
+	}
+	var resources []string
+	loose := map[string][]point{}
+	for _, p := range group {
+		if p.start != 0 {
+			continue
+		}
+		own := startsOf[p.resource]
+		i := sort.Search(len(own), func(i int) bool { return own[i] > p.time }) - 1
+		if i >= 0 {
+			if best := byStart[own[i]]; later(p, best) {
+				p.start = own[i]
+				byStart[own[i]] = p
+			}
+			continue
+		}
+		if _, ok := loose[p.resource]; !ok {
+			resources = append(resources, p.resource)
+		}
+		loose[p.resource] = append(loose[p.resource], p)
+	}
+	total := 0.0
+	for _, start := range starts {
+		total += byStart[start].value
+	}
+	for _, resource := range resources {
+		run := append([]point(nil), loose[resource]...)
+		sort.SliceStable(run, func(i, j int) bool { return later(run[j], run[i]) })
+		var last point
+		for i, p := range run {
+			switch {
+			case i == 0:
+			case p.time == last.time:
+				// Same time: an update of the same point, not a new value.
+			case p.value < last.value:
+				total += last.value
+			}
+			last = p
+		}
+		total += last.value
+	}
+	return total
 }
 
 func sumBy(points []point, key string) OrderedFloats {
@@ -1962,4 +2146,79 @@ func nonNilCalls(s []ToolCall) []ToolCall {
 		return []ToolCall{}
 	}
 	return s
+}
+
+// geminiTokens reads Gemini CLI token counts. gemini_cli.token.usage is a
+// cumulative counter by type (input, output, thought, cache, tool), so a
+// series keeps its latest point. Without those points it sums the token
+// attributes on gemini_cli.api_response. gen_ai.client.token.usage and the
+// gen_ai.client.inference.operation.details log repeat the same input and
+// output counts and are not added again. Field meanings follow
+// packages/core/src/telemetry (ApiResponseEvent): input_token_count is the
+// prompt count and includes cached_content_token_count; output_token_count
+// excludes thoughts_token_count; tool_token_count is the tool-use prompt.
+func geminiTokens(records []record.Record, points []point) (OrderedFloats, *string, *string, bool) {
+	var metricPoints []point
+	for _, p := range points {
+		if p.name == geminiTokenMetric {
+			metricPoints = append(metricPoints, p)
+		}
+	}
+	if len(metricPoints) > 0 {
+		return sumBy(metricPoints, "type"), record.Str("metrics " + geminiTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Gemini CLI type=input|output|thought|cache|tool; cache is a subset of input, thought and tool are not part of input or output"), true
+	}
+	totals := OrderedFloats{}
+	found := false
+	for _, rec := range records {
+		if rec.Signal != "logs" || logEventName(rec) != geminiAPIResponse {
+			continue
+		}
+		if addFields(&totals, rec, []string{"input_token_count", "output_token_count", "cached_content_token_count", "thoughts_token_count", "tool_token_count"}) {
+			found = true
+		}
+	}
+	if found {
+		return totals, record.Str("logs " + geminiAPIResponse), record.Str("sum of per-response token attributes from gemini_cli.api_response (input_token_count, output_token_count, cached_content_token_count, thoughts_token_count, tool_token_count); total_token_count is not added"), true
+	}
+	return OrderedFloats{}, nil, nil, false
+}
+
+// logToolName is the tool name on a tool-result log. Gemini CLI's
+// gemini_cli.tool_call uses function_name; the others use tool_name.
+func logToolName(rec record.Record) *string {
+	return firstText(rec.Attributes, "tool_name", "function_name")
+}
+
+// geminiWindow is the min-to-max timestamp of a Gemini CLI session's logs and
+// spans. Gemini CLI exports no session or turn duration. Its metrics are
+// cumulative, start at process start, and are exported every 10 seconds, so
+// they are left out of the window.
+func geminiWindow(records []record.Record) *float64 {
+	var lo, hi int64
+	seen := 0
+	gemini := false
+	for _, rec := range records {
+		if rec.Signal == "metrics" {
+			continue
+		}
+		if ToolOf(rec) != "gemini-cli" {
+			continue
+		}
+		if rec.Signal == "logs" && strings.HasPrefix(logEventName(rec), "gemini_cli.") {
+			gemini = true
+		}
+		for _, stamp := range stamps(rec) {
+			if seen == 0 || stamp < lo {
+				lo = stamp
+			}
+			if seen == 0 || stamp > hi {
+				hi = stamp
+			}
+			seen++
+		}
+	}
+	if !gemini || seen < 2 {
+		return nil
+	}
+	return record.Float(float64(hi-lo) / 1_000_000)
 }

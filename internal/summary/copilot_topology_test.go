@@ -8,7 +8,7 @@ import (
 	"github.com/paulpham157/sdf/internal/record"
 )
 
-const sec = int64(1_000_000_000)
+// sec (one second in nanoseconds) is declared in qwen_code_test.go.
 
 func topAgent(trace, id string, start, end int64, attrs map[string]any) record.Record {
 	all := map[string]any{"gen_ai.agent.id": "github.copilot.default", "server.address": "api.githubcopilot.com", "server.port": 443}
