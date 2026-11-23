@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestRoundTrip(t *testing.T) {
 	if len(got.Decisions) != 2 || len(got.Edges) != 3 {
 		t.Fatalf("%d decisions, %d edges", len(got.Decisions), len(got.Edges))
 	}
-	if got.Decisions[0] != first || got.Decisions[1] != second {
+	if !reflect.DeepEqual(got.Decisions[0], first) || !reflect.DeepEqual(got.Decisions[1], second) {
 		t.Fatalf("decisions %+v", got.Decisions)
 	}
 	if got.Edges[0] != edge || got.Edges[1] != sessionEdge || got.Edges[2] != commitEdge {
@@ -295,8 +296,8 @@ func openDB(t *testing.T) *store.Store {
 func TestWriteTextLaysOutBothTables(t *testing.T) {
 	g := decision.Graph{
 		Decisions: []decision.Record{
-			{ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision, RecordedAt: "2026-11-23T15:00:00.000000+00:00", Source: "issue 168"},
-			{ID: "pure-go", Statement: "The driver\tstays pure Go.\x1b[31m", Status: decision.StatusHypothesis, RecordedAt: "2026-11-23T15:00:01.000000+00:00"},
+			{ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision, RecordedAt: "2026-11-23T15:00:00.000000+00:00", Source: "issue 168", EffectiveStatus: decision.EffectiveSuperseded, SupersededBy: []string{"pure-go", "go-only"}},
+			{ID: "pure-go", Statement: "The driver\tstays pure Go.\x1b[31m", Status: decision.StatusHypothesis, RecordedAt: "2026-11-23T15:00:01.000000+00:00", EffectiveStatus: decision.EffectiveActive},
 		},
 		Edges: []decision.Edge{
 			{Relation: decision.RelImplements, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "pure-go"}, To: decision.Endpoint{Kind: decision.KindDecision, Ref: "use-sqlite"}, RecordedAt: "2026-11-23T15:00:02.000000+00:00"},
@@ -307,9 +308,9 @@ func TestWriteTextLaysOutBothTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "Decisions: 2\n" +
-		"ID          STATUS      RECORDED AT                       SOURCE     STATEMENT\n" +
-		"use-sqlite  decision    2026-11-23T15:00:00.000000+00:00  issue 168  Keep the collector store in SQLite.\n" +
-		"pure-go     hypothesis  2026-11-23T15:00:01.000000+00:00  -          \"The driver\\tstays pure Go.\\x1b[31m\"\n" +
+		"ID          STATUS      EFFECTIVE                       RECORDED AT                       SOURCE     STATEMENT\n" +
+		"use-sqlite  decision    superseded by pure-go, go-only  2026-11-23T15:00:00.000000+00:00  issue 168  Keep the collector store in SQLite.\n" +
+		"pure-go     hypothesis  active                          2026-11-23T15:00:01.000000+00:00  -          \"The driver\\tstays pure Go.\\x1b[31m\"\n" +
 		"\n" +
 		"Edges: 1\n" +
 		"RELATION    FROM              TO                   RECORDED AT\n" +

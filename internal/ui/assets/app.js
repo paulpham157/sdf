@@ -226,10 +226,16 @@
       kids.push(h("p", null, ["no decision"]));
     } else {
       records.forEach(function (record) {
-        kids.push(h("p", { class: "decision" }, [
+        const by = Array.isArray(record.superseded_by) ? record.superseded_by : [];
+        const superseded = record.effective_status === "superseded" && by.length > 0;
+        const parts = [
           h("span", { class: "status" }, [record.status || "unknown"]),
-          document.createTextNode(record.statement || ""),
-        ]));
+        ];
+        if (superseded) {
+          parts.push(h("span", { class: "superseded-by" }, ["superseded by " + by.join(", ")]));
+        }
+        parts.push(document.createTextNode(record.statement || ""));
+        kids.push(h("p", { class: superseded ? "decision superseded" : "decision" }, parts));
       });
     }
     edges.forEach(function (edge) {

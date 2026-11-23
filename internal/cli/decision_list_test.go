@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,9 +52,9 @@ func TestDecisionListPrintsDecisionsAndEdgesAsTables(t *testing.T) {
 	lines := strings.Split(strings.TrimSuffix(out.stdout, "\n"), "\n")
 	want := [][]string{
 		{"Decisions: 2"},
-		{"ID", "STATUS", "RECORDED AT", "SOURCE", "STATEMENT"},
-		{"use-sqlite", "decision", graph.Decisions[0].RecordedAt, "issue 168", "Keep the collector store in SQLite."},
-		{"pure-go", "hypothesis", graph.Decisions[1].RecordedAt, "-", "The driver stays pure Go."},
+		{"ID", "STATUS", "EFFECTIVE", "RECORDED AT", "SOURCE", "STATEMENT"},
+		{"use-sqlite", "decision", "active", graph.Decisions[0].RecordedAt, "issue 168", "Keep the collector store in SQLite."},
+		{"pure-go", "hypothesis", "active", graph.Decisions[1].RecordedAt, "-", "The driver stays pure Go."},
 		{""},
 		{"Edges: 3"},
 		{"RELATION", "FROM", "TO", "RECORDED AT"},
@@ -164,5 +165,59 @@ func TestDecisionListDefaultsToTheServeStore(t *testing.T) {
 	out := run(t, "decision", "list", "--json")
 	if out.code != 0 || len(decisionsDoc(t, out.stdout).Decisions) != 2 {
 		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestDecisionListShowsSupersededInTableJSONAndAPI(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	for _, id := range []string{"use-sqlite", "use-sqlite-wal", "use-duckdb"} {
+		if out := run(t, "decision", "add", "--db", dbPath, "--id", id, "--statement", "Store: "+id, "--status", "decision"); out.code != 0 {
+			t.Fatal(out.stderr)
+		}
+	}
+	for _, l := range [][2]string{{"use-sqlite-wal", "use-sqlite"}, {"use-duckdb", "use-sqlite-wal"}} {
+		if out := run(t, "decision", "link", "--db", dbPath, "--relation", "supersedes", "--from", "decision:"+l[0], "--to", "decision:"+l[1]); out.code != 0 {
+			t.Fatal(out.stderr)
+		}
+	}
+	table := run(t, "decision", "list", "--db", dbPath)
+	if table.code != 0 {
+		t.Fatal(table.stderr)
+	}
+	lines := strings.Split(table.stdout, "\n")
+	for i, want := range [][]string{
+		{"use-sqlite", "decision", "superseded", "by", "use-sqlite-wal"},
+		{"use-sqlite-wal", "decision", "superseded", "by", "use-duckdb"},
+		{"use-duckdb", "decision", "active"},
+	} {
+		got := strings.Fields(lines[2+i])
+		if len(got) < len(want) || strings.Join(got[:len(want)], " ") != strings.Join(want, " ") {
+			t.Fatalf("row %d %q\n%s", i, lines[2+i], table.stdout)
+		}
+	}
+	asJSON := run(t, "decision", "list", "--db", dbPath, "--json")
+	srv := serveStore(t, openStore(t, dbPath))
+	api := httpGet(t, srv.URL()+"api/decisions")
+	if asJSON.stdout != api {
+		t.Fatalf("cli:\n%s\napi:\n%s", asJSON.stdout, api)
+	}
+	var doc struct {
+		Decisions []struct {
+			ID              string   `json:"id"`
+			Status          string   `json:"status"`
+			EffectiveStatus string   `json:"effective_status"`
+			SupersededBy    []string `json:"superseded_by"`
+		} `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(api), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, d := range doc.Decisions {
+		got = append(got, d.ID+"="+d.Status+"/"+d.EffectiveStatus+":"+strings.Join(d.SupersededBy, ","))
+	}
+	want := "use-sqlite=decision/superseded:use-sqlite-wal use-sqlite-wal=decision/superseded:use-duckdb use-duckdb=decision/active:"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("%v", got)
 	}
 }

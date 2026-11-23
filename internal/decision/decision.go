@@ -51,15 +51,31 @@ var (
 	shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-// Record is one decision. Status is StatusHypothesis or StatusDecision.
-// Source is empty when the record named none. RecordedAt is UTC RFC3339
-// with a numeric zone, the same form the store uses for received_at.
+// EffectiveActive and EffectiveSuperseded are the values of
+// Record.EffectiveStatus. They are computed when the graph is read and are
+// never stored.
+const (
+	EffectiveActive     = "active"
+	EffectiveSuperseded = "superseded"
+)
+
+// Record is one decision. Status is StatusHypothesis or StatusDecision, as
+// stored. Source is empty when the record named none. RecordedAt is UTC
+// RFC3339 with a numeric zone, the same form the store uses for received_at.
+//
+// EffectiveStatus and SupersededBy are not stored. Load computes them from
+// the edges: a record is EffectiveSuperseded when at least one supersedes
+// edge runs from another decision to it, and SupersededBy lists those
+// decisions' ids once each, in edge order. Otherwise it is EffectiveActive
+// and SupersededBy is empty.
 type Record struct {
-	ID         string `json:"id"`
-	Statement  string `json:"statement"`
-	Status     string `json:"status"`
-	RecordedAt string `json:"recorded_at"`
-	Source     string `json:"source,omitempty"`
+	ID              string   `json:"id"`
+	Statement       string   `json:"statement"`
+	Status          string   `json:"status"`
+	RecordedAt      string   `json:"recorded_at"`
+	Source          string   `json:"source,omitempty"`
+	EffectiveStatus string   `json:"effective_status"`
+	SupersededBy    []string `json:"superseded_by,omitempty"`
 }
 
 // Endpoint is one end of an edge. Kind is KindDecision, KindSession, or
@@ -172,7 +188,40 @@ func Load(s *store.Store) (Graph, error) {
 			RecordedAt: e.RecordedAt,
 		})
 	}
+	resolve(&out)
 	return out, nil
+}
+
+// resolve fills EffectiveStatus and SupersededBy from the edges. An edge
+// "from supersedes to" means from replaces to. Only an edge whose two
+// endpoints are both decisions, and are different decisions, counts; any
+// other supersedes edge is still listed in Edges but changes no status.
+// Replacement is direct, not transitive: when b supersedes a and c
+// supersedes b, a is superseded by b and b by c. A reader follows the chain
+// through SupersededBy. Nothing here writes to the store.
+func resolve(g *Graph) {
+	by := map[string][]string{}
+	seen := map[[2]string]bool{}
+	for _, e := range g.Edges {
+		if e.Relation != RelSupersedes || e.From.Kind != KindDecision || e.To.Kind != KindDecision || e.From.Ref == e.To.Ref {
+			continue
+		}
+		pair := [2]string{e.To.Ref, e.From.Ref}
+		if seen[pair] {
+			continue
+		}
+		seen[pair] = true
+		by[e.To.Ref] = append(by[e.To.Ref], e.From.Ref)
+	}
+	for i := range g.Decisions {
+		d := &g.Decisions[i]
+		d.SupersededBy = by[d.ID]
+		if len(d.SupersededBy) > 0 {
+			d.EffectiveStatus = EffectiveSuperseded
+		} else {
+			d.EffectiveStatus = EffectiveActive
+		}
+	}
 }
 
 // WriteJSON writes the graph the way the summary JSON is written.
@@ -194,18 +243,19 @@ func WriteJSON(w io.Writer, g Graph) error {
 // GET /api/decisions write, so the two views cannot disagree. A cell that
 // holds a control character or invalid UTF-8 is printed Go-quoted so it
 // cannot break the columns or the terminal. An empty source prints as "-".
+// EFFECTIVE is the read-time status Load computed, see Record.
 func WriteText(w io.Writer, g Graph) error {
 	if len(g.Decisions) == 0 && len(g.Edges) == 0 {
 		_, err := io.WriteString(w, "No decisions in the store.\n")
 		return err
 	}
-	decisions := [][]string{{"ID", "STATUS", "RECORDED AT", "SOURCE", "STATEMENT"}}
+	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "RECORDED AT", "SOURCE", "STATEMENT"}}
 	for _, d := range g.Decisions {
 		source := d.Source
 		if source == "" {
 			source = "-"
 		}
-		decisions = append(decisions, []string{d.ID, d.Status, d.RecordedAt, source, d.Statement})
+		decisions = append(decisions, []string{d.ID, d.Status, effectiveText(d), d.RecordedAt, source, d.Statement})
 	}
 	edges := [][]string{{"RELATION", "FROM", "TO", "RECORDED AT"}}
 	for _, e := range g.Edges {
@@ -218,6 +268,19 @@ func WriteText(w io.Writer, g Graph) error {
 		return err
 	}
 	return writeTable(w, fmt.Sprintf("Edges: %d", len(g.Edges)), edges)
+}
+
+// effectiveText is the EFFECTIVE cell: "active", or "superseded by" and the
+// replacing ids. A record built by hand with no effective status prints "-".
+func effectiveText(d Record) string {
+	switch {
+	case d.EffectiveStatus == EffectiveSuperseded && len(d.SupersededBy) > 0:
+		return "superseded by " + strings.Join(d.SupersededBy, ", ")
+	case d.EffectiveStatus == "":
+		return "-"
+	default:
+		return d.EffectiveStatus
+	}
 }
 
 // writeTable prints a title line, then the header and rows aligned by
@@ -267,12 +330,14 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	if strings.ContainsAny(source, "\r\n") || len(source) > 500 {
 		return Record{}, fmt.Errorf("source must be one line")
 	}
+	// A new id has no edges yet, so the record starts active.
 	return Record{
-		ID:         id,
-		Statement:  statement,
-		Status:     in.Status,
-		RecordedAt: recordedAt,
-		Source:     source,
+		ID:              id,
+		Statement:       statement,
+		Status:          in.Status,
+		RecordedAt:      recordedAt,
+		Source:          source,
+		EffectiveStatus: EffectiveActive,
 	}, nil
 }
 
