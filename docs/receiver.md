@@ -35,8 +35,9 @@ stays on localhost when the receivers are bound wider. `--prices`, `--repo`,
 `--github`, and `--budget` match `sdf summary` and apply to the page. `--budget`
 names one local ceiling file; without it the page has no budget.
 
-`GET /health` returns `{"status":"ok"}`. HTTP exports are `POST /v1/traces`,
-`POST /v1/metrics`, and `POST /v1/logs`. The body may use `Content-Length` or
+`GET /health` on the OTLP/HTTP port (`http://127.0.0.1:4318/health`)
+returns `{"status":"ok"}`. The UI port does not serve it. HTTP exports are
+`POST /v1/traces`, `POST /v1/metrics`, and `POST /v1/logs`. The body may use `Content-Length` or
 `Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
 are chunked and omit `Content-Length`. When both headers are present, chunked
 encoding wins. `Content-Encoding: gzip` is inflated after the body is
@@ -52,6 +53,21 @@ open, and a missing code is `UNSET`. Inspect them with SQLite:
 ```bash
 sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
+```
+
+## Try it without an agent
+
+`sdf demo` runs the same receiver on free localhost ports, sends one
+synthetic Claude Code-shaped session to it, and prints that session's summary.
+Traces and logs go over OTLP/HTTP JSON and metrics over OTLP/gRPC, so both
+listeners are exercised. Every resource carries `sdf.fixture=demo`. It needs
+no agent, API key, or network, and it does not touch `sdf-telemetry.sqlite`:
+the store is a temporary file unless `--db PATH` names one to keep. `--json`
+prints the report as `sdf summary --json` would.
+
+```bash
+sdf demo
+sdf demo --db demo.sqlite && sdf summary --db demo.sqlite
 ```
 
 ## Optional token authentication

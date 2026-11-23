@@ -243,7 +243,10 @@ reads the id from the session manager instead and posts the open and the close.
 A `session_shutdown` fired because the session was replaced, on `reload`,
 `new`, `resume`, or `fork`, is not a close and is not posted.
 
-The same switches can be set in `.pi/agent/settings.json` under `otel`
+The same switches can be set under `otel` in the project file
+`.pi/settings.json` or the global file `~/.pi/agent/settings.json` (pi-otel
+reads the project file first, environment variables override both; this is
+what `sdf init pi --write` and `--write --global` update)
 (`protocol`, `signals.traces`, `signals.metrics`, `signals.logs`,
 `spanNaming`, `serviceName`). Leave content capture off; the summary does not
 need prompts or tool arguments.
@@ -510,12 +513,22 @@ log was emitted for this model in the 2026-11-10 capture, so cost stays unset.
 ```bash
 npm install -g @opencode/cli
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-opencode run --model "openrouter/recursive/flint-v1.0:free" "..."
+opencode models                      # the ids your configured providers offer
+opencode run --model "<provider/model>" "..."
 ```
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs when
 no token is set. If the receiver has a token set, also export
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+
+Pick the model id from `opencode models`. On `@opencode/cli` 2.3.2 (checked
+2026-11-23) the OpenRouter id this page used to show,
+`openrouter/recursive/flint-v1.0:free`, is reported as `Model unavailable`
+unless OpenRouter is configured as an OpenCode provider. The free ids 2.3.2
+lists without that are OpenCode-hosted, such as `opencode/flint-40b-free`,
+and they need an OpenCode account and its free quota. The export is the same
+either way; a run that fails at the provider still sends its process traces
+and logs.
 
 ## Point Pi at it
 

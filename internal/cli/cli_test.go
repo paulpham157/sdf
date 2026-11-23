@@ -752,12 +752,17 @@ func TestVersionMatchesTheSnapshotForm(t *testing.T) {
 	out := run(t, "version")
 	flag := run(t, "--version")
 	short := run(t, "-v")
-	if out.code != 0 || out.stdout != want || flag.stdout != want || short.stdout != want {
+	if out.code != 0 || !strings.HasPrefix(out.stdout, want) || flag.stdout != out.stdout || short.stdout != out.stdout {
 		t.Fatalf("want %q\nversion %d %q\nflag %d %q\nshort %d %q", want, out.code, out.stdout, flag.code, flag.stdout, short.code, short.stdout)
 	}
 	line := strings.TrimSuffix(strings.TrimPrefix(want, "sdf "), "\n")
 	if line == "" {
 		t.Fatal(want)
+	}
+	for _, field := range []string{"\ncommit: ", "\nbuilt: ", "\ngo: go1.", "\nplatform: "} {
+		if !strings.Contains(out.stdout, field) {
+			t.Fatalf("missing %q in %q", field, out.stdout)
+		}
 	}
 	help := run(t, "version", "--help")
 	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf version") || !strings.Contains(help.stdout, "sdf --version") {

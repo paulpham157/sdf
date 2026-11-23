@@ -2,7 +2,6 @@ package cli
 
 import (
 	"runtime/debug"
-	"strings"
 	"testing"
 )
 
@@ -21,7 +20,7 @@ func TestVersionUsesTheRecordedModuleVersion(t *testing.T) {
 		}
 		return
 	}
-	if got != "(devel)" && got != "unknown" && !strings.HasPrefix(got, "0.0.0-") {
+	if got != "dev" {
 		t.Fatalf("Version() = %q", got)
 	}
 }

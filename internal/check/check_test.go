@@ -161,3 +161,22 @@ func mustLoad(t *testing.T, name string) Case {
 	t.Fatalf("missing %s", name)
 	return Case{}
 }
+
+func TestEmbeddedCasesMatchTheCommittedFiles(t *testing.T) {
+	fromDisk, err := Load(filepath.Join("testdata", "cases"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := LoadEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embedded) != len(fromDisk) {
+		t.Fatalf("embedded %d, on disk %d", len(embedded), len(fromDisk))
+	}
+	for i := range fromDisk {
+		if embedded[i].ID != fromDisk[i].ID || embedded[i].Field != fromDisk[i].Field {
+			t.Fatalf("case %d: embedded %s, on disk %s", i, embedded[i].ID, fromDisk[i].ID)
+		}
+	}
+}
