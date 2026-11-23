@@ -115,17 +115,23 @@ the `telemetry` object of `$QWEN_HOME/settings.json` or
 so sdf turns it off even when the file says `true`, and warns. It does the
 same for `includeSensitiveSpanAttributes`. Key order, indentation, a UTF-8
 BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
-touched. The dry run prints only the merged `telemetry` object, not the
-rest of the file, which may hold MCP server secrets. A file with comments
-(Qwen Code accepts them) or that is not a JSON object is left untouched,
-and the `QWEN_TELEMETRY_*` variables are printed instead. `telemetry.outfile`
+touched. The dry run prints only the telemetry keys sdf manages, not the
+rest of the file or other telemetry keys, which may hold secrets (MCP
+server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
+or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+variables are printed instead; with `--write` that is an error (non-zero
+exit). `telemetry.outfile`
 and per-signal `otlp*Endpoint` keys are kept and reported, because they
 override the endpoint. The write refuses a file the user cannot write. It
 goes through a temp file in the same directory (fsync, rename), keeps the
 mode and, where the process may, the owner. The rename gives the file a new
 inode, so a hard link keeps the old content and extended attributes or ACLs
-are not copied. A symlink is followed with `readlink`, so a stow-style link
-to a file that does not exist yet creates that file. The old file is copied
+are not copied. A symlink is followed with `readlink`. It must end at a
+`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+not exist yet (stow-style) creates it: inside the settings directory,
+missing parent directories are created with mode 0700; outside it, only
+when the target's directory already exists, so sdf never creates
+directories elsewhere. The old file is copied
 to `.sdf-bak`; a different existing backup is kept and `.sdf-bak.1`, ... is
 used, and a backup made by a failed write is removed.
 

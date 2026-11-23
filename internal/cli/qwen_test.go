@@ -36,3 +36,29 @@ func TestInitQwenPrintsAndWritesSettings(t *testing.T) {
 		t.Fatalf("%d %s", global.code, global.stderr)
 	}
 }
+
+func TestInitQwenWriteFailsOnFileItCannotMerge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("QWEN_HOME", "")
+	t.Setenv("QWEN_CODE_SYSTEM_SETTINGS_PATH", filepath.Join(home, "none.json"))
+	path := filepath.Join(home, ".qwen", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"{\n  // mine\n}\n", "{ broken", "[]"} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		wrote := run(t, "init", "qwen", "--write")
+		if wrote.code == 0 || !strings.Contains(wrote.stderr, "was not changed") {
+			t.Fatalf("%q: %d %s %s", body, wrote.code, wrote.stdout, wrote.stderr)
+		}
+		if got := mustRead(t, path); got != body {
+			t.Fatalf("%q changed to %q", body, got)
+		}
+		if dry := run(t, "init", "qwen"); dry.code != 0 {
+			t.Fatalf("dry run %q: %d %s", body, dry.code, dry.stderr)
+		}
+	}
+}

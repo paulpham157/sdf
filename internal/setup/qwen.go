@@ -240,6 +240,10 @@ func qwen(req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	mkdir, err := qwenCheckLinkTarget(path, target)
+	if err != nil {
+		return Result{}, err
+	}
 	existing, err := os.ReadFile(target)
 	if err != nil && !os.IsNotExist(err) {
 		return Result{}, err
@@ -257,10 +261,16 @@ func qwen(req Request) (Result, error) {
 	if mergeErr != nil {
 		fmt.Fprintf(&b, "%s was not changed: %v\n", path, mergeErr)
 		fmt.Fprintf(&b, "Put these keys in its \"telemetry\" object, or use the variables above:\n  \"enabled\": true, \"otlpEndpoint\": %q, \"otlpProtocol\": \"http\", \"logPrompts\": false\n", req.Endpoint.base())
+		if req.Write {
+			// --write asked for a change that did not happen: fail, as
+			// sdf init claude-code does for a settings file it cannot parse.
+			return Result{Text: b.String()}, fmt.Errorf("%s was not changed: %w", path, mergeErr)
+		}
 		return Result{Text: b.String()}, nil
 	}
-	block, _ := qwenWriteJSON(tel, "  ")
-	fmt.Fprintf(&b, "%s, \"telemetry\" after the merge (other keys are kept as they are and not shown):\n%s\n", path, block)
+	shown, hidden := qwenManagedView(tel)
+	block, _ := qwenWriteJSON(shown, "  ")
+	fmt.Fprintf(&b, "%s, the \"telemetry\" keys sdf manages after the merge (other keys, including %d other telemetry keys, are kept as they are and not shown, since they may hold secrets such as otlpHeaders):\n%s\n", path, hidden, block)
 	if target != path {
 		fmt.Fprintf(&b, "%s is a symlink; the write goes to %s\n", path, target)
 	}
@@ -275,7 +285,7 @@ func qwen(req Request) (Result, error) {
 		b.WriteString("not written (pass --write)\n")
 		return Result{Text: b.String()}, nil
 	}
-	backup, err := qwenWriteAtomic(target, merged)
+	backup, err := qwenWriteAtomic(target, merged, mkdir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -284,6 +294,81 @@ func qwen(req Request) (Result, error) {
 		b.WriteString("backup " + backup + "\n")
 	}
 	return Result{Text: b.String(), Wrote: true}, nil
+}
+
+// qwenManaged are the telemetry keys sdf init qwen sets. Only these are
+// printed: other telemetry keys (otlpHeaders, endpoints with credentials)
+// and the rest of settings.json (mcpServers env) may hold secrets.
+var qwenManaged = []string{"enabled", "otlpEndpoint", "otlpProtocol", "logPrompts", qwenSensitive}
+
+func qwenManagedView(tel *qwenObject) (*qwenObject, int) {
+	view := newQwenObject()
+	for _, key := range qwenManaged {
+		if v, ok := tel.get(key); ok {
+			view.set(key, v)
+		}
+	}
+	return view, len(tel.keys) - len(view.keys)
+}
+
+// qwenCheckLinkTarget decides whether settings.json may be written at
+// target, the end of the symlink chain that starts at path (they are equal
+// when path is not a symlink), and whether missing parent directories may be
+// created (0700).
+//
+//   - No symlink: the settings directory (~/.qwen or $QWEN_HOME) and its
+//     parents may be created, as Qwen Code itself does.
+//   - A symlink must end at a .json file. Anything else (settings.json ->
+//     ../.bashrc) is refused, existing or not, so sdf never writes JSON into
+//     a file of another format.
+//   - An existing target is a regular file (qwenWriteAtomic checks that),
+//     so a link into a dotfiles repo works.
+//   - A dangling target inside the settings directory may get its parent
+//     directories created. A dangling target outside it (stow-style, into a
+//     dotfiles checkout) is created only when its directory already exists
+//     and is a real directory: sdf does not create directories outside the
+//     settings directory.
+func qwenCheckLinkTarget(path, target string) (bool, error) {
+	if target == path {
+		return true, nil
+	}
+	if !strings.EqualFold(filepath.Ext(target), ".json") {
+		return false, fmt.Errorf("%s is a symlink to %s, which is not a .json file; refusing to write settings there", path, target)
+	}
+	if _, err := os.Lstat(target); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	dir := filepath.Dir(path)
+	if realDir, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = realDir
+	}
+	parent := filepath.Dir(target)
+	if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+		if info, err := os.Stat(realParent); err != nil || !info.IsDir() {
+			return false, fmt.Errorf("%s is a symlink to %s, whose directory is not a directory", path, target)
+		}
+		return false, nil
+	}
+	if rel, err := filepath.Rel(dir, filepath.Clean(target)); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && qwenRealAncestorInside(parent, dir) {
+		return true, nil
+	}
+	return false, fmt.Errorf("%s is a symlink to %s, whose directory %s does not exist and is outside %s; create it first (sdf does not create directories there)", path, target, parent, filepath.Dir(path))
+}
+
+// qwenRealAncestorInside reports whether the deepest existing ancestor of
+// dir resolves (through symlinks) to root or a directory under it.
+func qwenRealAncestorInside(dir, root string) bool {
+	for cur := dir; ; cur = filepath.Dir(cur) {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			rel, err := filepath.Rel(root, real)
+			return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+		}
+		if filepath.Dir(cur) == cur {
+			return false
+		}
+	}
 }
 
 // qwenResolveLink follows a symlink chain with Readlink, so a link to a
@@ -325,7 +410,7 @@ var qwenRename = os.Rename
 // read-only file. An existing file is copied to .sdf-bak first; a
 // different existing backup is kept and .sdf-bak.N is used. A backup made
 // by a failed write is removed.
-func qwenWriteAtomic(target string, body []byte) (string, error) {
+func qwenWriteAtomic(target string, body []byte, mkdir bool) (string, error) {
 	var old os.FileInfo
 	if info, err := os.Stat(target); err == nil {
 		if !info.Mode().IsRegular() {
@@ -340,8 +425,10 @@ func qwenWriteAtomic(target string, body []byte) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return "", err
+	if mkdir {
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return "", err
+		}
 	}
 	mode := os.FileMode(0o600)
 	backup, created := "", false
