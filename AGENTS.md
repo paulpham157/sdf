@@ -20,7 +20,8 @@ make e2e           # builds ./sdf, then tests/e2e over HTTP and gRPC
 because that package builds only with `-tags e2e`.
 
 CI runs `fmt-check`, `staticcheck`, `vet`, and `test` on a pull request, and
-adds `race` and `e2e` after merge. Neither deploys nor publishes a release.
+adds `race` and `e2e` after merge. Neither deploys nor publishes a release;
+`release.yml` creates a draft GitHub Release only when a `v*` tag is pushed.
 Details are in `CONTRIBUTING.md`.
 
 `tests/samples/` is hand-written OTLP marked `sdf.fixture=sample`. Do not

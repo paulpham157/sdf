@@ -1,9 +1,12 @@
 # GoReleaser v2 config for sdf.
 #
-# .github/workflows/release.yml runs `goreleaser release --clean` only when a
-# v* tag is pushed, and publishes the archives and checksums.txt to that
-# tag's GitHub Release. Locally, `goreleaser release --snapshot --clean`
-# builds every archive into dist/ and publishes nothing.
+# .github/workflows/release.yml is the only place that runs a real release:
+# `goreleaser release --clean` when a v* tag is pushed. It uploads the
+# archives and checksums.txt to a DRAFT GitHub Release (release.draft below),
+# which a maintainer reviews and publishes by hand. A local
+# `goreleaser release` with a GITHUB_TOKEN also creates only a draft.
+# `goreleaser release --snapshot --clean` (main.yml, and locally) builds every
+# archive into dist/ and never creates a release or uploads anything.
 version: 2
 
 project_name: sdf
@@ -70,4 +73,6 @@ release:
     name: sdf
   # A tag such as v0.1.0-rc.1 is marked as a prerelease.
   prerelease: auto
-  draft: false
+  # Never publish directly. The release stays a draft until a maintainer
+  # publishes it on GitHub.
+  draft: true

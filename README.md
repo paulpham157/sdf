@@ -34,17 +34,20 @@ No agent, API key, or network connection is needed for these four steps.
 **1. Install.** With Go 1.26 or newer:
 
 ```bash
-go install github.com/paulpham157/sdf/cmd/sdf@latest   # or @v0.1.0
+go install github.com/paulpham157/sdf/cmd/sdf@latest
 ```
 
-That puts `sdf` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure that
-directory is on your `PATH`. Or download a prebuilt binary for Linux, macOS, or
-Windows on amd64 or arm64 from
-[GitHub Releases](https://github.com/paulpham157/sdf/releases) (published from
-v0.1.0 on), check it against `checksums.txt`, and unpack it:
+This is the primary install path. It puts `sdf` in `$(go env GOPATH)/bin`
+(usually `~/go/bin`); make sure that directory is on your `PATH`. Until the
+first tagged release, `@latest` resolves to the newest commit on `main`.
+
+Prebuilt binaries for Linux, macOS, and Windows on amd64 and arm64 will be on
+[GitHub Releases](https://github.com/paulpham157/sdf/releases) after the first
+release is published; there is no release yet. Once there is, download the
+archive for your platform with `checksums.txt`, verify it, and unpack it:
 
 ```bash
-VERSION=0.1.0 OS=linux ARCH=amd64   # OS: linux|darwin; ARCH: amd64|arm64
+VERSION=X.Y.Z OS=linux ARCH=amd64   # a published version; OS: linux|darwin; ARCH: amd64|arm64
 curl -LO https://github.com/paulpham157/sdf/releases/download/v${VERSION}/sdf_${VERSION}_${OS}_${ARCH}.tar.gz
 curl -LO https://github.com/paulpham157/sdf/releases/download/v${VERSION}/checksums.txt
 sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c checksums.txt
@@ -60,8 +63,9 @@ sdf version
 ```
 
 prints the version, commit, build date, Go version, and platform. `sdf
---version` and `sdf -v` are the same. A `go install ...@v0.1.0` build prints
-`v0.1.0`; a local build prints the pseudo-version the go tool recorded.
+--version` and `sdf -v` are the same. A `go install` of a tagged version
+prints that version; an untagged or local build prints the pseudo-version the
+go tool recorded.
 
 **3. See it work.**
 

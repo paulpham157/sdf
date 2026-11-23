@@ -1,0 +1,47 @@
+# Builds the archives and uploads them to a DRAFT GitHub Release when a v* tag
+# is pushed, for example v0.1.0. .goreleaser.yaml sets release.draft, so a
+# maintainer reviews the draft and publishes it by hand. Nothing else triggers
+# this workflow: pull requests and pushes to main only run the snapshot build
+# in main.yml, which never creates a release.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# No token permissions by default. Only the release job gets contents: write.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  goreleaser:
+    name: goreleaser (release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Create the draft release and upload the archives and checksums.txt.
+      # contents: write also covers checkout of this public repo.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # GoReleaser reads the tag and the commit history for the changelog.
+          fetch-depth: 0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Test before publishing
+        run: make test
+      - name: Release
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -987,6 +987,6 @@ func cmdDemo(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
 	}
-	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi to point a real agent at it.")
+	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi|grok to point a real agent at it.")
 	return 0
 }
