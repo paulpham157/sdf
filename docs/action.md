@@ -157,19 +157,24 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   substitute for review.
 - *A dishonest base branch.* Whoever can push to the base branch decides
   the task. Protect it.
-- No signature: the verdict is hashed, not signed. A ledger head check
-  (below) is the next step.
+- No signature: the verdict is hashed, not signed. A ledger prefix or head
+  check (below) can detect a rewritten chain.
 
-## Optional, after the ledger lands
+## Optional ledger check
 
-Once the ledger (pull request #189) is merged and `sdf verify` writes to
-it, a later step can audit the ledger the run produced:
+`sdf verify` can append evidence and the verdict to a hash-chained ledger
+(`--ledger PATH` or `$SDF_LEDGER`; see [ledger.md](ledger.md) and
+[verify.md](verify.md)). This action does not open a ledger today: it runs
+`sdf verify ... --no-data-dir` only.
+
+A later step in the workflow can audit a ledger the job produced:
 
 ```bash
-sdf audit verify --require-nonempty --expect-head-file head.txt
+sdf audit verify --require-nonempty --expect-prefix-file pin.txt
 ```
 
-with `--expect-prefix <seq>:<entry_hash>` when that flag exists. Its exit
-codes are 0 intact, 1 corrupt or mismatch, 2 usage, 3 I/O error. A step that
-uses it must map 1 to FAIL and 2 or 3 to ERROR, and must never turn either
-into PASS. It is not part of this action yet.
+`--expect-prefix` and `--expect-prefix-file` allow later legitimate appends.
+`--expect-head` and `--expect-head-file` require the current head to match
+exactly. Exit codes are 0 intact, 1 corrupt or mismatch, 2 usage, 3 I/O
+error. A step that uses it must map 1 to FAIL and 2 or 3 to ERROR, and must
+never turn either into PASS. It is not part of this action yet.

@@ -179,10 +179,12 @@ with `--store-content` (their `sdf.content` mark goes too), including a log
 name that is a copy of its body. It reads the rows in batches inside one
 transaction (a crash leaves the file as it was), rewrites the rows that
 changed with `secure_delete` on, runs `VACUUM` so the old text does not stay
-in free pages, and stamps the file. sdf's files use SQLite's default
-rollback journal; a file switched to WAL mode is also checkpointed and its
-WAL truncated. It needs free disk of about twice the file's size while it
-runs (the journal and `VACUUM`'s copy). Running it again changes nothing.
+in free pages, and stamps the file. `sdf serve` switches the telemetry database to WAL
+mode; `sdf redact` checkpoints and truncates that WAL after `VACUUM` so the
+old text does not remain in a sidecar file. A file still in rollback-journal
+mode is handled too (the checkpoints are no-ops). It needs free disk of about
+twice the file's size while it runs (the journal and `VACUUM`'s copy).
+Running it again changes nothing.
 
 - `--dry-run` opens the file read-only and writes nothing: no schema,
   migration, stamp, or lock file.

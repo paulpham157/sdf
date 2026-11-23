@@ -416,3 +416,5 @@ record.
 - No signature: the records are hashed, not signed. A verdict JSON shows
   what a verifier claimed; trust it only from a run you control, such as
   the CI job's log and artifact.
+
+The GitHub Action that runs this on a pull request is in [action.md](action.md).
