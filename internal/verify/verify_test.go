@@ -265,9 +265,9 @@ func TestCheckoutDirtyWhenSomethingWritesTheCheckout(t *testing.T) {
 
 func TestPathIsExplicitAndNeverTheCheckout(t *testing.T) {
 	f := newFixture(t, task.CriterionInput{Name: "unit", Argv: []string{"mytool"}, Designated: []string{"tests/*.sh"}})
-	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "mytool": "#!/bin/sh\nexit 0\n"})
+	f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "mytool": "#!/bin/sh\nexit 0\n"})
 	g(t, f.repo, "update-index", "--chmod=+x", "mytool")
-	sha = commit(t, f.repo, nil, "exec")
+	sha := commit(t, f.repo, nil, "exec")
 
 	// "." in PATH would find ./mytool in the checkout; it is dropped.
 	o := f.opts(sha)

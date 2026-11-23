@@ -44,9 +44,13 @@ a source.
    sha256 of the match, never the match. Binary files are listed as skipped.
    This is not a replacement for a full scanner.
 5. **Criteria**, only if nothing above failed: the submitted code does not
-   run otherwise. Each argv runs in the checkout with no shell, its own
-   process group, the declared timeout, and an allowlisted environment
-   (`PATH`, `HOME`, Go cache variables, locale, temp; plus `SDF_VERIFY=1`).
+   run otherwise. Each argv runs in the checkout root with no shell, its
+   own process group, the declared timeout, and an allowlisted environment
+   (`HOME`, Go cache variables, locale, temp; plus `SDF_VERIFY=1`). `PATH`
+   is set explicitly from `--path` (default: the verifier's PATH) with
+   relative entries dropped, and argv[0] is resolved in that PATH only, so
+   a bare name never resolves to a file in the checkout. The resolved
+   command, cwd, and PATH are in the evidence.
    Output is hashed (`--artifacts DIR` keeps it as `<sha256>` files). After
    each check, HEAD and the tracked files must be unchanged.
 
