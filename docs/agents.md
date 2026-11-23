@@ -555,6 +555,96 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
 
+## GitHub Copilot CLI
+
+> Mapping below is from the
+> [Copilot CLI OpenTelemetry reference](https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference),
+> `copilot help monitoring` in `@github/copilot` 1.0.114, and the
+> [copilot-cli changelog](https://github.com/github/copilot-cli/blob/main/changelog.md),
+> checked 2026-11-23. It was not checked against a live session: a live run
+> needs a Copilot subscription. `tests/samples/copilot_*.json` are built
+> from those documents.
+
+Copilot CLI exports **traces and metrics, no logs**. Export turns on when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set (or `COPILOT_OTEL_ENABLED=true`, or a
+file exporter path). It speaks OTLP/HTTP only: `OTEL_EXPORTER_OTLP_PROTOCOL`
+is `http/json` (default) or `http/protobuf` (1.0.61 and later). `grpc` is not
+supported and falls back with a warning, so use port 4318.
+
+```bash
+npm install -g @github/copilot
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT
+copilot
+```
+
+These `export` lines stay in that shell after `copilot` exits, so other
+OTel programs started there will send to sdf too. To scope them to one run,
+run copilot through `sh`, which works from bash, zsh, and fish:
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`.
+
+`sdf init copilot --write` merges these lines into
+`~/.config/sdf/copilot.env` for you to source (details and precedence in
+[docs/receiver.md](receiver.md#one-step-setup)). Copilot CLI has no
+settings-file key for the endpoint; the process environment wins, and
+per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` override the generic endpoint.
+Organization or device managed settings can also configure export.
+A plain `http://` endpoint such as this receiver exports normally. The
+warning in the docs that an `http://` endpoint disables export sits in the
+Transport security section and applies when one of the certificate or
+client-key variables (`OTEL_EXPORTER_OTLP_*CERTIFICATE`, `*CLIENT_KEY`) is
+set; changelog 1.0.107 says the same for `copilot help monitoring`.
+`sdf init copilot` warns when one is set. Content capture
+(`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`) defaults to `NO_CONTENT`; only
+`SPAN_ONLY` and `SPAN_AND_EVENT` put prompts and responses on spans
+(`EVENT_ONLY` puts them on span events, which sdf does not store). The legacy
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` counts only when the
+standard variable is empty or unset, though it alone still adds tool schemas
+(`gen_ai.tool.definitions`). The user id is the pseudonymous
+`enduser.pseudo.id`.
+
+`service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
+summary also recognizes `gen_ai.agent.id` = `github.copilot.*`). Each user
+message is one `invoke_agent` span carrying `gen_ai.conversation.id`, with a
+`chat {model}` CLIENT span per model request and an `execute_tool {tool}`
+span per tool call. Subagents (`explore`, `task`) are nested `invoke_agent`
+spans in the same trace. Tool and subagent spans are attributed through the
+trace id.
+
+- Top-level `invoke_agent` spans are the ones with `server.address` (the
+  docs say subagents have none), else `gen_ai.agent.id` =
+  `github.copilot.default`, else those with no `invoke_agent` above them.
+  In fleet mode (`invoke_workflow`), the subagents directly under a workflow
+  that no top-level `invoke_agent` contains are counted like top-level ones.
+- Duration is the union of the time covered by top-level `invoke_agent`
+  and `invoke_workflow` spans, so parallel runs count once (0-10 s and
+  5-15 s is 15 s). Nested subagent spans are inside them.
+- Tokens are the sum of `gen_ai.usage.input_tokens`, `output_tokens`,
+  `cache_read.input_tokens`, `cache_write.input_tokens`, and
+  `reasoning.output_tokens` on `chat` spans (compaction requests included).
+  Input includes cache read and write; output includes reasoning. Without
+  chat usage the top-level `invoke_agent` totals are used, then the
+  `gen_ai.client.inference.usage.*` counters. 1.0.64 named the cache write
+  count `cache_creation.input_tokens`, and earlier builds used underscore
+  names (`cache_read_input_tokens`, `cache_creation_input_tokens`,
+  `reasoning_output_tokens`); they are read too, and only the first name
+  present on a span counts.
+- Tool calls come from `execute_tool` spans. There is no success flag:
+  `error.type` or an ERROR status is a failure, anything else a success.
+- Cost: Copilot reports no USD. `github.copilot.cost` is a billing
+  multiplier, not money. `github.copilot.nano_aiu` (AI units / 1e9) is read
+  from top-level `invoke_agent` spans only and shown on the `agent cost`
+  missing line. Computed cost is always unknown: Copilot is billed in
+  premium requests and AI units, not per token, so sdf never prices its
+  token counts (a test in `internal/summary` keeps it that way).
+- `github.copilot.session.shutdown` (`total_premium_requests`, lines
+  added/removed), `gen_ai.client.operation.exception`, hook and compaction
+  events are span events. sdf does not store span events yet.
+- Metrics carry no session id. A point is attached to a session only when it
+  falls inside exactly one Copilot session window.
+
 ## Grok CLI
 
 > Mapping below was first sketched from the public xAI guide
@@ -621,3 +711,99 @@ Environment variables win over the file. The hook posts session open and
 close to `POST /v1/sessions`. Grok sets `GROK_SESSION_ID` on that process;
 the event JSON field is `sessionId`. User hooks under `~/.grok/hooks/` are
 trusted. A project `.grok/hooks/` file is not, until that folder is trusted.
+
+## Gemini CLI
+
+> Mapping below is from Gemini CLI's published
+> [telemetry doc](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md)
+> and its telemetry source (`packages/core/src/telemetry`) at
+> google-gemini/gemini-cli `eecccfcd5aff25de5e78135ca20f7abe3f566955`
+> (0.71.0-nightly, 2026-11-20 UTC). It has not been checked against a live,
+> signed-in session.
+
+Gemini CLI exports traces, logs, and metrics once `telemetry.enabled` is
+true. Settings live in the `telemetry` object of `~/.gemini/settings.json`. A
+workspace `.gemini/settings.json` overrides it, but only when Gemini CLI
+trusts the folder; in an untrusted folder the workspace file is not loaded.
+The system settings file (`/etc/gemini-cli/settings.json` on Linux,
+`/Library/Application Support/GeminiCli/settings.json` on macOS,
+`C:\ProgramData\gemini-cli\settings.json` on Windows, or
+`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) is applied after both and wins over them.
+`GEMINI_TELEMETRY_*` variables override every file, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` overrides `telemetry.otlpEndpoint` when
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset
+([configuration layers](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md)).
+The default exporter is gRPC at
+`http://localhost:4317`, which reaches `sdf serve` as is. With
+`otlpProtocol: "http"` it posts OTLP/HTTP JSON to `<otlpEndpoint>/v1/traces`,
+`/v1/logs`, and `/v1/metrics`. `telemetry.outfile` replaces the endpoint, so
+nothing reaches the receiver while it is set. `target: "gcp"` without
+`useCollector` sends to Google Cloud instead.
+
+`service.name` is `gemini-cli` (`service.version` is the Node.js version).
+Every log and metric data point carries `session.id`, `installation.id`,
+`interactive`, and, when known, `auth_type` and `user.email` (when you are
+signed in with Google). Logs name themselves in the `event.name` attribute
+(`gemini_cli.config`, `gemini_cli.user_prompt`, `gemini_cli.api_request`,
+`gemini_cli.api_response`, `gemini_cli.api_error`, `gemini_cli.tool_call`,
+`gemini_cli.file_operation`, `gemini_cli.conversation_finished`, and more).
+The body is a sentence such as `Tool call: read_file. Decision: auto_accept.
+Success: true. Duration: 14ms.` Each `api_request`, `api_response`, and
+`api_error` is followed by a `gen_ai.client.inference.operation.details` log
+with the same counts under `gen_ai.usage.*`.
+
+Spans are named for the operation (`llm_call`, `tool_call`, `agent_call`,
+...). They carry `gen_ai.conversation.id` (the session id),
+`gen_ai.operation.name`, and `gen_ai.agent.name=gemini-cli`, and `llm_call`
+adds `gen_ai.request.model`. Prompts, outputs, and tool definitions are on
+spans only with `telemetry.traces=true`.
+
+Metrics are cumulative and exported every 10 seconds:
+`gemini_cli.session.count`, `gemini_cli.token.usage` (`model`, `type` =
+`input` | `output` | `thought` | `cache` | `tool`), `gemini_cli.api.request.count`,
+`gemini_cli.tool.call.count` (`function_name`, `success`, `decision`,
+`tool_type`), latency histograms, and the GenAI
+`gen_ai.client.token.usage` and `gen_ai.client.operation.duration`.
+
+What the summary takes from it:
+
+| Summary field | Gemini CLI source |
+| --- | --- |
+| session id | `session.id` on logs and metrics; `gen_ai.conversation.id` on spans |
+| tool | `gemini-cli` (from `service.name`, or a `gemini_cli.*` name) |
+| model | `model` on `config`, `api_request`, `api_response`, `api_error`, and metric points; `gen_ai.request.model` on spans |
+| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields |
+| duration | min-to-max of the session's logs and spans (no session or turn duration is exported) |
+| tool calls | `gemini_cli.tool_call` logs: `function_name`, `success`, `duration_ms` (no call id) |
+| errors | `gemini_cli.api_error` in the log events; failed tools as `success=false`; `ERROR` status on spans |
+| agent-reported cost | not exported |
+| computed cost | unknown: there is no pricing rule for the Gemini token sources yet |
+
+`input` (`input_token_count`) is Gemini's `promptTokenCount`, which includes
+the `cache` count. `output` excludes `thought`. `tool` is the tool-use prompt
+count. Prompts are in the logs by default: `telemetry.logPrompts` defaults to
+`true`, and it adds `prompt`, `request_text`, `response_text`, and
+`function_args`. Set it to `false` unless you want that text in the local
+SQLite file. `sdf init gemini --write` does that when the file has no
+`logPrompts` yet.
+
+## Point Gemini CLI at it
+
+```bash
+sdf init gemini --write
+gemini
+```
+
+Or without touching the settings file:
+
+```bash
+export GEMINI_TELEMETRY_ENABLED=true
+export GEMINI_TELEMETRY_TARGET=local
+export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318
+export GEMINI_TELEMETRY_OTLP_PROTOCOL=http
+export GEMINI_TELEMETRY_LOG_PROMPTS=false
+gemini
+```
+
+gRPC works too: leave the protocol at its default and set
+`GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4317`.
