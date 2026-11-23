@@ -11,6 +11,8 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -74,7 +76,28 @@ type Store struct {
 }
 
 // Open creates the file if needed and applies the schema and column migration.
+// An error names the database by its absolute path.
 func Open(path string) (*Store, error) {
+	s, err := open(path)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "unable to open database file") {
+			return nil, fmt.Errorf("database %s: %w; check that its directory exists and is writable", AbsPath(path), err)
+		}
+		return nil, fmt.Errorf("database %s: %w", AbsPath(path), err)
+	}
+	return s, nil
+}
+
+// AbsPath is path made absolute for messages; path itself when that fails.
+func AbsPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+func open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err

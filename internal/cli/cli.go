@@ -306,7 +306,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "warning: "+warning)
 		}
 	}
-	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), dbPath)
+	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), store.AbsPath(dbPath))
 	fmt.Fprintf(stdout, "OTLP/gRPC listening on %s\n", srv.GRPCAddress())
 	if uiSrv != nil {
 		fmt.Fprintf(stdout, "UI listening on %s\n", uiSrv.URL())
@@ -336,6 +336,7 @@ func parseUIAddr(v string) (string, error) {
 
 func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
+	dbPathSet := false
 	var session *string
 	asJSON := false
 	allSpans := false
@@ -357,9 +358,9 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "sdf summary: --db requires a value")
 				return 2
 			}
-			dbPath = v
+			dbPath, dbPathSet = v, true
 		case strings.HasPrefix(arg, "--db="):
-			dbPath = strings.TrimPrefix(arg, "--db=")
+			dbPath, dbPathSet = strings.TrimPrefix(arg, "--db="), true
 		case arg == "--session":
 			v, ok := take(&i, args)
 			if !ok {
@@ -417,6 +418,9 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
+	}
+	if code := summaryStoreExists(dbPath, dbPathSet, stderr); code != 0 {
+		return code
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -1005,7 +1009,7 @@ func demoStoreIsSafe(path string, stderr io.Writer) int {
 	}
 	st, err := store.Open(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
 		return 1
 	}
 	other, err := st.HoldsOtherThanFixture("demo")

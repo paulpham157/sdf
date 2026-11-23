@@ -26,7 +26,13 @@ import (
 )
 
 func TestSummaryOfANewDatabase(t *testing.T) {
-	out := run(t, "summary", "--db", filepath.Join(t.TempDir(), "empty.sqlite"))
+	path := filepath.Join(t.TempDir(), "empty.sqlite")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	out := run(t, "summary", "--db", path)
 	if out.code != 0 || out.stdout != "No telemetry sessions in the store.\n" {
 		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
 	}
