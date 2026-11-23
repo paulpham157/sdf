@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -71,14 +74,72 @@ func parseEnvLine(line string) (string, string, bool) {
 	return strings.TrimSpace(key), value, true
 }
 
-func captureEnabled(key, value string) bool {
-	switch key {
-	case copilotCaptureKey:
-		return value != "" && !strings.EqualFold(value, copilotNoContent)
-	case copilotLegacyKey:
-		return strings.EqualFold(value, "true") || value == "1"
+// spanCapture reports whether a standard capture value puts prompt and
+// response text on spans. NO_CONTENT and EVENT_ONLY do not (EVENT_ONLY
+// content goes to span events, which sdf does not store), and an
+// unrecognized value disables capture.
+func spanCapture(value string) bool {
+	return strings.EqualFold(value, "SPAN_ONLY") || strings.EqualFold(value, "SPAN_AND_EVENT")
+}
+
+func legacyCapture(value string) bool {
+	return strings.EqualFold(value, "true") || value == "1"
+}
+
+// captureWarning describes the effective content capture for one set of
+// values. The legacy boolean counts only when the standard variable is empty
+// or unset (Copilot docs, Content capture).
+func captureWarning(where, standard, legacy string) string {
+	if standard != "" {
+		if spanCapture(standard) {
+			return fmt.Sprintf("content capture is on %s (%s=%s); kept. Set %s=%s to turn it off", where, copilotCaptureKey, standard, copilotCaptureKey, copilotNoContent)
+		}
+		return ""
 	}
-	return false
+	if legacyCapture(legacy) {
+		return fmt.Sprintf("content capture is on %s (%s=%s and %s unset)", where, copilotLegacyKey, legacy, copilotCaptureKey)
+	}
+	return ""
+}
+
+// copilotHostName is an RFC 1123 host name: dot-separated labels of letters,
+// digits, and inner hyphens.
+var copilotHostName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
+
+// copilotEndpoint validates --host and --port before they reach a file the
+// user sources: a host name, an IPv4 address, or an IPv6 address (bracketed
+// or bare), and a port in 1-65535. Anything else (spaces, ;, $, quotes,
+// backticks) is refused.
+func copilotEndpoint(ep Endpoint) (Endpoint, error) {
+	host := ep.Host
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		inner := host[1 : len(host)-1]
+		if ip := net.ParseIP(inner); ip == nil || ip.To4() != nil || !strings.Contains(inner, ":") {
+			return ep, fmt.Errorf("--host %q is not a valid bracketed IPv6 address", ep.Host)
+		}
+		host = inner
+	} else if strings.Contains(host, ":") {
+		if ip := net.ParseIP(host); ip == nil {
+			return ep, fmt.Errorf("--host %q is not a valid IPv6 address", ep.Host)
+		}
+	} else if net.ParseIP(host) == nil && (len(host) > 253 || !copilotHostName.MatchString(host)) {
+		return ep, fmt.Errorf("--host %q is not a host name, IPv4 address, or bracketed IPv6 address", ep.Host)
+	}
+	if ep.HTTPPort < 1 || ep.HTTPPort > 65535 {
+		return ep, fmt.Errorf("--port %d is not in 1-65535", ep.HTTPPort)
+	}
+	ep.Host = host
+	return ep, nil
+}
+
+// shellQuote single-quotes value for a POSIX shell; an embedded ' becomes
+// '\”.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func copilotExport(key, value string) string {
+	return "export " + key + "=" + shellQuote(value)
 }
 
 // mergeCopilotEnv rewrites an existing snippet in place: line order and
@@ -91,6 +152,7 @@ func mergeCopilotEnv(existing string, ep Endpoint) (string, []string) {
 	var out []string
 	seen := map[string]bool{}
 	hasCapture := false
+	standard, legacy := "", ""
 	lines := strings.Split(strings.TrimRight(existing, "\n"), "\n")
 	if existing == "" {
 		lines = nil
@@ -110,14 +172,15 @@ func mergeCopilotEnv(existing string, ep Endpoint) (string, []string) {
 			if value != target {
 				warnings = append(warnings, fmt.Sprintf("replacing %s=%s with %s", key, value, target))
 			}
-			out = append(out, "export "+key+"="+target)
+			out = append(out, copilotExport(key, target))
 			continue
 		}
-		if key == copilotCaptureKey {
+		switch key {
+		case copilotCaptureKey:
 			hasCapture = true
-		}
-		if captureEnabled(key, value) {
-			warnings = append(warnings, fmt.Sprintf("content capture is already on in this file (%s=%s); kept. Set %s=%s to turn it off", key, value, copilotCaptureKey, copilotNoContent))
+			standard = value
+		case copilotLegacyKey:
+			legacy = value
 		}
 		for _, o := range copilotOverrides {
 			if key == o {
@@ -131,11 +194,18 @@ func mergeCopilotEnv(existing string, ep Endpoint) (string, []string) {
 	}
 	for _, key := range []string{copilotEndpointKey, copilotProtocolKey} {
 		if !seen[key] {
-			out = append(out, "export "+key+"="+want[key])
+			out = append(out, copilotExport(key, want[key]))
 		}
 	}
 	if !hasCapture {
-		out = append(out, "export "+copilotCaptureKey+"="+copilotNoContent)
+		out = append(out, copilotExport(copilotCaptureKey, copilotNoContent))
+		standard = copilotNoContent
+	}
+	if w := captureWarning("in this file", standard, legacy); w != "" {
+		warnings = append(warnings, w)
+	}
+	if legacyCapture(legacy) && !spanCapture(standard) {
+		warnings = append(warnings, fmt.Sprintf("%s=%s in this file is overridden by %s=%s for prompts and responses, but it still adds tool schemas (gen_ai.tool.definitions) to spans", copilotLegacyKey, legacy, copilotCaptureKey, standard))
 	}
 	return strings.Join(out, "\n") + "\n", warnings
 }
@@ -160,15 +230,18 @@ func copilotEnvWarnings(ep Endpoint) []string {
 	if v := os.Getenv(copilotProtocolKey); v != "" && v != copilotProtocol && v != "http/protobuf" {
 		out = append(out, fmt.Sprintf("%s=%s is set; Copilot CLI supports only http/json and http/protobuf", copilotProtocolKey, v))
 	}
-	for _, key := range []string{copilotCaptureKey, copilotLegacyKey} {
-		if v := os.Getenv(key); captureEnabled(key, v) {
-			out = append(out, fmt.Sprintf("content capture is on in this environment (%s=%s)", key, v))
-		}
+	if w := captureWarning("in this environment", os.Getenv(copilotCaptureKey), os.Getenv(copilotLegacyKey)); w != "" {
+		out = append(out, w)
 	}
 	return out
 }
 
 func copilot(req Request) (Result, error) {
+	ep, err := copilotEndpoint(req.Endpoint)
+	if err != nil {
+		return Result{}, err
+	}
+	req.Endpoint = ep
 	path := copilotEnvPath(req.Home)
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -182,11 +255,14 @@ func copilot(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Content capture stays off (%s). gRPC is not supported; this uses the HTTP receiver.\n", copilotNoContent)
 	fmt.Fprintf(&b, "Per-signal variables (OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, ..._METRICS_ENDPOINT) and organization or device managed settings override these.\n")
 	fmt.Fprintf(&b, "Docs: https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference\n\n")
-	fmt.Fprintf(&b, "%s:\n%s", path, merged)
+	fmt.Fprintf(&b, "%s, the lines sdf manages:\n%s", path, copilotManagedLines(merged))
+	if others := copilotOtherLines(merged); others > 0 {
+		fmt.Fprintf(&b, "(%d other line(s) in the file are kept as they are and not shown)\n", others)
+	}
 	for _, w := range warnings {
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
-	fmt.Fprintf(&b, "\nCopilot CLI does not load %s by itself; source it in the shell that starts copilot.\n", path)
+	fmt.Fprintf(&b, "\nCopilot CLI does not load %s by itself. Source it in a subshell so the OTEL_* variables do not stay in your shell:\n  (. %s && copilot)\n", path, shellQuote(path))
 	if bytes.Equal(existing, []byte(merged)) {
 		b.WriteString(path + " already has these values\n")
 		return Result{Text: b.String()}, nil
@@ -229,23 +305,110 @@ func copilotConfigured(req Request) string {
 	return b.String()
 }
 
+func copilotManaged(key string) bool {
+	return key == copilotEndpointKey || key == copilotProtocolKey || key == copilotCaptureKey || key == copilotLegacyKey
+}
+
+// copilotManagedLines is the part of the snippet shown in output: only the
+// variables sdf sets or reads for capture, never the user's other lines
+// (OTEL_EXPORTER_OTLP_HEADERS and the like can hold tokens).
+func copilotManagedLines(merged string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(merged, "\n"), "\n") {
+		if key, _, ok := parseEnvLine(line); ok && copilotManaged(key) {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
+}
+
+func copilotOtherLines(merged string) int {
+	n := 0
+	for _, line := range strings.Split(strings.TrimRight(merged, "\n"), "\n") {
+		if key, _, ok := parseEnvLine(line); ok && !copilotManaged(key) {
+			n++
+		}
+	}
+	return n
+}
+
+// copilotResolve follows path's symlinks by hand, relative links from the
+// link's directory, so a link to a file that does not exist yet (stow-style)
+// resolves to the file to create.
+func copilotResolve(path string) (string, error) {
+	current := path
+	for range 40 {
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return current, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			return current, nil
+		}
+		link, err := os.Readlink(current)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(filepath.Dir(current), link)
+		}
+		current = link
+	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
+}
+
+// copilotWritable refuses an existing target we may not write: one with no
+// write bit (0400, 0444; this also holds for root, who could open it), or
+// one a write-only open (no truncation) is denied.
+func copilotWritable(path, target string) error {
+	info, err := os.Stat(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file; it was not changed", path)
+	}
+	if info.Mode().Perm()&0o222 == 0 {
+		return fmt.Errorf("%s is read-only (mode %04o); it was not changed", path, info.Mode().Perm())
+	}
+	f, err := os.OpenFile(target, os.O_WRONLY, 0)
+	if err != nil {
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err
+		}
+		return fmt.Errorf("%s is not writable (%v); it was not changed", path, err)
+	}
+	return f.Close()
+}
+
 // copilotRename is replaced in tests to simulate a failed write.
 var copilotRename = os.Rename
 
-// writeFileAtomic writes through a symlink to its target, backs up an
-// existing file to a .sdf-bak sibling (a different existing backup is never
-// overwritten; .sdf-bak.1, .2, ... are used), writes a temp file in the
-// same directory, fsyncs, keeps the file mode, and renames it into place.
-// A backup made by a failed write is removed.
+// writeFileAtomic writes through a symlink to its target (a link to a
+// missing file creates it), refuses a read-only target before doing
+// anything, backs up an existing file to a .sdf-bak sibling (a different
+// existing backup is never overwritten; .sdf-bak.1, .2, ... are used),
+// writes a temp file in the same directory, fsyncs, keeps the file mode and,
+// when allowed, the owner and group, and renames it into place. A backup
+// made by a failed write is removed. The rename gives the file a new inode:
+// other hard links keep the old bytes (a note is printed), and extended
+// attributes and ACLs are not copied.
 func writeFileAtomic(path string, body []byte) (string, error) {
-	target := path
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return "", fmt.Errorf("%s is a symlink whose target cannot be resolved: %w", path, err)
-		}
-		target = resolved
+	target, err := copilotResolve(path)
+	if err != nil {
+		return "", err
 	}
+	if err := copilotWritable(path, target); err != nil {
+		return "", err
+	}
+	links := copilotHardLinks(target)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", err
 	}
@@ -284,6 +447,7 @@ func writeFileAtomic(path string, body []byte) (string, error) {
 	if err := tmp.Chmod(mode); err != nil {
 		return cleanup(err)
 	}
+	copilotKeepOwner(tmp, target)
 	if err := tmp.Sync(); err != nil {
 		return cleanup(err)
 	}
@@ -304,6 +468,9 @@ func writeFileAtomic(path string, body []byte) (string, error) {
 	}
 	if backup != "" {
 		status += "backup " + backup + "\n"
+	}
+	if links > 1 {
+		status += fmt.Sprintf("note: %s had %d hard links; the other links still hold the old contents\n", target, links)
 	}
 	return status, nil
 }

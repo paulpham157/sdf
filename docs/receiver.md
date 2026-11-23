@@ -123,17 +123,28 @@ the session manager rather than from the file name pi-otel exports.
 GitHub Copilot CLI is configured by environment only (see
 [docs/agents.md](agents.md#github-copilot-cli)); it reads no settings-file
 key for the endpoint. `sdf init copilot` (alias `copilot-cli`) prints the
-merged `~/.config/sdf/copilot.env` it would write:
+lines of `~/.config/sdf/copilot.env` that sdf manages (never your other
+lines, which can hold tokens; it says how many it keeps):
 `OTEL_EXPORTER_OTLP_ENDPOINT` (the HTTP receiver),
 `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, and
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT`. Source that file
-in the shell that starts `copilot`; Copilot does not load it. `--write`
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT`, each value in
+single quotes. `--host` must be a host name, an IPv4 address, or an IPv6
+address (bracketed or bare) and `--port` must be 1-65535, so nothing in the
+file can run when it is sourced. Copilot does not load the file; source it
+in a subshell so the variables do not stay in your shell:
+`(. ~/.config/sdf/copilot.env && copilot)`. `--write`
 merges in place: line order and unrelated lines are kept, the endpoint and
 protocol lines are replaced (with a warning when the old value differed),
-and a capture-content line you already set is kept with a warning that
-content capture is on. The write goes to a temp file in the same directory,
-is fsynced, keeps the file mode, and is renamed into place. A symlinked
-file is written through to its target. The old file is copied to
+and a capture-content line you already set is kept, with a warning when it
+puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). The write goes to a temp file in the same directory,
+is fsynced, keeps the file mode (and the owner and group when the process
+may set them), and is renamed into place. Because the file is replaced,
+other hard links keep the old contents (a note is printed) and extended
+attributes and ACLs are not copied. A file that exists but that sdf may not
+write, or that has no write bit (`0400`, even for root), is refused before
+anything else. A symlinked file is written through to its target; a link
+to a file that does not exist yet (stow-style, relative links read from the
+link's directory) creates that file. The old file is copied to
 `.sdf-bak`; a different existing `.sdf-bak` is never overwritten
 (`.sdf-bak.1`, `.sdf-bak.2`, ... are used), and a backup made by a failed
 write is removed.

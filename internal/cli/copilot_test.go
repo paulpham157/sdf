@@ -15,7 +15,7 @@ func TestInitCopilotPrintsAndWritesEnv(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", "")
 	path := filepath.Join(home, ".config", "sdf", "copilot.env")
 	printed := run(t, "init", "copilot")
-	if printed.code != 0 || !strings.Contains(printed.stdout, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318") || !strings.Contains(printed.stdout, "CAPTURE_CONTENT=NO_CONTENT") || !strings.Contains(printed.stdout, "not written") {
+	if printed.code != 0 || !strings.Contains(printed.stdout, "OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'") || !strings.Contains(printed.stdout, "CAPTURE_CONTENT='NO_CONTENT'") || !strings.Contains(printed.stdout, "not written") {
 		t.Fatalf("%d %s %s", printed.code, printed.stdout, printed.stderr)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -25,7 +25,7 @@ func TestInitCopilotPrintsAndWritesEnv(t *testing.T) {
 	if wrote.code != 0 || !strings.Contains(wrote.stdout, "wrote "+path) {
 		t.Fatalf("%d %s %s", wrote.code, wrote.stdout, wrote.stderr)
 	}
-	if body := mustRead(t, path); !strings.Contains(body, "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:5318\n") {
+	if body := mustRead(t, path); !strings.Contains(body, "export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:5318'\n") {
 		t.Fatal(body)
 	}
 	global := run(t, "init", "copilot", "--global")

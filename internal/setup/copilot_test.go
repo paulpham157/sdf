@@ -29,9 +29,10 @@ func TestCopilotPrintDoesNotWrite(t *testing.T) {
 		t.Fatal(err, res.Wrote)
 	}
 	for _, want := range []string{
-		"export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
-		"export OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
-		"export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT",
+		"export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'",
+		"export OTEL_EXPORTER_OTLP_PROTOCOL='http/json'",
+		"export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT='NO_CONTENT'",
+		"(. '" + filepath.Join(home, ".config", "sdf", "copilot.env") + "' && copilot)",
 		"not written",
 		filepath.Join(home, ".config", "sdf", "copilot.env"),
 	} {
@@ -90,8 +91,8 @@ func TestCopilotWriteMergesEnvAndBacksUp(t *testing.T) {
 	for _, want := range []string{
 		"# mine\n",
 		"export OTEL_EXPORTER_OTLP_HEADERS=x-team=blue\n",
-		"export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:5318\n",
-		"export OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n",
+		"export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:5318'\n",
+		"export OTEL_EXPORTER_OTLP_PROTOCOL='http/json'\n",
 		// The user's own capture choice is kept, not reset.
 		"export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY\n",
 	} {
@@ -108,7 +109,7 @@ func TestCopilotWriteMergesEnvAndBacksUp(t *testing.T) {
 	}
 	for _, want := range []string{
 		"warning: replacing OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 with http://127.0.0.1:5318",
-		"warning: content capture is already on in this file (OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY)",
+		"warning: content capture is on in this file (OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=SPAN_ONLY)",
 	} {
 		if !strings.Contains(res.Text, want) {
 			t.Fatalf("missing %q\n%s", want, res.Text)
@@ -135,9 +136,9 @@ func TestCopilotWriteFreshFileDisablesContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "# source this file before starting copilot\n" +
-		"export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318\n" +
-		"export OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n" +
-		"export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT\n"
+		"export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'\n" +
+		"export OTEL_EXPORTER_OTLP_PROTOCOL='http/json'\n" +
+		"export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT='NO_CONTENT'\n"
 	if string(body) != want {
 		t.Fatalf("got\n%s", body)
 	}
@@ -156,14 +157,14 @@ func TestCopilotConfiguredReadsProcessEnv(t *testing.T) {
 	}
 }
 
-func TestCopilotDryRunPrintsMergedFile(t *testing.T) {
+func TestCopilotDryRunPrintsOnlyManagedLines(t *testing.T) {
 	clearCopilotEnv(t)
 	home := t.TempDir()
 	path := copilotEnvPath(home)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	old := "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc\nexport OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://other:4318/v1/traces\n"
+	old := "export OTEL_EXPORTER_OTLP_PROTOCOL=grpc\nexport OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://other:4318/v1/traces\nexport OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20sk-SECRET\nexport GITHUB_TOKEN=ghp_SECRET\n"
 	if err := os.WriteFile(path, []byte(old), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestCopilotDryRunPrintsMergedFile(t *testing.T) {
 		t.Fatal(err, res.Text)
 	}
 	for _, want := range []string{
-		path + ":\nexport OTEL_EXPORTER_OTLP_PROTOCOL=http/json\nexport OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://other:4318/v1/traces\nexport OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318\nexport OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT\n",
+		path + ", the lines sdf manages:\nexport OTEL_EXPORTER_OTLP_PROTOCOL='http/json'\nexport OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'\nexport OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT='NO_CONTENT'\n(3 other line(s) in the file are kept as they are and not shown)\n",
 		"warning: replacing OTEL_EXPORTER_OTLP_PROTOCOL=grpc with http/json",
 		"warning: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://other:4318/v1/traces in this file overrides",
 		"not written",
@@ -180,6 +181,9 @@ func TestCopilotDryRunPrintsMergedFile(t *testing.T) {
 		if !strings.Contains(res.Text, want) {
 			t.Fatalf("missing %q\n%s", want, res.Text)
 		}
+	}
+	if strings.Contains(res.Text, "SECRET") {
+		t.Fatalf("dry run printed an unmanaged line\n%s", res.Text)
 	}
 	if body, _ := os.ReadFile(path); string(body) != old {
 		t.Fatal("dry run changed the file")
@@ -261,18 +265,31 @@ func TestCopilotFailedWriteRemovesBackupAndKeepsFile(t *testing.T) {
 	}
 }
 
-func TestCopilotDanglingSymlinkIsNotReplaced(t *testing.T) {
+func TestCopilotDanglingSymlinkCreatesTarget(t *testing.T) {
 	clearCopilotEnv(t)
 	home := t.TempDir()
 	link := copilotEnvPath(home)
 	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(home, "missing", "copilot.env"), link); err != nil {
+	dotfiles := filepath.Join(home, "dotfiles")
+	if err := os.MkdirAll(dotfiles, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Run(copilotRequest(home, true)); err == nil || !strings.Contains(err.Error(), "symlink") {
+	// Relative, stow-style, and the target does not exist yet.
+	if err := os.Symlink(filepath.Join("..", "..", "dotfiles", "copilot.env"), link); err != nil {
 		t.Fatal(err)
+	}
+	res, err := Run(copilotRequest(home, true))
+	if err != nil || !res.Wrote {
+		t.Fatal(err, res.Text)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("symlink was replaced", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dotfiles, "copilot.env"))
+	if err != nil || !strings.Contains(string(body), "OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'") {
+		t.Fatal(err, string(body))
 	}
 }
 
