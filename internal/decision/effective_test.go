@@ -188,3 +188,23 @@ func TestTextQuotesDELAndRTLButJSONKeepsThemRaw(t *testing.T) {
 		t.Fatalf("json escaped DEL/RTL:\n%s", raw.String())
 	}
 }
+
+// TestSupersedesFromAnUnknownDecisionChangesNoStatus covers an older
+// database whose edge names a decision that was never stored. Only an edge
+// whose two endpoints are both stored decisions counts.
+func TestSupersedesFromAnUnknownDecisionChangesNoStatus(t *testing.T) {
+	db := openDB(t)
+	addAll(t, db, "real")
+	legacyEdge(t, db, decision.RelSupersedes, dec("ghost"), dec("real"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("real"), dec("ghost"))
+	g, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Decisions) != 1 || len(g.Edges) != 2 {
+		t.Fatalf("%d decisions, %d edges", len(g.Decisions), len(g.Edges))
+	}
+	if r := g.Decisions[0]; r.EffectiveStatus != decision.EffectiveActive || r.SupersededBy != nil {
+		t.Fatalf("ghost edge counted: %+v", r)
+	}
+}

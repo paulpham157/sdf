@@ -212,6 +212,17 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	if err := known(s, edge.To); err != nil {
 		return Edge{}, nil, err
 	}
+	// The stored decision ids, for the cycle check. Decisions are
+	// append-only, so reading them before the transaction is safe: an id can
+	// appear but never disappear.
+	rows, err := s.LoadDecisions()
+	if err != nil {
+		return Edge{}, nil, err
+	}
+	stored := make(map[string]bool, len(rows))
+	for _, d := range rows {
+		stored[d.ID] = true
+	}
 	var warnings []string
 	err = s.AppendDecisionEdge(store.DecisionEdge{
 		Relation:   edge.Relation,
@@ -230,7 +241,7 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 			})
 		}
 		var err error
-		warnings, err = checkAgainst(edge, existing)
+		warnings, err = checkAgainst(edge, existing, stored)
 		return err
 	})
 	if err != nil {
@@ -240,14 +251,14 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 }
 
 // checkAgainst applies the rules that depend on the stored edges.
-func checkAgainst(edge Edge, existing []Edge) ([]string, error) {
+func checkAgainst(edge Edge, existing []Edge, stored map[string]bool) ([]string, error) {
 	for _, e := range existing {
 		if e.Relation == edge.Relation && e.From == edge.From && e.To == edge.To {
 			return nil, fmt.Errorf("%w: %s %s %s", ErrDuplicateEdge, endpointText(edge.From), edge.Relation, endpointText(edge.To))
 		}
 	}
 	if edge.Relation == RelSupersedes {
-		if path := supersedesPath(existing, edge.To.Ref, edge.From.Ref); path != nil {
+		if path := supersedesPath(existing, stored, edge.To.Ref, edge.From.Ref); path != nil {
 			return nil, fmt.Errorf("%w: %s already reaches %s through supersedes (%s), so %s cannot supersede %s",
 				ErrSupersedesCycle, endpointText(edge.To), endpointText(edge.From), strings.Join(path, " -> "),
 				endpointText(edge.From), endpointText(edge.To))
@@ -269,14 +280,26 @@ func checkAgainst(edge Edge, existing []Edge) ([]string, error) {
 	return warnings, nil
 }
 
-// supersedesPath returns the decision ids from start to goal along
-// decision-to-decision supersedes edges (from -> to), or nil when goal is
-// not reachable. Self-edges an older sdf may have stored are skipped, as at
-// read time. The search is breadth-first, so the path is a shortest one.
-func supersedesPath(edges []Edge, start, goal string) []string {
+// countsAsSupersedes is the one rule, shared by read time (resolve) and the
+// cycle check, for whether a stored edge replaces a decision: relation
+// supersedes, two different decision endpoints, and both ids among the
+// stored decisions. An older database may hold an edge that fails it (a
+// self-edge, a session or commit end, or an id never stored); such an edge
+// is still listed but replaces nothing.
+func countsAsSupersedes(e Edge, stored map[string]bool) bool {
+	return e.Relation == RelSupersedes &&
+		e.From.Kind == KindDecision && e.To.Kind == KindDecision &&
+		e.From.Ref != e.To.Ref &&
+		stored[e.From.Ref] && stored[e.To.Ref]
+}
+
+// supersedesPath returns the decision ids from start to goal along edges
+// that countsAsSupersedes (from -> to), or nil when goal is not reachable.
+// The search is breadth-first, so the path is a shortest one.
+func supersedesPath(edges []Edge, stored map[string]bool, start, goal string) []string {
 	next := map[string][]string{}
 	for _, e := range edges {
-		if e.Relation == RelSupersedes && e.From.Kind == KindDecision && e.To.Kind == KindDecision && e.From.Ref != e.To.Ref {
+		if countsAsSupersedes(e, stored) {
 			next[e.From.Ref] = append(next[e.From.Ref], e.To.Ref)
 		}
 	}
@@ -344,16 +367,20 @@ func Load(s *store.Store) (Graph, error) {
 
 // resolve fills EffectiveStatus and SupersededBy from the edges. An edge
 // "from supersedes to" means from replaces to. Only an edge whose two
-// endpoints are both decisions, and are different decisions, counts; any
+// endpoints are both stored decisions, and are different decisions, counts; any
 // other supersedes edge is still listed in Edges but changes no status.
 // Replacement is direct, not transitive: when b supersedes a and c
 // supersedes b, a is superseded by b and b by c. A reader follows the chain
 // through SupersededBy. Nothing here writes to the store.
 func resolve(g *Graph) {
+	stored := make(map[string]bool, len(g.Decisions))
+	for _, d := range g.Decisions {
+		stored[d.ID] = true
+	}
 	by := map[string][]string{}
 	seen := map[[2]string]bool{}
 	for _, e := range g.Edges {
-		if e.Relation != RelSupersedes || e.From.Kind != KindDecision || e.To.Kind != KindDecision || e.From.Ref == e.To.Ref {
+		if !countsAsSupersedes(e, stored) {
 			continue
 		}
 		pair := [2]string{e.To.Ref, e.From.Ref}

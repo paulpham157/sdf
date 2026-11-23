@@ -232,3 +232,21 @@ func TestOlderInvalidEdgesStayReadable(t *testing.T) {
 		"edge already recorded: decision:a implements decision:b")
 	link(t, db, decision.RelSupersedes, dec("b"), dec("a"))
 }
+
+// TestCycleCheckIgnoresEdgesThroughAnUnknownDecision: an older database
+// holds a -> ghost -> b, where ghost was never stored. Read time ignores
+// both edges, so b supersedes a is not a cycle.
+func TestCycleCheckIgnoresEdgesThroughAnUnknownDecision(t *testing.T) {
+	db := openDB(t)
+	addAll(t, db, "a", "b")
+	legacyEdge(t, db, decision.RelSupersedes, dec("a"), dec("ghost"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("ghost"), dec("b"))
+	link(t, db, decision.RelSupersedes, dec("b"), dec("a"))
+	g, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Decisions[0].EffectiveStatus != decision.EffectiveSuperseded || g.Decisions[1].EffectiveStatus != decision.EffectiveActive {
+		t.Fatalf("%+v", g.Decisions)
+	}
+}

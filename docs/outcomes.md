@@ -163,12 +163,13 @@ an edge, so `sdf decision link` is the only way to write one.
 ### Superseded at read time
 
 A `supersedes` edge reads as "`from` supersedes `to`": the `from` decision
-replaces the `to` decision. Only an edge between two different decisions
-counts. `sdf decision link` no longer stores a `supersedes` edge with a
-session or commit endpoint, a self-link, or a cycle (see Link rules). A
-database written by an older sdf may still hold such edges. They stay as
-stored and are listed with the other edges, but a non-decision or self
-`supersedes` edge changes no status.
+replaces the `to` decision. Only an edge between two different decisions,
+both of them stored records, counts. `sdf decision link` no longer stores a
+`supersedes` edge with a session or commit endpoint, a self-link, or a cycle
+(see Link rules). A database written by an older sdf may still hold such
+edges, or an edge naming a decision id that was never stored. Those edges stay
+as stored and are listed with the other edges, but they change no status. The
+cycle check uses the same rule, so it does not follow them either.
 
 The stored record never changes. Each time the records are read, every record
 gets two fields that are not stored:
