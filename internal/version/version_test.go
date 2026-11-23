@@ -50,3 +50,18 @@ func TestNoBuildInfo(t *testing.T) {
 		t.Fatalf("%+v", info)
 	}
 }
+
+func TestPseudoVersionFillsCommitAndDate(t *testing.T) {
+	info := resolve("", "", "", func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{GoVersion: "go1.26.1", Main: debug.Module{Version: "v0.0.0-20261123054030-cda1d87f0356"}}, true
+	})
+	if info.Version != "v0.0.0-20261123054030-cda1d87f0356" || info.Commit != "cda1d87f0356" || info.Date != "2026-11-23T05:40:30Z" {
+		t.Fatalf("%+v", info)
+	}
+	tagged := resolve("", "", "", func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Version: "v0.1.0"}}, true
+	})
+	if tagged.Commit != "unknown" || tagged.Date != "unknown" {
+		t.Fatalf("%+v", tagged)
+	}
+}

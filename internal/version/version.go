@@ -8,6 +8,7 @@ package version
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -30,6 +31,10 @@ type Info struct {
 	GoVersion string
 	Modified  bool
 }
+
+// pseudo matches the tail of a Go pseudo-version, such as
+// v0.0.0-20261123054030-cda1d87f0356 or v0.1.1-0.20261123054030-cda1d87f0356.
+var pseudo = regexp.MustCompile(`[-.](\d{14})-([0-9a-f]{12})(?:\+[0-9A-Za-z.-]+)?$`)
 
 // Get resolves the build description from ldflags, then build info.
 func Get() Info {
@@ -62,6 +67,18 @@ func resolve(ver, commit, date string, read func() (*debug.BuildInfo, bool)) Inf
 			case "vcs.modified":
 				// Only meaningful when the commit also came from build info.
 				info.Modified = commit == "" && setting.Value == "true"
+			}
+		}
+	}
+	if info.Commit == "" || info.Date == "" {
+		// go install ...@<commit> records a pseudo-version and no VCS
+		// settings. Its last two fields are the commit time and revision.
+		if m := pseudo.FindStringSubmatch(info.Version); m != nil {
+			if info.Date == "" {
+				info.Date = m[1][0:4] + "-" + m[1][4:6] + "-" + m[1][6:8] + "T" + m[1][8:10] + ":" + m[1][10:12] + ":" + m[1][12:14] + "Z"
+			}
+			if info.Commit == "" {
+				info.Commit = m[2]
 			}
 		}
 	}
