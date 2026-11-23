@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,12 +110,39 @@ func TestMemLedgerRefusesBadKeys(t *testing.T) {
 			t.Errorf("kind %s accepted", name)
 		}
 	}
-	for name, id := range map[string]string{"empty": "", "bad utf8": string([]byte{'a', 0xff})} {
-		if _, err := l.Append(ctx, KindTask, id, p, PayloadHash(KindTask, p)); err == nil {
-			t.Errorf("id %s accepted", name)
+	for name, id := range map[string]string{
+		"empty": "", "bad utf8": string([]byte{'a', 0xff}), "space": "a b", "slash": "a/b",
+		"leading dot": ".a", "newline": "a\nb", "too long": strings.Repeat("a", 129), "non-ascii": "é",
+	} {
+		if _, err := l.Append(ctx, KindTask, id, p, PayloadHash(KindTask, p)); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("id %s: %v", name, err)
 		}
 	}
-	if len(l.Entries()) != 0 {
-		t.Fatal("a refused append wrote")
+	for _, id := range []string{"a..b", "A1", strings.Repeat("z", 128), "01JD5Z8K3QW9V4X7Y2M6N0P1RS"} {
+		if _, err := l.Append(ctx, KindEvidence, id, p, PayloadHash(KindEvidence, p)); err != nil {
+			t.Errorf("id %q: %v", id, err)
+		}
+	}
+	if n := len(l.Entries()); n != 5 { // genesis + the four valid ids
+		t.Fatalf("%d entries", n)
+	}
+}
+
+func TestMemLedgerCaseVariantIsAConflict(t *testing.T) {
+	ctx := context.Background()
+	l := NewMemLedger(nil)
+	p := []byte("{}")
+	h := PayloadHash(KindTask, p)
+	if _, err := l.Append(ctx, KindTask, "Feat", p, h); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(ctx, KindTask, "feat", p, h); !errors.Is(err, ErrConflict) {
+		t.Fatalf("case variant: %v", err)
+	}
+	if _, err := l.Append(ctx, KindTask, "Feat", p, h); err != nil {
+		t.Fatalf("same id again: %v", err)
+	}
+	if _, err := l.Append(ctx, KindEvidence, "feat", p, PayloadHash(KindEvidence, p)); err != nil {
+		t.Fatalf("other kind: %v", err)
 	}
 }

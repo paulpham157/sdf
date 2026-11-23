@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -56,11 +57,18 @@ type Ledger interface {
 }
 
 // Ledger errors.
+//
+// TODO(#189): when the ledger package merges, change errors.Is checks to its
+// error variables, and its ValidID (which returns an error, not a bool).
 var (
 	ErrHashMismatch = errors.New("ledger: hash does not match payload")
 	ErrConflict     = errors.New("ledger: id already holds a different payload")
 	ErrNotFound     = errors.New("ledger: not found")
+	ErrInvalidID    = errors.New("ledger: invalid id")
 )
+
+// ledgerIDPattern is the ledger's id rule, for every kind.
+var ledgerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // PayloadHash is "sha256:" + hex(sha256(kind + "\n" + canonical)).
 func PayloadHash(kind Kind, canonical []byte) string {
@@ -112,6 +120,7 @@ type MemLedger struct {
 	now     func() time.Time
 	entries []memEntry
 	index   map[string]int
+	folded  map[string]int
 }
 
 type memEntry struct {
@@ -124,10 +133,12 @@ func NewMemLedger(now func() time.Time) *MemLedger {
 	if now == nil {
 		now = time.Now
 	}
-	return &MemLedger{now: now, index: map[string]int{}}
+	return &MemLedger{now: now, index: map[string]int{}, folded: map[string]int{}}
 }
 
 func memKey(kind Kind, id string) string { return string(kind) + "\x00" + id }
+
+func foldKey(kind Kind, id string) string { return string(kind) + "\x00" + strings.ToLower(id) }
 
 // Append implements Ledger.
 func (m *MemLedger) Append(ctx context.Context, kind Kind, id string, canonical []byte, hash string) (Entry, error) {
@@ -148,6 +159,10 @@ func (m *MemLedger) Append(ctx context.Context, kind Kind, id string, canonical 
 			return old.entry, nil
 		}
 		return Entry{}, ErrConflict
+	}
+	// Ids that differ only by case are one id to the ledger.
+	if j, ok := m.folded[foldKey(kind, id)]; ok {
+		return Entry{}, fmt.Errorf("%w: %q differs only by case from %q", ErrConflict, id, m.entries[j].entry.ID)
 	}
 	if len(m.entries) == 0 {
 		g := []byte(GenesisPayload)
@@ -177,6 +192,7 @@ func (m *MemLedger) insert(kind Kind, id string, canonical []byte, hash string) 
 	}
 	e.EntryHash = h
 	m.index[memKey(kind, id)] = len(m.entries)
+	m.folded[foldKey(kind, id)] = len(m.entries)
 	m.entries = append(m.entries, memEntry{entry: e, payload: bytes.Clone(canonical)})
 	return e, nil
 }
@@ -184,16 +200,19 @@ func (m *MemLedger) insert(kind Kind, id string, canonical []byte, hash string) 
 // ReservedKindPrefix is the kind prefix only the ledger itself writes.
 const ReservedKindPrefix = "sdf.ledger."
 
-// validKey applies the ledger's rules to a caller's kind and id: both valid
-// UTF-8 and not empty, no control character (newline included) in the
-// kind, and no kind under ReservedKindPrefix.
+// validKey applies the ledger's rules to a caller's kind and id: the id
+// matches ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ (else ErrInvalidID); the kind
+// is valid UTF-8, not empty, has no control character (newline included),
+// and is not under ReservedKindPrefix.
 func validKey(kind Kind, id string) error {
 	k := string(kind)
 	switch {
-	case k == "" || id == "":
-		return fmt.Errorf("ledger: kind and id are required")
-	case !utf8.ValidString(k) || !utf8.ValidString(id):
-		return fmt.Errorf("ledger: kind and id must be valid UTF-8")
+	case !ledgerIDPattern.MatchString(id):
+		return fmt.Errorf("%w: %q", ErrInvalidID, id)
+	case k == "":
+		return fmt.Errorf("ledger: kind is required")
+	case !utf8.ValidString(k):
+		return fmt.Errorf("ledger: kind must be valid UTF-8")
 	case strings.IndexFunc(k, unicode.IsControl) >= 0:
 		return fmt.Errorf("ledger: kind %q contains a control character", k)
 	case strings.HasPrefix(k, ReservedKindPrefix):

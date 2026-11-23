@@ -357,3 +357,21 @@ func TestBackgroundProcessesDieWithTheCheck(t *testing.T) {
 		t.Fatal("a background process outlived its check")
 	}
 }
+
+func TestRecordIDsFitTheLedgerRule(t *testing.T) {
+	long := strings.Repeat("c", 128)
+	f := newFixture(t, task.CriterionInput{Name: long, Argv: []string{"sh", "tests/run.sh"}, Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	res := mustRun(t, f.opts(sha)) // the fake ledger refuses an invalid id
+	if res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	for _, r := range append(res.Evidence, res.Verdict) {
+		if !task.ValidID(r.ID) {
+			t.Fatalf("id %q", r.ID)
+		}
+	}
+	if res.Evidence[len(res.Evidence)-1].Value["name"] != long {
+		t.Fatal("criterion name not in the record")
+	}
+}

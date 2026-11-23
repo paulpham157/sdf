@@ -233,10 +233,10 @@ func (r *run) now() string { return r.opt.Now().UTC().Format(task.TimeLayout) }
 
 // evidence canonicalizes v as one evidence record and returns its id.
 func (r *run) addEvidence(kind, name string, v map[string]any) string {
+	// <verification id>.<NN>.<kind>: at most 72 bytes, inside the ledger's
+	// id rule. The criterion name is in the record, not the id, so a long
+	// name cannot push the id past 128 bytes.
 	id := fmt.Sprintf("%s.%02d.%s", r.id, len(r.evidence)+1, kind)
-	if name != "" {
-		id += "." + name
-	}
 	v["schema"] = EvidenceSchema
 	v["id"] = id
 	v["verification_id"] = r.id
