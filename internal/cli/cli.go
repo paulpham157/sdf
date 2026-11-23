@@ -17,6 +17,7 @@ import (
 
 	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/decision"
+	"github.com/paulpham157/sdf/internal/demo"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -24,6 +25,7 @@ import (
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
 	"github.com/paulpham157/sdf/internal/ui"
+	"github.com/paulpham157/sdf/internal/version"
 )
 
 // Main runs sdf with args, which do not include the program name.
@@ -50,6 +52,8 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdCheck(args[1:], stdout, stderr)
 	case "decision":
 		return cmdDecision(args[1:], stdout, stderr)
+	case "demo":
+		return cmdDemo(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -61,21 +65,21 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const usageLine = "usage: sdf <serve|summary|prices|init|check|decision|version> [flags]"
+const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|version> [flags]"
 
 func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	for _, arg := range args {
 		switch arg {
 		case "--help", "-h":
 			fmt.Fprintln(stdout, "usage: sdf version")
-			fmt.Fprintln(stdout, "sdf --version and sdf -v print the same line.")
+			fmt.Fprintln(stdout, "Prints the version, commit, build date, Go version, and platform. sdf --version and sdf -v are the same.")
 			return 0
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
-	fmt.Fprintf(stdout, "sdf %s\n", Version())
+	fmt.Fprint(stdout, version.Get().String())
 	return 0
 }
 
@@ -917,4 +921,72 @@ func take(i *int, args []string) (string, bool) {
 	}
 	*i++
 	return args[*i], true
+}
+
+const demoUsage = "usage: sdf demo [--db PATH] [--json]"
+
+func cmdDemo(args []string, stdout, stderr io.Writer) int {
+	dbPath := ""
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, demoUsage)
+			fmt.Fprintln(stdout, "Sends one synthetic session (sdf.fixture=demo) through a local receiver on free ports, then prints its summary.")
+			fmt.Fprintln(stdout, "No agent, API key, or network is needed. Without --db the store is a temporary file that is removed afterwards.")
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf demo: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	keep := dbPath != ""
+	if !keep {
+		dir, err := os.MkdirTemp("", "sdf-demo-")
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+			return 1
+		}
+		defer os.RemoveAll(dir)
+		dbPath = filepath.Join(dir, "sdf-demo.sqlite")
+	}
+	steps := stdout
+	if asJSON {
+		steps = stderr
+	}
+	fmt.Fprintln(steps, "sdf demo: synthetic Claude Code-shaped session, labeled sdf.fixture=demo. No agent, API key, or network.")
+	res, err := demo.Run(context.Background(), demo.Options{DBPath: dbPath, Log: steps})
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+		return 1
+	}
+	if asJSON {
+		if err := summary.WriteJSON(stdout, res.Report); err != nil {
+			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, "")
+	fmt.Fprint(stdout, summary.Format(res.Report))
+	fmt.Fprintln(stdout, "")
+	if keep {
+		fmt.Fprintf(stdout, "The demo session stays in %s. Read it again with: sdf summary --db %s --session %s\n", dbPath, dbPath, res.SessionID)
+	} else {
+		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
+	}
+	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi to point a real agent at it.")
+	return 0
 }

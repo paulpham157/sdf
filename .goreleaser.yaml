@@ -1,14 +1,23 @@
-# Local and CI builds only. `release.disable` keeps `goreleaser release`
-# from publishing. `goreleaser build --snapshot --clean` produces the archives.
+# GoReleaser v2 config for sdf.
+#
+# .github/workflows/release.yml runs `goreleaser release --clean` only when a
+# v* tag is pushed, and publishes the archives and checksums.txt to that
+# tag's GitHub Release. Locally, `goreleaser release --snapshot --clean`
+# builds every archive into dist/ and publishes nothing.
 version: 2
 
 project_name: sdf
+
+before:
+  hooks:
+    - go mod verify
 
 builds:
   - id: sdf
     main: ./cmd/sdf
     binary: sdf
     env:
+      # The SQLite driver is pure Go, so every target is a static binary.
       - CGO_ENABLED=0
     goos:
       - linux
@@ -19,26 +28,46 @@ builds:
       - arm64
     flags:
       - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
+      - -X github.com/paulpham157/sdf/internal/version.Version=v{{ .Version }}
+      - -X github.com/paulpham157/sdf/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/paulpham157/sdf/internal/version.Date={{ .CommitDate }}
 
 archives:
-  - formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+  - id: sdf
+    ids: [sdf]
+    formats: [tar.gz]
+    # sdf_0.1.0_linux_amd64.tar.gz, sdf_0.1.0_windows_arm64.zip, ...
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats: [zip]
+    files:
+      - README.md
+      - LICENSE
 
 checksum:
   name_template: checksums.txt
+  algorithm: sha256
 
-# The only tag in this repo is legacy-v1, which is not semver, so incpatch
-# cannot name a snapshot. This template does not read the tag.
+# The only existing tag is legacy-v1, which is not semver, so the snapshot
+# name does not derive from a tag.
 snapshot:
-  version_template: "0.0.0-{{ .ShortCommit }}"
+  version_template: "0.0.0-SNAPSHOT-{{ .ShortCommit }}"
 
 changelog:
-  disable: true
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^build\\(deps\\)"
 
 release:
-  disable: true
+  github:
+    owner: paulpham157
+    name: sdf
+  # A tag such as v0.1.0-rc.1 is marked as a prerelease.
+  prerelease: auto
+  draft: false
