@@ -300,6 +300,13 @@ func TestDecisionBriefCommandFailOpen(t *testing.T) {
 		t.Fatalf("success: err=%v out=%q", err, out)
 	}
 
+	const unavailable = "sdf decision brief unavailable: run sdf decision list\n"
+	writeFakeSdf("#!/bin/sh\necho 'sdf decision brief unavailable: run sdf decision list'\n")
+	out, err = run(decisionBriefCommand, nil)
+	if err != nil || out != unavailable {
+		t.Fatalf("unavailable line: err=%v out=%q", err, out)
+	}
+
 	writeFakeSdf("#!/bin/sh\nexit 1\n")
 	out, err = run(decisionBriefCommand, nil)
 	if err != nil || out != "" {
@@ -386,6 +393,10 @@ func TestOpenCodeAndPiPluginsAreUnchangedByTheBriefHook(t *testing.T) {
 	}
 }
 
+// TestDecisionBriefHookCommandWithRealBinaryEmptyDir checks the missing-DB
+// case: no sdf-telemetry.sqlite in an empty directory still prints nothing,
+// exits 0, and does not create a store. It does not cover an existing but
+// unreadable store (that path now prints one "unavailable" line and exits 0).
 func TestDecisionBriefHookCommandWithRealBinaryEmptyDir(t *testing.T) {
 	requireSh(t)
 	goBin, err := exec.LookPath("go")
