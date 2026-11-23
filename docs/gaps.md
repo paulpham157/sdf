@@ -68,6 +68,10 @@
   re-sent log whose attributes or log time differ from the first copy is
   still counted twice, and a log with no `event.timestamp` and no log time
   is never de-duplicated.
+  Copilot CLI spans stored twice (same trace and span id) and Gemini CLI
+  `gemini_cli.api_response` logs stored twice (same session, log time,
+  body, and every attribute) count once (issue #248). A re-sent Gemini log
+  that differs from the first copy in any attribute is still counted twice.
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
@@ -86,7 +90,11 @@
   below it (issue #222). Its `response.completed` logs, when they add up to
   exactly the metric totals, are priced per call instead; when they do not,
   it stays unknown,
-  a missing component price is unknown, and per-request or web-search fees
+  a missing component price is unknown (except that cache reads on an
+  OpenRouter `:free` row whose prompt and completion are 0 are priced at 0,
+  issue #243; a paid row such as `mistralai/mistral-nemo` with no
+  `input_cache_read` stays unknown when cache reads are reported), and
+  per-request or web-search fees
   are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its
   token sources yet, so both cost fields are unknown for a Gemini CLI session.

@@ -55,6 +55,26 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
+### WAL mode and backups
+
+The database is opened in SQLite WAL mode with a 5-second busy timeout, so
+`sdf summary` and other readers can run while the receiver writes. A
+read-only rollback-journal database keeps its journal mode and stays
+readable. A WAL database needs its `-shm` file or a writable directory to
+be read; in a read-only directory without one, open fails. In WAL mode
+SQLite keeps two
+sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
+`sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
+until a checkpoint, so do not copy or delete the main file alone. Back up
+with SQLite's online backup instead:
+
+```bash
+sqlite3 sdf-telemetry.sqlite ".backup sdf-telemetry.backup.sqlite"
+```
+
+WAL needs shared memory between processes on one host, so keep the
+database on a local disk, not a network filesystem (NFS, SMB).
+
 ## Content storage
 
 sdf drops content before anything is stored, for every agent, whatever the
@@ -323,9 +343,30 @@ sdf init --check
 `--check` GETs `http://127.0.0.1:4318/health` and opens a TCP connection to
 `127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
 counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
-`--host` must be a host name, an IPv4 address, or an IPv6 address (bare or
-in brackets), and the ports must be 1-65535; anything else is refused
-before a file is written. Those values end up in files other programs run
+`--host` must be a host name (a fully qualified name may end in one dot,
+`example.com.`; `localhost.` is written as `localhost`), a dotted-decimal
+IPv4 address (short, hex, and octal forms such as `127.1`, `0x7f.0.0.1`, or
+`0177.0.0.1` are refused), or an IPv6 address (bare or in brackets). The
+unspecified address is refused in every spelling (`0.0.0.0`, `::`,
+`::ffff:0.0.0.0`, `::ffff:0:0`, `::0.0.0.0`): `sdf serve` can bind it, but an
+agent cannot send to it, so the error suggests `--host 127.0.0.1` (or `::1`,
+or this machine's address). The ports must be plain decimal 1-65535
+(`--port 0`, `08`, and `+4318` are refused); anything else is refused, with
+exit code 2, before `--check` probes anything or a file is written.
+`--host 127.0.0.1:4318` (or `127.0.0.1:`, `[::1]:4318`,
+`::ffff:127.0.0.1:4318`) is refused with a hint you can paste, such as
+`pass --host 127.0.0.1 --port 4318`. The hint only names a host and port
+init accepts: an unspecified host becomes `127.0.0.1`, an IPv4 address
+written as IPv6 becomes the IPv4 address, a host that is refused on its own
+(`[::%lo]:4318`, `127.1:4318`) is said to be refused, and a port outside
+1-65535 (`0`, `00`, `65536`) is not echoed. A bare IPv6 address whose last
+group reads as a port (`fe80::1:4318`) is refused with both readings; write
+it in brackets (`[fe80::1:4318]`) to mean the address. When the bracketed
+reading is refused too (`[::1:4318]` is `::0.1.67.24`), only the port
+reading is offered. An IPv4 address written as IPv6 (`::ffff:127.0.0.1`, or
+the deprecated `::127.0.0.1`) is refused with a hint to pass the IPv4
+address, or `::1` for IPv6 loopback. `--git-hooks` takes
+`::1` with or without brackets. Those values end up in files other programs run
 (`opencode.env` is sourced by a shell, the Claude Code and Codex session
 hooks are shell commands), and the URL is single-quoted in both.
 
@@ -429,7 +470,11 @@ stays open. An agent with no hook keeps the inferred window. For Claude Code
 (`~/.claude/settings.json`) and Codex (`hooks.json`), sdf adds its hook to the
 `SessionStart` and `SessionEnd` arrays and keeps every other entry, matcher,
 and event; an sdf hook already there, including one an older sdf wrote with
-another host or port, is updated in place, so a rerun changes nothing. The hook exits
+another host or port, is updated in place, so a rerun changes nothing. Only
+the exact command text an sdf build has written counts as sdf's hook; a user's
+own hook that also posts to `/v1/sessions` is never rewritten. An event whose
+value is not an array, `null` included, is refused and the file is left as it
+was. The hook exits
 without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode

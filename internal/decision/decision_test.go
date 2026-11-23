@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -79,7 +80,7 @@ func TestRoundTrip(t *testing.T) {
 	if len(got.Decisions) != 2 || len(got.Edges) != 3 {
 		t.Fatalf("%d decisions, %d edges", len(got.Decisions), len(got.Edges))
 	}
-	if got.Decisions[0] != first || got.Decisions[1] != second {
+	if !reflect.DeepEqual(got.Decisions[0], first) || !reflect.DeepEqual(got.Decisions[1], second) {
 		t.Fatalf("decisions %+v", got.Decisions)
 	}
 	if got.Edges[0] != edge || got.Edges[1] != sessionEdge || got.Edges[2] != commitEdge {
@@ -280,6 +281,92 @@ func TestRejectedFields(t *testing.T) {
 	}); err == nil {
 		t.Fatal("short sha accepted")
 	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, DecidedBy: "owner",
+	}); err == nil {
+		t.Fatal("decided-by accepted")
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, Alternatives: "one\ntwo",
+	}); err == nil {
+		t.Fatal("multiline alternatives accepted")
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, Reason: "because\nof this",
+	}); err == nil {
+		t.Fatal("multiline reason accepted")
+	}
+}
+
+func TestOptionalFieldsRoundTripAndOmitEmpty(t *testing.T) {
+	db := openDB(t)
+	got, err := decision.Add(db, decision.RecordInput{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       decision.StatusDecision,
+		DecidedBy:    decision.DecidedByUser,
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := decision.Add(db, decision.RecordInput{
+		ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Decisions) != 2 {
+		t.Fatalf("%d decisions", len(loaded.Decisions))
+	}
+	if !reflect.DeepEqual(loaded.Decisions[0], got) || !reflect.DeepEqual(loaded.Decisions[1], plain) {
+		t.Fatalf("decisions %+v", loaded.Decisions)
+	}
+	if got.DecidedBy != "user" || got.Alternatives != "push the branch now" || got.Reason != "The user said don't push." {
+		t.Fatalf("%+v", got)
+	}
+	if plain.DecidedBy != "" || plain.Alternatives != "" || plain.Reason != "" {
+		t.Fatalf("empty fields set: %+v", plain)
+	}
+	var buf bytes.Buffer
+	if err := decision.WriteJSON(&buf, loaded); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Decisions []map[string]any `json:"decisions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Decisions[0]["decided_by"] != "user" || doc.Decisions[0]["alternatives"] != "push the branch now" || doc.Decisions[0]["reason"] != "The user said don't push." {
+		t.Fatalf("optional fields %#v", doc.Decisions[0])
+	}
+	for _, key := range []string{"decided_by", "alternatives", "reason", "source"} {
+		if _, ok := doc.Decisions[1][key]; ok {
+			t.Fatalf("empty %s was written: %#v", key, doc.Decisions[1])
+		}
+	}
+}
+
+func TestAgentDecisionIsDistinctFromUser(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Decisions[0].DecidedBy != decision.DecidedByAgent {
+		t.Fatalf("%q", loaded.Decisions[0].DecidedBy)
+	}
 }
 
 func openDB(t *testing.T) *store.Store {
@@ -290,4 +377,59 @@ func openDB(t *testing.T) *store.Store {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+func TestWriteTextLaysOutBothTables(t *testing.T) {
+	g := decision.Graph{
+		Decisions: []decision.Record{
+			{ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision, RecordedAt: "2026-11-23T15:00:00.000000+00:00", Source: "issue 168", EffectiveStatus: decision.EffectiveSuperseded, SupersededBy: []string{"pure-go", "go-only"}},
+			{ID: "pure-go", Statement: "The driver\tstays pure Go.\x1b[31m", Status: decision.StatusHypothesis, RecordedAt: "2026-11-23T15:00:01.000000+00:00", EffectiveStatus: decision.EffectiveActive},
+		},
+		Edges: []decision.Edge{
+			{Relation: decision.RelImplements, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "pure-go"}, To: decision.Endpoint{Kind: decision.KindDecision, Ref: "use-sqlite"}, RecordedAt: "2026-11-23T15:00:02.000000+00:00"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := decision.WriteText(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	want := "Decisions: 2\n" +
+		"ID          STATUS      EFFECTIVE                       RECORDED AT                       SOURCE     STATEMENT\n" +
+		"use-sqlite  decision    superseded by pure-go, go-only  2026-11-23T15:00:00.000000+00:00  issue 168  Keep the collector store in SQLite.\n" +
+		"pure-go     hypothesis  active                          2026-11-23T15:00:01.000000+00:00  -          \"The driver\\tstays pure Go.\\x1b[31m\"\n" +
+		"\n" +
+		"Edges: 1\n" +
+		"RELATION    FROM              TO                   RECORDED AT\n" +
+		"implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:02.000000+00:00\n"
+	if buf.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+func TestWriteTextEmptyGraph(t *testing.T) {
+	for _, g := range []decision.Graph{{}, {Decisions: []decision.Record{}, Edges: []decision.Edge{}}} {
+		var buf bytes.Buffer
+		if err := decision.WriteText(&buf, g); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "No decisions in the store.\n" {
+			t.Fatalf("%q", buf.String())
+		}
+	}
+}
+
+func TestWriteTextEdgesWithoutDecisions(t *testing.T) {
+	g := decision.Graph{Edges: []decision.Edge{{
+		Relation:   decision.RelValidates,
+		From:       decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"},
+		To:         decision.Endpoint{Kind: decision.KindCommit, Ref: sha},
+		RecordedAt: "2026-11-23T15:00:02.000000+00:00",
+	}}}
+	var buf bytes.Buffer
+	if err := decision.WriteText(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(buf.String(), "Decisions: 0\n\nEdges: 1\n") {
+		t.Fatalf("%q", buf.String())
+	}
 }

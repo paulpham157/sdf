@@ -12,8 +12,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/paulpham157/sdf/internal/store"
 )
@@ -23,6 +27,12 @@ const StatusHypothesis = "hypothesis"
 
 // StatusDecision is a settled choice.
 const StatusDecision = "decision"
+
+// DecidedByUser is a choice the user made.
+const DecidedByUser = "user"
+
+// DecidedByAgent is a choice the agent made.
+const DecidedByAgent = "agent"
 
 const (
 	KindDecision = "decision"
@@ -47,15 +57,36 @@ var (
 	shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-// Record is one decision. Status is StatusHypothesis or StatusDecision.
-// Source is empty when the record named none. RecordedAt is UTC RFC3339
-// with a numeric zone, the same form the store uses for received_at.
+// EffectiveActive and EffectiveSuperseded are the values of
+// Record.EffectiveStatus. They are computed when the graph is read and are
+// never stored.
+const (
+	EffectiveActive     = "active"
+	EffectiveSuperseded = "superseded"
+)
+
+// Record is one decision. Status is StatusHypothesis or StatusDecision, as
+// stored. Source, DecidedBy, Alternatives, and Reason are empty when the
+// record named none. DecidedBy is DecidedByUser or DecidedByAgent when set.
+// RecordedAt is UTC RFC3339 with a numeric zone, the same form the store
+// uses for received_at.
+//
+// EffectiveStatus and SupersededBy are not stored. Load computes them from
+// the edges: a record is EffectiveSuperseded when at least one supersedes
+// edge runs from another decision to it, and SupersededBy lists those
+// decisions' ids once each, in edge order. Otherwise it is EffectiveActive
+// and SupersededBy is empty.
 type Record struct {
-	ID         string `json:"id"`
-	Statement  string `json:"statement"`
-	Status     string `json:"status"`
-	RecordedAt string `json:"recorded_at"`
-	Source     string `json:"source,omitempty"`
+	ID              string   `json:"id"`
+	Statement       string   `json:"statement"`
+	Status          string   `json:"status"`
+	RecordedAt      string   `json:"recorded_at"`
+	Source          string   `json:"source,omitempty"`
+	DecidedBy       string   `json:"decided_by,omitempty"`
+	Alternatives    string   `json:"alternatives,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+	EffectiveStatus string   `json:"effective_status"`
+	SupersededBy    []string `json:"superseded_by,omitempty"`
 }
 
 // Endpoint is one end of an edge. Kind is KindDecision, KindSession, or
@@ -82,10 +113,13 @@ type Graph struct {
 
 // RecordInput is what a caller supplies. RecordedAt is filled here.
 type RecordInput struct {
-	ID        string
-	Statement string
-	Status    string
-	Source    string
+	ID           string
+	Statement    string
+	Status       string
+	Source       string
+	DecidedBy    string
+	Alternatives string
+	Reason       string
 }
 
 // EdgeInput is what a caller supplies for one edge.
@@ -102,11 +136,14 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		return Record{}, err
 	}
 	if err := s.InsertDecision(store.Decision{
-		ID:         rec.ID,
-		Statement:  rec.Statement,
-		Status:     rec.Status,
-		RecordedAt: rec.RecordedAt,
-		Source:     rec.Source,
+		ID:           rec.ID,
+		Statement:    rec.Statement,
+		Status:       rec.Status,
+		RecordedAt:   rec.RecordedAt,
+		Source:       rec.Source,
+		DecidedBy:    rec.DecidedBy,
+		Alternatives: rec.Alternatives,
+		Reason:       rec.Reason,
 	}); err != nil {
 		return Record{}, err
 	}
@@ -153,11 +190,14 @@ func Load(s *store.Store) (Graph, error) {
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
 		out.Decisions = append(out.Decisions, Record{
-			ID:         d.ID,
-			Statement:  d.Statement,
-			Status:     d.Status,
-			RecordedAt: d.RecordedAt,
-			Source:     d.Source,
+			ID:           d.ID,
+			Statement:    d.Statement,
+			Status:       d.Status,
+			RecordedAt:   d.RecordedAt,
+			Source:       d.Source,
+			DecidedBy:    d.DecidedBy,
+			Alternatives: d.Alternatives,
+			Reason:       d.Reason,
 		})
 	}
 	for _, e := range edges {
@@ -168,7 +208,40 @@ func Load(s *store.Store) (Graph, error) {
 			RecordedAt: e.RecordedAt,
 		})
 	}
+	resolve(&out)
 	return out, nil
+}
+
+// resolve fills EffectiveStatus and SupersededBy from the edges. An edge
+// "from supersedes to" means from replaces to. Only an edge whose two
+// endpoints are both decisions, and are different decisions, counts; any
+// other supersedes edge is still listed in Edges but changes no status.
+// Replacement is direct, not transitive: when b supersedes a and c
+// supersedes b, a is superseded by b and b by c. A reader follows the chain
+// through SupersededBy. Nothing here writes to the store.
+func resolve(g *Graph) {
+	by := map[string][]string{}
+	seen := map[[2]string]bool{}
+	for _, e := range g.Edges {
+		if e.Relation != RelSupersedes || e.From.Kind != KindDecision || e.To.Kind != KindDecision || e.From.Ref == e.To.Ref {
+			continue
+		}
+		pair := [2]string{e.To.Ref, e.From.Ref}
+		if seen[pair] {
+			continue
+		}
+		seen[pair] = true
+		by[e.To.Ref] = append(by[e.To.Ref], e.From.Ref)
+	}
+	for i := range g.Decisions {
+		d := &g.Decisions[i]
+		d.SupersededBy = by[d.ID]
+		if len(d.SupersededBy) > 0 {
+			d.EffectiveStatus = EffectiveSuperseded
+		} else {
+			d.EffectiveStatus = EffectiveActive
+		}
+	}
 }
 
 // WriteJSON writes the graph the way the summary JSON is written.
@@ -183,6 +256,80 @@ func WriteJSON(w io.Writer, g Graph) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(g)
+}
+
+// WriteText writes the graph as two tables, decisions then edges, in the
+// order Load returns them. It reads the same Graph that WriteJSON and
+// GET /api/decisions write, so the two views cannot disagree. A cell that
+// holds a control character or invalid UTF-8 is printed Go-quoted so it
+// cannot break the columns or the terminal. An empty source prints as "-".
+// EFFECTIVE is the read-time status Load computed, see Record.
+func WriteText(w io.Writer, g Graph) error {
+	if len(g.Decisions) == 0 && len(g.Edges) == 0 {
+		_, err := io.WriteString(w, "No decisions in the store.\n")
+		return err
+	}
+	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "RECORDED AT", "SOURCE", "STATEMENT"}}
+	for _, d := range g.Decisions {
+		source := d.Source
+		if source == "" {
+			source = "-"
+		}
+		decisions = append(decisions, []string{d.ID, d.Status, effectiveText(d), d.RecordedAt, source, d.Statement})
+	}
+	edges := [][]string{{"RELATION", "FROM", "TO", "RECORDED AT"}}
+	for _, e := range g.Edges {
+		edges = append(edges, []string{e.Relation, e.From.Kind + ":" + e.From.Ref, e.To.Kind + ":" + e.To.Ref, e.RecordedAt})
+	}
+	if err := writeTable(w, fmt.Sprintf("Decisions: %d", len(g.Decisions)), decisions); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		return err
+	}
+	return writeTable(w, fmt.Sprintf("Edges: %d", len(g.Edges)), edges)
+}
+
+// effectiveText is the EFFECTIVE cell: "active", or "superseded by" and the
+// replacing ids. A record built by hand with no effective status prints "-".
+func effectiveText(d Record) string {
+	switch {
+	case d.EffectiveStatus == EffectiveSuperseded && len(d.SupersededBy) > 0:
+		return "superseded by " + strings.Join(d.SupersededBy, ", ")
+	case d.EffectiveStatus == "":
+		return "-"
+	default:
+		return d.EffectiveStatus
+	}
+}
+
+// writeTable prints a title line, then the header and rows aligned by
+// column. A table with no rows prints the title only.
+func writeTable(w io.Writer, title string, rows [][]string) error {
+	if _, err := io.WriteString(w, title+"\n"); err != nil {
+		return err
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, c := range row {
+			cells[i] = cell(c)
+		}
+		if _, err := io.WriteString(tw, strings.Join(cells, "\t")+"\n"); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func cell(s string) string {
+	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
+		return s
+	}
+	return strconv.QuoteToASCII(s)
 }
 
 func newRecord(in RecordInput, recordedAt string) (Record, error) {
@@ -203,12 +350,31 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	if strings.ContainsAny(source, "\r\n") || len(source) > 500 {
 		return Record{}, fmt.Errorf("source must be one line")
 	}
+	decidedBy := strings.TrimSpace(in.DecidedBy)
+	switch decidedBy {
+	case "", DecidedByUser, DecidedByAgent:
+	default:
+		return Record{}, fmt.Errorf("decided-by must be %q or %q", DecidedByUser, DecidedByAgent)
+	}
+	alternatives := strings.TrimSpace(in.Alternatives)
+	if strings.ContainsAny(alternatives, "\r\n") || len(alternatives) > 500 {
+		return Record{}, fmt.Errorf("alternatives must be one line")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if strings.ContainsAny(reason, "\r\n") || len(reason) > 500 {
+		return Record{}, fmt.Errorf("reason must be one line")
+	}
+	// A new id has no edges yet, so the record starts active.
 	return Record{
-		ID:         id,
-		Statement:  statement,
-		Status:     in.Status,
-		RecordedAt: recordedAt,
-		Source:     source,
+		ID:              id,
+		Statement:       statement,
+		Status:          in.Status,
+		RecordedAt:      recordedAt,
+		Source:          source,
+		DecidedBy:       decidedBy,
+		Alternatives:    alternatives,
+		Reason:          reason,
+		EffectiveStatus: EffectiveActive,
 	}, nil
 }
 

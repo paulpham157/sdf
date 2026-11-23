@@ -119,14 +119,14 @@ func TestClaudeInitRerunIsANoOp(t *testing.T) {
 	}
 }
 
-// An sdf hook from an earlier init (another port here, and an older command
-// shape that set CLAUDE_HOOK_EDGE) is updated where it is, inside the user's
+// An sdf hook from an earlier init (another port here, and the first command
+// form sdf wrote) is updated where it is, inside the user's
 // matcher group, and a duplicate sdf copy is removed with the group it emptied.
 func TestClaudeInitUpdatesAnOldSdfHookInPlace(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".claude", "settings.json")
 	old := sessionHookCommand("claude-code", "open", "http://127.0.0.1:9999/v1/sessions")
-	legacy := `CLAUDE_HOOK_EDGE=close CLAUDE_HOOK_TOOL=claude-code sh -c 'curl -sf -X POST --data @- http://localhost:4318/v1/sessions'`
+	legacy := legacyHook(t, "claude-code", "close")
 	settings := map[string]any{"hooks": map[string]any{
 		"SessionStart": []any{
 			map[string]any{"matcher": "startup", "hooks": []any{
@@ -210,11 +210,8 @@ func TestCodexInitKeepsUserHooks(t *testing.T) {
 	if !strings.Contains(string(got), `"other": true`) || !strings.Contains(string(got), "thread_id") {
 		t.Fatal(string(got))
 	}
-	// codex only writes hooks.json while it appends [otel]; drop the table
-	// to rerun, and check the hook file does not change.
-	if err := os.Remove(filepath.Join(codexHome, "config.toml")); err != nil {
-		t.Fatal(err)
-	}
+	// The rerun finds the [otel] table the first run appended; hooks.json
+	// is still merged, and does not change.
 	run()
 	again, _ := os.ReadFile(path)
 	if string(again) != string(got) {

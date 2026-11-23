@@ -11,6 +11,10 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -52,7 +56,10 @@ CREATE TABLE IF NOT EXISTS decisions (
     statement TEXT NOT NULL,
     status TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
-    source TEXT
+    source TEXT,
+    decided_by TEXT,
+    alternatives TEXT,
+    reason TEXT
 );
 CREATE TABLE IF NOT EXISTS decision_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,14 +90,37 @@ func (s *Store) KeepContent(keep func(record.Record) bool) {
 	s.keep = keep
 }
 
+// busyTimeoutMS is how long a connection waits for another connection's
+// lock (a concurrent sdf summary, a second receiver) before SQLITE_BUSY. It
+// matches the ledger's busy_timeout.
+const busyTimeoutMS = 5000
+
 // Open creates the file if needed and applies the schema and column migration.
+//
+// busy_timeout is set in the DSN, so it applies to every connection the pool
+// opens, before any statement runs. The file is then switched to WAL, as the
+// ledger does: in WAL a reader never blocks the writer and the writer never
+// blocks readers, so sdf summary can read while the receiver ingests. WAL
+// is a property of the file and persists, so it is set once after opening
+// (not as a DSN pragma, which can fail with SQLITE_BUSY while a connection
+// opens, before the busy timeout applies).
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	name, err := dsn(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeoutMS))
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", name)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{path: path, db: db}
+	if !private(path) {
+		if err := setWAL(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -106,13 +136,95 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// private reports whether path names an in-memory (":memory:") or temporary
+// ("") database: one connection's own, so no other process shares it and WAL
+// does not apply.
+func private(path string) bool { return path == "" || path == ":memory:" }
+
+// dsn is a file: URI for path with query. The path is made absolute so a
+// relative --db keeps meaning the same file; ":memory:" and "" keep their
+// SQLite meaning.
+func dsn(path, query string) (string, error) {
+	if private(path) {
+		return "file:" + path + "?" + query, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p, RawQuery: query}).String(), nil
+}
+
+// sqliteReadonly is SQLITE_READONLY, the primary result code for a write to
+// a database this process cannot write.
+const sqliteReadonly = 8
+
+func sqliteCode(err error) int {
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		return coded.Code()
+	}
+	return 0
+}
+
+// setWAL switches the file to WAL unless it already is. A file this process
+// cannot write (a read-only file, directory, or mount) keeps its current
+// journal mode: switching needs a write, and reading it (sdf summary) works
+// in either mode, as it did before Open set WAL.
+func setWAL(db *sql.DB) error {
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return err
+	}
+	if strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		if sqliteCode(err)&0xff == sqliteReadonly {
+			return nil
+		}
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
+	}
+	return nil
+}
+
 // Path is the SQLite file path.
 func (s *Store) Path() string { return s.path }
 
 func (s *Store) migrate() error {
-	rows, err := s.db.Query(`PRAGMA table_info(records)`)
+	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
+		return err
+	}
+	return s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"})
+}
+
+func (s *Store) addMissingColumns(table string, cols []string) error {
+	present, err := s.tableColumns(table)
 	if err != nil {
 		return err
+	}
+	for _, col := range cols {
+		if present[col] {
+			continue
+		}
+		if _, err := s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + col + " TEXT"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	present := map[string]bool{}
@@ -123,21 +235,14 @@ func (s *Store) migrate() error {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return err
+			return nil, err
 		}
 		present[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	for _, col := range []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"} {
-		if !present[col] {
-			if _, err := s.db.Exec(`ALTER TABLE records ADD COLUMN ` + col + ` TEXT`); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return present, nil
 }
 
 // Close releases the database.
@@ -298,13 +403,17 @@ func (s *Store) Load() ([]record.Record, error) {
 }
 
 // Decision is one append-only decision record. Status is "hypothesis" or
-// "decision". Source is empty when the record named none.
+// "decision". Source, DecidedBy, Alternatives, and Reason are empty when
+// the record named none. DecidedBy is "user" or "agent" when set.
 type Decision struct {
-	ID         string
-	Statement  string
-	Status     string
-	RecordedAt string
-	Source     string
+	ID           string
+	Statement    string
+	Status       string
+	RecordedAt   string
+	Source       string
+	DecidedBy    string
+	Alternatives string
+	Reason       string
 }
 
 // DecisionEdge is one directed edge. Kind is "decision", "session", or
@@ -325,9 +434,9 @@ func (s *Store) InsertDecision(d Decision) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO decisions (id, statement, status, recorded_at, source)
-		VALUES (?, ?, ?, ?, ?)
-	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source))
+		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, alternatives, reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.Alternatives), nullText(d.Reason))
 	return err
 }
 
@@ -336,7 +445,7 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`
-		SELECT id, statement, status, recorded_at, source
+		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason
 		FROM decisions
 		ORDER BY rowid
 	`)
@@ -347,12 +456,21 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	var out []Decision
 	for rows.Next() {
 		var d Decision
-		var source sql.NullString
-		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source); err != nil {
+		var source, decidedBy, alternatives, reason sql.NullString
+		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &alternatives, &reason); err != nil {
 			return nil, err
 		}
 		if source.Valid {
 			d.Source = source.String
+		}
+		if decidedBy.Valid {
+			d.DecidedBy = decidedBy.String
+		}
+		if alternatives.Valid {
+			d.Alternatives = alternatives.String
+		}
+		if reason.Valid {
+			d.Reason = reason.String
 		}
 		out = append(out, d)
 	}

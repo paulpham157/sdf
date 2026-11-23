@@ -344,6 +344,58 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	}
 }
 
+func TestPageShowsSupersededDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "sqlite-wal"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelSupersedes,
+		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "sqlite-wal"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "superseded"`) || !strings.Contains(api, `"superseded_by": [`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "superseded by sqlite-wal") {
+			t.Fatalf("%q did not render the superseded state:\n%s", hash, page)
+		}
+		if strings.Count(page, "superseded by") != 1 {
+			t.Fatalf("%q: only keep-sqlite is superseded:\n%s", hash, page)
+		}
+	}
+}
+
+func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       decision.StatusDecision,
+		DecidedBy:    decision.DecidedByUser,
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderedPage(t, srv)
+	if !strings.Contains(page, "Do not push until the user says so.") {
+		t.Fatalf("statement not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "user") || !strings.Contains(page, "push the branch now") || !strings.Contains(page, "The user said don't push.") {
+		t.Fatalf("optional decision fields not rendered:\n%s", page)
+	}
+}
+
 func TestSessionsAndDetailShowDecisionsAndBudgetWhenEmpty(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{

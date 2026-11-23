@@ -2435,18 +2435,49 @@ func geminiTokens(records []record.Record, points []point) (OrderedFloats, *stri
 	}
 	totals := OrderedFloats{}
 	found := false
+	seen := map[string]bool{}
 	for _, rec := range records {
 		if rec.Signal != "logs" || logEventName(rec) != geminiAPIResponse {
 			continue
+		}
+		if key := geminiResponseKey(rec); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		if addFields(&totals, rec, []string{"input_token_count", "output_token_count", "cached_content_token_count", "thoughts_token_count", "tool_token_count"}) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("logs " + geminiAPIResponse), record.Str("sum of per-response token attributes from gemini_cli.api_response (input_token_count, output_token_count, cached_content_token_count, thoughts_token_count, tool_token_count); total_token_count is not added"), true
+		return totals, record.Str("logs " + geminiAPIResponse), record.Str("sum of per-response token attributes from gemini_cli.api_response (input_token_count, output_token_count, cached_content_token_count, thoughts_token_count, tool_token_count); total_token_count is not added; " + geminiResponseDedupMethod), true
 	}
 	return OrderedFloats{}, nil, nil, false
+}
+
+const geminiResponseDedupMethod = "a log stored twice (same session, log time, body, and every attribute) counts once"
+
+// geminiResponseKey identifies one gemini_cli.api_response log for
+// de-duplication (issue #248), like apiRequestKey for Claude and Grok. The
+// event carries no response or request id: prompt_id is shared by every
+// response of one prompt (each tool round trip is another response), and two
+// responses may have the same model and counts. So the key is an exact copy:
+// the session id, the log record time, the body, and every attribute
+// (event.timestamp, prompt_id, duration_ms, status_code, counts, and the
+// rest). A record stored twice, for example after an OTLP export retry, has
+// all of them; two real responses differ at least in event.timestamp or log
+// time. The key is empty, and the record is never merged, when it has
+// neither event.timestamp nor a log time.
+func geminiResponseKey(rec record.Record) string {
+	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
+		return ""
+	}
+	key := deref(rec.SessionID) + "|"
+	if rec.TimeUnixNano != nil {
+		key += strconv.FormatInt(*rec.TimeUnixNano, 10)
+	}
+	return key + "|" + deref(rec.Body) + "|" + freeze(rec.Attributes)
 }
 
 // logToolName is the tool name on a tool-result log. Gemini CLI's
