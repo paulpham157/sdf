@@ -49,10 +49,10 @@ make build
 That listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
 `127.0.0.1:4317`, writes `sdf-telemetry.sqlite` in the current directory, and
 serves a read-only UI at `http://127.0.0.1:4320/`. Authentication is off by
-default; keep the bind address on localhost. `--otlp-token` or
-`SDF_OTLP_TOKEN` is optional: when set, OTLP writes require
-`Authorization: Bearer <token>`. `GET /health` stays open and returns
-`{"status":"ok"}`.
+default; keep the bind address on localhost. `--otlp-token`,
+`--otlp-token-file`, `SDF_OTLP_TOKEN`, or `SDF_OTLP_TOKEN_FILE` is optional:
+when a token is set, OTLP writes require `Authorization: Bearer <token>`.
+`GET /health` stays open and returns `{"status":"ok"}`.
 
 ```bash
 ./sdf summary          # one block per session, then unattributed records
@@ -64,9 +64,10 @@ default; keep the bind address on localhost. `--otlp-token` or
 ```
 
 `--host`, `--port`, `--grpc-port`, and `--db` override the defaults. `--no-ui`
-leaves the OTLP ports only. `--otlp-token` (or `SDF_OTLP_TOKEN`) turns on the
-optional bearer token; see [docs/receiver.md](docs/receiver.md) and
-[docs/agents.md](docs/agents.md) for how to send it from an agent.
+leaves the OTLP ports only. `--otlp-token` or `--otlp-token-file` (or `SDF_OTLP_TOKEN` /
+`SDF_OTLP_TOKEN_FILE`) turns on the optional bearer token; see
+[docs/receiver.md](docs/receiver.md) and [docs/agents.md](docs/agents.md)
+for how to send it from an agent.
 `--prices`, `--repo`, and `--github` match `sdf summary` and apply to the page.
 
 The UI page has three views: an overview of totals and cost per accepted

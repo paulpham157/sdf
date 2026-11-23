@@ -5,8 +5,8 @@
 4318 is the OTLP/HTTP default. 4317 is the OTLP/gRPC default, which is where
 pi-otel exports unless you change it. Authentication is off by default; keep
 the bind address on localhost. Override with `--host`, `--port` (HTTP),
-`--grpc-port`, and `--db`. `--otlp-token` or `SDF_OTLP_TOKEN` is optional
-bearer authentication, described below.
+`--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
+`SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
 The same process serves a read-only UI at `http://127.0.0.1:4320/` unless
 you pass `--no-ui`. `--ui-addr` moves the UI. `--host` does not: the page
@@ -36,9 +36,16 @@ sqlite3 sdf-telemetry.sqlite \
 
 ## Optional token authentication
 
-`--otlp-token TOKEN` or the `SDF_OTLP_TOKEN` environment variable turns on a
-shared bearer token. The flag wins when both are set. A blank value is the
-same as unset: the receiver stays open, which is the default.
+`--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or
+`SDF_OTLP_TOKEN_FILE` turns on a shared bearer token. The two flags are
+mutually exclusive, as are the two environment variables. A flag beats the
+environment. The token is read once at startup.
+
+`--otlp-token` or `SDF_OTLP_TOKEN` with a blank value is the same as unset:
+the receiver stays open, which is the default. A token file is trimmed of
+trailing whitespace and newlines. An empty or unreadable file is a startup
+error; it does not disable authentication. On Unix, a group- or
+world-readable token file prints a warning.
 
 When a token is set, these requests must send `Authorization: Bearer <token>`:
 
@@ -64,10 +71,10 @@ The same header works for HTTP and gRPC exporters that honor
 If the receiver has a token set, those hooks and an init-generated config
 without the header will be rejected until you add it yourself.
 
-A token only detects callers that do not have it. It does not keep the
-token secret if it appears in a process listing, a settings file, or a
-log on the agent side. Keep the bind address on localhost unless you trust
-the network.
+A token only detects callers that do not have it. `--otlp-token-file`
+keeps the token out of the process listing, but a world-readable file, a
+settings file, or an agent log can still expose it. Keep the bind address
+on localhost unless you trust the network.
 
 ## The UI
 

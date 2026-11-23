@@ -70,15 +70,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	repoPath := ""
 	github := false
 	budgetPath := ""
-	token := ""
-	tokenFromFlag := false
+	tokenFlag := ""
+	tokenFlagSet := false
+	tokenFileFlag := ""
+	tokenFileFlagSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
-			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN or SDF_OTLP_TOKEN. Unset leaves the receiver open.")
+			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -184,20 +186,31 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "sdf serve: --otlp-token requires a value")
 				return 2
 			}
-			token = v
-			tokenFromFlag = true
+			tokenFlag = v
+			tokenFlagSet = true
 		case strings.HasPrefix(arg, "--otlp-token="):
-			token = strings.TrimPrefix(arg, "--otlp-token=")
-			tokenFromFlag = true
+			tokenFlag = strings.TrimPrefix(arg, "--otlp-token=")
+			tokenFlagSet = true
+		case arg == "--otlp-token-file":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --otlp-token-file requires a path")
+				return 2
+			}
+			tokenFileFlag = v
+			tokenFileFlagSet = true
+		case strings.HasPrefix(arg, "--otlp-token-file="):
+			tokenFileFlag = strings.TrimPrefix(arg, "--otlp-token-file=")
+			tokenFileFlagSet = true
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
-	if !tokenFromFlag {
-		token = os.Getenv("SDF_OTLP_TOKEN")
+	token, code := resolveServeOTLPToken(tokenFlag, tokenFlagSet, tokenFileFlag, tokenFileFlagSet, os.Getenv, stderr)
+	if code != 0 {
+		return code
 	}
-	token = strings.TrimSpace(token)
 	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
 		if token == "" {
 			fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
