@@ -40,13 +40,29 @@ func TestB1ForgedTestOutputIsNotAResult(t *testing.T) {
 	}
 }
 
+// harnessSocketGlob gives this test its own TMPDIR, where newHarness
+// creates its socket directory (os.MkdirTemp("", "sdfh")), and returns the
+// glob that matches only this run's socket, as a Go string literal for
+// attack code: it works whatever $TMPDIR is, and a concurrent verifier's
+// socket is not found.
+func harnessSocketGlob(t *testing.T) string {
+	t.Helper()
+	d, err := os.MkdirTemp("", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	t.Setenv("TMPDIR", d)
+	return strconv.Quote(filepath.Join(d, "sdfh*", "s"))
+}
+
 // B-1: code under test talks to the verifier's socket itself, or from a
 // process it starts. Both are refused, and refusing is a FAIL.
 func TestB1ForgedReportsOnTheHarnessSocket(t *testing.T) {
 	cases := map[string]string{
 		// The socket path is compiled into the hook, but its directory can
 		// be found.
-		"same process": `socks, _ := filepath.Glob("/tmp/sdfh*/s")
+		"same process": `socks, _ := filepath.Glob(SOCKGLOB)
 		for _, p := range socks {
 			if c, err := net.Dial("unix", p); err == nil {
 				c.Write([]byte("00 1 pass example.com/m/a TestAdd\n"))
@@ -65,6 +81,7 @@ func TestB1ForgedReportsOnTheHarnessSocket(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
+			body := strings.ReplaceAll(body, "SOCKGLOB", harnessSocketGlob(t))
 			f := newGoFixture(t)
 			src := "package a\n\nimport (\n\t\"net\"\n\t\"os\"\n\t\"os/exec\"\n\t\"path/filepath\"\n\t\"strings\"\n)\n\nvar _ = exec.Command\nvar _ = filepath.Glob\n\nfunc init() {\n\tif strings.HasSuffix(os.Args[0], \".test\") {\n\t\t" + body + "\n\t}\n}\n\n" + strings.TrimPrefix(goodAdd, "package a\n\n")
 			sha := f.agentCommit(t, map[string]string{"a/a.go": src})
@@ -239,7 +256,7 @@ func TestReplaceDirInitCannotTakeTheHarnessFirst(t *testing.T) {
 	base["lib/lib.go"] = "package lib\n\nfunc Two() int { return 2 }\n"
 	base["a/a.go"] = "package a\n\nimport \"example.com/lib\"\n\nfunc Add(x, y int) int { return 0 * lib.Two() }\n"
 	f := newFixtureFiles(t, base, task.CriterionInput{Name: "unit", Argv: []string{"go", "test", "./a/"}, TimeoutS: 300})
-	lib := "package lib\n\nimport (\n\t\"io\"\n\t\"net\"\n\t\"path/filepath\"\n)\n\nvar Conn net.Conn\n\nfunc init() {\n\tsocks, _ := filepath.Glob(\"/tmp/sdfh*/s\")\n\tfor _, p := range socks {\n\t\tif c, err := net.Dial(\"unix\", p); err == nil {\n\t\t\tio.ReadFull(c, make([]byte, 32))\n\t\t\tConn = c\n\t\t}\n\t}\n}\n\nfunc Two() int { return 2 }\n"
+	lib := "package lib\n\nimport (\n\t\"io\"\n\t\"net\"\n\t\"path/filepath\"\n)\n\nvar Conn net.Conn\n\nfunc init() {\n\tsocks, _ := filepath.Glob(" + harnessSocketGlob(t) + ")\n\tfor _, p := range socks {\n\t\tif c, err := net.Dial(\"unix\", p); err == nil {\n\t\t\tio.ReadFull(c, make([]byte, 32))\n\t\t\tConn = c\n\t\t}\n\t}\n}\n\nfunc Two() int { return 2 }\n"
 	sha := f.agentCommit(t, map[string]string{"lib/lib.go": lib, "a/a.go": "package a\n\nimport \"example.com/lib\"\n\nfunc Add(x, y int) int { return (x + y) * lib.Two() / 2 }\n"})
 	res := mustRun(t, goOpts(t, f, sha))
 	if res.Status != StatusFail || !hasCode(res, CodeTestReportInvalid) {
