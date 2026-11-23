@@ -79,7 +79,7 @@ func TestTaskDeclareAndShow(t *testing.T) {
 		!strings.Contains(out.stdout, "written ledger\n") {
 		t.Fatalf("stdout %q", out.stdout)
 	}
-	if spec.Criteria[0].Name != "accept" || spec.Criteria[0].TimeoutS != 120 || len(l.Entries()) != 1 {
+	if spec.Criteria[0].Name != "accept" || spec.Criteria[0].TimeoutS != 120 || len(l.Entries()) != 2 {
 		t.Fatalf("%+v", spec)
 	}
 

@@ -54,7 +54,7 @@ func TestDeclareIsWriteOnceAndIdempotent(t *testing.T) {
 			t.Fatalf("%+v", again.Copies)
 		}
 	}
-	if *again.Entry != *d.Entry || len(l.Entries()) != 1 {
+	if *again.Entry != *d.Entry || len(l.Entries()) != 2 {
 		t.Fatal("ledger changed on an identical declaration")
 	}
 
@@ -69,7 +69,7 @@ func TestDeclareIsWriteOnceAndIdempotent(t *testing.T) {
 		t.Fatalf("redeclare: %v", err)
 	}
 	b2, _ := os.ReadFile(repoFile)
-	if string(b2) != string(b) || len(l.Entries()) != 1 {
+	if string(b2) != string(b) || len(l.Entries()) != 2 {
 		t.Fatal("conflicting declaration wrote something")
 	}
 

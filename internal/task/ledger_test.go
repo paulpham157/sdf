@@ -28,7 +28,11 @@ func TestMemLedgerSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e1.Seq != 1 || e1.PrevHash != "" || e1.Hash != h || e1.EntryHash == "" || !e1.ChainedAt.Equal(at) {
+	all := l.Entries()
+	if len(all) != 2 || all[0].Seq != 0 || all[0].Kind != GenesisKind || all[0].PrevHash != ZeroHash {
+		t.Fatalf("genesis %+v", all)
+	}
+	if e1.Seq != 1 || e1.PrevHash != all[0].EntryHash || e1.Hash != h || e1.EntryHash == "" || !e1.ChainedAt.Equal(at) {
 		t.Fatalf("%+v", e1)
 	}
 	again, err := l.Append(ctx, KindTask, "t1", payload, h)
@@ -56,7 +60,35 @@ func TestMemLedgerSemantics(t *testing.T) {
 	if string(b2) != string(payload) {
 		t.Fatal("Get returned the stored slice")
 	}
-	if n := len(l.Entries()); n != 2 {
+	if n := len(l.Entries()); n != 3 {
 		t.Fatalf("%d entries", n)
+	}
+}
+
+// Known answers from the ledger package's tests (PR #189), computed there
+// with Python hashlib and recomputed here with Python independently. They
+// tie this package's JCS encoder, PayloadHash, and EntryHash to the real
+// ledger's, so a payload this package hashes is one the ledger accepts.
+func TestHashesMatchLedgerKnownAnswers(t *testing.T) {
+	if got := PayloadHash(KindTask, []byte("{}")); got != "sha256:1212580b02ee3822f380a3734f63b5346407ef19ef3f7b17c65940aa9f666925" {
+		t.Fatalf("payload hash %s", got)
+	}
+	at, err := time.Parse(time.RFC3339, "2026-11-23T05:40:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := EntryHash(Entry{
+		Seq:       1,
+		Kind:      KindTask,
+		ID:        `t"1`,
+		Hash:      PayloadHash(KindTask, []byte("{}")),
+		PrevHash:  ZeroHash,
+		ChainedAt: at,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "sha256:24d4d7c969de143a67dc11243a10cacca1ba43c20eb18ad7775664cfd76ad9c0" {
+		t.Fatalf("entry hash %s", got)
 	}
 }

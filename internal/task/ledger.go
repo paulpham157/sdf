@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,9 +64,43 @@ func PayloadHash(kind Kind, canonical []byte) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-// MemLedger is an in-memory Ledger for tests. It chains entries the simple
-// way: EntryHash = sha256 over seq, kind, id, hash, and the previous
-// EntryHash. That chain format is this fake's, not the real ledger's.
+// Chain constants, matching the ledger package (PR #189).
+const GenesisKind Kind = "sdf.ledger.genesis/v1"
+
+// More chain constants, matching the ledger package.
+const (
+	GenesisID      = "genesis"
+	GenesisPayload = `{"schema":"sdf.ledger/v1"}`
+	TimeLayout     = "2006-01-02T15:04:05.000000000Z"
+	entryDomain    = "sdf.ledger.v1.entry\n"
+)
+
+// ZeroHash is the prev_hash of the genesis entry.
+var ZeroHash = "sha256:" + strings.Repeat("0", 64)
+
+// EntryHash is "sha256:" + hex(sha256("sdf.ledger.v1.entry\n" + J)), where J
+// is the RFC 8785 form of {chained_at, hash, id, kind, prev_hash, seq} and
+// chained_at is UTC with nine fraction digits. Same formula as the ledger
+// package.
+func EntryHash(e Entry) (string, error) {
+	j, err := Canonical(map[string]any{
+		"chained_at": e.ChainedAt.UTC().Format(TimeLayout),
+		"hash":       e.Hash,
+		"id":         e.ID,
+		"kind":       string(e.Kind),
+		"prev_hash":  e.PrevHash,
+		"seq":        e.Seq,
+	})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(append([]byte(entryDomain), j...))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// MemLedger is an in-memory Ledger for tests. It chains the way the ledger
+// package does: a genesis entry at seq 0, written by the first Append, then
+// contiguous seq, each entry's PrevHash the EntryHash before it.
 type MemLedger struct {
 	mu      sync.Mutex
 	now     func() time.Time
@@ -108,20 +143,36 @@ func (m *MemLedger) Append(ctx context.Context, kind Kind, id string, canonical 
 		}
 		return Entry{}, ErrConflict
 	}
-	prev := ""
+	if kind == GenesisKind {
+		return Entry{}, fmt.Errorf("ledger: kind %s is reserved", GenesisKind)
+	}
+	if len(m.entries) == 0 {
+		g := []byte(GenesisPayload)
+		if _, err := m.insert(GenesisKind, GenesisID, g, PayloadHash(GenesisKind, g)); err != nil {
+			return Entry{}, err
+		}
+	}
+	return m.insert(kind, id, canonical, hash)
+}
+
+func (m *MemLedger) insert(kind Kind, id string, canonical []byte, hash string) (Entry, error) {
+	prev := ZeroHash
 	if n := len(m.entries); n > 0 {
 		prev = m.entries[n-1].entry.EntryHash
 	}
 	e := Entry{
-		Seq:       int64(len(m.entries) + 1),
+		Seq:       int64(len(m.entries)),
 		Kind:      kind,
 		ID:        id,
 		Hash:      hash,
 		PrevHash:  prev,
 		ChainedAt: m.now().UTC(),
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\n%s\n%s\n%s\n%s", e.Seq, e.Kind, e.ID, e.Hash, e.PrevHash)))
-	e.EntryHash = "sha256:" + hex.EncodeToString(sum[:])
+	h, err := EntryHash(e)
+	if err != nil {
+		return Entry{}, err
+	}
+	e.EntryHash = h
 	m.index[memKey(kind, id)] = len(m.entries)
 	m.entries = append(m.entries, memEntry{entry: e, payload: bytes.Clone(canonical)})
 	return e, nil
@@ -141,7 +192,7 @@ func (m *MemLedger) Get(ctx context.Context, kind Kind, id string) ([]byte, Entr
 	return bytes.Clone(m.entries[i].payload), m.entries[i].entry, nil
 }
 
-// Entries returns every entry in append order.
+// Entries returns every entry in append order, genesis included.
 func (m *MemLedger) Entries() []Entry {
 	m.mu.Lock()
 	defer m.mu.Unlock()
