@@ -8,6 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/paulpham157/sdf/internal/record"
+	"github.com/paulpham157/sdf/internal/store"
 )
 
 func TestCheckWithoutCasesRunsTheEmbeddedSet(t *testing.T) {
@@ -149,5 +152,62 @@ func moduleRoot(t *testing.T) string {
 			t.Fatal("go.mod not found")
 		}
 		dir = parent
+	}
+}
+
+// sdf demo --db refuses a store that already holds real telemetry or
+// decisions, so synthetic rows never mix into real summaries. A new or empty
+// file, or a store with only earlier demo sessions, is accepted.
+func TestDemoRefusesAStoreWithRealTelemetry(t *testing.T) {
+	dir := t.TempDir()
+
+	demoOnly := filepath.Join(dir, "demo.sqlite")
+	for i := 0; i < 2; i++ {
+		if out := run(t, "demo", "--db", demoOnly, "--json"); out.code != 0 {
+			t.Fatalf("demo run %d into a demo-only store: code %d\n%s", i, out.code, out.stderr)
+		}
+	}
+
+	empty := filepath.Join(dir, "empty.sqlite")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run(t, "demo", "--db", empty, "--json"); out.code != 0 {
+		t.Fatalf("empty file: code %d\n%s", out.code, out.stderr)
+	}
+
+	real := filepath.Join(dir, "real.sqlite")
+	st, err := store.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Insert([]record.Record{{
+		Signal: "logs", ServiceName: record.Str("claude-code"), SessionID: record.Str("live-1"),
+		Name: record.Str("claude_code.api_request"), TimeUnixNano: record.Int64(1),
+		Attributes: map[string]any{}, Resource: map[string]any{"service.name": "claude-code"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	decided := filepath.Join(dir, "decided.sqlite")
+	st, err = store.Open(decided)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertDecision(store.Decision{ID: "d1", Statement: "s", Status: "hypothesis", RecordedAt: "2026-11-23T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	for _, db := range []string{real, decided} {
+		out := run(t, "demo", "--db", db)
+		if out.code != 1 || !strings.Contains(out.stderr, "not from sdf demo; refusing") {
+			t.Fatalf("%s: code %d\n%s%s", db, out.code, out.stdout, out.stderr)
+		}
+		sum := run(t, "summary", "--db", db, "--json")
+		if strings.Contains(sum.stdout, "sdf-demo-") {
+			t.Fatalf("%s: demo rows were written\n%s", db, sum.stdout)
+		}
 	}
 }

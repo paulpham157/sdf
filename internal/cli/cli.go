@@ -3,8 +3,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -967,6 +969,40 @@ func take(i *int, args []string) (string, bool) {
 
 const demoUsage = "usage: sdf demo [--db PATH] [--json]"
 
+// demoStoreIsSafe refuses a --db that already holds real telemetry or
+// decisions, so the synthetic session (sdf.fixture=demo) never mixes into a
+// real store and its summaries. A missing or empty file, or a store with
+// only earlier demo sessions, is fine. It returns an exit code, 0 to go on.
+func demoStoreIsSafe(path string, stderr io.Writer) int {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+		return 1
+	}
+	if info.Mode().IsRegular() && info.Size() == 0 {
+		return 0
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf demo: %s: %v\n", path, err)
+		return 1
+	}
+	other, err := st.HoldsOtherThanFixture("demo")
+	_ = st.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf demo: %s: %v\n", path, err)
+		return 1
+	}
+	if other {
+		fmt.Fprintf(stderr, "sdf demo: %s already holds telemetry or decisions that are not from sdf demo; refusing to mix a synthetic session into it. Pass a new path, or leave out --db.\n", path)
+		return 1
+	}
+	return 0
+}
+
 func cmdDemo(args []string, stdout, stderr io.Writer) int {
 	dbPath := ""
 	asJSON := false
@@ -977,6 +1013,7 @@ func cmdDemo(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, demoUsage)
 			fmt.Fprintln(stdout, "Sends one synthetic session (sdf.fixture=demo) through a local receiver on free ports, then prints its summary.")
 			fmt.Fprintln(stdout, "No agent, API key, or network is needed. Without --db the store is a temporary file that is removed afterwards.")
+			fmt.Fprintln(stdout, "--db must name a new or empty file, or a store that holds only earlier demo sessions; a store with real telemetry is refused.")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -995,6 +1032,11 @@ func cmdDemo(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	keep := dbPath != ""
+	if keep {
+		if code := demoStoreIsSafe(dbPath, stderr); code != 0 {
+			return code
+		}
+	}
 	if !keep {
 		dir, err := os.MkdirTemp("", "sdf-demo-")
 		if err != nil {
@@ -1029,6 +1071,6 @@ func cmdDemo(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
 	}
-	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi|grok to point a real agent at it.")
+	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi|grok|qwen|gemini|copilot to point a real agent at it.")
 	return 0
 }

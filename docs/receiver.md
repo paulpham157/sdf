@@ -63,7 +63,10 @@ Traces and logs go over OTLP/HTTP JSON and metrics over OTLP/gRPC, so both
 listeners are exercised. Every resource carries `sdf.fixture=demo`. It needs
 no agent, API key, or network, and it does not touch `sdf-telemetry.sqlite`:
 the store is a temporary file unless `--db PATH` names one to keep. `--json`
-prints the report as `sdf summary --json` would.
+prints the report as `sdf summary --json` would. `--db` must name a new or
+empty file, or a store that holds only earlier demo sessions: a store with
+any telemetry not labeled `sdf.fixture=demo`, or any decision, is refused
+(exit 1) and left unchanged, so synthetic rows never mix into real summaries.
 
 ```bash
 sdf demo
