@@ -778,7 +778,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			}
 			agent = arg
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			fmt.Fprintf(stderr, "unrecognized arguments: %q\n", arg)
 			return 2
 		}
 	}
@@ -806,7 +806,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, initUsage)
 		return 2
 	}
-	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
+	// Validate before probing, printing, or writing anything: an invalid
+	// --host (a newline, a terminal escape) never reaches stdout raw, and
+	// --port 0 is refused rather than replaced by the default.
+	ep, err := setup.CheckEndpoint(setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort})
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf init: %v\n", err)
+		return 2
+	}
 	code := 0
 	if check {
 		probed := setup.Probe(ep)

@@ -137,7 +137,7 @@ func claude(req Request) (Result, error) {
 	fmt.Fprintf(&b, "A repository .claude/settings.json cannot turn these exporters on.\n")
 	fmt.Fprintf(&b, "Docs: https://code.claude.com/docs/en/monitoring-usage\n\n")
 	for _, key := range claudeOrder {
-		fmt.Fprintf(&b, "export %s=%s\n", key, env[key])
+		fmt.Fprintf(&b, "export %s=%s\n", key, shQuote(env[key]))
 	}
 	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
 		envChanged, err := mergeStringMap(root, "env", env)
@@ -319,11 +319,11 @@ func pi(req Request) (Result, error) {
 		fmt.Fprintf(&b, "--write updates %s. Pass --global to update %s instead.\n", path, global)
 	}
 	fmt.Fprintf(&b, "https://github.com/NikiforovAll/pi-otel\n\n")
-	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
-	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n")
-	fmt.Fprintf(&b, "export PI_OTEL_METRICS=1\n")
-	fmt.Fprintf(&b, "export PI_OTEL_LOGS=1\n")
-	fmt.Fprintf(&b, "export PI_OTEL_SPAN_NAMING=genai\n\n")
+	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", shQuote(req.Endpoint.base()))
+	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_PROTOCOL=%s\n", shQuote("http/json"))
+	fmt.Fprintf(&b, "export PI_OTEL_METRICS=%s\n", shQuote("1"))
+	fmt.Fprintf(&b, "export PI_OTEL_LOGS=%s\n", shQuote("1"))
+	fmt.Fprintf(&b, "export PI_OTEL_SPAN_NAMING=%s\n\n", shQuote("genai"))
 	status, err := mergeJSON(target, req.Write, func(root map[string]any) (bool, error) {
 		return mergeAnyMap(root, "otel", otel)
 	})
@@ -405,6 +405,10 @@ func Probe(ep Endpoint) Check {
 	}
 	if ep.GRPCPort == 0 {
 		ep.GRPCPort = 4317
+	}
+	if err := checkEndpoint(&ep); err != nil {
+		// Nothing is probed, and the input is shown only inside err (%q).
+		return Check{Text: "not probed: " + err.Error() + "\n", HTTPStatus: "not probed", GRPCStatus: "not probed"}
 	}
 	health := ep.base() + "/health"
 	httpStatus := probeHTTP(health)

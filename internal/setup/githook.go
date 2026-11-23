@@ -101,7 +101,16 @@ func UninstallGitHooks(dir string) (Result, error) {
 
 func hookLogsURL(ep Endpoint) (string, error) {
 	host := ep.Host
-	switch host {
+	if host != "" {
+		// Same parsing as checkEndpoint: [::1] is ::1, and an invalid host
+		// is reported quoted.
+		checked, err := checkHost(host)
+		if err != nil {
+			return "", err
+		}
+		host = checked
+	}
+	switch strings.TrimSuffix(host, ".") {
 	case "", "localhost", "127.0.0.1":
 		host = "127.0.0.1"
 	case "::1":
