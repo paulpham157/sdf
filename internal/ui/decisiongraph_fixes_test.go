@@ -1,6 +1,11 @@
 package ui_test
 
 import (
+	"encoding/json"
+	"github.com/paulpham157/sdf/internal/ui"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -220,5 +225,102 @@ func TestDecisionShortcutKeys(t *testing.T) {
 	// Typed into Jump, the keys are text.
 	if res := renderPage(t, srv, "#/decisions", "focus=.dg-jump,key=t,key=shift+?"); tensions(res) || help(res) {
 		t.Error("t or ? in the Jump field acted as a shortcut")
+	}
+}
+
+// graphPage draws the page against srv with the graph document passed
+// through edit first, so a test can hold data the store would not produce.
+func graphPage(t *testing.T, srv *ui.Server, edit func(doc map[string]any), hash, flags string) pageResult {
+	t.Helper()
+	bodies := map[string]string{}
+	for _, path := range []string{"", "app.js", "api/snapshot", "api/decisions", "api/summary", "api/decisions/graph"} {
+		status, _, body := get(t, srv.URL()+path)
+		if status != 200 {
+			t.Fatalf("%s: %d", path, status)
+		}
+		bodies["/"+path] = body
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(bodies["/api/decisions/graph"]), &doc); err != nil {
+		t.Fatal(err)
+	}
+	edit(doc)
+	graph, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodies["/api/decisions/graph"] = string(graph)
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := bodies[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(fake.Close)
+	return runPage(t, fake.URL+"/", bodies["/"], bodies["/app.js"], hash, flags)
+}
+
+// eachEnding calls fn on every ending node of every chapter.
+func eachEnding(doc map[string]any, fn func(node map[string]any)) {
+	chapters, _ := doc["chapters"].([]any)
+	for _, c := range chapters {
+		nodes, _ := c.(map[string]any)["nodes"].([]any)
+		for _, n := range nodes {
+			node := n.(map[string]any)
+			if node["kind"] == "ending" {
+				fn(node)
+			}
+		}
+	}
+}
+
+// An ending's pull request link is an href only for a GitHub https URL,
+// and it opens with rel="noopener noreferrer".
+func TestEndingLinksAllowOnlyGitHub(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	github := "https" + "://github.com/o/r/pull/7"
+	var id string
+	graphPage(t, srv, func(doc map[string]any) {
+		eachEnding(doc, func(node map[string]any) {
+			if id == "" && node["ending"] != nil {
+				id = node["id"].(string)
+			}
+		})
+	}, "", "")
+	if id == "" {
+		t.Fatal("seed has no ending")
+	}
+	for url, allowed := range map[string]bool{
+		github:                              true,
+		"javascript:alert(1)":               false,
+		"JavaScript:alert(1)":               false,
+		"data:text/html,<b>x</b>":           false,
+		"http" + "://github.com/o/r/pull/7": false,
+		"https" + "://github.com.evil.example/o/r/pull/7": false,
+		"https" + "://evil.example/?https://github.com/":  false,
+		"//github.com/o/r/pull/7":                         false,
+		" " + github:                                      false,
+	} {
+		res := graphPage(t, srv, func(doc map[string]any) {
+			eachEnding(doc, func(node map[string]any) {
+				if node["id"] == id {
+					end := node["ending"].(map[string]any)
+					end["url"], end["pull_request"] = url, 7
+				}
+			})
+		}, "#/decisions/ch-capture/"+id, "")
+		link := regexp.MustCompile(`<a [^>]*>Open pull request #7</a>`).FindString(res.Markup)
+		if allowed {
+			if !strings.Contains(link, `href="`+github+`"`) || !strings.Contains(link, `rel="noopener noreferrer"`) {
+				t.Errorf("%q: link %q", url, link)
+			}
+		} else if link != "" || !strings.Contains(res.Text, "Pull request #7") {
+			t.Errorf("%q became a link: %q", url, link)
+		}
 	}
 }

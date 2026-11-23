@@ -1500,6 +1500,15 @@
   };
   const LINK_ORDER = ["Blocked by", "Conflicts with", "Challenged by", "Refined by", "Refines", "Implemented by", "Validated by", "Supersedes", "Superseded by", "Constrains", "Constrained by", "Blocks", "Validates", "Contradicts", "Leads to"];
 
+  // The one external link on the page is an ending's pull request. Only a
+  // GitHub https URL becomes an href (no javascript:, data: or other host).
+  // Assembled, like SVGNS, so the asset holds no literal URL.
+  const GITHUB_PREFIX = ["https:", "", "github.com", ""].join("/");
+
+  function dgSafeURL(url) {
+    return typeof url === "string" && url.indexOf(GITHUB_PREFIX) === 0 && !/[\s\\]/.test(url);
+  }
+
   function dgLinkTarget(chapter, kind, ref) {
     if (kind === "decision") {
       const inChapter = chapter.nodes.some(function (node) { return node.id === ref; });
@@ -1594,7 +1603,8 @@
       kids.push(h("p", { class: "kicker" }, [node.kind === "start" ? "Chapter start" : "Ending · " + (end.type || "").replace("_", " ")]));
       kids.push(h("h2", null, [node.title]));
       kids.push(h("p", { class: "detail" }, [node.kind === "start" ? dgWhen(node.detail) : node.detail]));
-      if (end.url) kids.push(h("p", null, [h("a", { href: end.url, rel: "noreferrer" }, ["Open pull request #" + end.pull_request])]));
+      if (end.url && dgSafeURL(end.url)) kids.push(h("p", null, [h("a", { href: end.url, rel: "noopener noreferrer" }, ["Open pull request #" + end.pull_request])]));
+      else if (end.pull_request) kids.push(h("p", { class: "detail" }, ["Pull request #" + end.pull_request]));
       if (end.via && end.via.length) kids.push(h("p", null, [end.locked ? "Waits on " : "Reached via "].concat(end.via.map(function (id, i) { return [i ? ", " : "", dgLinkTarget(chapter, "decision", id)]; }).flat())));
       if (end.sessions && end.sessions.length) kids.push(h("p", null, ["Sessions "].concat(end.sessions.map(function (id, i) { return [i ? ", " : "", dgLinkTarget(chapter, "session", id)]; }).flat())));
       if (end.cost && end.cost.status !== "unknown") kids.push(h("p", { class: "detail" }, ["Computed cost " + end.cost.usd + " USD" + (end.cost.status === "partial" ? " (partial)" : "")]));
