@@ -904,13 +904,15 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+const pricesUsage = "usage: sdf prices refresh [--url URL] [--out PATH]"
+
 func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || (args[0] != "refresh" && args[0] != "--help" && args[0] != "-h") {
-		fmt.Fprintln(stderr, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		fmt.Fprintln(stderr, pricesUsage)
 		return 2
 	}
 	if args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		fmt.Fprintln(stdout, pricesUsage)
 		return 0
 	}
 	pageURL := ""
@@ -918,6 +920,9 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, pricesUsage)
+			return 0
 		case arg == "--url":
 			v, ok := take(&i, args)
 			if !ok {
