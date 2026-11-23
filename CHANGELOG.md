@@ -45,10 +45,14 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Add `sdf decision list` (and `--json`) to print decision records and edges ([#236](https://github.com/paulpham157/sdf/pull/236)).
 - Show each decision's effective status (`effective_status` / `superseded_by`, computed at read time and never stored) in the `EFFECTIVE` column and as "superseded by" in the UI ([#240](https://github.com/paulpham157/sdf/pull/240)).
 - Add `--expect-prefix` and `--expect-prefix-file` to `sdf audit verify` ([#220](https://github.com/paulpham157/sdf/pull/220)).
-- In `sdf decision link`, `supersedes` links are decision-to-decision only, unknown refs are rejected, and exact duplicates are rejected ([#251](https://github.com/paulpham157/sdf/pull/251), fixes [#249](https://github.com/paulpham157/sdf/issues/249)). `sdf decision list` shows `decided_by`, alternatives, and reason.
+- In `sdf decision link`, allowed relations are enforced, self-links are rejected, `supersedes` links are decision-to-decision only, unknown refs are rejected, exact duplicates are rejected, and supersedes cycles are rejected ([#251](https://github.com/paulpham157/sdf/pull/251), fixes [#249](https://github.com/paulpham157/sdf/issues/249)). `sdf decision list` shows `decided_by`, alternatives, and reason.
 - Add `sdf decision retract` (append-only; `--id`, optional `--reason` and `--retracted-by user|agent`) ([#256](https://github.com/paulpham157/sdf/pull/256)).
-- Add `sdf redact --db` to scrub stored content; `sdf serve` warns on a database that may still hold unscrubbed text ([#225](https://github.com/paulpham157/sdf/pull/225)).
+- Add `sdf redact --db` to scrub stored content (`--dry-run` only counts the rows that would change); `sdf serve` warns on a database that may still hold unscrubbed text ([#225](https://github.com/paulpham157/sdf/pull/225)).
 - Add decision relations `blocks`, `conflicts_with`, and `refines` to `sdf decision link`, with `blocked_by` and `depends_on` as input aliases of `blocks` (ends swapped). `blocks` and `refines` reject cycles; `conflicts_with` is symmetric and stored once in canonical order; `conflicts_with` and `refines` are refused when one side already supersedes the other, while `supersedes` after `conflicts_with` is allowed and resolves it. `sdf decision list`, `GET /api/decisions`, and the UI show the read-time fields `blocked_by`, `open_blockers`, `blocked`, `conflicts_with`, `conflicted`, `refined_by`, and `challenged` (omitted when empty); `effective_status` is unchanged. A blocker is open while any current head is a `hypothesis`, or when it has no head and any path of its `supersedes` chain reaches a legacy cycle; a retracted blocker blocks nothing. `challenged` counts `validates` and `contradicts` only from sessions, commits, and active decisions. Errors for the `blocked_by` and `depends_on` aliases name the alias and the `--from`/`--to` flag as typed. The UI lists every blocker and marks the open ones, as `sdf decision list` does, and its "conflicts with" badge lists only active sides ([#278](https://github.com/paulpham157/sdf/pull/278)).
+- Add read-only `sdf decision audit` for unlinked decisions and commits (`--json`, `--since`, `--until`) ([#289](https://github.com/paulpham157/sdf/pull/289)).
+- Improve first-run UX: command `--help`, `sdf init` agent suggestions, clearer busy-port and missing-database errors, token-aware `sdf init --check`, and a quickstart to a real session ([#216](https://github.com/paulpham157/sdf/pull/216)).
+- Install the OpenCode session plugin in the V2 plugin shape (`sdf init opencode --write`) ([#295](https://github.com/paulpham157/sdf/pull/295)).
+- Read Claude Code (`CLAUDE_CODE_SESSION_ID`) and Qwen Code (`QWEN_CODE_SESSION_ID`) session ids in `sdf init --git-hooks` ([#287](https://github.com/paulpham157/sdf/pull/287)).
 
 ### Fixes
 
@@ -78,14 +82,18 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Price `cache_read` at 0 on bundled OpenRouter `:free` rows whose prompt and completion are 0; a paid row such as `mistralai/mistral-nemo` with no `input_cache_read` stays unknown ([#246](https://github.com/paulpham157/sdf/pull/246), fixes [#243](https://github.com/paulpham157/sdf/issues/243)). Docs and tests for that rule were tightened in [#254](https://github.com/paulpham157/sdf/pull/254).
 - Count a re-sent Copilot span or Gemini `api_response` log once ([#250](https://github.com/paulpham157/sdf/pull/250), fixes [#248](https://github.com/paulpham157/sdf/issues/248)).
 - `sdf summary` works on a database in a read-only directory. It no longer creates a file for a missing `--db` path, and it does not convert a rollback-journal database to WAL ([#253](https://github.com/paulpham157/sdf/pull/253)).
-- Fix a stack overflow when the UI renders a deep span tree ([#232](https://github.com/paulpham157/sdf/pull/232)).
+- Fix a stack overflow when the UI renders a deep span tree; rendered depth is capped at 32 ([#232](https://github.com/paulpham157/sdf/pull/232), documented in [#269](https://github.com/paulpham157/sdf/pull/269)).
 - Keep the first copy of a re-sent Copilot span and use unambiguous dedup keys ([#257](https://github.com/paulpham157/sdf/pull/257)).
 - List a tool call from a re-sent export once ([#259](https://github.com/paulpham157/sdf/pull/259), fixes [#258](https://github.com/paulpham157/sdf/issues/258)).
 - Count a re-sent Qwen Code log or span once ([#262](https://github.com/paulpham157/sdf/pull/262), fixes [#261](https://github.com/paulpham157/sdf/issues/261)).
+- Close forged-PASS paths in `sdf verify` (PASS needs `--task-ref`, `--task-hash`, or a ledger `--expect-prefix` pin) and pin the GitHub Action's task to the base-branch commit ([#209](https://github.com/paulpham157/sdf/pull/209)).
+- Document OpenCode's camelCase `sessionID` alias and fix the missing-log reason when those logs are attributed to the session ([#230](https://github.com/paulpham157/sdf/pull/230)).
+- Price Grok and Claude metrics sessions from matching `api_request` logs: when de-duplicated logs match the metric totals, each request is priced on its own ([#231](https://github.com/paulpham157/sdf/pull/231)).
+- Cap span-tree nesting at 32 (`MaxSpanDepth`) and return HTTP 500 when the UI cannot encode a response ([#270](https://github.com/paulpham157/sdf/pull/270), fixes [#267](https://github.com/paulpham157/sdf/issues/267)).
 
 ### Security
 
-- Prompt and response content is now dropped before storing unless `sdf serve --store-content` is set. Tool and error text is dropped too ([#224](https://github.com/paulpham157/sdf/pull/224)).
+- Prompt and response content is now dropped before storing unless `sdf serve --store-content` or `SDF_STORE_CONTENT` is set. Tool and error text is dropped too ([#224](https://github.com/paulpham157/sdf/pull/224)).
 - Validate `sdf init --host` / `--port` and quote shell snippets ([#195](https://github.com/paulpham157/sdf/pull/195)).
 - Reject forged OTLP posts and rebound UI hosts ([#199](https://github.com/paulpham157/sdf/pull/199)).
 
@@ -104,7 +112,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Add GoReleaser config and `sdf version` link-time metadata (`internal/version` ldflags) ([#187](https://github.com/paulpham157/sdf/pull/187)).
 - Bump `actions/setup-go` from 7.0.0 to 7.1.0 ([#180](https://github.com/paulpham157/sdf/pull/180)).
 - Bump CodeQL to v4.39.4 and govulncheck to v1.10.0, cache setup-go on `go.sum`, and add `workflow_dispatch` to the scheduled workflow ([#244](https://github.com/paulpham157/sdf/pull/244)).
-- Pin the release toolchain to `go1.26.11` and bump GoReleaser to v2.20.3 ([#245](https://github.com/paulpham157/sdf/pull/245)).
+- Pin the release toolchain to `go1.26.11` (`toolchain go1.26.11` in `go.mod`) and bump GoReleaser to v2.20.3 ([#245](https://github.com/paulpham157/sdf/pull/245)).
 
 ### Cleanup
 
