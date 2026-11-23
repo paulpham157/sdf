@@ -57,11 +57,24 @@ sqlite3 sdf-telemetry.sqlite \
 
 ### WAL mode and backups
 
-The database is opened in SQLite WAL mode with a 5-second busy timeout, so
-`sdf summary` and other readers can run while the receiver writes. A
-read-only rollback-journal database keeps its journal mode and stays
-readable. A WAL database needs its `-shm` file or a writable directory to
-be read; in a read-only directory without one, open fails. In WAL mode
+`sdf serve` opens the database in SQLite WAL mode with a 5-second busy
+timeout, so `sdf summary` and other readers can run while the receiver
+writes. `sdf summary` only reads: it opens the file read-only
+(`mode=ro`, same busy timeout) and never creates it, applies the schema,
+adds columns, or changes its journal mode. A missing `--db` file in an
+existing directory reports an empty store and leaves no file behind; a
+missing directory is an error. A rollback-journal database keeps its
+journal mode and gets no sidecar files. Reading a WAL database needs its
+`-shm` file; when the directory is writable SQLite creates `-shm` (and an
+empty `-wal`) beside it, and a reader leaves them there. In a read-only
+directory without `-shm`, `sdf summary` falls back to SQLite's
+`immutable=1` read when there is no `-wal` file, since every committed
+write is then in the main file. `immutable=1` takes no locks and assumes
+nothing writes the file, so it is only a fallback after the normal
+read-only open fails, never the first choice. If a `-wal` file is there,
+it can hold writes the main file lacks, and `sdf summary` reports that
+instead of reading stale data: make the directory writable, or open the
+file once with `sdf serve` to checkpoint it. In WAL mode
 SQLite keeps two
 sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
 `sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
@@ -310,7 +323,11 @@ been recorded, and recording one does not change the summary. All three are
 read-only. There is no route that writes or deletes.
 
 A known `0` is a published price of zero, such as a `:free` model whose
-token buckets are all priced. It is not a stand-in for a missing price. If
+token buckets are all priced. It is not a stand-in for a missing price,
+with one exception (issue #243). On an OpenRouter row whose id ends in
+`:free` and whose prompt and completion are both `0`, cache-read tokens are
+priced at `0` when the row has no `input_cache_read` price. The cost `note`
+says so. See [summary.md](summary.md). If
 any session in a total has an unknown computed cost, the total is unknown
 too. The summary does not split one session's tokens across several models,
 so the page does not either: several models stay unknown, with the session

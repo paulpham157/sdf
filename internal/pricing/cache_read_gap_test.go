@@ -23,7 +23,7 @@ func claudeWithCacheRead(model string) Usage {
 
 func TestBundledFreeRowsPriceCacheReadAtZero(t *testing.T) {
 	cat := Bundled()
-	free := 0
+	free, viaRule := 0, 0
 	for id, model := range cat.Models {
 		if !strings.HasSuffix(id, ":free") {
 			continue
@@ -48,10 +48,21 @@ func TestBundledFreeRowsPriceCacheReadAtZero(t *testing.T) {
 		}
 		if !strings.Contains(got.Note, ":free") || !strings.Contains(got.Note, "input_cache_read") {
 			t.Errorf("%s: note %q", id, got.Note)
+			continue
 		}
+		viaRule++
 	}
 	if free == 0 {
 		t.Fatal("bundled snapshot has no :free rows")
+	}
+	// Without this the test passes vacuously once every :free row publishes
+	// input_cache_read. Then the zero rule is no longer exercised by the
+	// bundled table and this test (and docs/summary.md) need an update.
+	if viaRule == 0 {
+		t.Fatalf("no bundled :free row was priced by the zero rule (%d :free rows all publish input_cache_read)", free)
+	}
+	if cat.RetrievedAtRaw == "2026-11-10T10:53:46Z" && viaRule != 13 {
+		t.Fatalf("2026-11-10 snapshot: %d :free rows priced by the zero rule, want 13", viaRule)
 	}
 }
 
@@ -129,5 +140,87 @@ func TestMissingCacheReadIsNotZeroOutsideFreeRows(t *testing.T) {
 	})
 	if write.Status != "unknown" || !strings.Contains(write.Reason, "input_cache_write") {
 		t.Fatalf("%+v", write)
+	}
+}
+
+// cacheReadOnly isolates the cache_read bucket: input and output are 0, so
+// only the input_cache_read lookup (and the :free zero rule) decides.
+func cacheReadOnly(model string) Usage {
+	return Usage{
+		Models: []string{model},
+		Source: "metrics claude_code.token.usage",
+		Tokens: map[string]float64{"input": 0, "output": 0, "cacheRead": 100, "cacheCreation": 0},
+	}
+}
+
+// A :free row whose prompt or completion is not a parsable zero does not get
+// the zero rule (follow-up to #246). "-1" is OpenRouter's dynamic-router
+// sentinel, not a free price.
+func TestFreeZeroRuleNeedsParsableZeroPromptAndCompletion(t *testing.T) {
+	cases := map[string][2]string{
+		"vendor/router:free":         {"-1", "-1"},
+		"vendor/neg-prompt:free":     {"-1", "0"},
+		"vendor/neg-completion:free": {"0", "-1"},
+		"vendor/empty-prompt:free":   {"", "0"},
+		"vendor/empty-compl:free":    {"0", ""},
+		"vendor/junk-prompt:free":    {"free", "0"},
+		"vendor/junk-compl:free":     {"0", "n/a"},
+		"vendor/nonzero:free":        {"0.000001", "0"},
+	}
+	var models []*Model
+	for id, pc := range cases {
+		models = append(models, &Model{ID: id, Prices: map[string]string{"prompt": pc[0], "completion": pc[1]}})
+	}
+	// Controls: a parsable zero in another spelling does get the rule.
+	models = append(models,
+		&Model{ID: "vendor/zero:free", Prices: map[string]string{"prompt": "0", "completion": "0"}},
+		&Model{ID: "vendor/zero-decimal:free", Prices: map[string]string{"prompt": "0.0", "completion": "0.000"}},
+	)
+	cat := mustFixture(t, models...)
+	for id := range cases {
+		got := Price(cat, cacheReadOnly(id))
+		if got.Status != "unknown" || got.USD != "" || !strings.Contains(got.Reason, "input_cache_read") {
+			t.Errorf("%s %v: want unknown for missing input_cache_read, got %+v", id, cases[id], got)
+		}
+	}
+	for _, id := range []string{"vendor/zero:free", "vendor/zero-decimal:free"} {
+		got := Price(cat, cacheReadOnly(id))
+		if got.Status != "known" || got.USD != "0" {
+			t.Errorf("%s: %+v", id, got)
+		}
+	}
+}
+
+// openrouter/free (the Free Models Router) and the Lyria preview rows have
+// prompt and completion "0" in the bundled snapshot but no :free suffix, so
+// the zero rule does not apply: cache reads leave them unknown. Their 0/0
+// input and output still price at a known $0.
+func TestBundledZeroRowsWithoutFreeSuffixKeepCacheReadUnknown(t *testing.T) {
+	cat := Bundled()
+	for _, id := range []string{"openrouter/free", "google/lyria-3-clip-preview", "google/lyria-3-pro-preview"} {
+		model := cat.Models[id]
+		if model == nil {
+			t.Errorf("bundled snapshot has no %s; update docs/summary.md", id)
+			continue
+		}
+		if model.Prices["prompt"] != "0" || model.Prices["completion"] != "0" {
+			t.Errorf("%s: prices %v; update docs/summary.md", id, model.Prices)
+		}
+		if _, ok := model.Prices["input_cache_read"]; ok {
+			t.Errorf("%s gained input_cache_read; update this test and docs/summary.md", id)
+			continue
+		}
+		got := Price(cat, cacheReadOnly(id))
+		if got.Status != "unknown" || !strings.Contains(got.Reason, "catalog has no input_cache_read price for model "+id) {
+			t.Errorf("%s: %+v", id, got)
+		}
+		plain := Price(cat, Usage{
+			Models: []string{id},
+			Source: "metrics claude_code.token.usage",
+			Tokens: map[string]float64{"input": 100, "output": 10, "cacheRead": 0, "cacheCreation": 0},
+		})
+		if plain.Status != "known" || plain.USD != "0" {
+			t.Errorf("%s without cache reads: %+v", id, plain)
+		}
 	}
 }
