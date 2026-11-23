@@ -253,8 +253,11 @@ func codex(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Docs: https://developers.openai.com/codex/config-reference\n")
 	fmt.Fprintf(&b, "https://github.com/openai/codex/blob/main/codex-rs/otel/README.md\n\n")
 	b.WriteString(block)
+	hooks := filepath.Join(req.CodexHome, "hooks.json")
+	hookURL := req.Endpoint.base() + "/v1/sessions"
 	if !req.Write {
 		b.WriteString("\nnot written (pass --write to append this block; an existing [otel] table is left unchanged)\n")
+		b.WriteString(codexHookPreview(hooks, hookURL))
 		return Result{Text: b.String()}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -264,11 +267,21 @@ func codex(req Request) (Result, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return Result{}, readErr(path, err)
 	}
+	// An existing [otel] table is left alone, but the session hook is still
+	// merged: a user who set up [otel] by hand would otherwise get no hook.
 	if hasOtelTable(string(existing)) {
+		if err := checkAllWritable(hooks); err != nil {
+			return Result{}, err
+		}
 		b.WriteString("\nnot written: " + path + " already has an [otel] table; it was not changed\n")
-		return Result{Text: b.String()}, nil
+		hookStatus, err := codexHookFile(hooks, hookURL)
+		if err != nil {
+			return Result{}, err
+		}
+		b.WriteString(hookStatus)
+		b.WriteString(hookTokenNoteFor(req.Endpoint))
+		return Result{Text: b.String(), Wrote: strings.HasPrefix(hookStatus, "wrote ")}, nil
 	}
-	hooks := filepath.Join(req.CodexHome, "hooks.json")
 	if err := checkAllWritable(path, hooks); err != nil {
 		return Result{}, err
 	}
@@ -282,6 +295,18 @@ func codex(req Request) (Result, error) {
 		}
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
+		if _, err := tomlHasKey(existing, "otel"); err != nil {
+			return Result{}, fmt.Errorf("%s is not valid TOML (%v); Codex cannot load it either. Fix it and rerun; it was not changed", path, err)
+		}
+		if _, err := tomlHasKey(body, "otel"); err != nil {
+			return Result{}, fmt.Errorf("%s: appending the [otel] table would not be valid TOML (%v); add the printed keys by hand; it was not changed", path, err)
+		}
+	}
+	// Plan the hooks.json merge before config.toml is touched, so a corrupt
+	// or refused hooks.json (null, not an object) leaves both files as they
+	// were instead of [otel] written and the hook missing.
+	if err := codexHookCheck(hooks, hookURL); err != nil {
+		return Result{}, err
 	}
 	status, err := replaceFile(path, body, 0o600)
 	if err != nil {
@@ -289,7 +314,7 @@ func codex(req Request) (Result, error) {
 	}
 	b.WriteString("\n")
 	b.WriteString(status)
-	hookStatus, err := codexHookFile(hooks, req.Endpoint.base()+"/v1/sessions")
+	hookStatus, err := codexHookFile(hooks, hookURL)
 	if err != nil {
 		return Result{}, err
 	}
@@ -312,17 +337,13 @@ metrics_exporter = { otlp-http = { endpoint = "%s/v1/metrics", protocol = "binar
 `, base, base, base)) + "\n"
 }
 
+// hasOtelTable reports whether config.toml sets the top-level otel key in
+// any TOML form ([otel], [ otel ], ["otel"], [otel.sub], inline
+// otel = {...}, dotted otel.x = ...), the same parse as grokHasTelemetry.
+// A file that does not parse reports false; codex refuses it before writing.
 func hasOtelTable(text string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if trim == "[otel]" || strings.HasPrefix(trim, "[otel.") {
-			return true
-		}
-	}
-	return false
+	has, err := tomlHasKey([]byte(text), "otel")
+	return err == nil && has
 }
 
 func opencode(req Request) (Result, error) {
@@ -603,11 +624,18 @@ func writeGrokConfig(path, hookPath, block string) (string, bool, error) {
 // the last three, and appending a second [telemetry] then makes the file
 // fail to parse in Grok (duplicate key). Empty input has no telemetry.
 func grokHasTelemetry(body []byte) (bool, error) {
+	return tomlHasKey(body, "telemetry")
+}
+
+// tomlHasKey parses body as TOML and reports whether it sets the top-level
+// key in any form (table header with or without spaces or quotes, sub-table,
+// inline table, dotted or quoted key). Empty input has no keys.
+func tomlHasKey(body []byte, key string) (bool, error) {
 	var doc map[string]any
 	if _, err := toml.Decode(string(body), &doc); err != nil {
 		return false, err
 	}
-	_, ok := doc["telemetry"]
+	_, ok := doc[key]
 	return ok, nil
 }
 

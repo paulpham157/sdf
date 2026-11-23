@@ -105,7 +105,8 @@ Codex does not use the standard `OTEL_EXPORTER_OTLP_*` environment variables
 for its own export. Put an `[otel]` table in the user config
 (`$CODEX_HOME/config.toml`, `~/.codex/config.toml` by default). A project-local
 `.codex/config.toml` cannot set `otel`; Codex ignores it there. `sdf init codex
---write` also writes `hooks.json` with a `SessionStart` and `SessionEnd` hook.
+--write` also merges a `SessionStart` and `SessionEnd` hook into `hooks.json`,
+even when `config.toml` already has an `[otel]` table (which it leaves as is).
 The hook posts only when the session id equals the thread id, so a descendant
 thread reports nothing.
 
