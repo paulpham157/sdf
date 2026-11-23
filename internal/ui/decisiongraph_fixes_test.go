@@ -416,3 +416,42 @@ func TestShortSameRowEdgeDropsGlyph(t *testing.T) {
 		t.Errorf("a blocks edge under 40px still draws %d glyphs", n)
 	}
 }
+
+// The List toggle draws the chapter as an ordered list of the chosen path
+// with each node's alternatives and link sentences, then the rest.
+func TestDecisionListView(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	res := renderPage(t, srv, "#/decisions", "focus=~List,click=~List")
+	if !strings.Contains(res.Markup, `aria-pressed="true" data-focus-key="tb:List"`) || !strings.Contains(res.Active, `data-focus-key="tb:List"`) {
+		t.Fatalf("List toggle not on or lost focus: %q", res.Active)
+	}
+	if strings.Contains(res.Markup, "<svg") {
+		t.Error("List view still draws the graph")
+	}
+	ol := regexp.MustCompile(`<ol [^>]*class="dg-list"[^>]*>.*?</ol>`).FindString(res.Markup)
+	if ol == "" {
+		t.Fatalf("no ordered list:\n%s", res.Markup)
+	}
+	// Path order: start, capture, status-ui, silent; each a button.
+	var order []string
+	for _, m := range regexp.MustCompile(`<button [^>]*data-node="([^"]+)"[^>]*class="dg-linkish dg-list-node"`).FindAllStringSubmatch(ol, -1) {
+		order = append(order, m[1])
+	}
+	want := []string{"start:ch-capture", "capture", "status-ui", "silent"}
+	if got := strings.Join(order, " "); got != strings.Join(want, " ") {
+		t.Errorf("path order %q, want %q first", got, want)
+	}
+	text := res.Text
+	for _, s := range []string{"Chosen path, in order", "Not taken Parse the log", "Blocked by merge-first", "Conflicts with silent", "Constrained by capture", "Endings", "Locked ending", "ending, reached", "Off the path", "merge-first", "by you", "blocked"} {
+		if !strings.Contains(text, s) {
+			t.Errorf("List view is missing %q:\n%s", s, text)
+		}
+	}
+	// Choosing a node from the list focuses it, and focus stays in the list.
+	focused := renderPage(t, srv, "#/decisions", `click=~List,click=[data-node="capture"]`)
+	if focused.Hash != "#/decisions/ch-capture/capture" || !strings.Contains(focused.Active, `data-node="capture"`) || !strings.Contains(focused.Active, "dg-list-node") {
+		t.Errorf("list choice: hash %q focus %q", focused.Hash, focused.Active)
+	}
+}

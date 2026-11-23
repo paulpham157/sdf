@@ -980,6 +980,7 @@
   let dgHelp = false;
   let dgStatus = "";
   let dgJumpValue = "";
+  let dgList = false;
   // Focus to restore after the next draw: "node:<id>" or a data-focus-key.
   let dgWantFocus = "";
   let dgNavigating = false;
@@ -1514,6 +1515,7 @@
       toggle("Not taken", dgNotTaken, function () { dgNotTaken = !dgNotTaken; }),
       toggle("Show tensions", dgTensions, function () { dgTensions = !dgTensions; }, { "aria-keyshortcuts": "t" }),
       toggle("Chosen path only", dgPathOnly, function () { dgPathOnly = !dgPathOnly; }),
+      toggle("List", dgList, function () { dgList = !dgList; }, { "aria-label": "List view" }),
       jump,
       toggle("?", dgHelp, function () { dgHelp = !dgHelp; }, { "aria-label": "Keyboard shortcuts", "aria-keyshortcuts": "?" }),
     ]);
@@ -1549,7 +1551,7 @@
     if (!dgHelp) return null;
     return h("div", { class: "dg-help", role: "note" }, [
       h("p", null, [h("strong", null, ["Shortcuts"])]),
-      h("p", null, ["Tab moves between nodes · Enter or Space focuses one · Esc closes it · ↑ ↓ walk the rows · t toggles tensions · / jumps to an id · ? shows this"]),
+      h("p", null, ["Tab moves between nodes · Enter or Space focuses one · Esc closes it · ↑ ↓ walk the rows · ← → choose Everyone, You or Agents · t toggles tensions · / jumps to an id · ? shows this · List shows the chapter as a list"]),
     ]);
   }
 
@@ -1706,6 +1708,98 @@
     ]);
   }
 
+  // A node's links as <li> sentences ("Blocked by merge-first"), grouped
+  // and ordered by LINK_ORDER; the focus panel and the List view share it.
+  function dgLinkSentences(chapter, node) {
+    const rec = node.decision || {};
+    const groups = {};
+    (node.links || []).forEach(function (link) {
+      const label = LINK_SENTENCE[link.direction + " " + link.relation] || (link.direction === "in" ? link.relation + " ←" : link.relation + " →");
+      (groups[label] = groups[label] || []).push(dgLinkTarget(chapter, link.kind, link.ref));
+    });
+    chapter.edges.forEach(function (edge) {
+      if (edge.from === node.id && (edge.relation === "next" || edge.relation === "outcome")) {
+        (groups["Leads to"] = groups["Leads to"] || []).push(dgLinkTarget(chapter, "node", edge.to));
+      }
+    });
+    if (rec.blocked && rec.open_blockers && rec.open_blockers.length) {
+      groups["Blocked by"] = (rec.open_blockers || []).map(function (id) { return dgLinkTarget(chapter, "decision", id); });
+    }
+    const labels = Object.keys(groups).sort(function (a, b) {
+      const ia = LINK_ORDER.indexOf(a);
+      const ib = LINK_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    return labels.map(function (label) {
+      const items = [];
+      groups[label].forEach(function (item, i) { if (i) items.push(", "); items.push(item); });
+      return h("li", null, [h("strong", null, [label + " "])].concat(items));
+    });
+  }
+
+  function dgListState(node) {
+    const bits = [];
+    if (node.kind === "start") bits.push("chapter start");
+    else if (node.kind === "ending") bits.push(node.role === "locked_ending" ? "locked ending" : node.role === "reached" ? "ending, reached" : "ending, not reached");
+    else bits.push((node.role || node.kind).replace(/_/g, " "));
+    if (node.decided_by) bits.push(node.decided_by === "user" ? "by you" : "by the agent");
+    const rec = node.decision || {};
+    if (rec.blocked) bits.push("blocked");
+    if (rec.conflicted) bits.push("conflicted");
+    if (rec.challenged) bits.push("challenged");
+    if (dgMuted(node)) bits.push("filtered out");
+    return bits.join(", ");
+  }
+
+  function dgListItem(chapter, node, byId, focus) {
+    const on = node.id === focus;
+    const sub = [];
+    (node.alternatives || []).map(function (id) { return byId[id]; }).filter(Boolean).forEach(function (alt) {
+      if (!dgNotTaken) return;
+      sub.push(h("li", { class: "dg-list-alt" }, [h("strong", null, ["Not taken "]), h("button", {
+        type: "button", class: "dg-linkish", "data-node": alt.id, "aria-pressed": alt.id === focus ? "true" : "false",
+        onclick: function () { dgGo(chapter.id, alt.id); },
+      }, [alt.title])]));
+    });
+    if (node.kind !== "alternative") dgLinkSentences(chapter, node).forEach(function (li) { sub.push(li); });
+    return h("li", { class: "dg-list-item" + (on ? " dg-list-on" : "") }, [
+      h("button", {
+        type: "button",
+        class: "dg-linkish dg-list-node",
+        "data-node": node.id,
+        "aria-pressed": on ? "true" : "false",
+        onclick: function () { if (on) dgClose(chapter, node.id); else dgGo(chapter.id, node.id); },
+      }, [node.title]),
+      h("span", { class: "detail" }, [" " + (node.kind === "start" ? dgWhen(node.detail) : (node.detail || "")) + " · " + dgListState(node)]),
+      sub.length ? h("ul", null, sub) : null,
+    ]);
+  }
+
+  // List view (§2b scale rule f, §4): the chapter as an ordered, nested
+  // list: the chosen path in order, then endings, then the rest; each node carries its
+  // alternatives and link sentences. It doubles as the screen-reader view.
+  function dgListView(chapter, focus) {
+    const byId = {};
+    chapter.nodes.forEach(function (n) { byId[n.id] = n; });
+    const shown = dgOrderedNodes(chapter).filter(function (n) { return n.kind !== "alternative" || n.lane !== "none"; });
+    const onPath = shown.filter(function (n) { return n.on_path && n.kind !== "ending"; });
+    const endings = shown.filter(function (n) { return n.kind === "ending"; });
+    const rest = shown.filter(function (n) { return !n.on_path && n.kind !== "alternative" && n.kind !== "ending"; });
+    const kids = [
+      h("p", { class: "label", id: "dg-list-path" }, ["Chosen path, in order"]),
+      h("ol", { class: "dg-list", "aria-labelledby": "dg-list-path" }, onPath.map(function (n) { return dgListItem(chapter, n, byId, focus); })),
+    ];
+    if (endings.length) {
+      kids.push(h("p", { class: "label", id: "dg-list-endings" }, ["Endings"]));
+      kids.push(h("ul", { class: "dg-list", "aria-labelledby": "dg-list-endings" }, endings.map(function (n) { return dgListItem(chapter, n, byId, focus); })));
+    }
+    if (rest.length) {
+      kids.push(h("p", { class: "label", id: "dg-list-rest" }, ["Off the path"]));
+      kids.push(h("ul", { class: "dg-list", "aria-labelledby": "dg-list-rest" }, rest.map(function (n) { return dgListItem(chapter, n, byId, focus); })));
+    }
+    return h("div", { class: "dg-listview" }, kids);
+  }
+
   function dgFocusPanel(chapter, node) {
     const byId = {};
     chapter.nodes.forEach(function (n) { byId[n.id] = n; });
@@ -1747,31 +1841,10 @@
     if (rec.reason) kids.push(h("p", null, [h("span", { class: "label" }, ["Reason"]), rec.reason]));
     else kids.push(h("p", { class: "detail" }, ["Reason: none recorded. sdf keeps what was recorded and never invents one."]));
     if (rec.retraction) kids.push(h("p", { class: "detail" }, ["Retracted " + dgWhen(rec.retraction.retracted_at) + (rec.retraction.reason ? ": " + rec.retraction.reason : "")]));
-    const groups = {};
-    (node.links || []).forEach(function (link) {
-      const label = LINK_SENTENCE[link.direction + " " + link.relation] || (link.direction === "in" ? link.relation + " ←" : link.relation + " →");
-      (groups[label] = groups[label] || []).push(dgLinkTarget(chapter, link.kind, link.ref));
-    });
-    chapter.edges.forEach(function (edge) {
-      if (edge.from === node.id && (edge.relation === "next" || edge.relation === "outcome")) {
-        (groups["Leads to"] = groups["Leads to"] || []).push(dgLinkTarget(chapter, "node", edge.to));
-      }
-    });
-    if (rec.blocked && rec.open_blockers && rec.open_blockers.length) {
-      groups["Blocked by"] = (rec.open_blockers || []).map(function (id) { return dgLinkTarget(chapter, "decision", id); });
-    }
-    const labels = Object.keys(groups).sort(function (a, b) {
-      const ia = LINK_ORDER.indexOf(a);
-      const ib = LINK_ORDER.indexOf(b);
-      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-    });
-    if (labels.length) {
+    const links = dgLinkSentences(chapter, node);
+    if (links.length) {
       kids.push(h("p", { class: "label" }, ["Links"]));
-      kids.push(h("ul", { class: "dg-links" }, labels.map(function (label) {
-        const items = [];
-        groups[label].forEach(function (item, i) { if (i) items.push(", "); items.push(item); });
-        return h("li", null, [h("strong", null, [label + " "])].concat(items));
-      })));
+      kids.push(h("ul", { class: "dg-links" }, links));
     }
     const alts = (node.alternatives || []).map(function (id) { return byId[id]; }).filter(Boolean);
     if (alts.length) {
@@ -1836,7 +1909,7 @@
             if (next) dgGo(chapter.id, next.id);
           }
         },
-      }, [dgKey(chapter), dgCanvas(chapter, focus)]),
+      }, dgList ? [dgListView(chapter, focus)] : [dgKey(chapter), dgCanvas(chapter, focus)]),
       // The visible copy of the last status; screen readers hear it from the
       // one persistent live region outside the drawn tree (dgAnnounce).
       h("p", { class: "dg-live", "aria-hidden": "true" }, [dgStatus]),

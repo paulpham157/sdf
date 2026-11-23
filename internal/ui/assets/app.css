@@ -513,6 +513,15 @@ footer p { margin: 0; }
 .dg-key-swatch.challenged { border: 2px solid #a3301d; }
 .dg-key-swatch.ending { border: 3px double var(--green); background: var(--green-soft); }
 .dg-svg { display: block; margin: 8px auto 16px; }
+.dg-listview { padding: 6px 12px 12px; font-size: 13px; }
+.dg-listview .label { margin: 10px 0 4px; }
+.dg-list { margin: 0; padding-left: 22px; }
+ul.dg-list { list-style: disc; }
+.dg-list-item { padding: 5px 0; border-top: 1px solid var(--line); line-height: 1.45; }
+.dg-list-item > .detail { font-size: 12px; color: var(--ink-soft); }
+.dg-list-item ul { margin: 3px 0 0; padding-left: 18px; list-style: circle; font-size: 12.5px; }
+.dg-list-node { font-weight: 600; color: var(--ink); }
+.dg-list-on > .dg-list-node { outline: 2.5px solid var(--green); outline-offset: 2px; border-radius: 3px; }
 .dg-live { min-height: 1em; font-size: 12px; color: var(--ink-soft); margin: 4px 0 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
