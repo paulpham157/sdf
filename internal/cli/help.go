@@ -131,8 +131,10 @@ pull requests in the same SQLite file as sdf serve.
   add      sdf decision add --id ID --statement TEXT --status hypothesis|decision
   link     sdf decision link --relation REL --from KIND:REF --to KIND:REF
   list     sdf decision list [--json]
+  graph    sdf decision graph [--json]
   retract  sdf decision retract --id ID [--reason TEXT]
-Run sdf decision <add|link|list|retract> --help for the flags.`
+  audit    sdf decision audit [--json] [--since RFC3339] [--until RFC3339]
+Run sdf decision <add|link|list|graph|retract|audit> --help for the flags.`
 
 const auditHelp = `Checks the hash-chained ledger that sdf task declare --ledger and sdf verify
 --ledger append to.
