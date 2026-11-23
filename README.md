@@ -160,7 +160,8 @@ sdf summary --json
 sdf summary --session ID --all-spans
 sdf decision add --id ID --statement TEXT --status hypothesis
 sdf decision link --relation implements --from decision:ID --to session:ID
-sdf decision list      # decisions and edges; --json is GET /api/decisions
+sdf decision link --relation supersedes --from decision:NEW --to decision:OLD
+sdf decision list      # decisions, superseded or active, and edges; --json is GET /api/decisions
 sdf audit verify       # hash-chained ledger; see docs/ledger.md
 sdf task declare --ledger PATH ...  # opt-in: also chain the task (or set SDF_LEDGER)
 sdf verify SHA --task ID --ledger PATH  # opt-in: chain the evidence and verdict

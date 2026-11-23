@@ -344,6 +344,36 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	}
 }
 
+func TestPageShowsSupersededDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "sqlite-wal"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelSupersedes,
+		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "sqlite-wal"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "superseded"`) || !strings.Contains(api, `"superseded_by": [`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "superseded by sqlite-wal") {
+			t.Fatalf("%q did not render the superseded state:\n%s", hash, page)
+		}
+		if strings.Count(page, "superseded by") != 1 {
+			t.Fatalf("%q: only keep-sqlite is superseded:\n%s", hash, page)
+		}
+	}
+}
+
 func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{

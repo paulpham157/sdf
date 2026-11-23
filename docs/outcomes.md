@@ -112,9 +112,39 @@ writes one edge. It needs a relation and two `KIND:REF` endpoints, where
 `KIND` is `decision`, `session`, or `commit`. No route writes a record. An
 agent skill that uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
 
+### Superseded at read time
+
+A `supersedes` edge reads as "`from` supersedes `to`": the `from` decision
+replaces the `to` decision. Only an edge between two different decisions
+counts. A `supersedes` edge with a session or commit endpoint, or from a
+decision to itself, is still stored and listed with the other edges, but it
+changes no status.
+
+The stored record never changes. Each time the records are read, every record
+gets two fields that are not stored:
+
+- `effective_status`: `superseded` when at least one decision supersedes it,
+  otherwise `active`. `status` stays what was recorded (`hypothesis` or
+  `decision`).
+- `superseded_by`: the ids of the decisions that supersede it, once each, in the
+  order the edges were recorded. It is omitted when the record is active.
+
+Replacement is direct, not transitive. If `b` supersedes `a` and `c` supersedes
+`b`, then `a` is superseded by `b`, `b` is superseded by `c`, and `c` is
+active. To find the latest replacement, follow `superseded_by`. A cycle, such as
+`a` and `b` superseding each other, marks both superseded. `sdf decision list`,
+`GET /api/decisions`, and the UI show the same values, because all three read
+them from the same code. The UI shows "superseded by ID" next to the record.
+
 `sdf decision list` prints the records and then the edges, each as a table in
-insertion order. An empty source prints as `-`. A value with a control
-character, such as a tab, is printed Go-quoted so it cannot break the columns.
+insertion order. An empty source prints as `-`. A cell that holds a
+non-printing character, such as a tab, DEL, or a right-to-left override like
+U+202E, or that is not valid UTF-8, is printed Go-quoted so it cannot break the
+columns or reorder the terminal line. Every column follows this rule, including
+`EFFECTIVE`, and any column added later must too. `--json` does not quote: it
+leaves DEL and RTL characters raw in the JSON strings, exactly as
+`GET /api/decisions` does, so a reader that prints JSON values to a terminal
+has to escape them itself.
 `sdf decision list --json` prints exactly what `GET /api/decisions` returns,
 because both read the store through the same code. Like `sdf summary`, it opens
 `sdf-telemetry.sqlite` unless `--db` names another file, and opening a file
@@ -128,19 +158,22 @@ sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
   [--reason TEXT] [--source TEXT] [--db PATH]
 sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
+sdf decision link --relation supersedes --from decision:use-wal \
+  --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
 ```
 
 ```text
-Decisions: 2
-ID          STATUS      RECORDED AT                       SOURCE     STATEMENT
-use-sqlite  decision    2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
-pure-go     hypothesis  2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+Decisions: 3
+ID          STATUS      EFFECTIVE              RECORDED AT                       SOURCE     STATEMENT
+use-sqlite  decision    superseded by use-wal  2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
+pure-go     hypothesis  active                 2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+use-wal     decision    active                 2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
 
 Edges: 2
 RELATION    FROM              TO                   RECORDED AT
-implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:02.000000+00:00
-validates   session:sess-1    decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
+implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
+supersedes  decision:use-wal  decision:use-sqlite  2026-11-23T15:00:04.000000+00:00
 ```
 
 ## Local budget
