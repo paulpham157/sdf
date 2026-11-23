@@ -683,11 +683,9 @@ func TestSessionPageCapsLongSpanTrees(t *testing.T) {
 func TestSessionPageRendersDeepSpanTrees(t *testing.T) {
 	db := openDB(t)
 	// 2000 levels: the recursive renderer before this fix overflows node's
-	// call stack from about 1100 levels. Deeper does not fit through the API:
-	// /api/summary nests two JSON levels per span level and Go's encoder
-	// stops at 10000 (about 4997 span levels), and the indented response
-	// grows with depth squared (about 136 MB here, past V8's 512 MB string
-	// limit near 3900 levels), which also makes -race slow.
+	// call stack from about 1100 levels. The server now flattens the tree
+	// below depth 32 (#267), so the API response stays linear in span
+	// count; TestSessionPageDrawsAChainPastTheEncoderLimit covers 5500.
 	const depth = 2000
 	var recs []record.Record
 	var parent *string

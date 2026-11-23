@@ -615,36 +615,134 @@ func spanTree(records []record.Record, allSpans bool) ([]SpanNode, int) {
 			}
 		}
 	}
-	children := map[string][]record.Record{}
-	var roots []record.Record
-	for _, rec := range shown {
+	children := map[string][]int{}
+	var roots []int
+	for i, rec := range shown {
 		parent := shownParent(rec, byID, shownIDs)
 		if parent == nil {
-			roots = append(roots, rec)
+			roots = append(roots, i)
 		} else {
-			children[*parent] = append(children[*parent], rec)
+			children[*parent] = append(children[*parent], i)
 		}
 	}
-	sort.SliceStable(roots, func(i, j int) bool { return spanLess(roots[i], roots[j]) })
-	var build func(record.Record) SpanNode
-	build = func(rec record.Record) SpanNode {
-		id := ""
-		if rec.SpanID != nil {
-			id = *rec.SpanID
+	return buildSpanTree(shown, roots, children, logs, spans), len(spans) - len(shown)
+}
+
+// MaxSpanDepth bounds how deep the span tree nests. Roots are depth 0. A
+// node at depth MaxSpanDepth holds every deeper descendant as a flat list of
+// leaf children (depth-first order) and records how many in
+// FlattenedDescendants. Without a bound, each span level adds two JSON
+// nesting levels: Go's encoder stops at 10000 (about 4997 span levels,
+// issue #267) and the indented output grows with depth squared. 32 is the
+// UI's drawing limit, so every node the page can draw keeps its place, and
+// the page still notes deeper spans at that node.
+const MaxSpanDepth = 32
+
+// buildSpanTree nests shown spans under their parents without recursion, so
+// a deep chain cannot exhaust the stack. roots and children hold indexes into
+// shown. A span already on the path from its root (or, below MaxSpanDepth,
+// already listed) is not expanded again, so a cycle formed by a repeated
+// span id cannot loop.
+func buildSpanTree(shown []record.Record, roots []int, children map[string][]int, logs map[string]record.Record, spans []record.Record) []SpanNode {
+	sortedKids := func(i int) []int {
+		kids := append([]int{}, children[deref(shown[i].SpanID)]...)
+		sort.SliceStable(kids, func(a, b int) bool { return spanLess(shown[kids[a]], shown[kids[b]]) })
+		return kids
+	}
+	sort.SliceStable(roots, func(a, b int) bool { return spanLess(shown[roots[a]], shown[roots[b]]) })
+	type entry struct {
+		span   int // index into shown
+		parent int // index into entries, -1 for a root
+		level  int
+		kids   []int // indexes into entries
+		flat   []int // indexes into shown, set at MaxSpanDepth
+	}
+	entries := make([]entry, 0, len(shown))
+	onPath := func(parent, span int) bool {
+		for p := parent; p >= 0; p = entries[p].parent {
+			if entries[p].span == span {
+				return true
+			}
 		}
-		kids := append([]record.Record{}, children[id]...)
-		sort.SliceStable(kids, func(i, j int) bool { return spanLess(kids[i], kids[j]) })
-		built := make([]SpanNode, len(kids))
-		for i, child := range kids {
-			built[i] = build(child)
+		return false
+	}
+	stack := make([]int, 0, len(roots))
+	for _, span := range roots {
+		entries = append(entries, entry{span: span, parent: -1, level: 0})
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		stack = append(stack, i)
+	}
+	for len(stack) > 0 {
+		idx := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if entries[idx].level >= MaxSpanDepth {
+			entries[idx].flat = flattenSpans(entries[idx].span, sortedKids)
+			continue
 		}
-		return spanNode(rec, built, logs, spans)
+		var kidIdx []int
+		for _, kid := range sortedKids(entries[idx].span) {
+			if onPath(idx, kid) {
+				continue
+			}
+			entries = append(entries, entry{span: kid, parent: idx, level: entries[idx].level + 1})
+			kidIdx = append(kidIdx, len(entries)-1)
+		}
+		entries[idx].kids = kidIdx
+		for i := len(kidIdx) - 1; i >= 0; i-- {
+			stack = append(stack, kidIdx[i])
+		}
+	}
+	// A child always comes after its parent in entries, so building in
+	// reverse order has every child ready before its parent.
+	built := make([]SpanNode, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		var kids []SpanNode
+		if e.flat != nil {
+			kids = make([]SpanNode, len(e.flat))
+			for j, span := range e.flat {
+				kids[j] = spanNode(shown[span], []SpanNode{}, logs, spans)
+			}
+		} else {
+			kids = make([]SpanNode, len(e.kids))
+			for j, k := range e.kids {
+				kids[j] = built[k]
+				built[k] = SpanNode{}
+			}
+		}
+		built[i] = spanNode(shown[e.span], kids, logs, spans)
+		built[i].FlattenedDescendants = len(e.flat)
 	}
 	nodes := make([]SpanNode, len(roots))
-	for i, rec := range roots {
-		nodes[i] = build(rec)
+	for i := range roots {
+		nodes[i] = built[i]
 	}
-	return nodes, len(spans) - len(shown)
+	return nodes
+}
+
+// flattenSpans lists every descendant of span depth-first, each once.
+func flattenSpans(span int, sortedKids func(int) []int) []int {
+	flat := []int{}
+	seen := map[int]bool{span: true}
+	var stack []int
+	push := func(of int) {
+		kids := sortedKids(of)
+		for i := len(kids) - 1; i >= 0; i-- {
+			if !seen[kids[i]] {
+				seen[kids[i]] = true
+				stack = append(stack, kids[i])
+			}
+		}
+	}
+	push(span)
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		flat = append(flat, cur)
+		push(cur)
+	}
+	return flat
 }
 
 func shownParent(rec record.Record, byID map[string]record.Record, shownIDs map[string]bool) *string {

@@ -44,6 +44,10 @@ type SpanNode struct {
 	StatusMessage   *string    `json:"status_message"`
 	ErrorType       *string    `json:"error_type"` // error.type, error_type, or exception.type
 	Children        []SpanNode `json:"children"`
+	// FlattenedDescendants is set only on a node at MaxSpanDepth: its
+	// Children are then all of its descendants as leaves, depth-first, and
+	// this is how many there are. It is omitted for every other node.
+	FlattenedDescendants int `json:"flattened_descendants,omitempty"`
 }
 
 // LogLine is a collapsed log event.

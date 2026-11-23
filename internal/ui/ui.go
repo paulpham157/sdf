@@ -22,6 +22,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -29,6 +30,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,6 +74,9 @@ type Config struct {
 	Repo   string
 	GitHub bool
 	Budget string
+	// Log receives a line when a response cannot be encoded. Nil is
+	// os.Stderr.
+	Log io.Writer
 }
 
 // Server is the UI listener.
@@ -100,7 +106,12 @@ func Start(cfg Config) (*Server, error) {
 		_ = ln.Close()
 		return nil, err
 	}
+	logw := cfg.Log
+	if logw == nil {
+		logw = os.Stderr
+	}
 	h := &handler{
+		log:    logw,
 		store:  cfg.Store,
 		prices: cfg.Prices,
 		repo:   cfg.Repo,
@@ -178,6 +189,7 @@ func loopbackHost(host string) bool {
 }
 
 type handler struct {
+	log    io.Writer
 	store  *store.Store
 	prices string
 	repo   string
@@ -245,9 +257,7 @@ func (h *handler) summary(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if err := summary.WriteJSON(w, report); err != nil {
-		return
-	}
+	h.writeJSON(w, r, func(buf io.Writer) error { return summary.WriteJSON(buf, report) })
 }
 
 func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
@@ -266,10 +276,7 @@ func (h *handler) snapshot(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(snap)
+	h.writeJSON(w, r, func(buf io.Writer) error { return summary.EncodeJSON(buf, snap) })
 }
 
 func (h *handler) decisions(w http.ResponseWriter, r *http.Request) {
@@ -283,9 +290,7 @@ func (h *handler) decisions(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if err := decision.WriteJSON(w, graph); err != nil {
-		return
-	}
+	h.writeJSON(w, r, func(buf io.Writer) error { return decision.WriteJSON(buf, graph) })
 }
 
 func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
@@ -314,6 +319,22 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 	}
 	summary.ApplyBudget(&report, budget)
 	return report, cat, nil
+}
+
+// writeJSON runs encode into memory first, then sends the result. An encoding error is logged and answered with 500 and a
+// short JSON error, never 200 with an empty or partial body (issue #267).
+func (h *handler) writeJSON(w http.ResponseWriter, r *http.Request, encode func(io.Writer) error) {
+	var buf bytes.Buffer
+	if err := encode(&buf); err != nil {
+		fmt.Fprintf(h.log, "sdf ui: %s %s: encode response: %v\n", r.Method, r.URL.Path, err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		body, _ := json.Marshal(map[string]string{"error": "could not encode the response: " + err.Error()})
+		_, _ = w.Write(append(body, '\n'))
+		return
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = w.Write(buf.Bytes())
 }
 
 func writeText(w http.ResponseWriter, status int, msg string) {
