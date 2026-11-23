@@ -85,3 +85,41 @@ jobs:
           GITLEAKS_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITLEAKS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/gitleaks-scan.sh
+
+  # Same setup-go path as release.yml and sdf-verify: go-version-file
+  # go.mod, cache: false. sdf-verify is not called here; it builds the
+  # verifier, checks out the pull request, and fails unless a task
+  # verdict is PASS.
+  release-toolchain:
+    name: release toolchain (go.mod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          # release.yml uses go.mod at the repo root. sdf-verify resolves
+          # the same file via github.action_path.
+          go-version-file: go.mod
+          cache: false
+      - name: Confirm release toolchain
+        run: |
+          set -euo pipefail
+          expected="$(awk '/^toolchain[[:space:]]+go/{ print $2; exit }' go.mod)"
+          if [ -z "$expected" ]; then
+            echo "::error::go.mod has no toolchain line"
+            exit 1
+          fi
+          echo "expected from go.mod toolchain: ${expected}"
+          echo "go binary: $(command -v go)"
+          echo "PATH=${PATH}"
+          go version
+          echo "GOTOOLCHAIN=$(go env GOTOOLCHAIN)"
+          echo "GOVERSION=$(go env GOVERSION)"
+          echo "GOROOT=$(go env GOROOT)"
+          effective="$(go env GOVERSION)"
+          echo "effective Go version (same go binary goreleaser would find in PATH): ${effective}"
+          if [ "${effective}" != "${expected}" ]; then
+            echo "::error::effective Go is ${effective}, go.mod toolchain is ${expected}"
+            exit 1
+          fi

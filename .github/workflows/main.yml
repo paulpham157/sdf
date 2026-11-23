@@ -74,7 +74,10 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
-          go-version: stable
+          # Same go.mod toolchain as release.yml, so snapshot archives
+          # match release builds. cache: true is unchanged (#244 is not
+          # merged, so cache-dependency-path is not added here).
+          go-version-file: go.mod
           cache: true
       - name: Snapshot build
         # --snapshot never creates a GitHub release or uploads anything.
