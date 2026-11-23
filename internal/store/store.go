@@ -11,6 +11,9 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -73,14 +76,35 @@ type Store struct {
 	db   *sql.DB
 }
 
+// busyTimeoutMS is how long a connection waits for another connection's
+// lock (a concurrent sdf summary, a second receiver) before SQLITE_BUSY. It
+// matches the ledger's busy_timeout.
+const busyTimeoutMS = 5000
+
 // Open creates the file if needed and applies the schema and column migration.
+//
+// busy_timeout is set in the DSN, so it applies to every connection the pool
+// opens, before any statement runs. The file is then switched to WAL, as the
+// ledger does: in WAL a reader never blocks the writer and the writer never
+// blocks readers, so sdf summary can read while the receiver ingests. WAL
+// is a property of the file and persists, so it is set once after opening
+// (not as a DSN pragma, which can fail with SQLITE_BUSY while a connection
+// opens, before the busy timeout applies).
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	name, err := dsn(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeoutMS))
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", name)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{path: path, db: db}
+	if err := setWAL(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -90,6 +114,38 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// dsn is a file: URI for path with query. The path is made absolute so a
+// relative --db keeps meaning the same file.
+func dsn(path, query string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p, RawQuery: query}).String(), nil
+}
+
+// setWAL switches the file to WAL unless it already is.
+func setWAL(db *sql.DB) error {
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return err
+	}
+	if strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
+	}
+	return nil
 }
 
 // Path is the SQLite file path.
