@@ -1,6 +1,8 @@
 package cli_test
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -114,6 +116,7 @@ func TestDecisionListOnAnEmptyOrMissingStore(t *testing.T) {
 	empty := filepath.Join(dir, "empty.sqlite")
 	openStore(t, empty)
 	missing := filepath.Join(dir, "missing.sqlite")
+	const emptyJSON = "{\n  \"decisions\": [],\n  \"edges\": []\n}\n"
 
 	for name, dbPath := range map[string]string{"empty": empty, "missing": missing} {
 		out := run(t, "decision", "list", "--db", dbPath)
@@ -121,26 +124,89 @@ func TestDecisionListOnAnEmptyOrMissingStore(t *testing.T) {
 			t.Fatalf("%s: %d %q %q", name, out.code, out.stdout, out.stderr)
 		}
 		asJSON := run(t, "decision", "list", "--db="+dbPath, "--json")
-		if asJSON.code != 0 || asJSON.stderr != "" {
-			t.Fatalf("%s json: %d %q", name, asJSON.code, asJSON.stderr)
+		if asJSON.code != 0 || asJSON.stderr != "" || asJSON.stdout != emptyJSON {
+			t.Fatalf("%s json: %d %q %q", name, asJSON.code, asJSON.stdout, asJSON.stderr)
 		}
-		srv := serveStore(t, openStore(t, dbPath))
-		if api := httpGet(t, srv.URL()+"api/decisions"); asJSON.stdout != api {
-			t.Fatalf("%s json %q, api %q", name, asJSON.stdout, api)
-		}
-		if asJSON.stdout != "{\n  \"decisions\": [],\n  \"edges\": []\n}\n" {
-			t.Fatalf("%s json %q", name, asJSON.stdout)
-		}
+	}
+	// Like sdf summary (store.OpenReadOnly), a missing file reads as an empty
+	// store and is not created.
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("sdf decision list created the missing store: %v", err)
+	}
+	if out := run(t, "summary", "--db", missing); out.code != 0 {
+		t.Fatalf("summary on a missing store: %d %q", out.code, out.stderr)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("sdf summary created the missing store: %v", err)
+	}
+	// For an existing store, --json is still the API response.
+	srv := serveStore(t, openStore(t, empty))
+	if api := httpGet(t, srv.URL()+"api/decisions"); api != emptyJSON {
+		t.Fatalf("api %q", api)
 	}
 
-	// sdf summary opens (and so creates) a missing store; list does the same.
-	if _, err := os.Stat(missing); err != nil {
-		t.Fatalf("missing store not opened like sdf summary: %v", err)
+	// A missing directory fails the same way, with the same message, as
+	// sdf summary.
+	bad := filepath.Join(dir, "nope", "x.sqlite")
+	summary := run(t, "summary", "--db", bad)
+	list := run(t, "decision", "list", "--db", bad)
+	if summary.code != 1 || list.code != 1 || list.stdout != "" ||
+		strings.TrimPrefix(list.stderr, "sdf decision list: ") != strings.TrimPrefix(summary.stderr, "sdf summary: ") {
+		t.Fatalf("unopenable store: summary %d %q, list %d %q", summary.code, summary.stderr, list.code, list.stderr)
 	}
-	summary := run(t, "summary", "--db", filepath.Join(dir, "nope", "x.sqlite"))
-	list := run(t, "decision", "list", "--db", filepath.Join(dir, "nope", "x.sqlite"))
-	if summary.code != 1 || list.code != summary.code || list.stdout != "" || !strings.HasPrefix(list.stderr, "sdf decision list: ") {
-		t.Fatalf("unopenable store: summary %d, list %d %q %q", summary.code, list.code, list.stdout, list.stderr)
+}
+
+// TestDecisionListReadsWithoutWriting lists a store written before
+// decision_retractions existed. The read must not migrate it: the table is
+// still absent afterwards, and the file reads as having no retractions.
+func TestDecisionListReadsWithoutWriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.sqlite")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The decision tables as an sdf before #234 and #255 wrote them.
+	if _, err := raw.Exec(`
+		CREATE TABLE decisions (id TEXT PRIMARY KEY, statement TEXT NOT NULL, status TEXT NOT NULL, recorded_at TEXT NOT NULL, source TEXT);
+		CREATE TABLE decision_edges (id INTEGER PRIMARY KEY AUTOINCREMENT, relation TEXT NOT NULL, from_kind TEXT NOT NULL, from_ref TEXT NOT NULL, to_kind TEXT NOT NULL, to_ref TEXT NOT NULL, recorded_at TEXT NOT NULL);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`INSERT INTO decisions (id, statement, status, recorded_at) VALUES ('old', 'Old record', 'decision', '2026-01-01T00:00:00.000000+00:00')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Close()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := run(t, "decision", "list", "--db", path, "--json")
+	if out.code != 0 || out.stderr != "" {
+		t.Fatalf("%d %q", out.code, out.stderr)
+	}
+	doc := decisionsDoc(t, out.stdout)
+	if len(doc.Decisions) != 1 || doc.Decisions[0].ID != "old" {
+		t.Fatalf("%+v", doc)
+	}
+	if !strings.Contains(out.stdout, `"effective_status": "active"`) || strings.Contains(out.stdout, "retraction") {
+		t.Fatalf("%s", out.stdout)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("sdf decision list wrote the store")
+	}
+	check, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var n int
+	if err := check.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'decision_retractions'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("migrated on read: %d %v", n, err)
 	}
 }
 

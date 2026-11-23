@@ -714,7 +714,10 @@ const decisionListUsage = "usage: sdf decision list [--db PATH] [--json]"
 // cmdDecisionList prints every decision and edge. It reads through
 // decision.Load, the same path GET /api/decisions uses, and --json is that
 // response byte for byte. Like sdf summary, it opens the store with
-// store.Open, so a missing file is created empty and lists nothing.
+// store.OpenReadOnly and never writes: a missing file in an existing
+// directory lists nothing and is not created, a missing directory exits 1,
+// and an older file is read without being migrated (a file without
+// decision_retractions reads as having no retractions).
 func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
 	asJSON := false
@@ -740,7 +743,7 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	db, err := store.Open(dbPath)
+	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
 		return 1

@@ -206,11 +206,16 @@ leaves DEL and RTL characters raw in the JSON strings, exactly as
 `GET /api/decisions` does, so a reader that prints JSON values to a terminal
 has to escape them itself.
 `sdf decision list --json` prints exactly what `GET /api/decisions` returns,
-because both read the store through the same code. Like `sdf summary`, it opens
-`sdf-telemetry.sqlite` unless `--db` names another file, and opening a file
-that does not exist creates an empty store. With no records and no edges it
-prints `No decisions in the store.`, and `--json` prints empty lists. A path
-that cannot be opened, such as one in a missing directory, exits 1.
+because both read the store through the same code. Like `sdf summary`, it reads
+`sdf-telemetry.sqlite` unless `--db` names another file, and it opens the file
+read-only: it never writes, never migrates, and never creates a file. With no
+records and no edges it prints `No decisions in the store.`, and `--json`
+prints empty lists. A file that does not exist, in a directory that does, reads
+as such an empty store and is not created (exit 0). A missing directory exits
+1 with `sdf decision list: store: cannot open "PATH": directory "DIR" does not
+exist`, the same message `sdf summary` gives. A file written before a later
+column or table, such as one without `decision_retractions`, is read as is:
+the missing columns read as empty and the missing table as no retractions.
 
 ```bash
 sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
@@ -294,11 +299,14 @@ use-wal     decision  active                            -           2026-11-23T1
 decision_retractions`, in its own migration step, after the existing column
 migration. It only adds a table: no column or table changes, and running it
 again does nothing. A database written before this, including the Python
-receiver's, gains the empty table on its first open. An older sdf binary reads
+receiver's, gains the empty table on its first open by a command that writes
+(`sdf decision add`, `link`, `retract`, or the receiver). `sdf summary` and
+`sdf decision list` open read-only and do not add it. An older sdf binary reads
 a newer database as before. It does not know the table, so it shows a retracted
 decision by its stored status and edges, without the retraction. A file that
 cannot be written, such as a read-only copy, is opened without the table and
-reads as having no retractions. `retract` then fails on it.
+reads as having no retractions, as does any file `sdf decision list` reads
+before a writing command has added the table. `retract` then fails on it.
 
 ## Local budget
 
