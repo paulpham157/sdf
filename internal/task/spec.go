@@ -22,6 +22,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/paulpham157/sdf/internal/ledger"
 )
 
 // Schema is the value of Spec.Schema and the hash domain.
@@ -34,7 +36,7 @@ const (
 )
 
 var (
-	idPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	idPattern  = regexp.MustCompile(ledger.IDPattern)
 	shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 )
 
@@ -80,8 +82,6 @@ type Spec struct {
 // valid); Declare refuses an id that differs from an existing one by case
 // only. The first two rules are checked on their own too, so a looser
 // pattern later cannot let them through.
-//
-// TODO(#189): use ledger.ValidID once the ledger package is merged.
 func ValidID(id string) bool {
 	if !utf8.ValidString(id) {
 		return false

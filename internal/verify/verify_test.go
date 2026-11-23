@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/ledger/ledgertest"
 	"github.com/paulpham157/sdf/internal/task"
 )
 
@@ -51,7 +52,7 @@ func TestPassRecordsEvidenceAndVerdictInTheLedger(t *testing.T) {
 	if err != nil || string(b) != string(res.Verdict.Canonical) || e.Hash != res.Verdict.Hash {
 		t.Fatalf("ledger verdict %v", err)
 	}
-	if n := len(f.ledger.Entries()); n != 1+1+len(res.Evidence)+1 {
+	if n := ledgertest.Entries(t, f.ledger); n != 1+1+len(res.Evidence)+1 {
 		t.Fatalf("%d ledger entries", n)
 	}
 	// The temporary checkout is gone and was not in the repository.
@@ -362,7 +363,7 @@ func TestRecordIDsFitTheLedgerRule(t *testing.T) {
 	long := strings.Repeat("c", 128)
 	f := newFixture(t, task.CriterionInput{Name: long, Argv: []string{"sh", "tests/run.sh"}, Designated: []string{"tests/*.sh"}})
 	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
-	res := mustRun(t, f.opts(sha)) // the fake ledger refuses an invalid id
+	res := mustRun(t, f.opts(sha)) // the ledger refuses an invalid id
 	if res.Status != StatusPass {
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}

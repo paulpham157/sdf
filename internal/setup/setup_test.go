@@ -127,11 +127,11 @@ func TestOpenCodeWriteIsASnippet(t *testing.T) {
 	if err != nil || !res.Wrote {
 		t.Fatal(err, res.Text)
 	}
-	if !strings.Contains(res.Text, "does not load that file") || !strings.Contains(res.Text, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318") {
+	if !strings.Contains(res.Text, "does not load that file") || !strings.Contains(res.Text, "OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'") {
 		t.Fatal(res.Text)
 	}
 	body, err := os.ReadFile(filepath.Join(home, ".config", "sdf", "opencode.env"))
-	if err != nil || !strings.Contains(string(body), "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318\n") {
+	if err != nil || !strings.Contains(string(body), "export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'\n") {
 		t.Fatal(string(body), err)
 	}
 }
@@ -262,6 +262,75 @@ func TestProbeReportsHTTPAndLeavesGRPCClosed(t *testing.T) {
 	}
 	if !strings.Contains(got.GRPCStatus, "not reachable") {
 		t.Fatal(got.GRPCStatus)
+	}
+}
+
+func TestGrokWriteAppendsTelemetryAndLeavesAnExistingTable(t *testing.T) {
+	home := t.TempDir()
+	grokHome := filepath.Join(home, "grok")
+	path := filepath.Join(grokHome, "config.toml")
+	if err := os.MkdirAll(grokHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("model = \"keep\"\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(Request{Agent: "grok", Home: home, GrokHome: grokHome, Write: true, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || !res.Wrote {
+		t.Fatal(err, res.Text)
+	}
+	if !strings.Contains(res.Text, "GROK_EXTERNAL_OTEL=1") || !strings.Contains(res.Text, "http://127.0.0.1:4318") || !strings.Contains(res.Text, "backup ") {
+		t.Fatal(res.Text)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(body), "model = \"keep\"") || !strings.Contains(string(body), "otel_enabled = true") || !strings.Contains(string(body), "otel_endpoint = \"http://127.0.0.1:4318\"") {
+		t.Fatal(string(body), err)
+	}
+	backup, err := os.ReadFile(path + ".sdf-bak")
+	if err != nil || string(backup) != string(original) {
+		t.Fatalf("backup %s %v", backup, err)
+	}
+	hook, err := os.ReadFile(filepath.Join(grokHome, "hooks", "sdf-session.json"))
+	if err != nil || !strings.Contains(string(hook), "SessionStart") || !strings.Contains(string(hook), "SessionEnd") || !strings.Contains(string(hook), "GROK_SESSION_ID") || !strings.Contains(string(hook), "grok-cli") || !strings.Contains(string(hook), "/v1/sessions") {
+		t.Fatal(string(hook), err)
+	}
+	again, err := Run(Request{Agent: "grok", Home: home, GrokHome: grokHome, Write: true, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || again.Wrote || !strings.Contains(again.Text, "already has a [telemetry] table") || !strings.Contains(again.Text, "already has these values") {
+		t.Fatal(err, again.Wrote, again.Text)
+	}
+	held := []byte("[telemetry]\notel_enabled = false\n")
+	if err := os.WriteFile(path, held, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := Run(Request{Agent: "grok", Home: home, GrokHome: grokHome, Write: true, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || kept.Wrote || !strings.Contains(kept.Text, "already has a [telemetry] table") {
+		t.Fatal(err, kept.Wrote, kept.Text)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(held) {
+		t.Fatalf("existing table changed: %s", after)
+	}
+}
+
+func TestGrokConfiguredReadsEnvAndFile(t *testing.T) {
+	home := t.TempDir()
+	grokHome := filepath.Join(home, "grok")
+	if err := os.MkdirAll(grokHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GROK_EXTERNAL_OTEL", "1")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+	text, err := Configured(Request{Agent: "grok", Home: home, GrokHome: grokHome, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || !strings.Contains(text, "process env points at http://127.0.0.1:4318: true") || !strings.Contains(text, ": false") {
+		t.Fatal(err, text)
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "config.toml"), []byte("[telemetry]\notel_endpoint = \"http://127.0.0.1:4318\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text, err = Configured(Request{Agent: "grok", Home: home, GrokHome: grokHome, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || !strings.Contains(text, "pointing at http://127.0.0.1:4318: true") {
+		t.Fatal(err, text)
 	}
 }
 

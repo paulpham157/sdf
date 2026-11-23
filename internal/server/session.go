@@ -6,11 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
 // sessionEvent is what an agent hook posts to /v1/sessions. Tool is the agent
-// name the summary already classifies on (claude-code, codex, opencode, pi).
+// name the summary already classifies on (claude-code, codex, opencode, pi,
+// grok-cli).
 // Edge is open or close. Reason is whatever the agent said about why, and is
 // empty when the agent has nothing to say.
 type sessionEvent struct {
@@ -28,6 +30,14 @@ func (s *Server) handleSession(reader *bufio.Reader, writer *bufio.Writer, heade
 	body, err := readBody(reader, headers)
 	if err != nil {
 		return s.writeBodyError(writer, method, path, err, closeAfter)
+	}
+	// The hook posts application/json. text/plain is a CORS simple type, so a
+	// page could submit this JSON without a preflight if the type were ignored.
+	media, ok := otlp.HTTPMedia(headerGet(headers, "Content-Type"))
+	if !ok || media != "application/json" {
+		writeResponse(writer, 415, "text/plain", []byte("unsupported media type"), closeAfter)
+		s.logRequest(method, path, 415)
+		return closeAfter, nil
 	}
 	rec, err := sessionRecord(body, time.Now())
 	if err != nil {
@@ -58,9 +68,9 @@ func sessionRecord(body []byte, now time.Time) (record.Record, error) {
 	ev.Edge = strings.TrimSpace(ev.Edge)
 	ev.Reason = strings.TrimSpace(ev.Reason)
 	switch ev.Tool {
-	case "claude-code", "codex", "opencode", "pi":
+	case "claude-code", "codex", "opencode", "pi", "grok-cli":
 	default:
-		return record.Record{}, &bodyStatus{400, "session event tool must be claude-code, codex, opencode, or pi"}
+		return record.Record{}, &bodyStatus{400, "session event tool must be claude-code, codex, opencode, pi, or grok-cli"}
 	}
 	if ev.SessionID == "" {
 		return record.Record{}, &bodyStatus{400, "session event requires a session_id"}

@@ -10,6 +10,8 @@
   --green-soft: #e4f2eb;
   --amber: #8a4b08;
   --amber-soft: #f8ecd8;
+  --error: #8f2d1f;
+  --error-soft: #f8e4de;
   --shadow: 0 1px 0 rgba(29, 26, 21, 0.04);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -364,6 +366,55 @@ footer p { margin: 0; }
   background: var(--amber-soft);
   padding: 14px 16px;
 }
+
+
+.span-errors {
+  background: var(--error-soft);
+  border-color: #e4b6ad;
+  margin-top: 16px;
+}
+.span-errors p { margin: 0 0 6px; }
+.span-errors p:last-child { margin-bottom: 0; }
+.span-error-message, .span-status { color: var(--error); font-weight: 600; }
+
+.span-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.span-tree .span-tree {
+  margin: 4px 0 0 0.4rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--line);
+}
+.span-node {
+  margin: 0;
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.span-node.span-error {
+  background: var(--error-soft);
+  border: 1px solid #e4b6ad;
+  padding: 6px 8px;
+  margin: 4px 0;
+}
+.span-name {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.span-duration { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+.span-line { display: inline; }
+.span-tree details > summary {
+  cursor: pointer;
+}
+.span-tree details > summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.span-more { margin-top: 4px; }
+.span-more summary { color: var(--green); }
 
 @media (max-width: 800px) {
   .hero, .cards, .stats { grid-template-columns: 1fr; }
