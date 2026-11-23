@@ -33,8 +33,8 @@
   end, and only when `PI_OTEL_LOGS=1`. The summary keeps those two events
   and names that limit. Metrics stay unattributed when they do not fall
   inside exactly one Pi session.
-- Retried delta exports can be double-counted. Cumulative series add up
-  the latest point of each process run (see
+- Retried delta exports can be double-counted. Cumulative series use the
+  latest point of each process run and add the runs up (see
   [docs/summary.md](summary.md)). That is still wrong in these cases:
   - Two processes exporting the same series at once with the same start
     time are read as one run, so the total is whichever reported last
