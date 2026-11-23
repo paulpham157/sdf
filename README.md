@@ -76,7 +76,7 @@ needs no API key or network connection.
 | `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
 | `sdf init` | Print or write the settings that point an agent at the receiver |
 | `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, retract, or check decisions (`add`, `link`, `list`, `retract`, `check`). `check` exits 1 when an in-force decision forbids `push`, `merge`, `release`, `deploy`, or an architecture change. Links include `supersedes`, `refines`, `blocks`, and `conflicts_with`, and `list` shows blocked and conflicted records |
+| `sdf decision` | Record, link, list, retract, brief, or check decisions (`add`, `link`, `list`, `retract`, `brief`, `check`). `check` exits 1 when an in-force decision forbids `push`, `merge`, `release`, `deploy`, or an architecture change. Links include `supersedes`, `refines`, `blocks`, and `conflicts_with`, and `list` shows blocked and conflicted records |
 | `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
 | `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
 | `sdf verify` | Run a declared task's checks against a commit |

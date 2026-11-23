@@ -96,14 +96,11 @@ type Hit struct {
 //     change, and an architecture forbid does not forbid a named action.
 //   - The tag is reported in preference to a phrase when both match.
 //     Matching is case-insensitive. The id, the reason, and the source are
-//     not read. Edges are not read; supersede and retract matter only
-//     because Query.Active has already dropped those records.
-func CheckAction(q Query, action string) (Verdict, error) {
+//     not read. Edges are not read. The caller passes only settled decisions
+//     that are still in force; a hypothesis, a retraction, or a superseded
+//     record in recs is still matched, so the caller has to filter first.
+func CheckAction(recs []Record, action string) (Verdict, error) {
 	kind, canonical, err := classifyAction(action)
-	if err != nil {
-		return Verdict{}, err
-	}
-	recs, err := q.Active()
 	if err != nil {
 		return Verdict{}, err
 	}

@@ -503,9 +503,12 @@ is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
 or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
 exit code is still 1 when it is forbidden.
 
-The rows are the query's order, which for this command is insertion order.
-The read goes through one function, `decision.Query.Active`, so a later
-decision query can replace that read without a second copy of the match.
+The rows are in insertion order. The command opens the store with the same
+read-only path as `sdf decision brief` and keeps every record whose
+`status` is `decision` and whose `effective_status` is `active`. That is
+the set `decision.Active` will return. `sdf decision brief` ranks a narrower
+set (a user decision, or the source of a `constrains` edge), so a brief is
+not the forbid list.
 
 ## Local budget
 

@@ -903,13 +903,24 @@ func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, decisionCheckUsage)
 		return 2
 	}
-	db, err := store.OpenReadOnly(dbPath)
+	// Same default path as the other decision commands, and the same read
+	// path as sdf decision brief: OpenReadOnlyBusy plus LoadContext. A
+	// negative busy timeout is the store's usual read timeout. brief uses a
+	// shorter one because a session hook has a tight budget; this command
+	// does not. A missing file in an existing directory is an empty store
+	// and is not created.
+	db, err := store.OpenReadOnlyBusy(dbPath, -1)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
 		return 3
 	}
-	verdict, err := decision.CheckAction(decision.NewQuery(db), action)
+	graph, err := decision.LoadContext(context.Background(), db)
 	_ = db.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	verdict, err := decision.CheckAction(activeForCheck(graph), action)
 	if errors.Is(err, decision.ErrEmptyAction) {
 		fmt.Fprintln(stderr, decisionCheckUsage)
 		return 2
@@ -930,6 +941,27 @@ func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// activeForCheck is the set sdf decision check matches: every settled
+// decision that is still in force, in insertion order, whether the user or
+// the agent decided it. Blocked and conflicted records stay. Hypotheses,
+// retracted records, and superseded records do not.
+//
+// brief.Classify is a different set. It keeps a decision only when the user
+// decided it or it is the source of a constrains edge, so an agent's
+// "Do not push" with no constrains edge would disappear.
+//
+// Replace the body with `return decision.Active(g)` when that function is
+// exported. It returns this same set.
+func activeForCheck(g decision.Graph) []decision.Record {
+	out := make([]decision.Record, 0)
+	for _, d := range g.Decisions {
+		if d.EffectiveStatus == decision.EffectiveActive && d.Status == decision.StatusDecision {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func parseEndpoint(v string) (decision.Endpoint, error) {

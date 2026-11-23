@@ -10,15 +10,6 @@ import (
 	"github.com/paulpham157/sdf/internal/decision"
 )
 
-type staticQuery struct {
-	recs []decision.Record
-	err  error
-}
-
-func (q staticQuery) Active() ([]decision.Record, error) {
-	return q.recs, q.err
-}
-
 func rec(id, by, statement string) decision.Record {
 	return decision.Record{ID: id, DecidedBy: by, Statement: statement}
 }
@@ -69,7 +60,7 @@ func TestCheckActionMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := decision.CheckAction(staticQuery{recs: tt.recs}, tt.action)
+			got, err := decision.CheckAction(tt.recs, tt.action)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +86,7 @@ func TestCheckActionListsEveryBlockerInOrder(t *testing.T) {
 		rec("user-push", "user", "forbid:push"),
 		rec("agent-push", "agent", "Do not push the branch."),
 	}
-	got, err := decision.CheckAction(staticQuery{recs: recs}, "push")
+	got, err := decision.CheckAction(recs, "push")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,20 +101,16 @@ func TestCheckActionListsEveryBlockerInOrder(t *testing.T) {
 	}
 }
 
-func TestCheckActionEmptyAndQueryError(t *testing.T) {
-	if _, err := decision.CheckAction(staticQuery{}, "  "); !errors.Is(err, decision.ErrEmptyAction) {
-		t.Fatalf("%v", err)
-	}
-	boom := errors.New("read failed")
-	if _, err := decision.CheckAction(staticQuery{err: boom}, "push"); !errors.Is(err, boom) {
+func TestCheckActionEmpty(t *testing.T) {
+	if _, err := decision.CheckAction(nil, "  "); !errors.Is(err, decision.ErrEmptyAction) {
 		t.Fatalf("%v", err)
 	}
 }
 
 func TestWriteCheckTextAndJSON(t *testing.T) {
-	v, err := decision.CheckAction(staticQuery{recs: []decision.Record{
+	v, err := decision.CheckAction([]decision.Record{
 		{ID: "dont-push", DecidedBy: "", Statement: "Do not push\tnow."},
-	}}, "push")
+	}, "push")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +142,7 @@ func TestWriteCheckTextAndJSON(t *testing.T) {
 		t.Fatalf("%s", js.String())
 	}
 
-	ok, err := decision.CheckAction(staticQuery{}, "merge")
+	ok, err := decision.CheckAction(nil, "merge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +160,7 @@ func TestWriteCheckTextAndJSON(t *testing.T) {
 	if !strings.Contains(empty.String(), `"blocking": []`) || !strings.Contains(empty.String(), `"allowed": true`) {
 		t.Fatalf("%s", empty.String())
 	}
-	arch, err := decision.CheckAction(staticQuery{}, "replace sqlite")
+	arch, err := decision.CheckAction(nil, "replace sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,73 +170,5 @@ func TestWriteCheckTextAndJSON(t *testing.T) {
 	}
 	if archText.String() != "allowed: replace sqlite (architecture)\n" {
 		t.Fatalf("%q", archText.String())
-	}
-}
-
-func TestQueryKeepsOnlyInForceDecisions(t *testing.T) {
-	db := openDB(t)
-	add := func(id, statement, status, by string) {
-		t.Helper()
-		if _, err := decision.Add(db, decision.RecordInput{
-			ID: id, Statement: statement, Status: status, DecidedBy: by,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	link := func(rel, from, to string) {
-		t.Helper()
-		if _, err := decision.Link(db, decision.EdgeInput{
-			Relation: rel,
-			From:     decision.Endpoint{Kind: decision.KindDecision, Ref: from},
-			To:       decision.Endpoint{Kind: decision.KindDecision, Ref: to},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	add("dont-push", "Do not push.", decision.StatusDecision, decision.DecidedByUser)
-	add("maybe", "Do not push either.", decision.StatusHypothesis, decision.DecidedByAgent)
-	add("old-merge", "Do not merge.", decision.StatusDecision, decision.DecidedByUser)
-	add("new-merge", "Merging is allowed.", decision.StatusDecision, decision.DecidedByUser)
-	link(decision.RelSupersedes, "new-merge", "old-merge")
-	add("no-release", "Do not release.", decision.StatusDecision, decision.DecidedByAgent)
-	if _, err := decision.Retract(db, decision.RetractInput{ID: "no-release", RetractedBy: decision.DecidedByUser}); err != nil {
-		t.Fatal(err)
-	}
-	add("wait", "Waiting on review.", decision.StatusHypothesis, decision.DecidedByUser)
-	add("no-deploy", "Do not deploy.", decision.StatusDecision, decision.DecidedByAgent)
-	link(decision.RelBlocks, "wait", "no-deploy")
-
-	q := decision.NewQuery(db)
-	active, err := q.Active()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ids []string
-	for _, d := range active {
-		ids = append(ids, d.ID)
-	}
-	if strings.Join(ids, ",") != "dont-push,new-merge,no-deploy" {
-		t.Fatalf("active %v", ids)
-	}
-
-	push, err := decision.CheckAction(q, "push")
-	if err != nil || push.Allowed || len(push.Blocking) != 1 || push.Blocking[0].ID != "dont-push" || push.Blocking[0].DecidedBy != "user" {
-		t.Fatalf("%+v %v", push, err)
-	}
-	merge, err := decision.CheckAction(q, "merge")
-	if err != nil || !merge.Allowed {
-		t.Fatalf("superseded merge still blocks: %+v %v", merge, err)
-	}
-	release, err := decision.CheckAction(q, "release")
-	if err != nil || !release.Allowed {
-		t.Fatalf("retracted release still blocks: %+v %v", release, err)
-	}
-	deploy, err := decision.CheckAction(q, "deploy")
-	if err != nil || deploy.Allowed || deploy.Blocking[0].ID != "no-deploy" || deploy.Blocking[0].DecidedBy != "agent" {
-		t.Fatalf("blocked deploy: %+v %v", deploy, err)
-	}
-	again, err := q.Active()
-	if err != nil || len(again) != len(active) {
-		t.Fatal("query wrote or dropped a record")
 	}
 }

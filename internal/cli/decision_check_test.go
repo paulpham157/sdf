@@ -69,6 +69,57 @@ func TestDecisionCheckForbidsFromTheStatement(t *testing.T) {
 	}
 }
 
+func TestDecisionCheckKeepsAgentForbidsAndDropsOutOfForce(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	add := func(id, statement, status, by string) {
+		t.Helper()
+		out := run(t, "decision", "add", "--db", dbPath,
+			"--id", id, "--statement", statement, "--status", status, "--decided-by", by)
+		if out.code != 0 || out.stdout != "" || out.stderr != "" {
+			t.Fatalf("%s: %d %q %q", id, out.code, out.stdout, out.stderr)
+		}
+	}
+	link := func(rel, from, to string) {
+		t.Helper()
+		out := run(t, "decision", "link", "--db", dbPath, "--relation", rel, "--from", "decision:"+from, "--to", "decision:"+to)
+		if out.code != 0 || out.stdout != "" || out.stderr != "" {
+			t.Fatalf("%s: %d %q %q", rel, out.code, out.stdout, out.stderr)
+		}
+	}
+	add("dont-push", "Do not push.", "decision", "user")
+	add("maybe", "Do not push either.", "hypothesis", "agent")
+	add("old-merge", "Do not merge.", "decision", "user")
+	add("new-merge", "Merging is allowed.", "decision", "user")
+	link("supersedes", "new-merge", "old-merge")
+	// An agent decision with no constrains edge. brief.Classify would drop it.
+	add("agent-merge", "Do not merge the branch.", "decision", "agent")
+	add("no-release", "Do not release.", "decision", "agent")
+	retract := run(t, "decision", "retract", "--db", dbPath, "--id", "no-release", "--retracted-by", "user")
+	if retract.code != 0 || retract.stderr != "" {
+		t.Fatalf("retract: %d %q", retract.code, retract.stderr)
+	}
+	add("wait", "Waiting on review.", "hypothesis", "user")
+	add("no-deploy", "Do not deploy.", "decision", "agent")
+	link("blocks", "wait", "no-deploy")
+
+	push := run(t, "decision", "check", "--db", dbPath, "push")
+	if push.code != 1 || !strings.Contains(push.stdout, "dont-push\tuser\t") || strings.Contains(push.stdout, "maybe") {
+		t.Fatalf("push %d %q %q", push.code, push.stdout, push.stderr)
+	}
+	merge := run(t, "decision", "check", "--db", dbPath, "merge")
+	if merge.code != 1 || !strings.Contains(merge.stdout, "agent-merge\tagent\t") || strings.Contains(merge.stdout, "old-merge") {
+		t.Fatalf("merge %d %q %q", merge.code, merge.stdout, merge.stderr)
+	}
+	release := run(t, "decision", "check", "--db", dbPath, "release")
+	if release.code != 0 || release.stdout != "allowed: release\n" {
+		t.Fatalf("release %d %q %q", release.code, release.stdout, release.stderr)
+	}
+	deploy := run(t, "decision", "check", "--db", dbPath, "deploy")
+	if deploy.code != 1 || !strings.Contains(deploy.stdout, "no-deploy\tagent\t") {
+		t.Fatalf("deploy %d %q %q", deploy.code, deploy.stdout, deploy.stderr)
+	}
+}
+
 func TestDecisionCheckMissingStoreIsAllowedAndUncreated(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
 	out := run(t, "decision", "check", "--db", dbPath, "deploy")
