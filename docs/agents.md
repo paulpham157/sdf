@@ -313,9 +313,10 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics"
 ```
 
 `sdf init --write` does not add the header or the Codex `headers` field.
-Session hooks and `sdf init --git-hooks` post without `Authorization`, so
-they fail if the receiver requires a token until you add the header there
-too. See [docs/receiver.md](receiver.md#optional-token-authentication).
+The session hooks and the `sdf init --git-hooks` hooks send the token
+themselves when `SDF_OTLP_TOKEN` or `SDF_OTLP_TOKEN_FILE` is set where the
+agent (or `git`) runs; they read it at run time and never store it. See
+[docs/receiver.md](receiver.md#hooks-and-the-token).
 
 ## Point Claude Code at it
 

@@ -156,7 +156,9 @@ override the `sdf serve` defaults. `--no-ui` leaves the OTLP ports only.
 `--otlp-token` or `--otlp-token-file` (or `SDF_OTLP_TOKEN` /
 `SDF_OTLP_TOKEN_FILE`) turns on the optional bearer token; see
 [docs/receiver.md](docs/receiver.md) and [docs/agents.md](docs/agents.md)
-for how to send it from an agent. `--prices`, `--repo`, `--github`, and
+for how to send it from an agent. The session hooks and git hooks send it
+when `SDF_OTLP_TOKEN` or `SDF_OTLP_TOKEN_FILE` is set where they run; it is
+never written into a hook file. `--prices`, `--repo`, `--github`, and
 `--budget` match `sdf summary` and apply to the page. Every command prints
 its flags with `--help`.
 

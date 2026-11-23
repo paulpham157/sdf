@@ -62,6 +62,7 @@ func InstallGitHooks(dir string, ep Endpoint) (Result, error) {
 	}
 	fmt.Fprintf(&b, "Events go to %s and nowhere else. The body is the commit SHA, checkout path, branch, and agent session id. The diff and the commit message are not sent.\n", url)
 	fmt.Fprintf(&b, "A commit still succeeds when that receiver is down. prepare-commit-msg adds an SDF-Session trailer only when a session id is present.\n")
+	b.WriteString("If sdf serve requires a token, the hooks send it when SDF_OTLP_TOKEN or SDF_OTLP_TOKEN_FILE is set where git runs; the token is not written to the hooks.\n")
 	if hint := idleToolHint(top, configPath); hint != "" {
 		b.WriteString(hint)
 	}
