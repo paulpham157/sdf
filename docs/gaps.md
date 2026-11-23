@@ -86,7 +86,11 @@
   below it (issue #222). Its `response.completed` logs, when they add up to
   exactly the metric totals, are priced per call instead; when they do not,
   it stays unknown,
-  a missing component price is unknown, and per-request or web-search fees
+  a missing component price is unknown (except that cache reads on an
+  OpenRouter `:free` row whose prompt and completion are 0 are priced at 0,
+  issue #243; a paid row such as `mistralai/mistral-nemo` with no
+  `input_cache_read` stays unknown when cache reads are reported), and
+  per-request or web-search fees
   are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its
   token sources yet, so both cost fields are unknown for a Gemini CLI session.
