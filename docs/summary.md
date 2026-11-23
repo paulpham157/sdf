@@ -78,8 +78,10 @@ The UI session page draws that same span tree with a render depth cap of
 limit 32).` and does not draw deeper children. A `status=ERROR` span
 deeper than the cap still appears in the session error banner, because
 the banner is collected from the full tree. `GET /api/summary` and
-`GET /api/snapshot` currently serve the full tree; trees deep enough to
-break that response are tracked in issue #267.
+`GET /api/snapshot` serve the tree nested to the same depth of 32; deeper
+spans are listed flat under the span at that depth, counted by
+`flattened_descendants` (see [Deep span trees](#deep-span-trees),
+issue #267).
 
 ## Precedence
 
@@ -237,6 +239,25 @@ after it is 1500, not 500.
 The limits are in [docs/gaps.md](gaps.md). A Codex model id that contains `:` leaves the
 turn metrics missing; the summary quotes the exporter error and uses the log
 and span fallbacks above.
+
+## Deep span trees
+
+The span tree nests at most 32 levels below a root (`MaxSpanDepth`, the
+same limit the UI draws to). A span at depth 32 that has descendants keeps
+all of them as leaf children, listed once each in depth-first span order,
+and `--json` gives it `flattened_descendants` with their count. The key is
+absent on every other span, so a tree within the limit is unchanged. The
+text tree prints `(N deeper spans listed flat below; depth limit 32)` under
+that span. No span is dropped: every `status=ERROR` span and every tool
+call is still there. Without the limit each level added two JSON nesting
+levels, so past about 4997 levels the JSON encoder stopped (issue #267) and
+the indented output grew with depth squared. A cycle formed by two stored
+spans sharing a span id is cut where a span would repeat on its own path.
+
+The tree is built and printed without recursion. The UI writes each JSON
+response into memory first. An encoding error is logged to stderr and
+answered with `500` and `{"error": "..."}`, never `200` with an empty or
+partial body.
 
 ## Computed cost
 

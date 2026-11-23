@@ -176,3 +176,11 @@
   signed-in Grok with telemetry not disabled, still send `x-userid` and
   `x-teamid` headers, and put `user.id` / `team.id` on the resource, which
   sdf stores. Sources are in [docs/agents.md](agents.md#grok-cli).
+- A span tree deeper than 32 levels below a root is flattened from that
+  depth on: deeper spans are leaves of the span at depth 32, in depth-first
+  order, so their own parent links below that point are not shown as
+  nesting (`flattened_descendants` counts them; see
+  [docs/summary.md](summary.md#deep-span-trees)). The response stays linear
+  in span count but is still large for a very deep session: about 16 MB of
+  indented JSON for a 5500-level chain. A large report is encoded in memory
+  before it is sent.

@@ -322,7 +322,8 @@ again. `GET /api/summary` on the UI port is the same document as
 `GET /api/snapshot` is that report newest-first, plus the per-agent totals.
 `GET /api/decisions` reads the decision records. It is empty when none have
 been recorded, and recording one does not change the summary. All three are
-read-only. There is no route that writes or deletes.
+read-only. There is no route that writes or deletes. A response that cannot
+be encoded is `500` with a JSON error, not an empty `200` (issue #267).
 
 A known `0` is a published price of zero, such as a `:free` model whose
 token buckets are all priced. It is not a stand-in for a missing price,
