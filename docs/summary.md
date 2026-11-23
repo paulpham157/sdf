@@ -102,9 +102,12 @@ after it is 1500, not 500.
   a resource that gains an attribute mid-run (`process.pid`) does not split
   it.
 - A point without a start time joins the run with the latest start time at
-  or before its timestamp. If there is none, points are grouped by resource
-  and ordered by time, and a value lower than the one before starts a new
-  run.
+  or before its timestamp among the runs reported by the same resource. A
+  point from another resource never joins a run it did not report, so a
+  resumed process without a start time is its own run (1000, then 500 from
+  the new process, is 1500). If there is no such run, points are grouped by
+  resource and ordered by time, and a value lower than the one before starts
+  a new run.
 - Points of one group with the same timestamp are one point: the one stored
   last wins (1000 then 900 at the same time is 900, not 1900).
 

@@ -106,10 +106,10 @@ func TestCumulativeResourceChangeWithinOneStartTimeIsOneRun(t *testing.T) {
 
 func TestCumulativeMixedStartAndNoStartPoints(t *testing.T) {
 	// Only some points carry a start time. A point without one joins the run
-	// whose start is the latest at or before its time.
+	// of the same resource whose start is the latest at or before its time.
 	got := cumulativeTokens(t, "input",
 		cum{value: 1000, start: 1, when: 10, order: 1},
-		cum{value: 1500, when: 20, order: 2, instance: "other"},
+		cum{value: 1500, when: 20, order: 2},
 	)
 	if got != 1500 {
 		t.Fatalf("got %v, want 1500", got)
@@ -168,8 +168,54 @@ func TestCumulativeSameTimeIsOnePoint(t *testing.T) {
 	}
 }
 
+// E1: process A reports a start time, process B (another resource) does not.
+// B's point is not A's run: 300 + 200 = 500. Before, B's later point replaced
+// A's run value and the total was 200.
+func TestCumulativeE1StartlessPointOfAnotherResourceIsItsOwnRun(t *testing.T) {
+	got := cumulativeTokens(t, "input",
+		cum{value: 300, start: 1, when: 10, order: 1, instance: "a"},
+		cum{value: 200, when: 20, order: 2, instance: "b"},
+	)
+	if got != 500 {
+		t.Fatalf("got %v, want 500", got)
+	}
+}
+
+// E7: a resume where run 2 has no start time. Run 1 (resource a, start 1)
+// ends at 1000; run 2 is a new process (resource b) without a start time
+// that reaches 500. 1000 + 500 = 1500; before, run 2 joined run 1 and the
+// total was 500.
+func TestCumulativeE7ResumeWithoutStartTimeIsANewRun(t *testing.T) {
+	got := cumulativeTokens(t, "input",
+		cum{value: 600, start: 1, when: 10, order: 1, instance: "a"},
+		cum{value: 1000, start: 1, when: 20, order: 2, instance: "a"},
+		cum{value: 200, when: 40, order: 3, instance: "b"},
+		cum{value: 500, when: 50, order: 4, instance: "b"},
+	)
+	if got != 1500 {
+		t.Fatalf("got %v, want 1500", got)
+	}
+}
+
+// E3b: two concurrent processes interleave; a has a start time, b does not.
+// Each ends at 650, so 650 + 650 = 1300; before, b's points joined a's run
+// and the total was 650.
+func TestCumulativeE3bConcurrentStartAndStartlessProcesses(t *testing.T) {
+	got := cumulativeTokens(t, "input",
+		cum{value: 100, start: 1, when: 10, order: 1, instance: "a"},
+		cum{value: 300, when: 15, order: 2, instance: "b"},
+		cum{value: 650, start: 1, when: 20, order: 3, instance: "a"},
+		cum{value: 650, when: 25, order: 4, instance: "b"},
+	)
+	if got != 1300 {
+		t.Fatalf("got %v, want 1300", got)
+	}
+}
+
+// TestCumulativeKnownLimits pins each bullet under "Retried delta exports"
+// in docs/gaps.md, so a change in behavior shows up here and in the docs.
 func TestCumulativeKnownLimits(t *testing.T) {
-	// Without a start time, a restart whose first value is not lower than
+	// Bullet 3: without a start time, a restart whose first value is not lower than
 	// the last is not seen: 100 then a new run at 150 reads as 150.
 	if got := cumulativeTokens(t, "input",
 		cum{value: 100, when: 10, order: 1},
@@ -177,13 +223,34 @@ func TestCumulativeKnownLimits(t *testing.T) {
 	); got != 150 {
 		t.Fatalf("got %v, want 150 (documented undercount)", got)
 	}
-	// Two concurrent processes with the same start time (Gemini has no
-	// process.pid) read as one run, so the lower one is lost.
+	// Bullet 1: two concurrent processes with the same start time are one
+	// run even with different resources, so the total is whichever reported
+	// last (50), not 150.
 	if got := cumulativeTokens(t, "input",
-		cum{value: 100, start: 1, when: 10, order: 1},
-		cum{value: 50, start: 1, when: 11, order: 2},
+		cum{value: 100, start: 1, when: 10, order: 1, instance: "a"},
+		cum{value: 50, start: 1, when: 11, order: 2, instance: "b"},
 	); got != 50 {
 		t.Fatalf("got %v, want 50 (documented limit)", got)
+	}
+	// Bullet 2: without a start time, two processes with the same resource
+	// interleave and their drops read as resets: 100, 10, 200, 20 is read
+	// as 100 + 200 + 20 = 320, not 200 + 20 = 220.
+	if got := cumulativeTokens(t, "input",
+		cum{value: 100, when: 10, order: 1},
+		cum{value: 10, when: 11, order: 2},
+		cum{value: 200, when: 20, order: 3},
+		cum{value: 20, when: 21, order: 4},
+	); got != 320 {
+		t.Fatalf("got %v, want 320 (documented overcount)", got)
+	}
+	// Bullet 3 is the 100-then-150 case above.
+	// Bullet 4: a cumulative UpDownCounter without a start time that goes
+	// down (5, 3) reads as a reset: 8, not 3.
+	if got := cumulativeTokens(t, "input",
+		cum{value: 5, when: 10, order: 1},
+		cum{value: 3, when: 20, order: 2},
+	); got != 8 {
+		t.Fatalf("got %v, want 8 (documented limit)", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package summary
 import (
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1621,19 +1622,24 @@ func later(a, b point) bool {
 // example process.pid) does not split the run.
 //
 // A point without a start time (start 0) joins the run with the latest start
-// time at or before its own time, if there is one. Otherwise it is grouped by
-// resource, ordered by time, and a value lower than the previous one starts a
+// time at or before its own time among the runs its own resource reported, if
+// there is one. A startless point from another resource is another process (a
+// resume whose exporter sends no start time, for example), so it never joins
+// a run it did not report. Otherwise it is grouped by resource, ordered by
+// time, and a value lower than the previous one starts a
 // new segment; that is the only way to see a reset from an exporter that
 // sends no start time. Points of one group with the same time are one point:
 // the one stored last wins.
 //
-// Known limits: two concurrent processes with the same start time (and no
-// start time with the same resource) are read as one run or as resets; a
-// restart without a start time whose first value is not lower than the last
-// one is not seen, which undercounts.
+// Known limits (docs/gaps.md): two concurrent processes with the same start
+// time (or no start time and the same resource) are read as one run or as
+// resets; a restart without a start time whose first value is not lower than
+// the last one is not seen, which undercounts.
 func cumulativeTotal(group []point) float64 {
 	var starts []int64
 	byStart := map[int64]point{}
+	// startsOf lists, per resource, the start times its points carry.
+	startsOf := map[string][]int64{}
 	for _, p := range group {
 		if p.start == 0 {
 			continue
@@ -1645,19 +1651,25 @@ func cumulativeTotal(group []point) float64 {
 		if !ok || later(p, best) {
 			byStart[p.start] = p
 		}
+		if !slices.Contains(startsOf[p.resource], p.start) {
+			startsOf[p.resource] = append(startsOf[p.resource], p.start)
+		}
 	}
-	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+	for _, list := range startsOf {
+		slices.Sort(list)
+	}
 	var resources []string
 	loose := map[string][]point{}
 	for _, p := range group {
 		if p.start != 0 {
 			continue
 		}
-		i := sort.Search(len(starts), func(i int) bool { return starts[i] > p.time }) - 1
+		own := startsOf[p.resource]
+		i := sort.Search(len(own), func(i int) bool { return own[i] > p.time }) - 1
 		if i >= 0 {
-			if best := byStart[starts[i]]; later(p, best) {
-				p.start = starts[i]
-				byStart[starts[i]] = p
+			if best := byStart[own[i]]; later(p, best) {
+				p.start = own[i]
+				byStart[own[i]] = p
 			}
 			continue
 		}

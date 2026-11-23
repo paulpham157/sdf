@@ -38,8 +38,8 @@
   [docs/summary.md](summary.md)). That is still wrong in these cases:
   - Two processes exporting the same series at once with the same start
     time are read as one run, so the total is whichever reported last
-    instead of the sum. Gemini CLI sets no `process.pid`, so its resource
-    cannot tell two such processes apart either.
+    instead of the sum. The resource does not separate them, because runs
+    with a start time are keyed by start time alone.
   - Without a start time, two processes with the same resource interleave
     and their drops read as resets, which over-counts.
   - Without a start time, a new run whose first value is not lower than the
