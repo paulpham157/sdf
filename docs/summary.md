@@ -345,9 +345,11 @@ each have only prompt `"0"` and completion `"0"`. A session on one of them
 with input and output only computes `$0`. A session that also reports
 cache-read tokens stays `unknown` with
 `catalog has no input_cache_read price for model <id>`. The router's actual
-model and the preview rows' cache billing are not in the catalog. The other
-`openrouter/*` router rows (`openrouter/auto`, `openrouter/fusion`, and
-others) have prompt and completion `-1`, so they are never priced.
+model and the preview rows' cache billing are not in the catalog. Router rows
+with prompt and completion `-1` are never priced: the OpenRouter routers
+`openrouter/auto`, `openrouter/auto-beta`, `openrouter/auto-code`,
+`openrouter/bodybuilder`, `openrouter/fusion`, and `openrouter/pareto-code`,
+and the non-OpenRouter routers `nvidia/switchyard` and `typesafe/jev-router`.
 
 A paid row with no `input_cache_read` stays `unknown` when the session has
 cache-read tokens. `mistralai/mistral-nemo` is one example. Its row lists
