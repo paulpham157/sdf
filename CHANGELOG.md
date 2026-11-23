@@ -82,7 +82,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Keep the first copy of a re-sent Copilot span and use unambiguous dedup keys ([#257](https://github.com/paulpham157/sdf/pull/257)).
 - List a tool call from a re-sent export once ([#259](https://github.com/paulpham157/sdf/pull/259), fixes [#258](https://github.com/paulpham157/sdf/issues/258)).
 - Count a re-sent Qwen Code log or span once ([#262](https://github.com/paulpham157/sdf/pull/262), fixes [#261](https://github.com/paulpham157/sdf/issues/261)).
-- Quote unrecognized CLI arguments and flags that contain control characters, so a typo cannot write a terminal escape to stderr (idea from [#229](https://github.com/paulpham157/sdf/pull/229)) (#TBD).
+- Quote unrecognized CLI arguments and flags that contain control characters, so a typo cannot write a terminal escape to stderr (idea from [#229](https://github.com/paulpham157/sdf/pull/229)) ([#299](https://github.com/paulpham157/sdf/pull/299)).
 
 ### Security
 
