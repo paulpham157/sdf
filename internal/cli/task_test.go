@@ -217,3 +217,29 @@ func TestTaskDeclareUsageErrors(t *testing.T) {
 		t.Errorf("show missing: %d", r.code)
 	}
 }
+
+// A --base that starts with "-" would reach git rev-parse looking like an
+// option. Build refuses it before git runs (#190); this pins that down for
+// the flag forms and the JSON input.
+func TestTaskDeclareRejectsOptionLikeBase(t *testing.T) {
+	repo := taskRepo(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("SDF_LEDGER", "")
+	file := filepath.Join(t.TempDir(), "task.json")
+	if err := os.WriteFile(file, []byte(`{"id":"b","title":"t","base":"--all","criteria":[{"name":"a","argv":["true"]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"task", "declare", "--repo", repo, "--id", "b", "--title", "t", "--check", "a=true", "--base", "--output=/tmp/x"},
+		{"task", "declare", "--repo", repo, "--id", "b", "--title", "t", "--check", "a=true", "--base=-q"},
+		{"task", "declare", "--repo", repo, "--file", file},
+	} {
+		r := run(t, args...)
+		if r.code != 1 || r.stdout != "" || !strings.Contains(r.stderr, "is not a revision") {
+			t.Errorf("%v: %d %q %q", args[len(args)-2:], r.code, r.stdout, r.stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".sdf", "tasks", "b.json")); !os.IsNotExist(err) {
+		t.Fatalf("task written: %v", err)
+	}
+}
