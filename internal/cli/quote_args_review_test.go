@@ -10,8 +10,8 @@ import (
 )
 
 // Review tests for PR #299: every class of terminal-unsafe input reaches
-// stderr quoted, the quoted form round-trips to the original argument,
-// and exit codes stay 2.
+// stderr quoted, the quoted form round-trips to the original argument
+// (except a value longer than the display cap), and exit codes stay 2.
 func TestUnrecognizedArgumentsQuoteEveryUnsafeClass(t *testing.T) {
 	cases := map[string]string{
 		"csi":        "--x\x1b[31m",
@@ -51,12 +51,22 @@ func TestUnrecognizedArgumentsQuoteEveryUnsafeClass(t *testing.T) {
 					t.Fatalf("non-printable-ASCII rune %U on stderr: %q", r, got.stderr)
 				}
 			}
+			if got.stdout != "" {
+				t.Fatalf("stdout %q", got.stdout)
+			}
+			if name == "long + esc" {
+				// After quoting, display is capped at 256 bytes plus "...".
+				if !strings.HasSuffix(quoted, "...") || len(quoted) > 256+len("...") {
+					t.Fatalf("want truncated display, got len %d %q", len(quoted), quoted)
+				}
+				if strings.Contains(got.stderr, "\x1b") {
+					t.Fatalf("raw ESC on truncated stderr: %q", got.stderr)
+				}
+				return
+			}
 			back, err := strconv.Unquote(quoted)
 			if err != nil || back != arg {
 				t.Fatalf("quoted form %s does not round-trip: %q, %v", quoted, back, err)
-			}
-			if got.stdout != "" {
-				t.Fatalf("stdout %q", got.stdout)
 			}
 		})
 	}
@@ -75,8 +85,6 @@ func TestUnrecognizedArgumentsLeavePrintableUnicodeUnquoted(t *testing.T) {
 
 // Every "unrecognized arguments" message in the cli package goes through
 // unrecognizedArgs, so a new subcommand cannot reintroduce a raw echo.
-// (This guard fails on a merge of #299 with main f22a273, whose
-// sdf decision graph prints the raw argument.)
 func TestNoRawUnrecognizedArgumentsMessages(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -96,5 +104,49 @@ func TestNoRawUnrecognizedArgumentsMessages(t *testing.T) {
 				t.Errorf("%s:%d prints unrecognized arguments without unrecognizedArgs: %s", f, i+1, strings.TrimSpace(line))
 			}
 		}
+	}
+}
+
+func TestDecisionGraphQuotesUnrecognizedArgument(t *testing.T) {
+	got := run(t, "decision", "graph", "--bogus\x1b[31m")
+	if got.code != 2 || strings.Contains(got.stderr, "\x1b") || !strings.Contains(got.stderr, `"--bogus\x1b[31m"`) {
+		t.Fatalf("%d %q", got.code, got.stderr)
+	}
+}
+
+// Flag values that name a file are echoed through ledger.Safe in error
+// messages. Not "unrecognized arguments", but the same terminal-escape
+// class the CHANGELOG entry describes.
+func TestFlagValuePathsAreQuoted(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "x\x1b[31m")
+	_ = os.Remove(bad)
+	for _, args := range [][]string{
+		{"summary", "--budget=" + bad},
+		{"summary", "--prices=" + bad},
+		{"summary", "--db=" + bad},
+		{"check", "--cases=" + bad},
+		{"redact", "--db=" + bad},
+		{"serve", "--otlp-token-file=" + bad},
+		{"task", "declare", "--repo=" + bad, "--id", "t", "--title", "t", "--check", "c=true"},
+	} {
+		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
+			got := run(t, args...)
+			if strings.Contains(got.stderr, "\x1b") || strings.Contains(got.stdout, "\x1b") {
+				t.Fatalf("raw ESC: %d %q", got.code, got.stderr)
+			}
+		})
+	}
+}
+
+// A mistyped secret-bearing flag is not echoed verbatim to stderr (or CI logs).
+func TestUnrecognizedTokenFlagValueIsNotEchoed(t *testing.T) {
+	const secret = "review-fake-token-value"
+	got := run(t, "summary", "--otlp-token="+secret)
+	if got.code != 2 || strings.Contains(got.stderr, secret) {
+		t.Fatalf("%d %q", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "--otlp-token=[redacted]") {
+		t.Fatalf("want redacted flag, got %q", got.stderr)
 	}
 }

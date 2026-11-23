@@ -45,14 +45,14 @@ func cmdRedact(args []string, stdout, stderr io.Writer) int {
 	info, err := os.Stat(dbPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(stderr, "sdf redact: %s does not exist\n", dbPath)
+			fmt.Fprintf(stderr, "sdf redact: %s does not exist\n", displayPath(dbPath))
 			return 1
 		}
-		fmt.Fprintf(stderr, "sdf redact: %v\n", err)
+		fmt.Fprintf(stderr, "sdf redact: %s\n", displayErr(err))
 		return 1
 	}
 	if info.IsDir() {
-		fmt.Fprintf(stderr, "sdf redact: %s is a directory\n", dbPath)
+		fmt.Fprintf(stderr, "sdf redact: %s is a directory\n", displayPath(dbPath))
 		return 1
 	}
 	if !dryRun {
@@ -61,24 +61,24 @@ func cmdRedact(args []string, stdout, stderr io.Writer) int {
 		// --store-content) into the file while it is rewritten and stamped.
 		lock, err := store.LockForScrub(dbPath)
 		if errors.Is(err, store.ErrLocked) {
-			fmt.Fprintf(stderr, "sdf redact: sdf serve (or another sdf redact%s) is using %s; stop it and run sdf redact again\n", store.LockHolder(dbPath), dbPath)
+			fmt.Fprintf(stderr, "sdf redact: sdf serve (or another sdf redact%s) is using %s; stop it and run sdf redact again\n", store.LockHolder(dbPath), displayPath(dbPath))
 			return 1
 		}
 		if err != nil {
-			fmt.Fprintf(stderr, "sdf redact: cannot take the lock file %s: %v\n", store.LockPath(dbPath), err)
+			fmt.Fprintf(stderr, "sdf redact: cannot take the lock file %s: %s\n", displayPath(store.LockPath(dbPath)), displayErr(err))
 			return 1
 		}
 		defer lock.Release()
 	}
 	db, err := store.OpenForScrub(dbPath, dryRun)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf redact: %s: %v\n", dbPath, err)
+		fmt.Fprintf(stderr, "sdf redact: %s: %s\n", displayPath(dbPath), displayErr(err))
 		return 1
 	}
 	defer db.Close()
 	res, err := db.Scrub(dryRun)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf redact: %v\n", err)
+		fmt.Fprintf(stderr, "sdf redact: %s\n", displayErr(err))
 		return 1
 	}
 	if dryRun {
@@ -107,7 +107,7 @@ func warnUnscrubbed(db *store.Store, path string, stderr io.Writer) {
 	if err != nil || !needs {
 		return
 	}
-	fmt.Fprintf(stderr, "warning: %s has rows written before sdf dropped prompt, tool, and error text by default; they may hold that text. Stop sdf serve and run: sdf redact --db %s\n", path, shellWord(path))
+	fmt.Fprintf(stderr, "warning: %s has rows written before sdf dropped prompt, tool, and error text by default; they may hold that text. Stop sdf serve and run: sdf redact --db %s\n", displayPath(path), shellWord(displayPath(path)))
 }
 
 func shellWord(s string) string {

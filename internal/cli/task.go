@@ -215,7 +215,7 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	root, err := task.RepoRoot(ctx, repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: --repo %s is not in a git work tree: %v\n", prefix, repo, err)
+		fmt.Fprintf(stderr, "%s: --repo %s is not in a git work tree: %s\n", prefix, displayPath(repo), displayErr(err))
 		return 1
 	}
 	st, err := taskStore(root, dataDir, noDataDir)

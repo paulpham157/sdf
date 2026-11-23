@@ -39,12 +39,12 @@ func resolveServeOTLPToken(tokenFlag string, tokenFlagSet bool, tokenFileFlag st
 func readOTLPTokenFile(path string, stderr io.Writer) (string, int) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf serve: could not read OTLP token file %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "sdf serve: could not read OTLP token file %s: %s\n", displayPath(path), displayErr(err))
 		return "", 1
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		fmt.Fprintf(stderr, "sdf serve: OTLP token file %s is empty\n", path)
+		fmt.Fprintf(stderr, "sdf serve: OTLP token file %s is empty\n", displayPath(path))
 		return "", 1
 	}
 	if warning := tokenFileModeWarning(path); warning != "" {
@@ -64,5 +64,5 @@ func tokenFileModeWarning(path string) string {
 	if info.Mode().Perm()&0o044 == 0 {
 		return ""
 	}
-	return "warning: OTLP token file " + path + " is group- or world-readable"
+	return "warning: OTLP token file " + displayPath(path) + " is group- or world-readable"
 }

@@ -90,13 +90,13 @@ func cmdDecisionAudit(args []string, stdout, stderr io.Writer) int {
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision audit: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision audit: %s\n", displayErr(err))
 		return exitAuditError
 	}
 	report, err := decision.Audit(db, opt)
 	_ = db.Close()
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision audit: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision audit: %s\n", displayErr(err))
 		return exitAuditError
 	}
 	write := decision.WriteAuditText
@@ -104,7 +104,7 @@ func cmdDecisionAudit(args []string, stdout, stderr io.Writer) int {
 		write = decision.WriteAuditJSON
 	}
 	if err := write(stdout, report); err != nil {
-		fmt.Fprintf(stderr, "sdf decision audit: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision audit: %s\n", displayErr(err))
 		return exitAuditError
 	}
 	if report.FindingCount > 0 {

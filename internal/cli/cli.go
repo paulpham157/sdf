@@ -271,16 +271,16 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	content, err := parseStoreContent(contentFlag)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %s: %v\n", contentSource, err)
+		fmt.Fprintf(stderr, "sdf serve: %s: %s\n", contentSource, displayErr(err))
 		return 2
 	}
 	if _, err := summary.LoadBudget(budgetPath); err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintf(stderr, "sdf serve: %s\n", displayErr(err))
 		return 1
 	}
 	if uiOn {
 		if _, err := pricing.ResolveCatalog(pricesSpec); err != nil {
-			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			fmt.Fprintf(stderr, "sdf serve: %s\n", displayErr(err))
 			return 1
 		}
 	}
@@ -288,16 +288,16 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	// file under it, and serve refuses to start while redact runs.
 	lock, err := store.LockForServe(dbPath)
 	if errors.Is(err, store.ErrLocked) {
-		fmt.Fprintf(stderr, "sdf serve: sdf redact%s is rewriting %s; start sdf serve again when it finishes\n", store.LockHolder(dbPath), dbPath)
+		fmt.Fprintf(stderr, "sdf serve: sdf redact%s is rewriting %s; start sdf serve again when it finishes\n", store.LockHolder(dbPath), displayPath(dbPath))
 		return 1
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: cannot take the lock file %s (%v); sdf redact will not see this serve\n", store.LockPath(dbPath), err)
+		fmt.Fprintf(stderr, "warning: cannot take the lock file %s (%s); sdf redact will not see this serve\n", displayPath(store.LockPath(dbPath)), displayErr(err))
 	}
 	defer lock.Release()
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintf(stderr, "sdf serve: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
@@ -446,24 +446,24 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	}
 	budget, err := summary.LoadBudget(budgetPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	prices, err := pricing.ResolveCatalog(pricesSpec)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	summaryMissingHint(dbPath, dbPathSet, stderr)
 	records, err := db.Load()
 	_ = db.Close()
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	report := summary.SummarizeWith(records, allSpans, prices)
@@ -472,7 +472,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		lookup, err := outcome.NewGitHub()
 		if err != nil {
 			gitOpt.GitHubNote = err.Error()
-			fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+			fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		} else {
 			gitOpt.Lookup = lookup
 		}
@@ -494,7 +494,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	summary.ApplyBudget(&report, budget)
 	if asJSON {
 		if err := summary.WriteJSON(stdout, report); err != nil {
-			fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+			fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 			return 1
 		}
 		return 0
@@ -633,7 +633,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
@@ -646,7 +646,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		Alternatives: alternatives,
 		Reason:       reason,
 	}); err != nil {
-		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -711,17 +711,17 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 	}
 	fromEnd, err := parseEndpoint(from)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: --from %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: --from %s\n", displayErr(err))
 		return 2
 	}
 	toEnd, err := parseEndpoint(to)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: --to %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: --to %s\n", displayErr(err))
 		return 2
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
@@ -731,7 +731,7 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		To:       toEnd,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: %s\n", displayErr(err))
 		return 1
 	}
 	for _, w := range warnings {
@@ -776,13 +776,13 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
 		return 1
 	}
 	graph, err := decision.Load(db)
 	_ = db.Close()
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
 		return 1
 	}
 	write := decision.WriteText
@@ -790,7 +790,7 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 		write = decision.WriteJSON
 	}
 	if err := write(stdout, graph); err != nil {
-		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -839,24 +839,24 @@ func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
 		case arg == "--json":
 			asJSON = true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
 	prices, err := pricing.ResolveCatalog(pricesSpec)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		return 1
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		return 1
 	}
 	defer func() { _ = db.Close() }()
 	records, err := db.Load()
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		return 1
 	}
 	gitOpt := outcome.Options{Repo: repoPath}
@@ -864,7 +864,7 @@ func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
 		lookup, err := outcome.NewGitHub()
 		if err != nil {
 			gitOpt.GitHubNote = err.Error()
-			fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+			fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		} else {
 			gitOpt.Lookup = lookup
 		}
@@ -873,7 +873,7 @@ func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
 	report := outcome.Summarize(records, prices, gitOpt)
 	view, err := decisiongraph.FromStore(db, report)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		return 1
 	}
 	write := decisiongraph.WriteText
@@ -881,7 +881,7 @@ func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
 		write = decisiongraph.WriteJSON
 	}
 	if err := write(stdout, view); err != nil {
-		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -949,12 +949,12 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision retract: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
 	if _, err := decision.Retract(db, decision.RetractInput{ID: id, Reason: reason, RetractedBy: by}); err != nil {
-		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision retract: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -1002,7 +1002,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		cases, err = check.Load(dir)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf check: %v\n", err)
+		fmt.Fprintf(stderr, "sdf check: %s\n", displayErr(err))
 		return 1
 	}
 	report := check.Run(cases)
@@ -1055,7 +1055,7 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	if outPath == "" {
 		path, err := pricing.CachePath()
 		if err != nil {
-			fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+			fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 			return 1
 		}
 		outPath = path
@@ -1065,15 +1065,15 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	snap, err := pricing.Fetch(ctx, client, pageURL)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 		return 1
 	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 		return 1
 	}
 	if err := os.WriteFile(outPath, snap.Body, 0o644); err != nil {
-		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 		return 1
 	}
 	fmt.Fprintf(stdout, "wrote %d models from %s retrieved %s to %s\n", len(snap.Catalog.Models), snap.Catalog.Source, snap.Catalog.RetrievedAtRaw, outPath)
