@@ -116,14 +116,21 @@ So the same numbers are not added twice:
   `type`), and tool calls come from `qwen-code.tool` spans joined to
   `qwen-code.tool_call` logs. See [docs/agents.md](agents.md#qwen-code).
 
-Codex `response.completed` token fields are not all additive. `input_token_count`,
-`cached_token_count`, and `cache_write_token_count` already include the
-conversation prefix, which the next request sends again. The summary takes
-the max of those. `output_token_count` and `reasoning_token_count` are new
-tokens and are summed. When `turn.id` is present, only the last
-`response.completed` in that turn is used, so a retry does not add the
-attempt again. `tool_token_count` is ignored: at the cited Codex commit it is
-recorded from `total_tokens`.
+Codex `response.completed` logs are the fallback when `codex.turn.token_usage`
+is missing (for example an OpenRouter `:free` model id, whose `:` makes Codex
+drop the turn metrics). Each event is the usage of one Responses API call,
+and one turn makes one call per tool round trip, so `input_token_count`,
+`cached_token_count`, `cache_write_token_count`, `output_token_count`, and
+`reasoning_token_count` are all summed, the same way Codex sums
+`codex.turn.token_usage`. Every call is billed its full input, prefix
+included, and its own cache reads. `turn.id` does not collapse events: Codex
+0.167.0 and 0.171.0 do not put it (or a response id) on these logs, and
+every call in a turn is billed. An event stored twice (same
+`conversation.id`, `event.timestamp`, and counts) counts once.
+`tool_token_count` is ignored: at the cited Codex commit it is recorded from
+`total_tokens`. Checked against a real Codex 0.171.0 session on OpenRouter
+(issue #204): four calls billed 37400 input, 18560 cached, and 109 output
+tokens, which matches both the summed logs and `codex.turn.token_usage`.
 
 What one value is, per source, and how values are combined:
 
@@ -132,7 +139,7 @@ What one value is, per source, and how values are combined:
 | Claude Code `claude_code.token.usage` | delta or cumulative metric point | delta points summed; a cumulative series keeps the latest point per process run, runs summed |
 | Claude Code `claude_code.api_request` logs | one API request | summed |
 | Codex `codex.turn.token_usage` | histogram point per turn | summed like other metrics |
-| Codex `response.completed` logs | one response, last per `turn.id` | input, cached, cache_write max; output, reasoning summed |
+| Codex `response.completed` logs | one Responses API call | all counts summed; one value per `conversation.id`, `event.timestamp`, and counts |
 | OpenCode `SessionStep.attempt` spans | one provider request (finish usage of one `llm.stream`) | all counts summed; aliases on one span are one value (max); one value per trace and span id |
 | Pi `chat` spans | one model turn | input and output summed; one value per trace and span id |
 | Pi `gen_ai.client.token.usage`, Grok CLI `grok_code.token.usage` | metric point | as Claude metrics |

@@ -59,9 +59,9 @@
     250).
   - A cumulative UpDownCounter without a start time that goes down reads as
     a reset.
-- Codex `response.completed` input and cache tokens use the max, not the
-  sum, as described in [docs/summary.md](summary.md). OpenCode
-  `SessionStep.attempt` counts are per request and are summed (issue #200).
+- Codex `response.completed` and OpenCode `SessionStep.attempt` counts are
+  per request and are summed (issues #204 and #200), as described in
+  [docs/summary.md](summary.md).
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,

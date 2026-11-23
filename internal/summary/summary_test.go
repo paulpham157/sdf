@@ -55,7 +55,9 @@ func TestDeltaTokensSumAndCumulativeKeepsLatest(t *testing.T) {
 	}
 }
 
-func TestCodexSSETokensUseMaxInputAndSumOutput(t *testing.T) {
+func TestCodexSSETokensSumEveryResponse(t *testing.T) {
+	// Synthetic: turn-a makes two responses, turn-b one. Every response is
+	// its own billed call, so all counts add up and turn.id collapses nothing.
 	event := func(order int64, turn string, input, output int, when int64) record.Record {
 		return record.Record{
 			ID:           order,
@@ -82,8 +84,71 @@ func TestCodexSSETokensUseMaxInputAndSumOutput(t *testing.T) {
 	}, false).Sessions[0]
 	in, _ := session.Tokens.Get("input_token_count")
 	out, _ := session.Tokens.Get("output_token_count")
-	if in != 200 || out != 119 || !strings.Contains(deref(session.TokensMethod), "max") || !strings.HasPrefix(deref(session.TokensSource), "logs codex.sse_event") {
+	if in != 440 || out != 129 || !strings.Contains(deref(session.TokensMethod), "summed") || !strings.HasPrefix(deref(session.TokensSource), "logs codex.sse_event") {
 		t.Fatalf("%v %s %s", session.Tokens.Vals, deref(session.TokensSource), deref(session.TokensMethod))
+	}
+}
+
+// codexRealResponse is one codex.sse_event response.completed log as Codex
+// CLI 0.171.0 exported it (attribute set and value types as received; Codex
+// sends some counts as strings). No turn.id and no response id.
+func codexRealResponse(id int64, stamp, input string, cached int, output, total string) record.Record {
+	return record.Record{
+		ID:           id,
+		Signal:       "logs",
+		ServiceName:  record.Str("codex_exec"),
+		SessionID:    record.Str("01a207b5-8611-7031-a2e8-98e3a768ed2f"),
+		Name:         record.Str("codex.sse_event"),
+		TimeUnixNano: nil,
+		Attributes: map[string]any{
+			"app.version":             "0.171.0",
+			"cache_write_token_count": 0,
+			"cached_token_count":      cached,
+			"conversation.id":         "01a207b5-8611-7031-a2e8-98e3a768ed2f",
+			"event.kind":              "response.completed",
+			"event.name":              "codex.sse_event",
+			"event.timestamp":         stamp,
+			"input_token_count":       input,
+			"model":                   "mistralai/mistral-nemo",
+			"originator":              "codex_exec",
+			"output_token_count":      output,
+			"reasoning_token_count":   0,
+			"slug":                    "mistralai/mistral-nemo",
+			"tool_token_count":        total,
+		},
+		Resource: map[string]any{"service.name": "codex_exec"},
+	}
+}
+
+func TestCodexSSETokensRealOpenRouterCapture(t *testing.T) {
+	// Real capture (#204): Codex CLI 0.171.0, mistralai/mistral-nemo on
+	// OpenRouter, two turns, four Responses calls, three exec_command tool
+	// calls. OpenRouter's per-call usage was 9142/0/48, 9355/9152/22,
+	// 9399/0/27, 9504/9408/12 (input/cached/output), totals 37400/18560/109,
+	// which is also what Codex's own codex.turn.token_usage reported. The old
+	// max rule gave input 9504 and cached 9408.
+	events := []record.Record{
+		codexRealResponse(1, "2026-11-23T09:21:09.025Z", "9142", 0, "48", "9190"),
+		codexRealResponse(2, "2026-11-23T09:21:10.223Z", "9355", 9152, "22", "9377"),
+		codexRealResponse(3, "2026-11-23T09:21:12.639Z", "9399", 0, "27", "9426"),
+		codexRealResponse(4, "2026-11-23T09:21:13.590Z", "9504", 9408, "12", "9516"),
+	}
+	// The same export delivered twice must not double the totals.
+	withDuplicate := append(append([]record.Record{}, events...), codexRealResponse(5, "2026-11-23T09:21:13.590Z", "9504", 9408, "12", "9516"))
+	for name, records := range map[string][]record.Record{"once": events, "duplicate": withDuplicate} {
+		session := Summarize(records, false).Sessions[0]
+		want := map[string]float64{
+			"input_token_count":       37400,
+			"cached_token_count":      18560,
+			"cache_write_token_count": 0,
+			"output_token_count":      109,
+			"reasoning_token_count":   0,
+		}
+		for key, value := range want {
+			if got, ok := session.Tokens.Get(key); !ok || got != value {
+				t.Fatalf("%s: %s = %v (ok=%v), want %v; all %v", name, key, got, ok, value, session.Tokens.Vals)
+			}
+		}
 	}
 }
 
