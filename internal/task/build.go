@@ -317,3 +317,6 @@ func (g gitRepo) lsTree(ctx context.Context, rev string) (map[string]treeBlob, e
 func (g gitRepo) blob(ctx context.Context, oid string) ([]byte, error) {
 	return g.run(ctx, "cat-file", "blob", oid)
 }
+
+// MatchGlob reports whether the slash path p matches a designated glob.
+func MatchGlob(glob, p string) bool { return matchGlob(glob, p) }

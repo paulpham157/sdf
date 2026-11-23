@@ -1,8 +1,8 @@
 # Tasks
 
 `sdf task declare` records what a piece of agent work has to pass, before
-the agent starts. It runs nothing. A later `sdf verify` (not built yet)
-reads the declared task and runs its checks against a submitted revision.
+the agent starts. It runs nothing. [`sdf verify`](verify.md) reads the
+declared task and runs its checks against a submitted revision.
 
 ```bash
 sdf task declare --id add-widget --title "Add the widget" \
