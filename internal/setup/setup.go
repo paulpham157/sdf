@@ -101,6 +101,9 @@ func normalize(req *Request) error {
 	if req.Endpoint.GRPCPort == 0 {
 		req.Endpoint.GRPCPort = 4317
 	}
+	if err := checkEndpoint(&req.Endpoint); err != nil {
+		return err
+	}
 	if req.Home == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -269,7 +272,7 @@ func hasOtelTable(text string) bool {
 
 func opencode(req Request) (Result, error) {
 	path := filepath.Join(req.Home, ".config", "sdf", "opencode.env")
-	line := "export OTEL_EXPORTER_OTLP_ENDPOINT=" + req.Endpoint.base() + "\n"
+	line := "export OTEL_EXPORTER_OTLP_ENDPOINT=" + shQuote(req.Endpoint.base()) + "\n"
 	var b strings.Builder
 	fmt.Fprintf(&b, "OpenCode v2 (@opencode/cli) exports traces and logs when OTEL_EXPORTER_OTLP_ENDPOINT is set.\n")
 	fmt.Fprintf(&b, "It does not export metrics. npm opencode-ai is v1, not this CLI.\n")
