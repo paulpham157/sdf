@@ -112,7 +112,7 @@ func hookLogsURL(ep Endpoint) (string, error) {
 		host = checked
 	}
 	switch host {
-	case "", "localhost", "localhost.", "127.0.0.1":
+	case "", "localhost", "127.0.0.1":
 		host = "127.0.0.1"
 	case "::1":
 	default:

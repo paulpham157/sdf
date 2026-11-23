@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -22,10 +23,12 @@ import (
 // digits, and inner hyphens.
 var hostNamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
 
-// numericHostPattern is a host whose dot-separated labels are all digits.
-// Such a host must be a valid IPv4 address: 999.1.1.1 or 127.1 is not a host
-// name, and resolvers read the short forms differently.
-var numericHostPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*\.?$`)
+// numberLabelPattern is a label that URL parsers and inet_aton read as a
+// number: decimal, octal (leading 0), or hex (0x...). A host whose last
+// label is one of these is parsed as an IPv4 address, so it must be plain
+// dotted decimal: 127.1, 0x7f.1, 0x7f000001, and 0177.0.0.1 all reach
+// 127.0.0.1 but would not be recognised as loopback by sdf's own checks.
+var numberLabelPattern = regexp.MustCompile(`^([0-9]+|0[xX][0-9A-Fa-f]*)$`)
 
 // ValidateEndpoint is checkEndpoint for callers outside the package (sdf
 // init checks --host and the ports with it before --check probes anything
@@ -58,10 +61,18 @@ func checkHost(host string) (string, error) {
 		inner = host[1 : len(host)-1]
 	}
 	if strings.Contains(inner, ":") {
+		if !bracketed {
+			if hint := ipv6PortHint(host); hint != "" {
+				return "", fmt.Errorf("--host %q %s", host, hint)
+			}
+		}
 		ip := net.ParseIP(inner)
 		if ip == nil {
-			if h, p, err := net.SplitHostPort(host); err == nil && h != "" && allDigits(p) {
-				return "", fmt.Errorf("--host %q looks like host:port; pass the host alone (--host %s) and the port with --port %s", host, h, p)
+			if h, p, err := net.SplitHostPort(host); err == nil && h != "" {
+				return "", fmt.Errorf("--host %q looks like host:port; %s", host, portHint(h, p))
+			}
+			if h, p, ok := strings.Cut(host, ":"); ok && h != "" && !strings.Contains(p, ":") {
+				return "", fmt.Errorf("--host %q looks like host:port; %s", host, portHint(h, p))
 			}
 			return "", fmt.Errorf("--host %q is not a valid IPv6 address", host)
 		}
@@ -72,24 +83,78 @@ func checkHost(host string) (string, error) {
 			// checks disagree about them. Ask for the address itself.
 			return "", fmt.Errorf("--host %q is an IPv4 address written as IPv6; pass --host %s (or ::1 for IPv6 loopback)", host, v4)
 		}
+		if ip.IsUnspecified() {
+			return "", unspecifiedErr(host)
+		}
 		return inner, nil
 	}
 	if bracketed {
 		return "", fmt.Errorf("--host %q: only an IPv6 address goes in brackets", host)
 	}
-	if numericHostPattern.MatchString(host) && net.ParseIP(host) == nil {
-		return "", fmt.Errorf("--host %q is all numbers but not a valid IPv4 address", host)
-	}
-	if net.ParseIP(host) != nil {
+	name := strings.TrimSuffix(host, ".")
+	labels := strings.Split(name, ".")
+	if last := labels[len(labels)-1]; numberLabelPattern.MatchString(last) {
+		// Ends in a number, so resolvers and URL parsers read it as IPv4.
+		// Only plain dotted decimal is accepted (net.ParseIP also refuses
+		// leading zeros, which inet_aton reads as octal).
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil {
+			return "", fmt.Errorf("--host %q is all numbers but not a dotted-decimal IPv4 address (short, hex, and octal forms such as 127.1, 0x7f.0.0.1, or 0177.0.0.1 are refused); write it as four decimal numbers, like 127.0.0.1", host)
+		}
+		if ip.IsUnspecified() {
+			return "", unspecifiedErr(host)
+		}
 		return host, nil
 	}
-	// A fully qualified name may end in one dot (example.com.); it is kept
-	// as given. The dot is inert in a URL, a shell word, TOML, and JS.
-	name := strings.TrimSuffix(host, ".")
+	// localhost. (any case) is written as localhost: a trailing-dot name
+	// skips /etc/hosts on many resolvers and goes to DNS, where it need not
+	// be loopback, and the git hook and token checks treat only localhost,
+	// 127.0.0.1, and ::1 as loopback. Every writer then gets the same host.
+	if strings.EqualFold(name, "localhost") {
+		return "localhost", nil
+	}
+	// Any other fully qualified name may end in one dot (example.com.); it
+	// is kept as given, since the dot is meaningful (no search domains) and
+	// inert in a URL, a shell word, TOML, and JS.
 	if name != "" && len(name) <= 253 && hostNamePattern.MatchString(name) {
 		return host, nil
 	}
 	return "", fmt.Errorf("--host %q is not a host name, IPv4 address, or IPv6 address", host)
+}
+
+// ipv6PortHint reports a bare IPv6 literal whose last group reads as a port
+// (::1:4318, fe80::1:4318): everything before the last colon is itself an
+// IPv6 address and the last group is decimal, 2 to 5 digits, 1-65535. Such
+// a string is a valid address, but far more often a host:port typed without
+// brackets, so it is refused with both readings; the bracketed form
+// ([fe80::1:4318]) is accepted as the address it spells.
+func ipv6PortHint(host string) string {
+	i := strings.LastIndex(host, ":")
+	prefix, port := host[:i], host[i+1:]
+	if len(port) < 2 || len(port) > 5 || !allDigits(port) || port[0] == '0' {
+		return ""
+	}
+	if n, err := strconv.Atoi(port); err != nil || n > 65535 {
+		return ""
+	}
+	if ip := net.ParseIP(prefix); ip == nil || ip.To4() != nil || strings.Contains(prefix, ".") {
+		return ""
+	}
+	return fmt.Sprintf("looks like an IPv6 address and a port; for the port pass --host '[%s]' --port %s, or write the address in brackets (--host '[%s]') if :%s is part of it", prefix, port, host, port)
+}
+
+func portHint(host, port string) string {
+	if strings.Contains(host, ":") {
+		host = "'[" + host + "]'"
+	}
+	if allDigits(port) {
+		return fmt.Sprintf("pass the host alone (--host %s) and the port with --port %s", host, port)
+	}
+	return fmt.Sprintf("pass the host alone (--host %s) and the port as a number with --port", host)
+}
+
+func unspecifiedErr(host string) error {
+	return fmt.Errorf("--host %q is the unspecified address, which sdf serve can bind but an agent cannot send to; pass 127.0.0.1, ::1, or this machine's address", host)
 }
 
 // embeddedIPv4 returns the IPv4 address inside an IPv4-mapped

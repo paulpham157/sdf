@@ -90,3 +90,21 @@ func TestGitHooksAcceptBracketedIPv6Loopback(t *testing.T) {
 		t.Fatalf("hook does not post to [::1]:\n%s", body)
 	}
 }
+
+func TestPortsMustBePlainDecimal(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, args := range [][]string{
+		{"init", "--port", "08", "claude-code"},
+		{"init", "--port", "+4318", "claude-code"},
+		{"init", "--port=-1", "claude-code"},
+		{"init", "--grpc-port", "04317", "codex"},
+		{"init", "--grpc-port=+4317", "codex"},
+		{"serve", "--port", "08"},
+		{"serve", "--grpc-port=+4317"},
+	} {
+		out := run(t, args...)
+		if out.code != 2 || !strings.Contains(out.stderr, "requires a port number (plain decimal") {
+			t.Fatalf("%v: %d %q %q", args, out.code, out.stdout, out.stderr)
+		}
+	}
+}

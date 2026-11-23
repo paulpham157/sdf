@@ -127,14 +127,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
 		case strings.HasPrefix(arg, "--port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
@@ -142,14 +142,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
 		case strings.HasPrefix(arg, "--grpc-port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--grpc-port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
@@ -821,14 +821,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
 		case strings.HasPrefix(arg, "--port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
@@ -836,14 +836,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
 		case strings.HasPrefix(arg, "--grpc-port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--grpc-port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
@@ -959,8 +959,19 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
+// parsePort reads a port written as plain decimal: no sign, no leading
+// zero, no spaces (08, +4318, and " 4318" are refused; strconv.Atoi takes
+// the first two). "0" parses, so the range check can say why it is refused.
 func parsePort(v string, ok bool) (int, error) {
-	if !ok {
+	if !ok || v == "" || len(v) > 5 {
+		return 0, strconv.ErrSyntax
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return 0, strconv.ErrSyntax
+		}
+	}
+	if len(v) > 1 && v[0] == '0' {
 		return 0, strconv.ErrSyntax
 	}
 	return strconv.Atoi(v)
