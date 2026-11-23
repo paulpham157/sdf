@@ -16,8 +16,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"sort"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -32,7 +34,7 @@ const (
 )
 
 var (
-	idPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	idPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 	shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 )
 
@@ -73,9 +75,11 @@ type Spec struct {
 
 // ValidID reports whether id can name a task (or a criterion): valid UTF-8,
 // no newline or other control character, and the id pattern, which is
-// stricter (ASCII letters, digits, ".", "_", "-"; at most 128 bytes). The
-// first two rules are the ledger's own for an id; they are checked here
-// too so a looser pattern later cannot let them through.
+// stricter: lowercase ASCII letters, digits, ".", "_", "-", at most 128
+// bytes. Lowercase only, so two ids never differ by case alone (t1 and T1
+// would be one file on a case-insensitive filesystem). The first two rules
+// are checked on their own too, so a looser pattern later cannot let them
+// through.
 func ValidID(id string) bool {
 	if !utf8.ValidString(id) {
 		return false
@@ -126,6 +130,9 @@ func (s Spec) Validate() error {
 		}
 	}
 	for i, f := range s.DesignatedFiles {
+		if err := validRepoPath(f.Path); err != nil {
+			return fmt.Errorf("designated file: %w", err)
+		}
 		if f.Path == "" || f.Mode == "" || !shaPattern.MatchString(f.GitBlob) || !sha256Hex.MatchString(f.SHA256) {
 			return fmt.Errorf("designated file %q is incomplete", f.Path)
 		}
@@ -137,6 +144,18 @@ func (s Spec) Validate() error {
 }
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// validRepoPath accepts a clean, relative slash path inside the repository,
+// in valid UTF-8 with no control character.
+func validRepoPath(p string) error {
+	switch {
+	case p == "" || !utf8.ValidString(p) || strings.IndexFunc(p, unicode.IsControl) >= 0:
+		return fmt.Errorf("path %q is empty, not UTF-8, or has a control character", p)
+	case path.IsAbs(p) || path.Clean(p) != p || p == ".." || strings.HasPrefix(p, "../"):
+		return fmt.Errorf("path %q is not a clean path inside the repository", p)
+	}
+	return nil
+}
 
 func (c Criterion) validate() error {
 	if !ValidID(c.Name) {

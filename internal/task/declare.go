@@ -103,16 +103,17 @@ func Declare(ctx context.Context, spec Spec, st Store) (Declared, error) {
 		}
 	}
 	type file struct {
-		path   string
-		mode   fs.FileMode
-		exists bool
+		path    string
+		mode    fs.FileMode
+		dirMode fs.FileMode
+		exists  bool
 	}
 	var files []*file
 	if st.RepoDir != "" {
-		files = append(files, &file{path: RepoPath(st.RepoDir, spec.ID), mode: 0o644})
+		files = append(files, &file{path: RepoPath(st.RepoDir, spec.ID), mode: 0o644, dirMode: 0o755})
 	}
 	if st.DataDir != "" {
-		files = append(files, &file{path: DataPath(st.DataDir, spec.ID), mode: 0o444})
+		files = append(files, &file{path: DataPath(st.DataDir, spec.ID), mode: 0o444, dirMode: 0o700})
 	}
 	for _, f := range files {
 		have, err := readHash(f.path)
@@ -137,7 +138,7 @@ func Declare(ctx context.Context, spec Spec, st Store) (Declared, error) {
 		if isRepo && !st.WriteRepo {
 			continue
 		}
-		if err := writeOnce(f.path, append(append([]byte(nil), canonical...), '\n'), f.mode); err != nil {
+		if err := writeOnce(f.path, append(append([]byte(nil), canonical...), '\n'), f.mode, f.dirMode); err != nil {
 			return Declared{}, err
 		}
 		d.Copies = append(d.Copies, Copy{Where: f.path, Hash: hash, New: true})
@@ -168,26 +169,37 @@ func readHash(p string) (string, error) {
 	return h, nil
 }
 
-// writeOnce creates p with data and fails if p already exists.
-func writeOnce(p string, data []byte, mode fs.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+// writeOnce creates p with data, all or nothing, and fails if p already
+// exists. The bytes go to a temporary file in the same directory, are
+// synced, and are then hard-linked to p, which refuses an existing p (a
+// rename would replace it). A missing parent is created with dirMode.
+func writeOnce(p string, data []byte, mode, dirMode fs.FileMode) error {
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	tmp, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(p)+"-*")
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(p)
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(p)
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
 		return err
 	}
-	return f.Close()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Link(name, p)
 }
 
 // Found is one copy of a task read by Load.

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -42,6 +43,17 @@ func TestDeclareIsWriteOnceAndIdempotent(t *testing.T) {
 	info, err := os.Stat(DataPath(data, s.ID))
 	if err != nil || info.Mode().Perm() != 0o444 {
 		t.Fatalf("data file %v %v", info, err)
+	}
+	if runtime.GOOS != "windows" {
+		if di, err := os.Stat(filepath.Dir(DataPath(data, s.ID))); err != nil || di.Mode().Perm() != 0o700 {
+			t.Fatalf("data dir %v %v", di, err)
+		}
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".sdf", "tasks", ".tmp-*")); len(left) != 0 {
+		t.Fatalf("temporary files left: %v", left)
+	}
+	if err := writeOnce(repoFile, []byte("x"), 0o644, 0o755); err == nil {
+		t.Fatal("writeOnce replaced an existing file")
 	}
 
 	// Identical declaration: nothing new, same hash, ledger entry unchanged.
