@@ -91,6 +91,10 @@ func TestDecisionsLiveRegionAndFocusKeep(t *testing.T) {
 		return res.Outside
 	}
 
+	// The region is there, empty, before anything is announced.
+	if out := live(renderPage(t, srv, "#/decisions", "")); !strings.Contains(out, `role="status"`) {
+		t.Errorf("no live region before the first announcement: %q", out)
+	}
 	copied := renderPage(t, srv, "#/decisions/ch-capture/status-ui", `focus=~Copy command,click=~Copy command`)
 	if out := live(copied); !strings.Contains(out, "Copy failed") {
 		t.Errorf("copy status not announced: %s", out)

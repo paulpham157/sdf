@@ -2060,6 +2060,10 @@
     render();
   });
 
+  // The live region exists before the first announcement: a region added
+  // together with its text is often not read.
+  dgLiveRegion();
+
   // Navigation clears the status, and focus goes to the route's node.
   window.addEventListener("hashchange", function () {
     dgAnnounce("");
