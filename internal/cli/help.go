@@ -111,7 +111,8 @@ without --write. Agents: claude-code, codex, opencode, pi, qwen, grok, gemini, c
                          copied to a .sdf-bak sibling first); see docs/receiver.md
   --install              pi: run pi install npm:pi-otel
   --global               pi: write ~/.pi/agent/settings.json, not the project file
-  --check                probe the receiver on --port and --grpc-port
+  --check                probe the receiver on --port and --grpc-port, and whether
+                         it would accept a write with the token the hooks send
   --host, --port, --grpc-port   receiver address (defaults 127.0.0.1, 4318, 4317)
   --git-hooks            install git hooks in this checkout that record commit SHAs
   --uninstall-git-hooks  remove them

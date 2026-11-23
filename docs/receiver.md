@@ -98,6 +98,13 @@ does not require the token, so `sdf init --check` still works. A valid token
 does not bypass the media-type, `Origin`, or loopback `Host` checks above.
 Those still return 415 or 403 and write nothing.
 
+`sdf init --check` also posts an empty body with no `Content-Type` to
+`/v1/logs`, sending the token the hooks would send (`SDF_OTLP_TOKEN`, else
+the file named by `SDF_OTLP_TOKEN_FILE`; nothing when both are set). The
+token is checked before the media type, so a write that would pass gets 415
+and nothing is stored. A 401 is reported as `token required` (no token set
+here) or `token refused` (a different token), and `--check` exits 1.
+
 Point an OpenTelemetry exporter at the receiver with:
 
 ```bash

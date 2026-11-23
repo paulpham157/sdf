@@ -920,6 +920,16 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		if !probed.Reachable {
 			code = 1
 		}
+		token, source, note := hookToken(os.Getenv)
+		if note != "" {
+			fmt.Fprint(stdout, note)
+		}
+		if auth := setup.ProbeAuth(ep, token, source); auth.Text != "" {
+			fmt.Fprint(stdout, auth.Text)
+			if auth.Refused {
+				code = 1
+			}
+		}
 	}
 	if agent != "" {
 		res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install, Global: global})
