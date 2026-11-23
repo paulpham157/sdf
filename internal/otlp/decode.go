@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/paulpham157/sdf/internal/genai"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -52,7 +53,7 @@ var sessionKeys = []string{
 	"session.id",
 	"conversation.id",
 	"pi.session.id",
-	"gen_ai.conversation.id",
+	genai.AttrConversationID,
 }
 
 // HTTPMedia reports the OTLP/HTTP media type. ok is false unless the type

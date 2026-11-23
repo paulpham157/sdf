@@ -1,6 +1,10 @@
 package setup
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/paulpham157/sdf/internal/genai"
+)
 
 // hookScriptTemplate is a POSIX /bin/sh git hook. __SDF_HOOK_URL__ and
 // __SDF_HOOK_KIND__ are replaced before it is written. The kind is
@@ -235,8 +239,8 @@ sdf_send_one() {
       sess=$(printf '%s' \
         "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
         "{\"key\":\"pi.session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
-        "{\"key\":\"gen_ai.conversation.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
-        "{\"key\":\"gen_ai.system\",\"value\":{\"stringValue\":\"pi\"}},")
+        "{\"key\":\"` + genai.AttrConversationID + `\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
+        "{\"key\":\"` + genai.AttrSystem + `\",\"value\":{\"stringValue\":\"pi\"}},")
       ;;
     opencode)
       service=opencode
