@@ -282,6 +282,12 @@ func codex(req Request) (Result, error) {
 		}
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
+		if _, err := tomlHasKey(existing, "otel"); err != nil {
+			return Result{}, fmt.Errorf("%s is not valid TOML (%v); Codex cannot load it either. Fix it and rerun; it was not changed", path, err)
+		}
+		if _, err := tomlHasKey(body, "otel"); err != nil {
+			return Result{}, fmt.Errorf("%s: appending the [otel] table would not be valid TOML (%v); add the printed keys by hand; it was not changed", path, err)
+		}
 	}
 	status, err := replaceFile(path, body, 0o600)
 	if err != nil {
@@ -312,17 +318,13 @@ metrics_exporter = { otlp-http = { endpoint = "%s/v1/metrics", protocol = "binar
 `, base, base, base)) + "\n"
 }
 
+// hasOtelTable reports whether config.toml sets the top-level otel key in
+// any TOML form ([otel], [ otel ], ["otel"], [otel.sub], inline
+// otel = {...}, dotted otel.x = ...), the same parse as grokHasTelemetry.
+// A file that does not parse reports false; codex refuses it before writing.
 func hasOtelTable(text string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if trim == "[otel]" || strings.HasPrefix(trim, "[otel.") {
-			return true
-		}
-	}
-	return false
+	has, err := tomlHasKey([]byte(text), "otel")
+	return err == nil && has
 }
 
 func opencode(req Request) (Result, error) {
@@ -603,11 +605,18 @@ func writeGrokConfig(path, hookPath, block string) (string, bool, error) {
 // the last three, and appending a second [telemetry] then makes the file
 // fail to parse in Grok (duplicate key). Empty input has no telemetry.
 func grokHasTelemetry(body []byte) (bool, error) {
+	return tomlHasKey(body, "telemetry")
+}
+
+// tomlHasKey parses body as TOML and reports whether it sets the top-level
+// key in any form (table header with or without spaces or quotes, sub-table,
+// inline table, dotted or quoted key). Empty input has no keys.
+func tomlHasKey(body []byte, key string) (bool, error) {
 	var doc map[string]any
 	if _, err := toml.Decode(string(body), &doc); err != nil {
 		return false, err
 	}
-	_, ok := doc["telemetry"]
+	_, ok := doc[key]
 	return ok, nil
 }
 
