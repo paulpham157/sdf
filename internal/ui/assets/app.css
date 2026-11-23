@@ -515,7 +515,10 @@ footer p { margin: 0; }
 .dg-live { min-height: 1em; font-size: 12px; color: var(--ink-soft); margin: 4px 0 0; }
 
 .dg-node { cursor: pointer; outline: none; }
-.dg-node:focus-visible .dg-shape { stroke: var(--green); stroke-width: 3; }
+/* Keyboard focus: a pre-drawn ring 6px outside every node, stroked only on
+   :focus-visible. No state rule styles .dg-kb-ring, so none can override it. */
+.dg-kb-ring { fill: none; stroke: none; pointer-events: none; }
+.dg-node:focus-visible .dg-kb-ring { stroke: var(--green); stroke-width: 2.5; }
 .dg-shape { fill: var(--paper-raised); stroke: var(--ink); stroke-width: 1.5; }
 .dg-title { font: 600 12.5px ui-sans-serif, system-ui, sans-serif; fill: var(--ink); }
 .dg-detail { font: 11px ui-sans-serif, system-ui, sans-serif; fill: var(--ink-soft); }

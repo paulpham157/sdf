@@ -1140,12 +1140,19 @@
     return near;
   }
 
+  function dgKbRing(l, t, w, hgt) {
+    return s("rect", { x: l - 6, y: t - 6, width: w + 12, height: hgt + 12, rx: 13, class: "dg-kb-ring", "aria-hidden": "true" });
+  }
+
   function dgNodeShape(node, w, focused) {
     const p = dgPos(node);
     const l = p.x - w / 2;
     const t = p.y - DG.nodeH / 2;
     const hgt = DG.nodeH;
-    const kids = [];
+    // The keyboard ring is always drawn, unstroked, 6px outside the node; CSS
+    // strokes it on :focus-visible. Being outside the shape, no state style
+    // (path fill, locked amber, conflict red) can override it.
+    const kids = [dgKbRing(l, t, w, hgt)];
     if (focused) kids.push(s("rect", { x: l - 6, y: t - 6, width: w + 12, height: hgt + 12, rx: 13, class: "dg-focus-ring" }));
     if (node.decided_by === "agent") {
       const c = 10;
@@ -1287,6 +1294,7 @@
         ghosts.push(s("g", { class: "dg-node dg-kind-alternative dg-role-not_taken", tabindex: "0", role: "button", "aria-label": "Not taken: " + alt.title,
           onclick: function () { dgGo(chapter.id, alt.id); } }, [
           s("title", null, ["Not taken: " + alt.title]),
+          dgKbRing(gx - gw / 2, gy - 19, gw, 38),
           s("path", { d: "M" + sx + "," + (fp.y + DG.nodeH / 2) + " C" + sx + "," + gy + " " + sx + "," + gy + " " + ex + "," + gy, class: "dg-edge dg-ghost", "marker-end": "url(#dg-arrow)" }),
           s("rect", { x: gx - gw / 2, y: gy - 19, width: gw, height: 38, rx: 9, class: "dg-shape" }),
           s("text", { x: gx - gw / 2 + 12, y: gy - 3, class: "dg-detail" }, ["not taken · what if"]),
