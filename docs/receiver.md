@@ -536,6 +536,12 @@ has no close event, so only the open is posted. Pi reads the session id from
 the session manager rather than from the file name pi-otel exports. Grok
 posts both edges and reads `GROK_SESSION_ID`, then `sessionId`.
 
+For Claude Code and Codex, `--write` also appends a SessionStart hook that
+runs `sdf decision brief` with no flags, a 2 second timeout, and fail-open
+exit, so the agent can read the brief on stdout at session start. Other
+agents do not get that hook; run the command or use the skill. See
+[Decisions at session start](agents.md#decisions-at-session-start).
+
 GitHub Copilot CLI is configured by environment only (see
 [docs/agents.md](agents.md#github-copilot-cli)); it reads no settings-file
 key for the endpoint. `sdf init copilot` (alias `copilot-cli`) prints the

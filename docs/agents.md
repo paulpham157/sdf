@@ -22,34 +22,39 @@ The sections below cover settings, signal catalogs, and how to point each tool a
 
 ## Decisions at session start
 
-The session hooks `sdf init --write` installs today only report a session
-opening and, where the agent has such an event, closing. They post to
-`POST /v1/sessions` and do not give the agent a decision brief. See
-[One-step setup](receiver.md#one-step-setup).
+`sdf init --write` still installs the session-edge hooks that post open and
+close to `POST /v1/sessions` (see [One-step setup](receiver.md#one-step-setup)).
+For Claude Code and Codex it also adds a second SessionStart hook that runs
+`sdf decision brief` with no flags, so the agent receives the text brief on
+stdout at the start of a session. The command is
+`command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`,
+with a 2 second hook timeout. If `sdf` is not on `PATH`, the brief is
+empty, or the command fails, the hook exits 0 and prints nothing, so a
+session is never blocked. Claude Code's command is prefixed with
+`[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0` so a Grok session that also reads
+`~/.claude/settings.json` does not inject a Claude brief. `sdf init` keeps
+your other hooks; only the exact command text an sdf build has written is
+updated in place.
 
-To see the constraints, blocked decisions, and conflicting decisions that
-are in force, run `sdf decision brief` at the start of a session (the same
-`--db` as `sdf serve`, default `sdf-telemetry.sqlite` in the working
-directory). `sdf` must be on `PATH`. Install the `sdf-decisions` skill
-where that is documented, or run the command yourself. Before a push,
-merge, release, deploy, or architecture change, that skill also requires
-`sdf decision check`. The commands are in [Decision brief](outcomes.md#decision-brief)
+Other agents do not get that hook. At the start of a session, run
+`sdf decision brief` yourself (the same `--db` as `sdf serve`, default
+`sdf-telemetry.sqlite` in the working directory), or install the
+`sdf-decisions` skill where the agent will load it. `sdf` must be on
+`PATH`. Before a push, merge, release, deploy, or architecture change, that
+skill requires `sdf decision check`. See [Decision brief](outcomes.md#decision-brief)
 and [Checking an action](outcomes.md#checking-an-action).
-
-A later Hooks PR is expected to inject the brief from a SessionStart hook
-for Claude Code and Codex only. That hook is not in this tree. Until it
-lands, those two agents use the same fallback as the others.
 
 | Agent | Session hook today | Decision brief at session start | Fallback |
 | --- | --- | --- | --- |
-| Claude Code | `SessionStart` and `SessionEnd` in `~/.claude/settings.json` post open and close | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
-| Codex CLI | `SessionStart` and `SessionEnd` in `$CODEX_HOME/hooks.json` post open and close | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
-| Grok CLI | `$GROK_HOME/hooks/sdf-session.json` posts open and close (and `cwd`) | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
-| OpenCode v2 | `~/.config/opencode/plugins/sdf-session.js` posts open only | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
-| Pi | `.pi/extensions/sdf-session.js` (or `~/.pi/agent/extensions` with `--global`) posts open and close | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
+| Claude Code | `SessionStart` and `SessionEnd` in `~/.claude/settings.json` post open and close | Yes, after `sdf init claude-code --write`: a second SessionStart hook runs `sdf decision brief` (2s timeout, fail-open) | If the hook is not installed, or `sdf` is not on `PATH`, run `sdf decision brief` or use the `sdf-decisions` skill |
+| Codex CLI | `SessionStart` and `SessionEnd` in `$CODEX_HOME/hooks.json` post open and close | Yes, after `sdf init codex --write`: a second SessionStart hook runs `sdf decision brief` (2s timeout, fail-open) | If the hook is not installed, or `sdf` is not on `PATH`, run `sdf decision brief` or use the `sdf-decisions` skill |
+| Grok CLI | `$GROK_HOME/hooks/sdf-session.json` posts open and close (and `cwd`). Grok may also run Claude's `SessionStart` hooks, but sdf's brief hook exits because `GROK_HOOK_EVENT` is set | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
+| OpenCode v2 | `~/.config/opencode/plugins/sdf-session.js` posts open only | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
+| Pi | `.pi/extensions/sdf-session.js` (or `~/.pi/agent/extensions` with `--global`) posts open and close | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
 | Qwen Code | None. The session window is inferred from the records | Not injected | The `sdf-decisions` skill (install path in [skills/README.md](../skills/README.md)), or run `sdf decision brief` |
-| Gemini CLI | None. The session window is inferred from the records | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
+| Gemini CLI | None. The session window is inferred from the records | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
 | GitHub Copilot CLI | None. Environment only | Not injected | Run `sdf decision brief` |
+| Cursor | No `sdf init` target and no session hook to install | Not injected | Run `sdf decision brief` in the session, or install the skill if the agent will load it |
 
 The skill is not loaded from this repository automatically. Copy or symlink
 it into the location your agent reads. Install paths are documented for

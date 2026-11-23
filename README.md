@@ -132,7 +132,7 @@ keeps its rows until you run `sdf redact --db PATH`. See
 | [docs/receiver.md](docs/receiver.md) | The receiver, content storage, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
-| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record user and agent choices with `sdf decision` |
+| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record choices, and run `sdf decision check` before a push, merge, release, deploy, or architecture change |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
 | [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |

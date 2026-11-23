@@ -499,10 +499,11 @@ has `id`, `kind`, `statement`, `status`, `decided_by`, and `locked`.
 flag.
 
 A missing file, a missing directory, a path that is a directory, a file that
-cannot be read, a store error, or a brief in which nothing matched prints
-nothing and exits 0. Usage errors, such as a missing flag or a `--format`
-other than `text` or `json`, exit 2 with one `sdf decision brief: ...` line
-on stderr. A write error on stdout exits 1.
+cannot be read, a store error, a write error on stdout, or a brief in which
+nothing matched prints nothing and exits 0. Every runtime error is silent
+exit 0; only a usage error, such as a missing flag or a `--format` other
+than `text` or `json`, exits 2 with one `sdf decision brief: ...` line on
+stderr.
 
 ### Checking an action
 
