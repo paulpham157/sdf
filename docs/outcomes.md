@@ -467,9 +467,12 @@ order:
 1. **Constraints.** An in-force settled decision that the user made, or that
    is the source of a `constrains` edge. A locked constraint is a settled
    user decision (`status` `decision`, `--decided-by user`); a user
-   hypothesis never counts. Locked constraints come first; other constraints
-   follow, in insertion order inside each of those two tiers. A locked user
-   decision stays in this group even when it is also blocked or conflicted.
+   hypothesis never counts. Locked constraints come first, newest first.
+   Other constraints, then blocked items, then conflicting items, stay in
+   insertion order inside each of those tiers. A locked user decision stays
+   in this group even when it is also blocked or conflicted. Each statement
+   is capped at 200 bytes, cut on a rune boundary, and ends in `…` when it
+   is cut.
 2. **Blocked.** An in-force settled decision that is not a constraint, and
    that Load marked `blocked`: it has at least one open blocker (see Blocked,
    conflicted, refined, and challenged at read time).
@@ -482,15 +485,21 @@ An in-force settled decision that is none of these does not appear.
 
 Text is one tab-separated line per item: `kind`, `id`, `decided_by`, and
 `statement`. `kind` is `constraint`, `blocked`, or `conflicting`. An empty
-`decided_by` prints as `-`. A field that holds a tab, a non-printing
-character, or invalid UTF-8 is Go-quoted, as in `sdf decision list`.
+`decided_by` prints as `-`. A field that holds a tab or a control character,
+starts with `"`, or is invalid UTF-8 is quoted with `strconv.Quote`. Unicode
+is kept; this is not the `strconv.QuoteToASCII` form `sdf decision list`
+uses.
 
 Output appears whenever at least one decision matched. When nothing matched,
-nothing is printed, including under `--format json`. When items are cut by
-`--max-items` or `--max-bytes`, the text ends with `N more: run sdf decision
-list`. With `--max-items 0`, the text is only that footer, and JSON is
+nothing is printed, including under `--format json`. When filling under
+`--max-items` or `--max-bytes`, an item that does not fit is skipped and
+the fill continues, so a later shorter item can still appear. When any item
+is skipped, the text ends with `N more: run sdf decision list`. With
+`--max-items 0`, the text is only that footer, and JSON is
 `{"items":[],"omitted":N}`. The omitted note counts toward `--max-bytes`;
-if the note alone still exceeds the cap, it is kept.
+if the note alone still exceeds the cap, it is kept. At the default 2048
+bytes, JSON fits about 9-10 typical items; statements near the 200-byte cap
+fit fewer.
 
 `--format json` prints indented JSON with an `items` array and an `omitted`
 count, both always present in that object when anything matched. Each item
@@ -498,12 +507,15 @@ has `id`, `kind`, `statement`, `status`, `decided_by`, and `locked`.
 `locked` is true only for a constraint the user made. `--json` is not a
 flag.
 
-A missing file, a missing directory, a path that is a directory, a file that
-cannot be read, a store error, a write error on stdout, or a brief in which
-nothing matched prints nothing and exits 0. Every runtime error is silent
-exit 0; only a usage error, such as a missing flag or a `--format` other
-than `text` or `json`, exits 2 with one `sdf decision brief: ...` line on
-stderr.
+A path that does not exist (a missing file or a missing parent directory)
+prints nothing and exits 0. A path that exists but cannot be read — not a
+regular file, a permissions error, a corrupt database, a lock wait past
+200ms, or a query past the 500ms deadline — prints one line, `sdf decision
+brief unavailable: run sdf decision list` (`{"unavailable":true}` in JSON),
+and exits 0. A brief in which nothing matched also prints nothing and exits
+0. A stdout write error exits 0 with nothing on stderr. Only a usage error,
+such as a missing flag or a `--format` other than `text` or `json`, exits 2
+with one `sdf decision brief: ...` line on stderr.
 
 ### Checking an action
 

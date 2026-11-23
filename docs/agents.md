@@ -28,9 +28,13 @@ For Claude Code and Codex it also adds a second SessionStart hook that runs
 `sdf decision brief` with no flags, so the agent receives the text brief on
 stdout at the start of a session. The command is
 `command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`,
-with a 2 second hook timeout. If `sdf` is not on `PATH`, the brief is
-empty, or the command fails, the hook exits 0 and prints nothing, so a
-session is never blocked. Claude Code's command is prefixed with
+with a 2 second hook timeout. The hook is fail-open and never blocks a
+session. If `sdf` is not on `PATH`, the store is missing, nothing matched,
+or the command fails, the hook exits 0 and injects nothing. When the store
+exists but cannot be read, `sdf decision brief` prints
+`sdf decision brief unavailable: run sdf decision list` on stdout and exits
+0; that is the line Claude Code and Codex inject. Claude Code's command is
+prefixed with
 `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0` so a Grok session that also reads
 `~/.claude/settings.json` does not inject a Claude brief. `sdf init` keeps
 your other hooks; only the exact command text an sdf build has written is
