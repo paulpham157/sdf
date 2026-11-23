@@ -9,6 +9,8 @@ import (
 // prints usage on stdout and exits 0 for --help and -h. sdf prices refresh
 // used to reject both as unrecognized arguments (exit 2) even though
 // sdf prices --help worked, and the README says every command accepts --help.
+// The expected lines are the usage text those commands print, including
+// sdf decision audit.
 func TestEveryCommandAcceptsHelp(t *testing.T) {
 	// A regression that falls through into refresh must not write the real cache.
 	t.Setenv("SDF_PRICE_CACHE", t.TempDir())
@@ -24,11 +26,12 @@ func TestEveryCommandAcceptsHelp(t *testing.T) {
 		{[]string{"init"}, "usage: sdf init "},
 		{[]string{"prices"}, "usage: sdf prices refresh [--url URL] [--out PATH]"},
 		{[]string{"prices", "refresh"}, "usage: sdf prices refresh [--url URL] [--out PATH]"},
-		{[]string{"decision"}, "usage: sdf decision <add|link|list|retract>"},
+		{[]string{"decision"}, "usage: sdf decision <add|link|list|retract|audit> [flags]"},
 		{[]string{"decision", "add"}, "usage: sdf decision add "},
 		{[]string{"decision", "link"}, "usage: sdf decision link "},
 		{[]string{"decision", "list"}, "usage: sdf decision list "},
 		{[]string{"decision", "retract"}, "usage: sdf decision retract "},
+		{[]string{"decision", "audit"}, "usage: sdf decision audit "},
 		{[]string{"audit"}, "usage: sdf audit "},
 		{[]string{"audit", "verify"}, "usage: sdf audit verify "},
 		{[]string{"audit", "head"}, "usage: sdf audit head "},
