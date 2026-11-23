@@ -387,3 +387,31 @@ func TestBuildFromASubdirectory(t *testing.T) {
 		t.Fatal("subdirectory build differs")
 	}
 }
+
+func TestGoTestDesignatesTestsTestdataAndModule(t *testing.T) {
+	paths := []string{"go.mod", "go.sum", "main.go", "a/a.go", "a/a_test.go", "a/testdata/in.txt",
+		"a/b/b_test.go", "a/b/testdata/deep/x", "c/c_test.go", "testdata/root.txt", "x_test.go"}
+	cases := map[string]string{
+		"go test ./...":            "go.mod go.sum a/a_test.go a/testdata/in.txt a/b/b_test.go a/b/testdata/deep/x c/c_test.go testdata/root.txt x_test.go",
+		"go test ./a":              "go.mod go.sum a/a_test.go a/testdata/in.txt",
+		"go test -run X ./a/...":   "go.mod go.sum a/a_test.go a/testdata/in.txt a/b/b_test.go a/b/testdata/deep/x",
+		"go test":                  "go.mod go.sum testdata/root.txt x_test.go",
+		"go vet ./c":               "go.mod go.sum c/c_test.go",
+		"go build ./...":           "",
+		"go test example.com/x/..": "go.mod go.sum testdata/root.txt x_test.go",
+	}
+	for cmd, want := range cases {
+		if got := strings.Join(goTestPaths(strings.Fields(cmd), paths), " "); got != want {
+			t.Errorf("%s:\n got %q\nwant %q", cmd, got, want)
+		}
+	}
+}
+
+func TestBuildRefusesACriterionThatPinsNothing(t *testing.T) {
+	dir, _ := testRepo(t, repoFiles)
+	in := sampleInput()
+	in.Criteria = []CriterionInput{{Name: "u", Argv: []string{"true"}}}
+	if _, err := Build(context.Background(), dir, in); err == nil || !strings.Contains(err.Error(), "designates no files") {
+		t.Fatalf("%v", err)
+	}
+}

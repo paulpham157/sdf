@@ -92,7 +92,7 @@ func TestFailClosedCodes(t *testing.T) {
 		}, CodeSecretInDiff, false},
 		{"task file rewritten in the submission", func(t *testing.T, f *fixture) Options {
 			other, err := task.Build(context.Background(), f.repo, task.Input{ID: "feat", Title: "Feature", Base: f.base,
-				Criteria: []task.CriterionInput{{Name: "unit", Argv: []string{"true"}}}})
+				Criteria: []task.CriterionInput{{Name: "unit", Argv: []string{"true"}, Designated: []string{"tests/*.sh"}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,7 +107,7 @@ func TestFailClosedCodes(t *testing.T) {
 		{"trusted copies disagree", func(t *testing.T, f *fixture) Options {
 			o := f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"}))
 			other, err := task.Build(context.Background(), f.repo, task.Input{ID: "feat", Title: "Other", Base: f.base,
-				Criteria: []task.CriterionInput{{Name: "unit", Argv: []string{"true"}}}})
+				Criteria: []task.CriterionInput{{Name: "unit", Argv: []string{"true"}, Designated: []string{"tests/*.sh"}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,8 +170,8 @@ func TestSecretIsNotCopiedIntoEvidence(t *testing.T) {
 
 func TestCriterionTimeoutAndCheckoutChanges(t *testing.T) {
 	f := newFixture(t,
-		task.CriterionInput{Name: "slow", Argv: []string{"sh", "-c", "sleep 30; true"}, TimeoutS: 1},
-		task.CriterionInput{Name: "writer", Argv: []string{"sh", "-c", "echo x >> README"}},
+		task.CriterionInput{Name: "slow", Argv: []string{"sh", "-c", "sleep 30; true"}, TimeoutS: 1, Designated: []string{"tests/*.sh"}},
+		task.CriterionInput{Name: "writer", Argv: []string{"sh", "-c", "echo x >> README"}, Designated: []string{"tests/*.sh"}},
 	)
 	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
 	res := mustRun(t, f.opts(sha))
@@ -188,7 +188,7 @@ func TestCriterionTimeoutAndCheckoutChanges(t *testing.T) {
 }
 
 func TestMissingCommandIsError(t *testing.T) {
-	f := newFixture(t, task.CriterionInput{Name: "unit", Argv: []string{"sdf-no-such-command-xyz"}})
+	f := newFixture(t, task.CriterionInput{Name: "unit", Argv: []string{"sdf-no-such-command-xyz"}, Designated: []string{"tests/*.sh"}})
 	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
 	res := mustRun(t, f.opts(sha))
 	if res.Status != StatusError || !hasCode(res, CodeCheckError) {

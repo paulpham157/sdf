@@ -57,6 +57,7 @@ func TestTaskDeclareAndShow(t *testing.T) {
 		"--check", "unit=go test ./...",
 		"--designated", "unit=pkg/**/*_test.go",
 		"--check", "accept=sh scripts/accept.sh",
+		"--designated", "accept=scripts/*.sh",
 		"--timeout", "120"}
 	out := run(t, args...)
 	if out.code != 0 || out.stderr != "" {
@@ -73,7 +74,7 @@ func TestTaskDeclareAndShow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(out.stdout, "task add-widget "+hash+"\n") ||
-		!strings.Contains(out.stdout, "designated files 2\n") ||
+		!strings.Contains(out.stdout, "designated files 3\n") || // a_test.go, accept.sh, go.mod (go test)
 		!strings.Contains(out.stdout, "written "+repoFile+"\n") ||
 		!strings.Contains(out.stdout, "written "+dataFile+"\n") ||
 		!strings.Contains(out.stdout, "written ledger\n") {
@@ -145,7 +146,7 @@ func TestTaskShowStripsTerminalControls(t *testing.T) {
 	repo := taskRepo(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	title := "Fix \x1b]0;owned\x07it\u202e now"
-	if r := run(t, "task", "declare", "--repo", filepath.Join(repo, "pkg"), "--write", "--id", "esc", "--title", title, "--check", "a=true"); r.code != 0 {
+	if r := run(t, "task", "declare", "--repo", filepath.Join(repo, "pkg"), "--write", "--id", "esc", "--title", title, "--check", "a=true", "--designated", "a=go.mod"); r.code != 0 {
 		t.Fatalf("%d %q", r.code, r.stderr)
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".sdf", "tasks", "esc.json")); err != nil {
@@ -154,6 +155,23 @@ func TestTaskShowStripsTerminalControls(t *testing.T) {
 	r := run(t, "task", "show", "esc", "--repo", repo)
 	if r.code != 0 || strings.ContainsAny(r.stdout, "\x1b\x07\u202e") || !strings.Contains(r.stdout, "title Fix ]0;ownedit now\n") {
 		t.Fatalf("%q", r.stdout)
+	}
+}
+
+func TestTaskDeclareRequiresAndWarnsAboutDesignation(t *testing.T) {
+	repo := taskRepo(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	r := run(t, "task", "declare", "--repo", repo, "--id", "none", "--title", "t", "--check", "a=make check")
+	if r.code != 1 || !strings.Contains(r.stderr, "designates no files") {
+		t.Fatalf("%d %q", r.code, r.stderr)
+	}
+	r = run(t, "task", "declare", "--repo", repo, "--id", "warn", "--title", "t", "--check", "a=sh scripts/accept.sh")
+	if r.code != 0 || !strings.Contains(r.stderr, "warning: criterion \"a\" pins only the files named in its argv") {
+		t.Fatalf("%d %q", r.code, r.stderr)
+	}
+	r = run(t, "task", "declare", "--repo", repo, "--id", "go", "--title", "t", "--check", "unit=go test ./...")
+	if r.code != 0 || r.stderr != "" || !strings.Contains(r.stdout, "designated files 2\n") {
+		t.Fatalf("go test auto-designation: %d %q %q", r.code, r.stdout, r.stderr)
 	}
 }
 
