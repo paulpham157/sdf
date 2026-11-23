@@ -12,14 +12,18 @@
 // address cannot read the summary or trigger a GitHub lookup.
 //
 // GET /api/summary is the sdf summary JSON document: summary.SummarizeWith
-// with the default span view, then outcome.Attach. GET /api/snapshot is that
-// same report arranged for the page. GET /api/decisions reads the append-only
-// decision records; it is empty when none have been recorded, and it is not
-// part of the summary. GET /api/decisions/graph arranges those records into
-// chapters for the Decisions tab (see package decisiongraph). Computed cost the summary marks unknown is returned
-// without a USD value. A budget file, when one is configured, adds a
-// comparison of computed session cost with one local ceiling. The comparison
-// is reported only. There is no route that writes the store.
+// with the default span view, then outcome.Attach (outcome.Summarize). GET
+// /api/snapshot is that same report arranged for the page. GET
+// /api/decisions reads the append-only decision records; it is empty when
+// none have been recorded, and it is not part of the summary. GET
+// /api/decisions/graph arranges those records into chapters for the
+// Decisions tab (see package decisiongraph), over the same report without
+// the budget, as sdf decision graph builds it. Requests that arrive while a
+// report is being built share it, so one page load makes one round of
+// GitHub calls, not one per route. Computed cost the summary marks unknown
+// is returned without a USD value. A budget file, when one is configured,
+// adds a comparison of computed session cost with one local ceiling. The
+// comparison is reported only. There is no route that writes the store.
 package ui
 
 import (
@@ -34,6 +38,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paulpham157/sdf/internal/decision"
@@ -200,6 +205,25 @@ type handler struct {
 	port   string
 	hosts  []string
 	mux    *http.ServeMux
+
+	flightMu sync.Mutex
+	flight   *reportFlight // the report being built now, if any
+	hooks    *reportHooks  // set by tests only; nil in production
+}
+
+// reportHooks lets a test see report sharing: beforeBuild runs at the start
+// of a build, joined when a request waits for a build already running.
+type reportHooks struct {
+	beforeBuild func()
+	joined      func()
+}
+
+// reportFlight is one report build that concurrent requests share.
+type reportFlight struct {
+	done   chan struct{}
+	report summary.Report
+	cat    *pricing.Catalog
+	err    error
 }
 
 func (h *handler) routes() {
@@ -300,7 +324,9 @@ func (h *handler) decisions(w http.ResponseWriter, r *http.Request) {
 // decision records and the same summarized sessions GET /api/summary reads.
 // sdf decision graph --json prints the same bytes for the same flags.
 func (h *handler) decisionGraph(w http.ResponseWriter, r *http.Request) {
-	report, _, err := h.load()
+	// No budget: the graph does not show one, and a bad budget file must
+	// not break this route. The same report sdf decision graph builds.
+	report, _, err := h.report()
 	if err != nil {
 		writeText(w, http.StatusInternalServerError, err.Error())
 		return
@@ -315,10 +341,60 @@ func (h *handler) decisionGraph(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	_ = decisiongraph.WriteJSON(w, view)
+	h.writeJSON(w, r, func(buf io.Writer) error { return decisiongraph.WriteJSON(buf, view) })
 }
 
+// load is the report with the budget applied, for /api/summary and
+// /api/snapshot.
 func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
+	report, cat, err := h.report()
+	if err != nil {
+		return summary.Report{}, nil, err
+	}
+	budget, err := summary.LoadBudget(h.budget)
+	if err != nil {
+		return summary.Report{}, nil, err
+	}
+	// report is shared with concurrent requests; ApplyBudget only sets
+	// report.Budget, on this copy.
+	summary.ApplyBudget(&report, budget)
+	return report, cat, nil
+}
+
+// report is outcome.Summarize over the store, without the budget. A
+// request that arrives while another is building it waits for that build
+// and shares the result, so the page's parallel requests for the summary,
+// the snapshot, and the graph make one round of git and GitHub lookups.
+// Nothing is kept once the build finishes: the next request reads the
+// store again. Callers must treat the shared report as read-only, apart
+// from top-level fields of their own copy.
+func (h *handler) report() (summary.Report, *pricing.Catalog, error) {
+	h.flightMu.Lock()
+	if f := h.flight; f != nil {
+		h.flightMu.Unlock()
+		if h.hooks != nil {
+			h.hooks.joined()
+		}
+		<-f.done
+		return f.report, f.cat, f.err
+	}
+	f := &reportFlight{done: make(chan struct{})}
+	h.flight = f
+	h.flightMu.Unlock()
+	defer func() {
+		h.flightMu.Lock()
+		h.flight = nil
+		h.flightMu.Unlock()
+		close(f.done)
+	}()
+	f.report, f.cat, f.err = h.buildReport()
+	return f.report, f.cat, f.err
+}
+
+func (h *handler) buildReport() (summary.Report, *pricing.Catalog, error) {
+	if h.hooks != nil {
+		h.hooks.beforeBuild()
+	}
 	cat, err := pricing.ResolveCatalog(h.prices)
 	if err != nil {
 		return summary.Report{}, nil, err
@@ -327,7 +403,6 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
-	report := summary.SummarizeWith(records, false, cat)
 	opt := outcome.Options{Repo: h.repo}
 	if h.github {
 		lookup, gerr := outcome.NewGitHub()
@@ -337,16 +412,11 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 			opt.Lookup = lookup
 		}
 	}
-	outcome.Attach(&report, opt)
-	budget, err := summary.LoadBudget(h.budget)
-	if err != nil {
-		return summary.Report{}, nil, err
-	}
-	summary.ApplyBudget(&report, budget)
-	return report, cat, nil
+	return outcome.Summarize(records, cat, opt), cat, nil
 }
 
-// writeJSON runs encode into memory first, then sends the result. An encoding error is logged and answered with 500 and a
+// writeJSON runs encode into memory first, then sends the result with
+// Content-Length. An encoding error is logged and answered with 500 and a
 // short JSON error, never 200 with an empty or partial body (issue #267).
 func (h *handler) writeJSON(w http.ResponseWriter, r *http.Request, encode func(io.Writer) error) {
 	var buf bytes.Buffer

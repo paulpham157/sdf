@@ -13,6 +13,8 @@
 package decisiongraph
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -123,9 +125,18 @@ type Facts struct {
 	Challenged     int `json:"challenged"`
 }
 
-// Explored counts choice points only: decided decisions, not-taken
-// alternatives, open hypotheses, and locked decisions. Refinements and
-// commits are not choice points. Percent is nil when there are none.
+// Explored counts choice points only. A refinement or a commit is never
+// one. Each other record counts once:
+//
+//   - Locked: it is blocked (active with an open blocker), whether it is a
+//     decision or a hypothesis. Facts.Locked counts the same records.
+//   - Decided: any other decision record, including one that was later
+//     superseded or retracted: the choice was made when it was recorded.
+//   - Hypotheses: any other hypothesis that is still active.
+//
+// A superseded or retracted hypothesis is not a choice point any more (a
+// later record settled or withdrew it). NotTaken adds the alternatives of
+// every record counted above. Percent is nil when there are none.
 type Explored struct {
 	Decided    int  `json:"decided"`
 	NotTaken   int  `json:"not_taken"`
@@ -285,15 +296,34 @@ type builder struct {
 	sessions map[string]*summary.SessionSummary
 	order    map[string]int    // session id -> position in the report
 	commitTo map[string]string // full commit SHA -> session id
+
+	// Edge indexes, built once so a chapter or a node reads only its own
+	// edges instead of every stored edge.
+	incident   map[string][]int         // decision id -> indexes into g.Edges with it at either end, ascending, once each
+	refinement map[string]bool          // decision id -> has a refines edge to another stored decision
+	evidence   map[string]decision.Edge // decision id -> latest counted validates/contradicts (decision.LatestEvidenceByDecision)
 }
 
 func newBuilder(g decision.Graph, sessions []summary.SessionSummary) *builder {
-	b := &builder{g: g, index: map[string]int{}, sessions: map[string]*summary.SessionSummary{}, order: map[string]int{}, commitTo: map[string]string{}}
+	b := &builder{g: g, index: map[string]int{}, sessions: map[string]*summary.SessionSummary{}, order: map[string]int{}, commitTo: map[string]string{},
+		incident: map[string][]int{}, refinement: map[string]bool{}}
 	for i, d := range g.Decisions {
 		if _, dup := b.index[d.ID]; !dup {
 			b.index[d.ID] = i
 		}
 	}
+	for i, e := range g.Edges {
+		if e.From.Kind == decision.KindDecision {
+			b.incident[e.From.Ref] = append(b.incident[e.From.Ref], i)
+		}
+		if e.To.Kind == decision.KindDecision && !(e.From.Kind == decision.KindDecision && e.From.Ref == e.To.Ref) {
+			b.incident[e.To.Ref] = append(b.incident[e.To.Ref], i)
+		}
+		if e.Relation == decision.RelRefines && e.From.Kind == decision.KindDecision && b.stored(e.To) && e.To.Ref != e.From.Ref {
+			b.refinement[e.From.Ref] = true
+		}
+	}
+	b.evidence = decision.LatestEvidenceByDecision(g)
 	for i := range sessions {
 		s := &sessions[i]
 		if _, dup := b.sessions[s.SessionID]; dup {
@@ -440,14 +470,23 @@ func (b *builder) sorted(ids []string) []string {
 
 func (b *builder) rec(id string) *decision.Record { return &b.g.Decisions[b.index[id]] }
 
-func (b *builder) isRefinement(id string) bool {
-	for _, e := range b.g.Edges {
-		if e.Relation == decision.RelRefines && e.From.Kind == decision.KindDecision && e.From.Ref == id &&
-			b.stored(e.To) && e.To.Ref != id {
-			return true
+func (b *builder) isRefinement(id string) bool { return b.refinement[id] }
+
+// chapterEdges is the indexes of every stored edge with a decision of ids
+// at either end, ascending (edge order), once each.
+func (b *builder) chapterEdges(ids []string) []int {
+	seen := map[int]bool{}
+	var out []int
+	for _, id := range ids {
+		for _, i := range b.incident[id] {
+			if !seen[i] {
+				seen[i] = true
+				out = append(out, i)
+			}
 		}
 	}
-	return false
+	sort.Ints(out)
+	return out
 }
 
 func (b *builder) role(id string) (role, lane string) {
@@ -498,10 +537,16 @@ func SplitAlternatives(text string) []string {
 
 // WhatIfCommand is the command the page copies for a not-taken alternative.
 // It records the alternative as a new hypothesis; the page never runs it.
+//
+// The new id is PARENT-alt-N. A decision id is at most 128 characters, so
+// a parent longer than 110 is cut to 100 and followed by the first 8 hex
+// digits of its SHA-256: two long parents that share a prefix still get
+// different ids.
 func WhatIfCommand(parent string, n int, text string) string {
 	base := parent
 	if len(base) > 110 {
-		base = base[:110]
+		sum := sha256.Sum256([]byte(parent))
+		base = base[:100] + "-" + hex.EncodeToString(sum[:4])
 	}
 	id := fmt.Sprintf("%s-alt-%d", base, n)
 	return "sdf decision add --id " + id + " --status hypothesis --statement " + shellQuote(text) +
@@ -541,24 +586,38 @@ func (b *builder) chapter(ids []string) Chapter {
 
 	// Sessions and commits linked to the chapter, and which decisions they
 	// carry out (implements, validates) or merely touch.
-	type outcomeLink struct{ strong, weak []string }
+	type outcomeLink struct {
+		strong, weak []string
+		seen         map[[2]string]bool // {"strong"|"weak", id}
+	}
 	sessionVia := map[string]*outcomeLink{}
 	commitVia := map[string]*outcomeLink{}
 	var sessionOrder, commitOrder []string
 	note := func(m map[string]*outcomeLink, order *[]string, key, id, rel string) {
 		l, ok := m[key]
 		if !ok {
-			l = &outcomeLink{}
+			l = &outcomeLink{seen: map[[2]string]bool{}}
 			m[key] = l
 			*order = append(*order, key)
 		}
-		if rel == decision.RelImplements || rel == decision.RelValidates {
-			l.strong = appendOnce(l.strong, id)
+		strong := rel == decision.RelImplements || rel == decision.RelValidates
+		k := [2]string{"weak", id}
+		if strong {
+			k[0] = "strong"
+		}
+		if l.seen[k] {
+			return
+		}
+		l.seen[k] = true
+		if strong {
+			l.strong = append(l.strong, id)
 		} else {
-			l.weak = appendOnce(l.weak, id)
+			l.weak = append(l.weak, id)
 		}
 	}
-	for _, e := range b.g.Edges {
+	chEdges := b.chapterEdges(ids)
+	for _, ei := range chEdges {
+		e := b.g.Edges[ei]
 		for _, pair := range [][2]decision.Endpoint{{e.From, e.To}, {e.To, e.From}} {
 			self, other := pair[0], pair[1]
 			if !b.stored(self) || !in[self.Ref] {
@@ -614,15 +673,16 @@ func (b *builder) chapter(ids []string) Chapter {
 
 	// Endings: one per pull request or, without one, per linked commit.
 	type endingAcc struct {
-		node Node
-		via  []string
+		node    Node
+		via     []string
+		viaSeen map[string]bool
 	}
 	var endings []*endingAcc
 	byKey := map[string]*endingAcc{}
 	addEnding := func(key string, e Ending, title string, via []string, sid string) {
 		acc, ok := byKey[key]
 		if !ok {
-			acc = &endingAcc{node: Node{ID: "ending:" + key, Kind: KindEnding, Title: title}}
+			acc = &endingAcc{node: Node{ID: "ending:" + key, Kind: KindEnding, Title: title}, viaSeen: map[string]bool{}}
 			e.Sessions, e.Via = []string{}, []string{}
 			acc.node.Ending = &e
 			byKey[key] = acc
@@ -632,7 +692,10 @@ func (b *builder) chapter(ids []string) Chapter {
 			acc.node.Ending.Sessions = appendOnce(acc.node.Ending.Sessions, sid)
 		}
 		for _, id := range via {
-			acc.via = appendOnce(acc.via, id)
+			if !acc.viaSeen[id] {
+				acc.viaSeen[id] = true
+				acc.via = append(acc.via, id)
+			}
 		}
 	}
 	viaOf := func(l *outcomeLink) []string {
@@ -705,7 +768,8 @@ func (b *builder) chapter(ids []string) Chapter {
 		case LaneRight:
 			from := max(lastSpineRow, 1)
 			if role == RoleRefinement {
-				for _, e := range b.g.Edges {
+				for _, ei := range b.incident[id] {
+					e := b.g.Edges[ei]
 					if e.Relation == decision.RelRefines && e.From.Ref == id && e.From.Kind == decision.KindDecision {
 						if r, ok := rowOf[e.To.Ref]; ok && laneOf[e.To.Ref] != LaneRight {
 							from = r
@@ -796,13 +860,19 @@ func (b *builder) chapter(ids []string) Chapter {
 	}
 
 	// Stored edges between two decisions of this chapter, once per
-	// relation and pair.
+	// relation and pair. conflicts_with is symmetric, so its key is the
+	// pair in sorted order: a legacy row stored in the other order is the
+	// same conflict and is drawn once, as Facts.Conflicts counts it once.
 	seen := map[[3]string]bool{}
-	for _, e := range b.g.Edges {
+	for _, ei := range chEdges {
+		e := b.g.Edges[ei]
 		if !b.stored(e.From) || !b.stored(e.To) || !in[e.From.Ref] || e.From.Ref == e.To.Ref {
 			continue
 		}
 		key := [3]string{e.Relation, e.From.Ref, e.To.Ref}
+		if e.Relation == decision.RelConflictsWith && key[2] < key[1] {
+			key[1], key[2] = key[2], key[1]
+		}
 		if seen[key] {
 			continue
 		}
@@ -816,7 +886,10 @@ func (b *builder) chapter(ids []string) Chapter {
 	for _, id := range ids {
 		d := b.rec(id)
 		role, _ := b.role(id)
-		if d.Blocked {
+		// locked is the one rule for Facts.Locked, its attention row, and
+		// Explored.Locked: a blocked record that is a choice point.
+		locked := d.Blocked && role != RoleRefinement
+		if locked {
 			ch.Facts.Locked++
 			ch.Attention = append(ch.Attention, Attention{Kind: "locked", Nodes: append([]string{id}, d.OpenBlockers...),
 				Text: id + " waits on " + strings.Join(d.OpenBlockers, ", ")})
@@ -850,14 +923,17 @@ func (b *builder) chapter(ids []string) Chapter {
 		}
 		alts := len(SplitAlternatives(d.Alternatives))
 		switch {
-		case d.Status == decision.StatusDecision && d.Blocked:
+		case locked:
 			ch.Explored.Locked++
 		case d.Status == decision.StatusDecision:
+			// Superseded and retracted decision records count too: the
+			// choice was made when the record was written (documented in
+			// docs/outcomes.md).
 			ch.Explored.Decided++
 		case d.EffectiveStatus == decision.EffectiveActive:
 			ch.Explored.Hypotheses++
 		default:
-			continue // a hypothesis already settled or withdrawn is no longer a choice point
+			continue // a superseded or retracted hypothesis is not a choice point
 		}
 		ch.Explored.NotTaken += alts
 	}
@@ -890,11 +966,11 @@ func attentionRank(kind string) int {
 }
 
 // challenger names the source of the latest evidence that counts toward
-// Challenged, using the decision package's rule (decision.LatestEvidence),
-// so a validates or contradicts from a retracted or superseded decision is
-// skipped here too.
+// Challenged, using the decision package's rule (b.evidence, from
+// decision.LatestEvidenceByDecision), so a validates or contradicts from a
+// retracted or superseded decision is skipped here too.
 func (b *builder) challenger(id string) string {
-	e, ok := decision.LatestEvidence(b.g, id)
+	e, ok := b.evidence[id]
 	if !ok || e.Relation != decision.RelContradicts {
 		return ""
 	}
@@ -903,7 +979,8 @@ func (b *builder) challenger(id string) string {
 
 func (b *builder) links(id string) []Link {
 	var out []Link
-	for _, e := range b.g.Edges {
+	for _, ei := range b.incident[id] {
+		e := b.g.Edges[ei]
 		if e.From.Kind == decision.KindDecision && e.From.Ref == id {
 			out = append(out, Link{Relation: e.Relation, Direction: "out", Kind: e.To.Kind, Ref: e.To.Ref, RecordedAt: e.RecordedAt})
 		}
