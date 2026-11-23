@@ -223,22 +223,7 @@ func normalizeJSON(v any) (any, error) {
 // would put there. changed is false when merge reports no change. It does
 // not touch the filesystem beyond reading path.
 func planJSON(path string, merge func(map[string]any) (bool, error)) ([]byte, bool, error) {
-	root := map[string]any{}
-	var order *keyOrder
-	indent := "  "
-	if body, err := os.ReadFile(path); err == nil {
-		if !json.Valid(body) {
-			return nil, false, fmt.Errorf("%s is not JSON; it was not changed", path)
-		}
-		root, order, err = decodeSettings(body)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: %w", path, err)
-		}
-		indent = detectIndent(body)
-	} else if !os.IsNotExist(err) {
-		return nil, false, err
-	}
-	changed, err := merge(root)
+	root, order, indent, changed, err := planMerge(path, merge)
 	if err != nil {
 		return nil, false, err
 	}
@@ -247,6 +232,78 @@ func planJSON(path string, merge func(map[string]any) (bool, error)) ([]byte, bo
 		return nil, false, err
 	}
 	return encoded, changed, nil
+}
+
+func planMerge(path string, merge func(map[string]any) (bool, error)) (map[string]any, *keyOrder, string, bool, error) {
+	root := map[string]any{}
+	var order *keyOrder
+	indent := "  "
+	if body, err := os.ReadFile(path); err == nil {
+		if !json.Valid(body) {
+			return nil, nil, "", false, fmt.Errorf("%s is not JSON; it was not changed", path)
+		}
+		root, order, err = decodeSettings(body)
+		if err != nil {
+			return nil, nil, "", false, fmt.Errorf("%s: %w", path, err)
+		}
+		indent = detectIndent(body)
+	} else if !os.IsNotExist(err) {
+		return nil, nil, "", false, err
+	}
+	changed, err := merge(root)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	return root, order, indent, changed, nil
+}
+
+// previewJSON is the dry-run text for a JSON merge. It shows only the keys
+// sdf manages (the paths in shape, with the merged values), never the rest of
+// the file, which can hold API keys in env or mcpServers.
+func previewJSON(path string, merge func(map[string]any) (bool, error), shape map[string]any) string {
+	root, order, _, changed, err := planMerge(path, merge)
+	if err != nil {
+		return fmt.Sprintf("not written: %v. --write will refuse.\n", err)
+	}
+	if !changed {
+		return path + " already has these values (not written)\n"
+	}
+	managed := restrictTo(root, shape)
+	encoded, err := encodeSettings(managed, order, "  ")
+	if err != nil {
+		return fmt.Sprintf("not written: %v\n", err)
+	}
+	others := 0
+	for key := range root {
+		if _, ok := shape[key]; !ok {
+			others++
+		}
+	}
+	note := "Keys sdf does not manage are kept as they are and not shown."
+	if others > 0 {
+		note = fmt.Sprintf("%d other top-level key(s), and keys sdf does not manage inside these objects, are kept as they are and not shown.", others)
+	}
+	return fmt.Sprintf("not written (pass --write to update %s; an existing file is copied to a .sdf-bak sibling first).\nsdf would set:\n%s%s\n", path, encoded, note)
+}
+
+// restrictTo returns the parts of merged named by shape: an object in shape
+// recurses, any other value takes merged's value whole.
+func restrictTo(merged, shape map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, want := range shape {
+		have, ok := merged[key]
+		if !ok {
+			continue
+		}
+		wantMap, wantObj := want.(map[string]any)
+		haveMap, haveObj := have.(map[string]any)
+		if wantObj && haveObj {
+			out[key] = restrictTo(haveMap, wantMap)
+			continue
+		}
+		out[key] = have
+	}
+	return out
 }
 
 func mergeJSON(path string, write bool, merge func(map[string]any) (bool, error)) (string, error) {
@@ -267,15 +324,101 @@ func mergeJSON(path string, write bool, merge func(map[string]any) (bool, error)
 	return replaceFile(path, encoded, fallback)
 }
 
+// resolveTarget follows path's symlinks by hand, so a link to a file that
+// does not exist yet (a stow-style dotfile) resolves to the file to create.
+// A relative link is read relative to the link's directory.
+func resolveTarget(path string) (string, error) {
+	current := path
+	for range 40 {
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return current, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			return current, nil
+		}
+		link, err := os.Readlink(current)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(link) {
+			link = filepath.Join(filepath.Dir(current), link)
+		}
+		current = link
+	}
+	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
+}
+
+// checkWritable refuses a target that exists and that we may not write. It
+// opens the file write-only without truncating, so nothing changes. Root
+// passes that open on any mode, so a file with no write bit at all (0400,
+// 0444) is refused too: the owner marked it read-only on purpose.
+func checkWritable(path string) error {
+	target, err := resolveTarget(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file; it was not changed", path)
+	}
+	if info.Mode().Perm()&0o222 == 0 {
+		return fmt.Errorf("%s is read-only (mode %04o); it was not changed", path, info.Mode().Perm())
+	}
+	f, err := os.OpenFile(target, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("%s is not writable (%v); it was not changed", path, trimPathErr(err))
+	}
+	return f.Close()
+}
+
+func trimPathErr(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
+}
+
+// checkAllWritable runs checkWritable on every file one init writes, before
+// it writes any, so a read-only second file does not leave the first one
+// changed.
+func checkAllWritable(paths ...string) error {
+	for _, path := range paths {
+		if err := checkWritable(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // replaceFile backs up an existing path, then writes body atomically. A
 // symlinked path is written through: the link stays and its target gets the
-// new bytes. The target's permission bits are kept; a new file gets fallback.
-// If the write fails, the temp file and the backup made for it are removed and
-// path is left as it was.
+// new bytes; a link to a missing file creates that file. The target's
+// permission bits are kept, and its owner and group when the process may set
+// them; a new file gets fallback. A read-only target is refused before
+// anything is written. If the write fails, the temp file and the backup made
+// for it are removed and path is left as it was.
+//
+// The rename gives the target a new inode, so other hard links to the old
+// file keep the old bytes, and extended attributes and ACLs are not copied.
 func replaceFile(path string, body []byte, fallback os.FileMode) (string, error) {
+	if err := checkWritable(path); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
+	links := hardLinks(path)
 	backup, err := copyAside(path)
 	if err != nil {
 		return "", err
@@ -286,23 +429,26 @@ func replaceFile(path string, body []byte, fallback os.FileMode) (string, error)
 		}
 		return "", err
 	}
-	return wrote(path, backup), nil
+	text := wrote(path, backup)
+	if links > 1 {
+		text += fmt.Sprintf("note: %s had %d hard links; the other links still hold the old contents\n", path, links)
+	}
+	return text, nil
 }
 
 // renameFile is os.Rename; tests replace it to make a write fail.
 var renameFile = os.Rename
 
 func writeAtomic(path string, body []byte, fallback os.FileMode) error {
-	target := path
-	if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSymlink != 0 {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		target = resolved
+	target, err := resolveTarget(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	mode := fileMode(target, fallback)
 	dir := filepath.Dir(target)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(target)+".sdf-tmp-*")
 	if err != nil {
 		return err
@@ -319,6 +465,7 @@ func writeAtomic(path string, body []byte, fallback os.FileMode) error {
 	if err := tmp.Chmod(mode); err != nil {
 		return fail(err)
 	}
+	keepOwner(tmp, target)
 	if err := tmp.Sync(); err != nil {
 		return fail(err)
 	}

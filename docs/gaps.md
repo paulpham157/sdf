@@ -50,6 +50,11 @@
   not joined; tool calls come from the logs. The Gemini CLI mapping and the
   `gemini_*.json` samples come from the published docs and source, not from a
   live session.
+- `gemini --resume` reuses the `session.id`, but the new process restarts its
+  cumulative counters at 0, and cumulative series keep only their latest
+  point, so a resumed session undercounts cumulative tokens (1000 then 500
+  reads as 500) until [#191](https://github.com/paulpham157/sdf/pull/191)
+  merges.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
   SQLite file.

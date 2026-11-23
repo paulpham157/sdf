@@ -90,7 +90,9 @@ An empty database shows an empty state that points at `sdf init`.
 file unless you pass `--write`. An existing file is copied to a sibling
 ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
 the new copy gets a timestamped name). The new bytes are written to a temp
-file and renamed into place, keeping the file mode. A file that is not valid JSON is
+file and renamed into place, keeping the file mode. A read-only file is
+refused and left alone. Without `--write`, the JSON agents print only the
+keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
 ```bash
@@ -154,18 +156,32 @@ sets `logPrompts: false` only when the file does not already set
 `logPrompts`; Gemini CLI's own default is `true`, and an existing
 `logPrompts: true` is kept with a warning. Replacing an existing `target`,
 `otlpEndpoint`, or `otlpProtocol` prints the old and new value. Without
-`--write` it prints the whole file it would write and the same warnings.
+`--write` it prints the `telemetry` keys sdf manages as they would be
+written, and the same warnings. It never prints the rest of the file
+(`mcpServers` env, `otlpHeaders`, and the like can hold secrets); it only says
+how many other top-level keys are kept.
 
 An existing file is copied to a `.sdf-bak` sibling first. A backup that is
 already there is never overwritten: the copy goes to
 `.sdf-bak.<UTC timestamp>` instead (with `-2`, `-3` if that is taken too).
 The new bytes go to a temp file in the same directory, which is synced and
 then renamed over the old file, so a crash leaves either the old or the new
-file. The file mode is kept. When `settings.json` is a symlink, sdf writes
-through it: the link stays and its target is replaced, and the backup sits
-next to the link. If the write fails, the temp file and the backup it just
-made are removed. The same backup and atomic write apply to every file
-`sdf init --write` changes.
+file. The file mode is kept, and so are its owner and group when the process
+may set them (as root, or for a group you belong to); otherwise the new file
+belongs to you. Because the file is replaced, not rewritten in place, other
+hard links to it keep the old contents (sdf prints a note when the file had
+more than one link), and extended attributes and ACLs are not copied. When
+`settings.json` is a symlink, sdf writes through it: the link stays and its
+target is replaced, and the backup sits next to the link. A link to a file
+that does not exist yet (a stow-style dotfile) creates that file, with a
+relative link read from the link's directory. A file that exists but that
+sdf may not write, or that has no write bit at all (`0400`, `0444`, even for
+root), is refused before any backup or write. If the write fails, the temp
+file and the backup it just made are removed. The same checks, backup, and
+atomic write apply to every file `sdf init --write` changes, the Codex
+`config.toml` included. When one agent needs two files (Codex `config.toml`
+and `hooks.json`, Pi settings and its extension, OpenCode's env file and
+plugin), both are checked before either is written.
 
 A file that is not plain JSON (Gemini CLI also accepts comments) is left
 untouched, and the printed `GEMINI_TELEMETRY_*` variables can be used

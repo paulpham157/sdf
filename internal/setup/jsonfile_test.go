@@ -212,14 +212,17 @@ func TestGeminiDryRunWarnsAndPrintsMergedJSON(t *testing.T) {
 		`telemetry.otlpEndpoint "http://localhost:4317" -> "http://127.0.0.1:4318"`,
 		`telemetry.otlpProtocol "grpc" -> "http"`,
 		"telemetry.logPrompts=true",
-		"It would become:",
-		`"theme": "a&b"`,
+		"sdf would set:",
 		`"logPrompts": true`,
 		`"enabled": true`,
+		"1 other top-level key(s)",
 	} {
 		if !strings.Contains(res.Text, want) {
 			t.Fatalf("missing %q\n%s", want, res.Text)
 		}
+	}
+	if strings.Contains(res.Text, "theme") {
+		t.Fatalf("dry run printed a key sdf does not manage\n%s", res.Text)
 	}
 	if mustReadString(t, path) != original {
 		t.Fatal("dry run changed the file")

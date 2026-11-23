@@ -147,7 +147,7 @@ func claude(req Request) (Result, error) {
 	for _, key := range claudeOrder {
 		fmt.Fprintf(&b, "export %s=%s\n", key, env[key])
 	}
-	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
+	merge := func(root map[string]any) (bool, error) {
 		envChanged, err := mergeStringMap(root, "env", env)
 		if err != nil {
 			return false, err
@@ -157,9 +157,17 @@ func claude(req Request) (Result, error) {
 			return false, err
 		}
 		return envChanged || hooksChanged, nil
-	})
+	}
+	status, err := mergeJSON(path, req.Write, merge)
 	if err != nil {
 		return Result{}, err
+	}
+	if !req.Write {
+		envShape := map[string]any{}
+		for key, value := range env {
+			envShape[key] = value
+		}
+		status = previewJSON(path, merge, map[string]any{"env": envShape, "hooks": claudeHooks(req.Endpoint.base() + "/v1/sessions")})
 	}
 	b.WriteString("\n")
 	b.WriteString(status)
@@ -223,8 +231,8 @@ func codex(req Request) (Result, error) {
 		b.WriteString("\nnot written: " + path + " already has an [otel] table; it was not changed\n")
 		return Result{Text: b.String()}, nil
 	}
-	backup, err := copyAside(path)
-	if err != nil {
+	hooks := filepath.Join(req.CodexHome, "hooks.json")
+	if err := checkAllWritable(path, hooks); err != nil {
 		return Result{}, err
 	}
 	var body []byte
@@ -238,12 +246,13 @@ func codex(req Request) (Result, error) {
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
 	}
-	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
+	status, err := replaceFile(path, body, 0o600)
+	if err != nil {
 		return Result{}, err
 	}
 	b.WriteString("\n")
-	b.WriteString(wrote(path, backup))
-	hookStatus, err := writeBytes(filepath.Join(req.CodexHome, "hooks.json"), []byte(codexHooks(req.Endpoint.base()+"/v1/sessions")), true)
+	b.WriteString(status)
+	hookStatus, err := writeBytes(hooks, []byte(codexHooks(req.Endpoint.base()+"/v1/sessions")), true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -292,12 +301,15 @@ func opencode(req Request) (Result, error) {
 		b.WriteString("not written (pass --write)\n")
 		return Result{Text: b.String()}, nil
 	}
+	plugin := filepath.Join(req.Home, ".config", "opencode", "plugins", "sdf-session.js")
+	if err := checkAllWritable(path, plugin); err != nil {
+		return Result{}, err
+	}
 	status, err := writeBytes(path, []byte("# source this file before starting opencode\n"+line), req.Write)
 	if err != nil {
 		return Result{}, err
 	}
 	b.WriteString(status)
-	plugin := filepath.Join(req.Home, ".config", "opencode", "plugins", "sdf-session.js")
 	hookStatus, err := writeBytes(plugin, []byte(opencodePlugin(req.Endpoint.base()+"/v1/sessions")), req.Write)
 	if err != nil {
 		return Result{}, err
@@ -332,18 +344,28 @@ func pi(req Request) (Result, error) {
 	fmt.Fprintf(&b, "export PI_OTEL_METRICS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_LOGS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_SPAN_NAMING=genai\n\n")
-	status, err := mergeJSON(target, req.Write, func(root map[string]any) (bool, error) {
-		return mergeAnyMap(root, "otel", otel)
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	b.WriteString(status)
 	piDir := filepath.Join(req.ProjectDir, ".pi", "extensions")
 	if req.Global {
 		piDir = filepath.Join(req.Home, ".pi", "agent", "extensions")
 	}
-	extStatus, err := writeBytes(filepath.Join(piDir, "sdf-session.js"), []byte(piExtension(req.Endpoint.base()+"/v1/sessions")), req.Write)
+	extension := filepath.Join(piDir, "sdf-session.js")
+	if req.Write {
+		if err := checkAllWritable(target, extension); err != nil {
+			return Result{}, err
+		}
+	}
+	merge := func(root map[string]any) (bool, error) {
+		return mergeAnyMap(root, "otel", otel)
+	}
+	status, err := mergeJSON(target, req.Write, merge)
+	if err != nil {
+		return Result{}, err
+	}
+	if !req.Write {
+		status = previewJSON(target, merge, map[string]any{"otel": piOtel(req.Endpoint)})
+	}
+	b.WriteString(status)
+	extStatus, err := writeBytes(extension, []byte(piExtension(req.Endpoint.base()+"/v1/sessions")), req.Write)
 	if err != nil {
 		return Result{}, err
 	}
@@ -427,15 +449,11 @@ func gemini(req Request) (Result, error) {
 			return Result{}, err
 		}
 	} else {
-		encoded, changed, err := planJSON(path, merge)
-		switch {
-		case err != nil:
-			status = fmt.Sprintf("not written: %v. --write will refuse; use the variables above.\n", err)
-		case !changed:
-			status = path + " already has these values (not written)\n"
-		default:
-			status = fmt.Sprintf("not written (pass --write to update %s; an existing file is copied to a .sdf-bak sibling first). It would become:\n%s", path, encoded)
+		shape := map[string]any{"telemetry": map[string]any{"logPrompts": false}}
+		for key, value := range want {
+			shape["telemetry"].(map[string]any)[key] = value
 		}
+		status = previewJSON(path, merge, shape)
 	}
 	b.WriteString(status)
 	b.WriteString(warnings.String())
