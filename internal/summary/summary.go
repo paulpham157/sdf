@@ -407,9 +407,10 @@ func attribute(records []record.Record) (map[sessionKey][]record.Record, []recor
 		bounds[key] = [2]int64{open, end}
 		boundsSet[key] = true
 	}
+	segments := qwenSegments(scoped)
 	var leftover []record.Record
 	for _, rec := range unscoped {
-		key, ok := matchSession(rec, traceKeys, spanKeys, bounds)
+		key, ok := matchSession(rec, traceKeys, spanKeys, bounds, segments)
 		if !ok {
 			leftover = append(leftover, rec)
 			continue
@@ -428,7 +429,7 @@ func addKey(index map[string]map[sessionKey]struct{}, id string, key sessionKey)
 	set[key] = struct{}{}
 }
 
-func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionKey]struct{}, bounds map[sessionKey][2]int64) (sessionKey, bool) {
+func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionKey]struct{}, bounds map[sessionKey][2]int64, qwenSegs map[sessionKey][]int64) (sessionKey, bool) {
 	if rec.TraceID != nil {
 		if key, ok := onlyKey(traceKeys[*rec.TraceID]); ok {
 			return key, true
@@ -479,7 +480,7 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 		return matches[0], true
 	}
 	if len(matches) == 0 {
-		return qwenLateFlush(tool, rec, stamp, bounds)
+		return qwenLateFlush(tool, rec, stamp, qwenSegs)
 	}
 	return sessionKey{}, false
 }

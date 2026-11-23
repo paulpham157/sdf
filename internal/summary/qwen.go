@@ -308,12 +308,38 @@ func (idx *qwenIndex) earlierSession(self string, runStart, sessionStart int64) 
 	return false
 }
 
+// qwenSegments lists, per Qwen Code session, the sorted timestamps of its
+// logs and spans, so a late metric point can find the part of a session
+// that ran in the point's process (a resumed session runs in several).
+func qwenSegments(scoped map[sessionKey][]record.Record) map[sessionKey][]int64 {
+	out := map[sessionKey][]int64{}
+	for key, grouped := range scoped {
+		if key.tool != "qwen-code" {
+			continue
+		}
+		var st []int64
+		for _, rec := range grouped {
+			if rec.Signal != "metrics" {
+				st = append(st, stamps(rec)...)
+			}
+		}
+		if len(st) == 0 {
+			continue
+		}
+		sort.Slice(st, func(i, j int) bool { return st[i] < st[j] })
+		out[key] = st
+	}
+	return out
+}
+
 // qwenLateFlush places a cumulative Qwen Code metric point that no session
 // window holds, such as the flush at process exit after the last log. It
-// goes to the session that started latest at or before the point among the
-// sessions that started in the point's process run (no more than
-// qwenStartupSlack before its start time). A tie is left unattributed.
-func qwenLateFlush(tool string, rec record.Record, stamp int64, bounds map[sessionKey][2]int64) (sessionKey, bool) {
+// goes to the session whose part in the point's process run started latest
+// at or before the point. A session's part in a run starts at its first log
+// or span no more than qwenStartupSlack before the run's start time, so a
+// session resumed in a new process (qwen --resume) is placed by when it
+// resumed, not when it first started. A tie is left unattributed.
+func qwenLateFlush(tool string, rec record.Record, stamp int64, segments map[sessionKey][]int64) (sessionKey, bool) {
 	if tool != "qwen-code" || rec.Signal != "metrics" || deref(rec.MetricTemporality) != "cumulative" || rec.StartUnixNano == nil || *rec.StartUnixNano <= 0 {
 		return sessionKey{}, false
 	}
@@ -321,14 +347,16 @@ func qwenLateFlush(tool string, rec record.Record, stamp int64, bounds map[sessi
 	var best sessionKey
 	var bestLo int64
 	found, tie := false, false
-	for key, lohi := range bounds {
-		if key.tool != tool || lohi[0] < start-qwenStartupSlack || lohi[0] > stamp {
+	for key, st := range segments {
+		i := sort.Search(len(st), func(i int) bool { return st[i] >= start-qwenStartupSlack })
+		if key.tool != tool || i == len(st) || st[i] > stamp {
 			continue
 		}
+		lo := st[i]
 		switch {
-		case !found || lohi[0] > bestLo:
-			best, bestLo, found, tie = key, lohi[0], true, false
-		case lohi[0] == bestLo:
+		case !found || lo > bestLo:
+			best, bestLo, found, tie = key, lo, true, false
+		case lo == bestLo:
 			tie = true
 		}
 	}

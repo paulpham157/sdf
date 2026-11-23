@@ -113,8 +113,9 @@
   (attributes, resource, start time) is added up (the same rule as
   [#191](https://github.com/paulpham157/sdf/pull/191)), and a point after
   the last session window, such as the flush at exit, goes to the session
-  that started latest in that run (no more than 10 s before the run's start
-  time). From each run the session's share subtracts the run's latest point
+  whose part in that run started latest (its first log or span no more than
+  10 s before the run's start time, so a session resumed in a new process
+  counts from when it resumed). From each run the session's share subtracts the run's latest point
   before the session's first one, wherever that point was attributed (an
   earlier session in that process, after `/clear`). With no such point the
   share is the whole run when no other Qwen session started in the run, and

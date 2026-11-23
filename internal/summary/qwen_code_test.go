@@ -418,3 +418,25 @@ func TestQwenMetricTokensSlowStartupOfTheOnlySession(t *testing.T) {
 		t.Fatalf("A input %v, want 300 (slow startup, one session)", a.Vals["input"])
 	}
 }
+
+func TestQwenMetricTokensResumedSessionKeepsTheNewProcessExitFlush(t *testing.T) {
+	// qwen --resume R in a second process (start 50 s). That process's exit
+	// flush (200 at 80 s) comes after R's last log; it belongs to R even
+	// though R first started in the earlier process. 300 + 200.
+	rows := []record.Record{
+		qwenSessionLog("R", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("R", "qwen-code.conversation_finished", 10*sec),
+		qwenSessionLog("R", "qwen-code.user_prompt", 52*sec),
+		qwenSessionLog("R", "qwen-code.conversation_finished", 60*sec),
+		qwenTokenPoint("", "input", 100, 1*sec, 5*sec, 1, nil),
+		qwenTokenPoint("", "input", 300, 1*sec, 10*sec, 2, nil),
+		qwenTokenPoint("", "input", 50, 50*sec, 55*sec, 3, nil),
+		qwenTokenPoint("", "input", 200, 50*sec, 80*sec, 4, nil),
+	}
+	if r := qwenTokensFor(t, rows, "R"); r.Vals["input"] != 500 {
+		t.Fatalf("resumed input %v, want 500 (the second process's exit flush kept)", r.Vals["input"])
+	}
+	if _, left := qwenSessionFor(t, rows, "R"); left != 0 {
+		t.Fatalf("%d metric points unattributed, want 0", left)
+	}
+}
