@@ -3,11 +3,13 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func hasSessionStartCommand(t *testing.T, path, want string) bool {
@@ -209,8 +211,8 @@ func TestDecisionBriefDoesNotTakeOverAUserBriefHook(t *testing.T) {
 
 func TestDecisionBriefRecognizerMatchesWrittenFormsOnly(t *testing.T) {
 	forms := sdfDecisionBriefForms(t)
-	if len(forms) != 4 {
-		t.Fatalf("testdata has %d forms, want 4 (current pair, then the unreleased pair)", len(forms))
+	if len(forms) != 6 {
+		t.Fatalf("testdata has %d forms, want 6 (current pair, then the exec and || exit 0 pairs)", len(forms))
 	}
 	for _, form := range forms {
 		hook := briefHook(form[1])
@@ -307,10 +309,46 @@ func TestDecisionBriefCommandFailOpen(t *testing.T) {
 		t.Fatalf("unavailable line: err=%v out=%q", err, out)
 	}
 
-	writeFakeSdf("#!/bin/sh\nexit 1\n")
+	const tsv = "constraint\tkeep-local\tuser\tDo not push.\nblocked\tship-it\tagent\tPush now.\n"
+	writeFakeSdf("#!/bin/sh\nprintf '%s' " + shQuote(tsv) + "\n")
 	out, err = run(decisionBriefCommand, nil)
-	if err == nil || out != "" {
-		t.Fatalf("nonzero after exec (no || exit 0): err=%v out=%q", err, out)
+	if err != nil || out != tsv {
+		t.Fatalf("tsv: err=%v out=%q want %q", err, out, tsv)
+	}
+
+	payload := strings.Repeat("A", 2047) + "\n"
+	payloadPath := filepath.Join(dir, "payload")
+	if err := os.WriteFile(payloadPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeSdf("#!/bin/sh\ncat " + shQuote(payloadPath) + "\n")
+	out, err = run(decisionBriefCommand, nil)
+	if err != nil || out != payload {
+		t.Fatalf("2048-byte payload: err=%v len=%d want 2048", err, len(out))
+	}
+
+	writeFakeSdf("#!/bin/sh\necho 'usage: sdf decision brief [--db PATH]'\nexit 2\n")
+	out, err = run(decisionBriefCommand, nil)
+	if err != nil || out != "" {
+		t.Fatalf("usage exit 2: err=%v out=%q", err, out)
+	}
+
+	writeFakeSdf("#!/bin/sh\necho leaked\nexit 1\n")
+	out, err = run(decisionBriefCommand, nil)
+	if err != nil || out != "" {
+		t.Fatalf("exit 1: err=%v out=%q", err, out)
+	}
+
+	writeFakeSdf("#!/bin/sh\necho leaked\nexit 139\n")
+	out, err = run(decisionBriefCommand, nil)
+	if err != nil || out != "" {
+		t.Fatalf("exit 139: err=%v out=%q", err, out)
+	}
+
+	writeFakeSdf("#!/bin/sh\necho leaked\nkill -9 $$\n")
+	out, err = run(decisionBriefCommand, nil)
+	if err != nil || out != "" {
+		t.Fatalf("kill 137: err=%v out=%q", err, out)
 	}
 
 	writeFakeSdf("#!/bin/sh\nexit 0\n")
@@ -461,6 +499,116 @@ func TestCodexInitAsksToTrustHooks(t *testing.T) {
 	if !strings.Contains(again.Text, "sdf-telemetry.sqlite in the session working directory") {
 		t.Fatalf("no-op rerun dropped the store-path note:\n%s", again.Text)
 	}
+}
+
+func TestDecisionBriefUpgradesEveryUnreleasedForm(t *testing.T) {
+	forms := []struct {
+		name, command string
+	}{
+		{"v1 || exit 0 (933ea35)", decisionBriefCommandV1},
+		{"v2 exec (99e874a)", decisionBriefCommandV2},
+	}
+	for _, form := range forms {
+		t.Run(form.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, ".claude", "settings.json")
+			settings := map[string]any{"hooks": map[string]any{
+				"SessionStart": []any{
+					map[string]any{"hooks": []any{
+						map[string]any{"type": "command", "command": claudeGuard + form.command, "timeout": 5},
+						map[string]any{"type": "command", "command": claudeGuard + decisionBriefCommandV1},
+					}},
+				},
+			}}
+			body, _ := json.MarshalIndent(settings, "", "  ")
+			writeSettings(t, path, string(body))
+			if res := claudeInit(t, home, 4318); !res.Wrote {
+				t.Fatal(res.Text)
+			}
+			if !hasSessionStartCommand(t, path, decisionBriefCommandFor("claude-code")) {
+				t.Fatal("old brief command was not upgraded in place")
+			}
+			if got := sessionStartBriefTimeouts(t, path); len(got) != 1 || got[0] != 5 {
+				t.Fatalf("want one brief hook with timeout 5, got %v", got)
+			}
+		})
+	}
+}
+
+func TestDecisionBriefHookStdoutClosesIfShellIsKilled(t *testing.T) {
+	requireSh(t)
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	pidFile := filepath.Join(dir, "sdf.pid")
+	bin := filepath.Join(dir, "sdf")
+	script := "#!/bin/sh\nprintf '%s\\n' $$ > " + shQuote(pidFile) + "\ntouch " + shQuote(ready) + "\nsleep 30\necho leaked\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", "-c", decisionBriefCommand)
+	cmd.Dir = dir
+	cmd.Env = append(envWithout("PATH"), "PATH="+dir)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if body, err := os.ReadFile(pidFile); err == nil {
+			if proc, err := os.FindProcess(atoiPID(t, string(body))); err == nil {
+				_ = proc.Kill()
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake sdf did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan []byte, 1)
+	go func() {
+		b, _ := io.ReadAll(stdout)
+		done <- b
+	}()
+	select {
+	case out := <-done:
+		if len(out) != 0 {
+			t.Fatalf("hook stdout after killing sh: %q", out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hook stdout stayed open after sh was killed")
+	}
+}
+
+func atoiPID(t *testing.T, s string) int {
+	t.Helper()
+	s = strings.TrimSpace(s)
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			t.Fatalf("pid %q", s)
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n <= 0 {
+		t.Fatalf("pid %q", s)
+	}
+	return n
 }
 
 // TestDecisionBriefHookCommandWithRealBinaryEmptyDir checks the missing-DB

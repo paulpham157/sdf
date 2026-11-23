@@ -261,8 +261,9 @@ func isSdfDecisionBriefHook(hook map[string]any) bool {
 // decision-brief SessionStart hook, without the Claude Grok guard. The guard
 // is stripped before comparison. Newest first.
 var sdfDecisionBriefCommands = []string{
-	decisionBriefCommand,   // current, exec
-	decisionBriefCommandV1, // unreleased, no exec
+	decisionBriefCommand,   // current, capture in sdf_out
+	decisionBriefCommandV2, // unreleased, exec
+	decisionBriefCommandV1, // unreleased, no capture, || exit 0
 }
 
 // positiveHookTimeout reports whether v is a positive integer timeout, as

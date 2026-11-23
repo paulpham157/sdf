@@ -140,10 +140,15 @@ const claudeGuard = `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; `
 // hung. The agent kills the hook at this budget; the command also fail-opens.
 const decisionBriefTimeout = 2
 
-// decisionBriefCommandV1 is the unreleased command this branch first wrote
-// (no exec, with `|| exit 0`). The recognizer still matches it so re-init
+// decisionBriefCommandV1 is the first unreleased command this branch wrote
+// (no capture, with `|| exit 0`). The recognizer still matches it so re-init
 // upgrades it in place.
 const decisionBriefCommandV1 = `command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`
+
+// decisionBriefCommandV2 is the unreleased exec form. It forwarded sdf's
+// exit code, so an old binary or a crash could surface as a SessionStart
+// hook error. The recognizer still matches it so re-init upgrades it.
+const decisionBriefCommandV2 = `command -v sdf >/dev/null 2>&1 || exit 0; exec sdf decision brief 2>/dev/null`
 
 // decisionBriefCommand is the SessionStart command that prints
 // `sdf decision brief` on stdout for the agent to inject. It takes no flags:
@@ -152,11 +157,16 @@ const decisionBriefCommandV1 = `command -v sdf >/dev/null 2>&1 || exit 0; sdf de
 // cannot be read or queried, brief prints one stdout line,
 // `sdf decision brief unavailable: run sdf decision list`, and still exits 0
 // with empty stderr; the hook passes that line through for the agent to
-// inject. `exec` replaces the hook shell so a 2s timeout kills sdf itself.
-// `command -v` and the hook timeout are belt-and-braces. The hook passes no
-// flags, and brief exits 0 on every other path, so there is no `|| exit 0`
-// after exec.
-const decisionBriefCommand = `command -v sdf >/dev/null 2>&1 || exit 0; exec sdf decision brief 2>/dev/null`
+// inject.
+//
+// Output is captured in sdf_out so a non-zero sdf (an old binary that prints
+// usage and exits 2, or a crash) cannot leak text or a non-zero hook status.
+// Command substitution also means an orphaned sdf writes to sh's pipe, not
+// the agent's stdout. $(...) strips trailing newlines and printf adds one
+// back, which matches brief's usual single trailing newline (including a
+// 2048-byte cap that ends in \n). `command -v`, `|| exit 0`, and the hook
+// timeout are belt-and-braces; brief's own bounds are well under 2s.
+const decisionBriefCommand = `command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0`
 
 func decisionBriefCommandFor(tool string) string {
 	if tool == "claude-code" {
