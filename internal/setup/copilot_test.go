@@ -227,10 +227,12 @@ func TestCopilotWriteKeepsModeFollowsSymlinkAndKeepsOldBackups(t *testing.T) {
 	if old, _ := os.ReadFile(real + ".sdf-bak"); string(old) != "an older backup\n" {
 		t.Fatalf("existing backup clobbered: %q", old)
 	}
-	if b1, _ := os.ReadFile(real + ".sdf-bak.1"); string(b1) != "# mine\n" {
-		t.Fatalf("new backup %q", b1)
+	// The shared replaceFile (as for every other agent) backs up next to the
+	// path it was given, here the link, and names the backup in its status.
+	if b, _ := os.ReadFile(link + ".sdf-bak"); string(b) != "# mine\n" {
+		t.Fatalf("new backup %q", b)
 	}
-	if !strings.Contains(res.Text, "backup "+real+".sdf-bak.1") || !strings.Contains(res.Text, "(symlink "+link+")") {
+	if !strings.Contains(res.Text, "wrote "+link+"\nbackup "+link+".sdf-bak\n") {
 		t.Fatal(res.Text)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(real))
@@ -251,8 +253,8 @@ func TestCopilotFailedWriteRemovesBackupAndKeepsFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# mine\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	copilotRename = func(string, string) error { return os.ErrPermission }
-	t.Cleanup(func() { copilotRename = os.Rename })
+	renameFile = func(string, string) error { return os.ErrPermission }
+	t.Cleanup(func() { renameFile = os.Rename })
 	if _, err := Run(copilotRequest(home, true)); err == nil {
 		t.Fatal("expected the write to fail")
 	}

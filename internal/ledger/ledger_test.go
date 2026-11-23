@@ -172,6 +172,39 @@ func TestAppendConflictAndMismatch(t *testing.T) {
 	}
 }
 
+func TestGetBySeq(t *testing.T) {
+	ctx := context.Background()
+	_, s := seeded(t)
+	payload, e, err := s.GetBySeq(ctx, 1)
+	if err != nil || e.Seq != 1 || e.Kind != taskKind || e.ID != "task-1" || string(payload) != `{"objective":"a"}` {
+		t.Fatalf("%q %+v %v", payload, e, err)
+	}
+	if _, _, err := s.GetBySeq(ctx, 99); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("missing seq: %v", err)
+	}
+}
+
+func TestGetBySeqReportsAHandEditedPayload(t *testing.T) {
+	ctx := context.Background()
+	path, s := seeded(t)
+	_ = s.Close()
+	tamper(t, path, `UPDATE ledger_entries SET payload = '{"objective":"z"}' WHERE seq = 2`)
+	s = open(t, path)
+	got, e, err := s.GetBySeq(ctx, 2)
+	if !errors.Is(err, ledger.ErrCorrupt) {
+		t.Fatalf("err %v", err)
+	}
+	if !strings.Contains(err.Error(), `seq 2 ("sdf.task/v1" "task-2")`) {
+		t.Fatalf("error does not name seq, kind, and id: %v", err)
+	}
+	if got != nil || e != (ledger.Entry{}) {
+		t.Fatalf("corrupt payload returned: %q %+v", got, e)
+	}
+	if _, _, err := s.GetBySeq(ctx, 1); err != nil {
+		t.Fatalf("an untouched row: %v", err)
+	}
+}
+
 func TestGetReturnsTheBytesAsGiven(t *testing.T) {
 	ctx := context.Background()
 	s := open(t, filepath.Join(t.TempDir(), "ledger.db"))
@@ -199,6 +232,9 @@ func TestReadsOnAMissingFileDoNotCreateIt(t *testing.T) {
 	if _, err := s.Head(ctx); !errors.Is(err, ledger.ErrNotFound) {
 		t.Fatal(err)
 	}
+	if _, _, err := s.GetBySeq(ctx, 0); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatal(err)
+	}
 	rep, err := s.Verify(ctx)
 	if err != nil || !rep.OK || !rep.Empty || rep.Entries != 0 {
 		t.Fatalf("%+v %v", rep, err)
@@ -222,6 +258,9 @@ func TestReadsDoNotWriteAnExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := s.Get(ctx, taskKind, "task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GetBySeq(ctx, 1); err != nil {
 		t.Fatal(err)
 	}
 	_ = s.Close()

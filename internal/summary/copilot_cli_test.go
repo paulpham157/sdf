@@ -215,6 +215,10 @@ func TestCopilotTokensFallBackToInvokeAgentThenMetrics(t *testing.T) {
 	if s.Tokens.Vals["input_tokens"] != 700 || s.Tokens.Vals["output_tokens"] != 30 || s.Tokens.Vals["cache_write.input_tokens"] != 650 {
 		t.Fatalf("tokens %v", s.Tokens)
 	}
+	// Since #191 a cumulative series adds up each process run's latest point.
+	if m := deref(s.TokensMethod); !strings.Contains(m, "latest point of each process run") {
+		t.Fatalf("method %q", m)
+	}
 }
 
 func TestCopilotToolSuccessFromErrorType(t *testing.T) {

@@ -6,11 +6,12 @@ import (
 )
 
 // TestGrok47LiveRequestOverlapAtBaseRates locks the live grok-4.7 api_request
-// cost to the agent-reported 14802 micro-USD. The bundled x-ai/grok-4.7 row
-// has pricing.overrides, so Price() reports unknown; this test multiplies the
-// overlap buckets by the row's base rates directly:
+// cost to the agent-reported 14802 micro-USD by multiplying the overlap
+// buckets by the row's base rates directly:
 // (14454-10112)*0.000002 + 10112*0.0000005 + (177-121)*0.000006 + 121*0.000006
 // = 0.008684 + 0.005056 + 0.000336 + 0.000726 = 0.014802.
+// Price() applies those same base rates because 14454 is below the
+// min_prompt_tokens 200000 override; see TestGrok47LiveRequestPricesAtBaseRates.
 func TestGrok47LiveRequestOverlapAtBaseRates(t *testing.T) {
 	cat := Bundled()
 	if cat == nil {
@@ -38,7 +39,7 @@ func TestGrok47LiveRequestOverlapAtBaseRates(t *testing.T) {
 		if b.tokens.Sign() == 0 {
 			continue
 		}
-		rate, _, _, why := rateFor(model, b)
+		rate, _, _, why := rateFor(model, b, nil)
 		if why != "" {
 			t.Fatalf("bucket %s: %s", b.name, why)
 		}

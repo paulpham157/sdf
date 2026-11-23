@@ -56,23 +56,43 @@ func isCopilotRecord(service, name string, rec record.Record) bool {
 	return strings.HasPrefix(strAttr(rec.Attributes, genai.AttrAgentID), copilotAgentID)
 }
 
+// copilotSpans returns the session's Copilot spans whose name starts with
+// head. A span stored twice (same trace id and span id, for example after an
+// OTLP export retry or a re-sent batch) is returned once, the first copy, so
+// chat and invoke_agent usage and nano_aiu are not added twice (issue #248),
+// as OpenCode and Pi spans are counted once. A span without both ids is
+// never merged.
 func copilotSpans(records []record.Record, head string) []record.Record {
 	var out []record.Record
+	seen := map[string]bool{}
 	for _, rec := range records {
-		if rec.Signal == "traces" && spanHead(deref(rec.Name)) == head && ToolOf(rec) == "copilot-cli" {
-			out = append(out, rec)
+		if rec.Signal != "traces" || spanHead(deref(rec.Name)) != head || ToolOf(rec) != "copilot-cli" {
+			continue
 		}
+		if key, ok := spanKey(rec); ok {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, rec)
 	}
 	return out
 }
 
 // copilotSpanIndex maps trace id + span id to the span. Span ids are only
-// unique within a trace, so the trace id is part of the key.
+// unique within a trace, so the trace id is part of the key. A span stored
+// twice keeps its first copy, the same copy copilotSpans returns, so the
+// ancestry walk and the counted spans never disagree.
 func copilotSpanIndex(records []record.Record) map[string]record.Record {
 	byID := map[string]record.Record{}
 	for _, rec := range records {
-		if rec.Signal == "traces" && rec.SpanID != nil {
-			byID[copilotSpanKey(rec.TraceID, *rec.SpanID)] = rec
+		if rec.Signal != "traces" || rec.SpanID == nil {
+			continue
+		}
+		key := copilotSpanKey(rec.TraceID, *rec.SpanID)
+		if _, seen := byID[key]; !seen {
+			byID[key] = rec
 		}
 	}
 	return byID
@@ -216,7 +236,8 @@ func copilotUsage(totals *OrderedFloats, attrs map[string]any) bool {
 }
 
 // copilotTokens sums gen_ai.usage.* on chat spans (one per model request,
-// subagent and compaction requests included). Without chat usage it sums
+// subagent and compaction requests included; a span stored twice counts
+// once, see copilotSpans). Without chat usage it sums
 // the top-level invoke_agent totals, then the
 // gen_ai.client.inference.usage.* counters. Those counters have no session
 // id and reach a session only by its time window. Input includes cache read
@@ -240,7 +261,7 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 		}
 	}
 	if found {
-		return chat, record.Str("traces " + genai.OperationChat + " " + copilotService), record.Str("sum of gen_ai.usage.* on chat spans; cache_read and cache_write are part of input_tokens, reasoning is part of output_tokens. invoke_agent totals repeat these counts and are not added"), true
+		return chat, record.Str("traces " + genai.OperationChat + " " + copilotService), record.Str("sum of gen_ai.usage.* on chat spans; cache_read and cache_write are part of input_tokens, reasoning is part of output_tokens. invoke_agent totals repeat these counts and are not added; a span stored twice (same trace and span id) counts once"), true
 	}
 	top := OrderedFloats{}
 	for _, rec := range copilotTopLevel(records) {
@@ -249,7 +270,7 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 		}
 	}
 	if found {
-		return top, record.Str("traces " + genai.OperationInvokeAgent + " " + copilotService), record.Str("sum of gen_ai.usage.* on top-level invoke_agent spans (all turns of one user message); subagent invoke_agent spans are not added"), true
+		return top, record.Str("traces " + genai.OperationInvokeAgent + " " + copilotService), record.Str("sum of gen_ai.usage.* on top-level invoke_agent spans (all turns of one user message); subagent invoke_agent spans are not added; a span stored twice (same trace and span id) counts once"), true
 	}
 	metrics := OrderedFloats{}
 	for _, item := range copilotUsageKeys {
@@ -268,7 +289,7 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 		}
 	}
 	if found {
-		return metrics, record.Str("metrics gen_ai.client.inference.usage github-copilot"), record.Str("sum of gen_ai.client.inference.usage.* counter points attributed to this session by time window; a cumulative series keeps its latest point"), true
+		return metrics, record.Str("metrics gen_ai.client.inference.usage github-copilot"), record.Str("sum of gen_ai.client.inference.usage.* counter points attributed to this session by time window; a cumulative series adds up the latest point of each process run"), true
 	}
 	return OrderedFloats{}, nil, nil, false
 }

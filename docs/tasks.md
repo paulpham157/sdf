@@ -27,9 +27,16 @@ Or from a JSON file (`--file PATH`, `-` for stdin):
 }
 ```
 
-Flags override the file's `id`, `title`, `objective`, and `base`, and each
-`--check` adds a criterion. A `--check` command is split on spaces with no
-quoting and runs without a shell. Use the file for anything else.
+Flags override the file's `id`, `title`, `objective`, and `base`.
+`--no-secret-scan` stores `secret_scan: false` (the field is true by
+default, including when a file omits `secret_scan`). [`sdf verify`](verify.md)
+then skips its scan of added lines for secrets, and a secret in the diff
+no longer fails verification (`SECRET_IN_DIFF`). Each `--check` adds a
+criterion. A `--check` command is split on spaces with no quoting and runs
+without a shell. `--timeout SECONDS` sets the timeout for each criterion
+added with `--check`; it must be a positive number of seconds, and if the
+flag is omitted those criteria use the default 600 s. It does not change
+criteria already in the file. Use the file for anything else.
 
 ## What is declared
 
@@ -45,7 +52,9 @@ the repository's top level.
 
 The task is pinned to a **base revision** (`--base`, default `HEAD`),
 resolved to a full commit SHA and its tree id. Only committed content
-counts: an uncommitted edit in the working tree is not read.
+counts: an uncommitted edit in the working tree is not read. A base that
+starts with `-` is refused (exit 1) before git runs, so it can never be read
+as a git option.
 
 Each criterion has a name, an argv, a timeout (default 600 s), an expected
 exit code (default 0), and **designated** globs: the files the check depends
@@ -102,9 +111,10 @@ it, so protect the copy you trust (review on the protected branch).
 ## Where it is stored
 
 - `--write` puts it at `.sdf/tasks/<id>.json` in the repository. Commit
-  that file on a protected branch. Planned: `sdf verify` and its CI action
-  (separate pull requests) read the task from that branch, not from the
-  submitted revision.
+  that file on a protected branch. [`sdf verify`](verify.md) reads the task
+  from `--task-ref` (that branch, as `REF:.sdf/tasks/<id>.json`), not from
+  the working tree or the submitted revision. The [`sdf verify` GitHub
+  Action](action.md) passes `--task-ref` for the pull request's base branch.
 - `$XDG_DATA_HOME/sdf/tasks/<id>.json` (default
   `~/.local/share/sdf/tasks/`, directory mode 0700), read-only, outside the
   repository. Files are written to a temporary name and then linked into
@@ -120,3 +130,5 @@ it, so protect the copy you trust (review on the protected branch).
 Every place is read before anything is written. If any one already holds
 the id with a different hash, nothing is written. `sdf task show` reads
 every place, checks each copy is canonical, and fails if they disagree.
+`--json` prints the canonical JSON, indented for reading; the stored hash
+covers the compact form. Without `--json`, a text listing is printed.

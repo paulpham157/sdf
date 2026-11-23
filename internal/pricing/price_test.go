@@ -26,7 +26,7 @@ func TestBundledCatalogIsTheOpenRouterSnapshot(t *testing.T) {
 		t.Fatalf("%+v", flint)
 	}
 	if _, ok := flint.Prices["input_cache_read"]; ok {
-		t.Fatal("snapshot gained a cache-read price; the missing-price test needs an update")
+		t.Fatal("snapshot gained a cache-read price for flint; the :free zero rule (issue #243, cache_read_gap_test.go) is no longer exercised by it")
 	}
 	if flint.HasOverrides {
 		t.Fatal("overrides")
@@ -207,6 +207,9 @@ func TestFetchCopiesPricesAndDoesNotSendAKey(t *testing.T) {
 	model := snap.Catalog.Models["vendor/priced"]
 	if model.Prices["prompt"] != "0.000002" || !model.HasOverrides {
 		t.Fatalf("%+v", model)
+	}
+	if len(model.Overrides) != 1 || model.Overrides[0].MinPromptTokens == nil || *model.Overrides[0].MinPromptTokens != 10 || model.Overrides[0].Prices["prompt"] != "0.000004" {
+		t.Fatalf("overrides %+v", model.Overrides)
 	}
 	if !strings.Contains(string(snap.Body), `"retrieved_at"`) || !strings.Contains(string(snap.Body), "min_prompt_tokens") {
 		t.Fatalf("%s", snap.Body)

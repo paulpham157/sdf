@@ -42,6 +42,7 @@ type SpanNode struct {
 	ExecutionSource *string    `json:"execution_source"`
 	StatusCode      string     `json:"status_code"`
 	StatusMessage   *string    `json:"status_message"`
+	ErrorType       *string    `json:"error_type"` // error.type, error_type, or exception.type
 	Children        []SpanNode `json:"children"`
 }
 

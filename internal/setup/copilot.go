@@ -2,9 +2,7 @@ package setup
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,7 +201,7 @@ func copilot(req Request) (Result, error) {
 	path := copilotEnvPath(req.Home)
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return Result{}, err
+		return Result{}, readErr(path, err)
 	}
 	merged, warnings := mergeCopilotEnv(string(existing), req.Endpoint)
 	warnings = append(warnings, copilotEnvWarnings(req.Endpoint)...)
@@ -229,7 +227,7 @@ func copilot(req Request) (Result, error) {
 		b.WriteString("not written (pass --write)\n")
 		return Result{Text: b.String()}, nil
 	}
-	status, err := writeFileAtomic(path, []byte(merged))
+	status, err := replaceFile(path, []byte(merged), 0o600)
 	if err != nil {
 		return Result{}, err
 	}
@@ -288,194 +286,4 @@ func copilotOtherLines(merged string) int {
 		}
 	}
 	return n
-}
-
-// copilotResolve follows path's symlinks by hand, relative links from the
-// link's directory, so a link to a file that does not exist yet (stow-style)
-// resolves to the file to create.
-func copilotResolve(path string) (string, error) {
-	current := path
-	for range 40 {
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			return current, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if info.Mode()&fs.ModeSymlink == 0 {
-			return current, nil
-		}
-		link, err := os.Readlink(current)
-		if err != nil {
-			return "", err
-		}
-		if !filepath.IsAbs(link) {
-			link = filepath.Join(filepath.Dir(current), link)
-		}
-		current = link
-	}
-	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
-}
-
-// copilotWritable refuses an existing target we may not write: one with no
-// write bit (0400, 0444; this also holds for root, who could open it), or
-// one a write-only open (no truncation) is denied.
-func copilotWritable(path, target string) error {
-	info, err := os.Stat(target)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file; it was not changed", path)
-	}
-	if info.Mode().Perm()&0o222 == 0 {
-		return fmt.Errorf("%s is read-only (mode %04o); it was not changed", path, info.Mode().Perm())
-	}
-	f, err := os.OpenFile(target, os.O_WRONLY, 0)
-	if err != nil {
-		var pe *fs.PathError
-		if errors.As(err, &pe) {
-			err = pe.Err
-		}
-		return fmt.Errorf("%s is not writable (%v); it was not changed", path, err)
-	}
-	return f.Close()
-}
-
-// copilotRename is replaced in tests to simulate a failed write.
-var copilotRename = os.Rename
-
-// writeFileAtomic writes through a symlink to its target (a link to a
-// missing file creates it), refuses a read-only target before doing
-// anything, backs up an existing file to a .sdf-bak sibling (a different
-// existing backup is never overwritten; .sdf-bak.1, .2, ... are used),
-// writes a temp file in the same directory, fsyncs, keeps the file mode and,
-// when allowed, the owner and group, and renames it into place. A backup
-// made by a failed write is removed. The rename gives the file a new inode:
-// other hard links keep the old bytes (a note is printed), and extended
-// attributes and ACLs are not copied.
-func writeFileAtomic(path string, body []byte) (string, error) {
-	target, err := copilotResolve(path)
-	if err != nil {
-		return "", err
-	}
-	if err := copilotWritable(path, target); err != nil {
-		return "", err
-	}
-	links := copilotHardLinks(target)
-	// For a new file, including the target of a dangling (stow-style)
-	// symlink, missing parent directories are created with mode 0700.
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return "", err
-	}
-	mode := fileMode(target, 0o600)
-	old, err := os.ReadFile(target)
-	if err != nil && !os.IsNotExist(err) {
-		return "", err
-	}
-	backup := ""
-	created := false
-	if err == nil {
-		backup, created, err = backupAside(target, old, mode)
-		if err != nil {
-			return "", err
-		}
-	}
-	fail := func(err error) (string, error) {
-		if created {
-			_ = os.Remove(backup)
-		}
-		return "", err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+".sdf-tmp-*")
-	if err != nil {
-		return fail(err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func(err error) (string, error) {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-		return fail(err)
-	}
-	if _, err := tmp.Write(body); err != nil {
-		return cleanup(err)
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		return cleanup(err)
-	}
-	copilotKeepOwner(tmp, target)
-	if err := tmp.Sync(); err != nil {
-		return cleanup(err)
-	}
-	if err := tmp.Close(); err != nil {
-		return cleanup(err)
-	}
-	if err := copilotRename(tmpName, target); err != nil {
-		_ = os.Remove(tmpName)
-		return fail(err)
-	}
-	if dir, err := os.Open(filepath.Dir(target)); err == nil {
-		_ = dir.Sync()
-		_ = dir.Close()
-	}
-	status := "wrote " + path + "\n"
-	if target != path {
-		status = "wrote " + target + " (symlink " + path + ")\n"
-	}
-	if backup != "" {
-		status += "backup " + backup + "\n"
-	}
-	if links > 1 {
-		status += fmt.Sprintf("note: %s had %d hard links; the other links still hold the old contents\n", target, links)
-	}
-	return status, nil
-}
-
-// backupAside copies old to target.sdf-bak. An existing backup with the
-// same bytes is reused; a different one is kept and the next free
-// .sdf-bak.N is used.
-func backupAside(target string, old []byte, mode os.FileMode) (string, bool, error) {
-	for n := 0; n < 1000; n++ {
-		name := target + ".sdf-bak"
-		if n > 0 {
-			name = fmt.Sprintf("%s.%d", name, n)
-		}
-		existing, err := os.ReadFile(name)
-		if err == nil {
-			if bytes.Equal(existing, old) {
-				return name, false, nil
-			}
-			continue
-		}
-		if !os.IsNotExist(err) {
-			return "", false, err
-		}
-		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-		if errors.Is(err, os.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return "", false, err
-		}
-		if _, err := f.Write(old); err != nil {
-			_ = f.Close()
-			_ = os.Remove(name)
-			return "", false, err
-		}
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			_ = os.Remove(name)
-			return "", false, err
-		}
-		if err := f.Close(); err != nil {
-			_ = os.Remove(name)
-			return "", false, err
-		}
-		return name, true, nil
-	}
-	return "", false, fmt.Errorf("too many backups of %s", target)
 }

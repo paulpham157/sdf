@@ -9,8 +9,13 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -52,7 +57,10 @@ CREATE TABLE IF NOT EXISTS decisions (
     statement TEXT NOT NULL,
     status TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
-    source TEXT
+    source TEXT,
+    decided_by TEXT,
+    alternatives TEXT,
+    reason TEXT
 );
 CREATE TABLE IF NOT EXISTS decision_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,16 +79,49 @@ type Store struct {
 	path string
 	mu   sync.Mutex
 	db   *sql.DB
+	keep func(record.Record) bool
 }
 
+// KeepContent sets which records Insert stores with their prompt, tool, and
+// error text (sdf serve --store-content). Nil, the default, drops that
+// content from every record; see record.Redact.
+func (s *Store) KeepContent(keep func(record.Record) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keep = keep
+}
+
+// busyTimeoutMS is how long a connection waits for another connection's
+// lock (a concurrent sdf summary, a second receiver) before SQLITE_BUSY. It
+// matches the ledger's busy_timeout.
+const busyTimeoutMS = 5000
+
 // Open creates the file if needed and applies the schema and column migration.
+//
+// busy_timeout is set in the DSN, so it applies to every connection the pool
+// opens, before any statement runs. The file is then switched to WAL, as the
+// ledger does: in WAL a reader never blocks the writer and the writer never
+// blocks readers, so sdf summary can read while the receiver ingests. WAL
+// is a property of the file and persists, so it is set once after opening
+// (not as a DSN pragma, which can fail with SQLITE_BUSY while a connection
+// opens, before the busy timeout applies).
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	name, err := dsn(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeoutMS))
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", name)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{path: path, db: db}
+	if !private(path) {
+		if err := setWAL(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -89,16 +130,105 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.markNewDatabase(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// private reports whether path names an in-memory (":memory:") or temporary
+// ("") database: one connection's own, so no other process shares it and WAL
+// does not apply.
+func private(path string) bool { return path == "" || path == ":memory:" }
+
+// dsn is a file: URI for path with query. The path is made absolute so a
+// relative --db keeps meaning the same file; ":memory:" and "" keep their
+// SQLite meaning.
+func dsn(path, query string) (string, error) {
+	if private(path) {
+		return "file:" + path + "?" + query, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.ToSlash(abs)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return (&url.URL{Scheme: "file", Path: p, RawQuery: query}).String(), nil
+}
+
+// sqliteReadonly is SQLITE_READONLY, the primary result code for a write to
+// a database this process cannot write.
+const sqliteReadonly = 8
+
+func sqliteCode(err error) int {
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		return coded.Code()
+	}
+	return 0
+}
+
+// setWAL switches the file to WAL unless it already is. A file this process
+// cannot write (a read-only file, directory, or mount) keeps its current
+// journal mode: switching needs a write, and reading it (sdf summary) works
+// in either mode, as it did before Open set WAL.
+func setWAL(db *sql.DB) error {
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return err
+	}
+	if strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		if sqliteCode(err)&0xff == sqliteReadonly {
+			return nil
+		}
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
+	}
+	return nil
 }
 
 // Path is the SQLite file path.
 func (s *Store) Path() string { return s.path }
 
 func (s *Store) migrate() error {
-	rows, err := s.db.Query(`PRAGMA table_info(records)`)
+	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
+		return err
+	}
+	if err := s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"}); err != nil {
+		return err
+	}
+	return s.migrateRetractions()
+}
+
+func (s *Store) addMissingColumns(table string, cols []string) error {
+	present, err := s.tableColumns(table)
 	if err != nil {
 		return err
+	}
+	for _, col := range cols {
+		if present[col] {
+			continue
+		}
+		if _, err := s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + col + " TEXT"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	present := map[string]bool{}
@@ -109,21 +239,14 @@ func (s *Store) migrate() error {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return err
+			return nil, err
 		}
 		present[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	for _, col := range []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"} {
-		if !present[col] {
-			if _, err := s.db.Exec(`ALTER TABLE records ADD COLUMN ` + col + ` TEXT`); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return present, nil
 }
 
 // Close releases the database.
@@ -139,7 +262,10 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
-	records = record.Redact(records)
+	s.mu.Lock()
+	keep := s.keep
+	s.mu.Unlock()
+	records = record.RedactWith(records, keep)
 	received := time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -223,6 +349,11 @@ func (s *Store) Load() ([]record.Record, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanRecords(rows)
+}
+
+// scanRecords reads rows selected in Load's column order.
+func scanRecords(rows *sql.Rows) ([]record.Record, error) {
 	var out []record.Record
 	for rows.Next() {
 		var rec record.Record
@@ -281,13 +412,17 @@ func (s *Store) Load() ([]record.Record, error) {
 }
 
 // Decision is one append-only decision record. Status is "hypothesis" or
-// "decision". Source is empty when the record named none.
+// "decision". Source, DecidedBy, Alternatives, and Reason are empty when
+// the record named none. DecidedBy is "user" or "agent" when set.
 type Decision struct {
-	ID         string
-	Statement  string
-	Status     string
-	RecordedAt string
-	Source     string
+	ID           string
+	Statement    string
+	Status       string
+	RecordedAt   string
+	Source       string
+	DecidedBy    string
+	Alternatives string
+	Reason       string
 }
 
 // DecisionEdge is one directed edge. Kind is "decision", "session", or
@@ -308,9 +443,9 @@ func (s *Store) InsertDecision(d Decision) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO decisions (id, statement, status, recorded_at, source)
-		VALUES (?, ?, ?, ?, ?)
-	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source))
+		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, alternatives, reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.Alternatives), nullText(d.Reason))
 	return err
 }
 
@@ -319,7 +454,7 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`
-		SELECT id, statement, status, recorded_at, source
+		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason
 		FROM decisions
 		ORDER BY rowid
 	`)
@@ -330,12 +465,21 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	var out []Decision
 	for rows.Next() {
 		var d Decision
-		var source sql.NullString
-		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source); err != nil {
+		var source, decidedBy, alternatives, reason sql.NullString
+		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &alternatives, &reason); err != nil {
 			return nil, err
 		}
 		if source.Valid {
 			d.Source = source.String
+		}
+		if decidedBy.Valid {
+			d.DecidedBy = decidedBy.String
+		}
+		if alternatives.Valid {
+			d.Alternatives = alternatives.String
+		}
+		if reason.Valid {
+			d.Reason = reason.String
 		}
 		out = append(out, d)
 	}
@@ -345,23 +489,101 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	return out, rows.Err()
 }
 
-// InsertDecisionEdge appends one edge. The caller has already checked that
-// both endpoints name something the store knows.
-func (s *Store) InsertDecisionEdge(e DecisionEdge) error {
+// DecisionGraph is what AppendDecisionEdge's check sees: every stored
+// decision id, edge, and retraction, all read in the edge's transaction.
+type DecisionGraph struct {
+	DecisionIDs map[string]bool
+	Edges       []DecisionEdge
+	Retractions []DecisionRetraction
+}
+
+// AppendDecisionEdge appends e only if check, given every decision id, edge,
+// and retraction already stored, returns nil; otherwise it writes nothing
+// and returns check's error.
+// The read, the check, and the insert run in one BEGIN IMMEDIATE
+// transaction. IMMEDIATE takes SQLite's write lock before reading, so
+// another Store or process appending at the same time waits (busy_timeout)
+// and then reads a set that already holds this edge: two writers cannot both
+// pass a check that only one of them should. The caller has already checked
+// that both endpoints name something the store knows. Nothing is updated or
+// deleted.
+func (s *Store) AppendDecisionEdge(e DecisionEdge, check func(DecisionGraph) error) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+	ids, err := loadDecisionIDs(ctx, conn)
+	if err != nil {
+		return err
+	}
+	existing, err := loadDecisionEdges(ctx, conn)
+	if err != nil {
+		return err
+	}
+	retracted, err := loadDecisionRetractions(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := check(DecisionGraph{DecisionIDs: ids, Edges: existing, Retractions: retracted}); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO decision_edges (relation, from_kind, from_ref, to_kind, to_ref, recorded_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, e.Relation, e.FromKind, e.FromRef, e.ToKind, e.ToRef, e.RecordedAt)
-	return err
+	`, e.Relation, e.FromKind, e.FromRef, e.ToKind, e.ToRef, e.RecordedAt); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// loadDecisionIDs reads every stored decision id through q.
+func loadDecisionIDs(ctx context.Context, q querier) (map[string]bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM decisions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
 }
 
 // LoadDecisionEdges returns every edge in insertion order.
 func (s *Store) LoadDecisionEdges() ([]DecisionEdge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
+	return loadDecisionEdges(context.Background(), s.db)
+}
+
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func loadDecisionEdges(ctx context.Context, q querier) ([]DecisionEdge, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT relation, from_kind, from_ref, to_kind, to_ref, recorded_at
 		FROM decision_edges
 		ORDER BY id
@@ -395,8 +617,11 @@ func (s *Store) KnownSession(id string) (bool, error) {
 
 // KnownCommit reports whether telemetry already names this full commit SHA.
 // A SHA is known from an sdf.git.commit hook event, or from a
-// claude_code.tool_result log: vcs.ref.head.revision, git_commit_id, or a
-// git_commit_id nested inside tool_parameters. tool_parameters is read both
+// claude_code.tool_result log: sdf.git_commit_id (copied out of
+// tool_parameters at ingest, because tool_parameters itself is content and
+// is not stored by default), vcs.ref.head.revision, git_commit_id, or a
+// git_commit_id nested inside tool_parameters (rows stored before that, or
+// under --store-content). tool_parameters is read both
 // as an object and as a JSON string, matching how the outcome linker reads
 // it. The comparison ignores case, so a SHA stored in its original case
 // still matches the lowercase ref the decision endpoint passes in. This
@@ -410,13 +635,14 @@ func (s *Store) KnownCommit(sha string) (bool, error) {
 		WHERE signal = 'logs' AND (
 			(name = 'sdf.git.commit' AND json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE)
 			OR (name = 'claude_code.tool_result' AND (
-				json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE
+				json_extract(attributes_json, '$."sdf.git_commit_id"') = ? COLLATE NOCASE
+				OR json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE
 				OR json_extract(attributes_json, '$.git_commit_id') = ? COLLATE NOCASE
 				OR json_extract(attributes_json, '$.tool_parameters.git_commit_id') = ? COLLATE NOCASE
 				OR json_extract(json_extract(attributes_json, '$.tool_parameters'), '$.git_commit_id') = ? COLLATE NOCASE
 			))
 		)
-	`, sha, sha, sha, sha, sha).Scan(&n)
+	`, sha, sha, sha, sha, sha, sha).Scan(&n)
 	return n > 0, err
 }
 

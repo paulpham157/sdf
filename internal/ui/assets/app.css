@@ -292,6 +292,10 @@ h2.id {
 .budget-status { font-size: 32px; }
 
 .decision { margin: 0 0 8px; }
+.decision.superseded { color: var(--ink-soft); }
+.decision.retracted-record { color: var(--ink-soft); }
+.retracted { margin-right: 8px; font-size: 12px; color: var(--ink-soft); }
+.superseded-by { margin-right: 8px; font-size: 12px; color: var(--ink-soft); }
 .status {
   display: inline-block;
   margin-right: 8px;

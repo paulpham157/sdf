@@ -344,6 +344,84 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	}
 }
 
+func TestPageShowsSupersededDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "sqlite-wal"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelSupersedes,
+		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "sqlite-wal"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "superseded"`) || !strings.Contains(api, `"superseded_by": [`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "superseded by sqlite-wal") {
+			t.Fatalf("%q did not render the superseded state:\n%s", hash, page)
+		}
+		if strings.Count(page, "superseded by") != 1 {
+			t.Fatalf("%q: only keep-sqlite is superseded:\n%s", hash, page)
+		}
+	}
+}
+
+func TestPageShowsRetractedDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "pure-go"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Retract(db, decision.RetractInput{ID: "keep-sqlite", Reason: "Benchmark was wrong."}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "retracted"`) || !strings.Contains(api, `"retraction": {`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "retracted") || !strings.Contains(page, "Benchmark was wrong.") {
+			t.Fatalf("%q did not render the retraction:\n%s", hash, page)
+		}
+		if strings.Count(page, "retracted") != 1 {
+			t.Fatalf("%q: only keep-sqlite is retracted:\n%s", hash, page)
+		}
+	}
+}
+
+func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       decision.StatusDecision,
+		DecidedBy:    decision.DecidedByUser,
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderedPage(t, srv)
+	if !strings.Contains(page, "Do not push until the user says so.") {
+		t.Fatalf("statement not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "user") || !strings.Contains(page, "push the branch now") || !strings.Contains(page, "The user said don't push.") {
+		t.Fatalf("optional decision fields not rendered:\n%s", page)
+	}
+}
+
 func TestSessionsAndDetailShowDecisionsAndBudgetWhenEmpty(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{
@@ -396,6 +474,9 @@ func TestPageRendersOverAndUnknownBudgets(t *testing.T) {
 
 func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	db := openDB(t)
+	// Status messages are error text, dropped by default; keep them so the
+	// page's escaping of a hostile message is still exercised.
+	db.KeepContent(func(record.Record) bool { return true })
 	xssName := "<script>alert(1)</script>"
 	xssMsg := "</li><img src=x onerror=alert(1)>"
 	parent := record.Record{
@@ -410,7 +491,7 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 		Name: record.Str("Tool.execute"), SpanID: record.Str("tool"), ParentSpanID: record.Str("step"),
 		StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
 		StatusCode: "ERROR", StatusMessage: record.Str("write failed"),
-		Attributes: map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1"},
+		Attributes: map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1", "error.type": "EACCES"},
 		Resource:   map[string]any{},
 	}
 	injected := record.Record{
@@ -485,7 +566,7 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 		"SessionStep.attempt",
 		"Tool.execute",
 		"status=ERROR (turn failed)",
-		"status=ERROR (write failed)",
+		"status=ERROR (write failed) error_type=EACCES",
 		"This session has 3 spans with status=ERROR.",
 		"turn failed",
 		"write failed",
@@ -495,6 +576,70 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("missing %q on session page:\n%s", want, page)
+		}
+	}
+}
+
+// The default path: error text is dropped at ingest, and the page shows the
+// message sdf builds from the kept error class and HTTP code, the
+// error_type field, and the error banner, with none of the sent text.
+func TestSessionPageShowsErrorsWithoutContent(t *testing.T) {
+	db := openDB(t)
+	span := func(name, id, code, msg string, attrs map[string]any) record.Record {
+		return record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-default"),
+			Name: record.Str(name), SpanID: record.Str(id), ParentSpanID: record.Str("step"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
+			StatusCode: code, StatusMessage: record.Str(msg), Attributes: attrs, Resource: map[string]any{},
+		}
+	}
+	root := span("SessionStep.attempt", "step", "ERROR", "turn failed SDF-UI-SECRET-1", map[string]any{})
+	root.ParentSpanID = nil
+	recs := []record.Record{
+		root,
+		span("Tool.execute", "tool", "ERROR", "ENOENT: /home/me/SDF-UI-SECRET-2", map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1", "error.type": "FileNotFoundError", "error.message": "SDF-UI-SECRET-3"}),
+		span("chat m-1", "chat", "ERROR", "429 slow down SDF-UI-SECRET-4", map[string]any{"http.response.status_code": int64(429)}),
+		span("Tool.execute", "ok", "OK", "fine SDF-UI-SECRET-5", map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": "call_2"}),
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	snap := decodeSnapshot(t, apiSnapshot(t, srv))
+	if len(snap.Sessions) != 1 || len(snap.Sessions[0].Summary.Spans) != 1 {
+		t.Fatalf("snapshot %+v", snap.Sessions)
+	}
+	rootNode := snap.Sessions[0].Summary.Spans[0]
+	if rootNode.StatusCode != "ERROR" || spanText(rootNode.StatusMessage) != "error" || rootNode.ErrorType != nil {
+		t.Fatalf("root %+v", rootNode)
+	}
+	got := map[string]summary.SpanNode{}
+	for _, node := range rootNode.Children {
+		got[spanText(node.CallID)+node.Name] = node
+	}
+	if n := got["call_1Tool.execute"]; n.StatusCode != "ERROR" || spanText(n.StatusMessage) != "tool error: FileNotFoundError" || spanText(n.ErrorType) != "FileNotFoundError" {
+		t.Fatalf("tool %+v", n)
+	}
+	if n := got["chat m-1"]; n.StatusCode != "ERROR" || spanText(n.StatusMessage) != "error: HTTP 429 Too Many Requests" {
+		t.Fatalf("chat %+v", n)
+	}
+	if n := got["call_2Tool.execute"]; n.StatusCode != "OK" || n.StatusMessage != nil {
+		t.Fatalf("an OK span must not get an error message: %+v", n)
+	}
+	page := renderedPageAt(t, srv, "#/sessions/ses-default")
+	for _, want := range []string{
+		"status=ERROR (error)",
+		"status=ERROR (tool error: FileNotFoundError)",
+		"status=ERROR (error: HTTP 429 Too Many Requests)",
+		"This session has 3 spans with status=ERROR.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q on session page:\n%s", want, page)
+		}
+	}
+	for _, body := range []string{page, apiSummary(t, srv), apiSnapshot(t, srv)} {
+		if strings.Contains(body, "SDF-UI-SECRET") || strings.Contains(body, "error_type=FileNotFoundError") {
+			t.Fatalf("sent error text, or a repeated type, on the page:\n%s", body)
 		}
 	}
 }

@@ -59,6 +59,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Endpoint is the local sdf serve address the agent should use.
@@ -179,7 +181,7 @@ func claude(req Request) (Result, error) {
 	fmt.Fprintf(&b, "A repository .claude/settings.json cannot turn these exporters on.\n")
 	fmt.Fprintf(&b, "Docs: https://code.claude.com/docs/en/monitoring-usage\n\n")
 	for _, key := range claudeOrder {
-		fmt.Fprintf(&b, "export %s=%s\n", key, env[key])
+		fmt.Fprintf(&b, "export %s\n", quoteEndpointLine(key+"="+env[key]))
 	}
 	merge := func(root map[string]any) (bool, error) {
 		envChanged, err := mergeStringMap(root, "env", env)
@@ -251,8 +253,11 @@ func codex(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Docs: https://developers.openai.com/codex/config-reference\n")
 	fmt.Fprintf(&b, "https://github.com/openai/codex/blob/main/codex-rs/otel/README.md\n\n")
 	b.WriteString(block)
+	hooks := filepath.Join(req.CodexHome, "hooks.json")
+	hookURL := req.Endpoint.base() + "/v1/sessions"
 	if !req.Write {
 		b.WriteString("\nnot written (pass --write to append this block; an existing [otel] table is left unchanged)\n")
+		b.WriteString(codexHookPreview(hooks, hookURL))
 		return Result{Text: b.String()}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -262,11 +267,21 @@ func codex(req Request) (Result, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return Result{}, readErr(path, err)
 	}
+	// An existing [otel] table is left alone, but the session hook is still
+	// merged: a user who set up [otel] by hand would otherwise get no hook.
 	if hasOtelTable(string(existing)) {
+		if err := checkAllWritable(hooks); err != nil {
+			return Result{}, err
+		}
 		b.WriteString("\nnot written: " + path + " already has an [otel] table; it was not changed\n")
-		return Result{Text: b.String()}, nil
+		hookStatus, err := codexHookFile(hooks, hookURL)
+		if err != nil {
+			return Result{}, err
+		}
+		b.WriteString(hookStatus)
+		b.WriteString(hookTokenNoteFor(req.Endpoint))
+		return Result{Text: b.String(), Wrote: strings.HasPrefix(hookStatus, "wrote ")}, nil
 	}
-	hooks := filepath.Join(req.CodexHome, "hooks.json")
 	if err := checkAllWritable(path, hooks); err != nil {
 		return Result{}, err
 	}
@@ -280,6 +295,18 @@ func codex(req Request) (Result, error) {
 		}
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
+		if _, err := tomlHasKey(existing, "otel"); err != nil {
+			return Result{}, fmt.Errorf("%s is not valid TOML (%v); Codex cannot load it either. Fix it and rerun; it was not changed", path, err)
+		}
+		if _, err := tomlHasKey(body, "otel"); err != nil {
+			return Result{}, fmt.Errorf("%s: appending the [otel] table would not be valid TOML (%v); add the printed keys by hand; it was not changed", path, err)
+		}
+	}
+	// Plan the hooks.json merge before config.toml is touched, so a corrupt
+	// or refused hooks.json (null, not an object) leaves both files as they
+	// were instead of [otel] written and the hook missing.
+	if err := codexHookCheck(hooks, hookURL); err != nil {
+		return Result{}, err
 	}
 	status, err := replaceFile(path, body, 0o600)
 	if err != nil {
@@ -287,7 +314,7 @@ func codex(req Request) (Result, error) {
 	}
 	b.WriteString("\n")
 	b.WriteString(status)
-	hookStatus, err := codexHookFile(hooks, req.Endpoint.base()+"/v1/sessions")
+	hookStatus, err := codexHookFile(hooks, hookURL)
 	if err != nil {
 		return Result{}, err
 	}
@@ -310,17 +337,13 @@ metrics_exporter = { otlp-http = { endpoint = "%s/v1/metrics", protocol = "binar
 `, base, base, base)) + "\n"
 }
 
+// hasOtelTable reports whether config.toml sets the top-level otel key in
+// any TOML form ([otel], [ otel ], ["otel"], [otel.sub], inline
+// otel = {...}, dotted otel.x = ...), the same parse as grokHasTelemetry.
+// A file that does not parse reports false; codex refuses it before writing.
 func hasOtelTable(text string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if trim == "[otel]" || strings.HasPrefix(trim, "[otel.") {
-			return true
-		}
-	}
-	return false
+	has, err := tomlHasKey([]byte(text), "otel")
+	return err == nil && has
 }
 
 func opencode(req Request) (Result, error) {
@@ -376,7 +399,7 @@ func pi(req Request) (Result, error) {
 		fmt.Fprintf(&b, "--write updates %s. Pass --global to update %s instead.\n", path, global)
 	}
 	fmt.Fprintf(&b, "https://github.com/NikiforovAll/pi-otel\n\n")
-	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", shQuote(req.Endpoint.base()))
 	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n")
 	fmt.Fprintf(&b, "export PI_OTEL_METRICS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_LOGS=1\n")
@@ -432,7 +455,7 @@ func grok(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Checked against grok 1.0.92 on 2026-11-23. The schema is grok_code.schema.version v1 (alpha).\n")
 	fmt.Fprintf(&b, "https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md\n\n")
 	for _, line := range grokEnv(req.Endpoint) {
-		fmt.Fprintf(&b, "export %s\n", line)
+		fmt.Fprintf(&b, "export %s\n", quoteEndpointLine(line))
 	}
 	b.WriteString("\nIf sdf serve has a token, also export this. A literal space after Bearer always works:\n")
 	b.WriteString(`export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"` + "\n")
@@ -440,8 +463,8 @@ func grok(req Request) (Result, error) {
 	b.WriteString(block)
 	b.WriteString("\n")
 	for _, gate := range grokContentGates {
-		if v := strings.TrimSpace(os.Getenv(gate)); v != "" && v != "0" && !strings.EqualFold(v, "false") {
-			fmt.Fprintf(&b, "warning: %s=%s in this shell exports content to the collector; unset it to keep prompts and bodies out of sdf\n", gate, v)
+		if v := os.Getenv(gate); grokEnvTrue(v) {
+			b.WriteString(grokGateWarning(gate, strings.TrimSpace(v)))
 		}
 	}
 	if !req.Write {
@@ -449,7 +472,7 @@ func grok(req Request) (Result, error) {
 		fmt.Fprintf(&b, "not written (pass --write to install %s)\n", hookPath)
 		return Result{Text: b.String()}, nil
 	}
-	configStatus, configWrote, err := writeGrokConfig(path, block)
+	configStatus, configWrote, err := writeGrokConfig(path, hookPath, block)
 	if err != nil {
 		return Result{}, err
 	}
@@ -477,9 +500,44 @@ func hookTokenNoteFor(ep Endpoint) string {
 }
 
 // grokContentGates are the environment variables that put prompt text,
-// responses, or tool bodies on Grok's external stream. All are off by default
-// (24-monitoring-usage.md, "Environment variables").
-var grokContentGates = []string{"OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_CONTENT"}
+// responses, tool metadata, or tool bodies on Grok's external stream. All are
+// off by default (24-monitoring-usage.md, "Environment variables"), and the
+// [telemetry] table sdf writes pins all four off; a set variable wins over
+// the file, so init warns about each one that turns a gate on.
+var grokContentGates = []string{"OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT"}
+
+// grokEnvTrue is Grok's env_bool for the OTEL_LOG_* gates
+// (xai-grok-telemetry/src/external/config.rs at grok-build 2bdd1d6): trimmed
+// and lowercased, 1/true/yes/on is on, 0/false/no/off/"" is off, and any
+// other value is ignored, so the config file (pinned false) applies.
+func grokEnvTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// grokGateWarning is the warning for one gate env var that Grok reads as on.
+func grokGateWarning(gate, value string) string {
+	if gate == "OTEL_LOG_TOOL_DETAILS" {
+		return fmt.Sprintf("warning: %s=%s in this shell overrides otel_log_tool_details = false: Grok exports tool metadata (a 4 KB tool_parameters preview, full file paths, verbatim MCP/skill/plugin names), not bodies. sdf does not need it for Grok (the session hook supplies the working directory); unset it for grok if you set it for Claude Code's commit linking\n", gate, value)
+	}
+	return fmt.Sprintf("warning: %s=%s in this shell exports content to the collector and overrides the pinned config; unset it to keep prompts and bodies out of sdf\n", gate, value)
+}
+
+// quoteEndpointLine shQuotes the value of a KEY=VALUE line whose key names
+// an OTLP endpoint, the one value built from --host and --port. checkEndpoint
+// already keeps the host inert; quoting the printed line as well matches the
+// files sdf writes (opencode.env, copilot.env) for a line meant to be pasted
+// into a shell. Constant values (1, otlp, http/json) are printed as they are.
+func quoteEndpointLine(line string) string {
+	key, value, ok := strings.Cut(line, "=")
+	if !ok || !strings.HasSuffix(key, "_ENDPOINT") {
+		return line
+	}
+	return key + "=" + shQuote(value)
+}
 
 func grokEnv(ep Endpoint) []string {
 	return []string{
@@ -502,22 +560,38 @@ otel_metrics_exporter = "otlp"
 otel_logs_exporter = "otlp"
 otel_protocol = "http/protobuf"
 otel_endpoint = "%s"
+# Content and detail gates, pinned off. Grok's defaults are off too, but
+# otel_log_assistant_responses follows otel_log_user_prompts when unset, so
+# all four are written explicitly. An OTEL_LOG_* env var still wins.
+otel_log_user_prompts = false
+otel_log_assistant_responses = false
+otel_log_tool_details = false
+otel_log_tool_content = false
 `, ep.base())) + "\n"
 }
 
-func writeGrokConfig(path, block string) (string, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", false, err
-	}
+// writeGrokConfig appends block to config.toml unless it already has a
+// [telemetry] table. Like the other agents, every file this init writes
+// (config.toml and hookPath, the session hook written right after) is
+// checked first with checkAllWritable, so a read-only config, a refused
+// symlink as root, or an unwritable hooks/ directory fails before anything
+// changes; config.toml is then replaced atomically with replaceFile.
+func writeGrokConfig(path, hookPath, block string) (string, bool, error) {
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return "", false, err
+		return "", false, readErr(path, err)
 	}
-	if hasTelemetryTable(string(existing)) {
-		return "not written: " + path + " already has a [telemetry] table; it was not changed\n", false, nil
-	}
-	backup, err := copyAside(path)
+	has, err := grokHasTelemetry(existing)
 	if err != nil {
+		return "", false, fmt.Errorf("%s is not valid TOML (%v); Grok cannot load it either. Fix it and rerun; it was not changed", path, err)
+	}
+	if has {
+		if err := checkAllWritable(hookPath); err != nil {
+			return "", false, err
+		}
+		return "not written: " + path + " already has a [telemetry] table (or an inline telemetry = {...}, or dotted telemetry.* keys); it was not changed; add the printed keys to it by hand\n", false, nil
+	}
+	if err := checkAllWritable(path, hookPath); err != nil {
 		return "", false, err
 	}
 	var body []byte
@@ -531,23 +605,38 @@ func writeGrokConfig(path, block string) (string, bool, error) {
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
 	}
-	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
+	// The appended file must still parse; anything this misses would give
+	// Grok a duplicate table, so refuse instead of writing it.
+	if _, err := grokHasTelemetry(body); err != nil {
+		return "", false, fmt.Errorf("%s: appending the [telemetry] table would not be valid TOML (%v); add the printed keys by hand; it was not changed", path, err)
+	}
+	status, err := replaceFile(path, body, 0o600)
+	if err != nil {
 		return "", false, err
 	}
-	return wrote(path, backup), true, nil
+	return status, true, nil
 }
 
-func hasTelemetryTable(text string) bool {
-	for _, line := range strings.Split(text, "\n") {
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if trim == "[telemetry]" || strings.HasPrefix(trim, "[telemetry.") {
-			return true
-		}
+// grokHasTelemetry parses config.toml and reports whether it sets the
+// top-level telemetry key in any TOML form: a [telemetry] or [ telemetry ]
+// header, a [telemetry.sub] table, an inline telemetry = {...}, dotted
+// telemetry.x = ... keys, or a quoted "telemetry" key. A line scan misses
+// the last three, and appending a second [telemetry] then makes the file
+// fail to parse in Grok (duplicate key). Empty input has no telemetry.
+func grokHasTelemetry(body []byte) (bool, error) {
+	return tomlHasKey(body, "telemetry")
+}
+
+// tomlHasKey parses body as TOML and reports whether it sets the top-level
+// key in any form (table header with or without spaces or quotes, sub-table,
+// inline table, dotted or quoted key). Empty input has no keys.
+func tomlHasKey(body []byte, key string) (bool, error) {
+	var doc map[string]any
+	if _, err := toml.Decode(string(body), &doc); err != nil {
+		return false, err
 	}
-	return false
+	_, ok := doc[key]
+	return ok, nil
 }
 
 func grokConfigured(req Request) string {
@@ -556,7 +645,8 @@ func grokConfigured(req Request) string {
 	envHit := (os.Getenv("GROK_EXTERNAL_OTEL") == "1" || os.Getenv("GROK_EXTERNAL_OTEL") == "true") &&
 		(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == want || strings.HasPrefix(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), want+"/"))
 	body, err := os.ReadFile(path)
-	fileHit := err == nil && hasTelemetryTable(string(body)) && strings.Contains(string(body), want)
+	has, parseErr := grokHasTelemetry(body)
+	fileHit := err == nil && parseErr == nil && has && strings.Contains(string(body), want)
 	return fmt.Sprintf("grok process env points at %s: %t; %s has [telemetry] pointing at %s: %t\n", want, envHit, path, want, fileHit)
 }
 
@@ -586,7 +676,7 @@ func gemini(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Docs: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md\n\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_ENABLED=true\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_TARGET=local\n")
-	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", shQuote(req.Endpoint.base()))
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_LOG_PROMPTS=false\n\n")
 	want := geminiTelemetry(req.Endpoint)
@@ -774,6 +864,11 @@ func Probe(ep Endpoint) Check {
 	}
 	if ep.GRPCPort == 0 {
 		ep.GRPCPort = 4317
+	}
+	// The host and ports go into a URL and a dial address; probe nothing
+	// that sdf init would refuse to write.
+	if err := checkEndpoint(&ep); err != nil {
+		return Check{Text: "not probed: " + err.Error() + "\n", HTTPStatus: "not probed", GRPCStatus: "not probed"}
 	}
 	health := ep.base() + "/health"
 	httpStatus := probeHTTP(health)

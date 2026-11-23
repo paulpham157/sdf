@@ -130,9 +130,14 @@ sdf_post() {
       return 0
     fi
     sdf_rc=$(mktemp 2>/dev/null) || return 0
+    # The wgetrc holds the token: remove it however the hook ends (a kill
+    # with SIGKILL is the one case no trap can cover).
+    trap 'rm -f "$sdf_rc"' EXIT
+    trap 'rm -f "$sdf_rc"; exit 1' HUP INT TERM
     printf 'header = %s\n' "$sdf_auth" > "$sdf_rc"
     sdf_wget "$payload" "$sdf_rc"
     rm -f "$sdf_rc"
+    trap - EXIT HUP INT TERM
   fi
   return 0
 }
@@ -155,15 +160,28 @@ sdf_wget() {
 
 # sdf_auth_header prints an Authorization header line when a receiver token
 # is available, from the same variables sdf serve reads: SDF_OTLP_TOKEN, else
-# the file named by SDF_OTLP_TOKEN_FILE. This file never holds the token. The
+# the file named by SDF_OTLP_TOKEN_FILE, trimmed at the ends; both set is
+# refused with a warning, as sdf serve refuses it. This file never holds the token. The
 # header goes to curl on stdin and to wget through a private temporary
 # wgetrc, so it is not on a command line.
 sdf_auth_header() {
-  sdf_tok=$(printf '%s' "${SDF_OTLP_TOKEN:-}" | tr -d '[:space:]')
-  if [ -z "$sdf_tok" ] && [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then
-    sdf_tok=$(tr -d '[:space:]' < "$SDF_OTLP_TOKEN_FILE" 2>/dev/null)
+  sdf_tok=$(printf '%s\n' "${SDF_OTLP_TOKEN:-}" | tr -d '\r' | sdf_trim)
+  if [ -n "$sdf_tok" ] && [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then
+    echo 'sdf: SDF_OTLP_TOKEN and SDF_OTLP_TOKEN_FILE are both set (sdf serve refuses that too); not sending a token' >&2
+    return 0
+  fi
+  if [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then
+    sdf_tok=$(tr -d '\r' 2>/dev/null < "$SDF_OTLP_TOKEN_FILE" | sdf_trim)
   fi
   [ -z "$sdf_tok" ] || printf 'Authorization: Bearer %s' "$sdf_tok"
+}
+
+# sdf_trim prints the first non-blank line of stdin with leading and trailing
+# blanks removed (read's default IFS), which is strings.TrimSpace for a
+# one-line token, as sdf serve reads it.
+sdf_trim() {
+  while read -r sdf_line && [ -z "$sdf_line" ]; do :; done
+  printf '%s' "$sdf_line"
 }
 
 # Codex 0.167.0 service.name is the originator, except the app server passes

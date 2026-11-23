@@ -226,10 +226,38 @@
       kids.push(h("p", null, ["no decision"]));
     } else {
       records.forEach(function (record) {
-        kids.push(h("p", { class: "decision" }, [
+        const by = Array.isArray(record.superseded_by) ? record.superseded_by : [];
+        const retraction = record.effective_status === "retracted" && record.retraction ? record.retraction : null;
+        const superseded = by.length > 0 && (retraction || record.effective_status === "superseded");
+        const line = [
           h("span", { class: "status" }, [record.status || "unknown"]),
-          document.createTextNode(record.statement || ""),
-        ]));
+        ];
+        if (record.decided_by) {
+          line.push(h("span", { class: "status" }, [record.decided_by]));
+        }
+        if (retraction) {
+          line.push(h("span", { class: "retracted" }, ["retracted"]));
+        }
+        if (superseded) {
+          line.push(h("span", { class: "superseded-by" }, ["superseded by " + by.join(", ")]));
+        }
+        line.push(document.createTextNode(record.statement || ""));
+        let cls = "decision";
+        if (retraction) cls = "decision retracted-record";
+        else if (superseded) cls = "decision superseded";
+        kids.push(h("p", { class: cls }, line));
+        const extra = [];
+        if (record.alternatives) extra.push("alternatives " + record.alternatives);
+        if (record.reason) extra.push("reason " + record.reason);
+        if (retraction) {
+          const parts = ["retraction " + (retraction.retracted_at || "")];
+          if (retraction.retracted_by) parts.push("by " + retraction.retracted_by);
+          if (retraction.reason) parts.push(retraction.reason);
+          extra.push(parts.join(" "));
+        }
+        if (extra.length) {
+          kids.push(h("p", { class: "detail" }, [extra.join(" · ")]));
+        }
       });
     }
     edges.forEach(function (edge) {
@@ -589,6 +617,7 @@
     if (node && node.status_code === "ERROR") {
       let status = "status=ERROR";
       if (node.status_message) status += " (" + node.status_message + ")";
+      if (node.error_type && String(node.status_message || "").indexOf(node.error_type) < 0) status += " error_type=" + node.error_type;
       kids.push(document.createTextNode(" "));
       kids.push(h("span", { class: "span-status" }, [status]));
     }

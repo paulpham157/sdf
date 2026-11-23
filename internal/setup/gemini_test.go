@@ -37,7 +37,7 @@ func TestGeminiPrintDoesNotWrite(t *testing.T) {
 	for _, want := range []string{
 		"export GEMINI_TELEMETRY_ENABLED=true",
 		"export GEMINI_TELEMETRY_TARGET=local",
-		"export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318",
+		"export GEMINI_TELEMETRY_OTLP_ENDPOINT='http://127.0.0.1:4318'\n",
 		"export GEMINI_TELEMETRY_OTLP_PROTOCOL=http",
 		"export GEMINI_TELEMETRY_LOG_PROMPTS=false",
 		"not written",

@@ -1,7 +1,6 @@
 package cli_test
 
 import (
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,55 +41,22 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
-func TestDemoCommand(t *testing.T) {
-	t.Chdir(t.TempDir())
+// sdf demo was removed (#228): it is an unknown command, and the usage line
+// no longer lists it.
+func TestDemoCommandIsGone(t *testing.T) {
 	out := run(t, "demo")
-	if out.code != 0 {
+	if out.code != 2 || !strings.Contains(out.stderr, `unrecognized command "demo"`) {
 		t.Fatalf("code %d\n%s%s", out.code, out.stdout, out.stderr)
 	}
-	for _, want := range []string{
-		"sdf.fixture=demo",
-		"metrics over OTLP/gRPC -> ok",
-		"tool: claude-code",
-		"tokens: input=4200 output=480 cacheRead=12000",
-		"computed_cost_usd: 0.0156 ",
-		"Bash call_id=toolu_demo_bash success=true",
-		"missing: (none)",
-		"temporary store was removed",
-	} {
-		if !strings.Contains(out.stdout, want) {
-			t.Fatalf("missing %q\n%s", want, out.stdout)
-		}
-	}
-	if entries, _ := os.ReadDir("."); len(entries) != 0 {
-		t.Fatalf("demo wrote into the working directory: %v", entries)
-	}
-
-	db := filepath.Join(t.TempDir(), "demo.sqlite")
-	kept := run(t, "demo", "--db", db, "--json")
-	if kept.code != 0 {
-		t.Fatalf("code %d\n%s", kept.code, kept.stderr)
-	}
-	var report struct {
-		Sessions []struct {
-			SessionID string `json:"session_id"`
-		} `json:"sessions"`
-	}
-	if err := json.Unmarshal([]byte(kept.stdout), &report); err != nil {
-		t.Fatalf("%v\n%s", err, kept.stdout)
-	}
-	if len(report.Sessions) != 1 || !strings.HasPrefix(report.Sessions[0].SessionID, "sdf-demo-") {
-		t.Fatalf("%s", kept.stdout)
-	}
-	again := run(t, "summary", "--db", db)
-	if again.code != 0 || !strings.Contains(again.stdout, report.Sessions[0].SessionID) {
-		t.Fatalf("code %d\n%s%s", again.code, again.stdout, again.stderr)
+	help := run(t, "--help")
+	if help.code != 0 || strings.Contains(help.stdout, "demo") || !strings.Contains(help.stdout, "usage: sdf <serve|summary|check|") {
+		t.Fatalf("code %d\n%s", help.code, help.stdout)
 	}
 }
 
 // TestTrimpathReleaseBinary builds sdf the way `make build` and GoReleaser
-// do (-trimpath, stripped, version ldflags) and runs the 5-minute path from
-// a directory that has no source tree.
+// do (-trimpath, stripped, version ldflags) and runs sdf version and sdf
+// check from a directory that has no source tree.
 func TestTrimpathReleaseBinary(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a binary")
@@ -127,9 +93,6 @@ func TestTrimpathReleaseBinary(t *testing.T) {
 		t.Fatal(out)
 	}
 	if out := exe("check"); !strings.Contains(out, "priced-session pass\n") || !strings.Contains(out, " 0 failed") {
-		t.Fatal(out)
-	}
-	if out := exe("demo"); !strings.Contains(out, "computed_cost_usd: 0.0156 ") {
 		t.Fatal(out)
 	}
 }
