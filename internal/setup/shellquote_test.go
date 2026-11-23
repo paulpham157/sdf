@@ -148,3 +148,136 @@ func TestSessionHookCommandQuotesTheURL(t *testing.T) {
 		t.Fatalf("curl got %q", lines)
 	}
 }
+
+func TestCheckHostEdgeCases(t *testing.T) {
+	for host, want := range map[string]string{
+		"example.com.":   "example.com.",
+		"otel-1.corp.x.": "otel-1.corp.x.",
+		"[::1]":          "::1",
+	} {
+		got, err := checkHost(host)
+		if err != nil || got != want {
+			t.Fatalf("%q: %q %v", host, got, err)
+		}
+	}
+	for host, msg := range map[string]string{
+		".":                  "is not a host name",
+		"example.com..":      "is not a host name",
+		"127.0.0.1.":         "all numbers",
+		"127.0.0.1:4318":     "looks like host:port",
+		"[::1]:4318":         "looks like host:port",
+		"collector.lan:4318": "looks like host:port",
+		"::127.0.0.1":        "IPv4 address written as IPv6; pass --host 127.0.0.1",
+		"[::127.0.0.1]":      "IPv4 address written as IPv6",
+		"::ffff:127.0.0.1":   "IPv4 address written as IPv6; pass --host 127.0.0.1",
+		"::ffff:c000:0280":   "pass --host 192.0.2.128",
+		"fe80::1%eth0":       "not a valid IPv6 address",
+	} {
+		if _, err := checkHost(host); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Fatalf("%q: want %q, got %v", host, msg, err)
+		}
+	}
+}
+
+func TestValidateEndpointRefusesPortZero(t *testing.T) {
+	for _, ep := range []Endpoint{{Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 4317}, {Host: "127.0.0.1", HTTPPort: 4318, GRPCPort: 0}} {
+		if err := ValidateEndpoint(&ep); err == nil || !strings.Contains(err.Error(), "port 0 is not in 1-65535") {
+			t.Fatalf("%+v: %v", ep, err)
+		}
+	}
+	ep := Endpoint{Host: "[::1]", HTTPPort: 4318, GRPCPort: 4317}
+	if err := ValidateEndpoint(&ep); err != nil || ep.Host != "::1" {
+		t.Fatal(ep, err)
+	}
+}
+
+func TestProbeDoesNotDialAnInvalidHost(t *testing.T) {
+	got := Probe(Endpoint{Host: "a b", HTTPPort: 4318, GRPCPort: 4317})
+	if got.Reachable || !strings.HasPrefix(got.Text, "not probed: --host") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestGitHookURLAcceptsBracketedLoopback(t *testing.T) {
+	for host, want := range map[string]string{
+		"[::1]":      "http://[::1]:4318/v1/logs",
+		"::1":        "http://[::1]:4318/v1/logs",
+		"localhost.": "http://127.0.0.1:4318/v1/logs",
+		"LocalHost":  "http://127.0.0.1:4318/v1/logs",
+	} {
+		got, err := hookLogsURL(Endpoint{Host: host, HTTPPort: 4318})
+		if err != nil || got != want {
+			t.Fatalf("%q: %q %v", host, got, err)
+		}
+	}
+	for _, host := range []string{"10.0.0.1", "::127.0.0.1", "a b"} {
+		if _, err := hookLogsURL(Endpoint{Host: host, HTTPPort: 4318}); err == nil {
+			t.Fatalf("%q accepted", host)
+		}
+	}
+}
+
+// localhost. is written as localhost by every writer (agent configs, the
+// git hook, the token check), not kept with the dot that sends it to DNS.
+func TestLocalhostTrailingDotIsNormalized(t *testing.T) {
+	for _, host := range []string{"localhost.", "LOCALHOST.", "Localhost"} {
+		got, err := checkHost(host)
+		if err != nil || got != "localhost" {
+			t.Fatalf("%q: %q %v", host, got, err)
+		}
+	}
+	home := t.TempDir()
+	res, err := Run(Request{Agent: "claude-code", Home: home, ProjectDir: home, Endpoint: Endpoint{Host: "localhost."}})
+	if err != nil || strings.Contains(res.Text, "localhost.") || !strings.Contains(res.Text, "http://localhost:4318/v1/logs") {
+		t.Fatal(err, res.Text)
+	}
+	if !strings.Contains(res.Text, hookTokenNote) {
+		t.Fatal("localhost. should get the loopback token note")
+	}
+}
+
+func TestNonDecimalIPv4FormsAreRefused(t *testing.T) {
+	for _, host := range []string{"0x7f.1", "0x7f.0.0.1", "0x7f000001", "0X7F000001", "0177.0.0.1", "127.000.0.1", "2130706433", "127.1", "0x7f.1.", "foo.0x1", "a.123"} {
+		if _, err := checkHost(host); err == nil || !strings.Contains(err.Error(), "dotted-decimal") {
+			t.Fatalf("%q: %v", host, err)
+		}
+	}
+	for _, host := range []string{"127.0.0.1", "10.1.2.3", "1password.com", "0xdeadbeef.example.com", "x0x7f"} {
+		if _, err := checkHost(host); err != nil {
+			t.Fatalf("%q: %v", host, err)
+		}
+	}
+}
+
+func TestHostPortHints(t *testing.T) {
+	for host, want := range map[string]string{
+		"::1:4318":       "pass --host '[::1]' --port 4318",
+		"fe80::1:4318":   "pass --host '[fe80::1]' --port 4318",
+		"127.0.0.1:":     "looks like host:port; pass the host alone (--host 127.0.0.1) and the port as a number with --port",
+		"127.0.0.1:http": "looks like host:port; pass the host alone (--host 127.0.0.1) and the port as a number with --port",
+		"[::1]:4318":     "pass the host alone (--host '[::1]') and the port with --port 4318",
+	} {
+		_, err := checkHost(host)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%q: want %q, got %v", host, want, err)
+		}
+		if strings.Contains(err.Error(), "0.1.67.24") || strings.Contains(err.Error(), "IPv6 address\"") {
+			t.Fatalf("%q: wrong hint %v", host, err)
+		}
+	}
+	// The bracketed form is the address it spells, and short last groups
+	// are not read as ports.
+	for host, want := range map[string]string{"[fe80::1:4318]": "fe80::1:4318", "fd00::2:3": "fd00::2:3", "2001:db8::1": "2001:db8::1"} {
+		if got, err := checkHost(host); err != nil || got != want {
+			t.Fatalf("%q: %q %v", host, got, err)
+		}
+	}
+}
+
+func TestUnspecifiedHostIsRefused(t *testing.T) {
+	for _, host := range []string{"::", "[::]", "0.0.0.0", "0:0:0:0:0:0:0:0"} {
+		if _, err := checkHost(host); err == nil || !strings.Contains(err.Error(), "unspecified address") {
+			t.Fatalf("%q: %v", host, err)
+		}
+	}
+}

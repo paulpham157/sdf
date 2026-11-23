@@ -865,6 +865,11 @@ func Probe(ep Endpoint) Check {
 	if ep.GRPCPort == 0 {
 		ep.GRPCPort = 4317
 	}
+	// The host and ports go into a URL and a dial address; probe nothing
+	// that sdf init would refuse to write.
+	if err := checkEndpoint(&ep); err != nil {
+		return Check{Text: "not probed: " + err.Error() + "\n", HTTPStatus: "not probed", GRPCStatus: "not probed"}
+	}
 	health := ep.base() + "/health"
 	httpStatus := probeHTTP(health)
 	grpcAddr := net.JoinHostPort(ep.Host, fmt.Sprint(ep.GRPCPort))
