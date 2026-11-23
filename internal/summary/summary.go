@@ -2173,8 +2173,9 @@ func nonNilCalls(s []ToolCall) []ToolCall {
 }
 
 // geminiTokens reads Gemini CLI token counts. gemini_cli.token.usage is a
-// cumulative counter by type (input, output, thought, cache, tool), so a
-// series keeps its latest point. Without those points it sums the token
+// cumulative counter by type (input, output, thought, cache, tool); each
+// series adds up the latest point of each process run (cumulativeTotal), so a
+// resumed session is not undercounted. Without those points it sums the token
 // attributes on gemini_cli.api_response. gen_ai.client.token.usage and the
 // gen_ai.client.inference.operation.details log repeat the same input and
 // output counts and are not added again. Field meanings follow
@@ -2189,7 +2190,7 @@ func geminiTokens(records []record.Record, points []point) (OrderedFloats, *stri
 		}
 	}
 	if len(metricPoints) > 0 {
-		return sumBy(metricPoints, "type"), record.Str("metrics " + geminiTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Gemini CLI type=input|output|thought|cache|tool; cache is a subset of input, thought and tool are not part of input or output"), true
+		return sumBy(metricPoints, "type"), record.Str("metrics " + geminiTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run. Gemini CLI type=input|output|thought|cache|tool; cache is a subset of input, thought and tool are not part of input or output"), true
 	}
 	totals := OrderedFloats{}
 	found := false

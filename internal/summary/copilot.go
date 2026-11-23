@@ -268,7 +268,7 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 		}
 	}
 	if found {
-		return metrics, record.Str("metrics gen_ai.client.inference.usage github-copilot"), record.Str("sum of gen_ai.client.inference.usage.* counter points attributed to this session by time window; a cumulative series keeps its latest point"), true
+		return metrics, record.Str("metrics gen_ai.client.inference.usage github-copilot"), record.Str("sum of gen_ai.client.inference.usage.* counter points attributed to this session by time window; a cumulative series adds up the latest point of each process run"), true
 	}
 	return OrderedFloats{}, nil, nil, false
 }

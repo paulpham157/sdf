@@ -77,11 +77,6 @@
   not joined; tool calls come from the logs. The Gemini CLI mapping and the
   `gemini_*.json` samples come from the published docs and source, not from a
   live session.
-- `gemini --resume` reuses the `session.id`, but the new process restarts its
-  cumulative counters at 0, and cumulative series keep only their latest
-  point, so a resumed session undercounts cumulative tokens (1000 then 500
-  reads as 500) until [#191](https://github.com/paulpham157/sdf/pull/191)
-  merges.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
   SQLite file. The exception is tool arguments: Qwen Code sends the full
@@ -89,7 +84,8 @@
   of `write_file` and `edit`) and the tool's error text on
   `qwen-code.tool_call` whatever `logPrompts` says, and Gemini CLI sends
   `function_args` when its `logPrompts` is on. sdf drops `function_args`
-  from every record, and `error` / `error.message` from Qwen and Gemini
+  from every record of every agent (not only Qwen and Gemini; a key of that
+  name from any agent is never stored), and `error` / `error.message` from Qwen and Gemini
   tool-call records and Qwen tool spans (whose status message becomes
   "tool error"), before anything is stored. It keeps the tool name, call
   id, duration, success, and error type, the dropped sizes
