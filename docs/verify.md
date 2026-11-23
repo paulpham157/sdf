@@ -31,8 +31,10 @@ a source.
 2. **Revision identity.** HEAD is the submitted commit, the base's tree is
    the one the task recorded, the base is an ancestor of the commit, and the
    fresh checkout is clean.
-3. **Designated files.** Every designated file has the same mode and blob
-   at the commit as at the base, and the same sha256 on disk. A new file that
+3. **Designated files.** The base holds exactly the blobs the task pinned
+   (else `BASE_MISMATCH`). Every designated file has the same mode and blob
+   at the commit as at the base, and the same sha256 on disk, read without
+   following symlinks (the on-disk type must match the git mode). A new file that
    matches a designated glob fails. So does a copy of this task's
    `.sdf/tasks/<id>.json` in the commit that differs from the trusted one.
 4. **Secret scan** (when the task has `secret_scan`). Added lines of

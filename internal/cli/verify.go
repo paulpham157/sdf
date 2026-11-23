@@ -15,12 +15,14 @@ import (
 
 const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--repo DIR]
                   [--data-dir DIR | --no-data-dir] [--out PATH]
-                  [--artifacts DIR] [--work-dir DIR] [--keep]
+                  [--artifacts DIR] [--work-dir DIR] [--path PATH] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
 outside the repository. The task is read from --task-ref (the protected
 branch, for example origin/main) and the sdf data dir; every copy found has
-to agree. The working tree's .sdf/tasks file is not trusted.
+to agree. The working tree's .sdf/tasks file is not trusted. Checks run in
+the checkout root with --path (default: this PATH, relative entries
+dropped) as their only PATH.
 
 Prints the verdict and evidence as JSON. Exit 0 is PASS, 1 FAIL, 3 ERROR,
 2 a usage error.`
@@ -50,7 +52,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		}{
 			{"--task", &opt.TaskID}, {"--task-ref", &opt.TaskRef}, {"--repo", &opt.RepoDir},
 			{"--data-dir", &dataDir}, {"--out", &out}, {"--artifacts", &opt.ArtifactsDir},
-			{"--work-dir", &opt.WorkDir},
+			{"--work-dir", &opt.WorkDir}, {"--path", &opt.Path},
 		} {
 			v, ok, err := flagValue(f.name, &i, args)
 			if !ok {

@@ -262,3 +262,80 @@ func TestCheckoutDirtyWhenSomethingWritesTheCheckout(t *testing.T) {
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
 }
+
+func TestPathIsExplicitAndNeverTheCheckout(t *testing.T) {
+	f := newFixture(t, task.CriterionInput{Name: "unit", Argv: []string{"mytool"}, Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "mytool": "#!/bin/sh\nexit 0\n"})
+	g(t, f.repo, "update-index", "--chmod=+x", "mytool")
+	sha = commit(t, f.repo, nil, "exec")
+
+	// "." in PATH would find ./mytool in the checkout; it is dropped.
+	o := f.opts(sha)
+	o.Path = "."
+	res := mustRun(t, o)
+	if res.Status != StatusError || !hasCode(res, CodeCheckError) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "mytool"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o.Path = bin + string(os.PathListSeparator) + "relative/dir"
+	res = mustRun(t, o)
+	if res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	crit := res.Evidence[len(res.Evidence)-1].Value
+	if crit["command"] != filepath.Join(bin, "mytool") || crit["path"] != bin || crit["cwd"] != "." {
+		t.Fatalf("%v %v %v", crit["command"], crit["path"], crit["cwd"])
+	}
+}
+
+func TestBaseRecheckOfDesignatedFiles(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	forged := f.spec
+	forged.DesignatedFiles = append([]task.DesignatedFile(nil), f.spec.DesignatedFiles...)
+	forged.DesignatedFiles[0].GitBlob = strings.Repeat("1", 40)
+	data := t.TempDir()
+	if _, err := task.Declare(context.Background(), forged, task.Store{DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	o := f.opts(sha)
+	o.TaskRef, o.DataDir, o.Ledger = "", data, nil
+	res := mustRun(t, o)
+	if res.Status != StatusFail || !hasCode(res, CodeBaseMismatch) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestDesignatedFileIsNotFollowedThroughASymlink(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	outside := filepath.Join(t.TempDir(), "run.sh")
+	if err := os.WriteFile(outside, []byte(featureTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Same bytes as the pinned file, but reached through a link: refused.
+	afterCheckout = func(dir string) {
+		p := filepath.Join(dir, "tests", "run.sh")
+		_ = os.Remove(p)
+		_ = os.Symlink(outside, p)
+	}
+	defer func() { afterCheckout = nil }()
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusFail || !hasCode(res, CodeDesignatedFileModified) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestRepoMayBeASubdirectory(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	o := f.opts(sha)
+	o.RepoDir = filepath.Join(f.repo, "src")
+	if res := mustRun(t, o); res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}

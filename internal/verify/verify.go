@@ -92,6 +92,11 @@ type Options struct {
 	DataDir string      // the sdf data dir copy
 	Ledger  task.Ledger // also receives the evidence and verdict
 
+	// Path is the PATH the criteria run with, and the only one argv[0] is
+	// looked up in. Empty means the verifier's own PATH. Relative entries
+	// are dropped, so "." cannot resolve a command from the checkout.
+	Path string
+
 	WorkDir      string // parent of the temporary checkout; default os.TempDir()
 	ArtifactsDir string // when set, check output is kept here as <sha256> files
 	Keep         bool   // keep the temporary checkout
@@ -140,6 +145,8 @@ type run struct {
 	sources  []any
 	checkout string
 	tree     string
+	// reasonLater holds reasons found before their evidence record exists.
+	reasonLater []Reason
 }
 
 // Run verifies opt.SHA against task opt.TaskID. A returned error means no
@@ -160,7 +167,14 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if root, err := task.RepoRoot(ctx, repo); err == nil {
+		repo = root
+	}
 	opt.RepoDir = repo
+	if opt.Path == "" {
+		opt.Path = os.Getenv("PATH")
+	}
+	opt.Path = absolutePath(opt.Path)
 	var idb [8]byte
 	if _, err := rand.Read(idb[:]); err != nil {
 		return Result{}, err
@@ -486,6 +500,20 @@ func (r *run) checkIntegrity() {
 		r.reason(CodeInfraError, id, "%v", err)
 		return
 	}
+	// The base has to hold exactly what the task pinned, or the task does
+	// not describe this repository's base.
+	if atBase, err := lsTree(r.ctx, r.checkout, r.spec.BaseSHA); err == nil {
+		var off []string
+		for _, f := range r.spec.DesignatedFiles {
+			if b, ok := atBase[f.Path]; !ok || b.mode != f.Mode || b.oid != f.GitBlob {
+				off = append(off, f.Path)
+			}
+		}
+		ev["base_matches_task"] = len(off) == 0
+		if len(off) > 0 {
+			r.reasonLater = append(r.reasonLater, Reason{Code: CodeBaseMismatch, Detail: "designated files at the base differ from the task: " + strings.Join(off, ", ")})
+		}
+	}
 	var modified, added []any
 	var msgs []string
 	known := map[string]bool{}
@@ -556,10 +584,15 @@ func (r *run) checkIntegrity() {
 	ev["task_file"] = taskFileState
 	ev["checked"] = int64(len(r.spec.DesignatedFiles))
 	status := "pass"
-	if len(modified) > 0 || len(added) > 0 || (taskFileState != "absent" && taskFileState != "same") {
+	if len(modified) > 0 || len(added) > 0 || (taskFileState != "absent" && taskFileState != "same") || len(r.reasonLater) > 0 {
 		status = "fail"
 	}
 	id := r.addEvidence("designated_integrity", "", withStatus(ev, status))
+	for _, x := range r.reasonLater {
+		x.EvidenceID = id
+		r.reasons = append(r.reasons, x)
+	}
+	r.reasonLater = nil
 	if len(modified) > 0 {
 		r.reason(CodeDesignatedFileModified, id, "%s", strings.Join(msgs, "; "))
 	}
@@ -582,9 +615,19 @@ func nonNilAny(v []any) []any {
 	return v
 }
 
+// fileSHA256 hashes the checkout file at p without following a symlink:
+// the on-disk type has to match the git mode, and a link's hash is of its
+// target string.
 func fileSHA256(p, mode string) (string, error) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return "", err
+	}
+	isLink := info.Mode()&fs.ModeSymlink != 0
+	if isLink != (mode == "120000") || (!isLink && !info.Mode().IsRegular()) {
+		return "", fmt.Errorf("on-disk type %s does not match git mode %s", info.Mode().Type(), mode)
+	}
 	var b []byte
-	var err error
 	if mode == "120000" {
 		var target string
 		target, err = os.Readlink(p)
@@ -637,8 +680,10 @@ func nonNilStrings(v []string) []string {
 }
 
 func (r *run) runCriterion(c task.Criterion) {
-	env, envNames, envHash := checkEnv()
+	env, envNames, envHash := checkEnv(r.opt.Path)
 	ev := map[string]any{
+		"cwd":         ".",
+		"path":        r.opt.Path,
 		"argv":        c.Argv,
 		"timeout_s":   c.TimeoutS,
 		"expect_exit": c.ExpectExit,
@@ -650,7 +695,16 @@ func (r *run) runCriterion(c task.Criterion) {
 	stdout, errOut := filepath.Join(outDir, c.Name+".stdout"), filepath.Join(outDir, c.Name+".stderr")
 	ctx, cancel := context.WithTimeout(r.ctx, time.Duration(c.TimeoutS)*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
+	command, err := lookPath(c.Argv[0], r.checkout, r.opt.Path)
+	if err != nil {
+		ev["error"] = err.Error()
+		id := r.addEvidence("criterion", c.Name, withStatus(ev, "error"))
+		r.reason(CodeCheckError, id, "%s: %v", c.Name, err)
+		return
+	}
+	ev["command"] = command
+	cmd := exec.CommandContext(ctx, command, c.Argv[1:]...)
+	cmd.Args[0] = c.Argv[0]
 	cmd.Dir = r.checkout
 	cmd.Env = env
 	cmd.WaitDelay = 5 * time.Second
