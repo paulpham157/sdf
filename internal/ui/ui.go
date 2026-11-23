@@ -15,7 +15,8 @@
 // with the default span view, then outcome.Attach. GET /api/snapshot is that
 // same report arranged for the page. GET /api/decisions reads the append-only
 // decision records; it is empty when none have been recorded, and it is not
-// part of the summary. Computed cost the summary marks unknown is returned
+// part of the summary. GET /api/decisions/graph arranges those records into
+// chapters for the Decisions tab (see package decisiongraph). Computed cost the summary marks unknown is returned
 // without a USD value. A budget file, when one is configured, adds a
 // comparison of computed session cost with one local ceiling. The comparison
 // is reported only. There is no route that writes the store.
@@ -36,6 +37,7 @@ import (
 	"time"
 
 	"github.com/paulpham157/sdf/internal/decision"
+	"github.com/paulpham157/sdf/internal/decisiongraph"
 	"github.com/paulpham157/sdf/internal/httphost"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
@@ -207,6 +209,7 @@ func (h *handler) routes() {
 	h.mux.HandleFunc("GET /api/summary", h.summary)
 	h.mux.HandleFunc("GET /api/snapshot", h.snapshot)
 	h.mux.HandleFunc("GET /api/decisions", h.decisions)
+	h.mux.HandleFunc("GET /api/decisions/graph", h.decisionGraph)
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +294,28 @@ func (h *handler) decisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, r, func(buf io.Writer) error { return decision.WriteJSON(buf, graph) })
+}
+
+// decisionGraph is the Decisions tab document: decisiongraph.Build over the
+// decision records and the same summarized sessions GET /api/summary reads.
+// sdf decision graph --json prints the same bytes for the same flags.
+func (h *handler) decisionGraph(w http.ResponseWriter, r *http.Request) {
+	report, _, err := h.load()
+	if err != nil {
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	view, err := decisiongraph.FromStore(h.store, report)
+	if err != nil {
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_ = decisiongraph.WriteJSON(w, view)
 }
 
 func (h *handler) load() (summary.Report, *pricing.Catalog, error) {

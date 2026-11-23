@@ -1312,8 +1312,9 @@ func writeBudget(t *testing.T, ceiling string) string {
 
 // pageRunner executes the page script the browser would, then prints the text
 // of the drawn page. It implements only the DOM surface app.js uses:
-// createElement, setAttribute, className, addEventListener, removeEventListener, append,
-// replaceChildren, textContent, and the details open property. fetch is pointed at the server under test.
+// createElement, createElementNS, setAttribute, className, addEventListener,
+// removeEventListener, append, replaceChildren, textContent, and the details
+// open property. fetch is pointed at the server under test.
 const pageRunner = `"use strict";
 const { createInterface } = require("node:readline");
 
@@ -1410,6 +1411,7 @@ lines.on("close", async () => {
   const document = {
     getElementById: function () { return app; },
     createElement: function (tag) { return new Element(tag); },
+    createElementNS: function (ns, tag) { return new Element(tag); },
     createTextNode: function (value) { return new Text(value); },
   };
   const window = {

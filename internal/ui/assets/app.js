@@ -2,6 +2,8 @@
   const app = document.getElementById("app");
   let snapshot = null;
   let decisions = null;
+  let decisionGraph = null;
+  let decisionGraphError = "";
   let budget = undefined;
   let loadError = "";
   let agentFilter = "all";
@@ -32,6 +34,10 @@
       return { name: "detail", id: decodeURIComponent(hash.slice("#/sessions/".length)) };
     }
     if (hash === "#/sessions") return { name: "sessions" };
+    if (hash === "#/decisions" || hash.indexOf("#/decisions/") === 0) {
+      const parts = hash.slice("#/decisions".length).split("/").filter(Boolean).map(decodeURIComponent);
+      return { name: "decisions", chapter: parts[0] || "", node: parts[1] || "" };
+    }
     return { name: "overview" };
   }
 
@@ -129,6 +135,7 @@
         h("a", { href: "#/sessions", "aria-current": active === "sessions" || active === "detail" ? "page" : null }, [
           "Sessions" + (snapshot && snapshot.sessions ? " (" + snapshot.sessions.length + ")" : ""),
         ]),
+        dgChapters().length || active === "decisions" ? h("a", { href: "#/decisions", "aria-current": active === "decisions" ? "page" : null }, ["Decisions"]) : null,
         h("button", { type: "button", class: "refresh", onclick: function () { load(true); } }, ["Refresh"]),
       ]),
     ]);
@@ -932,6 +939,674 @@
     return h("section", { class: "section" }, kids);
   }
 
+  // ---- Decisions tab -------------------------------------------------------
+  // Draws GET /api/decisions/graph. The server places every node in a lane
+  // and a row; this code only turns lanes and rows into coordinates, so the
+  // page never re-derives a chapter, an ending, or a count.
+  // The SVG namespace is an identifier the DOM compares, never a URL the page
+  // requests. It is assembled so the asset holds no literal URL: the page
+  // tests reject any, and the CSP keeps every request on this server anyway.
+  const SVGNS = ["http:", "", "www.w3.org", "2000", "svg"].join("/");
+  const DG = {
+    laneX: { left: 130, spine: 390, right: 650, none: 390 },
+    laneCap: { left: 210, spine: 236, right: 220, none: 200 },
+    width: 790,
+    rowH: 66,
+    top: 34,
+    nodeH: 44,
+  };
+  let dgShow = "all";
+  let dgTensions = false;
+  let dgNotTaken = true;
+  let dgPathOnly = false;
+  let dgHelp = false;
+  let dgStatus = "";
+  let dgKeyOpen = null;
+
+  function s(tag, props, kids) {
+    const node = document.createElementNS(SVGNS, tag);
+    if (props) {
+      Object.keys(props).forEach(function (key) {
+        const value = props[key];
+        if (value == null || value === false) return;
+        if (key.slice(0, 2) === "on" && typeof value === "function") node.addEventListener(key.slice(2), value);
+        else node.setAttribute(key, value);
+      });
+    }
+    (kids || []).forEach(function (kid) {
+      if (kid == null || kid === false) return;
+      node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+    });
+    return node;
+  }
+
+  function dgChapters() {
+    return decisionGraph && Array.isArray(decisionGraph.chapters) ? decisionGraph.chapters : [];
+  }
+
+  function dgRelation(name) {
+    const types = decisionGraph && Array.isArray(decisionGraph.relation_types) ? decisionGraph.relation_types : [];
+    for (let i = 0; i < types.length; i++) if (types[i].name === name) return types[i];
+    return { name: name, style: "generic", label: name };
+  }
+
+  function dgHash(chapter, node) {
+    let out = "#/decisions/" + encodeURIComponent(chapter);
+    if (node) out += "/" + encodeURIComponent(node);
+    return out;
+  }
+
+  function dgGo(chapter, node) {
+    location.hash = dgHash(chapter, node);
+  }
+
+  function dgWhen(text) {
+    if (!text) return "";
+    const date = new Date(text);
+    if (isNaN(date.getTime())) return text;
+    try {
+      return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    } catch (err) {
+      return text;
+    }
+  }
+
+  function dgSize(node) {
+    const title = node.title || "";
+    const detail = node.detail || "";
+    const pad = node.decided_by ? 46 : 26;
+    let w = Math.max(title.length * 7.1, detail.length * 6.1) + pad;
+    if (node.kind === "start") w = Math.max(w, 150);
+    if (node.role === "locked" || node.role === "locked_ending") w += 30;
+    return Math.round(Math.min(Math.max(w, 140), DG.laneCap[node.lane] || 220));
+  }
+
+  function dgFit(text, width) {
+    const room = Math.max(4, Math.floor(width / 6.1));
+    if (!text || text.length <= room) return text || "";
+    return text.slice(0, room - 1).replace(/\s+$/, "") + "…";
+  }
+
+  function dgVisible(node) {
+    if (node.lane === "none") return false;
+    if (node.kind === "alternative" && !dgNotTaken) return false;
+    if (dgPathOnly && !(node.on_path || node.kind === "start" || node.kind === "ending")) return false;
+    return true;
+  }
+
+  function dgMuted(node) {
+    if (dgShow === "all" || node.kind !== "decision") return false;
+    return node.decided_by !== dgShow;
+  }
+
+  function dgPos(node) {
+    return { x: DG.laneX[node.lane] || DG.laneX.spine, y: DG.top + node.row * DG.rowH + DG.nodeH / 2 };
+  }
+
+  function lockIcon(x, y, color) {
+    return s("g", { transform: "translate(" + x + "," + y + ")", "aria-hidden": "true" }, [
+      s("path", { d: "M-4 -1 v-3 a4 4 0 0 1 8 0 v3", fill: "none", stroke: color, "stroke-width": "1.7" }),
+      s("rect", { x: "-6", y: "-1", width: "12", height: "9", rx: "1.5", fill: color }),
+    ]);
+  }
+
+  function dgGlyph(type, x, y, label) {
+    let shape;
+    if (type.style === "lock") {
+      shape = [s("circle", { cx: x, cy: y, r: 11, class: "dg-glyph-lock" }), lockIcon(x, y - 1.5, "#8a4b08")];
+    } else if (type.style === "crack") {
+      shape = [
+        s("rect", { x: x - 9, y: y - 9, width: 18, height: 18, transform: "rotate(45 " + x + " " + y + ")", class: "dg-glyph-crack" }),
+        s("path", { d: "M" + (x - 2) + " " + (y - 7) + " L" + (x + 2.5) + " " + (y - 1) + " L" + (x - 2.5) + " " + (y + 1) + " L" + (x + 2) + " " + (y + 7), class: "dg-crack-line" }),
+      ];
+    } else if (type.glyph) {
+      shape = [
+        s("circle", { cx: x, cy: y, r: 10, class: "dg-glyph-ring dg-" + type.style }),
+        s("text", { x: x, y: y + 5, "text-anchor": "middle", class: "dg-glyph-text dg-" + type.style }, [type.glyph]),
+      ];
+    } else {
+      return null;
+    }
+    // The relation name is the glyph's tooltip and a sentence in the focus
+    // panel; a text label beside the glyph collided with neighbouring nodes.
+    return s("g", { class: "dg-glyph" }, [s("title", null, [label])].concat(shape));
+  }
+
+  function dgEdgePath(a, b, sa, sb) {
+    const pa = dgPos(a);
+    const pb = dgPos(b);
+    if (a.row === b.row) {
+      const dir = pb.x > pa.x ? 1 : -1;
+      return { d: "M" + (pa.x + dir * sa / 2) + "," + pa.y + " L" + (pb.x - dir * (sb / 2 + 3)) + "," + pb.y, mid: [(pa.x + pb.x) / 2, pa.y] };
+    }
+    if (b.row > a.row) {
+      const sy = pa.y + DG.nodeH / 2;
+      const ty = pb.y - DG.nodeH / 2 - 3;
+      const my = (sy + ty) / 2;
+      if (pa.x === pb.x) return { d: "M" + pa.x + "," + sy + " L" + pb.x + "," + ty, mid: [pa.x, my] };
+      return { d: "M" + pa.x + "," + sy + " C" + pa.x + "," + my + " " + pb.x + "," + my + " " + pb.x + "," + ty, mid: [(pa.x + pb.x) / 2, my] };
+    }
+    // Upward: run along the gutter between the two lanes, or beside the lane.
+    let gutter;
+    let sx;
+    let tx;
+    if (pa.x === pb.x) {
+      gutter = pa.x - Math.max(sa, sb) / 2 - 16;
+      sx = pa.x - sa / 2;
+      tx = pb.x - sb / 2 - 3;
+    } else {
+      const aLeft = pa.x < pb.x;
+      const leftEdge = aLeft ? pa.x + sa / 2 : pb.x + sb / 2;
+      const rightEdge = aLeft ? pb.x - sb / 2 : pa.x - sa / 2;
+      gutter = (leftEdge + rightEdge) / 2;
+      sx = aLeft ? pa.x + sa / 2 : pa.x - sa / 2;
+      tx = aLeft ? pb.x - sb / 2 - 3 : pb.x + sb / 2 + 3;
+    }
+    const sy = pa.y - 10;
+    const ty = pb.y + 8;
+    const d = "M" + sx + "," + sy + " L" + gutter + "," + sy + " L" + gutter + "," + ty + " L" + tx + "," + ty;
+    return { d: d, mid: [gutter, (sy + ty) / 2] };
+  }
+
+  function dgNeighbours(chapter, focus) {
+    const near = {};
+    if (!focus) return null;
+    near[focus] = true;
+    chapter.edges.forEach(function (edge) {
+      if (edge.from === focus) near[edge.to] = true;
+      if (edge.to === focus) near[edge.from] = true;
+    });
+    chapter.nodes.forEach(function (node) {
+      if (node.parent === focus || node.id === focus) near[node.id] = true;
+    });
+    return near;
+  }
+
+  function dgNodeShape(node, w, focused) {
+    const p = dgPos(node);
+    const l = p.x - w / 2;
+    const t = p.y - DG.nodeH / 2;
+    const hgt = DG.nodeH;
+    const kids = [];
+    if (focused) kids.push(s("rect", { x: l - 6, y: t - 6, width: w + 12, height: hgt + 12, rx: 13, class: "dg-focus-ring" }));
+    if (node.decided_by === "agent") {
+      const c = 10;
+      const pts = [[l + c, t], [l + w - c, t], [l + w, t + c], [l + w, t + hgt - c], [l + w - c, t + hgt], [l + c, t + hgt], [l, t + hgt - c], [l, t + c]]
+        .map(function (q) { return q[0] + "," + q[1]; }).join(" ");
+      kids.push(s("polygon", { points: pts, class: "dg-shape" }));
+    } else if (node.kind === "ending") {
+      kids.push(s("rect", { x: l, y: t, width: w, height: hgt, rx: 3, class: "dg-shape" }));
+      if (node.role === "reached") kids.push(s("rect", { x: l + 4, y: t + 4, width: w - 8, height: hgt - 8, rx: 2, class: "dg-inner" }));
+    } else {
+      kids.push(s("rect", { x: l, y: t, width: w, height: hgt, rx: node.kind === "start" ? hgt / 2 : 9, class: "dg-shape" }));
+    }
+    let tx = l + 12;
+    let anchor = "start";
+    if (node.decided_by) {
+      kids.push(s("circle", { cx: l + 18, cy: p.y, r: 10, class: "dg-badge" }));
+      kids.push(s("text", { x: l + 18, y: p.y + 4, "text-anchor": "middle", class: "dg-badge-text" }, [node.decided_by === "user" ? "U" : "A"]));
+      tx = l + 34;
+    }
+    if (node.kind === "start" || node.kind === "ending") {
+      tx = p.x;
+      anchor = "middle";
+    }
+    const room = anchor === "start" ? w - (tx - l) - 10 - (node.role === "locked" ? 26 : 0) : w - 20;
+    kids.push(s("text", { x: tx, y: p.y - 3, "text-anchor": anchor, class: "dg-title" }, [dgFit(node.title, room * 1.15)]));
+    const detail = node.kind === "start" ? dgWhen(node.detail) : node.detail;
+    kids.push(s("text", { x: tx, y: p.y + 13, "text-anchor": anchor, class: "dg-detail" }, [dgFit(detail, room)]));
+    const chips = [];
+    const rec = node.decision || {};
+    if (node.role === "superseded") chips.push(["superseded", "soft"]);
+    if (node.role === "retracted") chips.push(["retracted", "soft"]);
+    if (node.role === "hypothesis") chips.push(["? hypothesis", "ink"]);
+    if (node.role === "refinement") chips.push(["refines", "violet"]);
+    if (node.kind === "alternative") chips.push(["not taken", "soft"]);
+    if (rec.blocked) chips.push(["locked", "amber"]);
+    if (rec.conflicted) chips.push(["conflict", "red"]);
+    if (rec.challenged) chips.push(["challenged", "red"]);
+    let cx = l + w - 6;
+    chips.slice().reverse().forEach(function (chip) {
+      const cw = 12 + chip[0].length * 6.1;
+      cx -= cw;
+      kids.push(s("rect", { x: cx, y: t - 9, width: cw, height: 17, rx: 8.5, class: "dg-chip dg-chip-" + chip[1] }));
+      kids.push(s("text", { x: cx + cw / 2, y: t + 3.5, "text-anchor": "middle", class: "dg-chip-text dg-chip-" + chip[1] }, [chip[0]]));
+      cx -= 4;
+    });
+    if (node.role === "locked" || node.role === "locked_ending") {
+      kids.push(s("circle", { cx: l + w - 16, cy: p.y + 5, r: 10, class: "dg-lock-ring" }));
+      kids.push(lockIcon(l + w - 16, p.y + 4, node.role === "locked" ? "#8a4b08" : "#5e584e"));
+    }
+    return kids;
+  }
+
+  function dgAria(node) {
+    const bits = [node.title + ": " + (node.detail || "")];
+    bits.push((node.role || node.kind).replace(/_/g, " "));
+    if (node.decided_by) bits.push("by " + node.decided_by);
+    const rec = node.decision || {};
+    if (rec.blocked) bits.push("blocked");
+    if (rec.conflicted) bits.push("conflicted");
+    if (rec.challenged) bits.push("challenged");
+    if (node.on_path) bits.push("on the chosen path");
+    return bits.join(", ");
+  }
+
+  function dgCanvas(chapter, focus) {
+    const byId = {};
+    chapter.nodes.forEach(function (node) { byId[node.id] = node; });
+    const near = dgNeighbours(chapter, focus);
+    const width = {};
+    chapter.nodes.forEach(function (node) { width[node.id] = dgSize(node); });
+    const off = [];
+    const path = [];
+    chapter.edges.forEach(function (edge) {
+      const a = byId[edge.from];
+      const b = byId[edge.to];
+      if (!a || !b || !dgVisible(a) || !dgVisible(b)) return;
+      const type = dgRelation(edge.relation);
+      const touches = focus && (edge.from === focus || edge.to === focus);
+      if (edge.tension && !dgTensions && !touches) return;
+      const geo = dgEdgePath(a, b, width[a.id], width[b.id]);
+      const cls = "dg-edge dg-" + type.style + (edge.on_path ? " dg-on-path" : "") + (b.role === "locked_ending" ? " dg-to-locked" : "");
+      const parts = [s("title", null, [a.title + " " + type.label + " " + b.title])];
+      if (edge.on_path) parts.push(s("path", { d: geo.d, class: "dg-halo" }));
+      parts.push(s("path", { d: geo.d, class: cls, "marker-end": type.symmetric ? null : (edge.on_path ? "url(#dg-arrow-ink)" : "url(#dg-arrow)") }));
+      if (!edge.derived) parts.push(dgGlyph(type, geo.mid[0], geo.mid[1], type.label));
+      const group = s("g", { class: focus && !touches ? "dg-dim" : null }, parts);
+      (edge.on_path ? path : off).push(group);
+    });
+    const nodes = [];
+    chapter.nodes.forEach(function (node) {
+      if (!dgVisible(node)) return;
+      const focused = node.id === focus;
+      const classes = ["dg-node", "dg-kind-" + node.kind, "dg-role-" + node.role];
+      if (node.on_path) classes.push("dg-on-path");
+      if (near && !near[node.id]) classes.push("dg-dim");
+      if (dgMuted(node)) classes.push("dg-muted");
+      const kids = [s("title", null, [node.title + ": " + (node.detail || "")])].concat(dgNodeShape(node, width[node.id], focused));
+      const hidden = (node.alternatives || []).filter(function (id) { return byId[id] && byId[id].lane === "none"; });
+      if (hidden.length && dgNotTaken) {
+        const p = dgPos(node);
+        // Bottom-left, straddling the border: the spine edge leaves from the
+        // centre and badges sit top-right, so this corner is free.
+        const px = p.x - width[node.id] / 2 + 10;
+        const py = p.y + DG.nodeH / 2 - 8;
+        kids.push(s("g", { class: "dg-pill" }, [
+          s("rect", { x: px, y: py, width: 86, height: 17, rx: 8.5 }),
+          s("text", { x: px + 43, y: py + 12.5, "text-anchor": "middle" }, ["+" + hidden.length + " not taken"]),
+        ]));
+      }
+      nodes.push(s("g", {
+        class: classes.join(" "),
+        tabindex: "0",
+        role: "button",
+        "data-node": node.id,
+        "aria-label": dgAria(node),
+        "aria-pressed": focused ? "true" : "false",
+        onclick: function () { dgGo(chapter.id, focused ? null : node.id); },
+        onkeydown: function (event) {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            dgGo(chapter.id, focused ? null : node.id);
+          }
+        },
+      }, kids));
+    });
+    // A focused node's collapsed alternatives open as ghosts below the chapter.
+    const ghosts = [];
+    const fnode = focus && byId[focus];
+    if (fnode && dgNotTaken) {
+      const hidden = (fnode.alternatives || []).map(function (id) { return byId[id]; }).filter(function (alt) { return alt && alt.lane === "none"; });
+      const fp = dgPos(fnode);
+      hidden.forEach(function (alt, i) {
+        const lane = i % 2 === 0 ? "left" : "right";
+        const gx = DG.laneX[lane];
+        const gy = DG.top + (chapter.rows + Math.floor(i / 2)) * DG.rowH + DG.nodeH / 2;
+        const gw = 210;
+        const sx = fp.x + (lane === "left" ? -1 : 1) * (width[fnode.id] / 2 - 30);
+        const ex = lane === "left" ? gx + gw / 2 + 3 : gx - gw / 2 - 3;
+        ghosts.push(s("g", { class: "dg-node dg-kind-alternative dg-role-not_taken", tabindex: "0", role: "button", "aria-label": "Not taken: " + alt.title,
+          onclick: function () { dgGo(chapter.id, alt.id); } }, [
+          s("title", null, ["Not taken: " + alt.title]),
+          s("path", { d: "M" + sx + "," + (fp.y + DG.nodeH / 2) + " C" + sx + "," + gy + " " + sx + "," + gy + " " + ex + "," + gy, class: "dg-edge dg-ghost", "marker-end": "url(#dg-arrow)" }),
+          s("rect", { x: gx - gw / 2, y: gy - 19, width: gw, height: 38, rx: 9, class: "dg-shape" }),
+          s("text", { x: gx - gw / 2 + 12, y: gy - 3, class: "dg-detail" }, ["not taken · what if"]),
+          s("text", { x: gx - gw / 2 + 12, y: gy + 12, class: "dg-title" }, [dgFit(alt.title, gw - 20)]),
+        ]));
+      });
+    }
+    const extraRows = ghosts.length ? Math.ceil(ghosts.length / 2) : 0;
+    const height = DG.top + (chapter.rows + extraRows) * DG.rowH + 10;
+    const defs = s("defs", null, [
+      s("marker", { id: "dg-arrow", viewBox: "0 0 10 10", refX: "8", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto" }, [s("path", { d: "M0 0L10 5L0 10z", class: "dg-arrow" })]),
+      s("marker", { id: "dg-arrow-ink", viewBox: "0 0 10 10", refX: "8", refY: "5", markerWidth: "5", markerHeight: "5", orient: "auto" }, [s("path", { d: "M0 0L10 5L0 10z", class: "dg-arrow-ink" })]),
+      s("pattern", { id: "dg-hatch", width: "8", height: "8", patternUnits: "userSpaceOnUse", patternTransform: "rotate(45)" }, [
+        s("rect", { width: "8", height: "8", class: "dg-hatch-bg" }),
+        s("line", { x1: "0", y1: "0", x2: "0", y2: "8", class: "dg-hatch-line" }),
+      ]),
+    ]);
+    return s("svg", {
+      class: "dg-svg" + (focus ? " dg-focusing" : ""),
+      width: DG.width,
+      height: height,
+      viewBox: "0 0 " + DG.width + " " + height,
+      role: "group",
+      "aria-label": "Decision graph: " + chapter.title,
+    }, [defs, s("g", null, off), s("g", null, path), s("g", null, ghosts), s("g", null, nodes)]);
+  }
+
+  function dgToolbar(chapter) {
+    function toggle(label, on, fn, extra) {
+      return h("button", Object.assign({ type: "button", "aria-pressed": on ? "true" : "false", onclick: function () { fn(); render(); } }, extra || {}), [label]);
+    }
+    const jump = h("input", {
+      type: "search",
+      class: "dg-jump",
+      placeholder: "Jump to id…",
+      "aria-label": "Jump to a decision id",
+      onkeydown: function (event) {
+        if (event.key !== "Enter") return;
+        const want = String(event.target.value || "").toLowerCase();
+        if (!want) return;
+        const hit = chapter.nodes.filter(function (node) { return node.id.toLowerCase().indexOf(want) >= 0 || (node.detail || "").toLowerCase().indexOf(want) >= 0; })[0];
+        if (hit) dgGo(chapter.id, hit.id);
+        else { dgStatus = "No node matches " + want + "."; render(); }
+      },
+    });
+    return h("div", { class: "dg-toolbar filters", role: "toolbar", "aria-label": "Graph controls" }, [
+      toggle("Everyone", dgShow === "all", function () { dgShow = "all"; }),
+      toggle("You", dgShow === "user", function () { dgShow = "user"; }),
+      toggle("Agents", dgShow === "agent", function () { dgShow = "agent"; }),
+      h("span", { class: "dg-sep", "aria-hidden": "true" }),
+      toggle("Not taken", dgNotTaken, function () { dgNotTaken = !dgNotTaken; }),
+      toggle("Show tensions", dgTensions, function () { dgTensions = !dgTensions; }, { "aria-keyshortcuts": "t" }),
+      toggle("Chosen path only", dgPathOnly, function () { dgPathOnly = !dgPathOnly; }),
+      jump,
+      toggle("?", dgHelp, function () { dgHelp = !dgHelp; }, { "aria-label": "Keyboard shortcuts", "aria-keyshortcuts": "?" }),
+    ]);
+  }
+
+  function dgKey(chapter) {
+    // Open by default only when the corner it covers is empty.
+    const open = dgKeyOpen != null ? dgKeyOpen : !chapter.nodes.some(function (node) {
+      return node.lane === "left" && node.row <= 3;
+    });
+    function row(cls, label) {
+      return h("li", null, [h("span", { class: "dg-key-swatch " + cls, "aria-hidden": "true" }), label]);
+    }
+    return h("details", { class: "dg-key", open: open ? "" : null, ontoggle: function (event) { dgKeyOpen = !!event.target.open; } }, [
+      h("summary", null, ["Key"]),
+      h("ul", null, [
+        row("path", "Chosen path"),
+        row("off", "Off the path"),
+        row("user", "You (U)"),
+        row("agent", "Agent (A)"),
+        row("ghost", "Not taken"),
+        row("superseded", "Superseded"),
+        row("hypothesis", "Hypothesis ?"),
+        row("locked", "Locked"),
+        row("challenged", "Challenged"),
+        row("ending", "Ending"),
+        h("li", null, ["🔒 blocks · ⚡ conflicts · ↶ supersedes · ↑ refines"]),
+      ]),
+    ]);
+  }
+
+  function dgHelpBox() {
+    if (!dgHelp) return null;
+    return h("div", { class: "dg-help", role: "note" }, [
+      h("p", null, [h("strong", null, ["Shortcuts"])]),
+      h("p", null, ["Tab moves between nodes · Enter or Space focuses one · Esc closes it · ↑ ↓ walk the rows · t toggles tensions · / jumps to an id · ? shows this"]),
+    ]);
+  }
+
+  function dgSummaryPanel(chapter) {
+    const f = chapter.facts || {};
+    const e = chapter.explored || {};
+    const meta = [];
+    if (chapter.start) meta.push(dgWhen(chapter.start) + (chapter.end && chapter.end !== chapter.start ? " – " + dgWhen(chapter.end) : ""));
+    if (chapter.branches && chapter.branches.length) meta.push("branches " + chapter.branches.join(", "));
+    if (chapter.pull_requests && chapter.pull_requests.length) meta.push("PRs " + chapter.pull_requests.map(function (n) { return "#" + n; }).join(" "));
+    if (chapter.sessions && chapter.sessions.length) meta.push(chapter.sessions.length + " session" + (chapter.sessions.length === 1 ? "" : "s"));
+    if (chapter.cost && chapter.cost.status !== "unknown") meta.push("computed " + chapter.cost.usd + " USD" + (chapter.cost.status === "partial" ? " (partial)" : ""));
+    const facts = [h("strong", null, [f.endings_reached + " of " + f.endings_total + " endings reached"])];
+    if (f.locked) facts.push(" · ", h("span", { class: "dg-amber" }, [f.locked + " locked"]));
+    if (f.conflicts) facts.push(" · ", h("span", { class: "dg-red" }, [f.conflicts + " conflict" + (f.conflicts === 1 ? "" : "s")]));
+    if (f.challenged) facts.push(" · ", h("span", { class: "dg-red" }, [f.challenged + " challenged"]));
+    const kids = [
+      h("p", { class: "kicker" }, ["Chapter · connected decisions"]),
+      h("h2", null, [chapter.title]),
+      h("p", { class: "detail" }, [meta.join(" · ")]),
+      h("p", { class: "dg-facts" }, facts),
+    ];
+    if (chapter.needs_attention && chapter.needs_attention.length) {
+      kids.push(h("p", { class: "label" }, ["Needs attention"]));
+      chapter.needs_attention.forEach(function (item) {
+        const icon = item.kind === "locked" ? "🔒 " : "⚡ ";
+        kids.push(h("button", {
+          type: "button",
+          class: "dg-attention dg-attention-" + item.kind,
+          onclick: function () { dgGo(chapter.id, item.nodes[0]); },
+        }, [icon, h("strong", null, [item.kind[0].toUpperCase() + item.kind.slice(1) + ": "]), item.text, h("span", { class: "dg-focus-link" }, [" Focus"])]));
+      });
+    }
+    const endings = chapter.nodes.filter(function (node) { return node.kind === "ending"; });
+    kids.push(h("p", { class: "label" }, ["Endings"]));
+    if (!endings.length) kids.push(h("p", { class: "detail" }, ["No ending yet. An ending is a pull request or commit a linked session produced."]));
+    else kids.push(h("ul", { class: "dg-endings" }, endings.map(function (node) {
+      const end = node.ending || {};
+      const bits = [node.detail];
+      if (end.cost && end.cost.status !== "unknown") bits.push(end.cost.usd + " USD");
+      return h("li", { class: "dg-ending-" + node.role }, [
+        h("button", { type: "button", class: "dg-linkish", onclick: function () { dgGo(chapter.id, node.id); } }, [
+          h("span", { class: "dg-ending-mark", "aria-hidden": "true" }, [end.locked ? "🔒" : ""]),
+          node.title,
+        ]),
+        h("span", { class: "detail" }, [bits.filter(Boolean).join(" · ")]),
+      ]);
+    })));
+    kids.push(h("p", { class: "label" }, ["Explored"]));
+    const pct = e.percent == null ? "–" : e.percent + "%";
+    kids.push(h("div", { class: "dg-explored" }, [
+      h("p", null, [e.decided + " of " + e.total + " choice points decided", h("span", null, [pct])]),
+      h("progress", { max: e.total || 1, value: e.decided || 0, "aria-label": "Choice points decided" }),
+      h("p", { class: "detail" }, ["Decided ÷ (decided + not taken + hypotheses + locked) = " + e.decided + " ÷ (" + e.decided + " + " + e.not_taken + " + " + e.hypotheses + " + " + e.locked + "). Refinements and commits do not count. A low figure only means many recorded alternatives."]),
+    ]));
+    return kids;
+  }
+
+  const LINK_SENTENCE = {
+    "in blocks": "Blocked by", "out blocks": "Blocks",
+    "in conflicts_with": "Conflicts with", "out conflicts_with": "Conflicts with",
+    "in refines": "Refined by", "out refines": "Refines",
+    "in implements": "Implemented by", "in validates": "Validated by", "out validates": "Validates",
+    "in contradicts": "Challenged by", "out contradicts": "Contradicts",
+    "in supersedes": "Superseded by", "out supersedes": "Supersedes",
+    "in constrains": "Constrained by", "out constrains": "Constrains",
+  };
+  const LINK_ORDER = ["Blocked by", "Conflicts with", "Challenged by", "Refined by", "Refines", "Implemented by", "Validated by", "Supersedes", "Superseded by", "Constrains", "Constrained by", "Blocks", "Validates", "Contradicts", "Leads to"];
+
+  function dgLinkTarget(chapter, kind, ref) {
+    if (kind === "decision") {
+      const inChapter = chapter.nodes.some(function (node) { return node.id === ref; });
+      return inChapter ? h("button", { type: "button", class: "dg-linkish", onclick: function () { dgGo(chapter.id, ref); } }, [ref]) : h("span", null, [ref]);
+    }
+    if (kind === "session") return h("a", { href: "#/sessions/" + encodeURIComponent(ref) }, ["session " + ref.slice(0, 12)]);
+    if (kind === "commit") return h("code", null, [ref.slice(0, 12)]);
+    if (kind === "node") {
+      const node = chapter.nodes.filter(function (n) { return n.id === ref; })[0];
+      return h("button", { type: "button", class: "dg-linkish", onclick: function () { dgGo(chapter.id, ref); } }, [node ? node.title : ref]);
+    }
+    return h("span", null, [kind + " " + ref]);
+  }
+
+  function dgCopy(text) {
+    function done(ok) {
+      dgStatus = ok ? "Copied the command. sdf did not run it." : "Copy failed. Select the command and copy it.";
+      render();
+    }
+    const nav = typeof navigator !== "undefined" ? navigator : null;
+    if (nav && nav.clipboard && nav.clipboard.writeText) {
+      nav.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      return;
+    }
+    done(false);
+  }
+
+  function dgWhatIf(alt) {
+    return h("div", { class: "dg-whatif" }, [
+      h("p", null, [h("strong", null, [alt.title])]),
+      h("code", { class: "dg-command" }, [alt.command]),
+      h("button", { type: "button", onclick: function () { dgCopy(alt.command); } }, ["Copy command"]),
+    ]);
+  }
+
+  function dgFocusPanel(chapter, node) {
+    const byId = {};
+    chapter.nodes.forEach(function (n) { byId[n.id] = n; });
+    const kids = [h("div", { class: "dg-panel-top" }, [
+      h("button", { type: "button", onclick: function () { dgGo(chapter.id, null); } }, ["← Chapter"]),
+      h("button", { type: "button", "aria-label": "Close", onclick: function () { dgGo(chapter.id, null); } }, ["×"]),
+    ])];
+    if (node.kind === "alternative") {
+      kids.push(h("p", { class: "kicker" }, ["Not taken · what if"]));
+      kids.push(h("h2", null, [node.title]));
+      kids.push(h("p", { class: "detail" }, ["An alternative recorded on ", dgLinkTarget(chapter, "decision", node.parent), ". The page is read-only: copy the command to record it as a hypothesis."]));
+      kids.push(dgWhatIf(node));
+      return kids;
+    }
+    if (node.kind === "ending" || node.kind === "start") {
+      const end = node.ending || {};
+      kids.push(h("p", { class: "kicker" }, [node.kind === "start" ? "Chapter start" : "Ending · " + (end.type || "").replace("_", " ")]));
+      kids.push(h("h2", null, [node.title]));
+      kids.push(h("p", { class: "detail" }, [node.kind === "start" ? dgWhen(node.detail) : node.detail]));
+      if (end.url) kids.push(h("p", null, [h("a", { href: end.url, rel: "noreferrer" }, ["Open pull request #" + end.pull_request])]));
+      if (end.via && end.via.length) kids.push(h("p", null, [end.locked ? "Waits on " : "Reached via "].concat(end.via.map(function (id, i) { return [i ? ", " : "", dgLinkTarget(chapter, "decision", id)]; }).flat())));
+      if (end.sessions && end.sessions.length) kids.push(h("p", null, ["Sessions "].concat(end.sessions.map(function (id, i) { return [i ? ", " : "", dgLinkTarget(chapter, "session", id)]; }).flat())));
+      if (end.cost && end.cost.status !== "unknown") kids.push(h("p", { class: "detail" }, ["Computed cost " + end.cost.usd + " USD" + (end.cost.status === "partial" ? " (partial)" : "")]));
+      return kids;
+    }
+    const rec = node.decision || {};
+    kids.push(h("p", { class: "kicker" }, ["Decision" + (node.decided_by ? " · by " + (node.decided_by === "user" ? "you" : "the agent") : "")]));
+    kids.push(h("h2", null, [node.id]));
+    const chips = [h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
+    if (rec.blocked) chips.push(h("span", { class: "dg-pchip dg-amber" }, ["🔒 blocked"]));
+    if (rec.conflicted) chips.push(h("span", { class: "dg-pchip dg-red" }, ["⚡ conflicted"]));
+    if (rec.challenged) chips.push(h("span", { class: "dg-pchip dg-red" }, ["challenged"]));
+    kids.push(h("p", { class: "dg-pchips" }, chips));
+    const meta = [dgWhen(rec.recorded_at)];
+    if (rec.source) meta.push("source " + rec.source);
+    kids.push(h("p", { class: "detail" }, [meta.join(" · ")]));
+    kids.push(h("p", null, [rec.statement || node.detail]));
+    if (rec.reason) kids.push(h("p", null, [h("span", { class: "label" }, ["Reason"]), rec.reason]));
+    else kids.push(h("p", { class: "detail" }, ["Reason: none recorded. sdf keeps what was recorded and never invents one."]));
+    if (rec.retraction) kids.push(h("p", { class: "detail" }, ["Retracted " + dgWhen(rec.retraction.retracted_at) + (rec.retraction.reason ? ": " + rec.retraction.reason : "")]));
+    const groups = {};
+    (node.links || []).forEach(function (link) {
+      const label = LINK_SENTENCE[link.direction + " " + link.relation] || (link.direction === "in" ? link.relation + " ←" : link.relation + " →");
+      (groups[label] = groups[label] || []).push(dgLinkTarget(chapter, link.kind, link.ref));
+    });
+    chapter.edges.forEach(function (edge) {
+      if (edge.from === node.id && (edge.relation === "next" || edge.relation === "outcome")) {
+        (groups["Leads to"] = groups["Leads to"] || []).push(dgLinkTarget(chapter, "node", edge.to));
+      }
+    });
+    if (rec.blocked && rec.open_blockers && rec.open_blockers.length) {
+      groups["Blocked by"] = (rec.open_blockers || []).map(function (id) { return dgLinkTarget(chapter, "decision", id); });
+    }
+    const labels = Object.keys(groups).sort(function (a, b) {
+      const ia = LINK_ORDER.indexOf(a);
+      const ib = LINK_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    if (labels.length) {
+      kids.push(h("p", { class: "label" }, ["Links"]));
+      kids.push(h("ul", { class: "dg-links" }, labels.map(function (label) {
+        const items = [];
+        groups[label].forEach(function (item, i) { if (i) items.push(", "); items.push(item); });
+        return h("li", null, [h("strong", null, [label + " "])].concat(items));
+      })));
+    }
+    const alts = (node.alternatives || []).map(function (id) { return byId[id]; }).filter(Boolean);
+    if (alts.length) {
+      kids.push(h("p", { class: "label" }, ["Not taken · what if"]));
+      alts.forEach(function (alt) { kids.push(dgWhatIf(alt)); });
+      kids.push(h("p", { class: "detail" }, ["Copy command records the alternative as a hypothesis. The page stays read-only."]));
+    }
+    return kids;
+  }
+
+  function dgOrderedNodes(chapter) {
+    return chapter.nodes.filter(dgVisible).slice().sort(function (a, b) {
+      if (a.row !== b.row) return a.row - b.row;
+      const order = { left: 0, spine: 1, right: 2 };
+      return (order[a.lane] || 0) - (order[b.lane] || 0);
+    });
+  }
+
+  function decisionsTab(chapterId, focus) {
+    const chapters = dgChapters();
+    if (decisionGraphError) {
+      return h("div", { class: "error" }, [h("p", null, [decisionGraphError])]);
+    }
+    if (!chapters.length) {
+      return h("section", { class: "empty" }, [
+        h("h2", null, ["No decision records in the store."]),
+        h("p", null, ["An agent with the sdf-decisions skill records them as you work. You can add one by hand:"]),
+        h("pre", null, ["sdf decision add --id dont-push --status decision --decided-by user --statement 'No push or PR without my OK'"]),
+      ]);
+    }
+    let chapter = chapters.filter(function (c) { return c.id === chapterId; })[0] || chapters[0];
+    const node = focus ? chapter.nodes.filter(function (n) { return n.id === focus; })[0] : null;
+    if (!node) focus = null;
+    const rail = h("nav", { class: "dg-rail", "aria-label": "Chapters" }, [
+      h("p", { class: "label" }, ["Chapters"]),
+      h("ul", null, chapters.map(function (c) {
+        const e = c.explored || {};
+        const bits = [dgWhen(c.end), (e.decided || 0) + "/" + (e.total || 0) + " decided"];
+        if (c.facts && c.facts.locked) bits.push(c.facts.locked + " locked");
+        return h("li", null, [h("a", { href: dgHash(c.id), "aria-current": c.id === chapter.id ? "true" : null }, [
+          h("strong", null, [c.title]),
+          h("span", null, [bits.join(" · ")]),
+        ])]);
+      })),
+    ]);
+    const canvas = h("div", { class: "dg-canvas-wrap" }, [
+      dgToolbar(chapter),
+      dgHelpBox(),
+      h("div", {
+        class: "dg-canvas",
+        tabindex: "-1",
+        onkeydown: function (event) {
+          const key = event.key;
+          if (event.target && event.target.tagName === "INPUT") return;
+          if (key === "Escape") { dgGo(chapter.id, null); return; }
+          if (key === "t") { dgTensions = !dgTensions; render(); return; }
+          if (key === "?") { dgHelp = !dgHelp; render(); return; }
+          if (key === "ArrowDown" || key === "ArrowUp") {
+            event.preventDefault();
+            const list = dgOrderedNodes(chapter);
+            let at = -1;
+            for (let i = 0; i < list.length; i++) if (list[i].id === focus) at = i;
+            const next = list[Math.max(0, Math.min(list.length - 1, at + (key === "ArrowDown" ? 1 : -1)))];
+            if (next) dgGo(chapter.id, next.id);
+          }
+        },
+      }, [dgKey(chapter), dgCanvas(chapter, focus)]),
+      h("p", { class: "dg-live", role: "status", "aria-live": "polite" }, [dgStatus]),
+    ]);
+    const panel = h("aside", { class: "dg-panel", "aria-label": node ? "Decision details" : "Chapter summary" }, node ? dgFocusPanel(chapter, node) : dgSummaryPanel(chapter));
+    return h("section", { class: "dg" }, [rail, canvas, panel]);
+  }
+
+  function dgRestoreFocus() {
+    const current = route();
+    if (current.name !== "decisions" || !current.node || !app.querySelector) return;
+    const el = app.querySelector('[data-node="' + String(current.node).replace(/["\\]/g, "\\$&") + '"]');
+    if (el && el.focus) el.focus();
+  }
+
   function shell(active, body) {
     app.replaceChildren(h("div", { class: "wrap" }, [
       header(active),
@@ -954,8 +1629,10 @@
       let body;
       if (current.name === "detail") body = detail(current.id);
       else if (current.name === "sessions") body = sessions();
+      else if (current.name === "decisions") body = decisionsTab(current.chapter, current.node);
       else body = overview();
       shell(current.name, body);
+      dgRestoreFocus();
     } catch (err) {
       const message = err && err.message ? err.message : "The page could not be drawn.";
       shell(current.name, h("div", { class: "error" }, [h("p", null, [message])]));
@@ -975,6 +1652,9 @@
       readJSON("/api/snapshot", "summary"),
       readJSON("/api/decisions", "decisions"),
       readJSON("/api/summary", "summary"),
+      readJSON("/api/decisions/graph", "decision graph").catch(function (err) {
+        return { error: err && err.message ? err.message : "The decision graph could not be read." };
+      }),
     ])
       .then(function (bodies) {
         snapshot = bodies[0];
@@ -983,6 +1663,8 @@
         if (!decisions.decisions) decisions.decisions = [];
         if (!decisions.edges) decisions.edges = [];
         budget = bodies[2] && Object.prototype.hasOwnProperty.call(bodies[2], "budget") ? bodies[2].budget : null;
+        decisionGraph = bodies[3] && !bodies[3].error ? bodies[3] : null;
+        decisionGraphError = bodies[3] && bodies[3].error ? bodies[3].error : "";
         loadError = "";
         render();
       })
