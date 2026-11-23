@@ -417,7 +417,7 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 			"cache_write_token_count": "cache_write",
 			"output_token_count":      "output",
 			"reasoning_token_count":   "reasoning",
-		}, "", "Codex response.completed counts use the summary's max for input, cached, and cache_write, and the sum for output and reasoning. cached and cache_write are subtracted from input; reasoning is subtracted from output")
+		}, "", "Codex response.completed counts are per Responses API call (the summary sums them and prices each call on its own). cached and cache_write are subtracted from input; reasoning is subtracted from output")
 	case "traces SessionStep.attempt":
 		return openCodeBuckets(tokens)
 	case "traces " + genai.OperationChat, "metrics " + genai.MetricClientTokenUsage:

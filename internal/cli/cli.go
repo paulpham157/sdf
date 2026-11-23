@@ -3,10 +3,8 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -19,7 +17,6 @@ import (
 
 	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/decision"
-	"github.com/paulpham157/sdf/internal/demo"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -58,8 +55,6 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdTask(args[1:], stdout, stderr)
 	case "verify":
 		return cmdVerify(args[1:], stdout, stderr)
-	case "demo":
-		return cmdDemo(args[1:], stdout, stderr)
 	case "audit":
 		return cmdAudit(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
@@ -73,7 +68,7 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|task|verify|version> [flags]"
+const usageLine = "usage: sdf <serve|summary|check|init|prices|decision|audit|task|verify|version> [flags]"
 
 func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	for _, arg := range args {
@@ -989,112 +984,4 @@ func take(i *int, args []string) (string, bool) {
 	}
 	*i++
 	return args[*i], true
-}
-
-const demoUsage = "usage: sdf demo [--db PATH] [--json]"
-
-// demoStoreIsSafe refuses a --db that already holds real telemetry or
-// decisions, so the synthetic session (sdf.fixture=demo) never mixes into a
-// real store and its summaries. A missing or empty file, or a store with
-// only earlier demo sessions, is fine. It returns an exit code, 0 to go on.
-func demoStoreIsSafe(path string, stderr io.Writer) int {
-	info, err := os.Stat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-		return 1
-	}
-	if info.Mode().IsRegular() && info.Size() == 0 {
-		return 0
-	}
-	st, err := store.Open(path)
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %s: %v\n", path, err)
-		return 1
-	}
-	other, err := st.HoldsOtherThanFixture("demo")
-	_ = st.Close()
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %s: %v\n", path, err)
-		return 1
-	}
-	if other {
-		fmt.Fprintf(stderr, "sdf demo: %s already holds telemetry or decisions that are not from sdf demo; refusing to mix a synthetic session into it. Pass a new path, or leave out --db.\n", path)
-		return 1
-	}
-	return 0
-}
-
-func cmdDemo(args []string, stdout, stderr io.Writer) int {
-	dbPath := ""
-	asJSON := false
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, demoUsage)
-			fmt.Fprintln(stdout, "Sends one synthetic session (sdf.fixture=demo) through a local receiver on free ports, then prints its summary.")
-			fmt.Fprintln(stdout, "No agent, API key, or network is needed. Without --db the store is a temporary file that is removed afterwards.")
-			fmt.Fprintln(stdout, "--db must name a new or empty file, or a store that holds only earlier demo sessions; a store with real telemetry is refused.")
-			return 0
-		case arg == "--db":
-			v, ok := take(&i, args)
-			if !ok {
-				fmt.Fprintln(stderr, "sdf demo: --db requires a value")
-				return 2
-			}
-			dbPath = v
-		case strings.HasPrefix(arg, "--db="):
-			dbPath = strings.TrimPrefix(arg, "--db=")
-		case arg == "--json":
-			asJSON = true
-		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
-			return 2
-		}
-	}
-	keep := dbPath != ""
-	if keep {
-		if code := demoStoreIsSafe(dbPath, stderr); code != 0 {
-			return code
-		}
-	}
-	if !keep {
-		dir, err := os.MkdirTemp("", "sdf-demo-")
-		if err != nil {
-			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-			return 1
-		}
-		defer os.RemoveAll(dir)
-		dbPath = filepath.Join(dir, "sdf-demo.sqlite")
-	}
-	steps := stdout
-	if asJSON {
-		steps = stderr
-	}
-	fmt.Fprintln(steps, "sdf demo: synthetic Claude Code-shaped session, labeled sdf.fixture=demo. No agent, API key, or network.")
-	res, err := demo.Run(context.Background(), demo.Options{DBPath: dbPath, Log: steps})
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-		return 1
-	}
-	if asJSON {
-		if err := summary.WriteJSON(stdout, res.Report); err != nil {
-			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-			return 1
-		}
-		return 0
-	}
-	fmt.Fprintln(stdout, "")
-	fmt.Fprint(stdout, summary.Format(res.Report))
-	fmt.Fprintln(stdout, "")
-	if keep {
-		fmt.Fprintf(stdout, "The demo session stays in %s. Read it again with: sdf summary --db %s --session %s\n", dbPath, dbPath, res.SessionID)
-	} else {
-		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
-	}
-	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi|grok|qwen|gemini|copilot to point a real agent at it.")
-	return 0
 }

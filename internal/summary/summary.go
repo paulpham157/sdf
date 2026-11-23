@@ -545,7 +545,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Models:   modelList,
 		Tokens:   tokenMap(tokens),
 		Source:   deref(tokensSource),
-		Requests: requestTokens(records, deref(tokensSource)),
+		Requests: sessionRequests(records, deref(tokensSource), tokens),
 	})
 	failures := metricFailures(records)
 	summary := SessionSummary{
@@ -892,27 +892,101 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 	return out
 }
 
+// sessionRequests returns the per-request token maps used for pricing. It is
+// requestTokens, plus the Codex metric case: codex.turn.token_usage is one
+// histogram sample per turn summed over every Responses call of that turn,
+// with no turn.id, and an exported point may merge several turns, so the
+// metric alone never yields per-request counts (issue #222). When the
+// session also has response.completed logs whose de-duplicated counts add
+// up to exactly the metric totals, those logs are the same tokens split per
+// call, and each one is priced on its own under the metric's keys. The
+// displayed totals stay the metric's, so nothing is counted twice.
+func sessionRequests(records []record.Record, source string, tokens OrderedFloats) []map[string]float64 {
+	if source == "metrics "+codexTokenMetric {
+		return codexMetricRequests(records, tokens)
+	}
+	return requestTokens(records, source)
+}
+
+// codexMetricKeys maps each response.completed count to the
+// codex.turn.token_usage token_type that carries the same tokens. "total"
+// is not priced and has no log field.
+var codexMetricKeys = [][2]string{
+	{"input_token_count", "input"},
+	{"cached_token_count", "cached_input"},
+	{"cache_write_token_count", "cache_write_input"},
+	{"output_token_count", "output"},
+	{"reasoning_token_count", "reasoning_output"},
+}
+
+// codexMetricRequests returns the session's de-duplicated response.completed
+// counts, renamed to codex.turn.token_usage keys, when their sums equal the
+// metric totals for every priced token type (a missing value is 0 on both
+// sides). Otherwise it returns nil and the metric aggregate is priced as
+// before: logs missing a call, or extra logs, cannot be trusted to split
+// the metric totals.
+func codexMetricRequests(records []record.Record, tokens OrderedFloats) []map[string]float64 {
+	logs := codexSSERequests(codexSSEEvents(records))
+	if len(logs) == 0 {
+		return nil
+	}
+	sums := map[string]float64{}
+	out := make([]map[string]float64, 0, len(logs))
+	for _, item := range logs {
+		renamed := map[string]float64{}
+		for _, pair := range codexMetricKeys {
+			if amount, ok := item[pair[0]]; ok {
+				renamed[pair[1]] = amount
+				sums[pair[1]] += amount
+			}
+		}
+		out = append(out, renamed)
+	}
+	for _, pair := range codexMetricKeys {
+		total, _ := tokens.Get(pair[1])
+		if total != sums[pair[1]] {
+			return nil
+		}
+	}
+	return out
+}
+
 func requestTokens(records []record.Record, source string) []map[string]float64 {
+	if source == "logs "+codexSSE+" response.completed" {
+		// One item per billed Responses API call, de-duplicated like the
+		// displayed totals, so the totals and the per-request prices come
+		// from the same events (issue #213).
+		return codexSSERequests(codexSSEEvents(records))
+	}
 	var keys []string
 	var match func(record.Record) bool
 	switch source {
 	case "logs " + claudeAPI:
-		keys = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		keys = claudeAPITokenFields
 		match = func(rec record.Record) bool {
 			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
 		}
 	case "logs " + grokAPI:
-		keys = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		keys = grokAPITokenFields
 		match = func(rec record.Record) bool {
 			return rec.Signal == "logs" && logEventName(rec) == grokAPI
 		}
 	default:
 		return nil
 	}
+	// Claude and Grok api_request logs only: Codex returned above with its
+	// own codexSSEKey de-duplication (issue #214).
+	seen := map[string]bool{}
 	var out []map[string]float64
 	for _, rec := range records {
 		if !match(rec) {
 			continue
+		}
+		if key := apiRequestKey(rec, keys); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		item := map[string]float64{}
 		found := false
@@ -962,23 +1036,18 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 			claudeLogs = append(claudeLogs, rec)
 		}
 	}
+	claudeLogs = uniqueAPIRequests(claudeLogs, claudeAPITokenFields)
 	totals := OrderedFloats{}
 	found := false
 	for _, rec := range claudeLogs {
-		if addFields(&totals, rec, []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+		if addFields(&totals, rec, claudeAPITokenFields) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes")
+		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes; " + apiRequestDedupMethod)
 	}
-	var events []record.Record
-	for _, rec := range records {
-		if rec.Signal == "logs" && deref(rec.Name) == codexSSE && strAttr(rec.Attributes, "event.kind") == "response.completed" {
-			events = append(events, rec)
-		}
-	}
-	if len(events) > 0 {
+	if events := codexSSEEvents(records); len(events) > 0 {
 		return codexSSETokens(events)
 	}
 	if gemini, source, method, ok := geminiTokens(records, points); ok {
@@ -1014,15 +1083,16 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 			grokLogs = append(grokLogs, rec)
 		}
 	}
+	grokLogs = uniqueAPIRequests(grokLogs, grokAPITokenFields)
 	grokTotals := OrderedFloats{}
 	grokFound := false
 	for _, rec := range grokLogs {
-		if addFields(&grokTotals, rec, []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+		if addFields(&grokTotals, rec, grokAPITokenFields) {
 			grokFound = true
 		}
 	}
 	if grokFound {
-		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens)")
+		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens); " + apiRequestDedupMethod)
 	}
 	return OrderedFloats{}, nil, nil
 }
@@ -1162,14 +1232,24 @@ func sumSpanMS(records []record.Record, match func(string) bool) *float64 {
 	return record.Float(sum(found))
 }
 
-// codexSSETokens sums Codex response.completed logs. Each event is the usage
-// of one Responses API call, and one turn makes several calls (one per tool
-// round trip), so every count is added up, like Codex's own
-// codex.turn.token_usage. A record stored twice (same conversation.id,
-// event.timestamp and counts) is counted once.
-func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
+// codexSSEEvents returns the Codex codex.sse_event response.completed logs.
+func codexSSEEvents(records []record.Record) []record.Record {
+	var events []record.Record
+	for _, rec := range records {
+		if rec.Signal == "logs" && deref(rec.Name) == codexSSE && strAttr(rec.Attributes, "event.kind") == "response.completed" {
+			events = append(events, rec)
+		}
+	}
+	return events
+}
+
+// codexSSERequests returns the token counts of each Codex response.completed
+// log, one map per Responses API call. A record stored twice (same
+// conversation.id, event.timestamp and counts) is returned once. Events
+// without any count are skipped. It returns nil when no event has a count.
+func codexSSERequests(events []record.Record) []map[string]float64 {
 	seen := map[string]bool{}
-	var totals OrderedFloats
+	var out []map[string]float64
 	for _, rec := range events {
 		key := codexSSEKey(rec)
 		if key != "" {
@@ -1178,10 +1258,32 @@ func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
 			}
 			seen[key] = true
 		}
+		item := map[string]float64{}
 		for _, field := range codexSSETokenFields {
 			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				item[field] = *amount
+			}
+		}
+		if len(item) > 0 {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// codexSSETokens sums Codex response.completed logs. Each event is the usage
+// of one Responses API call, and one turn makes several calls (one per tool
+// round trip), so every count is added up, like Codex's own
+// codex.turn.token_usage. A record stored twice (same conversation.id,
+// event.timestamp and counts) is counted once. The totals are the sum of
+// codexSSERequests, the same items pricing uses per request.
+func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
+	var totals OrderedFloats
+	for _, item := range codexSSERequests(events) {
+		for _, field := range codexSSETokenFields {
+			if amount, ok := item[field]; ok {
 				prev, _ := totals.Get(field)
-				totals.Set(field, prev+*amount)
+				totals.Set(field, prev+amount)
 			}
 		}
 	}
@@ -1206,6 +1308,69 @@ func codexSSEKey(rec record.Record) string {
 		}
 	}
 	return key
+}
+
+// Token fields of one claude_code.api_request / grok_code.api_request log.
+var (
+	claudeAPITokenFields = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+	grokAPITokenFields   = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+)
+
+// apiRequestKeyIDs are the identifiers an api_request log may carry. Claude
+// Code documents request_id (server request id), client_request_id,
+// prompt.id, event.sequence and event.timestamp on api_request; the Grok CLI
+// guide documents event.sequence and prompt.id on every event. Each one that
+// is present goes into the key, so two genuine requests do not share it.
+var apiRequestKeyIDs = []string{"session.id", "prompt.id", "request_id", "client_request_id", "event.sequence", "event.timestamp"}
+
+// apiRequestCostFields are the agent cost attributes, also part of the key.
+var apiRequestCostFields = []string{"cost_usd", "cost_usd_micros"}
+
+const apiRequestDedupMethod = "a log stored twice (same session.id, prompt.id, request_id, client_request_id, event.sequence, event.timestamp, log time, counts, and cost) counts once"
+
+// apiRequestKey identifies one claude_code.api_request or grok_code.api_request
+// log for de-duplication (issue #214), like codexSSEKey for Codex. A record
+// stored twice, for example after an OTLP export retry, has the same
+// attributes and log time. The key is empty, and the record is never merged,
+// when it has neither event.timestamp nor a log time.
+func apiRequestKey(rec record.Record, fields []string) string {
+	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
+		return ""
+	}
+	key := deref(rec.SessionID)
+	for _, id := range apiRequestKeyIDs {
+		key += "|" + strAttr(rec.Attributes, id)
+	}
+	key += "|"
+	if rec.TimeUnixNano != nil {
+		key += strconv.FormatInt(*rec.TimeUnixNano, 10)
+	}
+	for _, list := range [][]string{fields, apiRequestCostFields} {
+		for _, field := range list {
+			key += "|"
+			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				key += strconv.FormatFloat(*amount, 'g', -1, 64)
+			}
+		}
+	}
+	return key
+}
+
+// uniqueAPIRequests drops api_request logs whose apiRequestKey was already
+// seen, keeping the first copy.
+func uniqueAPIRequests(records []record.Record, fields []string) []record.Record {
+	seen := map[string]bool{}
+	out := records[:0:0]
+	for _, rec := range records {
+		if key := apiRequestKey(rec, fields); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 func costOf(records []record.Record, points []point, tool string) (*float64, *string, *string) {
@@ -1243,13 +1408,27 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 	total := 0.0
 	found := false
 	var source *string
+	seenRequest := map[string]bool{}
 	for _, rec := range records {
 		if rec.Signal != "logs" {
 			continue
 		}
 		var amount *float64
 		var label string
-		switch logEventName(rec) {
+		event := logEventName(rec)
+		if event == claudeAPI || event == grokAPI {
+			fields := claudeAPITokenFields
+			if event == grokAPI {
+				fields = grokAPITokenFields
+			}
+			if key := apiRequestKey(rec, fields); key != "" {
+				if seenRequest[event+"|"+key] {
+					continue
+				}
+				seenRequest[event+"|"+key] = true
+			}
+		}
+		switch event {
 		case claudeAPI:
 			amount = record.Number(rec.Attributes["cost_usd"])
 			label = "logs " + claudeAPI + " cost_usd"

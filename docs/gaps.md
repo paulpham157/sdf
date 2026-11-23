@@ -62,6 +62,12 @@
 - Codex `response.completed` and OpenCode `SessionStep.attempt` counts are
   per request and are summed (issues #204 and #200), as described in
   [docs/summary.md](summary.md).
+  Claude Code and Grok CLI `api_request` logs stored twice count once
+  (issue #214). The key is every id and timestamp the log carries plus its
+  counts and cost; no real duplicated capture has been checked. A
+  re-sent log whose attributes or log time differ from the first copy is
+  still counted twice, and a log with no `event.timestamp` and no log time
+  is never de-duplicated.
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
@@ -70,7 +76,16 @@
   or refreshed OpenRouter token price for the same de-duplicated counts.
   It is not an invoice either: override conditions other than
   `min_prompt_tokens` are refused, a session total at or above a
-  `min_prompt_tokens` threshold is unknown unless per-request counts exist,
+  `min_prompt_tokens` threshold is unknown unless per-request counts exist
+  (Claude Code and Grok CLI `api_request` logs, Codex `response.completed`
+  logs). A Codex `codex.turn.token_usage` point is one turn or more, each
+  turn summed over its Responses calls, with no `turn.id` or
+  `conversation.id`, and SDF keeps only the histogram `sum`, so a
+  metric-only Codex session whose input total reaches 272000 on
+  `openai/gpt-5.4` and similar rows stays unknown even when every call was
+  below it (issue #222). Its `response.completed` logs, when they add up to
+  exactly the metric totals, are priced per call instead; when they do not,
+  it stays unknown,
   a missing component price is unknown, and per-request or web-search fees
   are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its

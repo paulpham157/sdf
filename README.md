@@ -32,7 +32,8 @@ Repository history from before this collector is preserved at the git tag
 
 ## Quickstart (5 minutes)
 
-No agent, API key, or network connection is needed for these four steps.
+You need one supported coding agent already installed. The receiver itself
+needs no API key or network connection.
 
 **1. Install.** With Go 1.26 or newer:
 
@@ -70,32 +71,41 @@ prints the version, commit, build date, Go version, and platform. `sdf
 prints that version; an untagged or local build prints the pseudo-version the
 go tool recorded.
 
-**3. See it work.**
+**3. Start the receiver.**
 
 ```bash
-sdf demo
+sdf serve
 ```
 
-starts a receiver on free localhost ports, sends one synthetic Claude
-Code-shaped session (labeled `sdf.fixture=demo`) over OTLP/HTTP and OTLP/gRPC,
-and prints the session summary: duration, tokens, tool calls, the cost the
-agent reported, and the cost computed from the bundled price table. It writes
-to a temporary database that is removed afterwards; `--db PATH` keeps it and
-`--json` prints the report as JSON. It does not touch `sdf-telemetry.sqlite`
-and does not collide with a running `sdf serve`.
+listens for OTLP/HTTP on `127.0.0.1:4318` and OTLP/gRPC on `127.0.0.1:4317`,
+writes `sdf-telemetry.sqlite` in the current directory, and serves the UI at
+`http://127.0.0.1:4320/`. Leave it running. [Run](#run) has the flags.
 
-**4. Run the built-in checks.**
+**4. Point an agent at it.** In a second terminal:
 
 ```bash
-sdf check
+sdf init claude-code --write   # or codex, opencode, pi, qwen, grok, gemini, copilot
+sdf init --check               # is the receiver reachable on 4318 and 4317?
 ```
 
-runs the case set embedded in the binary against the summary and prints one
-line per case; `not_checked` is reported and is not a failure. See
-[docs/check.md](docs/check.md).
+Without `--write`, `sdf init` only prints the exporter settings. With it, the
+agent's settings file is updated; follow anything it prints that it cannot
+set for you, such as an environment variable to export. What each agent
+needs is in [docs/agents.md](docs/agents.md).
 
-Then point a real agent at it: `sdf serve` in one terminal, and
-`sdf init claude-code` (or `codex`, `opencode`, `pi`, `grok`) for the settings.
+**5. Restart the agent** so it reads the new settings, and use it for a
+session as usual.
+
+**6. See the session.** Open `http://127.0.0.1:4320/`, or run:
+
+```bash
+sdf summary
+```
+
+which prints one block per session: duration, tokens, tool calls, the cost
+the agent reported, and the cost computed from the bundled price table.
+`sdf check` runs the case set embedded in the binary against the summary;
+see [docs/check.md](docs/check.md).
 
 ## Build from source
 
@@ -147,7 +157,6 @@ stays open and returns `{"status":"ok"}`. `sdf init --check` probes it for you.
 
 ```bash
 sdf version            # version, commit, build date, Go version
-sdf demo               # synthetic session through the real receiver; no API key
 sdf summary            # one block per session, then unattributed records
 sdf summary --json
 sdf summary --session ID --all-spans

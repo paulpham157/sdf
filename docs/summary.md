@@ -138,18 +138,51 @@ every call in a turn is billed. An event stored twice (same
 (issue #204): four calls billed 37400 input, 18560 cached, and 109 output
 tokens, which matches both the summed logs and `codex.turn.token_usage`.
 
+`codex.turn.token_usage` itself is not per request (issue #222). In Codex
+0.171.0 (`codex-rs/core/src/state/turn_token_usage.rs`) it is a histogram
+with one sample per turn and model, whose value is that turn's usage summed
+over every Responses call of the turn. Its tags are `token_type` (`total`,
+`input`, `cached_input`, `cache_write_input`, `output`, `reasoning_output`),
+`tmp_mem_enabled`, and the session tags `auth_mode`, `session_source`,
+`originator`, `service_name`, `model`, and `app.version`; there is no
+`turn.id` and no `conversation.id`. With the default delta temporality one
+exported point is every sample of one attribute set in that export
+interval, so it can hold several turns, and SDF stores only the histogram
+`sum` (not `count`, `min`, `max`, or buckets). Neither the calls nor the
+turns can be split back out of a stored point.
+
+Claude Code `claude_code.api_request` and Grok CLI `grok_code.api_request`
+logs are one API request each and are summed. A log stored twice (for
+example after an OTLP export retry) counts once, in the token totals, in the
+per-request counts used for `min_prompt_tokens` override pricing, and in the
+agent-reported `cost_usd` / `cost_usd_micros` sum (issue #214). Two records
+are the same request only when all of these match: `session.id`,
+`prompt.id`, `request_id`, `client_request_id`, `event.sequence`,
+`event.timestamp`, the log record time, every token count, and `cost_usd` /
+`cost_usd_micros`. A field the event does not carry counts as empty. Claude
+Code documents `request_id` (the server request id), `client_request_id`,
+`prompt.id`, `event.sequence`, and `event.timestamp` on `api_request`; the
+Grok CLI guide documents `event.sequence` and `prompt.id` on every event,
+and grok 1.0.92 sent no `event.timestamp`. `event.sequence` is a
+per-process counter, so two real requests in one process do not share it.
+A record with neither `event.timestamp` nor a log time is never merged.
+This was not checked against real duplicated data. Codex `response.completed`
+logs keep their own key above (`conversation.id`, `event.timestamp`, and
+counts) for both the totals and the per-request prices; the `api_request`
+key is not applied to them.
+
 What one value is, per source, and how values are combined:
 
 | Source | One value is | Rule |
 | --- | --- | --- |
 | Claude Code `claude_code.token.usage` | delta or cumulative metric point | delta points summed; a cumulative series keeps the latest point per process run, runs summed |
-| Claude Code `claude_code.api_request` logs | one API request | summed |
-| Codex `codex.turn.token_usage` | histogram point per turn | summed like other metrics |
+| Claude Code `claude_code.api_request` logs | one API request | summed; one value per `session.id`, `prompt.id`, `request_id`, `client_request_id`, `event.sequence`, `event.timestamp`, log time, counts, and cost |
+| Codex `codex.turn.token_usage` | delta histogram `sum`: every turn of one model in one export interval, each turn summed over its Responses calls | summed like other metrics; a cumulative series as Claude metrics |
 | Codex `response.completed` logs | one Responses API call | all counts summed; one value per `conversation.id`, `event.timestamp`, and counts |
 | OpenCode `SessionStep.attempt` spans | one provider request (finish usage of one `llm.stream`) | all counts summed; aliases on one span are one value (max); one value per trace and span id |
 | Pi `chat` spans | one model turn | input and output summed; one value per trace and span id |
 | Pi `gen_ai.client.token.usage`, Grok CLI `grok_code.token.usage` | metric point | as Claude metrics |
-| Grok CLI `grok_code.api_request` logs | one API request | summed |
+| Grok CLI `grok_code.api_request` logs | one API request | summed; same one-value rule as Claude `api_request` logs |
 
 Delta metric points are summed. Gauges keep the latest point for that
 attribute set. A cumulative series (same name and attributes) keeps the
@@ -227,7 +260,24 @@ When only a session aggregate exists and that prompt total is at or above
 the lowest threshold, the cost stays `unknown`: a request could have crossed
 the threshold, and the base rate is not applied to the total. Per-request
 counts are used when the token source is already `grok_code.api_request` or
-`claude_code.api_request` logs. An override entry with any other condition
+`claude_code.api_request` logs, or Codex `response.completed` logs: each
+de-duplicated `response.completed` event (the same events the displayed
+totals sum) is priced on its own, so a Codex session whose summed prompt
+tokens reach 272000 is still priced when every call is below the
+`min_prompt_tokens` 272000 override on `openai/gpt-5.4` and similar rows,
+and a single call at or above it uses the override rates (issue #213). A
+Codex session whose token source is `codex.turn.token_usage` has no
+per-request counts in the metric (see above), so on its own it is priced
+from that aggregate and stays `unknown` when the summed input reaches the
+threshold, even if every call was below it; pricing it per turn would be
+wrong too, because one turn sums several calls. When the same session also
+has `response.completed` logs, and their de-duplicated counts add up to
+exactly the metric totals for `input`, `cached_input`, `cache_write_input`,
+`output`, and `reasoning_output` (a missing value counts as 0), each log is
+priced as one request under the metric's keys (issue #222). The displayed
+totals stay the metric's, so nothing is counted twice. If the logs do not
+add up (a call's log is missing, or there are logs the metric does not
+cover), the aggregate rule applies. An override entry with any other condition
 key (for example `utc_start` / `utc_end`) leaves the cost unknown, including
 when a `min_prompt_tokens` field is present but not a non-negative integer.
 
