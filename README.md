@@ -17,6 +17,7 @@ reported. A model with no published price is `unknown`, not zero.
 | --- | --- | --- | --- | --- |
 | Claude Code | Beta spans when `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` and `OTEL_TRACES_EXPORTER=otlp` | Event catalog when `OTEL_LOGS_EXPORTER=otlp` | Counters, including tokens and cost, with `session.id` by default | Traces are off unless both flags are set. HTTP is port 4318. gRPC is port 4317. |
 | Codex CLI | Process spans when `otel.trace_exporter` is an OTLP/HTTP URL | Session record (`codex.sse_event`, `codex.tool_result`, and the other `codex.*` events) | Large catalog. Turn metrics carry `conversation.id` only when every tag is valid | Does not read `OTEL_*`. `metrics_exporter` defaults to `statsig`. A model id containing `:` drops the turn metrics. |
+| Qwen Code (`@qwen-code/qwen-code`) | Built in. `qwen-code.interaction`, `qwen-code.llm_request`, `qwen-code.tool` (with `blocked_on_user` and `execution` children), `qwen-code.subagent`, and `qwen-code.hook` spans with `session.id` and `gen_ai.*` | `qwen-code.*` events (`api_response`, `tool_call`, `user_prompt`, ...) with `session.id`. Prompts and request/response text when `logPrompts` is on, which is the default. Every `tool_call` carries the full tool arguments and error text whatever `logPrompts` says; sdf discards them before storing | `qwen-code.*` cumulative counters, including `qwen-code.token.usage`. No session id unless `telemetry.metrics.includeSessionId` | Off until `telemetry.enabled`. Default protocol is gRPC on port 4317. No cost metric. `sdf init qwen` sets `logPrompts: false`. Mapping is from the docs and source (v0.28.4), not a live capture. |
 | OpenCode v2 (`@opencode/cli`) | Built in. Chunked OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Runner spans set `session.id` | Process logs only (`cli starting`, watcher, shutdown). No `session.id` | Not exported | No per-session log catalog and no metrics. npm `opencode-ai` is v1, not this CLI. |
 | Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC on port 4317, which this receiver accepts. |
 
@@ -48,13 +49,16 @@ make build
 
 That listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
 `127.0.0.1:4317`, writes `sdf-telemetry.sqlite` in the current directory, and
-serves a read-only UI at `http://127.0.0.1:4320/`. There is no authentication
-on either port; keep both binds on localhost. The HTTP receiver stores a
-body only when `Content-Type` is `application/json` or `application/x-protobuf`,
+serves a read-only UI at `http://127.0.0.1:4320/`. Authentication is off by
+default; keep both binds on localhost. `--otlp-token`, `--otlp-token-file`,
+`SDF_OTLP_TOKEN`, or `SDF_OTLP_TOKEN_FILE` is optional: when a token is set,
+OTLP writes require `Authorization: Bearer <token>`. The HTTP receiver stores
+a body only when `Content-Type` is `application/json` or `application/x-protobuf`,
 and it refuses a request that carries `Origin`. On a loopback bind it also
 refuses a `Host` other than `localhost`, `127.0.0.1`, or `[::1]`. The UI
-refuses that same foreign `Host` on every route. Details are in
-[docs/receiver.md](docs/receiver.md). `GET /health` returns `{"status":"ok"}`.
+refuses that same foreign `Host` on every route. A token does not bypass
+those checks. Details are in [docs/receiver.md](docs/receiver.md).
+`GET /health` stays open and returns `{"status":"ok"}`.
 
 ```bash
 ./sdf summary          # one block per session, then unattributed records
@@ -66,8 +70,11 @@ refuses that same foreign `Host` on every route. Details are in
 ```
 
 `--host`, `--port`, `--grpc-port`, and `--db` override the defaults. `--no-ui`
-leaves the OTLP ports only. `--prices`, `--repo`, and `--github` match
-`sdf summary` and apply to the page.
+leaves the OTLP ports only. `--otlp-token` or `--otlp-token-file` (or `SDF_OTLP_TOKEN` /
+`SDF_OTLP_TOKEN_FILE`) turns on the optional bearer token; see
+[docs/receiver.md](docs/receiver.md) and [docs/agents.md](docs/agents.md)
+for how to send it from an agent.
+`--prices`, `--repo`, and `--github` match `sdf summary` and apply to the page.
 
 The UI page has three views: an overview of totals and cost per accepted
 outcome, a session list, and one session. `GET /api/summary`,
@@ -83,5 +90,6 @@ that writes or deletes. The page loads nothing from the network.
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
+| [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
 | [docs/gaps.md](docs/gaps.md) | Known limits of the collector and the summary |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests and continuous integration |

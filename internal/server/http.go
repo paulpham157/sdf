@@ -70,8 +70,15 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 	}
 	closeAfter := connectionClose(headers)
 	path = strings.SplitN(path, "?", 2)[0]
+	// Host and Origin are checked before the bearer token. A matching token
+	// does not make a browser post or a rebound Host acceptable.
 	if status, msg, refuse := s.refusal(headers); refuse {
 		return s.refuse(reader, writer, method, path, headers, status, msg, closeAfter)
+	}
+	if s.requiresAuth(method, path) && !s.authorizedBearer(headerGet(headers, "Authorization")) {
+		writeResponse(writer, 401, "text/plain", []byte("unauthorized"), true)
+		s.logRequest(method, path, 401)
+		return true, nil
 	}
 	if expect100(headers) {
 		fmt.Fprintf(writer, "HTTP/1.1 100 Continue\r\n\r\n")
@@ -428,6 +435,9 @@ func writeResponse(w *bufio.Writer, status int, contentType string, body []byte,
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", status, reason(status))
 	fmt.Fprintf(w, "Content-Type: %s\r\n", contentType)
 	fmt.Fprintf(w, "Content-Length: %d\r\n", len(body))
+	if status == 401 {
+		fmt.Fprintf(w, "WWW-Authenticate: Bearer\r\n")
+	}
 	if closeConn {
 		fmt.Fprintf(w, "Connection: close\r\n")
 	}
@@ -439,6 +449,8 @@ func reason(status int) string {
 	switch status {
 	case 200:
 		return "OK"
+	case 401:
+		return "Unauthorized"
 	case 400:
 		return "Bad Request"
 	case 403:

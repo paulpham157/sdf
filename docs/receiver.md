@@ -3,9 +3,10 @@
 `./sdf serve` listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
 `127.0.0.1:4317`, and writes `sdf-telemetry.sqlite` in the current directory.
 4318 is the OTLP/HTTP default. 4317 is the OTLP/gRPC default, which is where
-pi-otel exports unless you change it. There is no authentication on either
-port; keep the bind address on localhost. Override with `--host`, `--port`
-(HTTP), `--grpc-port`, and `--db`.
+pi-otel exports unless you change it. Authentication is off by default; keep
+the bind address on localhost. Override with `--host`, `--port` (HTTP),
+`--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
+`SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
 The HTTP receiver stores a body only for `Content-Type: application/json`
 or `application/x-protobuf`. The type match is case-insensitive, and
@@ -52,6 +53,51 @@ open, and a missing code is `UNSET`. Inspect them with SQLite:
 sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
+
+## Optional token authentication
+
+`--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or
+`SDF_OTLP_TOKEN_FILE` turns on a shared bearer token. The two flags are
+mutually exclusive, as are the two environment variables. A flag beats the
+environment. The token is read once at startup.
+
+`--otlp-token` or `SDF_OTLP_TOKEN` with a blank value is the same as unset:
+the receiver stays open, which is the default. A token file is trimmed of
+leading and trailing whitespace. An empty or unreadable file is a startup
+error; it does not disable authentication. On Unix, a group- or
+world-readable token file prints a warning.
+
+When a token is set, these requests must send `Authorization: Bearer <token>`:
+
+- `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/sessions`
+- gRPC `TraceService`, `MetricsService`, and `LogsService` `Export` RPCs, as
+  metadata key `authorization`
+
+A missing or wrong token is HTTP 401 or gRPC `Unauthenticated`. The comparison
+is constant-time. The token is not written to the request log. `GET /health`
+does not require the token, so `sdf init --check` still works. A valid token
+does not bypass the media-type, `Origin`, or loopback `Host` checks above.
+Those still return 415 or 403 and write nothing.
+
+Point an OpenTelemetry exporter at the receiver with:
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
+```
+
+The space after `Bearer` is written as `%20`, as the OpenTelemetry
+specification requires for `OTEL_EXPORTER_OTLP_HEADERS`. The same header
+works for HTTP and gRPC exporters that honor that variable. Agent-specific
+settings are in [docs/agents.md](agents.md#optional-receiver-token).
+
+`sdf init --write` and the session and git hooks do not add this header yet.
+If the receiver has a token set, those hooks and an init-generated config
+without the header will be rejected until you add it yourself.
+
+A token only detects callers that do not have it. `--otlp-token-file`
+keeps the token out of the process listing, but a world-readable file, a
+settings file, or an agent log can still expose it. Keep the bind address
+on localhost unless you trust the network.
 
 ## The UI
 
@@ -106,16 +152,16 @@ scripts, or anything else from the network.
 
 `sdf serve --host 0.0.0.0` exposes the OTLP receivers on every interface.
 Those payloads can include prompts and filesystem paths when the agent is
-opted in, and the receiver has no authentication. On that bind the HTTP
-receiver still rejects an `Origin` and a non-OTLP media type. It does not
-filter `Host`, because a remote exporter's `Host` is the address it was
-given. The UI still binds to `127.0.0.1` in that case.
-`--ui-addr 0.0.0.0:4320` listens on every interface and prints a warning.
-Requests are still limited to `Host` `0.0.0.0`, `localhost`, `127.0.0.1`,
-or `[::1]`, so a browser that opens the machine's LAN address is refused
-until `--ui-addr` names that address. The Host check is not authentication:
-anyone who can open the socket can send an allowed name. Do not bind the
-UI on a network you do not trust.
+opted in. A bearer token is a shared secret, not a substitute for a trusted
+network. On that bind the HTTP receiver still rejects an `Origin` and a
+non-OTLP media type. It does not filter `Host`, because a remote exporter's
+`Host` is the address it was given. The UI still binds to `127.0.0.1` in
+that case. `--ui-addr 0.0.0.0:4320` listens on every interface and prints a
+warning. Requests are still limited to `Host` `0.0.0.0`, `localhost`,
+`127.0.0.1`, or `[::1]`, so a browser that opens the machine's LAN address
+is refused until `--ui-addr` names that address. The Host check is not
+authentication: anyone who can open the socket can send an allowed name.
+Do not bind the UI on a network you do not trust.
 
 An empty database shows an empty state that points at `sdf init`.
 
@@ -130,6 +176,7 @@ left untouched. An existing Codex `[otel]` table is left untouched.
 sdf init claude-code
 sdf init claude-code --write
 sdf init codex --write
+sdf init qwen --write
 sdf init opencode --write
 sdf init pi --write
 sdf init pi --write --global
@@ -141,13 +188,66 @@ sdf init --check
 `--check` GETs `http://127.0.0.1:4318/health` and opens a TCP connection to
 `127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
 counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
+`--host` must be a host name, an IPv4 address, or an IPv6 address (bare or
+in brackets), and the ports must be 1-65535; anything else is refused
+before a file is written. Those values end up in files other programs run
+(`opencode.env` is sourced by a shell, the Claude Code and Codex session
+hooks are shell commands), and the URL is single-quoted in both.
+
+`sdf init qwen` (alias `qwen-code`) merges `enabled: true`, `otlpEndpoint`
+(the HTTP receiver), `otlpProtocol: "http"`, and `logPrompts: false` into
+the `telemetry` object of `$QWEN_HOME/settings.json` or
+`~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
+so sdf turns it off even when the file says `true`, and warns. It does the
+same for `includeSensitiveSpanAttributes`. Key order, indentation, a UTF-8
+BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
+touched. The dry run prints only the telemetry keys sdf manages, not the
+rest of the file or other telemetry keys, which may hold secrets (MCP
+server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
+or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+variables are printed instead; with `--write` that is an error (non-zero
+exit). `telemetry.outfile`
+and per-signal `otlp*Endpoint` keys are kept and reported, because they
+override the endpoint. The write refuses a file the user cannot write. It
+goes through a temp file in the same directory (fsync, rename), keeps the
+mode and, where the process may, the owner. The rename gives the file a new
+inode, so a hard link keeps the old content and extended attributes or ACLs
+are not copied. A symlink is followed with `readlink`. It must end at a
+`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+not exist yet (stow-style) creates it: inside the settings directory,
+missing parent directories are created with mode 0700; outside it, only
+when the target's directory already exists, so sdf never creates
+directories elsewhere. The old file is copied
+to `.sdf-bak`; a different existing backup is kept and `.sdf-bak.1`, ... is
+used, and a backup made by a failed write is removed.
+
+What wins, from Qwen Code's `resolveTelemetrySettings` and `mergeSettings`:
+CLI flags (`--telemetry`, `--telemetry-otlp-endpoint`,
+`--telemetry-otlp-protocol`, `--telemetry-log-prompts`,
+`--telemetry-outfile`), then `QWEN_TELEMETRY_*` (and
+`OTEL_EXPORTER_OTLP_ENDPOINT` for the endpoint; `QWEN_TELEMETRY_OTLP_*` and
+`OTEL_EXPORTER_OTLP_*` per-signal endpoints), then the merged settings:
+system (`/etc/qwen-code/settings.json`, or `QWEN_CODE_SYSTEM_SETTINGS_PATH`)
+over the workspace `<cwd>/.qwen/settings.json` over the user file over
+system defaults (`system-defaults.json` beside the system file, or
+`QWEN_CODE_SYSTEM_DEFAULTS_PATH`). The workspace file is ignored when
+`security.folderTrust.enabled` is true and the folder is not trusted (folder
+trust is off by default). `sdf init --check qwen` reads every layer, shows
+which one sets each key, applies the environment, says whether Qwen Code
+points at this receiver over HTTP, and warns when `logPrompts` is on.
+There is no session hook for Qwen Code, so its window is inferred from the
+records.
 
 `--write` also installs a session hook for that agent. The hook posts to
 `POST /v1/sessions` when a session opens and, where the agent has such an
 event, when it closes. The collector stores each as a log named
 `sdf.session.open` or `sdf.session.close` and uses those as the session's
 window instead of inferring one from the records. A session with no close
-stays open. An agent with no hook keeps the inferred window. The hook exits
+stays open. An agent with no hook keeps the inferred window. For Claude Code
+(`~/.claude/settings.json`) and Codex (`hooks.json`), sdf adds its hook to the
+`SessionStart` and `SessionEnd` arrays and keeps every other entry, matcher,
+and event; an sdf hook already there, including one an older sdf wrote with
+another host or port, is updated in place, so a rerun changes nothing. The hook exits
 without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode

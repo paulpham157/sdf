@@ -15,6 +15,11 @@
 // gRPC listens on a separate port for the OTLP TraceService, MetricsService,
 // and LogsService Export RPCs. pi-otel's default endpoint is this port.
 // The gzip compressor is registered so clients can send grpc-encoding: gzip.
+//
+// When Token is set, POST /v1/traces, /v1/metrics, /v1/logs, and
+// /v1/sessions require Authorization: Bearer <token>, and gRPC Export
+// RPCs require the same value in the authorization metadata. GET /health
+// stays unauthenticated. An unset Token leaves the receiver open.
 package server
 
 import (
@@ -40,6 +45,11 @@ type Server struct {
 	GRPCPort int
 	Store    *store.Store
 	Quiet    bool
+	// Token, when non-empty, requires a matching Bearer token on write
+	// paths and gRPC Export RPCs. It is never written to the request log.
+	Token string
+	// Log receives request lines when Quiet is false. When nil, stderr is used.
+	Log io.Writer
 
 	httpLn   net.Listener
 	grpcLn   net.Listener
@@ -55,7 +65,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("store is required")
 	}
 	if s.log == nil {
-		s.log = os.Stderr
+		if s.Log != nil {
+			s.log = s.Log
+		} else {
+			s.log = os.Stderr
+		}
 	}
 	host := s.Host
 	if host == "" {
@@ -80,9 +94,13 @@ func (s *Server) Start() error {
 	s.grpcLn = grpcLn
 	s.httpHost = httpHost
 	s.httpPort = httpPort
+	// OTLP Export RPCs are unary. The stream interceptor is defense in depth
+	// if a streaming method is added later.
 	s.grpcSrv = grpc.NewServer(
 		grpc.MaxRecvMsgSize(otlp.MaxBodyBytes),
 		grpc.MaxSendMsgSize(otlp.MaxBodyBytes),
+		grpc.UnaryInterceptor(s.authInterceptor),
+		grpc.StreamInterceptor(s.streamAuthInterceptor),
 	)
 	coltracepb.RegisterTraceServiceServer(s.grpcSrv, traceService{srv: s})
 	colmetricspb.RegisterMetricsServiceServer(s.grpcSrv, metricsService{srv: s})
