@@ -52,9 +52,8 @@ func TestAppendRejectsInvalidKindsAndIDs(t *testing.T) {
 	if rep, _ := s.Verify(ctx); !rep.Empty {
 		t.Fatalf("a rejected append wrote: %+v", rep)
 	}
-	// "sdf.ledgerx" and an id with control characters are fine.
+	// "sdf.ledgerx" is not the reserved prefix.
 	appendOK(t, s, "sdf.ledgerx/v1", "x", "{}")
-	appendOK(t, s, taskKind, "line\nbreak\x00", "{}")
 }
 
 // "a" + "\n" + "b\n{}" and "a\nb" + "\n" + "{}" are the same bytes, so the
@@ -90,21 +89,21 @@ func TestVerifyFlagsAReservedKind(t *testing.T) {
 }
 
 // JSON cannot carry invalid UTF-8, so an id "a\xffb" and "a\uFFFDb" would
-// encode the same and share an entry hash. Verify and Get refuse such a row
-// instead of hashing it, so a pinned head does not hide the swap.
+// encode the same and share an entry hash. Append never writes either (the
+// id rules are ASCII), and Verify refuses a stored one instead of hashing
+// it, so a pinned head does not hide the swap.
 func TestInvalidUTF8IDIsNotHiddenByTheEntryHash(t *testing.T) {
 	ctx := context.Background()
-	path, s := seeded(t)
-	e := appendOK(t, s, taskKind, "a\uFFFDb", `{}`)
-	_ = s.Close()
-	swapped := e
-	swapped.ID = "a\xffb"
-	if ledger.EntryHash(swapped) != e.EntryHash {
-		t.Fatal("expected the lossy encoding to collide; this test documents why ids must be valid UTF-8")
+	a, b := ledger.Entry{Seq: 1, Kind: taskKind, ID: "a\uFFFDb"}, ledger.Entry{Seq: 1, Kind: taskKind, ID: "a\xffb"}
+	if ledger.EntryHash(a) != ledger.EntryHash(b) {
+		t.Fatal("expected the lossy encoding to collide; this test documents why ids are checked")
 	}
+	path, s := seeded(t)
+	e := appendOK(t, s, taskKind, "aXb", `{}`)
+	_ = s.Close()
 	tamper(t, path, `UPDATE ledger_entries SET id = CAST(X'61ff62' AS TEXT) WHERE seq = ?`, e.Seq)
 	verifyFails(t, path, e.Seq, ledger.ProblemModified, "not valid UTF-8")
-	if _, _, err := open(t, path).Get(ctx, taskKind, "a\xffb"); !errors.Is(err, ledger.ErrCorrupt) {
+	if _, _, err := open(t, path).Get(ctx, taskKind, "a\xffb"); !errors.Is(err, ledger.ErrInvalidID) {
 		t.Fatalf("get: %v", err)
 	}
 }

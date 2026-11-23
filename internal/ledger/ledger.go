@@ -22,8 +22,8 @@
 // prev_hash is "sha256:" followed by 64 zeros. Seq is contiguous.
 //
 // A kind is non-empty UTF-8 with no control characters, and the prefix
-// "sdf.ledger." is reserved for genesis. An id is any non-empty UTF-8
-// string. Append rejects anything else (ErrInvalid); Verify and Get treat a
+// "sdf.ledger." is reserved for genesis. An id matches IDPattern (see
+// ValidID). Append rejects anything else (ErrInvalid); Verify and Get treat a
 // stored row that breaks these rules as modified or corrupt, because the
 // JSON encoding above cannot represent invalid UTF-8 without loss.
 //
@@ -47,6 +47,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,7 +113,21 @@ var (
 	ErrCorrupt = errors.New("ledger: stored entry does not match its hash")
 	// ErrInvalid means Append was given a kind or id the ledger does not accept.
 	ErrInvalid = errors.New("ledger: invalid kind or id")
+	// ErrInvalidID means an id breaks the id rules (see ValidID). It wraps
+	// ErrInvalid, so errors.Is(err, ErrInvalid) holds too.
+	ErrInvalidID = fmt.Errorf("%w: invalid id", ErrInvalid)
 )
+
+// IDPattern is the id rule, the same pattern as task.ValidID in the
+// verifier (internal/task): 1 to MaxIDLen ASCII letters, digits, ".", "_",
+// or "-", starting with a letter or digit. Case is preserved and
+// significant.
+const IDPattern = `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
+
+// MaxIDLen is the longest id, in bytes.
+const MaxIDLen = 128
+
+var idPattern = regexp.MustCompile(IDPattern)
 
 // ReservedKindPrefix is reserved for the ledger's own entries. Only
 // GenesisKind uses it; Append rejects any other kind that starts with it.
@@ -276,16 +291,43 @@ func kindProblem(kind Kind) string {
 	return ""
 }
 
-// idProblem says why id is not a valid id, or "". An id is any non-empty
-// valid UTF-8 string.
+// ValidID returns nil when id matches IDPattern, else an error wrapping
+// ErrInvalidID that names the rule it breaks. The pattern alone implies
+// valid UTF-8, no control character, no whitespace, no path separator, no
+// leading "-" or ".", and at most MaxIDLen bytes. ULIDs (uppercase
+// Crockford base32) and lowercase task ids both match.
+func ValidID(id string) error {
+	if p := idProblem(id); p != "" {
+		return fmt.Errorf("%w %q: %s", ErrInvalidID, id, p)
+	}
+	return nil
+}
+
+// idProblem says which id rule id breaks, or "".
 func idProblem(id string) string {
 	switch {
 	case id == "":
-		return "empty id"
+		return "empty"
+	case len(id) > MaxIDLen:
+		return fmt.Sprintf("longer than %d bytes", MaxIDLen)
 	case !utf8.ValidString(id):
-		return "id is not valid UTF-8"
+		return "not valid UTF-8"
+	case strings.IndexFunc(id, unicode.IsControl) >= 0:
+		return "contains a control character"
+	case strings.IndexFunc(id, unicode.IsSpace) >= 0:
+		return "contains whitespace"
+	case strings.ContainsAny(id, `/\`):
+		return "contains a path separator"
+	case !isIDStart(id[0]):
+		return "must start with an ASCII letter or digit"
+	case !idPattern.MatchString(id):
+		return "may contain only ASCII letters, digits, '.', '_', and '-'"
 	}
 	return ""
+}
+
+func isIDStart(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 func checkKey(kind Kind, id string) error {
@@ -295,10 +337,7 @@ func checkKey(kind Kind, id string) error {
 	if strings.HasPrefix(string(kind), ReservedKindPrefix) {
 		return fmt.Errorf("%w: kind prefix %q is reserved", ErrInvalid, ReservedKindPrefix)
 	}
-	if p := idProblem(id); p != "" {
-		return fmt.Errorf("%w: %s", ErrInvalid, p)
-	}
-	return nil
+	return ValidID(id)
 }
 
 func dsn(path, query string) string {
@@ -459,7 +498,7 @@ func fieldProblem(row storedRow) string {
 	case kindProblem(e.Kind) != "":
 		return kindProblem(e.Kind)
 	case idProblem(e.ID) != "":
-		return idProblem(e.ID)
+		return "id " + idProblem(e.ID)
 	case e.Seq != 0 && strings.HasPrefix(string(e.Kind), ReservedKindPrefix):
 		return fmt.Sprintf("kind uses the reserved prefix %q", ReservedKindPrefix)
 	case formatTime(e.ChainedAt) != row.chainedAt:
@@ -556,10 +595,14 @@ func insert(ctx context.Context, conn *sql.Conn, seq int64, kind Kind, id string
 	return e, nil
 }
 
-// Get implements Ledger. It checks the row it reads: its fields, its payload
+// Get implements Ledger. An id that breaks the id rules is ErrInvalidID,
+// without a lookup. It checks the row it reads: its fields, its payload
 // hash, and its entry hash. A row that fails is ErrCorrupt, wrapped with the
 // kind and id. Get does not walk the chain; Verify does.
 func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, error) {
+	if err := ValidID(id); err != nil {
+		return nil, Entry{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	db, err := s.readDB(ctx)

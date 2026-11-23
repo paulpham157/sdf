@@ -53,7 +53,7 @@ One table, `ledger_entries`. Each row is one entry, payload included:
 | --- | --- |
 | `seq` | 0 for genesis, then 1, 2, 3 with no gaps |
 | `kind` | Payload schema name, such as `sdf.task/v1` |
-| `id` | Any non-empty, valid UTF-8 string: a ULID, or a task id a person chose |
+| `id` | A ULID, or a task id a person chose, under the id rules below |
 | `payload` | The canonical bytes, exactly as the writer passed them |
 | `hash` | Payload hash |
 | `prev_hash` | `entry_hash` of the entry before |
@@ -71,7 +71,31 @@ again returns the stored entry. A different hash for a stored `(kind, id)` is
   split (`"a"` + `"b\n{}"` versus `"a\nb"` + `"{}"`);
 - a `kind` that starts with `sdf.ledger.`. That prefix is reserved, and only
   the genesis entry uses it;
-- an `id` that is empty or not valid UTF-8.
+- an `id` that breaks the id rules below. That error is `ErrInvalidID`, which
+  wraps `ErrInvalid`.
+
+### Id rules
+
+An id matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` (`ledger.IDPattern`,
+checked by `ledger.ValidID`). This is the same rule as the verifier's
+`task.ValidID`, and a test pins the two together. In words:
+
+- 1 to 128 bytes (`ledger.MaxIDLen`);
+- ASCII letters, digits, `.`, `_`, and `-` only. That excludes whitespace,
+  control characters, path separators (`/`, `\`), `:`, and anything
+  non-ASCII, so an id is always valid UTF-8;
+- it starts with a letter or digit. So no leading `-` (it can't be read as a
+  flag), no leading `.` (not hidden, and never `.` or `..` on its own);
+- `..` inside an id, as in `a..b`, is allowed. With no separator it cannot
+  leave a directory;
+- case is preserved and significant. A canonical ULID is uppercase
+  (`01JD5Z9X8Y7W6V5T4S3R2Q1P0N`) and is valid as it is. `Add-Widget` and
+  `add-widget` are two different ids. On a case-insensitive file system
+  (macOS and Windows defaults), two such ids would name the same file if
+  used as file names.
+
+`Get` returns `ErrInvalidID` for a bad id without looking it up. `Verify`
+reports a stored row whose id breaks these rules as `modified`.
 
 `Get` checks the row it reads: its fields, its payload hash, and its entry
 hash. A row that fails is `ErrCorrupt`, wrapped with the kind and id. `Get`

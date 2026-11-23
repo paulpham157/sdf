@@ -159,21 +159,6 @@ func TestAppendConflictAndMismatch(t *testing.T) {
 	}
 }
 
-func TestIDIsAnArbitraryString(t *testing.T) {
-	ctx := context.Background()
-	s := open(t, filepath.Join(t.TempDir(), "ledger.db"))
-	for _, id := range []string{"01JD5Z9X8Y7W6V5T4S3R2Q1P0N", "my task / \"quoted\"\n", "ünïcode ✓", "\u2028"} {
-		appendOK(t, s, taskKind, id, `{}`)
-		if _, _, err := s.Get(ctx, taskKind, id); err != nil {
-			t.Fatalf("%q: %v", id, err)
-		}
-	}
-	rep, err := s.Verify(ctx)
-	if err != nil || !rep.OK {
-		t.Fatalf("%+v %v", rep, err)
-	}
-}
-
 func TestGetReturnsTheBytesAsGiven(t *testing.T) {
 	ctx := context.Background()
 	s := open(t, filepath.Join(t.TempDir(), "ledger.db"))
