@@ -113,7 +113,7 @@ a statement, and a status of `hypothesis` or `decision`. `--decided-by`,
 writes one edge. It needs a relation and two `KIND:REF` endpoints, where
 `KIND` is `decision`, `session`, or `commit`. No route writes a record.
 `sdf decision brief` prints a ranked, size-capped prefix of the active
-constraints, blocked decisions, and conflicting decisions still in force
+constraints, blocked records, and conflicting records
 (see Decision brief). `sdf decision check` reports whether an in-force
 decision forbids an action (see Checking an action). An agent skill that
 uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
@@ -593,7 +593,7 @@ recall in sessions that recorded a decision is
 ### Decision brief
 
 `sdf decision brief` prints a short, ranked list of the constraints, blocked
-decisions, and conflicting decisions that are still in force. It is read-only:
+records, and conflicting records that are still active. It is read-only:
 it does not write a record, and it does not infer a decision from telemetry.
 
 ```bash
@@ -627,9 +627,15 @@ this list. A record appears in at most one group, in this order:
    is capped at 200 bytes, cut on a rune boundary, and ends in `…` when it
    is cut.
 2. **Blocked.** An active record that is not a constraint, and that Load
-   marked `blocked`: it has at least one open blocker (see Blocked,
-   conflicted, refined, and challenged at read time). This includes an
-   active hypothesis.
+   marked `blocked`. This includes an active hypothesis. A record is
+   blocked only while it has at least one open blocker. A blocker is open
+   while any of its current heads is still a `hypothesis`, or when it
+   reaches no head and a path of its `supersedes` chain hits a cycle
+   (rows an older sdf could store). A `blocks` edge from a settled
+   blocker — a record whose current head is a `decision`, including a
+   blocker that was recorded as a `decision` — does not block the
+   target. See Blocked, conflicted, refined, and challenged at read
+   time.
 3. **Conflicting.** An active record that is in neither group above, and
    that Load marked `conflicted`: it has a `conflicts_with` edge to another
    active decision. This includes an active hypothesis. `challenged` (the
@@ -664,9 +670,9 @@ flag.
 A path that does not exist (a missing file or a missing parent directory)
 prints nothing and exits 0. A path that exists but cannot be read — not a
 regular file, a permissions error, a corrupt database, a lock wait past
-200ms, or a query past the 500ms deadline — prints one line, `sdf decision
-brief unavailable: run sdf decision list` (`{"unavailable":true}` in JSON),
-and exits 0. A brief in which nothing matched also prints nothing and exits
+200ms, or a query past the 500ms deadline — prints `sdf decision brief
+unavailable: run sdf decision list` (`{"unavailable":true}` in JSON), each
+followed by a newline, and exits 0. A brief in which nothing matched also prints nothing and exits
 0. A stdout write error exits 0 with nothing on stderr. Only a usage error,
 such as a missing flag or a `--format` other than `text` or `json`, exits 2
 with one `sdf decision brief: ...` line on stderr.
