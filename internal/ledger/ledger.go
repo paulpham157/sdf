@@ -434,11 +434,11 @@ func (s *Store) writeDB() (*sql.DB, error) {
 			_ = f.Close()
 		}
 	}
-	// WAL: a reader never needs to roll back a hot journal, so reads stay
-	// read-only even after a writer crashed. Opening an older rollback-journal
-	// ledger here rolls back any hot journal and switches it to WAL.
 	// synchronous(FULL) keeps a committed append durable across power loss.
-	db, err := sql.Open("sqlite", dsn(s.path, "mode=rw&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"))
+	// WAL is set by Append (setWAL), not here: a journal_mode pragma run while
+	// a connection opens can fail with SQLITE_BUSY before the busy timeout
+	// applies.
+	db, err := sql.Open("sqlite", dsn(s.path, "mode=rw&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)"))
 	if err != nil {
 		return nil, err
 	}
@@ -533,11 +533,77 @@ func (s *Store) Append(ctx context.Context, kind Kind, id string, canonical []by
 	if err != nil {
 		return Entry{}, err
 	}
+	var entry Entry
+	err = retryBusy(ctx, func() error {
+		var err error
+		entry, err = appendOnce(ctx, db, kind, id, canonical, hash)
+		return err
+	})
+	return entry, err
+}
+
+// busyWait bounds how long Append retries SQLITE_BUSY and SQLITE_LOCKED,
+// on top of each connection's own busy_timeout.
+var busyWait = 10 * time.Second
+
+func isBusy(err error) bool {
+	c := sqliteCode(err) & 0xff
+	return c == 5 || c == 6 // SQLITE_BUSY, SQLITE_LOCKED
+}
+
+// retryBusy runs f until it returns something other than a busy error, the
+// context ends, or busyWait passes. A busy attempt has rolled back, so
+// running f again is safe.
+func retryBusy(ctx context.Context, f func() error) error {
+	deadline := time.Now().Add(busyWait)
+	delay := time.Millisecond
+	for {
+		err := f()
+		if !isBusy(err) || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+		if delay < 100*time.Millisecond {
+			delay *= 2
+		}
+	}
+}
+
+// setWAL switches the file to WAL unless it already is. WAL is a property
+// of the file, so this runs once per file in practice. In WAL mode a reader
+// never needs to roll back a hot journal, so reads stay read-only even after
+// a writer crashed. An older rollback-journal ledger is switched here, after
+// SQLite has rolled back any hot journal it had.
+func setWAL(ctx context.Context, conn *sql.Conn) error {
+	var mode string
+	if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return err
+	}
+	if strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if err := conn.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("ledger: could not switch the ledger to WAL (journal_mode is %s)", mode)
+	}
+	return nil
+}
+
+func appendOnce(ctx context.Context, db *sql.DB, kind Kind, id string, canonical []byte, hash string) (Entry, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return Entry{}, err
 	}
 	defer conn.Close()
+	if err := setWAL(ctx, conn); err != nil {
+		return Entry{}, err
+	}
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return Entry{}, err
 	}
