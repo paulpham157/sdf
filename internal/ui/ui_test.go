@@ -344,6 +344,28 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	}
 }
 
+func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       decision.StatusDecision,
+		DecidedBy:    decision.DecidedByUser,
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderedPage(t, srv)
+	if !strings.Contains(page, "Do not push until the user says so.") {
+		t.Fatalf("statement not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "user") || !strings.Contains(page, "push the branch now") || !strings.Contains(page, "The user said don't push.") {
+		t.Fatalf("optional decision fields not rendered:\n%s", page)
+	}
+}
+
 func TestSessionsAndDetailShowDecisionsAndBudgetWhenEmpty(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{

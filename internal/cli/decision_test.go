@@ -207,12 +207,66 @@ func TestDecisionLinkRejectsAnUnknownEndpointAndWritesNothing(t *testing.T) {
 	}
 }
 
+func TestDecisionAddRecordsWhoDecidedAndOmitsEmptyOptionalFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	out := run(t, "decision", "add", "--db", dbPath,
+		"--id", "dont-push",
+		"--statement", "Do not push until the user says so.",
+		"--status", "decision",
+		"--decided-by", "user",
+		"--alternatives", "push the branch now",
+		"--reason", "The user said don't push.")
+	if out.code != 0 || out.stdout != "" || out.stderr != "" {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	plain := run(t, "decision", "add", "--db", dbPath,
+		"--id", "use-sqlite",
+		"--statement", "Keep the collector store in SQLite.",
+		"--status", "decision")
+	if plain.code != 0 || plain.stdout != "" || plain.stderr != "" {
+		t.Fatalf("%d %q %q", plain.code, plain.stdout, plain.stderr)
+	}
+	rejected := run(t, "decision", "add", "--db", dbPath,
+		"--id", "bad-actor",
+		"--statement", "Someone decided this.",
+		"--status", "decision",
+		"--decided-by", "owner")
+	if rejected.code == 0 || rejected.stdout != "" {
+		t.Fatalf("bad decided-by accepted: %d %q %q", rejected.code, rejected.stdout, rejected.stderr)
+	}
+
+	db := openStore(t, dbPath)
+	srv := serveStore(t, db)
+	body := httpGet(t, srv.URL()+"api/decisions")
+	var raw struct {
+		Decisions []map[string]any `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Decisions) != 2 {
+		t.Fatalf("%#v", raw.Decisions)
+	}
+	got := raw.Decisions[0]
+	if got["id"] != "dont-push" || got["decided_by"] != "user" || got["alternatives"] != "push the branch now" || got["reason"] != "The user said don't push." {
+		t.Fatalf("%#v", got)
+	}
+	for _, key := range []string{"decided_by", "alternatives", "reason", "source"} {
+		if _, ok := raw.Decisions[1][key]; ok {
+			t.Fatalf("empty %s was written: %#v", key, raw.Decisions[1])
+		}
+	}
+}
+
 type decisionJSON struct {
-	ID         string `json:"id"`
-	Statement  string `json:"statement"`
-	Status     string `json:"status"`
-	RecordedAt string `json:"recorded_at"`
-	Source     string `json:"source"`
+	ID           string `json:"id"`
+	Statement    string `json:"statement"`
+	Status       string `json:"status"`
+	RecordedAt   string `json:"recorded_at"`
+	Source       string `json:"source"`
+	DecidedBy    string `json:"decided_by"`
+	Alternatives string `json:"alternatives"`
+	Reason       string `json:"reason"`
 }
 
 type endpointJSON struct {

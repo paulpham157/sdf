@@ -226,10 +226,20 @@
       kids.push(h("p", null, ["no decision"]));
     } else {
       records.forEach(function (record) {
-        kids.push(h("p", { class: "decision" }, [
+        const line = [
           h("span", { class: "status" }, [record.status || "unknown"]),
-          document.createTextNode(record.statement || ""),
-        ]));
+        ];
+        if (record.decided_by) {
+          line.push(h("span", { class: "status" }, [record.decided_by]));
+        }
+        line.push(document.createTextNode(record.statement || ""));
+        kids.push(h("p", { class: "decision" }, line));
+        const extra = [];
+        if (record.alternatives) extra.push("alternatives " + record.alternatives);
+        if (record.reason) extra.push("reason " + record.reason);
+        if (extra.length) {
+          kids.push(h("p", { class: "detail" }, [extra.join(" · ")]));
+        }
       });
     }
     edges.forEach(function (edge) {
