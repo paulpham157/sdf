@@ -165,24 +165,6 @@ runs (the journal and `VACUUM`'s copy). Running it again changes nothing.
 - Copies of the file elsewhere (backups, Time Machine, `.sdf-bak`) are not
   touched.
 
-## Try it without an agent
-
-`sdf demo` runs the same receiver on free localhost ports, sends one
-synthetic Claude Code-shaped session to it, and prints that session's summary.
-Traces and logs go over OTLP/HTTP JSON and metrics over OTLP/gRPC, so both
-listeners are exercised. Every resource carries `sdf.fixture=demo`. It needs
-no agent, API key, or network, and it does not touch `sdf-telemetry.sqlite`:
-the store is a temporary file unless `--db PATH` names one to keep. `--json`
-prints the report as `sdf summary --json` would. `--db` must name a new or
-empty file, or a store that holds only earlier demo sessions: a store with
-any telemetry not labeled `sdf.fixture=demo`, or any decision, is refused
-(exit 1) and left unchanged, so synthetic rows never mix into real summaries.
-
-```bash
-sdf demo
-sdf demo --db demo.sqlite && sdf summary --db demo.sqlite
-```
-
 ## Optional token authentication
 
 `--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or
@@ -320,7 +302,7 @@ stays unknown because merge status was not requested. The cost per accepted
 outcome uses that answer. It is unknown, not zero, when nothing merged or
 when a session has no known outcome.
 
-The UI is on by default so a local demo is `sdf serve` and a browser.
+The UI is on by default, so `sdf serve` and a browser are all it takes.
 `--no-ui` leaves the OTLP ports only. It is a second listener, embedded in
 the sdf binary (HTML, CSS, and script). The page does not load fonts,
 scripts, or anything else from the network.
@@ -347,7 +329,11 @@ file unless you pass `--write`. An existing file is copied to a sibling
 ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
 the new copy gets a timestamped name). The new bytes are written to a temp
 file and renamed into place, keeping the file mode. A read-only file is
-refused and left alone. Without `--write`, the JSON agents print only the
+refused and left alone. A symlink is written through; a link to a file
+that does not exist yet creates it, but sdf creates missing directories for
+it only inside the agent's config directory or `$HOME` (a link to
+`/elsewhere/missing/config.toml` is refused). A symlink loop is refused
+with a message saying so. Without `--write`, the JSON agents print only the
 keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
@@ -389,16 +375,21 @@ BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP
 server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
-or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+or that is not a JSON object is left untouched, and so is an existing empty
+file (Qwen Code cannot load one either; put `{}` in it), and the `QWEN_TELEMETRY_*`
 variables are printed instead; with `--write` that is an error (non-zero
 exit). `telemetry.outfile`
 and per-signal `otlp*Endpoint` keys are kept and reported, because they
-override the endpoint. The write refuses a file the user cannot write. It
+override the endpoint. The write runs the same precheck as the other
+agents: it refuses a file with no write bit (0400, 0444, 0000, even as
+root), a file the user cannot write, an unwritable directory, and, as root,
+a symlink that resolves outside the settings directory and `$HOME` (for
+anyone else that link is written through with a warning). It
 goes through a temp file in the same directory (fsync, rename), keeps the
 mode and, where the process may, the owner. The rename gives the file a new
 inode, so a hard link keeps the old content and extended attributes or ACLs
 are not copied. A symlink is followed with `readlink`. It must end at a
-`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+`.json` file, compared exactly (a link to `~/.bashrc` or `Settings.JSON` is refused). A link to a file that does
 not exist yet (stow-style) creates it: inside the settings directory,
 missing parent directories are created with mode 0700; outside it, only
 when the target's directory already exists, so sdf never creates
@@ -427,17 +418,35 @@ records.
 lines, the receiver-token header, and the same settings as a `[telemetry]`
 table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
-`otel_endpoint` (the HTTP receiver). `--write` appends that table to
+`otel_endpoint` (the HTTP receiver), plus the four content gates pinned
+off: `otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` all `= false` (an
+`OTEL_LOG_*` environment variable still wins). Pinning
+`otel_log_tool_details` off is stricter than the guide's "Recommended fleet
+gates", which turns that metadata gate on for SIEM joins; sdf does not need
+it for Grok. `--write` appends that table to
 `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
 no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
-directory. An existing `[telemetry]` table is left unchanged; add the
-printed keys to it by hand. A project `.grok/config.toml` cannot set
+directory. Both files are checked before either is written, as for the
+other agents, so a read-only `config.toml` or an unwritable `hooks/`
+directory leaves both unchanged, with no `.sdf-bak`. An existing
+`[telemetry]` table is left unchanged; add the printed keys to it by hand.
+The file is parsed as TOML, so a `[ telemetry ]` header with spaces, an
+inline `telemetry = {...}`, dotted `telemetry.x = ...` keys, and a quoted
+`"telemetry"` key all count as an existing table (appending a second one
+would make Grok fail to parse the file). A `config.toml` that is not valid
+TOML is refused and left unchanged. A project `.grok/config.toml` cannot set
 `otel_*`. Grok reads the environment over the file, so an
 `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also redirects Grok.
-`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, and
-`OTEL_LOG_TOOL_CONTENT` set in the shell that runs `sdf init` are reported,
-because they put content on the stream; Grok's own defaults for all three
-are off. Grok has no config-file key for headers; a receiver token goes in
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`,
+`OTEL_LOG_TOOL_DETAILS`, and `OTEL_LOG_TOOL_CONTENT` set in the shell that
+runs `sdf init` are reported when Grok would read them as on (`1`, `true`,
+`yes`, or `on`, any case, as Grok's `env_bool` parses them; `0`, `false`,
+`no`, `off`, and unknown values leave the file's `false` in effect), because
+each one overrides the pinned key. Three put content on the stream;
+`OTEL_LOG_TOOL_DETAILS` is a metadata gate (a 4 KB `tool_parameters`
+preview, full file paths, verbatim MCP/skill/plugin names, no bodies).
+Grok's own defaults for all four are off. Grok has no config-file key for headers; a receiver token goes in
 `OTEL_EXPORTER_OTLP_HEADERS` (see
 [docs/agents.md](agents.md#optional-receiver-token)). The keys and paths are
 from grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
@@ -750,13 +759,13 @@ its database in this directory:
 
 ```bash
 sdf init --git-hooks
-export OPENCODE_SESSION_ID=ses_demo
+export OPENCODE_SESSION_ID=ses_example
 git commit --allow-empty -m "try sdf git hook"
 unset OPENCODE_SESSION_ID
 sdf summary
 ```
 
-Summary shows session `ses_demo`, tool `opencode`, match `hook`. That commit
+Summary shows session `ses_example`, tool `opencode`, match `hook`. That commit
 is the whole session until OpenCode exports a trace with the same
 `session.id`; the trace joins it. A later commit in this shell with the
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the

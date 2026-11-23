@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // runningAsRoot reports whether sdf runs as root; tests replace it.
@@ -30,6 +31,41 @@ func linkEscape(path, target string) string {
 		}
 	}
 	return fmt.Sprintf("%s is a symlink to %s, outside %s and $HOME", path, real, filepath.Dir(path))
+}
+
+// danglingOutside refuses a symlink to a missing file whose directory does
+// not exist either and would be created outside the link's directory (the
+// agent's config dir) and $HOME: writeAtomic creates the target's parent
+// directories, and sdf should not create directories elsewhere
+// (~/.grok/config.toml -> /outside/missing/config.toml). A missing target in
+// a directory that exists (stow-style, into a dotfiles checkout) is fine, and
+// so is one whose missing directories are inside the config dir or $HOME.
+// This is the rule sdf init qwen already applied (qwenCheckLinkTarget).
+func danglingOutside(path, target string) string {
+	if target == path {
+		return ""
+	}
+	dir := filepath.Dir(target)
+	if info, err := os.Stat(dir); err == nil && info.IsDir() {
+		return ""
+	}
+	real := realPath(dir)
+	roots := []string{filepath.Dir(path)}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		roots = append(roots, home)
+	}
+	for _, root := range roots {
+		if within(real, realPath(root)) {
+			return ""
+		}
+	}
+	return fmt.Sprintf("%s is a symlink to %s, whose directory %s does not exist and is outside %s and $HOME; create it first (sdf does not create directories there); it was not changed",
+		path, target, dir, filepath.Dir(path))
+}
+
+// loopErr is the error for a symlink chain that never ends.
+func loopErr(path string) error {
+	return fmt.Errorf("%s is a symlink loop (or a chain of more than 40 links); fix or remove the link and rerun; it was not changed", path)
 }
 
 // realPath resolves the symlinks of the longest existing prefix of p, so a
@@ -108,6 +144,9 @@ func probeDir(path, dir string) error {
 // readErr makes a failed read of an existing settings file say what to fix
 // instead of a bare "permission denied".
 func readErr(path string, err error) error {
+	if errors.Is(err, syscall.ELOOP) {
+		return loopErr(path)
+	}
 	if errors.Is(err, fs.ErrPermission) {
 		return fmt.Errorf("%s cannot be read (mode %04o, %v); fix its permissions (chmod u+rw) and rerun; it was not changed",
 			path, fileMode(path, 0).Perm(), trimPathErr(err))
