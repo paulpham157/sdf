@@ -67,3 +67,53 @@ func TestDecisionNodesCarryKeyboardRing(t *testing.T) {
 		}
 	}
 }
+
+// One live region for the page, outside the drawn tree, kept across draws,
+// cleared on navigation; focus survives each draw and returns to the node
+// when its panel closes.
+func TestDecisionsLiveRegionAndFocusKeep(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	live := func(res pageResult) string {
+		if n := strings.Count(res.Outside, "aria-live"); n != 1 {
+			t.Errorf("%d live regions outside the app root: %s", n, res.Outside)
+		}
+		if strings.Contains(res.Markup, "aria-live") || strings.Contains(res.Markup, `role="status"`) {
+			t.Errorf("a live region inside the redrawn tree:\n%s", res.Markup)
+		}
+		return res.Outside
+	}
+
+	copied := renderPage(t, srv, "#/decisions/ch-capture/status-ui", `focus=~Copy command,click=~Copy command`)
+	if out := live(copied); !strings.Contains(out, "Copy failed") {
+		t.Errorf("copy status not announced: %s", out)
+	}
+	if !strings.Contains(copied.Active, `data-focus-key="copy:`) {
+		t.Errorf("focus left the Copy button: %q", copied.Active)
+	}
+	moved := renderPage(t, srv, "#/decisions/ch-capture/status-ui", `focus=~Copy command,click=~Copy command,hash=#/decisions/ch-capture`)
+	if out := live(moved); strings.Contains(out, "Copy failed") {
+		t.Errorf("navigation kept the old status: %s", out)
+	}
+
+	for _, flags := range []string{"key=Escape", `click=[aria-label="Close"]`, "click=~← Chapter"} {
+		res := renderPage(t, srv, "#/decisions/ch-capture/status-ui", flags)
+		if res.Hash != "#/decisions/ch-capture" || !strings.Contains(res.Active, `data-node="status-ui"`) {
+			t.Errorf("%s: hash %q, focus %q; want the chapter with focus on status-ui", flags, res.Hash, res.Active)
+		}
+	}
+
+	toggled := renderPage(t, srv, "#/decisions", "focus=~Show tensions,click=~Show tensions")
+	if !strings.Contains(toggled.Active, `data-focus-key="tb:Show tensions"`) || !strings.Contains(toggled.Markup, `aria-pressed="true" data-focus-key="tb:Show tensions"`) {
+		t.Errorf("toggle lost focus: %q", toggled.Active)
+	}
+
+	missed := renderPage(t, srv, "#/decisions", "focus=.dg-jump,input=zzz,key=Enter")
+	if !strings.Contains(missed.Active, `class="dg-jump"`) || !strings.Contains(missed.Active, `value="zzz"`) {
+		t.Errorf("Jump lost focus or its value: %q", missed.Active)
+	}
+	if out := live(missed); !strings.Contains(out, "No node matches zzz.") || !strings.Contains(missed.Text, "No node matches zzz.") {
+		t.Errorf("no-match status: %s", out)
+	}
+}

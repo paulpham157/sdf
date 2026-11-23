@@ -979,6 +979,11 @@
   let dgPathOnly = false;
   let dgHelp = false;
   let dgStatus = "";
+  let dgJumpValue = "";
+  // Focus to restore after the next draw: "node:<id>" or a data-focus-key.
+  let dgWantFocus = "";
+  let dgNavigating = false;
+  let dgLive = null;
   let dgKeyOpen = null;
 
   function s(tag, props, kids) {
@@ -1269,11 +1274,12 @@
         "data-node": node.id,
         "aria-label": dgAria(node),
         "aria-pressed": focused ? "true" : "false",
-        onclick: function () { dgGo(chapter.id, focused ? null : node.id); },
+        onclick: function () { if (focused) dgClose(chapter, node.id); else dgGo(chapter.id, node.id); },
         onkeydown: function (event) {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            dgGo(chapter.id, focused ? null : node.id);
+            if (focused) dgClose(chapter, node.id);
+            else dgGo(chapter.id, node.id);
           }
         },
       }, kids));
@@ -1324,20 +1330,23 @@
 
   function dgToolbar(chapter) {
     function toggle(label, on, fn, extra) {
-      return h("button", Object.assign({ type: "button", "aria-pressed": on ? "true" : "false", onclick: function () { fn(); render(); } }, extra || {}), [label]);
+      return h("button", Object.assign({ type: "button", "aria-pressed": on ? "true" : "false", "data-focus-key": "tb:" + label, onclick: function () { fn(); render(); } }, extra || {}), [label]);
     }
     const jump = h("input", {
       type: "search",
       class: "dg-jump",
       placeholder: "Jump to id…",
       "aria-label": "Jump to a decision id",
+      "data-focus-key": "jump",
+      value: dgJumpValue || null,
+      oninput: function (event) { dgJumpValue = String(event.target.value || ""); },
       onkeydown: function (event) {
         if (event.key !== "Enter") return;
         const want = String(event.target.value || "").toLowerCase();
         if (!want) return;
         const hit = chapter.nodes.filter(function (node) { return node.id.toLowerCase().indexOf(want) >= 0 || (node.detail || "").toLowerCase().indexOf(want) >= 0; })[0];
         if (hit) dgGo(chapter.id, hit.id);
-        else { dgStatus = "No node matches " + want + "."; render(); }
+        else { dgAnnounce("No node matches " + want + "."); render(); }
       },
     });
     return h("div", { class: "dg-toolbar filters", role: "toolbar", "aria-label": "Graph controls" }, [
@@ -1467,9 +1476,49 @@
     return h("span", null, [kind + " " + ref]);
   }
 
+  // One live region for the whole page, created once beside the app root so
+  // app.replaceChildren never replaces it and announcements are not lost.
+  function dgLiveRegion() {
+    if (dgLive) return dgLive;
+    const host = document.body || app.parentNode;
+    if (!host || !host.appendChild) return null;
+    dgLive = h("p", { class: "sr-only", role: "status", "aria-live": "polite", "aria-atomic": "true", "data-sdf-live": "" });
+    host.appendChild(dgLive);
+    return dgLive;
+  }
+
+  function dgAnnounce(text) {
+    dgStatus = text || "";
+    const live = dgLiveRegion();
+    if (!live) return;
+    // The same message twice in a row still changes the text, so it is read.
+    live.textContent = text && live.textContent === text ? text + "\u00a0" : dgStatus;
+  }
+
+  function dgFocusKey(el) {
+    if (!el || !el.getAttribute) return "";
+    const key = el.getAttribute("data-focus-key");
+    if (key) return key;
+    const node = el.getAttribute("data-node");
+    return node ? "node:" + node : "";
+  }
+
+  function dgFindFocus(key) {
+    if (!key || !app.querySelector) return null;
+    const esc = function (v) { return String(v).replace(/["\\]/g, "\\$&"); };
+    if (key.indexOf("node:") === 0) return app.querySelector('[data-node="' + esc(key.slice(5)) + '"]');
+    return app.querySelector('[data-focus-key="' + esc(key) + '"]');
+  }
+
+  // Close the focus panel and give focus back to the node it described.
+  function dgClose(chapter, id) {
+    if (id) dgWantFocus = "node:" + id;
+    dgGo(chapter.id, null);
+  }
+
   function dgCopy(text) {
     function done(ok) {
-      dgStatus = ok ? "Copied the command. sdf did not run it." : "Copy failed. Select the command and copy it.";
+      dgAnnounce(ok ? "Copied the command. sdf did not run it." : "Copy failed. Select the command and copy it.");
       render();
     }
     const nav = typeof navigator !== "undefined" ? navigator : null;
@@ -1484,7 +1533,7 @@
     return h("div", { class: "dg-whatif" }, [
       h("p", null, [h("strong", null, [alt.title])]),
       h("code", { class: "dg-command" }, [alt.command]),
-      h("button", { type: "button", onclick: function () { dgCopy(alt.command); } }, ["Copy command"]),
+      h("button", { type: "button", "data-focus-key": "copy:" + alt.id, onclick: function () { dgCopy(alt.command); } }, ["Copy command"]),
     ]);
   }
 
@@ -1492,8 +1541,8 @@
     const byId = {};
     chapter.nodes.forEach(function (n) { byId[n.id] = n; });
     const kids = [h("div", { class: "dg-panel-top" }, [
-      h("button", { type: "button", onclick: function () { dgGo(chapter.id, null); } }, ["← Chapter"]),
-      h("button", { type: "button", "aria-label": "Close", onclick: function () { dgGo(chapter.id, null); } }, ["×"]),
+      h("button", { type: "button", onclick: function () { dgClose(chapter, node.id); } }, ["← Chapter"]),
+      h("button", { type: "button", "aria-label": "Close", onclick: function () { dgClose(chapter, node.id); } }, ["×"]),
     ])];
     if (node.kind === "alternative") {
       kids.push(h("p", { class: "kicker" }, ["Not taken · what if"]));
@@ -1607,7 +1656,7 @@
         onkeydown: function (event) {
           const key = event.key;
           if (event.target && event.target.tagName === "INPUT") return;
-          if (key === "Escape") { dgGo(chapter.id, null); return; }
+          if (key === "Escape") { dgClose(chapter, focus); return; }
           if (key === "t") { dgTensions = !dgTensions; render(); return; }
           if (key === "?") { dgHelp = !dgHelp; render(); return; }
           if (key === "ArrowDown" || key === "ArrowUp") {
@@ -1620,17 +1669,30 @@
           }
         },
       }, [dgKey(chapter), dgCanvas(chapter, focus)]),
-      h("p", { class: "dg-live", role: "status", "aria-live": "polite" }, [dgStatus]),
+      // The visible copy of the last status; screen readers hear it from the
+      // one persistent live region outside the drawn tree (dgAnnounce).
+      h("p", { class: "dg-live", "aria-hidden": "true" }, [dgStatus]),
     ]);
     const panel = h("aside", { class: "dg-panel", "aria-label": node ? "Decision details" : "Chapter summary" }, node ? dgFocusPanel(chapter, node) : dgSummaryPanel(chapter));
     return h("section", { class: "dg" }, [rail, canvas, panel]);
   }
 
-  function dgRestoreFocus() {
-    const current = route();
-    if (current.name !== "decisions" || !current.node || !app.querySelector) return;
-    const el = app.querySelector('[data-node="' + String(current.node).replace(/["\\]/g, "\\$&") + '"]');
-    if (el && el.focus) el.focus();
+  // Every draw replaces the tree, so put focus back: first where a control
+  // asked (a closed panel returns to its node), then, after navigation, the
+  // route's node, else the control that had focus before the draw.
+  function dgRestoreFocus(current, kept) {
+    const want = dgWantFocus;
+    dgWantFocus = "";
+    if (current.name !== "decisions") return;
+    const node = current.node ? "node:" + current.node : "";
+    const order = dgNavigating ? [want, node, kept] : [want, kept, node];
+    for (let i = 0; i < order.length; i++) {
+      const el = dgFindFocus(order[i]);
+      if (el && el.focus) {
+        el.focus();
+        return;
+      }
+    }
   }
 
   function shell(active, body) {
@@ -1645,6 +1707,8 @@
     // route() and the focus restore run inside the try: anything they throw
     // draws as an error, never as a blank page.
     let current = { name: "overview" };
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    const kept = active && app.contains && app.contains(active) ? dgFocusKey(active) : "";
     try {
       current = route();
       if (!snapshot && !loadError) {
@@ -1661,7 +1725,7 @@
       else if (current.name === "decisions") body = decisionsTab(current.chapter, current.node);
       else body = overview();
       shell(current.name, body);
-      dgRestoreFocus();
+      dgRestoreFocus(current, kept);
     } catch (err) {
       const message = err && err.message ? err.message : "The page could not be drawn.";
       shell(current.name, h("div", { class: "error" }, [h("p", null, [message])]));
@@ -1703,7 +1767,16 @@
       });
   }
 
-  window.addEventListener("hashchange", render);
+  // Navigation clears the status, and focus goes to the route's node.
+  window.addEventListener("hashchange", function () {
+    dgAnnounce("");
+    dgNavigating = true;
+    try {
+      render();
+    } finally {
+      dgNavigating = false;
+    }
+  });
   render();
   load(false);
 })();

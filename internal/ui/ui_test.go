@@ -1442,7 +1442,7 @@ function markup(node) {
 function parseSelector(sel) {
   const steps = [];
   let comb = " ";
-  const re = /\s*(>)\s*|\s+|([^\s>]+)/g;
+  const re = /\s*(>)\s*|\s+|((?:[^\s>\[]|\[[^\]]*\])+)/g;
   let m;
   while ((m = re.exec(sel.trim()))) {
     if (m[1]) { comb = ">"; continue; }
