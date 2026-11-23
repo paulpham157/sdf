@@ -98,3 +98,10 @@
   payloads only. OpenCode and Pi behavior above is from the 2026-11-10
   checks of the named package versions, not from a fixture that was copied
   out of a live SQLite file.
+- Grok CLI exports no working directory, so its sessions link to a commit
+  only with `--repo PATH` and one commit in the time window (or a hook or
+  trailer). Its resource is a fixed set and `OTEL_RESOURCE_ATTRIBUTES` is
+  ignored, so there is no env var to add one. Grok CLI has no customer-facing
+  traces exporter; `OTEL_TRACES_EXPORTER` only switches its internal span
+  pipeline, which sends xAI credentials, so sdf has no Grok span mapping.
+  Sources are in [docs/agents.md](agents.md#grok-cli).

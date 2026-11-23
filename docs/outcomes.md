@@ -46,9 +46,11 @@ attributed to another session, is not given out by the heuristic.
 it is the checkout used for a hook or trailer link when you pass it. If it
 disagrees with a directory the agent did export, the session stays unlinked.
 
-Without the git hooks, Codex and OpenCode do not export a working directory
-or a commit SHA on the signals this receiver stores, so those sessions stay
-unlinked unless you pass `--repo` and the time window contains one commit.
+Without the git hooks, Codex, OpenCode, and Grok CLI do not export a working
+directory or a commit SHA on the signals this receiver stores, so those
+sessions stay unlinked unless you pass `--repo` and the time window contains
+one commit. Grok ignores `OTEL_RESOURCE_ATTRIBUTES`, so one cannot be added
+(see [Grok CLI](agents.md#grok-cli)).
 Pi exports `pi.cwd` and can use the heuristic, and the hook when the
 session file stem matches `pi.session.id`. A commit with no session id is
 not attached to a session by the hook. Under Codex's default

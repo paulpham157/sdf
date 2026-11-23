@@ -128,7 +128,7 @@ func TestGrokDocsSchemaSessionTokensCostToolsAndDuration(t *testing.T) {
 			metrics = item.Reason
 		}
 	}
-	if !strings.Contains(traces, "logs and metrics only") || logs != "" || metrics != "" {
+	if !strings.Contains(traces, "logs and metrics only") || !strings.Contains(traces, "OTEL_TRACES_EXPORTER does not add") || logs != "" || metrics != "" {
 		t.Fatalf("missing %+v", got.Missing)
 	}
 }

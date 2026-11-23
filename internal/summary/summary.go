@@ -1402,7 +1402,11 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 		case "pi":
 			reason = "no spans exported. Pi has no built-in OTLP exporter; install pi-otel and set OTEL_EXPORTER_OTLP_PROTOCOL=http/json."
 		case "grok-cli":
-			reason = "Grok CLI's external OTEL stream exports logs and metrics only (no traces). Documented in xAI monitoring-usage (alpha, grok_code.schema.version=v1)."
+			// xai-org/grok-build 24-monitoring-usage.md: "logs and metrics only (no
+			// customer-facing traces exporter)". OTEL_TRACES_EXPORTER in Grok's
+			// source (xai-grok-config/src/endpoints.rs) only switches the internal
+			// span pipeline, whose exports carry the user's xAI bearer token.
+			reason = "Grok CLI's external OTEL stream exports logs and metrics only (no traces). Documented in xAI monitoring-usage (alpha, grok_code.schema.version=v1). OTEL_TRACES_EXPORTER does not add a customer traces exporter; it only switches Grok's internal span pipeline, which sends xAI credentials, so sdf does not ask for it."
 		default:
 			reason = "no spans exported for this session."
 		}
