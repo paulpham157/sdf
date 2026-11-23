@@ -41,8 +41,9 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Add `sdf decision list` (and `--json`) to print decision records and edges ([#236](https://github.com/paulpham157/sdf/pull/236)).
 - Show each decision's effective status (`effective_status` / `superseded_by`, computed at read time and never stored) in the `EFFECTIVE` column and as "superseded by" in the UI ([#240](https://github.com/paulpham157/sdf/pull/240)).
 - Add `--expect-prefix` and `--expect-prefix-file` to `sdf audit verify` ([#220](https://github.com/paulpham157/sdf/pull/220)).
-- Drop prompt, response, tool, and error text before storing, for every agent; keep it only with `sdf serve --store-content` or `SDF_STORE_CONTENT` ([#224](https://github.com/paulpham157/sdf/pull/224)).
-- Check relations and endpoints in `sdf decision link` (allowed relations, no self-link, `supersedes` only between stored decisions, no cycles); show `decided_by`, alternatives, and reason in `sdf decision list` ([#251](https://github.com/paulpham157/sdf/pull/251), fixes [#249](https://github.com/paulpham157/sdf/issues/249)).
+- In `sdf decision link`, `supersedes` links are decision-to-decision only, unknown refs are rejected, and exact duplicates are rejected ([#251](https://github.com/paulpham157/sdf/pull/251), fixes [#249](https://github.com/paulpham157/sdf/issues/249)). `sdf decision list` shows `decided_by`, alternatives, and reason.
+- Add `sdf decision retract` (append-only; `--id`, optional `--reason` and `--retracted-by user|agent`) ([#256](https://github.com/paulpham157/sdf/pull/256)).
+- Add `sdf redact --db` to scrub stored content; `sdf serve` warns on a database that may still hold unscrubbed text ([#225](https://github.com/paulpham157/sdf/pull/225)).
 
 ### Fixes
 
@@ -71,10 +72,15 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Never hint the unspecified address for `sdf init --host` ([#226](https://github.com/paulpham157/sdf/pull/226)).
 - Price `cache_read` at 0 on bundled OpenRouter `:free` rows whose prompt and completion are 0; a paid row such as `mistralai/mistral-nemo` with no `input_cache_read` stays unknown ([#246](https://github.com/paulpham157/sdf/pull/246), fixes [#243](https://github.com/paulpham157/sdf/issues/243)). Docs and tests for that rule were tightened in [#254](https://github.com/paulpham157/sdf/pull/254).
 - Count a re-sent Copilot span or Gemini `api_response` log once ([#250](https://github.com/paulpham157/sdf/pull/250), fixes [#248](https://github.com/paulpham157/sdf/issues/248)).
-- Open the database read-only for `sdf summary` (`mode=ro`, with an `immutable=1` fallback) ([#253](https://github.com/paulpham157/sdf/pull/253)).
+- `sdf summary` works on a database in a read-only directory. It no longer creates a file for a missing `--db` path, and it does not convert a rollback-journal database to WAL ([#253](https://github.com/paulpham157/sdf/pull/253)).
+- Fix a stack overflow when the UI renders a deep span tree ([#232](https://github.com/paulpham157/sdf/pull/232)).
+- Keep the first copy of a re-sent Copilot span and use unambiguous dedup keys ([#257](https://github.com/paulpham157/sdf/pull/257)).
+- List a tool call from a re-sent export once ([#259](https://github.com/paulpham157/sdf/pull/259), fixes [#258](https://github.com/paulpham157/sdf/issues/258)).
+- Count a re-sent Qwen Code log or span once ([#262](https://github.com/paulpham157/sdf/pull/262), fixes [#261](https://github.com/paulpham157/sdf/issues/261)).
 
 ### Security
 
+- Prompt and response content is now dropped before storing unless `sdf serve --store-content` is set. Tool and error text is dropped too ([#224](https://github.com/paulpham157/sdf/pull/224)).
 - Validate `sdf init --host` / `--port` and quote shell snippets ([#195](https://github.com/paulpham157/sdf/pull/195)).
 - Reject forged OTLP posts and rebound UI hosts ([#199](https://github.com/paulpham157/sdf/pull/199)).
 
@@ -84,12 +90,16 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Split the README into a short overview and `docs/` ([449212e](https://github.com/paulpham157/sdf/commit/449212edd0bb7ba18347fb23fa96bb0abdc429ca)).
 - Add 5-minute install docs for `go install` and (once published) prebuilt archives ([#187](https://github.com/paulpham157/sdf/pull/187); quickstart later aligned in [#233](https://github.com/paulpham157/sdf/pull/233)).
 - Drop the stale “planned” text for `sdf verify`; document `sdf task declare --timeout` / `--no-secret-scan` and `sdf task show --json`; mention GitHub Copilot CLI in the README opening sentence ([#237](https://github.com/paulpham157/sdf/pull/237)). Say what `--no-secret-scan` skips, and that `sdf task show --json` is indented ([#241](https://github.com/paulpham157/sdf/pull/241)).
+- Shorten the README overview and add a diagram ([#265](https://github.com/paulpham157/sdf/pull/265)).
+- Add a Decisions page screenshot to the README ([#266](https://github.com/paulpham157/sdf/pull/266)).
 
 ### CI/Build
 
 - Split CI into pull-request, main, and scheduled workflows ([#162](https://github.com/paulpham157/sdf/pull/162)).
 - Add GoReleaser config and `sdf version` link-time metadata (`internal/version` ldflags) ([#187](https://github.com/paulpham157/sdf/pull/187)).
 - Bump `actions/setup-go` from 7.0.0 to 7.1.0 ([#180](https://github.com/paulpham157/sdf/pull/180)).
+- Bump CodeQL to v4.39.4 and govulncheck to v1.10.0, cache setup-go on `go.sum`, and add `workflow_dispatch` to the scheduled workflow ([#244](https://github.com/paulpham157/sdf/pull/244)).
+- Pin the release toolchain to `go1.26.11` and bump GoReleaser to v2.20.3 ([#245](https://github.com/paulpham157/sdf/pull/245)).
 
 ### Cleanup
 
