@@ -188,11 +188,16 @@ active. To find the latest replacement, follow `superseded_by`. A cycle, such as
 them from the same code. The UI shows "superseded by ID" next to the record.
 
 `sdf decision list` prints the records and then the edges, each as a table in
-insertion order. An empty source prints as `-`. A cell that holds a
+insertion order. An empty source or `DECIDED BY` prints as `-`. When a record
+has alternatives or a reason, each follows its row on its own line in the
+`STATEMENT` column, as `alternatives: TEXT` and `reason: TEXT`. They are free
+text up to 500 bytes, so they are kept out of the columns. `--json` carries
+the same fields as `decided_by`, `alternatives`, and `reason`. A cell that holds a
 non-printing character, such as a tab, DEL, or a right-to-left override like
 U+202E, or that is not valid UTF-8, is printed Go-quoted so it cannot break the
 columns or reorder the terminal line. Every column follows this rule, including
-`EFFECTIVE`, and any column added later must too. `--json` does not quote: it
+`EFFECTIVE`, `DECIDED BY`, and the alternatives and reason values (the label
+stays outside the quotes), and any column added later must too. `--json` does not quote: it
 leaves DEL and RTL characters raw in the JSON strings, exactly as
 `GET /api/decisions` does, so a reader that prints JSON values to a terminal
 has to escape them itself.
@@ -216,10 +221,12 @@ sdf decision list [--db PATH] [--json]
 
 ```text
 Decisions: 3
-ID          STATUS      EFFECTIVE              RECORDED AT                       SOURCE     STATEMENT
-use-sqlite  decision    superseded by use-wal  2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
-pure-go     hypothesis  active                 2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
-use-wal     decision    active                 2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
+ID          STATUS      EFFECTIVE              DECIDED BY  RECORDED AT                       SOURCE     STATEMENT
+use-sqlite  decision    superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
+                                                                                                        alternatives: Postgres, DuckDB
+                                                                                                        reason: One file, no server
+pure-go     hypothesis  active                 agent       2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+use-wal     decision    active                 -           2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
 
 Edges: 2
 RELATION    FROM              TO                   RECORDED AT

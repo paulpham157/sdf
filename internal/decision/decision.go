@@ -419,20 +419,32 @@ func WriteJSON(w io.Writer, g Graph) error {
 // order Load returns them. It reads the same Graph that WriteJSON and
 // GET /api/decisions write, so the two views cannot disagree. A cell that
 // holds a control character or invalid UTF-8 is printed Go-quoted so it
-// cannot break the columns or the terminal. An empty source prints as "-".
-// EFFECTIVE is the read-time status Load computed, see Record.
+// cannot break the columns or the terminal. An empty source or decided-by
+// prints as "-". EFFECTIVE is the read-time status Load computed, see
+// Record. Alternatives and reason, when set, follow the row on indented
+// "alternatives: " and "reason: " lines in the STATEMENT column.
 func WriteText(w io.Writer, g Graph) error {
 	if len(g.Decisions) == 0 && len(g.Edges) == 0 {
 		_, err := io.WriteString(w, "No decisions in the store.\n")
 		return err
 	}
-	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "RECORDED AT", "SOURCE", "STATEMENT"}}
+	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"}}
 	for _, d := range g.Decisions {
-		source := d.Source
-		if source == "" {
-			source = "-"
+		row := []string{d.ID, d.Status, effectiveText(d), orDash(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
+		decisions = append(decisions, row)
+		// Alternatives and reason are free text, up to 500 bytes each, so
+		// they go on their own lines under STATEMENT instead of widening
+		// every row. The leading cells are empty so the columns still line
+		// up. The value is quoted by the same rule as any cell; the label
+		// stays outside the quotes.
+		for _, extra := range [][2]string{{"alternatives", d.Alternatives}, {"reason", d.Reason}} {
+			if extra[1] == "" {
+				continue
+			}
+			line := make([]string, len(row))
+			line[len(row)-1] = extra[0] + ": " + cell(extra[1])
+			decisions = append(decisions, line)
 		}
-		decisions = append(decisions, []string{d.ID, d.Status, effectiveText(d), d.RecordedAt, source, d.Statement})
 	}
 	edges := [][]string{{"RELATION", "FROM", "TO", "RECORDED AT"}}
 	for _, e := range g.Edges {
@@ -445,6 +457,13 @@ func WriteText(w io.Writer, g Graph) error {
 		return err
 	}
 	return writeTable(w, fmt.Sprintf("Edges: %d", len(g.Edges)), edges)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // effectiveText is the EFFECTIVE cell: "active", or "superseded by" and the
