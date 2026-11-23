@@ -79,6 +79,8 @@ func OpenReadOnly(path string) (*Store, error) {
 		walExists := exists(path + "-wal")
 		switch {
 		case readOnlyFallback(code, walExists):
+			// The immutable DSN intentionally has no busy_timeout: immutable=1
+			// takes no locks, so a timeout would be harmless.
 			db, err = openReadOnlyProbe(path, "mode=ro&immutable=1")
 		case walExists && !exists(path+"-shm") &&
 			(code == sqliteReadonlyDirectory || code == sqliteReadonlyCantInit || code&0xff == sqliteCantOpen):
@@ -119,10 +121,15 @@ func readOnlyFallback(code int, walExists bool) bool {
 }
 
 // openReadOnlyProbe opens path with one connection and reads the schema, so
-// an unreadable file fails here and not halfway through a query. The pool
-// keeps that one connection (database/sql replaces it only after a driver
-// reports it broken), so the temporary views and query_only set on it
-// apply to every query.
+// an unreadable file fails here and not halfway through a query.
+//
+// TEMP views and PRAGMA query_only are per-connection. The pool is capped
+// at one connection (MaxOpenConns = MaxIdleConns = 1) and must stay that
+// way: every query reuses this connection. database/sql replaces it only
+// after the driver reports it broken, and a replacement would lack the
+// views and query_only. OpenReadOnly is for short-lived commands such as
+// sdf summary. A long-lived process that needs reconnect-safe setup should
+// apply both on each new connection (for example a driver connection hook).
 func openReadOnlyProbe(path, query string) (*sql.DB, error) {
 	name, err := dsn(path, query)
 	if err != nil {
@@ -143,7 +150,8 @@ func openReadOnlyProbe(path, query string) (*sql.DB, error) {
 }
 
 // openEmptyReadOnly is a store with the current schema and no rows, held in
-// memory and closed to writes.
+// memory and closed to writes. query_only is per-connection, so the pool
+// is capped at one connection, as in openReadOnlyProbe.
 func openEmptyReadOnly(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", "file::memory:")
 	if err != nil {
@@ -238,6 +246,10 @@ func schemaColumns() (tableSet, error) {
 		}
 		order = append(order, name)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return tableSet{}, err
+	}
 	if err := rows.Close(); err != nil {
 		return tableSet{}, err
 	}
@@ -254,6 +266,10 @@ func schemaColumns() (tableSet, error) {
 				return tableSet{}, err
 			}
 			set.cols[table] = append(set.cols[table], c)
+		}
+		if err := r.Err(); err != nil {
+			_ = r.Close()
+			return tableSet{}, err
 		}
 		if err := r.Close(); err != nil {
 			return tableSet{}, err
