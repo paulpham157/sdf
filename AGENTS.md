@@ -28,7 +28,8 @@ Details are in `CONTRIBUTING.md`.
 replace it with a capture from a live agent.
 
 Docs: `README.md` is the short overview. `docs/` holds the detail (what each
-agent exports, the receiver and git hooks, the summary and computed cost,
-outcomes and the local budget, `sdf check`, the ledger and `sdf audit`, and
-known gaps). When behavior changes, update the doc that describes it rather
-than growing the README.
+agent exports, the receiver, content storage and `sdf redact`, the summary
+and computed cost, outcomes, decision records and the local budget, `sdf
+check`, tasks and `sdf verify`, the ledger and `sdf audit`, and known
+gaps). When behavior changes, update the doc that describes it rather than
+growing the README.
