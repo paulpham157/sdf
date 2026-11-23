@@ -112,7 +112,11 @@ counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
 event, when it closes. The collector stores each as a log named
 `sdf.session.open` or `sdf.session.close` and uses those as the session's
 window instead of inferring one from the records. A session with no close
-stays open. An agent with no hook keeps the inferred window. The hook exits
+stays open. An agent with no hook keeps the inferred window. For Claude Code
+(`~/.claude/settings.json`) and Codex (`hooks.json`), sdf adds its hook to the
+`SessionStart` and `SessionEnd` arrays and keeps every other entry, matcher,
+and event; an sdf hook already there, including one an older sdf wrote with
+another host or port, is updated in place, so a rerun changes nothing. The hook exits
 without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode
