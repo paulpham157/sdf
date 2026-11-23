@@ -368,10 +368,12 @@ write, or that has no write bit (`0400`, even for root), is refused before
 anything else. A symlinked file is written through to its target; a link
 to a file that does not exist yet (stow-style, relative links read from the
 link's directory) creates that file, and creates its missing parent
-directories with mode 0700. The old file is copied to
-`.sdf-bak`; a different existing `.sdf-bak` is never overwritten
-(`.sdf-bak.1`, `.sdf-bak.2`, ... are used), and a backup made by a failed
-write is removed.
+directories with mode 0700. The write uses the same helper as the other
+agents: the old file is copied to a `.sdf-bak` sibling of the path sdf was
+given (next to the link, for a symlink); an existing `.sdf-bak` is never
+overwritten (the copy goes to `.sdf-bak.<UTC timestamp>` instead), and a
+backup made by a failed write is removed. A link that leads outside its
+directory and `$HOME` gets a warning, and is refused when sdf runs as root.
 
 What wins: the environment of the `copilot` process. Per-signal variables
 (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
