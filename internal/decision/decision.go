@@ -24,6 +24,12 @@ const StatusHypothesis = "hypothesis"
 // StatusDecision is a settled choice.
 const StatusDecision = "decision"
 
+// DecidedByUser is a choice the user made.
+const DecidedByUser = "user"
+
+// DecidedByAgent is a choice the agent made.
+const DecidedByAgent = "agent"
+
 const (
 	KindDecision = "decision"
 	KindSession  = "session"
@@ -48,14 +54,19 @@ var (
 )
 
 // Record is one decision. Status is StatusHypothesis or StatusDecision.
-// Source is empty when the record named none. RecordedAt is UTC RFC3339
-// with a numeric zone, the same form the store uses for received_at.
+// Source, DecidedBy, Alternatives, and Reason are empty when the record
+// named none. DecidedBy is DecidedByUser or DecidedByAgent when set.
+// RecordedAt is UTC RFC3339 with a numeric zone, the same form the store
+// uses for received_at.
 type Record struct {
-	ID         string `json:"id"`
-	Statement  string `json:"statement"`
-	Status     string `json:"status"`
-	RecordedAt string `json:"recorded_at"`
-	Source     string `json:"source,omitempty"`
+	ID           string `json:"id"`
+	Statement    string `json:"statement"`
+	Status       string `json:"status"`
+	RecordedAt   string `json:"recorded_at"`
+	Source       string `json:"source,omitempty"`
+	DecidedBy    string `json:"decided_by,omitempty"`
+	Alternatives string `json:"alternatives,omitempty"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // Endpoint is one end of an edge. Kind is KindDecision, KindSession, or
@@ -82,10 +93,13 @@ type Graph struct {
 
 // RecordInput is what a caller supplies. RecordedAt is filled here.
 type RecordInput struct {
-	ID        string
-	Statement string
-	Status    string
-	Source    string
+	ID           string
+	Statement    string
+	Status       string
+	Source       string
+	DecidedBy    string
+	Alternatives string
+	Reason       string
 }
 
 // EdgeInput is what a caller supplies for one edge.
@@ -102,11 +116,14 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		return Record{}, err
 	}
 	if err := s.InsertDecision(store.Decision{
-		ID:         rec.ID,
-		Statement:  rec.Statement,
-		Status:     rec.Status,
-		RecordedAt: rec.RecordedAt,
-		Source:     rec.Source,
+		ID:           rec.ID,
+		Statement:    rec.Statement,
+		Status:       rec.Status,
+		RecordedAt:   rec.RecordedAt,
+		Source:       rec.Source,
+		DecidedBy:    rec.DecidedBy,
+		Alternatives: rec.Alternatives,
+		Reason:       rec.Reason,
 	}); err != nil {
 		return Record{}, err
 	}
@@ -153,11 +170,14 @@ func Load(s *store.Store) (Graph, error) {
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
 		out.Decisions = append(out.Decisions, Record{
-			ID:         d.ID,
-			Statement:  d.Statement,
-			Status:     d.Status,
-			RecordedAt: d.RecordedAt,
-			Source:     d.Source,
+			ID:           d.ID,
+			Statement:    d.Statement,
+			Status:       d.Status,
+			RecordedAt:   d.RecordedAt,
+			Source:       d.Source,
+			DecidedBy:    d.DecidedBy,
+			Alternatives: d.Alternatives,
+			Reason:       d.Reason,
 		})
 	}
 	for _, e := range edges {
@@ -203,12 +223,29 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	if strings.ContainsAny(source, "\r\n") || len(source) > 500 {
 		return Record{}, fmt.Errorf("source must be one line")
 	}
+	decidedBy := strings.TrimSpace(in.DecidedBy)
+	switch decidedBy {
+	case "", DecidedByUser, DecidedByAgent:
+	default:
+		return Record{}, fmt.Errorf("decided-by must be %q or %q", DecidedByUser, DecidedByAgent)
+	}
+	alternatives := strings.TrimSpace(in.Alternatives)
+	if strings.ContainsAny(alternatives, "\r\n") || len(alternatives) > 500 {
+		return Record{}, fmt.Errorf("alternatives must be one line")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if strings.ContainsAny(reason, "\r\n") || len(reason) > 500 {
+		return Record{}, fmt.Errorf("reason must be one line")
+	}
 	return Record{
-		ID:         id,
-		Statement:  statement,
-		Status:     in.Status,
-		RecordedAt: recordedAt,
-		Source:     source,
+		ID:           id,
+		Statement:    statement,
+		Status:       in.Status,
+		RecordedAt:   recordedAt,
+		Source:       source,
+		DecidedBy:    decidedBy,
+		Alternatives: alternatives,
+		Reason:       reason,
 	}, nil
 }
 

@@ -52,7 +52,10 @@ CREATE TABLE IF NOT EXISTS decisions (
     statement TEXT NOT NULL,
     status TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
-    source TEXT
+    source TEXT,
+    decided_by TEXT,
+    alternatives TEXT,
+    reason TEXT
 );
 CREATE TABLE IF NOT EXISTS decision_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,9 +99,32 @@ func Open(path string) (*Store, error) {
 func (s *Store) Path() string { return s.path }
 
 func (s *Store) migrate() error {
-	rows, err := s.db.Query(`PRAGMA table_info(records)`)
+	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
+		return err
+	}
+	return s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"})
+}
+
+func (s *Store) addMissingColumns(table string, cols []string) error {
+	present, err := s.tableColumns(table)
 	if err != nil {
 		return err
+	}
+	for _, col := range cols {
+		if present[col] {
+			continue
+		}
+		if _, err := s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + col + " TEXT"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	present := map[string]bool{}
@@ -109,21 +135,14 @@ func (s *Store) migrate() error {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
-			return err
+			return nil, err
 		}
 		present[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	for _, col := range []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"} {
-		if !present[col] {
-			if _, err := s.db.Exec(`ALTER TABLE records ADD COLUMN ` + col + ` TEXT`); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return present, nil
 }
 
 // Close releases the database.
@@ -281,13 +300,17 @@ func (s *Store) Load() ([]record.Record, error) {
 }
 
 // Decision is one append-only decision record. Status is "hypothesis" or
-// "decision". Source is empty when the record named none.
+// "decision". Source, DecidedBy, Alternatives, and Reason are empty when
+// the record named none. DecidedBy is "user" or "agent" when set.
 type Decision struct {
-	ID         string
-	Statement  string
-	Status     string
-	RecordedAt string
-	Source     string
+	ID           string
+	Statement    string
+	Status       string
+	RecordedAt   string
+	Source       string
+	DecidedBy    string
+	Alternatives string
+	Reason       string
 }
 
 // DecisionEdge is one directed edge. Kind is "decision", "session", or
@@ -308,9 +331,9 @@ func (s *Store) InsertDecision(d Decision) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO decisions (id, statement, status, recorded_at, source)
-		VALUES (?, ?, ?, ?, ?)
-	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source))
+		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, alternatives, reason)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.Alternatives), nullText(d.Reason))
 	return err
 }
 
@@ -319,7 +342,7 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.Query(`
-		SELECT id, statement, status, recorded_at, source
+		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason
 		FROM decisions
 		ORDER BY rowid
 	`)
@@ -330,12 +353,21 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	var out []Decision
 	for rows.Next() {
 		var d Decision
-		var source sql.NullString
-		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source); err != nil {
+		var source, decidedBy, alternatives, reason sql.NullString
+		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &alternatives, &reason); err != nil {
 			return nil, err
 		}
 		if source.Valid {
 			d.Source = source.String
+		}
+		if decidedBy.Valid {
+			d.DecidedBy = decidedBy.String
+		}
+		if alternatives.Valid {
+			d.Alternatives = alternatives.String
+		}
+		if reason.Valid {
+			d.Reason = reason.String
 		}
 		out = append(out, d)
 	}
