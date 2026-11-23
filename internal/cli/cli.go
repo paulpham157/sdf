@@ -84,7 +84,7 @@ func cmdVersion(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "Prints the version, commit, build date, Go version, and platform. sdf --version and sdf -v are the same.")
 			return 0
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -249,7 +249,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -439,7 +439,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--budget="):
 			budgetPath = strings.TrimPrefix(arg, "--budget=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -526,7 +526,7 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, decisionHelp)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
+		unrecognizedArgs(stderr, args[0])
 		return 2
 	}
 }
@@ -620,7 +620,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--reason="):
 			reason = strings.TrimPrefix(arg, "--reason=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -698,7 +698,7 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--to="):
 			to, toSet = strings.TrimPrefix(arg, "--to="), true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -767,7 +767,7 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 		case arg == "--json":
 			asJSON = true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -845,7 +845,7 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--retracted-by="):
 			by = strings.TrimPrefix(arg, "--retracted-by=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -894,7 +894,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--cases="):
 			dir = strings.TrimPrefix(arg, "--cases=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -954,7 +954,7 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--out="):
 			outPath = strings.TrimPrefix(arg, "--out=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -1080,7 +1080,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, unknownAgentMessage(arg))
 			return 2
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}

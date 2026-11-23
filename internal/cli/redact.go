@@ -34,7 +34,7 @@ func cmdRedact(args []string, stdout, stderr io.Writer) int {
 		case arg == "--dry-run":
 			dryRun = true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}

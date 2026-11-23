@@ -48,7 +48,7 @@ func cmdTask(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, taskHelp)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
+		unrecognizedArgs(stderr, args[0])
 		return 2
 	}
 }
@@ -142,7 +142,7 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 		if !matched {
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -332,7 +332,7 @@ func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if strings.HasPrefix(arg, "-") || id != "" {
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 		id = arg

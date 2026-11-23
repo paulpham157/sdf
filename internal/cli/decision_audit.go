@@ -50,7 +50,7 @@ func cmdDecisionAudit(args []string, stdout, stderr io.Writer) int {
 			return 0
 		case "--json":
 			if hasValue {
-				fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+				unrecognizedArgs(stderr, arg)
 				return 2
 			}
 			asJSON = true
@@ -80,7 +80,7 @@ func cmdDecisionAudit(args []string, stdout, stderr io.Writer) int {
 				opt.Until = t
 			}
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
