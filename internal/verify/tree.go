@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"hash"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -77,9 +79,30 @@ func (r *run) watched(p string) bool {
 
 // checkDisk compares the checkout on disk with the submitted tree, held in
 // memory since checkIntegrity: every tracked file must have the tree's mode
-// and blob, and no new file may be a watched path. It returns the problems.
+// and blob, and no new file may be a watched path or code. It returns the
+// problems.
 func (r *run) checkDisk() []string {
-	var problems []string
+	changed, code := r.checkDiskAll()
+	return append(changed, code...)
+}
+
+// isCodePath reports whether a checkout path is a compile input: Go,
+// assembly, C or object files, module files, or anything under vendor/.
+func isCodePath(p string) bool {
+	base := path.Base(p)
+	switch base {
+	case "go.mod", "go.sum", "go.work", "go.work.sum":
+		return true
+	}
+	return strings.HasSuffix(p, ".go") || tamperExts[path.Ext(p)] ||
+		strings.HasPrefix(p, "vendor/") || strings.Contains(p, "/vendor/")
+}
+
+// checkDiskAll is checkDisk split in two: changes to tracked files and new
+// watched paths, and new untracked code files (atk_plant: a check writes a
+// .go file that a later go test would compile; it is never in the diff,
+// so neither the integrity checks nor the tripwire would see it).
+func (r *run) checkDiskAll() (problems, code []string) {
 	seen := map[string]bool{}
 	oidLen := 40
 	for _, e := range r.treeAtSHA {
@@ -113,8 +136,11 @@ func (r *run) checkDisk() []string {
 		seen[rel] = true
 		want, tracked := r.treeAtSHA[rel]
 		if !tracked {
-			if r.watched(rel) {
+			switch {
+			case r.watched(rel):
 				problems = append(problems, rel+": added")
+			case isCodePath(rel):
+				code = append(code, rel+": code added")
 			}
 			return nil
 		}
@@ -138,7 +164,8 @@ func (r *run) checkDisk() []string {
 		}
 	}
 	sort.Strings(problems)
-	return problems
+	sort.Strings(code)
+	return problems, code
 }
 
 // hideGitDir moves the checkout's .git next to it, outside the directory
@@ -154,6 +181,89 @@ func (r *run) hideGitDir() error {
 	}
 	r.gitHidden = true
 	return nil
+}
+
+// savePristine copies the checkout (after .git is moved out, before any
+// check runs) to <work>/pristine. Each criterion after the first starts
+// from a fresh copy of it (resetCheckout), so nothing a check leaves in the
+// checkout, tracked or not, reaches a later criterion. Isolated checks do
+// not see it (the work directory is masked); an unisolated one could
+// change it, which resetCheckout's comparison with the tree catches.
+func (r *run) savePristine() error {
+	r.pristine = filepath.Join(filepath.Dir(r.checkout), "pristine")
+	return copyTree(r.checkout, r.pristine)
+}
+
+// resetCheckout replaces the checkout with a copy of the pristine tree and
+// checks it against the submitted tree: every tracked file with its mode
+// and blob, and nothing else at all.
+func (r *run) resetCheckout() error {
+	if err := removeTree(r.checkout); err != nil {
+		return err
+	}
+	if err := copyTree(r.pristine, r.checkout); err != nil {
+		return err
+	}
+	if problems := r.checkDisk(); len(problems) > 0 {
+		return fmt.Errorf("the fresh checkout differs from the submitted tree: %s", strings.Join(problems, "; "))
+	}
+	var extra []string
+	_ = filepath.WalkDir(r.checkout, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(r.checkout, p)
+		if _, ok := r.treeAtSHA[filepath.ToSlash(rel)]; !ok {
+			extra = append(extra, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	if len(extra) > 0 {
+		return fmt.Errorf("the fresh checkout has files the submitted tree does not: %s", strings.Join(extra, ", "))
+	}
+	return nil
+}
+
+// copyTree copies directories, regular files (with their permission bits)
+// and symlinks from src to a new dst.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		t := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(t, info.Mode().Perm()|0o700)
+		case d.Type()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(target, t)
+		case d.Type().IsRegular():
+			in, err := os.Open(p)
+			if err != nil {
+				return err
+			}
+			defer in.Close()
+			out, err := os.OpenFile(t, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, in); err != nil {
+				out.Close()
+				return err
+			}
+			return out.Close()
+		}
+		return fmt.Errorf("%s: unexpected file type %s", rel, d.Type())
+	})
 }
 
 // removeTree removes dir after making every directory in it writable (the

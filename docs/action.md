@@ -132,8 +132,11 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   processes through sockets under `/tmp` or `/run`, the network, or docker.
   Every host directory is read-only inside a check (the toolchain, `PATH`,
   the job's workspace and other files), so a check cannot change what a
-  later step runs; it can still read what the runner user can outside the
-  masked directories. The verify step's exit code (the verdict, see above)
+  later step runs; each criterion starts from a fresh copy of the
+  submitted tree, a `go test`/`go vet` criterion cannot write the
+  checkout, and code a check adds to it is `CHECK_ADDED_CODE`. A check
+  can still read what the runner user can outside the masked
+  directories. The verify step's exit code (the verdict, see above)
   and the verdict hash it printed to the log are the record to trust, not
   the artifact. Running the checks as a separate unprivileged OS user
   would close the rest; it is not built.

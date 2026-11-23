@@ -71,6 +71,7 @@ const (
 	CodeIsolationUnavailable   = "ISOLATION_UNAVAILABLE"
 	CodeTamperCapable          = "TAMPER_CAPABLE_CODE"
 	CodeCommandChanged         = "COMMAND_CHANGED"
+	CodeCheckAddedCode         = "CHECK_ADDED_CODE"
 	CodeInfraError             = "INFRA_ERROR"
 )
 
@@ -81,6 +82,7 @@ var failCodes = map[string]bool{
 	CodeSecretInDiff: true, CodeCheckoutDirty: true, CodeCheckoutModified: true,
 	CodeCheckFailed: true, CodeCheckTimeout: true, CodeDesignatedTestMissing: true,
 	CodeSymlinkOutside: true, CodeTestReportInvalid: true, CodeCommandChanged: true,
+	CodeCheckAddedCode: true,
 }
 
 // Record schemas, also the ledger kinds.
@@ -129,6 +131,11 @@ type Options struct {
 	// AllowNetwork names criteria that keep the host network. Every other
 	// criterion runs in its own network namespace with only loopback.
 	AllowNetwork []string
+	// WritableCheckout names go test/vet criteria whose checkout is
+	// writable. Every other go test/vet criterion runs on a read-only
+	// checkout (isolated), so a test binary cannot plant a file that a
+	// package built later in the same run compiles.
+	WritableCheckout []string
 
 	// GoCache and GoModCache, when set, are the GOCACHE and GOMODCACHE
 	// checks use. They have to be directories the agent cannot write.
@@ -197,6 +204,8 @@ type run struct {
 	treeAtSHA map[string]treeEntry
 	critN     int
 	gitHidden bool
+	pristine  string
+	ranCheck  bool
 	pins      map[string]commandPin
 	isolation string
 	// reasonLater holds reasons found before their evidence record exists.
@@ -298,7 +307,11 @@ func (r *run) prepareChecks() bool {
 			return false
 		}
 	}
-	if err := r.hideGitDir(); err != nil {
+	err := r.hideGitDir()
+	if err == nil {
+		err = r.savePristine()
+	}
+	if err != nil {
 		id := r.addEvidence("checkout", "", map[string]any{"status": "error", "error": err.Error()})
 		r.reason(CodeInfraError, id, "preparing checks: %v", err)
 		return false
@@ -356,7 +369,8 @@ func (r *run) resolveCommand(argv0 string) (string, string, error) {
 }
 
 // criterionDirs makes the new directories criterion c's check gets.
-func (r *run) criterionDirs() (checkDirs, error) {
+func (r *run) criterionDirs(c task.Criterion) (checkDirs, error) {
+	hostNet := contains(r.opt.AllowNetwork, c.Name)
 	r.critN++
 	root := filepath.Join(filepath.Dir(r.checkout), fmt.Sprintf("c%02d", r.critN))
 	d := checkDirs{
@@ -381,6 +395,13 @@ func (r *run) criterionDirs() (checkDirs, error) {
 			// Unisolated: the check uses the trusted cache itself and can
 			// write it (the verdict says isolation none).
 			*tc.dir = tc.trusted
+			continue
+		}
+		if tc.name == "gomodcache" && !hostNet {
+			// Nothing to download without the network: the trusted module
+			// cache is bound read-only, so not even a test binary of this
+			// run can change a module another package compiles later.
+			d.overlays = append(d.overlays, overlayMount{target: *tc.dir, lower: tc.trusted})
 			continue
 		}
 		o := overlayMount{target: *tc.dir, lower: tc.trusted, upper: filepath.Join(root, tc.name+".upper"), work: filepath.Join(root, tc.name+".work")}
@@ -1079,7 +1100,7 @@ func nonNilStrings(v []string) []string {
 }
 
 func (r *run) runCriterion(c task.Criterion) {
-	d, dirErr := r.criterionDirs()
+	d, dirErr := r.criterionDirs(c)
 	defer func() { _ = removeTree(d.root) }()
 	env, envNames, envHash := checkEnv(r.opt.Path, d)
 	ev := map[string]any{
@@ -1110,6 +1131,16 @@ func (r *run) runCriterion(c task.Criterion) {
 	if dirErr != nil {
 		fail(CodeInfraError, "criterion directories: %v", dirErr)
 		return
+	}
+	// Every criterion after the first starts from a fresh copy of the
+	// submitted tree: nothing an earlier check left (an untracked .go file,
+	// a build output, a config) carries over (atk_plant).
+	if r.ranCheck {
+		if err := r.resetCheckout(); err != nil {
+			fail(CodeCheckoutModified, "not run: %v", err)
+			return
+		}
+		ev["fresh_checkout"] = true
 	}
 	// The command must still be the file pinned before any check ran.
 	if pin, ok := r.pins[c.Name]; ok {
@@ -1183,6 +1214,7 @@ func (r *run) runCriterion(c task.Criterion) {
 	ev["command"] = command
 	var cmd *exec.Cmd
 	ev["network"] = "host"
+	ev["checkout_writable"] = r.isolation != IsolationNamespace || !isGoTool(c.Argv) || contains(r.opt.WritableCheckout, c.Name)
 	if r.isolation == IsolationNamespace {
 		cfg, unmasked := r.sandboxConfig(c, command, goroot, h, d)
 		if !cfg.hostNet {
@@ -1221,6 +1253,7 @@ func (r *run) runCriterion(c task.Criterion) {
 	}
 	cmd.Stdout, cmd.Stderr = so, se
 	started := r.opt.Now()
+	r.ranCheck = true
 	runErr := cmd.Start()
 	if runErr == nil {
 		if h != nil {
@@ -1270,10 +1303,10 @@ func (r *run) runCriterion(c task.Criterion) {
 	// read from disk (not from git's index, which a check could change).
 	// Nothing the check started is running any more (isolated), so this
 	// read cannot race a writer.
-	after := r.checkDisk()
-	unchanged := len(after) == 0
+	after, addedCode := r.checkDiskAll()
+	unchanged := len(after) == 0 && len(addedCode) == 0
 	ev["checkout_unchanged"] = unchanged
-	ev["checkout_after"] = nonNilStrings(after)
+	ev["checkout_after"] = nonNilStrings(append(append([]string{}, after...), addedCode...))
 
 	var code, detail string
 	switch {
@@ -1301,8 +1334,11 @@ func (r *run) runCriterion(c task.Criterion) {
 	if code != "" {
 		r.reason(code, id, "%s: %s", c.Name, detail)
 	}
-	if !unchanged {
+	if len(after) > 0 {
 		r.reason(CodeCheckoutModified, id, "%s changed the checkout: %s", c.Name, strings.Join(after, "; "))
+	}
+	if len(addedCode) > 0 {
+		r.reason(CodeCheckAddedCode, id, "%s left code files in the checkout that are not in the submitted tree (a later step could compile them): %s", c.Name, strings.Join(addedCode, "; "))
 	}
 }
 
@@ -1455,4 +1491,13 @@ func goEnvGOROOT(ctx context.Context, goCmd string, env []string, dir string) (s
 		return "", fmt.Errorf("GOROOT %q is not absolute", g)
 	}
 	return g, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

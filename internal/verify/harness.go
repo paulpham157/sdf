@@ -379,21 +379,26 @@ func T_send(msg string) {
 // cannot open /proc/self/mem to patch the testing package's code
 // (atk_tw5 writes a RET over (*common).Fail), and a child process cannot
 // ptrace or open it either. On amd64 and arm64 a seccomp filter, applied to
-// every thread and inherited by children, then refuses
-// prctl(PR_SET_DUMPABLE), so the process cannot turn that back on (and any
-// system call of another architecture's ABI). It does not stop code that
-// uses unsafe or assembly from writing memory directly: the tripwire flags
-// those.
+// every thread and inherited by children, then refuses (EPERM)
+// prctl(PR_SET_DUMPABLE), so the process cannot turn that back on; ptrace,
+// process_vm_readv and process_vm_writev (another way to read the key or
+// write the process's memory, atk_pvm) and pidfd_getfd (taking the harness
+// connection from another process); and any system call of another
+// architecture's ABI. Tests that run debuggers or strace fail. It does not
+// stop code that uses unsafe or assembly from reading or writing memory
+// directly: the tripwire flags those.
 func hardenSource(goos, goarch string) string {
 	if goos != "linux" {
 		return "\nfunc T_harden() string { return \"\" }\n"
 	}
-	arch, prctl, seccomp := "", "", ""
+	// System call numbers: prctl, seccomp, ptrace, process_vm_readv,
+	// process_vm_writev, pidfd_getfd.
+	arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd := "", "", "", "", "", "", ""
 	switch goarch {
 	case "amd64":
-		arch, prctl, seccomp = "0xC000003E", "157", "317"
+		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd = "0xC000003E", "157", "317", "101", "310", "311", "438"
 	case "arm64":
-		arch, prctl, seccomp = "0xC00000B7", "167", "277"
+		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd = "0xC00000B7", "167", "277", "117", "270", "271", "438"
 	}
 	src := `
 func T_harden() string {
@@ -403,15 +408,19 @@ func T_harden() string {
 	}
 	if ARCH != 0 {
 		filter := []T_sockFilter{
-			{0x20, 0, 0, 4},              // A = arch
-			{0x15, 0, 6, ARCH},           // not this ABI: deny
-			{0x20, 0, 0, 0},              // A = nr
-			{0x45, 4, 0, 0x40000000},     // x32 ABI: deny
-			{0x15, 0, 2, NR_PRCTL},       // not prctl: allow
-			{0x20, 0, 0, 16},             // A = args[0]
-			{0x15, 1, 0, prSetDumpable},  // PR_SET_DUMPABLE: deny
-			{0x06, 0, 0, 0x7fff0000},     // allow
-			{0x06, 0, 0, 0x00050000 | 1}, // EPERM
+			{0x20, 0, 0, 4},              // 0: A = arch
+			{0x15, 0, 10, ARCH},          // 1: not this ABI: deny
+			{0x20, 0, 0, 0},              // 2: A = nr
+			{0x45, 8, 0, 0x40000000},     // 3: x32 ABI: deny
+			{0x15, 7, 0, NR_PTRACE},      // 4: ptrace: deny
+			{0x15, 6, 0, NR_PVMR},        // 5: process_vm_readv: deny
+			{0x15, 5, 0, NR_PVMW},        // 6: process_vm_writev: deny
+			{0x15, 4, 0, NR_PIDFD_GETFD}, // 7: pidfd_getfd: deny
+			{0x15, 0, 2, NR_PRCTL},       // 8: not prctl: allow
+			{0x20, 0, 0, 16},             // 9: A = args[0]
+			{0x15, 1, 0, prSetDumpable},  // 10: PR_SET_DUMPABLE: deny
+			{0x06, 0, 0, 0x7fff0000},     // 11: allow
+			{0x06, 0, 0, 0x00050000 | 1}, // 12: EPERM
 		}
 		prog := struct {
 			n uint16
@@ -442,10 +451,14 @@ type T_sockFilter struct {
 }
 `
 	if arch == "" {
-		arch, prctl, seccomp = "0", "0", "0"
+		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd = "0", "0", "0", "0", "0", "0", "0"
 	}
 	src = strings.ReplaceAll(src, "ARCH", arch)
 	src = strings.ReplaceAll(src, "NR_PRCTL", prctl)
+	src = strings.ReplaceAll(src, "NR_PTRACE", ptrace)
+	src = strings.ReplaceAll(src, "NR_PVMR", pvmr)
+	src = strings.ReplaceAll(src, "NR_PVMW", pvmw)
+	src = strings.ReplaceAll(src, "NR_PIDFD_GETFD", pidfdGetfd)
 	src = strings.ReplaceAll(src, "SYS_SECCOMP", seccomp)
 	return src
 }

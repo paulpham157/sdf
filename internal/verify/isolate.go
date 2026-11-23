@@ -31,7 +31,8 @@ type nsConfig struct {
 	hostNet bool           // keep the host network instead of loopback only
 }
 
-// overlayMount is an overlayfs at target: lower is never written.
+// overlayMount is an overlayfs at target: lower is never written. With no
+// upper, lower is bound read-only at target instead.
 type overlayMount struct{ target, lower, upper, work string }
 
 // Isolation names how criteria were run: IsolationNamespace (Linux user,
@@ -96,7 +97,11 @@ func (r *run) sandboxConfig(c task.Criterion, command, goroot string, h *harness
 			*list = append(*list, p)
 		}
 	}
-	add(&cfg.rw, r.checkout)
+	if isGoTool(c.Argv) && !contains(r.opt.WritableCheckout, c.Name) {
+		add(&cfg.ro, r.checkout)
+	} else {
+		add(&cfg.rw, r.checkout)
+	}
 	add(&cfg.rw, d.root)
 	if h != nil {
 		add(&cfg.ro, h.dir)
@@ -139,10 +144,6 @@ func (r *run) sandboxConfig(c task.Criterion, command, goroot string, h *harness
 		}
 		cfg.mask = append(cfg.mask, m)
 	}
-	for _, n := range r.opt.AllowNetwork {
-		if n == c.Name {
-			cfg.hostNet = true
-		}
-	}
+	cfg.hostNet = contains(r.opt.AllowNetwork, c.Name)
 	return cfg, unmasked
 }

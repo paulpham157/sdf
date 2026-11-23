@@ -261,6 +261,16 @@ func nsInitMain(args []string) int {
 		}
 	}
 	for i, o := range overlays {
+		if o.upper == "" {
+			if err := syscall.Mount("/proc/self/fd/"+strconv.Itoa(lowerFDs[i]), o.target, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+				return die("bind %s over %s: %v", o.lower, o.target, err)
+			}
+			syscall.Close(lowerFDs[i])
+			if err := remountBind(o.target, true); err != nil {
+				return die("%v", err)
+			}
+			continue
+		}
 		opts := "lowerdir=/proc/self/fd/" + strconv.Itoa(lowerFDs[i]) + ",upperdir=" + o.upper + ",workdir=" + o.work
 		if err := syscall.Mount("overlay", o.target, "overlay", syscall.MS_NOSUID|syscall.MS_NODEV, opts); err != nil {
 			return die("overlay %s over %s: %v", o.target, o.lower, err)

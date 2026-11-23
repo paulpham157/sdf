@@ -105,9 +105,13 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    `go env -w GOFLAGS=-exec=...`) reaches a check.
 
    `--go-cache`/`--go-mod-cache` name trusted caches to start from. An
-   isolated check gets each as the read-only lower layer of an overlay
-   whose writes land in its own directory: it reads the cache and cannot
-   change it (evidence `read_only_caches`). An unisolated check uses the
+   isolated check gets `GOCACHE` as the read-only lower layer of an
+   overlay whose writes land in its own directory: it reads the cache and
+   cannot change it (evidence `read_only_caches`). `GOMODCACHE` is the
+   same for a criterion with `--allow-network`; without the network there
+   is nothing to download, so the trusted module cache is bound
+   **read-only** and not even a test binary of that run can change a
+   module source another package compiles later. An unisolated check uses the
    cache directly and can write it. Without them every criterion starts
    with empty caches, so a repository with dependencies and no `vendor/`
    must download them: give that criterion `--allow-network NAME`, or an
@@ -139,9 +143,15 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      directory: where the sockets of processes outside the namespace live
      (a tmux or screen server, docker and containerd, ssh-agent, a D-Bus or
      systemd user session), and where the moved `.git`, other criteria's
-     output and the harness are. Bound back **writable**: only the checkout
-     and the criterion's own directory (HOME, TMPDIR, GOPATH, the Go caches;
-     evidence `writable`). Bound back **read-only**, where a mask covers
+     output and the harness are. Bound back **writable**: only the
+     criterion's own directory (HOME, TMPDIR, GOPATH, the Go caches;
+     evidence `writable`) and, except for a `go test` or `go vet`
+     criterion, the checkout. A `go test`/`go vet` criterion gets the
+     checkout **read-only** (evidence `checkout_writable: false`), so a
+     test binary cannot write a `.go` file that a package compiled later in
+     the same run picks up (Review's atk_plant); `--writable-checkout NAME`
+     (repeatable) makes it writable for criterion NAME, for tests that
+     write testdata in place. Bound back **read-only**, where a mask covers
      them: the harness socket's directory, `PATH` entries and the Go
      toolchain. The evidence lists `masked` (and `unmasked`, a mask a bound
      directory equals or contains);
@@ -196,9 +206,13 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      (Review's atk_tw5). On amd64 and arm64 a seccomp filter (all threads,
      inherited by children, with `no_new_privs`) then refuses
      `prctl(PR_SET_DUMPABLE)` and system calls of another ABI, so this
-     cannot be undone. If any of it fails the test binary exits 3. Side
-     effects for tests: `/proc/self/fd` is not listable, and set-uid
-     programs run by a test do not gain privileges.
+     cannot be undone, and refuses `ptrace`, `process_vm_readv`,
+     `process_vm_writev` and `pidfd_getfd` (`EPERM`), so a child or sibling
+     of the same user cannot read or write the test process's memory that
+     way either (Review's atk_pvm). If any of it fails the test binary
+     exits 3. Side effects for tests: `/proc/self/fd` is not listable,
+     set-uid programs run by a test do not gain privileges, and a test that
+     runs a debugger or `strace` fails.
 
    **This resists only naive cheating. It is not a security boundary
    against an adversarial agent**: code in the test binary that uses
@@ -249,8 +263,16 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    Before and after each check, every tracked file on disk is re-hashed
    (without git, its index, or following symlinks) against the submitted
    tree, and no designated or Go test input file may appear
-   (`CHECKOUT_MODIFIED`). A check is not run on a checkout an earlier check
-   changed.
+   (`CHECKOUT_MODIFIED`). A code file the check added (`.go`, assembly, C
+   and the other tripwire extensions, `go.mod`, `go.sum`, `go.work`,
+   `go.work.sum`, anything under `vendor/`) is `CHECK_ADDED_CODE` (FAIL),
+   even if the check itself passed. Every criterion after the first then
+   starts from a **fresh copy** of the submitted tree, taken before any
+   check ran (evidence `fresh_checkout`): the previous checkout is removed,
+   so nothing a check left (an untracked `.go` file, a build output, a
+   config) reaches a later criterion. If the copy does not match the
+   submitted tree exactly, the criterion is `CHECKOUT_MODIFIED` and not
+   run.
 
 ## Verdict codes
 
@@ -259,7 +281,8 @@ FAIL: `TASK_SNAPSHOT_MISSING`, `TASK_HASH_MISMATCH`, `TASK_FILE_MODIFIED`,
 `REVISION_UNRESOLVABLE`, `REVISION_MISMATCH`, `BASE_MISMATCH`,
 `BASE_NOT_ANCESTOR`, `DESIGNATED_FILE_MODIFIED`, `DESIGNATED_FILE_ADDED`,
 `SECRET_IN_DIFF`, `CHECKOUT_DIRTY`, `CHECKOUT_MODIFIED`, `CHECK_FAILED`,
-`CHECK_TIMEOUT`, `TEST_REPORT_INVALID`, `COMMAND_CHANGED`.
+`CHECK_TIMEOUT`, `TEST_REPORT_INVALID`, `COMMAND_CHANGED`,
+`CHECK_ADDED_CODE`.
 
 ERROR (the verifier could not decide): `TASK_UNTRUSTED` (the task came only
 from the data dir or an unpinned ledger), `ISOLATION_UNAVAILABLE` (no
@@ -278,7 +301,8 @@ sources, the submitted commit and tree, and the secret rule set's hash.
 The verdict also records `isolation`; `command_pins` lists each criterion's
 resolved argv[0] and its sha256; each criterion's evidence records
 `command_sha256`, `network`, `masked`, `unmasked`, `writable`,
-`read_only_caches` and `goroot`. With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
+`checkout_writable`, `read_only_caches`, `goroot` and, for every criterion
+after the first, `fresh_checkout`. With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
 appended to that ledger in one transaction ([docs/ledger.md](ledger.md#who-writes-it)):
 all of them or none. The ledger is prepared before the checkout, so one
 that cannot be written is exit 3 with nothing run. If the append itself
@@ -312,9 +336,12 @@ record.
   `.git/config` and the checks' environment and asks for `contents: read`
   only, but the runner's own files are not hidden further (see
   [action.md](action.md)).
-- Untracked files a check leaves in the checkout stay there for later
-  criteria (only designated and Go test input paths, and `.git`, are
-  checked): criteria share one checkout.
+- Within one run, a check can change what it compiles or runs later in
+  that same run where it can write: a criterion with `--allow-network`
+  writes its own `GOMODCACHE`/`GOCACHE` layer, every check writes its own
+  `GOCACHE` layer, a script or `--writable-checkout` criterion writes the
+  checkout (and can delete what it wrote before the check after it, so
+  `CHECK_ADDED_CODE` does not see it). None of it outlives the criterion.
 - `--task-ref` is read from the repository given. If the agent can move that
   ref locally, it is not protected: use the protected branch as just
   fetched from the remote, or `--task-hash`.

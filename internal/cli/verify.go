@@ -19,6 +19,7 @@ const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--task-ha
                   [--artifacts DIR] [--work-dir DIR] [--path PATH]
                   [--go-cache DIR] [--go-mod-cache DIR] [--expect-prefix SEQ:HASH]
                   [--allow-unisolated] [--allow-network NAME]...
+                  [--writable-checkout NAME]...
                   [--allow-tamper-capable] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
@@ -37,6 +38,11 @@ and no capabilities; everything it started is killed when it exits. Where
 that is not possible the verdict is ERROR (ISOLATION_UNAVAILABLE) unless
 --allow-unisolated, which runs the checks anyway and records isolation
 "none". --allow-network NAME keeps the host network for criterion NAME.
+Every host directory is read-only inside a check, and each criterion
+starts from a fresh copy of the submitted tree; a go test or go vet
+criterion's checkout is read-only too (--writable-checkout NAME allows
+writes for NAME). Code files a check leaves in the checkout are FAIL
+(CHECK_ADDED_CODE).
 
 For a go test criterion, new or changed code that could forge the test
 harness's reports (unsafe, debug/*, cgo, assembly, raw syscalls, /proc
@@ -88,6 +94,17 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			opt.AllowNetwork = append(opt.AllowNetwork, v)
+			continue
+		}
+		if v, ok, err := flagValue("--writable-checkout", &i, args); ok {
+			if err == nil && v == "" {
+				err = fmt.Errorf("--writable-checkout requires a criterion name")
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+				return 2
+			}
+			opt.WritableCheckout = append(opt.WritableCheckout, v)
 			continue
 		}
 		if v, ok, err := flagValue("--ledger", &i, args); ok {

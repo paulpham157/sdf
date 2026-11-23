@@ -93,6 +93,7 @@ import (
 	"os"
 	"syscall"
 	"testing"
+	"unsafe"
 )
 
 func TestAdd(t *testing.T) {
@@ -110,9 +111,26 @@ func TestAdd(t *testing.T) {
 		if _, _, e := syscall.RawSyscall(syscall.SYS_PRCTL, 4, 1, 0); e != syscall.EPERM {
 			t.Fatalf("PR_SET_DUMPABLE 1: %v", e)
 		}
+		// atk_pvm: process_vm_writev / readv on itself, and ptrace.
+		var src, dst [1]byte
+		l := syscall.Iovec{Base: &src[0], Len: 1}
+		r := syscall.Iovec{Base: &dst[0], Len: 1}
+		for _, nr := range []uintptr{PVMW, PVMR} {
+			if _, _, e := syscall.Syscall6(nr, uintptr(os.Getpid()), uintptr(unsafe.Pointer(&l)), 1, uintptr(unsafe.Pointer(&r)), 1, 0); e != syscall.EPERM {
+				t.Fatalf("process_vm_%d: %v", nr, e)
+			}
+		}
+		if _, _, e := syscall.RawSyscall(PTRACE, 0, 0, 0); e != syscall.EPERM {
+			t.Fatalf("ptrace(PTRACE_TRACEME): %v", e)
+		}
 	}
 }
 `
+	nums := map[string][3]string{"amd64": {"311", "310", "101"}, "arm64": {"271", "270", "117"}}[runtime.GOARCH]
+	if !seccomp {
+		nums = [3]string{"0", "0", "0"}
+	}
+	base["a/a_test.go"] = strings.NewReplacer("PVMW", nums[0], "PVMR", nums[1], "PTRACE", nums[2]).Replace(base["a/a_test.go"])
 	f := newFixtureFiles(t, base, task.CriterionInput{Name: "unit", Argv: []string{"go", "test", "./a/"}, TimeoutS: 300})
 	sha := f.agentCommit(t, map[string]string{"a/a.go": goodAdd})
 	if res := mustRun(t, goOpts(t, f, sha)); res.Status != StatusPass {
@@ -182,22 +200,26 @@ func TestIsolatedCheckCannotWriteHostDirectories(t *testing.T) {
 		}
 	}()
 	a := `for d in "` + pathDir + `" "` + goroot + `" "` + wd + `"; do if ( : > "$d/` + probe + `" ) 2>/dev/null; then echo "wrote $d" >&2; exit 1; fi; done
-echo changed > "$GOMODCACHE/f" || exit 2
-test "$(cat "$GOMODCACHE/f")" = changed || exit 3
+if ( echo changed > "$GOMODCACHE/f" ) 2>/dev/null; then echo "trusted module cache writable without network" >&2; exit 2; fi
 test ! -e ../git || { echo "../git is visible" >&2; exit 4; }
 test "$(readlink /proc/self/ns/ipc)" != "` + ipc + `" || exit 5
 test "$(readlink /proc/self/ns/uts)" != "` + uts + `" || exit 6
 : > src/written-by-check || exit 7`
-	b := `test "$(cat "$GOMODCACHE/f")" = orig`
+	// With the network (it may download), the trusted cache is an overlay:
+	// writes land in the criterion's own layer.
+	b := `echo changed > "$GOMODCACHE/f" && test "$(cat "$GOMODCACHE/f")" = changed`
+	c := `test "$(cat "$GOMODCACHE/f")" = orig`
 	f := newFixture(t,
 		task.CriterionInput{Name: "a", Argv: []string{"sh", "-c", a}, Designated: []string{"tests/*.sh"}},
 		task.CriterionInput{Name: "b", Argv: []string{"sh", "-c", b}, Designated: []string{"tests/*.sh"}},
+		task.CriterionInput{Name: "c", Argv: []string{"sh", "-c", c}, Designated: []string{"tests/*.sh"}},
 	)
 	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
 	o := f.opts(sha)
 	o.AllowUnisolated = false
 	o.Path = pathDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	o.GoModCache = cache
+	o.AllowNetwork = []string{"b"}
 	res := mustRun(t, o)
 	if res.Status != StatusPass {
 		for _, e := range res.Evidence {
@@ -296,4 +318,21 @@ func reasonDetails(res Result) []string {
 		out = append(out, r.Detail)
 	}
 	return out
+}
+
+// Whatever a check leaves in the checkout (here a non-code file and a
+// changed mode on a directory) is gone for the next criterion.
+func TestEachCriterionStartsFromAFreshCheckout(t *testing.T) {
+	f := newFixture(t,
+		task.CriterionInput{Name: "a", Argv: []string{"sh", "-c", "echo x > leftover.txt && mkdir -p out && echo y > out/z && chmod 500 src"}, Designated: []string{"tests/*.sh"}},
+		task.CriterionInput{Name: "b", Argv: []string{"sh", "-c", "test ! -e leftover.txt && test ! -e out && test -w src && sh tests/run.sh"}, Designated: []string{"tests/*.sh"}},
+	)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	if res.Evidence[len(res.Evidence)-1].Value["fresh_checkout"] != true {
+		t.Fatal("b did not record a fresh checkout")
+	}
 }
