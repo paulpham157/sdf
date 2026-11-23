@@ -98,6 +98,9 @@ var (
 	ErrConflict = errors.New("ledger: id already stored with a different hash")
 	// ErrNotFound means no entry has that (kind, id), or the ledger is empty.
 	ErrNotFound = errors.New("ledger: not found")
+	// ErrCorrupt means a stored payload no longer hashes to its chained hash.
+	// Get wraps it with the kind and id.
+	ErrCorrupt = errors.New("ledger: stored payload does not match its hash")
 )
 
 const schema = `
@@ -436,8 +439,9 @@ func insert(ctx context.Context, conn *sql.Conn, seq int64, kind Kind, id string
 	return e, nil
 }
 
-// Get implements Ledger. It returns the bytes as stored; Verify is what
-// checks them.
+// Get implements Ledger. It recomputes the payload hash of the row it reads
+// and returns ErrCorrupt (wrapped with kind and id) on a mismatch. It does
+// not walk the chain; Verify does.
 func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -454,6 +458,9 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, e
 	}
 	if err != nil {
 		return nil, Entry{}, err
+	}
+	if PayloadHash(row.entry.Kind, row.payload) != row.entry.Hash {
+		return nil, Entry{}, fmt.Errorf("%w: %s %q", ErrCorrupt, kind, id)
 	}
 	return row.payload, row.entry, nil
 }

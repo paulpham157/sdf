@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -340,5 +341,26 @@ func TestAppendAfterAReadOnTheSameStore(t *testing.T) {
 	rep, err := open(t, path).Verify(ctx)
 	if err != nil || !rep.OK || rep.Entries != 5 {
 		t.Fatalf("%+v %v", rep, err)
+	}
+}
+
+func TestGetReportsAHandEditedPayload(t *testing.T) {
+	ctx := context.Background()
+	path, s := seeded(t)
+	_ = s.Close()
+	tamper(t, path, `UPDATE ledger_entries SET payload = '{"objective":"z"}' WHERE id = 'task-2'`)
+	s = open(t, path)
+	got, e, err := s.Get(ctx, taskKind, "task-2")
+	if !errors.Is(err, ledger.ErrCorrupt) {
+		t.Fatalf("err %v", err)
+	}
+	if !strings.Contains(err.Error(), `sdf.task/v1 "task-2"`) {
+		t.Fatalf("error does not name kind and id: %v", err)
+	}
+	if got != nil || e != (ledger.Entry{}) {
+		t.Fatalf("corrupt payload returned: %q %+v", got, e)
+	}
+	if _, _, err := s.Get(ctx, taskKind, "task-1"); err != nil {
+		t.Fatalf("an untouched row: %v", err)
 	}
 }

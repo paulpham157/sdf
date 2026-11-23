@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"regexp"
 	"strings"
 
 	"github.com/paulpham157/sdf/internal/ledger"
 )
 
-const auditUsage = "usage: sdf audit <verify|head> [--ledger PATH] [--json]"
+const auditUsage = "usage: sdf audit <verify|head> [--ledger PATH] [--json]; see sdf audit verify --help"
 
 func cmdAudit(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -127,27 +129,154 @@ func describeFailure(f *ledger.Failure) string {
 	return fmt.Sprintf("%s: %s: %s", where, f.Problem, f.Detail)
 }
 
+const auditVerifyUsage = "usage: sdf audit verify [--ledger PATH] [--json] [--require-nonempty] [--expect-head HASH | --expect-head-file PATH]"
+
+var entryHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// readExpectedHead reads a pinned head from a file. The file may hold the
+// bare hash, the text `sdf audit head` prints ("seq N entry_hash HASH"), or
+// the JSON `sdf audit head --json` prints.
+func readExpectedHead(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimSpace(string(data))
+	var doc struct {
+		Head struct {
+			EntryHash string `json:"entry_hash"`
+		} `json:"head"`
+	}
+	if strings.HasPrefix(text, "{") {
+		if err := json.Unmarshal([]byte(text), &doc); err != nil {
+			return "", fmt.Errorf("%s: %v", path, err)
+		}
+		return doc.Head.EntryHash, nil
+	}
+	if fields := strings.Fields(text); len(fields) == 4 && fields[0] == "seq" && fields[2] == "entry_hash" {
+		return fields[3], nil
+	}
+	return text, nil
+}
+
 func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 	const name = "sdf audit verify"
-	path, asJSON, code, done := parseAuditFlags(name, "usage: sdf audit verify [--ledger PATH] [--json]", args, stdout, stderr)
-	if done {
-		return code
+	path := ""
+	asJSON, requireNonEmpty := false, false
+	expect, expectFile := "", ""
+	expectSet, expectFileSet := false, false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		value := func(flag string) (string, bool) {
+			if strings.HasPrefix(arg, flag+"=") {
+				v := strings.TrimPrefix(arg, flag+"=")
+				return v, v != ""
+			}
+			v, ok := take(&i, args)
+			return v, ok && v != ""
+		}
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, auditVerifyUsage)
+			return 0
+		case arg == "--json":
+			asJSON = true
+		case arg == "--require-nonempty":
+			requireNonEmpty = true
+		case arg == "--ledger" || strings.HasPrefix(arg, "--ledger="):
+			v, ok := value("--ledger")
+			if !ok {
+				fmt.Fprintf(stderr, "%s: --ledger requires a value\n", name)
+				return 2
+			}
+			path = v
+		case arg == "--expect-head" || strings.HasPrefix(arg, "--expect-head="):
+			v, ok := value("--expect-head")
+			if !ok {
+				fmt.Fprintf(stderr, "%s: --expect-head requires a value\n", name)
+				return 2
+			}
+			expect, expectSet = v, true
+		case arg == "--expect-head-file" || strings.HasPrefix(arg, "--expect-head-file="):
+			v, ok := value("--expect-head-file")
+			if !ok {
+				fmt.Fprintf(stderr, "%s: --expect-head-file requires a value\n", name)
+				return 2
+			}
+			expectFile, expectFileSet = v, true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	if expectSet && expectFileSet {
+		fmt.Fprintf(stderr, "%s: --expect-head and --expect-head-file cannot be used together\n", name)
+		return 2
+	}
+	if expectFileSet {
+		v, err := readExpectedHead(expectFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: --expect-head-file: %v\n", name, err)
+			return 2
+		}
+		expect = v
+	}
+	if (expectSet || expectFileSet) && !entryHashPattern.MatchString(expect) {
+		fmt.Fprintf(stderr, "%s: expected head %q is not sha256: followed by 64 lowercase hex digits\n", name, expect)
+		return 2
+	}
+	if path == "" {
+		p, err := ledger.DefaultPath()
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			return 1
+		}
+		path = p
 	}
 	rep, ok := verifyLedger(name, path, stderr)
 	if !ok {
 		return 1
 	}
+
+	ok = rep.OK
+	emptyFail := requireNonEmpty && rep.Empty
+	if emptyFail {
+		ok = false
+	}
+	var headMatch *bool
+	actual := ""
+	if rep.Head != nil {
+		actual = rep.Head.EntryHash
+	}
+	if expect != "" {
+		m := rep.OK && !rep.Empty && actual == expect
+		headMatch = &m
+		if !m {
+			ok = false
+		}
+	}
+
 	if asJSON {
+		var expected *string
+		if expect != "" {
+			expected = &expect
+		}
 		writeJSON(stdout, struct {
-			Path    string          `json:"path"`
-			OK      bool            `json:"ok"`
-			Empty   bool            `json:"empty"`
-			Entries int64           `json:"entries"`
-			Head    *auditEntry     `json:"head"`
-			Failure *ledger.Failure `json:"failure"`
-		}{rep.Path, rep.OK, rep.Empty, rep.Entries, toAuditEntry(rep.Head), rep.Failure})
+			Path            string          `json:"path"`
+			OK              bool            `json:"ok"`
+			ChainOK         bool            `json:"chain_ok"`
+			Empty           bool            `json:"empty"`
+			RequireNonEmpty bool            `json:"require_nonempty"`
+			Entries         int64           `json:"entries"`
+			Head            *auditEntry     `json:"head"`
+			ExpectedHead    *string         `json:"expected_head"`
+			HeadMatch       *bool           `json:"head_match"`
+			Failure         *ledger.Failure `json:"failure"`
+		}{rep.Path, ok, rep.OK, rep.Empty, requireNonEmpty, rep.Entries, toAuditEntry(rep.Head), expected, headMatch, rep.Failure})
 	} else {
 		switch {
+		case rep.Empty && emptyFail:
+			fmt.Fprintf(stdout, "ledger empty: %s has no entries, and --require-nonempty was given\n", rep.Path)
 		case rep.Empty:
 			fmt.Fprintf(stdout, "ledger empty: %s has no entries\n", rep.Path)
 		case rep.OK:
@@ -160,8 +289,19 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "stored head seq %d entry_hash %s (not trustworthy)\n", rep.Head.Seq, rep.Head.EntryHash)
 			}
 		}
+		if headMatch != nil {
+			shown := actual
+			if shown == "" {
+				shown = "none"
+			}
+			if *headMatch {
+				fmt.Fprintf(stdout, "head matches expected %s\n", expect)
+			} else {
+				fmt.Fprintf(stdout, "head mismatch: expected %s, actual %s (entries were removed, rewritten, or appended since the head was pinned)\n", expect, shown)
+			}
+		}
 	}
-	if !rep.OK {
+	if !ok {
 		return 1
 	}
 	return 0

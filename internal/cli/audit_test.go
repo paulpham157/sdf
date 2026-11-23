@@ -152,3 +152,134 @@ func TestAuditUsage(t *testing.T) {
 		t.Fatalf("%d %q", out.code, out.stdout)
 	}
 }
+
+func TestAuditVerifyRequireNonEmpty(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "none", "ledger.db")
+	out := run(t, "audit", "verify", "--ledger", missing, "--require-nonempty")
+	if out.code != 1 || !strings.Contains(out.stdout, "has no entries, and --require-nonempty was given") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	if _, err := os.Stat(filepath.Dir(missing)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("verify created the ledger directory")
+	}
+	js := run(t, "audit", "verify", "--ledger", missing, "--require-nonempty", "--json")
+	var doc struct {
+		OK              bool `json:"ok"`
+		ChainOK         bool `json:"chain_ok"`
+		Empty           bool `json:"empty"`
+		RequireNonEmpty bool `json:"require_nonempty"`
+	}
+	if err := json.Unmarshal([]byte(js.stdout), &doc); err != nil || js.code != 1 {
+		t.Fatalf("%d %q %v", js.code, js.stdout, err)
+	}
+	if doc.OK || !doc.ChainOK || !doc.Empty || !doc.RequireNonEmpty {
+		t.Fatalf("%+v", doc)
+	}
+
+	path, _ := seedLedger(t)
+	if out := run(t, "audit", "verify", "--ledger", path, "--require-nonempty"); out.code != 0 {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestAuditVerifyExpectHeadMatches(t *testing.T) {
+	path, head := seedLedger(t)
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-head", head.EntryHash)
+	if out.code != 0 || !strings.Contains(out.stdout, "head matches expected "+head.EntryHash) {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	// Each form `sdf audit head` prints can be pinned in a file.
+	dir := t.TempDir()
+	for i, args := range [][]string{
+		{"audit", "head", "--ledger", path},
+		{"audit", "head", "--ledger", path, "--json"},
+	} {
+		pinned := run(t, args...)
+		f := filepath.Join(dir, "head"+string(rune('a'+i)))
+		if err := os.WriteFile(f, []byte(pinned.stdout), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if out := run(t, "audit", "verify", "--ledger", path, "--expect-head-file="+f); out.code != 0 {
+			t.Fatalf("%v: %d %q %q", args, out.code, out.stdout, out.stderr)
+		}
+	}
+	bare := filepath.Join(dir, "bare")
+	if err := os.WriteFile(bare, []byte(head.EntryHash+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := run(t, "audit", "verify", "--ledger", path, "--expect-head-file", bare); out.code != 0 {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+// Deleting the newest entry leaves a valid chain. Only a pinned head catches it.
+func TestAuditVerifyExpectHeadDetectsTruncation(t *testing.T) {
+	path, head := seedLedger(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM ledger_entries WHERE seq = 3`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	if out := run(t, "audit", "verify", "--ledger", path); out.code != 0 {
+		t.Fatalf("plain verify should pass a truncated chain: %d %q", out.code, out.stdout)
+	}
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-head", head.EntryHash)
+	if out.code != 1 || !strings.Contains(out.stdout, "head mismatch: expected "+head.EntryHash+", actual sha256:") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	js := run(t, "audit", "verify", "--ledger", path, "--expect-head", head.EntryHash, "--json")
+	var doc struct {
+		OK           bool   `json:"ok"`
+		ChainOK      bool   `json:"chain_ok"`
+		ExpectedHead string `json:"expected_head"`
+		HeadMatch    *bool  `json:"head_match"`
+		Head         struct {
+			Seq       int64  `json:"seq"`
+			EntryHash string `json:"entry_hash"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal([]byte(js.stdout), &doc); err != nil || js.code != 1 {
+		t.Fatalf("%d %q %v", js.code, js.stdout, err)
+	}
+	if doc.OK || !doc.ChainOK || doc.ExpectedHead != head.EntryHash || doc.HeadMatch == nil || *doc.HeadMatch || doc.Head.Seq != 2 {
+		t.Fatalf("%+v", doc)
+	}
+}
+
+func TestAuditVerifyExpectHeadOnAnEmptyLedger(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "ledger.db")
+	want := "sha256:" + strings.Repeat("a", 64)
+	out := run(t, "audit", "verify", "--ledger", missing, "--expect-head", want)
+	if out.code != 1 || !strings.Contains(out.stdout, "actual none") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestAuditVerifyExpectHeadUsage(t *testing.T) {
+	path, head := seedLedger(t)
+	f := filepath.Join(t.TempDir(), "head")
+	if err := os.WriteFile(f, []byte(head.EntryHash), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(t.TempDir(), "bad")
+	if err := os.WriteFile(bad, []byte("not a hash"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--expect-head", head.EntryHash, "--expect-head-file", f},
+		{"--expect-head", "sha256:XYZ"},
+		{"--expect-head", strings.TrimPrefix(head.EntryHash, "sha256:")},
+		{"--expect-head"},
+		{"--expect-head-file", filepath.Join(t.TempDir(), "absent")},
+		{"--expect-head-file", bad},
+	} {
+		full := append([]string{"audit", "verify", "--ledger", path}, args...)
+		if out := run(t, full...); out.code != 2 {
+			t.Fatalf("%v: exit %d %q %q", args, out.code, out.stdout, out.stderr)
+		}
+	}
+}

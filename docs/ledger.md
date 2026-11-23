@@ -41,6 +41,10 @@ One table, `ledger_entries`. Each row is one entry, payload included:
 again returns the stored entry. A different hash for a stored `(kind, id)` is
 `ErrConflict`. Nothing updates or deletes a row.
 
+`Get` recomputes the payload hash of the row it reads. A stored payload that
+no longer matches its hash is `ErrCorrupt`, wrapped with the kind and id. `Get`
+does not walk the chain; `sdf audit verify` does.
+
 ## Encoding
 
 The writer canonicalizes its payload. The verifier uses JCS (RFC 8785). The
@@ -75,7 +79,8 @@ for checking a writer in another language.
 ## sdf audit
 
 ```bash
-sdf audit verify [--ledger PATH] [--json]
+sdf audit verify [--ledger PATH] [--json] [--require-nonempty]
+                 [--expect-head HASH | --expect-head-file PATH]
 sdf audit head   [--ledger PATH] [--json]
 ```
 
@@ -89,13 +94,42 @@ It reports the first failure:
 - `gap-reordered`: a `prev_hash` does not link to the entry before. A row was
   moved or inserted, or an earlier entry was rewritten along with its hashes.
 
-Exit 0 means intact (an empty or absent ledger is intact). Exit 1 means broken,
-or the file could not be read. Exit 2 means a usage error. An intact
-ledger prints the head seq and its `entry_hash`.
+Exit 0 means intact. Exit 1 means broken, the file could not be read, or a
+check below failed. Exit 2 means a usage error. An intact ledger prints the
+head seq and its `entry_hash`.
+
+An empty or absent ledger is intact, so a mistyped path passes. Add
+`--require-nonempty` to make an absent or empty ledger exit 1.
+
+A chain with its newest entries deleted is still a valid chain. To catch that,
+pass the head you pinned earlier:
+
+- `--expect-head sha256:…` takes the hash itself.
+- `--expect-head-file PATH` reads it from a file. The file can hold the bare
+  hash, the line `sdf audit head` prints, or `sdf audit head --json` output.
+
+The two flags cannot be used together. When the current head's `entry_hash`
+differs from the expected one, or the ledger is empty or broken, verify exits
+1 and prints both values. An exact match is required. After a legitimate
+append, pin the new head. `--json` reports `ok` (every check), `chain_ok`
+(the chain alone), `require_nonempty`, `expected_head`, and `head_match`.
 
 `head` verifies first. It prints `seq N entry_hash sha256:…` only for an
 intact, non-empty ledger. Otherwise it exits 1 and prints nothing to stdout.
 Use it to copy the head somewhere else.
+
+### Pinning the head in CI
+
+Keep the head somewhere the agent cannot write. The verifier's CI job is the
+intended place. After the job appends, it runs `sdf audit head --json` and
+stores the output as a CI artifact or on a protected ref. The next job, or
+anyone auditing later, runs:
+
+```bash
+sdf audit verify --require-nonempty --expect-head-file pinned-head.json
+```
+
+This passes only if the local file still ends at the entry CI recorded.
 
 ## What this does not protect against
 
@@ -104,9 +138,10 @@ limits:
 
 - The agent runs as the same user as sdf, so it can write this file. It can
   rewrite any entry and recompute every hash after it. It can also delete the
-  last entries. The result is a valid chain, and `sdf audit verify` passes.
+  last entries. The result is a valid chain, and a plain `sdf audit verify`
+  passes.
 - That is only caught by comparing against a head hash stored **somewhere the
-  agent cannot write**. Without such a copy, a rewritten ledger cannot be told
+  agent cannot write** (`--expect-head`). Without such a copy, a rewritten ledger cannot be told
   apart from the real one.
 - The real trust anchor is CI: the verifier's GitHub Action runs outside the
   agent's machine and records the head there. The local file is a working
