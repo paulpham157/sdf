@@ -1253,7 +1253,8 @@
       const classes = ["dg-node", "dg-kind-" + node.kind, "dg-role-" + node.role];
       if (node.on_path) classes.push("dg-on-path");
       if (near && !near[node.id]) classes.push("dg-dim");
-      if (dgMuted(node)) classes.push("dg-muted");
+      const muted = dgMuted(node);
+      if (muted) classes.push("dg-muted");
       const kids = [s("title", null, [node.title + ": " + (node.detail || "")])].concat(dgNodeShape(node, width[node.id], focused));
       const hidden = (node.alternatives || []).filter(function (id) { return byId[id] && byId[id].lane === "none"; });
       if (hidden.length && dgNotTaken) {
@@ -1269,10 +1270,12 @@
       }
       nodes.push(s("g", {
         class: classes.join(" "),
-        tabindex: "0",
+        // A node the You/Agents filter mutes stays clickable but leaves the
+        // tab order.
+        tabindex: muted ? "-1" : "0",
         role: "button",
         "data-node": node.id,
-        "aria-label": dgAria(node),
+        "aria-label": dgAria(node) + (muted ? ", filtered out" : ""),
         "aria-pressed": focused ? "true" : "false",
         onclick: function () { if (focused) dgClose(chapter, node.id); else dgGo(chapter.id, node.id); },
         onkeydown: function (event) {

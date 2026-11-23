@@ -584,14 +584,17 @@ footer p { margin: 0; }
 .dg-glyph-text { font: 700 14px ui-sans-serif, system-ui, sans-serif; fill: var(--ink-soft); }
 .dg-glyph-text.dg-refines { fill: #5b4a9e; }
 
-/* Focus mode: shapes and edges soften; node text is recoloured, not faded, so it keeps 4.5:1. */
+/* Focus mode and the You/Agents filter: shapes and edges soften; node text
+   is recoloured, never faded, so it keeps 4.5:1 (#3a352e on #e9e4d9 9.58:1). */
 g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
-.dg-node.dg-dim .dg-shape, .dg-node.dg-dim.dg-kind-decision.dg-role-locked .dg-shape { fill: #e9e4d9; stroke: #b9b0a0; }
-.dg-node.dg-dim .dg-title, .dg-node.dg-dim .dg-detail { fill: #3a352e; }
-.dg-node.dg-dim .dg-badge { fill: #4a453d; }
-.dg-node.dg-dim .dg-badge-text { fill: var(--paper); }
-.dg-node.dg-dim .dg-chip-text, .dg-node.dg-dim .dg-chip { color: #4a453d; }
-.dg-node.dg-muted { opacity: 0.35; }
+.dg-node.dg-dim .dg-shape, .dg-node.dg-dim.dg-kind-decision.dg-role-locked .dg-shape,
+.dg-node.dg-muted .dg-shape, .dg-node.dg-muted.dg-kind-decision.dg-role-locked .dg-shape { fill: #e9e4d9; stroke: #b9b0a0; }
+.dg-node.dg-dim .dg-title, .dg-node.dg-dim .dg-detail,
+.dg-node.dg-muted .dg-title, .dg-node.dg-muted .dg-detail { fill: #3a352e; }
+.dg-node.dg-dim .dg-badge, .dg-node.dg-muted .dg-badge { fill: #4a453d; }
+.dg-node.dg-dim .dg-badge-text, .dg-node.dg-muted .dg-badge-text { fill: var(--paper); }
+.dg-node.dg-dim .dg-chip-text, .dg-node.dg-dim .dg-chip,
+.dg-node.dg-muted .dg-chip-text, .dg-node.dg-muted .dg-chip { color: #4a453d; }
 
 .dg-panel {
   background: var(--paper-raised);

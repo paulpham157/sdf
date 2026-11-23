@@ -117,3 +117,32 @@ func TestDecisionsLiveRegionAndFocusKeep(t *testing.T) {
 		t.Errorf("no-match status: %s", out)
 	}
 }
+
+// The You/Agents filter recolours the other decider's nodes with the dim
+// palette, never opacity, and takes them out of the tab order.
+func TestDecisionFilterMutesWithoutOpacity(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	res := renderPage(t, srv, "#/decisions", "click=~You")
+	tag := func(id string) string {
+		return regexp.MustCompile(`<g [^>]*data-node="` + id + `"[^>]*>`).FindString(res.Markup)
+	}
+	for _, id := range []string{"merge-first", "silent"} {
+		if g := tag(id); !strings.Contains(g, "dg-muted") || !strings.Contains(g, `tabindex="-1"`) || !strings.Contains(g, "filtered out") {
+			t.Errorf("agent node %s under You: %q", id, g)
+		}
+	}
+	for _, id := range []string{"capture", "status-ui"} {
+		if g := tag(id); strings.Contains(g, "dg-muted") || !strings.Contains(g, `tabindex="0"`) {
+			t.Errorf("user node %s under You: %q", id, g)
+		}
+	}
+	css := readAsset(t, "app.css")
+	if regexp.MustCompile(`dg-muted[^{]*\{[^}]*opacity`).MatchString(css) {
+		t.Error("muted nodes still fade with opacity")
+	}
+	if !strings.Contains(css, ".dg-node.dg-muted .dg-title, .dg-node.dg-muted .dg-detail { fill: #3a352e; }") {
+		t.Error("muted node text is not recoloured with the dim palette")
+	}
+}
