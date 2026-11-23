@@ -136,6 +136,11 @@ func checkHost(host string) (string, error) {
 func ipv6PortHint(host string) string {
 	i := strings.LastIndex(host, ":")
 	prefix, port := host[:i], host[i+1:]
+	if strings.Contains(prefix, ".") && net.ParseIP(prefix) != nil && port != "" && !strings.Contains(port, ".") {
+		// ::ffff:127.0.0.1:4318: a dotted quad ends an IPv6 address, so
+		// this can only be host:port.
+		return "looks like host:port; " + portHint(prefix, port)
+	}
 	if len(port) < 2 || len(port) > 5 || !allDigits(port) || port[0] == '0' {
 		return ""
 	}
@@ -146,27 +151,89 @@ func ipv6PortHint(host string) string {
 		return ""
 	}
 	if isUnspecified(prefix) {
-		return fmt.Sprintf("looks like the unspecified address and a port, and an agent cannot send to %s; %s", prefix, unspecifiedPortHint(port))
+		return fmt.Sprintf("looks like the unspecified address and a port, and an agent cannot send to %s; pass %s", prefix, unspecifiedArgs(port))
 	}
-	return fmt.Sprintf("looks like an IPv6 address and a port; for the port pass --host '[%s]' --port %s, or write the address in brackets (--host '[%s]') if :%s is part of it", prefix, port, host, port)
+	if _, err := checkHost("[" + prefix + "]"); err != nil {
+		return "looks like host:port; " + portHint(prefix, port)
+	}
+	// Offer the other reading only when init would take it (::1:4318 in
+	// brackets is ::0.1.67.24, an IPv4-compatible address, refused).
+	alt := ""
+	if _, err := checkHost("[" + host + "]"); err == nil {
+		alt = fmt.Sprintf(", or write the address in brackets (--host '[%s]') if :%s is part of it", host, port)
+	}
+	return fmt.Sprintf("looks like an IPv6 address and a port; for the port pass --host '[%s]' --port %s%s", prefix, port, alt)
 }
 
+// portHint is the advice for --host HOST:PORT. The host it suggests is
+// checked with checkHost first, so it never names one init refuses: the
+// unspecified address gets 127.0.0.1, an IPv4 address written as IPv6 gets
+// the IPv4 address, and any other refused host gets no suggestion. The
+// port is echoed only when --port would accept it.
 func portHint(host, port string) string {
 	if isUnspecified(host) {
-		return "the host is the unspecified address, which an agent cannot send to; " + unspecifiedPortHint(port)
+		return "the host is the unspecified address, which an agent cannot send to; pass " + unspecifiedArgs(port)
 	}
-	if strings.Contains(host, ":") {
-		host = "'[" + host + "]'"
+	bare := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	candidate := bare
+	if strings.Contains(bare, ":") {
+		candidate = "[" + bare + "]"
 	}
-	if allDigits(port) {
-		return fmt.Sprintf("pass the host alone (--host %s) and the port with --port %s", host, port)
+	if norm, err := checkHost(candidate); err == nil {
+		if !strings.Contains(norm, ":") {
+			candidate = norm // localhost. is written as localhost
+		}
+	} else {
+		ip := net.ParseIP(bare)
+		v4 := net.IP(nil)
+		if ip != nil {
+			v4 = embeddedIPv4(ip)
+		}
+		if v4 == nil {
+			return fmt.Sprintf("the host part %q is refused too; pass a host name, IPv4 address, or IPv6 address with --host, %s", bare, portText(port))
+		}
+		candidate = v4.String()
 	}
-	return fmt.Sprintf("pass the host alone (--host %s) and the port as a number with --port", host)
+	if strings.Contains(candidate, ":") {
+		candidate = "'" + candidate + "'"
+	}
+	return "pass " + hostPortArgs(candidate, port)
+}
+
+// validPort is a port --port accepts: plain decimal 1-65535.
+func validPort(port string) bool {
+	if port == "" || len(port) > 5 || !allDigits(port) || port[0] == '0' {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// hostPortArgs is --host HOST --port PORT, one argv to paste, or the host
+// alone and what --port needs when PORT is not one --port accepts.
+func hostPortArgs(host, port string) string {
+	if validPort(port) {
+		return "--host " + host + " --port " + port
+	}
+	return "--host " + host + ", " + portText(port)
+}
+
+func portText(port string) string {
+	if validPort(port) {
+		return "and --port " + port
+	}
+	return "and the port as a number in 1-65535 with --port"
+}
+
+func unspecifiedArgs(port string) string {
+	if validPort(port) {
+		return "--host 127.0.0.1 --port " + port + " (or --host ::1, or this machine's address)"
+	}
+	return "--host 127.0.0.1 (or --host ::1, or this machine's address), " + portText(port)
 }
 
 // isUnspecified reports whether host (bracketed or not) is 0.0.0.0, ::, or
-// an IPv4-mapped or -compatible form of 0.0.0.0, so a hint never suggests
-// a host that checkHost refuses.
+// an IPv4-mapped or -compatible form of 0.0.0.0.
 func isUnspecified(host string) bool {
 	ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
 	if ip == nil {
@@ -179,15 +246,8 @@ func isUnspecified(host string) bool {
 	return v4 != nil && v4.IsUnspecified()
 }
 
-func unspecifiedPortHint(port string) string {
-	if allDigits(port) {
-		return fmt.Sprintf("pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port %s", port)
-	}
-	return "pass --host 127.0.0.1, ::1, or this machine's address, and the port as a number with --port"
-}
-
 func unspecifiedErr(host string) error {
-	return fmt.Errorf("--host %q is the unspecified address, which sdf serve can bind but an agent cannot send to; pass 127.0.0.1, ::1, or this machine's address", host)
+	return fmt.Errorf("--host %q is the unspecified address, which sdf serve can bind but an agent cannot send to; pass --host 127.0.0.1 (or --host ::1, or this machine's address)", host)
 }
 
 // embeddedIPv4 returns the IPv4 address inside an IPv4-mapped

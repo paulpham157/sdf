@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -187,10 +188,10 @@ func TestCheckHostNeverHintsTheUnspecifiedAddress(t *testing.T) {
 		"[::ffff:0.0.0.0]": "is the unspecified address",
 		"::ffff:0:0":       "is the unspecified address",
 		"::0.0.0.0":        "is the unspecified address",
-		"0.0.0.0:4318":     "pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port 4318",
-		"[::]:4318":        "pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port 4318",
-		"0.0.0.0:http":     "the port as a number with --port",
-		":::4318":          "pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port 4318",
+		"0.0.0.0:4318":     "pass --host 127.0.0.1 --port 4318 (or --host ::1, or this machine's address)",
+		"[::]:4318":        "pass --host 127.0.0.1 --port 4318 (or --host ::1, or this machine's address)",
+		"0.0.0.0:http":     "the port as a number in 1-65535 with --port",
+		":::4318":          "pass --host 127.0.0.1 --port 4318 (or --host ::1, or this machine's address)",
 	} {
 		_, err := checkHost(host)
 		if err == nil || !strings.Contains(err.Error(), msg) {
@@ -278,9 +279,10 @@ func TestHostPortHints(t *testing.T) {
 	for host, want := range map[string]string{
 		"::1:4318":       "pass --host '[::1]' --port 4318",
 		"fe80::1:4318":   "pass --host '[fe80::1]' --port 4318",
-		"127.0.0.1:":     "looks like host:port; pass the host alone (--host 127.0.0.1) and the port as a number with --port",
-		"127.0.0.1:http": "looks like host:port; pass the host alone (--host 127.0.0.1) and the port as a number with --port",
-		"[::1]:4318":     "pass the host alone (--host '[::1]') and the port with --port 4318",
+		"127.0.0.1:":     "looks like host:port; pass --host 127.0.0.1, and the port as a number in 1-65535 with --port",
+		"127.0.0.1:http": "looks like host:port; pass --host 127.0.0.1, and the port as a number in 1-65535 with --port",
+		"[::1]:4318":     "pass --host '[::1]' --port 4318",
+		"127.0.0.1:4318": "looks like host:port; pass --host 127.0.0.1 --port 4318",
 	} {
 		_, err := checkHost(host)
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -303,6 +305,56 @@ func TestUnspecifiedHostIsRefused(t *testing.T) {
 	for _, host := range []string{"::", "[::]", "0.0.0.0", "0:0:0:0:0:0:0:0"} {
 		if _, err := checkHost(host); err == nil || !strings.Contains(err.Error(), "unspecified address") {
 			t.Fatalf("%q: %v", host, err)
+		}
+	}
+}
+
+var (
+	hintHost = regexp.MustCompile(`--host ('[^']*'|[^\s,()"]+)`)
+	hintPort = regexp.MustCompile(`--port ([^\s,()]+)`)
+)
+
+// Review of #226: every --host and --port a hint suggests is one init
+// accepts (mapped IPv4, zones, the unspecified address, and invalid ports
+// were echoed back), and the host and port come as one argv to paste.
+func TestHintsOnlySuggestValuesInitAccepts(t *testing.T) {
+	for _, host := range []string{
+		"::ffff:0.0.0.0", "[::ffff:0.0.0.0]", "::ffff:0:0", "0.0.0.0:4318", "[::]:4318", ":::4318",
+		"0.0.0.0:0", "0.0.0.0:00", "0.0.0.0:65536", "0.0.0.0:http", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:04318",
+		"::ffff:0.0.0.0:4318", "::ffff:127.0.0.1:4318", "[::ffff:127.0.0.1]:4318", "[::ffff:0:0]:4318",
+		"[::%lo]:4318", "[fe80::1%eth0]:4318", "bad_host!:4318", "127.1:4318", "localhost.:4318",
+		"127.0.0.1:4318", "[::1]:4318", "::1:4318", "fe80::1:4318", "collector.lan:4318", "::127.0.0.1", "::ffff:127.0.0.1",
+	} {
+		_, err := checkHost(host)
+		if err == nil {
+			t.Fatalf("%q accepted", host)
+		}
+		msg := err.Error()
+		for _, m := range hintHost.FindAllStringSubmatch(msg, -1) {
+			h := strings.Trim(m[1], "'")
+			if _, err := checkHost(h); err != nil {
+				t.Errorf("%q: hint suggests --host %s, which is refused: %v\n%s", host, m[1], err, msg)
+			}
+		}
+		for _, m := range hintPort.FindAllStringSubmatch(msg, -1) {
+			if !validPort(m[1]) {
+				t.Errorf("%q: hint suggests --port %s\n%s", host, m[1], msg)
+			}
+		}
+	}
+	for host, want := range map[string]string{
+		"::ffff:0.0.0.0:4318":     "looks like host:port; the host is the unspecified address, which an agent cannot send to; pass --host 127.0.0.1 --port 4318 (or --host ::1, or this machine's address)",
+		"::ffff:127.0.0.1:4318":   "looks like host:port; pass --host 127.0.0.1 --port 4318",
+		"[::ffff:127.0.0.1]:4318": "looks like host:port; pass --host 127.0.0.1 --port 4318",
+		"[::%lo]:4318":            `the host part "::%lo" is refused too; pass a host name, IPv4 address, or IPv6 address with --host, and --port 4318`,
+		"::1:4318":                "looks like an IPv6 address and a port; for the port pass --host '[::1]' --port 4318",
+		"fe80::1:4318":            "for the port pass --host '[fe80::1]' --port 4318, or write the address in brackets (--host '[fe80::1:4318]') if :4318 is part of it",
+		"0.0.0.0:65536":           "pass --host 127.0.0.1 (or --host ::1, or this machine's address), and the port as a number in 1-65535 with --port",
+		"localhost.:4318":         "pass --host localhost --port 4318",
+		"::ffff:0.0.0.0":          "pass --host 127.0.0.1 (or --host ::1, or this machine's address)",
+	} {
+		if _, err := checkHost(host); err == nil || !strings.HasSuffix(err.Error(), want) {
+			t.Errorf("%q: want suffix %q, got %v", host, want, err)
 		}
 	}
 }

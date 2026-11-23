@@ -265,17 +265,25 @@ counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
 `example.com.`; `localhost.` is written as `localhost`), a dotted-decimal
 IPv4 address (short, hex, and octal forms such as `127.1`, `0x7f.0.0.1`, or
 `0177.0.0.1` are refused), or an IPv6 address (bare or in brackets). The
-unspecified address (`0.0.0.0`, `::`) is refused: `sdf serve` can bind it,
-but an agent cannot send to it. The ports must be plain decimal 1-65535
+unspecified address is refused in every spelling (`0.0.0.0`, `::`,
+`::ffff:0.0.0.0`, `::ffff:0:0`, `::0.0.0.0`): `sdf serve` can bind it, but an
+agent cannot send to it, so the error suggests `--host 127.0.0.1` (or `::1`,
+or this machine's address). The ports must be plain decimal 1-65535
 (`--port 0`, `08`, and `+4318` are refused); anything else is refused, with
 exit code 2, before `--check` probes anything or a file is written.
-`--host 127.0.0.1:4318` (or `127.0.0.1:`, `[::1]:4318`) is refused with a
-hint to pass the port with `--port`. A bare IPv6 address whose last group
-reads as a port (`::1:4318`, `fe80::1:4318`) is refused with both readings;
-write it in brackets (`[fe80::1:4318]`) to mean the address. An IPv4
-address written as IPv6 (`::ffff:127.0.0.1`, or the deprecated
-`::127.0.0.1`) is refused with a hint to pass the IPv4 address, or `::1`
-for IPv6 loopback. `--git-hooks` takes
+`--host 127.0.0.1:4318` (or `127.0.0.1:`, `[::1]:4318`,
+`::ffff:127.0.0.1:4318`) is refused with a hint you can paste, such as
+`pass --host 127.0.0.1 --port 4318`. The hint only names a host and port
+init accepts: an unspecified host becomes `127.0.0.1`, an IPv4 address
+written as IPv6 becomes the IPv4 address, a host that is refused on its own
+(`[::%lo]:4318`, `127.1:4318`) is said to be refused, and a port outside
+1-65535 (`0`, `00`, `65536`) is not echoed. A bare IPv6 address whose last
+group reads as a port (`fe80::1:4318`) is refused with both readings; write
+it in brackets (`[fe80::1:4318]`) to mean the address. When the bracketed
+reading is refused too (`[::1:4318]` is `::0.1.67.24`), only the port
+reading is offered. An IPv4 address written as IPv6 (`::ffff:127.0.0.1`, or
+the deprecated `::127.0.0.1`) is refused with a hint to pass the IPv4
+address, or `::1` for IPv6 loopback. `--git-hooks` takes
 `::1` with or without brackets. Those values end up in files other programs run
 (`opencode.env` is sourced by a shell, the Claude Code and Codex session
 hooks are shell commands), and the URL is single-quoted in both.
