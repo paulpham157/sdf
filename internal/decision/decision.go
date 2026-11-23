@@ -7,6 +7,7 @@
 package decision
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -518,15 +519,24 @@ func endpointText(e Endpoint) string { return e.Kind + ":" + e.Ref }
 
 // Load reads the graph back. An empty store returns empty lists, not nil.
 func Load(s *store.Store) (Graph, error) {
-	decisions, err := s.LoadDecisions()
+	return LoadContext(context.Background(), s)
+}
+
+// LoadContext is Load bound to ctx. A cancelled ctx stops the read and
+// returns ctx.Err(). An empty store returns empty lists, not nil.
+func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	decisions, err := s.LoadDecisionsContext(ctx)
 	if err != nil {
 		return Graph{}, err
 	}
-	edges, err := s.LoadDecisionEdges()
+	edges, err := s.LoadDecisionEdgesContext(ctx)
 	if err != nil {
 		return Graph{}, err
 	}
-	retractions, err := s.LoadDecisionRetractions()
+	retractions, err := s.LoadDecisionRetractionsContext(ctx)
 	if err != nil {
 		return Graph{}, err
 	}

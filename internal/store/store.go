@@ -451,9 +451,17 @@ func (s *Store) InsertDecision(d Decision) error {
 
 // LoadDecisions returns every decision in insertion order.
 func (s *Store) LoadDecisions() ([]Decision, error) {
+	return s.LoadDecisionsContext(context.Background())
+}
+
+// LoadDecisionsContext is LoadDecisions bound to ctx.
+func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason
 		FROM decisions
 		ORDER BY rowid
@@ -573,9 +581,17 @@ func loadDecisionIDs(ctx context.Context, q querier) (map[string]bool, error) {
 
 // LoadDecisionEdges returns every edge in insertion order.
 func (s *Store) LoadDecisionEdges() ([]DecisionEdge, error) {
+	return s.LoadDecisionEdgesContext(context.Background())
+}
+
+// LoadDecisionEdgesContext is LoadDecisionEdges bound to ctx.
+func (s *Store) LoadDecisionEdgesContext(ctx context.Context) ([]DecisionEdge, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return loadDecisionEdges(context.Background(), s.db)
+	return loadDecisionEdges(ctx, s.db)
 }
 
 type querier interface {

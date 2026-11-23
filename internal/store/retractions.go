@@ -54,9 +54,17 @@ func (s *Store) migrateRetractions() error {
 // LoadDecisionRetractions returns every retraction in insertion order. A
 // file without the table returns an empty list.
 func (s *Store) LoadDecisionRetractions() ([]DecisionRetraction, error) {
+	return s.LoadDecisionRetractionsContext(context.Background())
+}
+
+// LoadDecisionRetractionsContext is LoadDecisionRetractions bound to ctx.
+func (s *Store) LoadDecisionRetractionsContext(ctx context.Context) ([]DecisionRetraction, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return loadDecisionRetractions(context.Background(), s.db)
+	return loadDecisionRetractions(ctx, s.db)
 }
 
 // AppendDecisionRetraction appends r only if check, given every retraction

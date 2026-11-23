@@ -53,6 +53,21 @@ const (
 // views that supply the missing columns and tables as NULL or empty, which is
 // what Open's migration would give them, without writing the file.
 func OpenReadOnly(path string) (*Store, error) {
+	return openReadOnly(path, busyTimeoutMS)
+}
+
+// OpenReadOnlyBusy is OpenReadOnly with busyMS as the connection's
+// busy_timeout, in milliseconds. Zero waits not at all. A negative value is
+// the same timeout as OpenReadOnly. The file is still opened mode=ro and
+// query_only, and a missing file is still not created.
+func OpenReadOnlyBusy(path string, busyMS int) (*Store, error) {
+	if busyMS < 0 {
+		busyMS = busyTimeoutMS
+	}
+	return openReadOnly(path, busyMS)
+}
+
+func openReadOnly(path string, busyMS int) (*Store, error) {
 	if private(path) {
 		return openEmptyReadOnly(path)
 	}
@@ -73,7 +88,7 @@ func OpenReadOnly(path string) (*Store, error) {
 	if info.IsDir() {
 		return nil, fmt.Errorf("store: %q is a directory, not a database file", path)
 	}
-	db, err := openReadOnlyProbe(path, fmt.Sprintf("mode=ro&_pragma=busy_timeout(%d)", busyTimeoutMS))
+	db, err := openReadOnlyProbe(path, fmt.Sprintf("mode=ro&_pragma=busy_timeout(%d)", busyMS))
 	if err != nil {
 		code := sqliteCode(err)
 		walExists := exists(path + "-wal")
