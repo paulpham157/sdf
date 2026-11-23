@@ -13,16 +13,45 @@ import (
 	"github.com/paulpham157/sdf/internal/verify"
 )
 
-const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--repo DIR]
-                  [--data-dir DIR | --no-data-dir] [--ledger PATH] [--out PATH]
-                  [--artifacts DIR] [--work-dir DIR] [--path PATH] [--keep]
+const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--task-hash HASH]
+                  [--repo DIR] [--data-dir DIR | --no-data-dir] [--ledger PATH]
+                  [--out PATH]
+                  [--artifacts DIR] [--work-dir DIR] [--path PATH]
+                  [--go-cache DIR] [--go-mod-cache DIR] [--expect-prefix SEQ:HASH]
+                  [--allow-unisolated] [--allow-network NAME]...
+                  [--writable-checkout NAME]...
+                  [--allow-tamper-capable] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
 outside the repository. The task is read from --task-ref (the protected
-branch, for example origin/main) and the sdf data dir; every copy found has
-to agree. The working tree's .sdf/tasks file is not trusted. Checks run in
-the checkout root with --path (default: this PATH, relative entries
-dropped) as their only PATH.
+branch as just fetched, for example origin/main) and the sdf data dir;
+every copy found has to agree, and --task-hash pins the hash they must
+have. PASS needs --task-ref, --task-hash, or a ledger pinned with
+--expect-prefix SEQ:sha256:<entry hash>: a task found only in the data dir
+or an unpinned ledger, which the agent can write, gives at best ERROR
+(TASK_UNTRUSTED). A local branch as --task-ref draws a warning: pass a
+freshly fetched remote ref or a commit id.
+
+Each check runs as pid 1's child in new Linux user, pid, mount and network
+namespaces, with an empty /tmp, /run, /dev/shm and home, only loopback,
+and no capabilities; everything it started is killed when it exits. Where
+that is not possible the verdict is ERROR (ISOLATION_UNAVAILABLE) unless
+--allow-unisolated, which runs the checks anyway and records isolation
+"none". --allow-network NAME keeps the host network for criterion NAME.
+Every host directory is read-only inside a check, and each criterion
+starts from a fresh copy of the submitted tree; a go test or go vet
+criterion's checkout is read-only too (--writable-checkout NAME allows
+writes for NAME). Code files a check leaves in the checkout are FAIL
+(CHECK_ADDED_CODE).
+
+For a go test criterion, new or changed code that could forge the test
+harness's reports (unsafe, debug/*, cgo, assembly, raw syscalls, /proc
+paths) is ERROR (TAMPER_CAPABLE_CODE); --allow-tamper-capable, after a
+person has read it, makes that a warning. The
+working tree's .sdf/tasks file is never read. Checks run in the checkout
+root with --path (default: this PATH, relative entries dropped) as their
+only PATH, a new HOME, and new Go caches unless --go-cache/--go-mod-cache
+name ones the agent cannot write.
 
 --ledger PATH (or $SDF_LEDGER) also reads the task from that ledger and
 appends the evidence and then the verdict to it in one transaction; with
@@ -49,6 +78,34 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		case "--no-data-dir":
 			noDataDir = true
 			continue
+		case "--allow-unisolated":
+			opt.AllowUnisolated = true
+			continue
+		case "--allow-tamper-capable":
+			opt.AllowTamperCapable = true
+			continue
+		}
+		if v, ok, err := flagValue("--allow-network", &i, args); ok {
+			if err == nil && v == "" {
+				err = fmt.Errorf("--allow-network requires a criterion name")
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+				return 2
+			}
+			opt.AllowNetwork = append(opt.AllowNetwork, v)
+			continue
+		}
+		if v, ok, err := flagValue("--writable-checkout", &i, args); ok {
+			if err == nil && v == "" {
+				err = fmt.Errorf("--writable-checkout requires a criterion name")
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+				return 2
+			}
+			opt.WritableCheckout = append(opt.WritableCheckout, v)
+			continue
 		}
 		if v, ok, err := flagValue("--ledger", &i, args); ok {
 			if err == nil && v == "" {
@@ -68,7 +125,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		}{
 			{"--task", &opt.TaskID}, {"--task-ref", &opt.TaskRef}, {"--repo", &opt.RepoDir},
 			{"--data-dir", &dataDir}, {"--out", &out}, {"--artifacts", &opt.ArtifactsDir},
-			{"--work-dir", &opt.WorkDir}, {"--path", &opt.Path},
+			{"--work-dir", &opt.WorkDir}, {"--path", &opt.Path}, {"--task-hash", &opt.TaskHash},
+			{"--go-cache", &opt.GoCache}, {"--go-mod-cache", &opt.GoModCache},
+			{"--expect-prefix", &opt.ExpectPrefix},
 		} {
 			v, ok, err := flagValue(f.name, &i, args)
 			if !ok {
@@ -131,6 +190,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "%s: %v\n", prefix, werr)
 			return 3
 		}
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(stderr, "warning: %s\n", w)
 	}
 	fmt.Fprintf(stderr, "verdict %s %s\n", res.Status, res.Verdict.Hash)
 	for _, r := range res.Reasons {

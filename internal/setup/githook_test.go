@@ -211,6 +211,87 @@ func TestGitHookGrokSessionID(t *testing.T) {
 	}
 }
 
+// CLAUDE_CODE_SESSION_ID is what Claude Code (v2.1.132 and later) sets in
+// its Bash tool and hook subprocesses; it equals the hook session_id and the
+// session.id on Claude Code telemetry. QWEN_CODE_SESSION_ID is what Qwen Code
+// (v0.28.4) puts in its shell tool's environment; it is Config.getSessionId(),
+// the session.id on Qwen telemetry. Both ids are random UUIDs; the values
+// below are made up in that shape, not captures.
+func TestGitHookClaudeAndQwenSessionIDs(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	srv, got := recordingServer(t)
+	if _, err := InstallGitHooks(dir, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		claudeID = "4f6b1c2e-8d3a-4b7e-9f21-3c5d6e7a8b90"
+		qwenID   = "b2e7a0d4-5c19-4f8e-a3b6-71d0c9e45f2a"
+		grokID   = "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+		threadID = "019d2bae-7c39-7c73-b058-7b45e6aabef7"
+	)
+	claudeSHA := commitIn(t, dir, "claude subject", "CLAUDE_CODE_SESSION_ID="+claudeID)
+	qwenSHA := commitIn(t, dir, "qwen subject", "QWEN_CODE_SESSION_ID="+qwenID)
+	// A Qwen process started from Claude Code's Bash tool inherits
+	// CLAUDE_CODE_SESSION_ID, and a Claude Code started from a Grok shell
+	// inherits GROK_SESSION_ID: two ids, so the commit is not attributed.
+	conflicts := [][]string{
+		{"CLAUDE_CODE_SESSION_ID=" + claudeID, "QWEN_CODE_SESSION_ID=" + qwenID},
+		{"CLAUDE_CODE_SESSION_ID=" + claudeID, "GROK_SESSION_ID=" + grokID},
+		{"QWEN_CODE_SESSION_ID=" + qwenID, "CODEX_THREAD_ID=" + threadID},
+		{"CLAUDE_CODE_SESSION_ID=" + claudeID, "OPENCODE_SESSION_ID=ses_one"},
+	}
+	for i, env := range conflicts {
+		sha := commitIn(t, dir, "ambiguous subject", env...)
+		if msg := commitLog(t, dir, sha); strings.Contains(msg, "SDF-Session:") {
+			t.Fatalf("conflict %d gained a trailer: %s", i, msg)
+		}
+	}
+	commitIn(t, dir, "bad claude id", "CLAUDE_CODE_SESSION_ID=has space")
+	commitIn(t, dir, "bad qwen id", "QWEN_CODE_SESSION_ID=semi;colon")
+	bodies := got.all()
+	if len(bodies) != 2 {
+		t.Fatalf("want the claude and qwen commits only, got %d", len(bodies))
+	}
+	for i, want := range []struct{ id, agent, sha, subject string }{
+		{claudeID, "claude-code", claudeSHA, "claude subject"},
+		{qwenID, "qwen-code", qwenSHA, "qwen subject"},
+	} {
+		attrs := payloadAttrs(t, bodies[i])
+		if attrs["session.id"] != want.id || attrs["sdf.git.agent"] != want.agent || attrs["resource.service.name"] != want.agent || attrs["vcs.ref.head.revision"] != want.sha || attrs["event.name"] != "sdf.git.commit" {
+			t.Fatalf("%s %+v", want.agent, attrs)
+		}
+		if _, ok := attrs["conversation.id"]; ok {
+			t.Fatalf("%s payload set conversation.id", want.agent)
+		}
+		if strings.Contains(string(bodies[i]), "subject") {
+			t.Fatalf("payload contained the subject: %s", bodies[i])
+		}
+		if msg := commitLog(t, dir, want.sha); !strings.Contains(msg, "SDF-Session: "+want.id) || strings.Count(msg, "SDF-Session:") != 1 {
+			t.Fatalf("%s trailer %q", want.agent, msg)
+		}
+	}
+	for _, rev := range []string{"HEAD", "HEAD~1"} {
+		if bad := commitLog(t, dir, rev); strings.Contains(bad, "SDF-Session:") {
+			t.Fatalf("an invalid id gained a trailer: %s", bad)
+		}
+	}
+
+	old := strings.Repeat("ab", 20)
+	next := strings.Repeat("cd", 20)
+	cmd := exec.Command(filepath.Join(hooksPath(t, dir), "post-rewrite"), "amend")
+	cmd.Dir = dir
+	cmd.Env = gitEnv("QWEN_CODE_SESSION_ID=" + qwenID)
+	cmd.Stdin = strings.NewReader(old + " " + next + "\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("post-rewrite: %v %s", err, out)
+	}
+	rewritten := payloadAttrs(t, got.all()[2])
+	if rewritten["session.id"] != qwenID || rewritten["resource.service.name"] != "qwen-code" || rewritten["vcs.ref.head.revision"] != next || rewritten["sdf.git.rewritten_from"] != old {
+		t.Fatalf("%+v", rewritten)
+	}
+}
+
 func TestCodexHookServiceNameFollowsTheParent(t *testing.T) {
 	isolateGit(t)
 	dir := testRepo(t)
@@ -540,7 +621,7 @@ func isolateGit(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
-	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GROK_SESSION_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "AI_AGENT"} {
+	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GROK_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "QWEN_CODE_SESSION_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "AI_AGENT"} {
 		t.Setenv(key, "")
 	}
 }
@@ -548,7 +629,8 @@ func isolateGit(t *testing.T) {
 func gitEnv(extra ...string) []string {
 	drop := map[string]bool{
 		"PI_SESSION_FILE": true, "PI_SESSION_ID": true, "OPENCODE_SESSION_ID": true,
-		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "GROK_SESSION_ID": true, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE": true, "AI_AGENT": true,
+		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "GROK_SESSION_ID": true, "CLAUDE_CODE_SESSION_ID": true, "QWEN_CODE_SESSION_ID": true,
+		"CODEX_INTERNAL_ORIGINATOR_OVERRIDE": true, "AI_AGENT": true,
 	}
 	var out []string
 	for _, env := range os.Environ() {
