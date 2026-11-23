@@ -4,8 +4,9 @@ SDF collects traces of coding-agent work from OpenTelemetry the agents export,
 and summarizes a session from that telemetry.
 
 It does not launch, route, or sandbox agents. Codex CLI, Claude Code,
-OpenCode v2, Qwen Code, Grok CLI, and Gemini CLI export their own telemetry.
-Pi does not; its section uses the community `pi-otel` extension. SDF listens.
+OpenCode v2, Qwen Code, Grok CLI, Gemini CLI, and GitHub Copilot CLI
+export their own telemetry. Pi does not; its section uses the community
+`pi-otel` extension. SDF listens.
 
 The tools do not emit the same signals. A field the summary cannot find is
 reported as not present. SDF does not estimate tokens or duration. It does
