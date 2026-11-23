@@ -216,3 +216,49 @@ func TestUsageAndLedgerConflict(t *testing.T) {
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
 }
+
+func TestRevisionMismatchForATagObject(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	g(t, f.repo, "tag", "-a", "-m", "release", "v1", sha)
+	tagObj := g(t, f.repo, "rev-parse", "v1")
+	if tagObj == sha {
+		t.Fatal("tag is not an object of its own")
+	}
+	// A tag id is a full object id, and it peels to the commit, but it is
+	// not the commit: the verdict must not be bound to a different id.
+	res := mustRun(t, f.opts(tagObj))
+	if res.Status != StatusFail || !hasCode(res, CodeRevisionMismatch) || strings.Contains(kinds(res), "criterion:") {
+		t.Fatalf("%s %+v %s", res.Status, res.Reasons, kinds(res))
+	}
+}
+
+func TestBaseMismatchWhenTheTaskTreeIsWrong(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	forged := f.spec
+	forged.BaseTree = strings.Repeat("0", 40)
+	data := t.TempDir()
+	if _, err := task.Declare(context.Background(), forged, task.Store{DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	o := f.opts(sha)
+	o.TaskRef, o.DataDir, o.Ledger = "", data, nil
+	res := mustRun(t, o)
+	if res.Status != StatusFail || !hasCode(res, CodeBaseMismatch) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestCheckoutDirtyWhenSomethingWritesTheCheckout(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	afterCheckout = func(dir string) {
+		_ = os.WriteFile(filepath.Join(dir, "planted.txt"), []byte("x"), 0o644)
+	}
+	defer func() { afterCheckout = nil }()
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusFail || !hasCode(res, CodeCheckoutDirty) || strings.Contains(kinds(res), "criterion:") {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}

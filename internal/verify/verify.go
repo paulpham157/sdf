@@ -377,11 +377,18 @@ func (r *run) prepareCheckout() bool {
 	if _, err := git(r.ctx, r.checkout, "-c", "advice.detachedHead=false", "checkout", "-q", "--detach", r.opt.SHA); err != nil {
 		return fail(CodeRevisionUnresolvable, "checkout %s: %v", r.opt.SHA, err)
 	}
+	if afterCheckout != nil {
+		afterCheckout(r.checkout)
+	}
 	sum := sha256.Sum256([]byte(r.checkout))
 	ev["path_sha256"] = hex.EncodeToString(sum[:])
 	r.addEvidence("checkout", "", withStatus(ev, "pass"))
 	return true
 }
+
+// afterCheckout, when set by a test, runs right after the checkout: it
+// stands in for another process writing the directory.
+var afterCheckout func(dir string)
 
 // inside reports whether p is dir or below it, after resolving symlinks.
 func inside(dir, p string) bool {
