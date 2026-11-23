@@ -42,6 +42,7 @@ var notInRegistry = map[string]string{
 	"UsageLabelCacheReadInputTokensUnderscore":     "underscore spelling of cache_read.input_tokens sent by some OpenCode builds; never in semconv",
 	"UsageLabelCacheWriteInputTokensUnderscore":    "underscore spelling of cache_write.input_tokens; never in semconv",
 	"UsageLabelReasoningTokens":                    "pre-v0.1.0 spelling of reasoning.output_tokens",
+	"UsageLabelReasoningOutputTokensUnderscore":    "underscore spelling of reasoning.output_tokens sent by Copilot CLI before 1.0.64; never in semconv",
 	"ModalityVideo":                                "not a gen_ai.token.modality member in v0.1.0; accepted ahead of the spec",
 }
 
@@ -276,7 +277,7 @@ func TestPin(t *testing.T) {
 //	Attr*        attribute key
 //	UsageLabel*  gen_ai.usage.<label> attribute key
 //	UsagePrefix  prefix of at least one attribute key
-//	Metric*      metric name
+//	Metric*      metric name (Metric*Prefix: prefix of at least one metric)
 //	Operation*   member of gen_ai.operation.name (also SDF's span-name head)
 //	Modality*    member of gen_ai.token.modality
 func TestConstantsExistInRegistry(t *testing.T) {
@@ -297,6 +298,10 @@ func TestConstantsExistInRegistry(t *testing.T) {
 		case name == "UsagePrefix":
 			for key := range r.attributes {
 				found = found || strings.HasPrefix(key, value)
+			}
+		case strings.HasPrefix(name, "Metric") && strings.HasSuffix(name, "Prefix"):
+			for metric := range r.metrics {
+				found = found || strings.HasPrefix(metric, value)
 			}
 		case strings.HasPrefix(name, "UsageLabel"):
 			found = r.attributes[UsagePrefix+value]
@@ -347,6 +352,9 @@ func TestWellKnownValues(t *testing.T) {
 		OperationChat:                     "chat",
 		OperationInvokeAgent:              "invoke_agent",
 		OperationExecuteTool:              "execute_tool",
+		OperationInvokeWorkflow:           "invoke_workflow",
+		AttrAgentID:                       "gen_ai.agent.id",
+		MetricInferenceUsagePrefix:        "gen_ai.client.inference.usage.",
 	} {
 		if got != want {
 			t.Errorf("got %q want %q", got, want)

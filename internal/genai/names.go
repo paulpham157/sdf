@@ -2,6 +2,7 @@ package genai
 
 // Attribute keys defined by semantic-conventions-genai v0.1.0.
 const (
+	AttrAgentID        = "gen_ai.agent.id"
 	AttrConversationID = "gen_ai.conversation.id"
 	AttrOperationName  = "gen_ai.operation.name"
 	AttrRequestModel   = "gen_ai.request.model"
@@ -35,10 +36,16 @@ const (
 // gen_ai.operation.name values. SDF also matches them as the first word of a
 // span name ("chat <model>", "invoke_agent <name>", "execute_tool <tool>").
 const (
-	OperationChat        = "chat"
-	OperationInvokeAgent = "invoke_agent"
-	OperationExecuteTool = "execute_tool"
+	OperationChat           = "chat"
+	OperationInvokeAgent    = "invoke_agent"
+	OperationInvokeWorkflow = "invoke_workflow"
+	OperationExecuteTool    = "execute_tool"
 )
+
+// MetricInferenceUsagePrefix starts the v0.1.0 per-token-type usage counters,
+// gen_ai.client.inference.usage.<label> (for example
+// gen_ai.client.inference.usage.input_tokens).
+const MetricInferenceUsagePrefix = "gen_ai.client.inference.usage."
 
 // gen_ai.token.modality values defined by v0.1.0. They also prefix the
 // per-modality usage labels, such as text.input_tokens.

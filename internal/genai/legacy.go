@@ -29,6 +29,9 @@ const (
 	UsageLabelCacheCreationInputTokensUnderscore = "cache_creation_input_tokens"
 	UsageLabelCacheReadInputTokensUnderscore     = "cache_read_input_tokens"
 	UsageLabelCacheWriteInputTokensUnderscore    = "cache_write_input_tokens"
+	// UsageLabelReasoningOutputTokensUnderscore is the underscore spelling
+	// Copilot CLI builds before 1.0.64 sent.
+	UsageLabelReasoningOutputTokensUnderscore = "reasoning_output_tokens"
 	// UsageLabelReasoningTokens is the pre-v0.1.0 spelling of
 	// UsageLabelReasoningOutputTokens.
 	UsageLabelReasoningTokens = "reasoning_tokens"
