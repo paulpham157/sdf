@@ -11,7 +11,14 @@ prompt, request, or response text. The `qwen-code.tool_call` logs do carry
 made-up tool arguments and error text (a shell command, a `write_file` body),
 because Qwen Code sends those whatever `logPrompts` says. Every such value
 contains `SDF-FIXTURE-SECRET`, and the store and e2e tests check that none of
-it reaches the database.
+it reaches the database. `qwen_sensitive_*.json` is one more session as sent
+when a workspace or system settings file turns `includeSensitiveSpanAttributes`
+and `logPrompts` back on: `gen_ai.tool.call.arguments` and `.result` on
+`qwen-code.tool`, `gen_ai.input.messages`, `gen_ai.output.messages`, and
+`gen_ai.system_instructions` on `qwen-code.llm_request` and a
+`gen_ai.client.inference.operation.details` log, and a failing
+`qwen-code.hook` span, every value marked `SDF-FIXTURE-SECRET`. It is
+written by hand from the GenAI semantic conventions, not captured.
 
 Every resource carries `sdf.fixture=sample`. The shapes follow the attribute
 names documented for each tool (see the repository README) so ingest and

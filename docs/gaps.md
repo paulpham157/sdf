@@ -100,14 +100,23 @@
   arguments of every tool call (`function_args`: shell commands, the content
   of `write_file` and `edit`) and the tool's error text on
   `qwen-code.tool_call` whatever `logPrompts` says, and Gemini CLI sends
-  `function_args` when its `logPrompts` is on. sdf drops `function_args`
-  from every record of every agent (not only Qwen and Gemini; a key of that
-  name from any agent is never stored), and `error` / `error.message` from Qwen and Gemini
-  tool-call records and Qwen tool spans (whose status message becomes
-  "tool error"), before anything is stored. It keeps the tool name, call
-  id, duration, success, and error type, the dropped sizes
-  (`function_args_bytes`, `error_bytes`), and the dropped keys in
-  `sdf.redacted`.
+  `function_args` when its `logPrompts` is on. A Qwen workspace
+  (`<cwd>/.qwen/settings.json`) or system settings file can also turn
+  `includeSensitiveSpanAttributes` or `logPrompts` back on over what
+  `sdf init qwen` wrote, which puts tool call arguments and results and the
+  model's input, output, and system messages on `qwen-code.tool` and
+  `qwen-code.llm_request` spans. sdf drops `function_args`,
+  `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`,
+  `gen_ai.input.messages`, `gen_ai.output.messages`, and
+  `gen_ai.system_instructions` from every log, span, and metric of every
+  agent, whatever its settings (a key of those names from any agent is
+  never stored), and `error` / `error.message` from Qwen and Gemini
+  tool-call records, Qwen tool spans (whose status message becomes
+  "tool error"), and Qwen `qwen-code.hook` spans (whose status message
+  becomes "hook error"), before anything is stored. It keeps the tool name,
+  call id, duration, success, and error type, the dropped sizes
+  (`function_args_bytes`, `gen_ai.input.messages_bytes`, ...,
+  `error_bytes`; strings only), and the dropped keys in `sdf.redacted`.
 - Qwen Code reports no cost, and `internal/pricing` has no rule for its
   token sources, so both cost fields are unknown. Its token totals include
   subagents and the background memory extractor. Its metrics carry no
@@ -115,15 +124,21 @@
   HTTP when only a traces endpoint is set) are not modelled. Tokens come from
   per-response logs, which a resumed session (`qwen --resume`) does not
   reset. The `qwen-code.token.usage` fallback is a per-process cumulative
-  counter: its points are placed by their own time, each process run is
-  added up (the same rule as
-  [#191](https://github.com/paulpham157/sdf/pull/191), done in the Qwen code
-  so it does not wait for #191), and when the process started more than
-  10 s before the session (an earlier session in that process, after
-  `/clear`) the run's first point in the session is subtracted. Tokens used
-  before that first export are lost, and a `/clear` within 10 s of launch
-  is missed. With `telemetry.metrics.includeSessionId` the points are the
-  session's own and nothing is subtracted. The mapping and
+  counter: its points are placed by their own time, each process run
+  (attributes, resource, start time) is added up (the same rule as
+  [#191](https://github.com/paulpham157/sdf/pull/191)), and a point after
+  the last session window, such as the flush at exit, goes to the session
+  whose part in that run started latest (its first log or span no more than
+  10 s before the run's start time, so a session resumed in a new process
+  counts from when it resumed). From each run the session's share subtracts the run's latest point
+  before the session's first one, wherever that point was attributed (an
+  earlier session in that process, after `/clear`). With no such point the
+  share is the whole run when no other Qwen session started in the run, and
+  the tokens are unknown otherwise (not 0). Placement is by time, so a
+  concurrent Qwen process's session that overlaps a point in time can take
+  it, and a session of another process that started inside the run can
+  make the fallback unknown. With `telemetry.metrics.includeSessionId` the
+  points are the session's own and nothing is subtracted. The mapping and
   the `qwen_*.json` samples come from the v0.28.4 docs and source, not a
   live session.
 - The git hook sends the commit SHA, checkout path, and branch to the local

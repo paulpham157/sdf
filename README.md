@@ -4,8 +4,9 @@ SDF collects traces of coding-agent work from OpenTelemetry the agents export,
 and summarizes a session from that telemetry.
 
 It does not launch, route, or sandbox agents. Codex CLI, Claude Code,
-OpenCode v2, Qwen Code, Grok CLI, and Gemini CLI export their own telemetry.
-Pi does not; its section uses the community `pi-otel` extension. SDF listens.
+OpenCode v2, Qwen Code, Grok CLI, Gemini CLI, and GitHub Copilot CLI
+export their own telemetry. Pi does not; its section uses the community
+`pi-otel` extension. SDF listens.
 
 The tools do not emit the same signals. A field the summary cannot find is
 reported as not present. SDF does not estimate tokens or duration. It does
@@ -141,10 +142,13 @@ refuses a `Host` other than `localhost`, `127.0.0.1`, or `[::1]`. The UI
 refuses that same foreign `Host` on every route. A token does not bypass
 those checks. Details are in [docs/receiver.md](docs/receiver.md).
 Before anything is stored, the receiver drops tool arguments
-(`function_args`) from every record, whatever agent sent them, and the tool
-error text from Qwen Code and Gemini CLI tool calls. It keeps the tool name,
-call id, duration, success, and error type, the dropped sizes
-(`function_args_bytes`, `error_bytes`), and the dropped keys in
+(`function_args`) and the GenAI content attributes (`gen_ai.tool.call.arguments`,
+`gen_ai.tool.call.result`, `gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.system_instructions`) from every log, span, and metric, whatever agent
+sent them and whatever its settings say, and the tool and hook error text
+from Qwen Code and Gemini CLI tool calls and Qwen Code hook spans. It keeps
+the tool name, call id, duration, success, and error type, the dropped sizes
+(`function_args_bytes`, `error_bytes`, ...), and the dropped keys in
 `sdf.redacted`; see [docs/gaps.md](docs/gaps.md).
 `GET http://127.0.0.1:4318/health` (the OTLP/HTTP port, not the UI port)
 stays open and returns `{"status":"ok"}`. `sdf init --check` probes it for you.
@@ -194,6 +198,7 @@ that writes or deletes. The page loads nothing from the network.
 | [docs/receiver.md](docs/receiver.md) | The receiver, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
+| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record user and agent choices with `sdf decision` |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
 | [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |

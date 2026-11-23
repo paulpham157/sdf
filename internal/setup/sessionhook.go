@@ -7,11 +7,6 @@ import (
 	"strings"
 )
 
-// sessionHookCommand reads the JSON an agent passes a command hook on stdin and
-// posts one session edge to the collector. It exits 0 even when the collector
-// is down, so a stopped sdf never blocks the agent. CLAUDE_HOOK_EDGE and
-// CLAUDE_HOOK_TOOL are the only thing that differs between the two events, and
-// Codex reuses the same command with CODEX_HOOK_EDGE.
 // fieldExpr pulls the string value of one JSON key. The payload is one flat
 // object, so a single match is enough and a missing key yields an empty string.
 func fieldExpr(name string) string {
@@ -105,6 +100,11 @@ func jsHeaders(u string) string {
 	return jsPlainHeaders
 }
 
+// sessionHookCommand reads the JSON an agent passes a command hook on stdin and
+// posts one session edge to the collector. It exits 0 even when the collector
+// is down, so a stopped sdf never blocks the agent. The two events differ only
+// in the edge ("open" or "close") in the posted payload, and Codex reuses the
+// command with its thread guard inserted (codexHookCommands).
 func sessionHookCommand(tool, edge, url string) string {
 	body := fmt.Sprintf(`{"tool":%q,"session_id":"%%s","edge":%q,"reason":"%%s"}`, tool, edge)
 	return fmt.Sprintf(`export PATH="$PATH:/usr/bin:/bin"; json=$(cat); `+

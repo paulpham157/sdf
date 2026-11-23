@@ -1,0 +1,252 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "qwen-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.28.4"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "qwen-code"
+          },
+          "spans": [
+            {
+              "traceId": "9e120000000000000000000000000001",
+              "spanId": "9e12000000000001",
+              "name": "qwen-code.interaction",
+              "kind": 1,
+              "startTimeUnixNano": "1800001000000000000",
+              "endTimeUnixNano": "1800001009000000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-sensitive"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "9e120000000000000000000000000001",
+              "spanId": "9e12000000000002",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800001000100000000",
+              "endTimeUnixNano": "1800001002000000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-sensitive"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "1200"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "80"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"SDF-FIXTURE-SECRET prompt: deploy with key sk-fixture\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.system_instructions",
+                  "value": {
+                    "stringValue": "[{\"type\": \"text\", \"content\": \"SDF-FIXTURE-SECRET QWEN.md contents\"}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "role",
+                                "value": {
+                                  "stringValue": "assistant"
+                                }
+                              },
+                              {
+                                "key": "content",
+                                "value": {
+                                  "stringValue": "SDF-FIXTURE-SECRET response text"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e12000000000001"
+            },
+            {
+              "traceId": "9e120000000000000000000000000001",
+              "spanId": "9e12000000000003",
+              "name": "qwen-code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1800001002100000000",
+              "endTimeUnixNano": "1800001004000000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-sensitive"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call-sensitive-1"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call-sensitive-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.arguments",
+                  "value": {
+                    "stringValue": "{\"command\": \"cat ~/.ssh/id_rsa # SDF-FIXTURE-SECRET\"}"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.result",
+                  "value": {
+                    "stringValue": "SDF-FIXTURE-SECRET tool output: -----BEGIN KEY-----"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e12000000000001"
+            },
+            {
+              "traceId": "9e120000000000000000000000000001",
+              "spanId": "9e12000000000004",
+              "name": "qwen-code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1800001002050000000",
+              "endTimeUnixNano": "1800001002090000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-sensitive"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "40"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "error",
+                  "value": {
+                    "stringValue": "hook stderr: SDF-FIXTURE-SECRET token=abc"
+                  }
+                }
+              ],
+              "status": {
+                "code": 2,
+                "message": "hook stderr: SDF-FIXTURE-SECRET token=abc"
+              },
+              "parentSpanId": "9e12000000000001"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

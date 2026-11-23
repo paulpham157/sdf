@@ -55,6 +55,26 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
+### WAL mode and backups
+
+The database is opened in SQLite WAL mode with a 5-second busy timeout, so
+`sdf summary` and other readers can run while the receiver writes. A
+read-only rollback-journal database keeps its journal mode and stays
+readable. A WAL database needs its `-shm` file or a writable directory to
+be read; in a read-only directory without one, open fails. In WAL mode
+SQLite keeps two
+sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
+`sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
+until a checkpoint, so do not copy or delete the main file alone. Back up
+with SQLite's online backup instead:
+
+```bash
+sqlite3 sdf-telemetry.sqlite ".backup sdf-telemetry.backup.sqlite"
+```
+
+WAL needs shared memory between processes on one host, so keep the
+database on a local disk, not a network filesystem (NFS, SMB).
+
 ## Optional token authentication
 
 `--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or
@@ -219,7 +239,11 @@ file unless you pass `--write`. An existing file is copied to a sibling
 ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
 the new copy gets a timestamped name). The new bytes are written to a temp
 file and renamed into place, keeping the file mode. A read-only file is
-refused and left alone. Without `--write`, the JSON agents print only the
+refused and left alone. A symlink is written through; a link to a file
+that does not exist yet creates it, but sdf creates missing directories for
+it only inside the agent's config directory or `$HOME` (a link to
+`/elsewhere/missing/config.toml` is refused). A symlink loop is refused
+with a message saying so. Without `--write`, the JSON agents print only the
 keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
@@ -254,21 +278,29 @@ hooks are shell commands), and the URL is single-quoted in both.
 the `telemetry` object of `$QWEN_HOME/settings.json` or
 `~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
 so sdf turns it off even when the file says `true`, and warns. It does the
-same for `includeSensitiveSpanAttributes`. Key order, indentation, a UTF-8
+same for `includeSensitiveSpanAttributes`. A workspace or system file can
+still turn them back on (see below), so the receiver drops the GenAI
+message and tool content and hook error text before storing anything,
+whatever the settings ([docs/gaps.md](gaps.md)). Key order, indentation, a UTF-8
 BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP
 server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
-or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+or that is not a JSON object is left untouched, and so is an existing empty
+file (Qwen Code cannot load one either; put `{}` in it), and the `QWEN_TELEMETRY_*`
 variables are printed instead; with `--write` that is an error (non-zero
 exit). `telemetry.outfile`
 and per-signal `otlp*Endpoint` keys are kept and reported, because they
-override the endpoint. The write refuses a file the user cannot write. It
+override the endpoint. The write runs the same precheck as the other
+agents: it refuses a file with no write bit (0400, 0444, 0000, even as
+root), a file the user cannot write, an unwritable directory, and, as root,
+a symlink that resolves outside the settings directory and `$HOME` (for
+anyone else that link is written through with a warning). It
 goes through a temp file in the same directory (fsync, rename), keeps the
 mode and, where the process may, the owner. The rename gives the file a new
 inode, so a hard link keeps the old content and extended attributes or ACLs
 are not copied. A symlink is followed with `readlink`. It must end at a
-`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+`.json` file, compared exactly (a link to `~/.bashrc` or `Settings.JSON` is refused). A link to a file that does
 not exist yet (stow-style) creates it: inside the settings directory,
 missing parent directories are created with mode 0700; outside it, only
 when the target's directory already exists, so sdf never creates
@@ -297,17 +329,35 @@ records.
 lines, the receiver-token header, and the same settings as a `[telemetry]`
 table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
-`otel_endpoint` (the HTTP receiver). `--write` appends that table to
+`otel_endpoint` (the HTTP receiver), plus the four content gates pinned
+off: `otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` all `= false` (an
+`OTEL_LOG_*` environment variable still wins). Pinning
+`otel_log_tool_details` off is stricter than the guide's "Recommended fleet
+gates", which turns that metadata gate on for SIEM joins; sdf does not need
+it for Grok. `--write` appends that table to
 `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
 no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
-directory. An existing `[telemetry]` table is left unchanged; add the
-printed keys to it by hand. A project `.grok/config.toml` cannot set
+directory. Both files are checked before either is written, as for the
+other agents, so a read-only `config.toml` or an unwritable `hooks/`
+directory leaves both unchanged, with no `.sdf-bak`. An existing
+`[telemetry]` table is left unchanged; add the printed keys to it by hand.
+The file is parsed as TOML, so a `[ telemetry ]` header with spaces, an
+inline `telemetry = {...}`, dotted `telemetry.x = ...` keys, and a quoted
+`"telemetry"` key all count as an existing table (appending a second one
+would make Grok fail to parse the file). A `config.toml` that is not valid
+TOML is refused and left unchanged. A project `.grok/config.toml` cannot set
 `otel_*`. Grok reads the environment over the file, so an
 `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also redirects Grok.
-`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, and
-`OTEL_LOG_TOOL_CONTENT` set in the shell that runs `sdf init` are reported,
-because they put content on the stream; Grok's own defaults for all three
-are off. Grok has no config-file key for headers; a receiver token goes in
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`,
+`OTEL_LOG_TOOL_DETAILS`, and `OTEL_LOG_TOOL_CONTENT` set in the shell that
+runs `sdf init` are reported when Grok would read them as on (`1`, `true`,
+`yes`, or `on`, any case, as Grok's `env_bool` parses them; `0`, `false`,
+`no`, `off`, and unknown values leave the file's `false` in effect), because
+each one overrides the pinned key. Three put content on the stream;
+`OTEL_LOG_TOOL_DETAILS` is a metadata gate (a 4 KB `tool_parameters`
+preview, full file paths, verbatim MCP/skill/plugin names, no bodies).
+Grok's own defaults for all four are off. Grok has no config-file key for headers; a receiver token goes in
 `OTEL_EXPORTER_OTLP_HEADERS` (see
 [docs/agents.md](agents.md#optional-receiver-token)). The keys and paths are
 from grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
@@ -324,7 +374,11 @@ stays open. An agent with no hook keeps the inferred window. For Claude Code
 (`~/.claude/settings.json`) and Codex (`hooks.json`), sdf adds its hook to the
 `SessionStart` and `SessionEnd` arrays and keeps every other entry, matcher,
 and event; an sdf hook already there, including one an older sdf wrote with
-another host or port, is updated in place, so a rerun changes nothing. The hook exits
+another host or port, is updated in place, so a rerun changes nothing. Only
+the exact command text an sdf build has written counts as sdf's hook; a user's
+own hook that also posts to `/v1/sessions` is never rewritten. An event whose
+value is not an array, `null` included, is refused and the file is left as it
+was. The hook exits
 without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode

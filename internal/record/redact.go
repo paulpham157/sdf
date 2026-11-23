@@ -19,9 +19,19 @@ import (
 // type, records the size of what it dropped (function_args_bytes,
 // error_bytes), and lists the dropped keys in sdf.redacted.
 //
-// function_args is dropped from every record, whatever the agent. The error
-// text is dropped only from the tool-call records named in toolErrorRecords,
-// so other agents' API error messages stay readable.
+// Qwen Code also copies messages and tool data into its spans when
+// telemetry.includeSensitiveSpanAttributes is on, and a workspace
+// (<cwd>/.qwen/settings.json) or system settings file can turn that, or
+// logPrompts, back on over what sdf init writes: gen_ai.tool.call.arguments
+// and gen_ai.tool.call.result on qwen-code.tool, and gen_ai.input.messages,
+// gen_ai.output.messages, and gen_ai.system_instructions on
+// qwen-code.llm_request. These are the OpenTelemetry GenAI content
+// attributes, so they are dropped too.
+//
+// The keys in RedactedKeys are dropped from every record (log, span, or
+// metric) of every agent, whatever its settings. The error text is dropped
+// only from the tool-call and hook records named in toolErrorRecords, so
+// other agents' API error messages stay readable.
 //
 // Records are copied before they are changed; the caller's maps are not
 // modified.
@@ -43,15 +53,24 @@ func Redact(records []Record) []Record {
 }
 
 // RedactedKeys are attribute keys dropped from every record.
-var RedactedKeys = []string{"function_args"}
+var RedactedKeys = []string{
+	"function_args",
+	"gen_ai.tool.call.arguments",
+	"gen_ai.tool.call.result",
+	"gen_ai.input.messages",
+	"gen_ai.output.messages",
+	"gen_ai.system_instructions",
+}
 
-// toolErrorRecords are the tool-call logs and spans whose error text is
-// dropped.
-var toolErrorRecords = map[string]bool{
-	"qwen-code.tool_call":      true,
-	"qwen-code.tool":           true,
-	"qwen-code.tool.execution": true,
-	"gemini_cli.tool_call":     true,
+// toolErrorRecords are the tool-call and hook logs and spans whose error
+// text is dropped, with the status message each one's text is replaced by.
+// A qwen-code.hook span's error and status carry the hook command's output.
+var toolErrorRecords = map[string]string{
+	"qwen-code.tool_call":      toolErrorStatus,
+	"qwen-code.tool":           toolErrorStatus,
+	"qwen-code.tool.execution": toolErrorStatus,
+	"qwen-code.hook":           hookErrorStatus,
+	"gemini_cli.tool_call":     toolErrorStatus,
 }
 
 var toolErrorKeys = []string{"error", "error.message", "error_message"}
@@ -59,6 +78,9 @@ var toolErrorKeys = []string{"error", "error.message", "error_message"}
 // toolErrorStatus replaces a tool span's status message; it is the text Qwen
 // Code itself uses when a failed tool has no message.
 const toolErrorStatus = "tool error"
+
+// hookErrorStatus replaces a qwen-code.hook span's status message.
+const hookErrorStatus = "hook error"
 
 func redactOne(rec Record) (Record, bool) {
 	var dropped []string
@@ -87,13 +109,13 @@ func redactOne(rec Record) (Record, bool) {
 	for _, key := range RedactedKeys {
 		take(key, key+"_bytes")
 	}
-	toolRecord := toolErrorRecords[name(rec)]
+	status, toolRecord := toolErrorRecords[name(rec)]
 	if toolRecord {
 		for _, key := range toolErrorKeys {
 			take(key, "error_bytes")
 		}
 	}
-	statusRedacted := toolRecord && rec.StatusMessage != nil && *rec.StatusMessage != "" && *rec.StatusMessage != toolErrorStatus
+	statusRedacted := toolRecord && rec.StatusMessage != nil && *rec.StatusMessage != "" && *rec.StatusMessage != status
 	if len(dropped) == 0 && !statusRedacted {
 		return rec, false
 	}
@@ -105,7 +127,7 @@ func redactOne(rec Record) (Record, bool) {
 	}
 	if statusRedacted {
 		dropped = append(dropped, "status.message")
-		msg := toolErrorStatus
+		msg := status
 		rec.StatusMessage = &msg
 	}
 	sort.Strings(dropped)

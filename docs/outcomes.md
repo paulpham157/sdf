@@ -92,19 +92,25 @@ from telemetry, and recording one changes nothing about collection or
 summarization.
 
 Each record has an id, one statement, and a status of `hypothesis` or
-`decision`. A hypothesis is an assumption, not a settled fact. An edge connects
-two endpoints and uses one of `constrains`, `implements`, `supersedes`,
-`validates`, or `contradicts`. An endpoint is a decision id, a session id, or a
-full 40-character commit SHA. A session or commit endpoint is stored only when
-the store already has telemetry for it; the edge is not a copy of that
-telemetry. A commit SHA is matched without regard to case, so a SHA the agent
-exported in uppercase still matches the lowercase ref the edge stores.
+`decision`. A hypothesis is an assumption, not a settled fact. Optional fields
+name who decided (`user` or `agent`), the alternatives that were on the table,
+a reason, and a source pointer. Time is `recorded_at`. A session is not stored
+on the record; link it with an edge when the store already has that session.
+An edge connects two endpoints and uses one of
+`constrains`, `implements`, `supersedes`, `validates`, or `contradicts`. An
+endpoint is a decision id, a session id, or a full 40-character commit SHA. A
+session or commit endpoint is stored only when the store already has telemetry
+for it; the edge is not a copy of that telemetry. A commit SHA is matched
+without regard to case, so a SHA the agent exported in uppercase still matches
+the lowercase ref the edge stores.
 
 `GET /api/decisions` returns the records and edges in insertion order. An empty
 store returns empty lists. `sdf decision add` writes one record. It needs an id,
-a statement, and a status of `hypothesis` or `decision`. `sdf decision link`
+a statement, and a status of `hypothesis` or `decision`. `--decided-by`,
+`--alternatives`, `--reason`, and `--source` are optional. `sdf decision link`
 writes one edge. It needs a relation and two `KIND:REF` endpoints, where
-`KIND` is `decision`, `session`, or `commit`. No route writes a record.
+`KIND` is `decision`, `session`, or `commit`. No route writes a record. An
+agent skill that uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
 
 ### Superseded at read time
 
@@ -142,7 +148,8 @@ that cannot be opened, such as one in a missing directory, exits 1.
 
 ```bash
 sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
-  --status decision [--source TEXT] [--db PATH]
+  --status decision [--decided-by user|agent] [--alternatives TEXT] \
+  [--reason TEXT] [--source TEXT] [--db PATH]
 sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
 sdf decision link --relation supersedes --from decision:use-wal \

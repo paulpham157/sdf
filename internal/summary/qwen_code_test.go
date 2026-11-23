@@ -273,11 +273,10 @@ func TestQwenMetricTokensDoNotCarryIntoTheNextSessionOfOneProcess(t *testing.T) 
 	if a := qwenTokensFor(t, rows, "A"); a.Vals["input"] != 300 {
 		t.Fatalf("A input %v, want 300 (the process started with A)", a.Vals["input"])
 	}
-	// B starts 59 s after the process: its share is 700 - 450. The 150
-	// tokens between 300 and B's first export (450) are not recoverable
-	// from these points and are lost.
-	if b := qwenTokensFor(t, rows, "B"); b.Vals["input"] != 250 {
-		t.Fatalf("B input %v, want 250, not 700", b.Vals["input"])
+	// B starts 59 s after the process: its baseline is the run's latest
+	// point before B's first one (300, A's last export), so 700 - 300.
+	if b := qwenTokensFor(t, rows, "B"); b.Vals["input"] != 400 {
+		t.Fatalf("B input %v, want 400, not 700 or 250", b.Vals["input"])
 	}
 }
 
@@ -303,5 +302,141 @@ func TestQwenMetricTokensWithSessionIDAndResume(t *testing.T) {
 	}
 	if r := qwenTokensFor(t, rows, "R"); r.Vals["input"] != 1500 {
 		t.Fatalf("resumed input %v, want 1500", r.Vals["input"])
+	}
+}
+
+func qwenSessionFor(t *testing.T, rows []record.Record, session string) (SessionSummary, int) {
+	t.Helper()
+	r := Summarize(rows, false)
+	left := 0
+	for _, u := range r.Unattributed {
+		left += u.Metrics
+	}
+	for _, s := range r.Sessions {
+		if s.SessionID == session {
+			return s, left
+		}
+	}
+	t.Fatalf("no session %s", session)
+	return SessionSummary{}, 0
+}
+
+func TestQwenMetricTokensKeepTheExitFlushAfterTheLastLog(t *testing.T) {
+	// The process exports 100 during the session and flushes 300 at exit,
+	// 20 s after the last log. The flush is the session's.
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 10*sec),
+		qwenTokenPoint("", "input", 100, 1*sec, 5*sec, 1, nil),
+		qwenTokenPoint("", "input", 300, 1*sec, 30*sec, 2, nil),
+	}
+	if a := qwenTokensFor(t, rows, "A"); a.Vals["input"] != 300 {
+		t.Fatalf("A input %v, want 300 (exit flush kept)", a.Vals["input"])
+	}
+	if _, left := qwenSessionFor(t, rows, "A"); left != 0 {
+		t.Fatalf("%d metric points unattributed, want 0", left)
+	}
+}
+
+func TestQwenMetricTokensExitFlushAfterClearGoesToTheLatestSession(t *testing.T) {
+	// After /clear, the exit flush goes to the latest session of the run.
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 10*sec),
+		qwenSessionLog("B", "qwen-code.user_prompt", 60*sec),
+		qwenSessionLog("B", "qwen-code.conversation_finished", 90*sec),
+		qwenTokenPoint("", "input", 300, 1*sec, 10*sec, 1, nil),
+		qwenTokenPoint("", "input", 450, 1*sec, 65*sec, 2, nil),
+		qwenTokenPoint("", "input", 800, 1*sec, 120*sec, 3, nil),
+	}
+	if a := qwenTokensFor(t, rows, "A"); a.Vals["input"] != 300 {
+		t.Fatalf("A input %v, want 300", a.Vals["input"])
+	}
+	if b := qwenTokensFor(t, rows, "B"); b.Vals["input"] != 500 {
+		t.Fatalf("B input %v, want 500 (800 - 300)", b.Vals["input"])
+	}
+}
+
+func TestQwenMetricTokensLateFlushStaysInItsOwnRun(t *testing.T) {
+	// A late point of a run that started after the only session is not
+	// that session's (another process).
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 10*sec),
+		qwenTokenPoint("", "input", 100, 1*sec, 5*sec, 1, nil),
+		qwenTokenPoint("", "input", 900, 50*sec, 70*sec, 2, nil),
+	}
+	if a := qwenTokensFor(t, rows, "A"); a.Vals["input"] != 100 {
+		t.Fatalf("A input %v, want 100 (the other run's point is not A's)", a.Vals["input"])
+	}
+	if _, left := qwenSessionFor(t, rows, "A"); left != 1 {
+		t.Fatalf("%d metric points unattributed, want 1", left)
+	}
+}
+
+func TestQwenMetricTokensSinglePointUsesTheRunsEarlierPoint(t *testing.T) {
+	// B has one export point; the run's earlier point (A's) is its baseline.
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 10*sec),
+		qwenSessionLog("B", "qwen-code.user_prompt", 60*sec),
+		qwenSessionLog("B", "qwen-code.conversation_finished", 90*sec),
+		qwenTokenPoint("", "input", 300, 1*sec, 10*sec, 1, nil),
+		qwenTokenPoint("", "input", 700, 1*sec, 85*sec, 2, nil),
+	}
+	if b := qwenTokensFor(t, rows, "B"); b.Vals["input"] != 400 {
+		t.Fatalf("B input %v, want 400, not a certain 0", b.Vals["input"])
+	}
+}
+
+func TestQwenMetricTokensUnknownWithoutABaseline(t *testing.T) {
+	// An earlier session in the run and no earlier point: B's share cannot
+	// be split from A's, so tokens are unknown, not 0 and not 700.
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 10*sec),
+		qwenSessionLog("B", "qwen-code.user_prompt", 60*sec),
+		qwenSessionLog("B", "qwen-code.conversation_finished", 90*sec),
+		qwenTokenPoint("", "input", 700, 1*sec, 85*sec, 1, nil),
+	}
+	b, _ := qwenSessionFor(t, rows, "B")
+	if b.TokensSource != nil || len(b.Tokens.Vals) != 0 {
+		t.Fatalf("B tokens %v from %q, want unknown", b.Tokens.Vals, deref(b.TokensSource))
+	}
+}
+
+func TestQwenMetricTokensSlowStartupOfTheOnlySession(t *testing.T) {
+	// The process started 15 s before the only session's first log: nothing
+	// to subtract.
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 16*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 60*sec),
+		qwenTokenPoint("", "input", 100, 1*sec, 20*sec, 1, nil),
+		qwenTokenPoint("", "input", 300, 1*sec, 60*sec, 2, nil),
+	}
+	if a := qwenTokensFor(t, rows, "A"); a.Vals["input"] != 300 {
+		t.Fatalf("A input %v, want 300 (slow startup, one session)", a.Vals["input"])
+	}
+}
+
+func TestQwenMetricTokensResumedSessionKeepsTheNewProcessExitFlush(t *testing.T) {
+	// qwen --resume R in a second process (start 50 s). That process's exit
+	// flush (200 at 80 s) comes after R's last log; it belongs to R even
+	// though R first started in the earlier process. 300 + 200.
+	rows := []record.Record{
+		qwenSessionLog("R", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("R", "qwen-code.conversation_finished", 10*sec),
+		qwenSessionLog("R", "qwen-code.user_prompt", 52*sec),
+		qwenSessionLog("R", "qwen-code.conversation_finished", 60*sec),
+		qwenTokenPoint("", "input", 100, 1*sec, 5*sec, 1, nil),
+		qwenTokenPoint("", "input", 300, 1*sec, 10*sec, 2, nil),
+		qwenTokenPoint("", "input", 50, 50*sec, 55*sec, 3, nil),
+		qwenTokenPoint("", "input", 200, 50*sec, 80*sec, 4, nil),
+	}
+	if r := qwenTokensFor(t, rows, "R"); r.Vals["input"] != 500 {
+		t.Fatalf("resumed input %v, want 500 (the second process's exit flush kept)", r.Vals["input"])
+	}
+	if _, left := qwenSessionFor(t, rows, "R"); left != 0 {
+		t.Fatalf("%d metric points unattributed, want 0", left)
 	}
 }

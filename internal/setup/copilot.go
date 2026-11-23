@@ -201,7 +201,7 @@ func copilot(req Request) (Result, error) {
 	path := copilotEnvPath(req.Home)
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return Result{}, err
+		return Result{}, readErr(path, err)
 	}
 	merged, warnings := mergeCopilotEnv(string(existing), req.Endpoint)
 	warnings = append(warnings, copilotEnvWarnings(req.Endpoint)...)

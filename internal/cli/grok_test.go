@@ -10,7 +10,7 @@ import (
 func TestInitGrokPrintsAndWrites(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	for _, key := range []string{"GROK_HOME", "GROK_EXTERNAL_OTEL", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_CONTENT"} {
+	for _, key := range []string{"GROK_HOME", "GROK_EXTERNAL_OTEL", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT"} {
 		t.Setenv(key, "")
 	}
 	config := filepath.Join(home, ".grok", "config.toml")

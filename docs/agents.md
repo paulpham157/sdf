@@ -105,7 +105,8 @@ Codex does not use the standard `OTEL_EXPORTER_OTLP_*` environment variables
 for its own export. Put an `[otel]` table in the user config
 (`$CODEX_HOME/config.toml`, `~/.codex/config.toml` by default). A project-local
 `.codex/config.toml` cannot set `otel`; Codex ignores it there. `sdf init codex
---write` also writes `hooks.json` with a `SessionStart` and `SessionEnd` hook.
+--write` also merges a `SessionStart` and `SessionEnd` hook into `hooks.json`,
+even when `config.toml` already has an `[otel]` table (which it leaves as is).
 The hook posts only when the session id equals the thread id, so a descendant
 thread reports nothing.
 
@@ -349,10 +350,22 @@ config-file key for headers.
 `sdf init grok` prints those lines and the matching `[telemetry]` table
 (`otel_enabled`, `otel_metrics_exporter`, `otel_logs_exporter`,
 `otel_protocol`, `otel_endpoint`, the names in the guide's "Config file"
-section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`).
+section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`), with
+`otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` pinned to `false`.
+Unset, `otel_log_assistant_responses` follows `otel_log_user_prompts`, so
+all four are written; an `OTEL_LOG_*` variable in the environment still
+wins over the file, and `sdf init grok` warns about each one Grok would read
+as on (`1`/`true`/`yes`/`on`). `otel_log_tool_details` is a metadata gate,
+not a body gate (a 4 KB `tool_parameters` preview, full file paths, verbatim
+MCP/skill/plugin names); pinning it off is stricter than the guide's
+"Recommended fleet gates", which turns it on for SIEM joins. sdf does not
+need it for Grok: the session hook supplies the working directory.
 `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
 (default `~/.grok/config.toml`) when the file has no `[telemetry]` table;
-an existing `[telemetry]` table is left unchanged. A project
+an existing `[telemetry]` table, in any TOML form (`[ telemetry ]`,
+inline `telemetry = {...}`, dotted `telemetry.x` keys), is left unchanged,
+and a `config.toml` that is not valid TOML is refused. A project
 `.grok/config.toml` cannot set `otel_*`. Environment variables win over the
 file. It also installs `hooks/sdf-session.json` beside it, a session hook
 that posts the session's open and close to `POST /v1/sessions`. Grok sets
@@ -461,7 +474,13 @@ files Qwen read and its memory extractor's reads of `~/.qwen/memories/`),
 and response text go into the logs. `sdf init qwen` sets it to `false`,
 also when the file already says `true`. `includeSensitiveSpanAttributes`
 (default false) copies messages and tool data into spans; `sdf init qwen`
-sets it back to false when it finds it on.
+sets it back to false when it finds it on. A workspace or system settings
+file can still turn either back on, so sdf also drops the span and log
+content before storing it, whatever the settings: `gen_ai.tool.call.arguments`
+and `gen_ai.tool.call.result` (`qwen-code.tool`), `gen_ai.input.messages`,
+`gen_ai.output.messages`, and `gen_ai.system_instructions`
+(`qwen-code.llm_request`), and the error text and status message of
+`qwen-code.hook` spans (the status becomes "hook error").
 
 No setting turns off tool arguments: every `qwen-code.tool_call` log carries
 the full JSON arguments of the call in `function_args` (the shell command,
@@ -486,9 +505,11 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
   `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
   spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
   `thought`, `cache`). That counter belongs to the process, not the session:
-  sdf places its points by their own time, adds up process runs, and
-  subtracts what an earlier session in the same process had counted (see
-  [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
+  sdf places its points by their own time (a flush after the last log goes
+  to the latest session of that process run), adds up process runs, and
+  subtracts the run's last point before the session, which is what an
+  earlier session in the same process had counted; when that cannot be
+  told apart the tokens are unknown (see [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
   providers (the default) output includes thoughts, which Qwen estimates
   from text when the provider does not report them; with Gemini-native
   responses it does not. The totals include subagents and the background
@@ -511,8 +532,9 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
 - A published run of an earlier Qwen Code release (spencerclark.dev,
   2026-10-10; it predates v0.28.4 and was not repeated here) had every
   `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
-  detail" even with no hooks configured. The summary shows them as they
-  arrive.
+  detail" even with no hooks configured. The summary shows them marked
+  ERROR; sdf stores the status message as "hook error", because a hook's
+  error text can carry the hook command's output.
 
 ## OpenRouter
 

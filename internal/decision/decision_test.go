@@ -281,6 +281,92 @@ func TestRejectedFields(t *testing.T) {
 	}); err == nil {
 		t.Fatal("short sha accepted")
 	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, DecidedBy: "owner",
+	}); err == nil {
+		t.Fatal("decided-by accepted")
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, Alternatives: "one\ntwo",
+	}); err == nil {
+		t.Fatal("multiline alternatives accepted")
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, Reason: "because\nof this",
+	}); err == nil {
+		t.Fatal("multiline reason accepted")
+	}
+}
+
+func TestOptionalFieldsRoundTripAndOmitEmpty(t *testing.T) {
+	db := openDB(t)
+	got, err := decision.Add(db, decision.RecordInput{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       decision.StatusDecision,
+		DecidedBy:    decision.DecidedByUser,
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := decision.Add(db, decision.RecordInput{
+		ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Decisions) != 2 {
+		t.Fatalf("%d decisions", len(loaded.Decisions))
+	}
+	if !reflect.DeepEqual(loaded.Decisions[0], got) || !reflect.DeepEqual(loaded.Decisions[1], plain) {
+		t.Fatalf("decisions %+v", loaded.Decisions)
+	}
+	if got.DecidedBy != "user" || got.Alternatives != "push the branch now" || got.Reason != "The user said don't push." {
+		t.Fatalf("%+v", got)
+	}
+	if plain.DecidedBy != "" || plain.Alternatives != "" || plain.Reason != "" {
+		t.Fatalf("empty fields set: %+v", plain)
+	}
+	var buf bytes.Buffer
+	if err := decision.WriteJSON(&buf, loaded); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Decisions []map[string]any `json:"decisions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Decisions[0]["decided_by"] != "user" || doc.Decisions[0]["alternatives"] != "push the branch now" || doc.Decisions[0]["reason"] != "The user said don't push." {
+		t.Fatalf("optional fields %#v", doc.Decisions[0])
+	}
+	for _, key := range []string{"decided_by", "alternatives", "reason", "source"} {
+		if _, ok := doc.Decisions[1][key]; ok {
+			t.Fatalf("empty %s was written: %#v", key, doc.Decisions[1])
+		}
+	}
+}
+
+func TestAgentDecisionIsDistinctFromUser(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Decisions[0].DecidedBy != decision.DecidedByAgent {
+		t.Fatalf("%q", loaded.Decisions[0].DecidedBy)
+	}
 }
 
 func openDB(t *testing.T) *store.Store {

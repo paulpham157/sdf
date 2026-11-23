@@ -483,12 +483,15 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	statement := ""
 	status := ""
 	source := ""
+	decidedBy := ""
+	alternatives := ""
+	reason := ""
 	idSet, statementSet, statusSet := false, false, false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -535,13 +538,40 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 			source = v
 		case strings.HasPrefix(arg, "--source="):
 			source = strings.TrimPrefix(arg, "--source=")
+		case arg == "--decided-by":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --decided-by requires a value")
+				return 2
+			}
+			decidedBy = v
+		case strings.HasPrefix(arg, "--decided-by="):
+			decidedBy = strings.TrimPrefix(arg, "--decided-by=")
+		case arg == "--alternatives":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --alternatives requires a value")
+				return 2
+			}
+			alternatives = v
+		case strings.HasPrefix(arg, "--alternatives="):
+			alternatives = strings.TrimPrefix(arg, "--alternatives=")
+		case arg == "--reason":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --reason requires a value")
+				return 2
+			}
+			reason = v
+		case strings.HasPrefix(arg, "--reason="):
+			reason = strings.TrimPrefix(arg, "--reason=")
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
 	if !idSet || !statementSet || !statusSet {
-		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
 		return 2
 	}
 	db, err := store.Open(dbPath)
@@ -551,10 +581,13 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 	if _, err := decision.Add(db, decision.RecordInput{
-		ID:        id,
-		Statement: statement,
-		Status:    status,
-		Source:    source,
+		ID:           id,
+		Statement:    statement,
+		Status:       status,
+		Source:       source,
+		DecidedBy:    decidedBy,
+		Alternatives: alternatives,
+		Reason:       reason,
 	}); err != nil {
 		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
 		return 1
