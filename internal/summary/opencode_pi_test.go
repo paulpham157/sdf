@@ -132,7 +132,7 @@ func TestOpencodeSessionUsesSpanTokensWithoutSummingThePrefix(t *testing.T) {
 	for _, item := range session.Missing {
 		reasons[item.Signal] = item.Reason
 	}
-	if !strings.Contains(reasons["logs"], "session.id") || !strings.Contains(reasons["logs"], "per-session") || reasons["metrics"] != "OpenCode v2 does not export OTLP metrics." || reasons["traces"] != "" {
+	if !strings.Contains(reasons["logs"], "session.id") || !strings.Contains(reasons["logs"], "sessionID") || !strings.Contains(reasons["logs"], "attributed") || reasons["metrics"] != "OpenCode v2 does not export OTLP metrics." || reasons["traces"] != "" {
 		t.Fatal(reasons)
 	}
 	if len(report.Unattributed) != 1 || report.Unattributed[0].Tool != "opencode" || report.Unattributed[0].Traces != 1 || report.Unattributed[0].Logs != 1 {

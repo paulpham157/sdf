@@ -15,7 +15,11 @@ and prints no report. The comparison itself is in [docs/outcomes.md](outcomes.md
 
 One block per real session (`session.id`, `conversation.id`,
 `pi.session.id`, or `gen_ai.conversation.id`), then an `unattributed` block
-for records that could not be joined. Each block has:
+for records that could not be joined. CamelCase `sessionID` is accepted as
+an alias of `session.id` on record, instrumentation-scope, and resource
+attributes. If both keys are present and equal, `session.id` is kept. If
+they conflict, `session.id` wins and the alias is ignored; the two ids are
+not merged. Each block has:
 
 - signal counts (`traces`, `logs`, `metrics`)
 - duration, tokens, and cost, each labeled with the signal it came from
