@@ -416,6 +416,74 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
 
+## GitHub Copilot CLI
+
+> Mapping below is from the
+> [Copilot CLI OpenTelemetry reference](https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference),
+> `copilot help monitoring` in `@github/copilot` 1.0.114, and the
+> [copilot-cli changelog](https://github.com/github/copilot-cli/blob/main/changelog.md),
+> checked 2026-11-23. It was not checked against a live session: a live run
+> needs a Copilot subscription. `tests/samples/copilot_*.json` are built
+> from those documents.
+
+Copilot CLI exports **traces and metrics, no logs**. Export turns on when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set (or `COPILOT_OTEL_ENABLED=true`, or a
+file exporter path). It speaks OTLP/HTTP only: `OTEL_EXPORTER_OTLP_PROTOCOL`
+is `http/json` (default) or `http/protobuf` (1.0.61 and later). `grpc` is not
+supported and falls back with a warning, so use port 4318.
+
+```bash
+npm install -g @github/copilot
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT
+copilot
+```
+
+`sdf init copilot --write` merges these lines into
+`~/.config/sdf/copilot.env` for you to source (details and precedence in
+[docs/receiver.md](receiver.md#one-step-setup)). Copilot CLI has no
+settings-file key for the endpoint; the process environment wins, and
+per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` override the generic endpoint.
+Organization or device managed settings can also configure export.
+The docs say a plain `http://` endpoint disables export; changelog 1.0.107
+narrows that to the case where an `OTEL_EXPORTER_OTLP_*CERTIFICATE` or
+`*CLIENT_KEY` variable is also set. `sdf init copilot` warns when one is.
+Content capture (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`) defaults to
+`NO_CONTENT`; the user id is the pseudonymous `enduser.pseudo.id`.
+
+`service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
+summary also recognizes `gen_ai.agent.id` = `github.copilot.*`). Each user
+message is one `invoke_agent` span carrying `gen_ai.conversation.id`, with a
+`chat {model}` CLIENT span per model request and an `execute_tool {tool}`
+span per tool call. Subagents (`explore`, `task`) are nested `invoke_agent`
+spans in the same trace. Tool and subagent spans are attributed through the
+trace id.
+
+- Duration is the sum of top-level `invoke_agent` spans. Nested subagent
+  spans are inside them and are not added.
+- Tokens are the sum of `gen_ai.usage.input_tokens`, `output_tokens`,
+  `cache_read.input_tokens`, `cache_write.input_tokens`, and
+  `reasoning.output_tokens` on `chat` spans (compaction requests included).
+  Input includes cache read and write; output includes reasoning. Without
+  chat usage the top-level `invoke_agent` totals are used, then the
+  `gen_ai.client.inference.usage.*` counters. 1.0.64 named the cache write
+  count `cache_creation.input_tokens`; it is read as `cache_write`.
+- Tool calls come from `execute_tool` spans. There is no success flag:
+  `error.type` or an ERROR status is a failure, anything else a success.
+- Cost: Copilot reports no USD. `github.copilot.cost` is a billing
+  multiplier, not money. `github.copilot.nano_aiu` (AI units / 1e9) is read
+  from top-level `invoke_agent` spans only and shown on the `agent cost`
+  missing line. Computed cost is unknown: `internal/pricing` has no rule for
+  Copilot token sources, and the user's Copilot plan, not per-token rates,
+  is what they pay.
+- `github.copilot.session.shutdown` (`total_premium_requests`, lines
+  added/removed), `gen_ai.client.operation.exception`, hook and compaction
+  events are span events. sdf does not store span events yet.
+- Metrics carry no session id. A point is attached to a session only when it
+  falls inside exactly one Copilot session window.
+
 ## Grok CLI
 
 > Mapping below was first sketched from the public xAI guide

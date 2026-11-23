@@ -96,6 +96,7 @@ sdf init claude-code
 sdf init claude-code --write
 sdf init codex --write
 sdf init opencode --write
+sdf init copilot --write
 sdf init pi --write
 sdf init pi --write --global
 sdf init pi --install
@@ -118,6 +119,36 @@ agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode
 has no close event, so only the open is posted. Pi reads the session id from
 the session manager rather than from the file name pi-otel exports.
+
+GitHub Copilot CLI is configured by environment only (see
+[docs/agents.md](agents.md#github-copilot-cli)); it reads no settings-file
+key for the endpoint. `sdf init copilot` (alias `copilot-cli`) prints the
+merged `~/.config/sdf/copilot.env` it would write:
+`OTEL_EXPORTER_OTLP_ENDPOINT` (the HTTP receiver),
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT`. Source that file
+in the shell that starts `copilot`; Copilot does not load it. `--write`
+merges in place: line order and unrelated lines are kept, the endpoint and
+protocol lines are replaced (with a warning when the old value differed),
+and a capture-content line you already set is kept with a warning that
+content capture is on. The write goes to a temp file in the same directory,
+is fsynced, keeps the file mode, and is renamed into place. A symlinked
+file is written through to its target. The old file is copied to
+`.sdf-bak`; a different existing `.sdf-bak` is never overwritten
+(`.sdf-bak.1`, `.sdf-bak.2`, ... are used), and a backup made by a failed
+write is removed.
+
+What wins: the environment of the `copilot` process. Per-signal variables
+(`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+and the `_PROTOCOL` pair) override the generic ones, and
+`COPILOT_OTEL_EXPORTER_TYPE=file` or `COPILOT_OTEL_FILE_EXPORTER_PATH` sends
+export to a file instead. Any OTLP certificate or client key variable makes
+Copilot drop an `http://` endpoint. Organization or device managed settings
+can also configure export; sdf cannot read them. `sdf init copilot` and
+`sdf init --check copilot` warn about each of these that is set in the
+current environment or the snippet, and `--check` reports whether the
+process environment and the snippet point at this receiver. There is no
+session hook for Copilot CLI, so its window is inferred from the records.
 
 The settings are the ones in [docs/agents.md](agents.md). Claude Code's variables are
 from the [monitoring doc](https://code.claude.com/docs/en/monitoring-usage)

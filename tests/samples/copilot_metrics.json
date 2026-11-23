@@ -1,0 +1,371 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "github-copilot"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.0.114"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "github.copilot",
+            "version": "1.0.114"
+          },
+          "metrics": [
+            {
+              "name": "gen_ai.client.inference.usage.input_tokens",
+              "description": "Input tokens, cached included",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "63600",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "github"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.inference.usage.output_tokens",
+              "description": "Output tokens, reasoning included",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "990",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "github"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.inference.usage.cache_read.input_tokens",
+              "description": "Cache read input tokens",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "41300",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "github"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.inference.usage.cache_write.input_tokens",
+              "description": "Cache write input tokens",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "11800",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "github"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "gen_ai.client.inference.usage.reasoning.output_tokens",
+              "description": "Reasoning output tokens",
+              "unit": "{token}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "96",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.operation.name",
+                        "value": {
+                          "stringValue": "chat"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.provider.name",
+                        "value": {
+                          "stringValue": "github"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.request.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      },
+                      {
+                        "key": "gen_ai.response.model",
+                        "value": {
+                          "stringValue": "claude-sonnet-4.5"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "github.copilot.tool.call.count",
+              "description": "Tool call count",
+              "unit": "{call}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "view"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "task"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "grep"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "edit"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "gen_ai.tool.name",
+                        "value": {
+                          "stringValue": "bash"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": false
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "github.copilot.agent.turn.count",
+              "description": "Agent turns",
+              "unit": "{turn}",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000098500000000",
+                    "timeUnixNano": "1800000153800000000",
+                    "asInt": "5",
+                    "attributes": []
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
