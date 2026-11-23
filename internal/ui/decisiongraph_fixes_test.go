@@ -362,3 +362,33 @@ func TestGhostAlternativesKeyboard(t *testing.T) {
 		t.Errorf("Esc from a ghost: hash %q focus %q", back.Hash, back.Active)
 	}
 }
+
+// A long title is cut to the room the semibold title font has (about
+// 7.1px a character), not the detail font's 6.1px, so it stays inside the
+// node; the full text stays in the node's <title>.
+func TestLongNodeTitleFitsItsNode(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	long := "push-when-green-and-the-reviewer-has-approved-every-check"
+	res := graphPage(t, srv, func(doc map[string]any) {
+		for _, c := range doc["chapters"].([]any) {
+			for _, n := range c.(map[string]any)["nodes"].([]any) {
+				if node := n.(map[string]any); node["id"] == "capture" {
+					node["title"] = long
+				}
+			}
+		}
+	}, "#/decisions", "")
+	m := regexp.MustCompile(`<text [^>]*class="dg-title">(push-when[^<]*)</text>`).FindStringSubmatch(res.Markup)
+	if m == nil {
+		t.Fatalf("no long title drawn:\n%s", res.Markup)
+	}
+	// The spine cap is 236px: 236 - 34 (badge) - 10 (pad) = 192px of room.
+	if n := len([]rune(m[1])); n > 192/7 || !strings.HasSuffix(m[1], "…") {
+		t.Errorf("title %q (%d chars) overflows 192px at 7.1px a character", m[1], n)
+	}
+	if !strings.Contains(res.Markup, "<title>"+long+": ") {
+		t.Error("the full title is not in the node's <title>")
+	}
+}

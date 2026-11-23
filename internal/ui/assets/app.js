@@ -1044,8 +1044,12 @@
     return Math.round(Math.min(Math.max(w, 140), DG.laneCap[node.lane] || 220));
   }
 
-  function dgFit(text, width) {
-    const room = Math.max(4, Math.floor(width / 6.1));
+  // Approximate advance widths: 11px detail text runs about 6.1px a
+  // character, the 12.5px semibold title about 7.1px (dgSize uses the same).
+  const DG_CHAR = { detail: 6.1, title: 7.1 };
+
+  function dgFit(text, width, charW) {
+    const room = Math.max(4, Math.floor(width / (charW || DG_CHAR.detail)));
     if (!text || text.length <= room) return text || "";
     return text.slice(0, room - 1).replace(/\s+$/, "") + "…";
   }
@@ -1193,7 +1197,7 @@
       anchor = "middle";
     }
     const room = anchor === "start" ? w - (tx - l) - 10 - (node.role === "locked" ? 26 : 0) : w - 20;
-    kids.push(s("text", { x: tx, y: p.y - 3, "text-anchor": anchor, class: "dg-title" }, [dgFit(node.title, room * 1.15)]));
+    kids.push(s("text", { x: tx, y: p.y - 3, "text-anchor": anchor, class: "dg-title" }, [dgFit(node.title, room, DG_CHAR.title)]));
     const detail = node.kind === "start" ? dgWhen(node.detail) : node.detail;
     kids.push(s("text", { x: tx, y: p.y + 13, "text-anchor": anchor, class: "dg-detail" }, [dgFit(detail, room)]));
     const chips = [];
@@ -1340,7 +1344,7 @@
           s("path", { d: "M" + sx + "," + (fp.y + DG.nodeH / 2) + " C" + sx + "," + gy + " " + sx + "," + gy + " " + ex + "," + gy, class: "dg-edge dg-ghost", "marker-end": "url(#dg-arrow)" }),
           s("rect", { x: gx - gw / 2, y: gy - 19, width: gw, height: 38, rx: 9, class: "dg-shape" }),
           s("text", { x: gx - gw / 2 + 12, y: gy - 3, class: "dg-detail" }, ["not taken · what if"]),
-          s("text", { x: gx - gw / 2 + 12, y: gy + 12, class: "dg-title" }, [dgFit(alt.title, gw - 20)]),
+          s("text", { x: gx - gw / 2 + 12, y: gy + 12, class: "dg-title" }, [dgFit(alt.title, gw - 24, DG_CHAR.title)]),
         ]));
       });
     }
