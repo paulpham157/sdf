@@ -8,6 +8,10 @@ This file covers the first public release of the current product: a vendor-neutr
 
 This will be the first tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` (after the tag exists) or with the prebuilt archives on GitHub Releases once published.
 
+### Breaking changes
+
+- **BREAKING:** `sdf decision link` now enforces endpoint kinds for relations that used to accept any kind. `implements` must run from a `session` or `commit` to a `decision` (a `decision` source, or a `session`/`commit` target, is refused); `validates` and `contradicts` must point to a `decision` (a `session` or `commit` target is refused); `constrains` must start from a `decision` (a `session` or `commit` source is refused). A refused link exits 1 with one line naming the rule and the end, for example `sdf decision link: implements links a session or commit to a decision: from is decision:a`. Rows an older sdf stored are kept and listed, count for the duplicate check, and drive no read-time field ([#278](https://github.com/paulpham157/sdf/pull/278)).
+
 ### Features
 
 - Replace the previous product with an OTLP receiver for Codex and Claude Code; store traces, metrics, and logs in SQLite and summarize sessions ([#157](https://github.com/paulpham157/sdf/pull/157)).
@@ -44,6 +48,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - In `sdf decision link`, `supersedes` links are decision-to-decision only, unknown refs are rejected, and exact duplicates are rejected ([#251](https://github.com/paulpham157/sdf/pull/251), fixes [#249](https://github.com/paulpham157/sdf/issues/249)). `sdf decision list` shows `decided_by`, alternatives, and reason.
 - Add `sdf decision retract` (append-only; `--id`, optional `--reason` and `--retracted-by user|agent`) ([#256](https://github.com/paulpham157/sdf/pull/256)).
 - Add `sdf redact --db` to scrub stored content; `sdf serve` warns on a database that may still hold unscrubbed text ([#225](https://github.com/paulpham157/sdf/pull/225)).
+- Add decision relations `blocks`, `conflicts_with`, and `refines` to `sdf decision link`, with `blocked_by` and `depends_on` as input aliases of `blocks` (ends swapped). `blocks` and `refines` reject cycles; `conflicts_with` is symmetric and stored once in canonical order; `conflicts_with` and `refines` are refused when one side already supersedes the other, while `supersedes` after `conflicts_with` is allowed and resolves it. `sdf decision list`, `GET /api/decisions`, and the UI show the read-time fields `blocked_by`, `open_blockers`, `blocked`, `conflicts_with`, `conflicted`, `refined_by`, and `challenged` (omitted when empty); `effective_status` is unchanged. A blocker is open while any current head is a `hypothesis`, or when it has no head and any path of its `supersedes` chain reaches a legacy cycle; a retracted blocker blocks nothing. `challenged` counts `validates` and `contradicts` only from sessions, commits, and active decisions. Errors for the `blocked_by` and `depends_on` aliases name the alias and the `--from`/`--to` flag as typed. The UI lists every blocker and marks the open ones, as `sdf decision list` does, and its "conflicts with" badge lists only active sides ([#278](https://github.com/paulpham157/sdf/pull/278)).
 
 ### Fixes
 

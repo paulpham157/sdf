@@ -307,7 +307,7 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := decision.Link(db, decision.EdgeInput{
-		Relation: decision.RelImplements,
+		Relation: decision.RelConstrains,
 		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "pure-go"},
 		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
 	}); err != nil {
@@ -333,7 +333,7 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	if !strings.Contains(page, "The driver stays pure Go.") || !strings.Contains(page, "hypothesis") {
 		t.Fatalf("hypothesis record not rendered:\n%s", page)
 	}
-	if !strings.Contains(page, "implements") || !strings.Contains(page, "pure-go") || !strings.Contains(page, "keep-sqlite") {
+	if !strings.Contains(page, "constrains") || !strings.Contains(page, "pure-go") || !strings.Contains(page, "keep-sqlite") {
 		t.Fatalf("decision edge not rendered:\n%s", page)
 	}
 	if !strings.Contains(page, "validates") || !strings.Contains(page, "sess-1") {
@@ -371,6 +371,153 @@ func TestPageShowsSupersededDecisions(t *testing.T) {
 		if strings.Count(page, "superseded by") != 1 {
 			t.Fatalf("%q: only keep-sqlite is superseded:\n%s", hash, page)
 		}
+	}
+}
+
+func TestPageShowsBlockedConflictedRefinedAndChallenged(t *testing.T) {
+	db := openDB(t)
+	adds := []decision.RecordInput{
+		{ID: "which-db", Statement: "Pick the store.", Status: decision.StatusHypothesis},
+		{ID: "design-schema", Statement: "Design the schema.", Status: decision.StatusDecision},
+		{ID: "use-sqlite", Statement: "Use SQLite.", Status: decision.StatusDecision},
+		{ID: "use-postgres", Statement: "Use Postgres.", Status: decision.StatusDecision},
+		{ID: "bucket-per-minute", Statement: "Bucket per minute.", Status: decision.StatusDecision},
+	}
+	for _, in := range adds {
+		if _, err := decision.Add(db, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := func(id string) decision.Endpoint { return decision.Endpoint{Kind: decision.KindDecision, Ref: id} }
+	for _, e := range []decision.EdgeInput{
+		{Relation: decision.AliasBlockedBy, From: d("design-schema"), To: d("which-db")},
+		{Relation: decision.RelConflictsWith, From: d("use-sqlite"), To: d("use-postgres")},
+		{Relation: decision.RelRefines, From: d("bucket-per-minute"), To: d("use-sqlite")},
+		{Relation: decision.RelContradicts, From: d("bucket-per-minute"), To: d("design-schema")},
+	} {
+		if _, err := decision.Link(db, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	page := renderedPage(t, srv)
+	for _, want := range []string{
+		"blocked by which-db",
+		"conflicts with use-postgres",
+		"conflicts with use-sqlite",
+		"refined by bucket-per-minute",
+		"challenged",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q:\n%s", want, page)
+		}
+	}
+	if strings.Count(page, "blocked by") != 1 {
+		t.Fatalf("only design-schema is blocked:\n%s", page)
+	}
+}
+
+// A superseded record is not blocked, but its blocker is still open: the
+// detail line must not call it settled.
+func TestPageDoesNotCallAnOpenBlockerOfASupersededRecordSettled(t *testing.T) {
+	db := openDB(t)
+	adds := []decision.RecordInput{
+		{ID: "which-db", Statement: "Pick the store.", Status: decision.StatusHypothesis},
+		{ID: "design-schema", Statement: "Design the schema.", Status: decision.StatusDecision},
+		{ID: "design-schema-v2", Statement: "Design the schema again.", Status: decision.StatusDecision},
+	}
+	for _, in := range adds {
+		if _, err := decision.Add(db, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := func(id string) decision.Endpoint { return decision.Endpoint{Kind: decision.KindDecision, Ref: id} }
+	for _, e := range []decision.EdgeInput{
+		{Relation: decision.RelBlocks, From: d("which-db"), To: d("design-schema")},
+		{Relation: decision.RelSupersedes, From: d("design-schema-v2"), To: d("design-schema")},
+	} {
+		if _, err := decision.Link(db, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	page := renderedPage(t, srv)
+	if strings.Contains(page, "(settled)") {
+		t.Fatalf("which-db is still a hypothesis, not settled:\n%s", page)
+	}
+	if !strings.Contains(page, "blocked by which-db (open: which-db)") {
+		t.Fatalf("missing the open blocker:\n%s", page)
+	}
+}
+
+// Like sdf decision list, the UI lists every blocker and marks the open
+// ones: a settled blocker next to an open one is still shown.
+func TestPageListsEveryBlockerAndMarksTheOpenOnes(t *testing.T) {
+	db := openDB(t)
+	adds := []decision.RecordInput{
+		{ID: "which-db", Statement: "Pick the store.", Status: decision.StatusHypothesis},
+		{ID: "which-auth", Statement: "Pick auth.", Status: decision.StatusDecision},
+		{ID: "design-schema", Statement: "Design the schema.", Status: decision.StatusDecision},
+		{ID: "write-docs", Statement: "Write the docs.", Status: decision.StatusDecision},
+	}
+	for _, in := range adds {
+		if _, err := decision.Add(db, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := func(id string) decision.Endpoint { return decision.Endpoint{Kind: decision.KindDecision, Ref: id} }
+	for _, e := range []decision.EdgeInput{
+		{Relation: decision.RelBlocks, From: d("which-db"), To: d("design-schema")},
+		{Relation: decision.RelBlocks, From: d("which-auth"), To: d("design-schema")},
+		{Relation: decision.RelBlocks, From: d("which-auth"), To: d("write-docs")},
+	} {
+		if _, err := decision.Link(db, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	page := renderedPage(t, srv)
+	for _, want := range []string{
+		"blocked by which-db, which-auth (open: which-db)",
+		"blocked by which-auth (settled)",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q:\n%s", want, page)
+		}
+	}
+	if strings.Count(page, "blocked by") != 2 {
+		t.Fatalf("each blocked record lists its blockers once:\n%s", page)
+	}
+}
+
+// The "conflicts with" badge lists only the conflicts that are still active;
+// a side that was superseded is shown as resolved on its own detail line.
+func TestPageConflictBadgeListsOnlyActiveConflicts(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"use-sqlite", "use-postgres", "use-mysql", "use-postgres-16"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := func(id string) decision.Endpoint { return decision.Endpoint{Kind: decision.KindDecision, Ref: id} }
+	for _, e := range []decision.EdgeInput{
+		{Relation: decision.RelConflictsWith, From: d("use-sqlite"), To: d("use-postgres")},
+		{Relation: decision.RelConflictsWith, From: d("use-sqlite"), To: d("use-mysql")},
+		{Relation: decision.RelSupersedes, From: d("use-postgres-16"), To: d("use-postgres")},
+	} {
+		if _, err := decision.Link(db, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	page := renderedPage(t, srv)
+	for _, want := range []string{"conflicts with use-mysql", "conflicts with use-sqlite (resolved)"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, "conflicts with use-postgres, use-mysql") || strings.Contains(page, "conflicts with use-mysql, use-postgres") {
+		t.Fatalf("badge lists the superseded use-postgres:\n%s", page)
 	}
 }
 
