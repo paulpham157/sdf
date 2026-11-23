@@ -117,7 +117,7 @@ button:focus-visible, a:focus-visible {
 }
 
 .refresh:hover, .nav a:hover, .filters button:hover { border-color: var(--ink); color: var(--ink); }
-.nav a[aria-current="page"]:hover, .filters button[aria-pressed="true"]:hover { color: var(--paper); }
+.nav a[aria-current="page"]:hover, .filters button[aria-pressed="true"]:hover, .filters button[aria-checked="true"]:hover { color: var(--paper); }
 
 .hero {
   display: grid;
@@ -465,7 +465,8 @@ footer p { margin: 0; }
   color: var(--ink-soft);
   cursor: pointer;
 }
-.dg-toolbar button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.dg-toolbar button[aria-pressed="true"], .dg-toolbar button[aria-checked="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.dg-radios { display: inline-flex; gap: 4px; }
 .dg-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
 .dg-jump {
   margin-left: auto;

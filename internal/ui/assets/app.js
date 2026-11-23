@@ -1331,6 +1331,42 @@
     }, [defs, s("g", null, off), s("g", null, path), s("g", null, ghosts), s("g", null, nodes)]);
   }
 
+  const DG_SHOW = [["all", "Everyone"], ["user", "You"], ["agent", "Agents"]];
+
+  // Everyone / You / Agents is one choice of three: a radiogroup with a
+  // roving tabindex, where the arrows (and Home/End) move and select.
+  function dgShowGroup() {
+    function pick(value) {
+      dgShow = value;
+      dgWantFocus = "show:" + value;
+      render();
+    }
+    return h("div", { class: "dg-radios", role: "radiogroup", "aria-label": "Decided by" }, DG_SHOW.map(function (opt, i) {
+      const on = dgShow === opt[0];
+      return h("button", {
+        type: "button",
+        role: "radio",
+        "aria-checked": on ? "true" : "false",
+        tabindex: on ? "0" : "-1",
+        "data-focus-key": "show:" + opt[0],
+        onclick: function () { pick(opt[0]); },
+        onkeydown: function (event) {
+          if (event.ctrlKey || event.metaKey || event.altKey) return;
+          const n = DG_SHOW.length;
+          let to = -1;
+          if (event.key === "ArrowRight" || event.key === "ArrowDown") to = (i + 1) % n;
+          else if (event.key === "ArrowLeft" || event.key === "ArrowUp") to = (i + n - 1) % n;
+          else if (event.key === "Home") to = 0;
+          else if (event.key === "End") to = n - 1;
+          if (to < 0) return;
+          event.preventDefault();
+          if (event.stopPropagation) event.stopPropagation();
+          pick(DG_SHOW[to][0]);
+        },
+      }, [opt[1]]);
+    }));
+  }
+
   function dgToolbar(chapter) {
     function toggle(label, on, fn, extra) {
       return h("button", Object.assign({ type: "button", "aria-pressed": on ? "true" : "false", "data-focus-key": "tb:" + label, onclick: function () { fn(); render(); } }, extra || {}), [label]);
@@ -1353,9 +1389,7 @@
       },
     });
     return h("div", { class: "dg-toolbar filters", role: "toolbar", "aria-label": "Graph controls" }, [
-      toggle("Everyone", dgShow === "all", function () { dgShow = "all"; }),
-      toggle("You", dgShow === "user", function () { dgShow = "user"; }),
-      toggle("Agents", dgShow === "agent", function () { dgShow = "agent"; }),
+      dgShowGroup(),
       h("span", { class: "dg-sep", "aria-hidden": "true" }),
       toggle("Not taken", dgNotTaken, function () { dgNotTaken = !dgNotTaken; }),
       toggle("Show tensions", dgTensions, function () { dgTensions = !dgTensions; }, { "aria-keyshortcuts": "t" }),

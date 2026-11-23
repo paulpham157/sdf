@@ -146,3 +146,38 @@ func TestDecisionFilterMutesWithoutOpacity(t *testing.T) {
 		t.Error("muted node text is not recoloured with the dim palette")
 	}
 }
+
+// Everyone / You / Agents is a radiogroup with a roving tabindex: one tab
+// stop, and the arrows, Home and End move and select.
+func TestDecisionShowFilterIsRadiogroup(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	radios := regexp.MustCompile(`<button [^>]*role="radio"[^>]*>`)
+	check := func(flags, want string) {
+		t.Helper()
+		res := renderPage(t, srv, "#/decisions", flags)
+		if !strings.Contains(res.Markup, `role="radiogroup" aria-label="Decided by"`) {
+			t.Fatalf("no radiogroup:\n%s", res.Markup)
+		}
+		all := radios.FindAllString(res.Markup, -1)
+		if len(all) != 3 || strings.Count(strings.Join(all, ""), `tabindex="0"`) != 1 || strings.Count(strings.Join(all, ""), `aria-checked="true"`) != 1 {
+			t.Fatalf("%s: radios %q", flags, all)
+		}
+		for _, r := range all {
+			on := strings.Contains(r, `data-focus-key="show:`+want+`"`)
+			if on != strings.Contains(r, `aria-checked="true"`) || on != strings.Contains(r, `tabindex="0"`) {
+				t.Errorf("%s: want %s checked: %q", flags, want, r)
+			}
+		}
+		if flags != "" && !strings.Contains(res.Active, `data-focus-key="show:`+want+`"`) {
+			t.Errorf("%s: focus %q, want show:%s", flags, res.Active, want)
+		}
+	}
+	check("", "all")
+	check(`key=ArrowRight@[data-focus-key="show:all"]`, "user")
+	check(`key=ArrowLeft@[data-focus-key="show:all"]`, "agent")
+	check(`key=End@[data-focus-key="show:all"]`, "agent")
+	check(`key=ArrowRight@[data-focus-key="show:all"],key=ArrowDown,key=ArrowDown`, "all")
+	check(`click=~Agents,key=Home`, "all")
+}
