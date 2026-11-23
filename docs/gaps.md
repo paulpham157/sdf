@@ -41,9 +41,11 @@
   Codex micro-USD or `usage.estimated_usd`, Pi `pi.cost.usd`). It is not an
   invoice. OpenCode does not emit one. `computed_cost_usd` is the bundled
   or refreshed OpenRouter token price for the same de-duplicated counts.
-  It is not an invoice either: conditional overrides are refused, a missing
-  component price is unknown, and per-request or web-search fees are not
-  added.
+  It is not an invoice either: override conditions other than
+  `min_prompt_tokens` are refused, a session total at or above a
+  `min_prompt_tokens` threshold is unknown unless per-request counts exist,
+  a missing component price is unknown, and per-request or web-search fees
+  are not added.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
   SQLite file.

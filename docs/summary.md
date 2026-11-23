@@ -127,8 +127,23 @@ It is not `0`.
 Matching is exact on the catalog id, or on an `openrouter/` prefix stripped
 once (OpenCode's `--model openrouter/...` form), or on a suffix that hits
 exactly one catalog id. Two hits is unknown. Two models that resolve to
-different rows are unknown. A row with `pricing.overrides` is unknown: the
-base rate would be a guess about which conditional rate applied.
+different rows are unknown.
+
+A row with `pricing.overrides` that only uses `min_prompt_tokens` (the shape
+on `x-ai/grok-4.6`, `x-ai/grok-4.7`, Claude Sonnet 4.5, Gemini 2.5 Pro, and
+other long-context rows in the bundled table) is priced at the base rates
+when the prompt token count is below that threshold, and at the matching
+override rates when a per-request prompt count is at or above it. Prompt
+tokens are the request's input total: for overlap sources (Grok, Codex,
+OpenCode) that is the input count, which already includes cache; for
+disjoint sources (Claude Code) it is input plus cache read plus cache write.
+When only a session aggregate exists and that prompt total is at or above
+the lowest threshold, the cost stays `unknown`: a request could have crossed
+the threshold, and the base rate is not applied to the total. Per-request
+counts are used when the token source is already `grok_code.api_request` or
+`claude_code.api_request` logs. An override entry with any other condition
+key (for example `utc_start` / `utc_end`) leaves the cost unknown, including
+when a `min_prompt_tokens` field is present but not a non-negative integer.
 
 How a count is turned into a bucket:
 
@@ -138,7 +153,7 @@ How a count is turned into a bucket:
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
 | OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
-| Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
+| Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. `x-ai/grok-4.6` and `x-ai/grok-4.7` have `min_prompt_tokens` 200000 overrides; a live `grok-4.7` api_request of 14454/177/121/10112 input/output/reasoning/cache_read prices at `$0.014802` (base rates), and the session totals 64649/384/167/51072 price at `$0.054994` because that prompt total is below the threshold. A metric-only total at or above 200000 stays unknown unless per-request `api_request` counts are the token source. |
 
 Cache-creation counts mix the five-minute and one-hour lifetimes. If the
 catalog publishes both `input_cache_write` and `input_cache_write_1h` and
