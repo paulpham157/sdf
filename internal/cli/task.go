@@ -44,6 +44,8 @@ func cmdTask(args []string, stdout, stderr io.Writer) int {
 		return cmdTaskShow(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, taskUsage)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, taskHelp)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])

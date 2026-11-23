@@ -39,6 +39,8 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		return cmdAuditHead(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, auditUsage)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, auditHelp)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(args[0]))

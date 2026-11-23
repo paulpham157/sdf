@@ -23,10 +23,17 @@ import (
 	"github.com/paulpham157/sdf/internal/samplepath"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/ui"
+	"github.com/paulpham157/sdf/internal/verify"
 )
 
 func TestSummaryOfANewDatabase(t *testing.T) {
-	out := run(t, "summary", "--db", filepath.Join(t.TempDir(), "empty.sqlite"))
+	path := filepath.Join(t.TempDir(), "empty.sqlite")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	out := run(t, "summary", "--db", path)
 	if out.code != 0 || out.stdout != "No telemetry sessions in the store.\n" {
 		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
 	}
@@ -117,7 +124,14 @@ func mustRead(t *testing.T, path string) string {
 }
 
 func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
+	// Answers as sdf serve does: /health is ok, and the empty token-check
+	// POST to /v1/logs (no Content-Type) gets 415. init --check fails on
+	// any other answer to that POST.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/logs" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()
@@ -816,6 +830,12 @@ type result struct {
 
 func run(t *testing.T, args ...string) result {
 	t.Helper()
+	// Where checks cannot be isolated (GitHub's ubuntu-24.04 runners, which
+	// the tests do not reconfigure), sdf verify would refuse to run them;
+	// the verify package tests isolation itself.
+	if ok, _ := verify.IsolationAvailable(); !ok && len(args) > 0 && args[0] == "verify" {
+		args = append([]string{"verify", "--allow-unisolated"}, args[1:]...)
+	}
 	oldOut, oldErr := os.Stdout, os.Stderr
 	outR, outW, err := os.Pipe()
 	if err != nil {

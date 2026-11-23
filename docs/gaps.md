@@ -86,7 +86,8 @@
   It is not an invoice either: override conditions other than
   `min_prompt_tokens` are refused, a session total at or above a
   `min_prompt_tokens` threshold is unknown unless per-request counts exist
-  (Claude Code and Grok CLI `api_request` logs, Codex `response.completed`
+  (Claude Code and Grok CLI `api_request` logs, including when those logs'
+  totals match a preferred usage metric, and Codex `response.completed`
   logs). A Codex `codex.turn.token_usage` point is one turn or more, each
   turn summed over its Responses calls, with no `turn.id` or
   `conversation.id`, and SDF keeps only the histogram `sum`, so a
@@ -150,7 +151,11 @@
   receiver. It does not send the diff or the message. The `SDF-Session`
   trailer stays in the git object. A GitHub squash merge keeps that trailer
   only when the squash commit message includes it. Husky, lefthook, and
-  pre-commit are not edited; `core.hooksPath` is left as it was.
+  pre-commit are not edited; `core.hooksPath` is left as it was. The
+  Claude Code (`CLAUDE_CODE_SESSION_ID`) and Qwen Code
+  (`QWEN_CODE_SESSION_ID`) session ids the hook reads come from their docs
+  and source, not a live commit; a hook installed by an older sdf does not
+  read them until `sdf init --git-hooks` is run again.
 - With a receiver token, a hook authenticates only when `SDF_OTLP_TOKEN` or
   `SDF_OTLP_TOKEN_FILE` is in the environment of the agent or `git` that
   runs it; an agent started from a desktop launcher or a GUI git client may

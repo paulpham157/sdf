@@ -38,6 +38,7 @@ func Main(args []string) int {
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usageLine)
+		fmt.Fprintln(stderr, "Run sdf --help for what each command does. New here? Start with sdf serve, then sdf init <agent> --write.")
 		return 2
 	}
 	switch args[0] {
@@ -63,11 +64,13 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdRedact(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
-	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, usageLine)
+	case "-h", "--help":
+		writeTopHelp(stdout)
 		return 0
+	case "help":
+		return cmdHelp(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
+		fmt.Fprintf(stderr, "unrecognized command %q; run sdf --help for the list\n", args[0])
 		return 2
 	}
 }
@@ -115,6 +118,8 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
 			fmt.Fprintln(stdout, "Prompt, response, tool, and error text is dropped before storing, for every agent. --store-content (or SDF_STORE_CONTENT=1) keeps it; --store-content=qwen,claude-code (or SDF_STORE_CONTENT=qwen,claude-code) keeps it for those agents only.")
 			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, serveHelp)
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -309,7 +314,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		Token:    token,
 	}
 	if err := srv.Start(); err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 		return 1
 	}
 	defer srv.Shutdown()
@@ -324,7 +329,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			Budget: budgetPath,
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 			return 1
 		}
 		defer func() {
@@ -336,7 +341,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "warning: "+warning)
 		}
 	}
-	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), dbPath)
+	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), store.AbsPath(dbPath))
 	fmt.Fprintf(stdout, "OTLP/gRPC listening on %s\n", srv.GRPCAddress())
 	if uiSrv != nil {
 		fmt.Fprintf(stdout, "UI listening on %s\n", uiSrv.URL())
@@ -366,6 +371,7 @@ func parseUIAddr(v string) (string, error) {
 
 func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
+	dbPathSet := false
 	var session *string
 	asJSON := false
 	allSpans := false
@@ -378,6 +384,8 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, summaryHelp)
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -385,9 +393,9 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "sdf summary: --db requires a value")
 				return 2
 			}
-			dbPath = v
+			dbPath, dbPathSet = v, true
 		case strings.HasPrefix(arg, "--db="):
-			dbPath = strings.TrimPrefix(arg, "--db=")
+			dbPath, dbPathSet = strings.TrimPrefix(arg, "--db="), true
 		case arg == "--session":
 			v, ok := take(&i, args)
 			if !ok {
@@ -451,6 +459,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
 	}
+	summaryMissingHint(dbPath, dbPathSet, stderr)
 	records, err := db.Load()
 	_ = db.Close()
 	if err != nil {
@@ -494,7 +503,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|graph|retract> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list|graph|retract|audit> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -512,8 +521,12 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionGraph(args[1:], stdout, stderr)
 	case "retract":
 		return cmdDecisionRetract(args[1:], stdout, stderr)
+	case "audit":
+		return cmdDecisionAudit(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, decisionHelp)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
@@ -962,6 +975,8 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, "usage: sdf check [--cases DIR]")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, checkHelp)
 			return 0
 		case arg == "--cases":
 			v, ok := take(&i, args)
@@ -1003,8 +1018,10 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: sdf prices refresh [--url URL] [--out PATH]")
 		return 2
 	}
-	if args[0] == "--help" || args[0] == "-h" {
+	if args[0] == "--help" || args[0] == "-h" || (len(args) > 1 && (args[1] == "--help" || args[1] == "-h")) {
 		fmt.Fprintln(stdout, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, pricesHelp)
 		return 0
 	}
 	pageURL := ""
@@ -1085,6 +1102,8 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, initUsage)
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, initHelp)
 			return 0
 		case arg == "--write":
 			write = true
@@ -1151,6 +1170,9 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			agent = arg
+		case !strings.HasPrefix(arg, "-"):
+			fmt.Fprintln(stderr, unknownAgentMessage(arg))
+			return 2
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
@@ -1202,6 +1224,16 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 		if !probed.Reachable {
 			code = 1
+		}
+		token, source, note := hookToken(os.Getenv)
+		if note != "" {
+			fmt.Fprint(stdout, note)
+		}
+		if auth := setup.ProbeAuth(ep, token, source); auth.Text != "" {
+			fmt.Fprint(stdout, auth.Text)
+			if auth.Failed {
+				code = 1
+			}
 		}
 	}
 	if agent != "" {

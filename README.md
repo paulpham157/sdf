@@ -29,7 +29,9 @@ sdf version
 ```
 
 That puts `sdf` in `$(go env GOPATH)/bin` (usually `~/go/bin`); keep that
-directory on your `PATH`. Until the first tagged release, `@latest` is the
+directory on your `PATH`. If `sdf version` says `command not found`, run
+`export PATH="$(go env GOPATH)/bin:$PATH"` and add that line to your shell
+profile. Until the first tagged release, `@latest` is the
 newest commit on `main`. There is no release yet; prebuilt archives for
 Linux, macOS, and Windows (amd64 and arm64) will be on
 [GitHub Releases](https://github.com/paulpham157/sdf/releases) after one is
@@ -76,7 +78,7 @@ needs no API key or network connection.
 | `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
 | `sdf init` | Print or write the settings that point an agent at the receiver |
 | `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, graph, or retract decisions (`add`, `link`, `list`, `graph`, `retract`); links include `supersedes`, `refines`, `blocks`, and `conflicts_with`, `list` shows blocked and conflicted records, and `graph` (also `GET /api/decisions/graph` and the UI's Decisions tab) shows chapters, endings, and explored % |
+| `sdf decision` | Record, link, list, graph, retract, or audit decisions (`add`, `link`, `list`, `graph`, `retract`, `audit`); links include `supersedes`, `refines`, `blocks`, and `conflicts_with`, `list` shows blocked and conflicted records, `graph` (also `GET /api/decisions/graph` and the UI's Decisions tab) shows chapters, endings, and explored %, and `audit` reports unlinked decisions and commits (exit 1 on findings) |
 | `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
 | `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
 | `sdf verify` | Run a declared task's checks against a commit |
