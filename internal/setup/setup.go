@@ -87,12 +87,14 @@ func Run(req Request) (Result, error) {
 		return codex(req)
 	case "opencode":
 		return opencode(req)
+	case "qwen", "qwen-code":
+		return qwen(req)
 	case "pi":
 		return pi(req)
 	case "grok":
 		return grok(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, grok)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok)", req.Agent)
 	}
 }
 
@@ -111,6 +113,9 @@ func normalize(req *Request) error {
 	}
 	if req.Endpoint.GRPCPort == 0 {
 		req.Endpoint.GRPCPort = 4317
+	}
+	if err := checkEndpoint(&req.Endpoint); err != nil {
+		return err
 	}
 	if req.Home == "" {
 		home, err := os.UserHomeDir()
@@ -159,7 +164,7 @@ func claude(req Request) (Result, error) {
 		if err != nil {
 			return false, err
 		}
-		hooksChanged, err := mergeAnyMap(root, "hooks", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
+		hooksChanged, err := mergeSessionHooks(root, "claude-code", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
 		if err != nil {
 			return false, err
 		}
@@ -250,7 +255,7 @@ func codex(req Request) (Result, error) {
 	}
 	b.WriteString("\n")
 	b.WriteString(wrote(path, backup))
-	hookStatus, err := writeBytes(filepath.Join(req.CodexHome, "hooks.json"), []byte(codexHooks(req.Endpoint.base()+"/v1/sessions")), true)
+	hookStatus, err := codexHookFile(filepath.Join(req.CodexHome, "hooks.json"), req.Endpoint.base()+"/v1/sessions")
 	if err != nil {
 		return Result{}, err
 	}
@@ -287,7 +292,7 @@ func hasOtelTable(text string) bool {
 
 func opencode(req Request) (Result, error) {
 	path := filepath.Join(req.Home, ".config", "sdf", "opencode.env")
-	line := "export OTEL_EXPORTER_OTLP_ENDPOINT=" + req.Endpoint.base() + "\n"
+	line := "export OTEL_EXPORTER_OTLP_ENDPOINT=" + shQuote(req.Endpoint.base()) + "\n"
 	var b strings.Builder
 	fmt.Fprintf(&b, "OpenCode v2 (@opencode/cli) exports traces and logs when OTEL_EXPORTER_OTLP_ENDPOINT is set.\n")
 	fmt.Fprintf(&b, "It does not export metrics. npm opencode-ai is v1, not this CLI.\n")
@@ -598,6 +603,8 @@ func Configured(req Request) (string, error) {
 		return codexConfigured(req), nil
 	case "opencode":
 		return opencodeConfigured(req), nil
+	case "qwen", "qwen-code":
+		return qwenConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
 	case "grok":

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -29,6 +30,14 @@ func (s *Server) handleSession(reader *bufio.Reader, writer *bufio.Writer, heade
 	body, err := readBody(reader, headers)
 	if err != nil {
 		return s.writeBodyError(writer, method, path, err, closeAfter)
+	}
+	// The hook posts application/json. text/plain is a CORS simple type, so a
+	// page could submit this JSON without a preflight if the type were ignored.
+	media, ok := otlp.HTTPMedia(headerGet(headers, "Content-Type"))
+	if !ok || media != "application/json" {
+		writeResponse(writer, 415, "text/plain", []byte("unsupported media type"), closeAfter)
+		s.logRequest(method, path, 415)
+		return closeAfter, nil
 	}
 	rec, err := sessionRecord(body, time.Now())
 	if err != nil {

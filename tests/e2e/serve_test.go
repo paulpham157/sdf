@@ -92,6 +92,10 @@ func TestSamplesOverHTTPAndGRPC(t *testing.T) {
 		"  tool: opencode\n",
 		"input_tokens=5822",
 		"output_tokens=306",
+		"session sample-qwen-1\n",
+		"  tool: qwen-code\n",
+		"  duration_ms: 38000 (traces qwen-code.interaction)\n",
+		"input_token_count=67800 output_token_count=1920 cached_content_token_count=44596 thoughts_token_count=710",
 		"session 2026-01-01T00-00-00-000Z_sample-pi-session\n",
 		"  tool: pi\n",
 		"input_tokens=1245",
@@ -111,6 +115,7 @@ func TestSamplesOverHTTPAndGRPC(t *testing.T) {
 		`"session_id": "sample-claude-1"`,
 		`"session_id": "sample-codex-conv-1"`,
 		`"session_id": "ses_sampleopencode0001"`,
+		`"session_id": "sample-qwen-1"`,
 		`"session_id": "2026-01-01T00-00-00-000Z_sample-pi-session"`,
 	} {
 		if !strings.Contains(js, id) {
@@ -382,6 +387,7 @@ func sampleFiles(t *testing.T) []string {
 	}
 	required := []string{
 		"claude_logs.json", "claude_metrics.json", "claude_traces.json",
+		"qwen_logs.json", "qwen_metrics.json", "qwen_traces.json",
 		"codex_logs.json", "codex_metrics.json",
 		"opencode_logs.json", "opencode_traces.json",
 		"pi_logs.json", "pi_metrics.json", "pi_traces.json",

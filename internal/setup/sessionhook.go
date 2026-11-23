@@ -25,16 +25,16 @@ func sessionHookCommand(tool, edge, url string) string {
 		`payload=$(printf '%s' "$sid" "$reason"); `+
 		`curl -sf -m 2 -X POST -H 'content-type: application/json' `+
 		`--data "$payload" %s >/dev/null 2>&1 || true`,
-		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, url)
+		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, shQuote(url))
 }
 
-// claudeHooks is the "hooks" object merged into ~/.claude/settings.json. A
-// command hook on SessionStart and SessionEnd. Both events carry session_id,
-// which is the session.id the exporter sends.
-func claudeHooks(url string) map[string]any {
-	return map[string]any{
-		"SessionStart": []any{hookGroup(sessionHookCommand("claude-code", "open", url))},
-		"SessionEnd":   []any{hookGroup(sessionHookCommand("claude-code", "close", url))},
+// claudeHooks is the command sdf adds to each event under "hooks" in
+// ~/.claude/settings.json (see mergeSessionHooks). Both events carry
+// session_id, which is the session.id the exporter sends.
+func claudeHooks(url string) map[string]string {
+	return map[string]string{
+		"SessionStart": sessionHookCommand("claude-code", "open", url),
+		"SessionEnd":   sessionHookCommand("claude-code", "close", url),
 	}
 }
 
@@ -49,10 +49,7 @@ func hookGroup(command string) map[string]any {
 // its spans carry the thread id. A descendant never fires SessionEnd, so a
 // posted event for one would open a session no span joins.
 func codexHooks(url string) string {
-	guard := `tid=$(printf '%s' "$json" | ` + fieldExpr("thread_id") + `); ` +
-		`[ -z "$tid" ] || [ "$tid" = "$sid" ] || exit 0; `
-	open := sessionHookCommand("codex", "open", url)
-	closeCmd := sessionHookCommand("codex", "close", url)
+	commands := codexHookCommands(url)
 	return fmt.Sprintf(`{
   "hooks": {
     "SessionStart": [
@@ -63,7 +60,18 @@ func codexHooks(url string) string {
     ]
   }
 }
-`, insertGuard(open, guard), insertGuard(closeCmd, guard))
+`, commands["SessionStart"], commands["SessionEnd"])
+}
+
+// codexHookCommands is the command for each event in hooks.json, used to
+// write a new file and to merge into an existing one.
+func codexHookCommands(url string) map[string]string {
+	guard := `tid=$(printf '%s' "$json" | ` + fieldExpr("thread_id") + `); ` +
+		`[ -z "$tid" ] || [ "$tid" = "$sid" ] || exit 0; `
+	return map[string]string{
+		"SessionStart": insertGuard(sessionHookCommand("codex", "open", url), guard),
+		"SessionEnd":   insertGuard(sessionHookCommand("codex", "close", url), guard),
+	}
 }
 
 // insertGuard places the thread-id check after the session id is read and

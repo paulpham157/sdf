@@ -29,5 +29,6 @@ replace it with a capture from a live agent.
 
 Docs: `README.md` is the short overview. `docs/` holds the detail (what each
 agent exports, the receiver and git hooks, the summary and computed cost,
-outcomes and the local budget, `sdf check`, and known gaps). When behavior
-changes, update the doc that describes it rather than growing the README.
+outcomes and the local budget, `sdf check`, the ledger and `sdf audit`, and
+known gaps). When behavior changes, update the doc that describes it rather
+than growing the README.

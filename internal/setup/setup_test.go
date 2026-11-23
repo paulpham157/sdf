@@ -127,11 +127,11 @@ func TestOpenCodeWriteIsASnippet(t *testing.T) {
 	if err != nil || !res.Wrote {
 		t.Fatal(err, res.Text)
 	}
-	if !strings.Contains(res.Text, "does not load that file") || !strings.Contains(res.Text, "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318") {
+	if !strings.Contains(res.Text, "does not load that file") || !strings.Contains(res.Text, "OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'") {
 		t.Fatal(res.Text)
 	}
 	body, err := os.ReadFile(filepath.Join(home, ".config", "sdf", "opencode.env"))
-	if err != nil || !strings.Contains(string(body), "export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318\n") {
+	if err != nil || !strings.Contains(string(body), "export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'\n") {
 		t.Fatal(string(body), err)
 	}
 }
