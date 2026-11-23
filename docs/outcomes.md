@@ -106,11 +106,34 @@ a statement, and a status of `hypothesis` or `decision`. `sdf decision link`
 writes one edge. It needs a relation and two `KIND:REF` endpoints, where
 `KIND` is `decision`, `session`, or `commit`. No route writes a record.
 
+`sdf decision list` prints the records and then the edges, each as a table in
+insertion order. An empty source prints as `-`. A value with a control
+character, such as a tab, is printed Go-quoted so it cannot break the columns.
+`sdf decision list --json` prints exactly what `GET /api/decisions` returns,
+because both read the store through the same code. Like `sdf summary`, it opens
+`sdf-telemetry.sqlite` unless `--db` names another file, and opening a file
+that does not exist creates an empty store. With no records and no edges it
+prints `No decisions in the store.`, and `--json` prints empty lists. A path
+that cannot be opened, such as one in a missing directory, exits 1.
+
 ```bash
 sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
   --status decision [--source TEXT] [--db PATH]
 sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
+sdf decision list [--db PATH] [--json]
+```
+
+```text
+Decisions: 2
+ID          STATUS      RECORDED AT                       SOURCE     STATEMENT
+use-sqlite  decision    2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
+pure-go     hypothesis  2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+
+Edges: 2
+RELATION    FROM              TO                   RECORDED AT
+implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:02.000000+00:00
+validates   session:sess-1    decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
 ```
 
 ## Local budget
