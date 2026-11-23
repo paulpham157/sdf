@@ -225,7 +225,7 @@ func codex(req Request) (Result, error) {
 	}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return Result{}, err
+		return Result{}, readErr(path, err)
 	}
 	if hasOtelTable(string(existing)) {
 		b.WriteString("\nnot written: " + path + " already has an [otel] table; it was not changed\n")
@@ -802,7 +802,7 @@ func writeBytes(path string, body []byte, write bool) (string, error) {
 	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, body) {
 		return path + " already has these values\n", nil
 	} else if err != nil && !os.IsNotExist(err) {
-		return "", err
+		return "", readErr(path, err)
 	}
 	return replaceFile(path, body, 0o600)
 }

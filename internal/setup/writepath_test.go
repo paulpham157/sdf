@@ -134,6 +134,7 @@ func TestUnwritableForThisUserIsRefused(t *testing.T) {
 
 func TestDanglingSymlinkCreatesItsTarget(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	dotfiles := filepath.Join(home, "dotfiles", "gemini")
 	if err := os.MkdirAll(dotfiles, 0o700); err != nil {
 		t.Fatal(err)

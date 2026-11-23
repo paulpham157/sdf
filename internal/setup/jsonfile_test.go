@@ -98,7 +98,11 @@ func TestGeminiWriteKeepsFileMode(t *testing.T) {
 }
 
 func TestGeminiWriteThroughSymlink(t *testing.T) {
+	// The target is outside the config dir and $HOME: a warning, and a
+	// refusal as root (writecheck_test.go). Pin the non-root path here.
+	notRoot(t)
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	dotfiles := filepath.Join(t.TempDir(), "dotfiles")
 	if err := os.MkdirAll(dotfiles, 0o700); err != nil {
 		t.Fatal(err)

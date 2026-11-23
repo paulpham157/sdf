@@ -176,12 +176,21 @@ target is replaced, and the backup sits next to the link. A link to a file
 that does not exist yet (a stow-style dotfile) creates that file, with a
 relative link read from the link's directory. A file that exists but that
 sdf may not write, or that has no write bit at all (`0400`, `0444`, even for
-root), is refused before any backup or write. If the write fails, the temp
+root), is refused before any backup or write. sdf also checks that it can
+create files in the directories the write uses (it creates and removes a
+probe file there): the target's directory, the link's directory for the
+backup, and, for a file that does not exist yet, the nearest existing parent
+directory. A `0555` directory is refused with its mode in the message. A
+symlink that resolves outside its own directory and `$HOME` is written
+through with a warning; as root it is refused. If the write fails, the temp
 file and the backup it just made are removed. The same checks, backup, and
 atomic write apply to every file `sdf init --write` changes, the Codex
 `config.toml` included. When one agent needs two files (Codex `config.toml`
 and `hooks.json`, Pi settings and its extension, OpenCode's env file and
-plugin), both are checked before either is written.
+plugin), both are checked before either is written. The check runs before
+the write, not under a lock: if another process changes a mode, directory,
+or link in between, that write fails without changing its file, but a file
+already written by the same init stays written.
 
 A file that is not plain JSON (Gemini CLI also accepts comments) is left
 untouched, and the printed `GEMINI_TELEMETRY_*` variables can be used

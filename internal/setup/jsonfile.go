@@ -248,7 +248,7 @@ func planMerge(path string, merge func(map[string]any) (bool, error)) (map[strin
 		}
 		indent = detectIndent(body)
 	} else if !os.IsNotExist(err) {
-		return nil, nil, "", false, err
+		return nil, nil, "", false, readErr(path, err)
 	}
 	changed, err := merge(root)
 	if err != nil {
@@ -355,30 +355,43 @@ func resolveTarget(path string) (string, error) {
 // checkWritable refuses a target that exists and that we may not write. It
 // opens the file write-only without truncating, so nothing changes. Root
 // passes that open on any mode, so a file with no write bit at all (0400,
-// 0444) is refused too: the owner marked it read-only on purpose.
+// 0444) is refused too: the owner marked it read-only on purpose. Whether
+// the file exists or not, the directories the write needs are probed (see
+// checkDirs), so a missing file under an unwritable directory is refused
+// here too. As root, a symlink that resolves outside the agent's config dir
+// and $HOME is refused (replaceFile only warns about it otherwise), so root
+// is not steered into writing an arbitrary file.
 func checkWritable(path string) error {
 	target, err := resolveTarget(path)
 	if err != nil {
 		return err
 	}
+	if msg := linkEscape(path, target); msg != "" && runningAsRoot() {
+		return fmt.Errorf("%s; refusing to write through it as root (run sdf as the user who owns it, or point the link inside $HOME); it was not changed", msg)
+	}
 	info, err := os.Stat(target)
 	if os.IsNotExist(err) {
-		return nil
+		return checkDirs(path, target)
 	}
 	if err != nil {
-		return err
+		return readErr(path, err)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file; it was not changed", path)
 	}
-	if info.Mode().Perm()&0o222 == 0 {
-		return fmt.Errorf("%s is read-only (mode %04o); it was not changed", path, info.Mode().Perm())
+	if perm := info.Mode().Perm(); perm == 0 {
+		return fmt.Errorf("%s has no permissions at all (mode 0000); fix its permissions (chmod u+rw) and rerun; it was not changed", path)
+	} else if perm&0o222 == 0 {
+		return fmt.Errorf("%s is read-only (mode %04o); it was not changed", path, perm)
 	}
 	f, err := os.OpenFile(target, os.O_WRONLY, 0)
 	if err != nil {
 		return fmt.Errorf("%s is not writable (%v); it was not changed", path, trimPathErr(err))
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return checkDirs(path, target)
 }
 
 func trimPathErr(err error) error {
@@ -390,8 +403,13 @@ func trimPathErr(err error) error {
 }
 
 // checkAllWritable runs checkWritable on every file one init writes, before
-// it writes any, so a read-only second file does not leave the first one
-// changed.
+// it writes any, so a read-only second file, or a missing one under an
+// unwritable directory, does not leave the first one changed.
+//
+// This is a precheck, not a lock: between it and the rename another process
+// can change a mode, a directory, or a link (TOCTOU). The write still fails
+// safely then (temp file and backup removed, target unchanged), but a file
+// written earlier in the same init stays written.
 func checkAllWritable(paths ...string) error {
 	for _, path := range paths {
 		if err := checkWritable(path); err != nil {
@@ -418,6 +436,14 @@ func replaceFile(path string, body []byte, fallback os.FileMode) (string, error)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
+	target, err := resolveTarget(path)
+	if err != nil {
+		return "", err
+	}
+	warning := ""
+	if msg := linkEscape(path, target); msg != "" {
+		warning = "warning: " + msg + "; sdf wrote through it\n"
+	}
 	links := hardLinks(path)
 	backup, err := copyAside(path)
 	if err != nil {
@@ -429,7 +455,7 @@ func replaceFile(path string, body []byte, fallback os.FileMode) (string, error)
 		}
 		return "", err
 	}
-	text := wrote(path, backup)
+	text := wrote(path, backup) + warning
 	if links > 1 {
 		text += fmt.Sprintf("note: %s had %d hard links; the other links still hold the old contents\n", path, links)
 	}
