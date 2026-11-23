@@ -450,6 +450,31 @@ func IsGoTest(argv []string) bool {
 	return len(argv) >= 2 && path.Base(argv[0]) == "go" && argv[1] == "test"
 }
 
+// GoChdir returns the directory a `go test`/`go vet` argv runs in, relative
+// to the checkout: the -C flag's value ("-C dir" or "-C=dir", which go
+// accepts only as the first flag), cleaned, or "." without one. ok is false
+// for a -C outside the checkout. rest is the argv after the -C flag.
+func GoChdir(argv []string) (dir string, rest []string, ok bool) {
+	if len(argv) < 3 {
+		return ".", nil, true
+	}
+	a := argv[2]
+	switch {
+	case (a == "-C" || a == "--C") && len(argv) > 3:
+		dir, rest = argv[3], argv[4:]
+	case strings.HasPrefix(a, "-C=") || strings.HasPrefix(a, "--C="):
+		_, dir, _ = strings.Cut(a, "=")
+		rest = argv[3:]
+	default:
+		return ".", argv[2:], true
+	}
+	dir = path.Clean(dir)
+	if path.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") {
+		return dir, rest, false
+	}
+	return dir, rest, true
+}
+
 func goTestPaths(argv []string, paths []string) []string {
 	if len(argv) < 2 || path.Base(argv[0]) != "go" || (argv[1] != "test" && argv[1] != "vet") {
 		return nil
@@ -458,8 +483,12 @@ func goTestPaths(argv []string, paths []string) []string {
 		dir       string
 		recursive bool
 	}
+	chdir, args, ok := GoChdir(argv)
+	if !ok {
+		return nil
+	}
 	var pkgs []pkg
-	for _, a := range argv[2:] {
+	for _, a := range args {
 		if a != "." && a != "..." && !strings.HasPrefix(a, "./") {
 			continue
 		}
@@ -468,17 +497,20 @@ func goTestPaths(argv []string, paths []string) []string {
 		if d == "" {
 			d = "."
 		}
+		d = path.Join(chdir, d)
 		if d == ".." || strings.HasPrefix(d, "../") {
 			continue
 		}
 		pkgs = append(pkgs, pkg{d, rec})
 	}
 	if len(pkgs) == 0 {
-		pkgs = []pkg{{".", false}}
+		pkgs = []pkg{{chdir, false}}
 	}
 	var out []string
 	for _, p := range paths {
-		if p == "go.mod" || p == "go.sum" || p == "go.work" || p == "go.work.sum" {
+		dir, name := path.Split(p)
+		dir = path.Clean(dir)
+		if (name == "go.mod" || name == "go.sum" || name == "go.work" || name == "go.work.sum") && (dir == "." || dir == chdir) {
 			out = append(out, p)
 			continue
 		}
@@ -514,6 +546,24 @@ var interpreters = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash"
 // import or call; an inline -c script pins nothing it names.
 func Warnings(s Spec) []string {
 	var w []string
+	// A designated test file no `go test` criterion runs gets no harness:
+	// a script that runs go test reports only its exit code, which code
+	// under test can fake (an init that exits 0).
+	for _, f := range s.DesignatedFiles {
+		if !strings.HasSuffix(f.Path, "_test.go") {
+			continue
+		}
+		covered := false
+		for _, c := range s.Criteria {
+			if IsGoTest(c.Argv) && len(GoTestPaths(c.Argv, []string{f.Path})) > 0 {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			w = append(w, fmt.Sprintf("designated test file %s is not run by any `go test` criterion, so its results are not checked by the verifier's harness (a script running go test reports only an exit code, which code under test can fake); add a `go test` criterion, with -C <dir> for a nested module", f.Path))
+		}
+	}
 	for _, c := range s.Criteria {
 		base := path.Base(c.Argv[0])
 		if len(c.Designated) > 0 {

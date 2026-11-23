@@ -18,7 +18,8 @@ const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--task-ha
                   [--out PATH]
                   [--artifacts DIR] [--work-dir DIR] [--path PATH]
                   [--go-cache DIR] [--go-mod-cache DIR] [--expect-prefix SEQ:HASH]
-                  [--allow-unisolated] [--keep]
+                  [--allow-unisolated] [--allow-network NAME]...
+                  [--allow-tamper-capable] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
 outside the repository. The task is read from --task-ref (the protected
@@ -30,11 +31,17 @@ or an unpinned ledger, which the agent can write, gives at best ERROR
 (TASK_UNTRUSTED). A local branch as --task-ref draws a warning: pass a
 freshly fetched remote ref or a commit id.
 
-Each check runs as pid 1's child in new Linux user, pid and mount
-namespaces, and everything it started is killed when it exits. Where that
-is not possible the verdict is ERROR (ISOLATION_UNAVAILABLE) unless
+Each check runs as pid 1's child in new Linux user, pid, mount and network
+namespaces, with an empty /tmp, /run, /dev/shm and home, only loopback,
+and no capabilities; everything it started is killed when it exits. Where
+that is not possible the verdict is ERROR (ISOLATION_UNAVAILABLE) unless
 --allow-unisolated, which runs the checks anyway and records isolation
-"none". The
+"none". --allow-network NAME keeps the host network for criterion NAME.
+
+For a go test criterion, new or changed code that could forge the test
+harness's reports (unsafe, debug/*, cgo, assembly, raw syscalls, /proc
+paths) is ERROR (TAMPER_CAPABLE_CODE); --allow-tamper-capable, after a
+person has read it, makes that a warning. The
 working tree's .sdf/tasks file is never read. Checks run in the checkout
 root with --path (default: this PATH, relative entries dropped) as their
 only PATH, a new HOME, and new Go caches unless --go-cache/--go-mod-cache
@@ -67,6 +74,20 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 			continue
 		case "--allow-unisolated":
 			opt.AllowUnisolated = true
+			continue
+		case "--allow-tamper-capable":
+			opt.AllowTamperCapable = true
+			continue
+		}
+		if v, ok, err := flagValue("--allow-network", &i, args); ok {
+			if err == nil && v == "" {
+				err = fmt.Errorf("--allow-network requires a criterion name")
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+				return 2
+			}
+			opt.AllowNetwork = append(opt.AllowNetwork, v)
 			continue
 		}
 		if v, ok, err := flagValue("--ledger", &i, args); ok {

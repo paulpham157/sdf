@@ -38,14 +38,14 @@ func cleanGitEnv() []string {
 // config) reaches a check. PATH is set from Options.Path.
 var checkEnvNames = []string{
 	"CI", "GONOPROXY", "GONOSUMDB", "GOPRIVATE", "GOPROXY", "GOSUMDB",
-	"LANG", "LC_ALL", "LOGNAME", "SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "TZ", "USER",
+	"LANG", "LC_ALL", "LOGNAME", "SYSTEMROOT", "TZ", "USER",
 }
 
 // checkDirs are the per-verification directories a check gets as its home
 // and Go state. All are outside the checkout and new, except caches the
 // caller passed in Options.
 type checkDirs struct {
-	home, gopath, gocache, gomodcache string
+	home, gopath, gocache, gomodcache, tmp string
 }
 
 // absolutePath drops empty and relative entries from a PATH value.
@@ -113,6 +113,8 @@ func checkEnv(pathValue string, d checkDirs) ([]string, []string, string) {
 		{"XDG_STATE_HOME", filepath.Join(d.home, ".local", "state")},
 		{"GOENV", "off"}, {"GOFLAGS", ""}, {"GOTOOLCHAIN", "local"},
 		{"GOPATH", d.gopath}, {"GOCACHE", d.gocache}, {"GOMODCACHE", d.gomodcache},
+		// A new temp directory: /tmp is covered in the namespace.
+		{"TMPDIR", d.tmp}, {"TEMP", d.tmp}, {"TMP", d.tmp},
 	}
 	for _, kv := range set {
 		env = append(env, kv[0]+"="+kv[1])

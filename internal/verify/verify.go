@@ -69,6 +69,7 @@ const (
 	CodeCheckError             = "CHECK_ERROR"
 	CodeTaskUntrusted          = "TASK_UNTRUSTED"
 	CodeIsolationUnavailable   = "ISOLATION_UNAVAILABLE"
+	CodeTamperCapable          = "TAMPER_CAPABLE_CODE"
 	CodeInfraError             = "INFRA_ERROR"
 )
 
@@ -118,6 +119,15 @@ type Options struct {
 	// verdict then records isolation "none"; without this, no isolation is
 	// ERROR (ISOLATION_UNAVAILABLE) and no criterion runs.
 	AllowUnisolated bool
+
+	// AllowTamperCapable turns the tripwire's TAMPER_CAPABLE_CODE (new code
+	// that could forge go test reports: unsafe, debug/*, cgo, assembly,
+	// raw syscalls, /proc paths) from ERROR into a warning.
+	AllowTamperCapable bool
+
+	// AllowNetwork names criteria that keep the host network. Every other
+	// criterion runs in its own network namespace with only loopback.
+	AllowNetwork []string
 
 	// GoCache and GoModCache, when set, are the GOCACHE and GOMODCACHE
 	// checks use. They have to be directories the agent cannot write.
@@ -253,6 +263,11 @@ func (r *run) steps() {
 	}
 	r.checkRevision()
 	r.checkIntegrity()
+	for _, w := range task.Warnings(r.spec) {
+		if strings.HasPrefix(w, "designated test file") {
+			r.warnings = append(r.warnings, w)
+		}
+	}
 	if r.spec.SecretScan {
 		r.scanSecrets()
 	}
@@ -273,6 +288,7 @@ func (r *run) prepareChecks() bool {
 	tmp := filepath.Dir(r.checkout)
 	r.dirs = checkDirs{
 		home:       filepath.Join(tmp, "home"),
+		tmp:        filepath.Join(tmp, "tmp"),
 		gopath:     filepath.Join(tmp, "gopath"),
 		gocache:    r.opt.GoCache,
 		gomodcache: r.opt.GoModCache,
@@ -294,7 +310,7 @@ func (r *run) prepareChecks() bool {
 		}
 	}
 	err := r.hideGitDir()
-	for _, d := range []string{r.dirs.home, r.dirs.gopath, r.dirs.gocache, r.dirs.gomodcache} {
+	for _, d := range []string{r.dirs.home, r.dirs.tmp, r.dirs.gopath, r.dirs.gocache, r.dirs.gomodcache} {
 		if err == nil {
 			err = os.MkdirAll(d, 0o700)
 		}
@@ -703,6 +719,7 @@ func (r *run) checkIntegrity() {
 		return
 	}
 	r.treeAtSHA = at
+	r.checkTamperCapable(at, atBase)
 	// The base has to hold exactly what the task pinned, or the task does
 	// not describe this repository's base.
 	{
@@ -1016,6 +1033,7 @@ func (r *run) runCriterion(c task.Criterion) {
 	goTest := task.IsGoTest(c.Argv)
 	var h *harness
 	var wantTests []string
+	goroot := ""
 	argv := c.Argv
 	if goTest {
 		var err error
@@ -1032,7 +1050,18 @@ func (r *run) runCriterion(c task.Criterion) {
 			fail(CodeCheckError, "%v", err)
 			return
 		}
-		if h, err = r.newHarness(c, wantTests); err != nil {
+		goCmd, err := lookPath(argv[0], r.checkout, r.opt.Path)
+		if err != nil {
+			fail(CodeCheckError, "%v", err)
+			return
+		}
+		goroot, err = goEnvGOROOT(r.ctx, goCmd, env, filepath.Dir(r.checkout))
+		if err != nil {
+			fail(CodeInfraError, "go env GOROOT: %v", err)
+			return
+		}
+		ev["goroot"] = goroot
+		if h, err = r.newHarness(c, wantTests, goroot); err != nil {
 			fail(CodeInfraError, "go test harness: %v", err)
 			return
 		}
@@ -1043,8 +1072,8 @@ func (r *run) runCriterion(c task.Criterion) {
 			return
 		}
 		// No cgo: a C constructor would run before the hook's init.
-		env = append(env, "CGO_ENABLED=0", "GOTMPDIR="+gotmp, hookEnv+"="+h.socket)
-		envNames = append(envNames, "CGO_ENABLED", "GOTMPDIR", hookEnv)
+		env = append(env, "CGO_ENABLED=0", "GOTMPDIR="+gotmp)
+		envNames = append(envNames, "CGO_ENABLED", "GOTMPDIR")
 		sort.Strings(envNames)
 	}
 	ev["run_argv"] = argv
@@ -1063,8 +1092,14 @@ func (r *run) runCriterion(c task.Criterion) {
 	}
 	ev["command"] = command
 	var cmd *exec.Cmd
+	ev["network"] = "host"
 	if r.isolation == IsolationNamespace {
-		if cmd, err = isolatedCommand(ctx, command, argv); err != nil {
+		cfg, unmasked := r.sandboxConfig(c, command, goroot, h)
+		if !cfg.hostNet {
+			ev["network"] = "loopback"
+		}
+		ev["masked"], ev["unmasked"] = nonNilStrings(cfg.mask), nonNilStrings(unmasked)
+		if cmd, err = isolatedCommand(ctx, command, argv, cfg); err != nil {
 			if h != nil {
 				h.finish()
 			}
@@ -1308,4 +1343,20 @@ func (r *run) finish() (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// goEnvGOROOT asks the criterion's go command for its GOROOT, with the
+// check's environment, outside the checkout.
+func goEnvGOROOT(ctx context.Context, goCmd string, env []string, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, goCmd, "env", "GOROOT")
+	cmd.Env, cmd.Dir = env, dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	g := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(g) {
+		return "", fmt.Errorf("GOROOT %q is not absolute", g)
+	}
+	return g, nil
 }

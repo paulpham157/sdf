@@ -18,7 +18,8 @@ import (
 )
 
 // goTestArgv adds -count=1 (unless the task sets -count) and the harness
-// overlay to a `go test` argv, right after "test". -count=1 keeps a cached
+// overlay to a `go test` argv, right after "test", or after "-C dir", which
+// go requires to be the first flag. -count=1 keeps a cached
 // result from standing in for a run. It refuses -overlay and -exec, which
 // would replace the harness or put another process between go and the test
 // binary.
@@ -26,8 +27,13 @@ func goTestArgv(argv []string, overlay string) ([]string, error) {
 	if !task.IsGoTest(argv) {
 		return argv, nil
 	}
+	chdir, rest, ok := task.GoChdir(argv)
+	if !ok {
+		return nil, fmt.Errorf("go test -C %s is outside the checkout", chdir)
+	}
+	head := argv[:len(argv)-len(rest)]
 	hasCount := false
-	for _, a := range argv[2:] {
+	for _, a := range rest {
 		flag := strings.TrimLeft(a, "-")
 		name, _, _ := strings.Cut(flag, "=")
 		switch {
@@ -38,14 +44,14 @@ func goTestArgv(argv []string, overlay string) ([]string, error) {
 			return nil, fmt.Errorf("go test %s is not supported: it would bypass the verifier's test harness", a)
 		}
 	}
-	out := append([]string(nil), argv[:2]...)
+	out := append([]string(nil), head...)
 	if !hasCount {
 		out = append(out, "-count=1")
 	}
 	if overlay != "" {
 		out = append(out, "-overlay="+overlay)
 	}
-	return append(out, argv[2:]...), nil
+	return append(out, rest...), nil
 }
 
 // isGoTool reports whether argv runs `go test` or `go vet`.
@@ -75,7 +81,6 @@ func designatedTests(checkout string, spec task.Spec, c task.Criterion) ([]strin
 			paths = append(paths, f.Path)
 		}
 	}
-	module := ""
 	var out []string
 	ctx := build.Default
 	ctx.CgoEnabled = false
@@ -87,20 +92,13 @@ func designatedTests(checkout string, spec task.Spec, c task.Criterion) ([]strin
 		if ok, _ := ctx.MatchFile(filepath.Dir(full), filepath.Base(full)); !ok {
 			continue // not built here, so neither wrapped nor required
 		}
-		if module == "" {
-			m, err := modulePath(filepath.Join(checkout, "go.mod"))
-			if err != nil {
-				return nil, err
-			}
-			module = m
+		pkg, err := importPath(checkout, path.Dir(p))
+		if err != nil {
+			return nil, err
 		}
 		file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(checkout, filepath.FromSlash(p)), nil, parser.SkipObjectResolution)
 		if err != nil {
 			return nil, err
-		}
-		pkg := module
-		if d := path.Dir(p); d != "." {
-			pkg = module + "/" + d
 		}
 		for _, d := range file.Decls {
 			fn, ok := d.(*ast.FuncDecl)

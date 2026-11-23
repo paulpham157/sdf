@@ -8,7 +8,7 @@ import (
 	"os/exec"
 )
 
-func isolatedCommand(context.Context, string, []string) (*exec.Cmd, error) {
+func isolatedCommand(context.Context, string, []string, nsConfig) (*exec.Cmd, error) {
 	return nil, errors.New("criterion isolation needs Linux namespaces")
 }
 

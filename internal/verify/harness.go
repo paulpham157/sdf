@@ -29,12 +29,16 @@ import (
 // output, which the code under test can write. Instead, for a `go test`
 // criterion:
 //
-//   - go test gets -overlay with a hook package under a random name, and a
-//     file in every package of the module that imports it. Go initializes
-//     a package's imports before the package, so the hook's init runs
-//     before any init in the module's code.
-//   - The hook connects to a unix socket the verifier listens on and reads
-//     a 32-byte key. The verifier accepts one connection per test binary
+//   - go test gets -overlay that adds the hook, under random names, to the
+//     standard library's testing package (in GOROOT, so nothing is written
+//     to the checkout), and a file importing "testing" to every package
+//     directory in the checkout: the module, nested modules, replace
+//     directories and vendor/. Go initializes a package's imports before
+//     the package, so the hook's init runs before any init or package
+//     variable in the repository's code.
+//   - The hook connects to a unix socket the verifier listens on, whose
+//     path is compiled into it (no environment variable to redirect), and
+//     reads a 32-byte key. The verifier accepts one connection per test binary
 //     process, and only from a process whose executable is a test binary
 //     and whose parent is the criterion's own go command; a second
 //     connection from the same process, or from anything else, is a
@@ -46,18 +50,16 @@ import (
 //   - The verifier requires a valid pass for every designated test, and no
 //     invalid frame and no fail.
 //
-// The key is in the test binary's memory, so code under test that reads
-// its own process's memory, or patches the testing package, can still
-// forge a report. That needs code written against this harness; see
-// docs/verify.md.
-
-// hookEnv names the variable holding the socket path.
-const hookEnv = "SDF_VERIFY_HOOK"
+// KNOWN GAP: the key and the report function are in the test binary's
+// memory, so code under test that reads its own process's memory or calls
+// the report function through its symbol table (atk_b1mem: debug/elf +
+// debug/gosym + unsafe) can still forge a pass. The tripwire (tripwire.go)
+// makes such code an ERROR when it is new; see docs/verify.md.
 
 type harness struct {
 	keyed                int // test binaries that got a key
 	dir, overlay, socket string
-	hookPkg              string
+	tag                  string // random suffix of the hook's names
 	ln                   net.Listener
 	expected             []string
 
@@ -83,18 +85,20 @@ func randHex(n int) string {
 }
 
 // newHarness writes the overlay for criterion c and listens on the socket.
-func (r *run) newHarness(c task.Criterion, expected []string) (*harness, error) {
-	module, err := modulePath(filepath.Join(r.checkout, "go.mod"))
-	if err != nil {
-		return nil, fmt.Errorf("go.mod: %w", err)
+// goroot is the GOROOT of the go command the criterion runs.
+func (r *run) newHarness(c task.Criterion, expected []string, goroot string) (*harness, error) {
+	testingDir := filepath.Join(goroot, "src", "testing")
+	if fi, err := os.Stat(testingDir); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("GOROOT %s has no src/testing", goroot)
 	}
 	// A short directory: unix socket paths are limited to about 100 bytes.
 	dir, err := os.MkdirTemp("", "sdfh")
 	if err != nil {
 		return nil, err
 	}
-	h := &harness{dir: dir, hookPkg: "z" + randHex(8), expected: expected,
+	h := &harness{dir: dir, tag: randHex(8), expected: expected,
 		results: map[string][]string{}, pids: map[int]bool{}, started: make(chan struct{})}
+	h.socket = filepath.Join(dir, "s")
 	replace := map[string]string{}
 	add := func(target, content string) error {
 		src := filepath.Join(dir, "f"+strconv.Itoa(len(replace))+".go")
@@ -104,18 +108,12 @@ func (r *run) newHarness(c task.Criterion, expected []string) (*harness, error) 
 		replace[target] = src
 		return nil
 	}
-	hookImport := module + "/" + h.hookPkg
-	// go vet chdirs into a package's directory, so the hook's has to exist.
-	hookDir := filepath.Join(r.checkout, h.hookPkg)
-	if err := os.Mkdir(hookDir, 0o755); err != nil {
-		return nil, err
-	}
-	if err := add(filepath.Join(hookDir, "hook.go"), hookSource(h.hookPkg)); err != nil {
+	if err := add(filepath.Join(testingDir, "zz_sdfverify_"+h.tag+".go"), hookSource(h.tag, h.socket)); err != nil {
 		return nil, err
 	}
 	ctx := build.Default
 	ctx.CgoEnabled = false
-	dirs, err := modulePackageDirs(r.checkout)
+	dirs, err := packageDirs(r.checkout)
 	if err != nil {
 		return nil, err
 	}
@@ -124,11 +122,11 @@ func (r *run) newHarness(c task.Criterion, expected []string) (*harness, error) 
 		if _, ok := err.(*build.NoGoError); ok {
 			continue
 		}
-		if err != nil {
-			return nil, fmt.Errorf("package in %s: %w", d, err)
+		if err != nil || p.Name == "" || p.Name == "documentation" {
+			continue // not a package go would build; nothing to hook
 		}
-		name := "zz_sdfverify_" + randHex(4) + ".go"
-		if err := add(filepath.Join(d, name), fmt.Sprintf("package %s\n\nimport _ %q\n", p.Name, hookImport)); err != nil {
+		name := "zz_sdfverify_" + h.tag + ".go"
+		if err := add(filepath.Join(d, name), fmt.Sprintf("package %s\n\nimport _ \"testing\"\n", p.Name)); err != nil {
 			return nil, err
 		}
 	}
@@ -141,11 +139,11 @@ func (r *run) newHarness(c task.Criterion, expected []string) (*harness, error) 
 		if ok, _ := ctx.MatchFile(filepath.Dir(full), filepath.Base(full)); !ok {
 			continue
 		}
-		pkg := module
-		if d := path.Dir(f.Path); d != "." {
-			pkg = module + "/" + d
+		pkg, err := importPath(r.checkout, path.Dir(f.Path))
+		if err != nil {
+			return nil, err
 		}
-		src, err := wrapTests(full, pkg, hookImport, h.hookPkg)
+		src, err := wrapTests(full, pkg, h.tag)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", f.Path, err)
 		}
@@ -163,7 +161,6 @@ func (r *run) newHarness(c task.Criterion, expected []string) (*harness, error) 
 	if err := os.WriteFile(h.overlay, b, 0o600); err != nil {
 		return nil, err
 	}
-	h.socket = filepath.Join(dir, "s")
 	if h.ln, err = net.Listen("unix", h.socket); err != nil {
 		return nil, err
 	}
@@ -172,10 +169,11 @@ func (r *run) newHarness(c task.Criterion, expected []string) (*harness, error) 
 	return h, nil
 }
 
-// modulePackageDirs lists the directories of the module rooted at root
-// that can hold a package: not vendor, testdata, ".x" or "_x", and not
-// inside a nested module.
-func modulePackageDirs(root string) ([]string, error) {
+// packageDirs lists every directory under root that can hold a package
+// go would build: everything but testdata, ".x" and "_x". Nested modules,
+// replace directories and vendor/ are included, so their init functions
+// also wait for the hook.
+func packageDirs(root string) ([]string, error) {
 	var dirs []string
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -186,10 +184,7 @@ func modulePackageDirs(root string) ([]string, error) {
 		}
 		if p != root {
 			n := d.Name()
-			if n == "vendor" || n == "testdata" || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
-				return filepath.SkipDir
-			}
-			if _, err := os.Lstat(filepath.Join(p, "go.mod")); err == nil {
+			if n == "testdata" || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") {
 				return filepath.SkipDir
 			}
 		}
@@ -199,10 +194,37 @@ func modulePackageDirs(root string) ([]string, error) {
 	return dirs, err
 }
 
+// importPath is the import path of the package in dir (relative to the
+// checkout, slash-separated): the nearest go.mod at or above it, within the
+// checkout, plus the rest of the path.
+func importPath(checkout, dir string) (string, error) {
+	d := path.Clean(dir)
+	rest := ""
+	for {
+		m, err := modulePath(filepath.Join(checkout, filepath.FromSlash(d), "go.mod"))
+		if err == nil {
+			if rest == "" {
+				return m, nil
+			}
+			return m + "/" + rest, nil
+		}
+		if d == "." {
+			return "", fmt.Errorf("no go.mod at or above %s", dir)
+		}
+		if rest == "" {
+			rest = path.Base(d)
+		} else {
+			rest = path.Base(d) + "/" + rest
+		}
+		d = path.Dir(d)
+	}
+}
+
 // wrapTests returns the source of a test file with each top-level Test
 // function renamed and replaced by a wrapper that reports through the
 // hook, or "" when the file has none. Everything else is byte for byte.
-func wrapTests(file, pkg, hookImport, alias string) (string, error) {
+func wrapTests(file, pkg, tag string) (string, error) {
+	alias := "sdf" + tag
 	src, err := os.ReadFile(file)
 	if err != nil {
 		return "", err
@@ -240,7 +262,7 @@ func wrapTests(file, pkg, hookImport, alias string) (string, error) {
 		last = upTo
 	}
 	write(pkgEnd)
-	fmt.Fprintf(&out, "\n\nimport %s %q\n", alias, hookImport)
+	fmt.Fprintf(&out, "\n\nimport %s \"testing\"\n", alias)
 	sort.Slice(rs, func(i, j int) bool { return rs[i].off < rs[j].off })
 	for _, x := range rs {
 		write(x.off)
@@ -249,59 +271,57 @@ func wrapTests(file, pkg, hookImport, alias string) (string, error) {
 	}
 	write(len(src))
 	for _, x := range rs {
-		fmt.Fprintf(&out, "\n\nfunc %s(sdfT %s) { %s.Run(sdfT, %q, %s_%s) }\n", x.name, x.typ, alias, pkg+" "+x.name, alias, x.name)
+		fmt.Fprintf(&out, "\n\nfunc %s(sdfT %s) { %s.SdfVerify%sRun(sdfT, %q, %s_%s) }\n", x.name, x.typ, alias, tag, pkg+" "+x.name, alias, x.name)
 	}
 	return out.String(), nil
 }
 
-// hookSource is the hook package. It imports only the standard library.
-func hookSource(pkg string) string {
-	return `package ` + pkg + `
+// hookSource is the file the overlay adds to package testing. Every name
+// it declares, including its imports, carries the run's random tag, so it
+// cannot collide with testing's own and code under test cannot name it
+// without knowing the tag. The socket path is a constant in it.
+func hookSource(tag, socket string) string {
+	src := `package testing
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
-	"io"
-	"net"
-	"os"
-	"strconv"
-	"sync"
-	"testing"
+	T_hmac "crypto/hmac"
+	T_sha256 "crypto/sha256"
+	T_hex "encoding/hex"
+	T_io "io"
+	T_net "net"
+	T_os "os"
+	T_strconv "strconv"
+	T_sync "sync"
 )
 
-var st struct {
-	mu   sync.Mutex
-	conn net.Conn
+var T_st struct {
+	mu   T_sync.Mutex
+	conn T_net.Conn
 	key  []byte
 	seq  int
 }
 
 func init() {
-	// This package exists only in the verifier's overlay, so failing to
-	// reach the verifier is fatal (and visible: go test shows a failing
+	// This file exists only in the verifier's overlay, so failing to reach
+	// the verifier is fatal (and visible: go test shows a failing
 	// package's output).
 	die := func(msg string) {
-		os.Stderr.WriteString("sdf verify hook: " + msg + "\n")
-		os.Exit(3)
+		T_os.Stderr.WriteString("sdf verify hook: " + msg + "\n")
+		T_os.Exit(3)
 	}
-	p := os.Getenv("` + hookEnv + `")
-	if p == "" {
-		die("` + hookEnv + ` is not set")
-	}
-	c, err := net.Dial("unix", p)
+	c, err := T_net.Dial("unix", SOCKET)
 	if err != nil {
 		die(err.Error())
 	}
 	key := make([]byte, 32)
-	if _, err := io.ReadFull(c, key); err != nil {
+	if _, err := T_io.ReadFull(c, key); err != nil {
 		die("no key: " + err.Error())
 	}
-	st.conn, st.key = c, key
+	T_st.conn, T_st.key = c, key
 }
 
-// Run runs a designated test and reports its result to the verifier.
-func Run(t *testing.T, name string, f func(*testing.T)) {
+// SdfVerifyTRun runs a designated test and reports its result.
+func SdfVerifyTRun(t *T, name string, f func(*T)) {
 	returned := false
 	t.Cleanup(func() {
 		res := "fail"
@@ -311,25 +331,28 @@ func Run(t *testing.T, name string, f func(*testing.T)) {
 		case returned && !t.Failed():
 			res = "pass"
 		}
-		send(res + " " + name)
+		T_send(res + " " + name)
 	})
 	f(t)
 	returned = true
 }
 
-func send(msg string) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.conn == nil {
+func T_send(msg string) {
+	T_st.mu.Lock()
+	defer T_st.mu.Unlock()
+	if T_st.conn == nil {
 		return
 	}
-	st.seq++
-	body := strconv.Itoa(st.seq) + " " + msg
-	m := hmac.New(sha256.New, st.key)
+	T_st.seq++
+	body := T_strconv.Itoa(T_st.seq) + " " + msg
+	m := T_hmac.New(T_sha256.New, T_st.key)
 	m.Write([]byte(body))
-	io.WriteString(st.conn, hex.EncodeToString(m.Sum(nil))+" "+body+"\n")
+	T_io.WriteString(T_st.conn, T_hex.EncodeToString(m.Sum(nil))+" "+body+"\n")
 }
 `
+	src = strings.ReplaceAll(src, "SOCKET", strconv.Quote(socket))
+	src = strings.ReplaceAll(src, "SdfVerifyTRun", "SdfVerify"+tag+"Run")
+	return strings.ReplaceAll(src, "T_", "sdf"+tag+"_")
 }
 
 func (h *harness) violate(format string, args ...any) {

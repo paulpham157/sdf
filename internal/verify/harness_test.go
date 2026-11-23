@@ -44,10 +44,17 @@ func TestB1ForgedTestOutputIsNotAResult(t *testing.T) {
 // process it starts. Both are refused, and refusing is a FAIL.
 func TestB1ForgedReportsOnTheHarnessSocket(t *testing.T) {
 	cases := map[string]string{
-		"same process": `c, err := net.Dial("unix", os.Getenv("SDF_VERIFY_HOOK"))
-		if err == nil {
-			c.Write([]byte("00 1 pass example.com/m/a TestAdd\n"))
-			c.Close()
+		// The socket path is compiled into the hook, but its directory can
+		// be found.
+		"same process": `socks, _ := filepath.Glob("/tmp/sdfh*/s")
+		for _, p := range socks {
+			if c, err := net.Dial("unix", p); err == nil {
+				c.Write([]byte("00 1 pass example.com/m/a TestAdd\n"))
+				c.Close()
+			}
+		}
+		if len(socks) == 0 {
+			panic("no socket found")
 		}`,
 		"child process": `if os.Getenv("SDF_ATTACK_CHILD") == "" {
 			cmd := exec.Command(os.Args[0], "-test.run=^$")
@@ -59,7 +66,7 @@ func TestB1ForgedReportsOnTheHarnessSocket(t *testing.T) {
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			f := newGoFixture(t)
-			src := "package a\n\nimport (\n\t\"net\"\n\t\"os\"\n\t\"os/exec\"\n\t\"strings\"\n)\n\nvar _ = exec.Command\n\nfunc init() {\n\tif strings.HasSuffix(os.Args[0], \".test\") {\n\t\t" + body + "\n\t}\n}\n\n" + strings.TrimPrefix(goodAdd, "package a\n\n")
+			src := "package a\n\nimport (\n\t\"net\"\n\t\"os\"\n\t\"os/exec\"\n\t\"path/filepath\"\n\t\"strings\"\n)\n\nvar _ = exec.Command\nvar _ = filepath.Glob\n\nfunc init() {\n\tif strings.HasSuffix(os.Args[0], \".test\") {\n\t\t" + body + "\n\t}\n}\n\n" + strings.TrimPrefix(goodAdd, "package a\n\n")
 			sha := f.agentCommit(t, map[string]string{"a/a.go": src})
 			res := mustRun(t, goOpts(t, f, sha))
 			if res.Status != StatusFail || !hasCode(res, CodeTestReportInvalid) {
@@ -190,5 +197,52 @@ func TestSecretScanCoversCommitHeadersAndPathNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// go test -C on a nested module: the flags go after -C (go requires -C
+// first), the module's packages are hooked and named by their own go.mod.
+func TestGoTestChdirNestedModule(t *testing.T) {
+	base := map[string]string{
+		"go.mod":        "module example.com/root\n\ngo 1.21\n",
+		"sub/go.mod":    "module example.com/sub\n\ngo 1.21\n",
+		"sub/s.go":      "package sub\n\nfunc Add(x, y int) int { return 0 }\n",
+		"sub/s_test.go": "package sub\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(2, 3) != 5 {\n\t\tt.Fatal(\"Add\")\n\t}\n}\n",
+	}
+	f := newFixtureFiles(t, base, task.CriterionInput{Name: "unit", Argv: []string{"go", "test", "-C", "sub", "./..."}, TimeoutS: 300})
+	honest := f.agentCommit(t, map[string]string{"sub/s.go": "package sub\n\nfunc Add(x, y int) int { return x + y }\n"})
+	res := mustRun(t, goOpts(t, f, honest))
+	if res.Status != StatusPass {
+		t.Fatalf("honest: %s %+v", res.Status, res.Reasons)
+	}
+	crit := res.Evidence[len(res.Evidence)-1].Value
+	if a := strings.Join(crit["run_argv"].([]string), " "); !strings.HasPrefix(a, "go test -C sub -count=1 -overlay=") {
+		t.Fatalf("argv %s", a)
+	}
+	g(t, f.repo, "checkout", "-q", f.base)
+	atk := f.agentCommit(t, map[string]string{"sub/hack.go": "package sub\n\nimport (\n\t\"os\"\n\t\"syscall\"\n)\n\nfunc init() {\n\tos.Stdout.WriteString(\"ok\\n\")\n\tsyscall.Exit(0)\n}\n"})
+	if res := mustRun(t, goOpts(t, f, atk)); res.Status != StatusFail || !hasCode(res, CodeDesignatedTestMissing) {
+		t.Fatalf("atk: %s %+v", res.Status, res.Reasons)
+	}
+}
+
+// A replace directory's package is initialized after the hook (it imports
+// testing through the overlay), so its init cannot take the socket first:
+// its connection is the second from the process, a violation.
+func TestReplaceDirInitCannotTakeTheHarnessFirst(t *testing.T) {
+	base := map[string]string{}
+	for p, c := range goBase {
+		base[p] = c
+	}
+	base["go.mod"] = "module example.com/m\n\ngo 1.21\n\nrequire example.com/lib v0.0.0\n\nreplace example.com/lib => ./lib\n"
+	base["lib/go.mod"] = "module example.com/lib\n\ngo 1.21\n"
+	base["lib/lib.go"] = "package lib\n\nfunc Two() int { return 2 }\n"
+	base["a/a.go"] = "package a\n\nimport \"example.com/lib\"\n\nfunc Add(x, y int) int { return 0 * lib.Two() }\n"
+	f := newFixtureFiles(t, base, task.CriterionInput{Name: "unit", Argv: []string{"go", "test", "./a/"}, TimeoutS: 300})
+	lib := "package lib\n\nimport (\n\t\"io\"\n\t\"net\"\n\t\"path/filepath\"\n)\n\nvar Conn net.Conn\n\nfunc init() {\n\tsocks, _ := filepath.Glob(\"/tmp/sdfh*/s\")\n\tfor _, p := range socks {\n\t\tif c, err := net.Dial(\"unix\", p); err == nil {\n\t\t\tio.ReadFull(c, make([]byte, 32))\n\t\t\tConn = c\n\t\t}\n\t}\n}\n\nfunc Two() int { return 2 }\n"
+	sha := f.agentCommit(t, map[string]string{"lib/lib.go": lib, "a/a.go": "package a\n\nimport \"example.com/lib\"\n\nfunc Add(x, y int) int { return (x + y) * lib.Two() / 2 }\n"})
+	res := mustRun(t, goOpts(t, f, sha))
+	if res.Status != StatusFail || !hasCode(res, CodeTestReportInvalid) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
 }

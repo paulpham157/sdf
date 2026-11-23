@@ -2,9 +2,7 @@ package verify
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,30 +10,14 @@ import (
 	"github.com/paulpham157/sdf/internal/task"
 )
 
-// requireIsolation skips where namespaces are unavailable, except on a
-// GitHub-hosted Linux runner: there it does what the Action does (lift
-// Ubuntu's AppArmor restriction on unprivileged user namespaces with sudo)
-// and then requires isolation, so CI shows whether the Action can work.
+// requireIsolation skips where namespaces are unavailable (for example
+// GitHub's ubuntu-24.04 runners, until the workflow lifts AppArmor's
+// restriction; see docs/action.md). Tests never change the host.
 func requireIsolation(t *testing.T) {
 	t.Helper()
-	if ok, _ := isolationAvailable(); ok {
-		return
+	if ok, why := isolationAvailable(); !ok {
+		t.Skipf("isolation unavailable here: %s", why)
 	}
-	if runtime.GOOS == "linux" && os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("RUNNER_ENVIRONMENT") == "github-hosted" {
-		out, err := exec.Command("sudo", "-n", "sysctl", "-w", "kernel.apparmor_restrict_unprivileged_userns=0").CombinedOutput()
-		t.Logf("sudo sysctl: %v %s", err, out)
-		resetIsolationProbe()
-		if ok, why := isolationAvailable(); !ok {
-			t.Fatalf("isolation unavailable on a GitHub-hosted runner even after the sysctl: %s", why)
-		}
-		return
-	}
-	_, why := isolationAvailable()
-	t.Skipf("isolation unavailable here: %s", why)
-}
-
-func TestIsolationAvailableOnGitHubRunners(t *testing.T) {
-	requireIsolation(t)
 }
 
 // B-3: a check leaves a setsid daemon that rewrites the next check's script
