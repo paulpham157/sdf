@@ -40,6 +40,9 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Record who decided, alternatives, and a reason on `sdf decision add` (`--decided-by user|agent`, `--alternatives`, `--reason`); ship the `sdf-decisions` skill ([#234](https://github.com/paulpham157/sdf/pull/234)).
 - Add `sdf decision list` (and `--json`) to print decision records and edges ([#236](https://github.com/paulpham157/sdf/pull/236)).
 - Show each decision's effective status (`effective_status` / `superseded_by`, computed at read time and never stored) in the `EFFECTIVE` column and as "superseded by" in the UI ([#240](https://github.com/paulpham157/sdf/pull/240)).
+- Add `--expect-prefix` and `--expect-prefix-file` to `sdf audit verify` ([#220](https://github.com/paulpham157/sdf/pull/220)).
+- Drop prompt, response, tool, and error text before storing, for every agent; keep it only with `sdf serve --store-content` or `SDF_STORE_CONTENT` ([#224](https://github.com/paulpham157/sdf/pull/224)).
+- Check relations and endpoints in `sdf decision link` (allowed relations, no self-link, `supersedes` only between stored decisions, no cycles); show `decided_by`, alternatives, and reason in `sdf decision list` ([#251](https://github.com/paulpham157/sdf/pull/251), fixes [#249](https://github.com/paulpham157/sdf/issues/249)).
 
 ### Fixes
 
@@ -66,6 +69,9 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Set SQLite `busy_timeout` and WAL on open so concurrent ingest and summary do not fail with `SQLITE_BUSY` ([#238](https://github.com/paulpham157/sdf/pull/238)).
 - Validate `sdf init --host` and ports before `--check` probes them, and tighten host parsing ([#215](https://github.com/paulpham157/sdf/pull/215)).
 - Never hint the unspecified address for `sdf init --host` ([#226](https://github.com/paulpham157/sdf/pull/226)).
+- Price `cache_read` at 0 on bundled OpenRouter `:free` rows whose prompt and completion are 0; a paid row such as `mistralai/mistral-nemo` with no `input_cache_read` stays unknown ([#246](https://github.com/paulpham157/sdf/pull/246), fixes [#243](https://github.com/paulpham157/sdf/issues/243)). Docs and tests for that rule were tightened in [#254](https://github.com/paulpham157/sdf/pull/254).
+- Count a re-sent Copilot span or Gemini `api_response` log once ([#250](https://github.com/paulpham157/sdf/pull/250), fixes [#248](https://github.com/paulpham157/sdf/issues/248)).
+- Open the database read-only for `sdf summary` (`mode=ro`, with an `immutable=1` fallback) ([#253](https://github.com/paulpham157/sdf/pull/253)).
 
 ### Security
 
