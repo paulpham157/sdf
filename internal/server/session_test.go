@@ -33,6 +33,15 @@ func TestSessionEventIsStoredAsALog(t *testing.T) {
 	if row.TimeUnixNano == nil || row.Attributes["sdf.session.reason"] != "startup" {
 		t.Fatalf("%+v", row)
 	}
+	grokBody := `{"tool":"grok-cli","session_id":"grok-1","edge":"close"}`
+	resp, err = http.Post(base+"/v1/sessions", "application/json", strings.NewReader(grokBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("grok-cli %d", resp.StatusCode)
+	}
 }
 
 func TestSessionEventRejectsABadPayloadAndStoresNothing(t *testing.T) {

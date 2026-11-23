@@ -31,6 +31,29 @@ import (
 	"github.com/paulpham157/sdf/internal/samplepath"
 )
 
+func TestCheckRunsFromADirectoryThatIsNotTheSourceTree(t *testing.T) {
+	bin := binPath(t)
+	cmd := exec.Command(bin, "check")
+	cmd.Dir = t.TempDir()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sdf check: %v\n%s", err, out)
+	}
+	text := string(out)
+	if !strings.Contains(text, "priced-session pass") || strings.Contains(text, " fail ") {
+		t.Fatal(text)
+	}
+	version := exec.Command(bin, "version")
+	version.Dir = cmd.Dir
+	printed, err := version.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sdf version: %v\n%s", err, printed)
+	}
+	if !bytes.HasPrefix(printed, []byte("sdf ")) {
+		t.Fatalf("version %s", printed)
+	}
+}
+
 func TestBinaryIsStatic(t *testing.T) {
 	bin := binPath(t)
 	info, err := exec.Command("go", "version", "-m", bin).CombinedOutput()

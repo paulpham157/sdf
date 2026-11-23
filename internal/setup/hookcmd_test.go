@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -28,6 +29,38 @@ func TestSessionHookCommandPostsTheEdge(t *testing.T) {
 	}
 }
 
+func TestGrokHookPostsSessionIDFromTheEnvironment(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = string(body)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	cmd := grokSessionHookCommand("close", srv.URL)
+	command := exec.Command("sh", "-c", cmd)
+	command.Stdin = strings.NewReader(`{"sessionId":"from-json","reason":"exit"}`)
+	command.Env = append(envWithout("GROK_SESSION_ID"), "GROK_SESSION_ID=from-env")
+	out, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook exited: %v\n%s", err, out)
+	}
+	if !strings.Contains(got, `"tool":"grok-cli"`) || !strings.Contains(got, `"session_id":"from-env"`) || !strings.Contains(got, `"edge":"close"`) || !strings.Contains(got, `"reason":"exit"`) {
+		t.Fatalf("posted %q", got)
+	}
+	got = ""
+	command = exec.Command("sh", "-c", cmd)
+	command.Stdin = strings.NewReader(`{"sessionId":"from-json","source":"startup"}`)
+	command.Env = envWithout("GROK_SESSION_ID")
+	out, err = command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook exited: %v\n%s", err, out)
+	}
+	if !strings.Contains(got, `"session_id":"from-json"`) || !strings.Contains(got, `"reason":"startup"`) {
+		t.Fatalf("posted %q", got)
+	}
+}
+
 func TestCodexHookSkipsADescendantThread(t *testing.T) {
 	posts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +78,17 @@ func TestCodexHookSkipsADescendantThread(t *testing.T) {
 	if posts != 1 {
 		t.Fatalf("the root thread posted %d times", posts)
 	}
+}
+
+func envWithout(key string) []string {
+	prefix := key + "="
+	var out []string
+	for _, item := range os.Environ() {
+		if !strings.HasPrefix(item, prefix) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func runHook(t *testing.T, command, in string) string {

@@ -19,6 +19,13 @@
 // Its default protocol is grpc at 127.0.0.1:4317. This setup uses http/json
 // on the receiver's HTTP port. grpc on 4317 also reaches sdf serve.
 // https://github.com/NikiforovAll/pi-otel
+//
+// Grok CLI exports metrics and logs (no traces) when GROK_EXTERNAL_OTEL=1
+// and an OTLP exporter is set. The user config is $GROK_HOME/config.toml
+// (default ~/.grok/config.toml). A project .grok/config.toml cannot set
+// otel_*. Env vars win over that file. Checked against the xAI monitoring
+// guide and grok 1.0.92 on 2026-11-23.
+// https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
 package setup
 
 import (
@@ -45,9 +52,11 @@ type Endpoint struct {
 
 // Request is one init invocation.
 type Request struct {
-	Agent      string
-	Home       string
-	CodexHome  string
+	Agent     string
+	Home      string
+	CodexHome string
+	// GrokHome is $GROK_HOME, or ~/.grok when that variable is unset.
+	GrokHome   string
 	ProjectDir string
 	Endpoint   Endpoint
 	Write      bool
@@ -82,8 +91,10 @@ func Run(req Request) (Result, error) {
 		return qwen(req)
 	case "pi":
 		return pi(req)
+	case "grok":
+		return grok(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok)", req.Agent)
 	}
 }
 
@@ -118,6 +129,13 @@ func normalize(req *Request) error {
 			req.CodexHome = env
 		} else {
 			req.CodexHome = filepath.Join(req.Home, ".codex")
+		}
+	}
+	if req.GrokHome == "" {
+		if env := os.Getenv("GROK_HOME"); env != "" {
+			req.GrokHome = env
+		} else {
+			req.GrokHome = filepath.Join(req.Home, ".grok")
 		}
 	}
 	if req.ProjectDir == "" {
@@ -355,6 +373,119 @@ func pi(req Request) (Result, error) {
 	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
 }
 
+func grok(req Request) (Result, error) {
+	path := filepath.Join(req.GrokHome, "config.toml")
+	hookPath := filepath.Join(req.GrokHome, "hooks", "sdf-session.json")
+	block := grokBlock(req.Endpoint)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Grok CLI exports metrics and logs, not traces, when GROK_EXTERNAL_OTEL=1 and an OTLP exporter is set.\n")
+	fmt.Fprintf(&b, "Set these in the shell that launches grok, or in %s under [telemetry].\n", path)
+	fmt.Fprintf(&b, "A project .grok/config.toml cannot set otel_*. Environment variables win over config.toml.\n")
+	fmt.Fprintf(&b, "Checked against grok 1.0.92 on 2026-11-23. The schema is grok_code.schema.version v1 (alpha).\n")
+	fmt.Fprintf(&b, "https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md\n\n")
+	for _, line := range grokEnv(req.Endpoint) {
+		fmt.Fprintf(&b, "export %s\n", line)
+	}
+	b.WriteString("\n")
+	b.WriteString(block)
+	b.WriteString("\n")
+	if !req.Write {
+		fmt.Fprintf(&b, "not written (pass --write to append this block to %s; an existing [telemetry] table is left unchanged)\n", path)
+		fmt.Fprintf(&b, "not written (pass --write to install %s)\n", hookPath)
+		return Result{Text: b.String()}, nil
+	}
+	configStatus, configWrote, err := writeGrokConfig(path, block)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(configStatus)
+	hookStatus, err := writeBytes(hookPath, []byte(grokHooks(req.Endpoint.base()+"/v1/sessions")), true)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(hookStatus)
+	return Result{Text: b.String(), Wrote: configWrote || strings.HasPrefix(hookStatus, "wrote ")}, nil
+}
+
+func grokEnv(ep Endpoint) []string {
+	return []string{
+		"GROK_EXTERNAL_OTEL=1",
+		"OTEL_METRICS_EXPORTER=otlp",
+		"OTEL_LOGS_EXPORTER=otlp",
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_ENDPOINT=" + ep.base(),
+	}
+}
+
+func grokBlock(ep Endpoint) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+# Grok reads [telemetry] from $GROK_HOME/config.toml (default ~/.grok/config.toml).
+# A project .grok/config.toml cannot set otel_*. Env vars win over this file.
+# https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
+[telemetry]
+otel_enabled = true
+otel_metrics_exporter = "otlp"
+otel_logs_exporter = "otlp"
+otel_protocol = "http/protobuf"
+otel_endpoint = "%s"
+`, ep.base())) + "\n"
+}
+
+func writeGrokConfig(path, block string) (string, bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", false, err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return "", false, err
+	}
+	if hasTelemetryTable(string(existing)) {
+		return "not written: " + path + " already has a [telemetry] table; it was not changed\n", false, nil
+	}
+	backup, err := copyAside(path)
+	if err != nil {
+		return "", false, err
+	}
+	var body []byte
+	if len(bytes.TrimSpace(existing)) == 0 {
+		body = []byte(block)
+	} else {
+		body = existing
+		if !bytes.HasSuffix(body, []byte("\n")) {
+			body = append(body, '\n')
+		}
+		body = append(body, '\n')
+		body = append(body, []byte(block)...)
+	}
+	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
+		return "", false, err
+	}
+	return wrote(path, backup), true, nil
+}
+
+func hasTelemetryTable(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		if trim == "[telemetry]" || strings.HasPrefix(trim, "[telemetry.") {
+			return true
+		}
+	}
+	return false
+}
+
+func grokConfigured(req Request) string {
+	path := filepath.Join(req.GrokHome, "config.toml")
+	want := req.Endpoint.base()
+	envHit := (os.Getenv("GROK_EXTERNAL_OTEL") == "1" || os.Getenv("GROK_EXTERNAL_OTEL") == "true") &&
+		(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == want || strings.HasPrefix(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), want+"/"))
+	body, err := os.ReadFile(path)
+	fileHit := err == nil && hasTelemetryTable(string(body)) && strings.Contains(string(body), want)
+	return fmt.Sprintf("grok process env points at %s: %t; %s has [telemetry] pointing at %s: %t\n", want, envHit, path, want, fileHit)
+}
+
 func piOtel(ep Endpoint) map[string]any {
 	return map[string]any{
 		"endpoint":   ep.base(),
@@ -476,6 +607,8 @@ func Configured(req Request) (string, error) {
 		return qwenConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
+	case "grok":
+		return grokConfigured(req), nil
 	default:
 		return "", fmt.Errorf("unknown agent %q", req.Agent)
 	}

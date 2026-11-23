@@ -2,9 +2,13 @@
 
 ```bash
 ./sdf summary
+./sdf summary --db PATH
 ./sdf summary --session sample-claude-1
 ./sdf summary --json
 ./sdf summary --all-spans
+./sdf summary --prices bundled
+./sdf summary --repo PATH
+./sdf summary --github
 ./sdf summary --budget PATH
 ```
 
