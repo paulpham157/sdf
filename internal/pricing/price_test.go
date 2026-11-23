@@ -208,6 +208,9 @@ func TestFetchCopiesPricesAndDoesNotSendAKey(t *testing.T) {
 	if model.Prices["prompt"] != "0.000002" || !model.HasOverrides {
 		t.Fatalf("%+v", model)
 	}
+	if len(model.Overrides) != 1 || model.Overrides[0].MinPromptTokens == nil || *model.Overrides[0].MinPromptTokens != 10 || model.Overrides[0].Prices["prompt"] != "0.000004" {
+		t.Fatalf("overrides %+v", model.Overrides)
+	}
 	if !strings.Contains(string(snap.Body), `"retrieved_at"`) || !strings.Contains(string(snap.Body), "min_prompt_tokens") {
 		t.Fatalf("%s", snap.Body)
 	}

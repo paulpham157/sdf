@@ -742,8 +742,10 @@ Token counts come from `grok_code.token.usage` (`type` = `input` \| `output`
 `grok_code.api_request` token fields. Live rates matched OpenRouter only
 when `cache_read` is treated as a subset of `input` and `reasoning` as a
 subset of `output`. A model id such as `grok-4.7` may suffix-match
-`x-ai/grok-4.7`; if that catalog row has `pricing.overrides`, computed cost
-stays unknown even when the base rate would have matched the agent figure.
+`x-ai/grok-4.7`. That catalog row has a `min_prompt_tokens` 200000
+override: below the threshold base rates apply, an `api_request` at or
+above it uses the override rates, and a metric-only aggregate at or above
+it stays unknown (see `docs/summary.md`).
 
 Tool calls come from `grok_code.tool_result` (`tool_name`, `success`,
 `duration_ms`, `tool_use_id`). Duration prefers

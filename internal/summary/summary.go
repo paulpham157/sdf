@@ -537,9 +537,10 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 	costUSD, costSource, costNote := costOf(records, points, tool)
 	modelList := models(records, points)
 	computed := pricing.Price(prices, pricing.Usage{
-		Models: modelList,
-		Tokens: tokenMap(tokens),
-		Source: deref(tokensSource),
+		Models:   modelList,
+		Tokens:   tokenMap(tokens),
+		Source:   deref(tokensSource),
+		Requests: requestTokens(records, deref(tokensSource)),
 	})
 	failures := metricFailures(records)
 	summary := SessionSummary{
@@ -881,6 +882,48 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 	out := make(map[string]float64, tokens.Len())
 	for _, key := range tokens.Keys {
 		out[key] = tokens.Vals[key]
+	}
+	return out
+}
+
+func requestTokens(records []record.Record, source string) []map[string]float64 {
+	var keys []string
+	var match func(record.Record) bool
+	switch source {
+	case "logs " + claudeAPI:
+		keys = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		match = func(rec record.Record) bool {
+			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
+		}
+	case "logs " + grokAPI:
+		keys = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		match = func(rec record.Record) bool {
+			return rec.Signal == "logs" && logEventName(rec) == grokAPI
+		}
+	default:
+		return nil
+	}
+	var out []map[string]float64
+	for _, rec := range records {
+		if !match(rec) {
+			continue
+		}
+		item := map[string]float64{}
+		found := false
+		for _, key := range keys {
+			amount := record.Number(rec.Attributes[key])
+			if amount == nil {
+				continue
+			}
+			item[key] = *amount
+			found = true
+		}
+		if found {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

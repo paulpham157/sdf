@@ -68,9 +68,11 @@
   Codex micro-USD or `usage.estimated_usd`, Pi `pi.cost.usd`). It is not an
   invoice. OpenCode does not emit one. `computed_cost_usd` is the bundled
   or refreshed OpenRouter token price for the same de-duplicated counts.
-  It is not an invoice either: conditional overrides are refused, a missing
-  component price is unknown, and per-request or web-search fees are not
-  added.
+  It is not an invoice either: override conditions other than
+  `min_prompt_tokens` are refused, a session total at or above a
+  `min_prompt_tokens` threshold is unknown unless per-request counts exist,
+  a missing component price is unknown, and per-request or web-search fees
+  are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its
   token sources yet, so both cost fields are unknown for a Gemini CLI session.
   Its tool-call logs carry no call id, so a `tool_call` span and its log are
