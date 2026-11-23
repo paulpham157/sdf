@@ -25,7 +25,7 @@ func sessionHookCommand(tool, edge, url string) string {
 		`payload=$(printf '%s' "$sid" "$reason"); `+
 		`curl -sf -m 2 -X POST -H 'content-type: application/json' `+
 		`--data "$payload" %s >/dev/null 2>&1 || true`,
-		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, url)
+		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, shQuote(url))
 }
 
 // claudeHooks is the "hooks" object merged into ~/.claude/settings.json. A

@@ -106,6 +106,11 @@ sdf init --check
 `--check` GETs `http://127.0.0.1:4318/health` and opens a TCP connection to
 `127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
 counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
+`--host` must be a host name, an IPv4 address, or an IPv6 address (bare or
+in brackets), and the ports must be 1-65535; anything else is refused
+before a file is written. Those values end up in files other programs run
+(`opencode.env` is sourced by a shell, the Claude Code and Codex session
+hooks are shell commands), and the URL is single-quoted in both.
 
 `--write` also installs a session hook for that agent. The hook posts to
 `POST /v1/sessions` when a session opens and, where the agent has such an
