@@ -84,3 +84,19 @@ func TestNoBoundaryKeepsTheInferredWindow(t *testing.T) {
 		t.Fatalf("inferred window changed: unattributed=%d", len(report.Unattributed))
 	}
 }
+
+func TestGrokHookBoundaryJoinsTheGrokSession(t *testing.T) {
+	// sdf init grok installs a hook that posts tool grok-cli, the same tool
+	// ToolOf gives Grok CLI's own service.name, so the edge and the
+	// telemetry land in one session.
+	id := "0199a1b2-c3d4"
+	event := boundary("grok_code.user_prompt", "grok-cli", id, 2*boundarySecond)
+	report := Summarize([]record.Record{
+		boundary("sdf.session.open", "grok-cli", id, 1*boundarySecond),
+		event,
+		boundary("sdf.session.close", "grok-cli", id, 3*boundarySecond),
+	}, false)
+	if len(report.Sessions) != 1 || report.Sessions[0].SessionID != id || report.Sessions[0].Tool != "grok-cli" {
+		t.Fatalf("%+v", report.Sessions)
+	}
+}

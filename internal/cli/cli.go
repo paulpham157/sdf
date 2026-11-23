@@ -845,7 +845,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			grpcPort = n
-		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "qwen" || arg == "qwen-code" || arg == "grok" || arg == "gemini" || arg == "gemini-cli" || arg == "copilot" || arg == "copilot-cli":
+		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "qwen" || arg == "qwen-code" || arg == "grok" || arg == "grok-cli" || arg == "gemini" || arg == "gemini-cli" || arg == "copilot" || arg == "copilot-cli":
 			if agent != "" {
 				fmt.Fprintf(stderr, "sdf init: extra agent %s\n", arg)
 				return 2

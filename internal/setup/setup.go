@@ -111,7 +111,7 @@ func Run(req Request) (Result, error) {
 		return qwen(req)
 	case "pi":
 		return pi(req)
-	case "grok":
+	case "grok", "grok-cli":
 		return grok(req)
 	case "gemini", "gemini-cli":
 		return gemini(req)
@@ -430,9 +430,16 @@ func grok(req Request) (Result, error) {
 	for _, line := range grokEnv(req.Endpoint) {
 		fmt.Fprintf(&b, "export %s\n", line)
 	}
-	b.WriteString("\n")
+	b.WriteString("\nIf sdf serve has a token, also export this. A literal space after Bearer always works:\n")
+	b.WriteString(`export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"` + "\n")
+	b.WriteString("config.toml has no headers key; the token stays in the environment.\n\n")
 	b.WriteString(block)
 	b.WriteString("\n")
+	for _, gate := range grokContentGates {
+		if v := strings.TrimSpace(os.Getenv(gate)); v != "" && v != "0" && !strings.EqualFold(v, "false") {
+			fmt.Fprintf(&b, "warning: %s=%s in this shell exports content to the collector; unset it to keep prompts and bodies out of sdf\n", gate, v)
+		}
+	}
 	if !req.Write {
 		fmt.Fprintf(&b, "not written (pass --write to append this block to %s; an existing [telemetry] table is left unchanged)\n", path)
 		fmt.Fprintf(&b, "not written (pass --write to install %s)\n", hookPath)
@@ -450,6 +457,11 @@ func grok(req Request) (Result, error) {
 	b.WriteString(hookStatus)
 	return Result{Text: b.String(), Wrote: configWrote || strings.HasPrefix(hookStatus, "wrote ")}, nil
 }
+
+// grokContentGates are the environment variables that put prompt text,
+// responses, or tool bodies on Grok's external stream. All are off by default
+// (24-monitoring-usage.md, "Environment variables").
+var grokContentGates = []string{"OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_CONTENT"}
 
 func grokEnv(ep Endpoint) []string {
 	return []string{
@@ -815,7 +827,7 @@ func Configured(req Request) (string, error) {
 		return qwenConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
-	case "grok":
+	case "grok", "grok-cli":
 		return grokConfigured(req), nil
 	case "gemini", "gemini-cli":
 		return geminiConfigured(req), nil

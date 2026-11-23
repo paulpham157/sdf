@@ -35,9 +35,8 @@
   inside exactly one Pi session.
 - Grok CLI's external stream exports no traces. Startup metrics
   (`grok_code.startup.*`) in the 2026-11-23 capture had no `session.id` and
-  stay unattributed. The CLI sends no working-directory attribute, and the
-  git hook does not read a Grok session id, so those sessions are not linked
-  to a commit.
+  stay unattributed. The working directory and the internal spans are
+  covered below.
 - GitHub Copilot CLI has no log signal; its lifecycle events
   (`github.copilot.session.shutdown` with `total_premium_requests`,
   exceptions, hooks) are span events, which sdf does not store. Its metrics
@@ -119,7 +118,21 @@
   trailer stays in the git object. A GitHub squash merge keeps that trailer
   only when the squash commit message includes it. Husky, lefthook, and
   pre-commit are not edited; `core.hooksPath` is left as it was.
-- No live capture is committed in this tree. The tests use the sample
-  payloads only. OpenCode and Pi behavior above is from the 2026-11-10
+- No live capture is committed in this tree; the tests use the hand-written
+  sample payloads (`tests/samples/grok_traces.json` follows the Grok CLI
+  1.0.92 span shapes but is not a capture). OpenCode and Pi behavior above is from the 2026-11-10
   checks of the named package versions, not from a fixture that was copied
   out of a live SQLite file.
+- Grok CLI's telemetry has no working directory. Its resource is a fixed
+  set and `OTEL_RESOURCE_ATTRIBUTES` is ignored, so there is no env var to
+  add one. The session hook from `sdf init grok --write` posts the hook's
+  `workspaceRoot` instead, and the heuristic uses it. Without that hook a
+  Grok session links to a commit only with `--repo PATH` and one commit in
+  the time window (or a git hook or trailer). The hook path was checked
+  against a live `grok` 1.0.92 on 2026-11-23. Grok CLI spans come only
+  from its internal, undocumented pipeline (`GROK_INTERNAL_OTLP_TRACES_ENDPOINT`
+  with `GROK_INTERNAL_OTLP_HEADERS` replacing the xAI token). The span
+  mapping follows grok 1.0.92 and can break on a newer release. Spans need a
+  signed-in Grok with telemetry not disabled, still send `x-userid` and
+  `x-teamid` headers, and put `user.id` / `team.id` on the resource, which
+  sdf stores. Sources are in [docs/agents.md](agents.md#grok-cli).

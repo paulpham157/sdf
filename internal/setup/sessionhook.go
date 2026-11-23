@@ -23,7 +23,7 @@ func sessionHookCommand(tool, edge, url string) string {
 		`reason=$(printf '%%s' "$json" | %s); `+
 		`[ -n "$reason" ] || reason=$(printf '%%s' "$json" | %s); `+
 		`payload=$(printf '%s' "$sid" "$reason"); `+
-		`curl -sf -m 2 -X POST -H 'content-type: application/json' `+
+		`curl -sf -m 1 -X POST -H 'content-type: application/json' `+
 		`--data "$payload" %s >/dev/null 2>&1 || true`,
 		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, shQuote(url))
 }
@@ -31,12 +31,20 @@ func sessionHookCommand(tool, edge, url string) string {
 // claudeHooks is the command sdf adds to each event under "hooks" in
 // ~/.claude/settings.json (see mergeSessionHooks). Both events carry
 // session_id, which is the session.id the exporter sends.
+//
+// Grok CLI also runs the hooks in ~/.claude/settings.json by default
+// (grok-build user-guide/10-hooks.md, "Hook Locations") and sets
+// GROK_HOOK_EVENT on every hook process (xai-grok-hooks/src/runner/command.rs).
+// Without the guard a Grok session would post a claude-code open and close.
+// ${GROK_HOOK_EVENT:-} is a modifier form, which Grok leaves for sh.
 func claudeHooks(url string) map[string]string {
 	return map[string]string{
-		"SessionStart": sessionHookCommand("claude-code", "open", url),
-		"SessionEnd":   sessionHookCommand("claude-code", "close", url),
+		"SessionStart": claudeGuard + sessionHookCommand("claude-code", "open", url),
+		"SessionEnd":   claudeGuard + sessionHookCommand("claude-code", "close", url),
 	}
 }
+
+const claudeGuard = `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; `
 
 func hookGroup(command string) map[string]any {
 	return map[string]any{
@@ -123,17 +131,53 @@ func grokHooks(url string) string {
 }
 
 // grokSessionHookCommand posts one edge. GROK_SESSION_ID is the id Grok puts
-// in the hook environment. sessionId is the same value in the JSON on stdin.
+// in the hook environment (grok-build 2bdd1d6, xai-grok-hooks
+// src/runner/command.rs). sessionId, and its snake_case alias session_id, is
+// the same value in the JSON on stdin (src/event.rs, HookEventEnvelope,
+// SNAKE_CASE_ALIASES).
+//
+// Grok substitutes $VAR in a hook command at load time from its own
+// environment and refuses a command whose plain $VAR stays unresolved unless
+// the command assigns it (docs/custom-hooks.md, "Variable Substitution";
+// src/runner/command.rs find_unresolved_env_vars). The local names are
+// sdf_-prefixed so a variable in Grok's environment cannot replace them, and
+// PATH and GROK_SESSION_ID use the ${NAME:-} modifier form, which Grok leaves
+// for sh. A SessionEnd that carries subagentType is a child session closing,
+// not the session the exporter reports, so it posts nothing.
+//
+// The hook also sends the working directory as cwd. It reads workspaceRoot,
+// which Grok sets to the git toplevel of the session directory, or that
+// directory when it is not in a checkout (xai-grok-shell
+// session/acp_session_impl/spawn.rs: find_git_root_from_path(session_info.cwd),
+// else session_info.cwd; session/acp_session/hooks.rs make_hook_envelope).
+// When workspaceRoot is missing it falls back to cwd, the session directory.
+// The value is copied as the escaped JSON string body it already is, so a
+// quote or backslash in the path stays escaped and cannot end the payload
+// string; the server decodes it.
 func grokSessionHookCommand(edge, url string) string {
-	body := fmt.Sprintf(`{"tool":"grok-cli","session_id":"%%s","edge":%q,"reason":"%%s"}`, edge)
-	return fmt.Sprintf(`export PATH="$PATH:/usr/bin:/bin"; json=$(cat); `+
-		`sid=${GROK_SESSION_ID:-}; [ -n "$sid" ] || sid=$(printf '%%s' "$json" | %s); [ -n "$sid" ] || exit 0; `+
-		`reason=$(printf '%%s' "$json" | %s); `+
-		`[ -n "$reason" ] || reason=$(printf '%%s' "$json" | %s); `+
-		`payload=$(printf '%s' "$sid" "$reason"); `+
-		`curl -sf -m 2 -X POST -H 'content-type: application/json' `+
-		`--data "$payload" %s >/dev/null 2>&1 || true`,
-		fieldExpr("sessionId"), fieldExpr("source"), fieldExpr("reason"), body, url)
+	body := fmt.Sprintf(`{"tool":"grok-cli","session_id":"%%s","edge":%q,"reason":"%%s","cwd":"%%s"}`, edge)
+	return fmt.Sprintf(`export PATH="${PATH:-}:/usr/bin:/bin"; sdf_json=$(cat); `+
+		`case "$sdf_json" in *'"subagentType"'*) exit 0 ;; esac; `+
+		`sdf_sid=${GROK_SESSION_ID:-}; `+
+		`[ -n "$sdf_sid" ] || sdf_sid=$(printf '%%s' "$sdf_json" | %s); `+
+		`[ -n "$sdf_sid" ] || sdf_sid=$(printf '%%s' "$sdf_json" | %s); [ -n "$sdf_sid" ] || exit 0; `+
+		`sdf_reason=$(printf '%%s' "$sdf_json" | %s); `+
+		`[ -n "$sdf_reason" ] || sdf_reason=$(printf '%%s' "$sdf_json" | %s); `+
+		`sdf_cwd=$(printf '%%s' "$sdf_json" | %s); `+
+		`[ -n "$sdf_cwd" ] || sdf_cwd=$(printf '%%s' "$sdf_json" | %s); `+
+		`sdf_payload=$(printf '%s' "$sdf_sid" "$sdf_reason" "$sdf_cwd"); `+
+		`curl -sf -m 1 -X POST -H 'content-type: application/json' `+
+		`--data "$sdf_payload" %s >/dev/null 2>&1 || true`,
+		fieldExpr("sessionId"), fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"),
+		jsonStringExpr("workspaceRoot"), jsonStringExpr("cwd"), body, shQuote(url))
+}
+
+// jsonStringExpr prints the body of one JSON string value with its escapes
+// left in place. ([^"\\]|\\.)* cannot stop at an escaped quote, and an
+// escaped key inside another value ("x\"workspaceRoot\":...") does not match,
+// because the name is followed by a backslash there, not a quote.
+func jsonStringExpr(name string) string {
+	return `sed -n -E 's/.*"` + name + `"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p'`
 }
 
 // piExtension reads the real session id. pi-otel derives pi.session.id from the

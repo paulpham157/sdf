@@ -69,3 +69,52 @@ func TestSessionEventRejectsABadPayloadAndStoresNothing(t *testing.T) {
 		t.Fatalf("stored %d", len(rows))
 	}
 }
+
+func TestSessionEventAcceptsGrokCLI(t *testing.T) {
+	base, db := start(t)
+	body := `{"tool":"grok-cli","session_id":"0199a1b2-c3d4","edge":"close","reason":"exit"}`
+	resp, err := http.Post(base+"/v1/sessions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("got %d", resp.StatusCode)
+	}
+	rows, err := db.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || deref(rows[0].Name) != "sdf.session.close" || deref(rows[0].ServiceName) != "grok-cli" || rows[0].Attributes["sdf.session.reason"] != "exit" {
+		t.Fatalf("%+v", rows)
+	}
+}
+
+func TestSessionEventStoresTheHookWorkingDirectory(t *testing.T) {
+	base, db := start(t)
+	body := `{"tool":"grok-cli","session_id":"g1","edge":"open","reason":"startup","cwd":"/tmp/my repo/it's \"q\""}`
+	resp, err := http.Post(base+"/v1/sessions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("got %d", resp.StatusCode)
+	}
+	bad := `{"tool":"grok-cli","session_id":"g1","edge":"open","cwd":"/a\nb"}`
+	resp, err = http.Post(base+"/v1/sessions", "application/json", strings.NewReader(bad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("multi-line cwd got %d", resp.StatusCode)
+	}
+	rows, err := db.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Attributes["sdf.session.cwd"] != `/tmp/my repo/it's "q"` {
+		t.Fatalf("%+v", rows)
+	}
+}

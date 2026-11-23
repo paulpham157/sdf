@@ -280,7 +280,7 @@ When `sdf serve` is started with `--otlp-token` or `SDF_OTLP_TOKEN`, exporters
 must send the same value as `Authorization: Bearer <token>`.
 
 For agents that honor the standard OpenTelemetry environment variables
-(Claude Code, OpenCode v2, Pi with pi-otel, and Grok CLI):
+(Claude Code, OpenCode v2, and Pi with pi-otel):
 
 ```bash
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
@@ -288,6 +288,19 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
 
 The space after `Bearer` is written as `%20`, as the OpenTelemetry
 specification requires for `OTEL_EXPORTER_OTLP_HEADERS`.
+
+For Grok CLI a literal space always works, as Grok's own guide writes it:
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+```
+
+Grok 1.0.92 was also seen to accept `%20` in a live run on 2026-11-23: with
+a receiver token set, its logs and metrics POSTs returned 200. Earlier these
+docs said `%20` gets a 401, from the source alone: `parse_header_list` in
+grok-build `xai-grok-telemetry/src/external/config.rs` (`2bdd1d6`) splits on
+`,` and `=` and trims without percent-decoding. Which build decodes it is
+not pinned down, so `sdf init grok` prints the literal space.
 
 Codex does not read `OTEL_*`. Put a `headers` table on each `otlp-http`
 exporter instead. Those values are literal; `${SDF_OTLP_TOKEN}` is not
@@ -327,7 +340,46 @@ export OTEL_TRACES_EXPORT_INTERVAL=5000
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"` with a
+literal space, which always works; 1.0.92 also accepted `%20` live (see
+[Optional receiver token](#optional-receiver-token)). Grok has no
+config-file key for headers.
+
+`sdf init grok` prints those lines and the matching `[telemetry]` table
+(`otel_enabled`, `otel_metrics_exporter`, `otel_logs_exporter`,
+`otel_protocol`, `otel_endpoint`, the names in the guide's "Config file"
+section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`).
+`sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
+(default `~/.grok/config.toml`) when the file has no `[telemetry]` table;
+an existing `[telemetry]` table is left unchanged. A project
+`.grok/config.toml` cannot set `otel_*`. Environment variables win over the
+file. It also installs `hooks/sdf-session.json` beside it, a session hook
+that posts the session's open and close to `POST /v1/sessions`. Grok sets
+`GROK_SESSION_ID` on that process; the event JSON field is `sessionId`.
+User hooks under `~/.grok/hooks/` are trusted. A project `.grok/hooks/`
+file is not, until that folder is trusted. The reasons for the hook
+command's shape are in [docs/receiver.md](receiver.md#one-step-setup). With
+`sdf init --git-hooks`, a commit Grok makes carries an `SDF-Session`
+trailer and links to the session, because Grok puts `GROK_SESSION_ID` in
+its shell tool's environment
+([docs/receiver.md](receiver.md#git-hooks)). These three were written from
+grok-build `2bdd1d6` (read 2026-11-23) and then checked against a live,
+signed-in `grok` 1.0.92 in headless mode (`grok -p --always-approve`) on
+2026-11-23, with a throwaway repository whose path has a space:
+
+- With only the `config.toml` that `--write` produced (no `OTEL_*` or
+  `GROK_EXTERNAL_OTEL` in the environment), logs and metrics arrived with
+  `session.id`.
+- The hook posted an open (`source` was `new`) and a close (`reason` was
+  `shutdown`) for the same id the telemetry carried, with the repository
+  path as `cwd`.
+- A commit Grok made from its shell tool with the git hooks installed
+  carried `SDF-Session: <session.id>` and linked as `hook`. With the git
+  hooks removed, the next session's commit linked as `heuristic` from the
+  hook's `cwd`, with no `--repo`.
+- Grok ran the `SessionStart` hooks in `~/.claude/settings.json` with
+  `GROK_HOOK_EVENT=session_start`, and the sdf Claude Code hook there posted
+  nothing.
 
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal
@@ -656,8 +708,8 @@ trace id.
 > (`grok_code.schema.version = v1`, status alpha) and then corrected against
 > an authenticated `grok` 1.0.92 session on 2026-11-23 (Asia/Bangkok).
 
-Grok CLI exports **metrics and logs only** (no traces) when both the master
-switch and an exporter are set:
+Grok CLI's external stream is **metrics and logs only** when both the master
+switch and an exporter are set (spans: see **Traces** below):
 
 ```bash
 export GROK_EXTERNAL_OTEL=1
@@ -669,7 +721,9 @@ grok
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`. The
+literal space always works; 1.0.92 also accepted `%20` (see
+[Optional receiver token](#optional-receiver-token)).
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
@@ -706,15 +760,128 @@ The official protocol list includes `grpc`. A cheap gRPC check is recorded
 in the 2026-11-23 notes when it was run; http/protobuf is the documented
 default and was used for the live capture.
 
-`sdf init grok` prints the variables above and the matching `[telemetry]`
-table. `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
-(default `~/.grok/config.toml`) when the file has no `[telemetry]` table, and
-installs `hooks/sdf-session.json` beside it. An existing `[telemetry]` table
-is left unchanged. A project `.grok/config.toml` cannot set `otel_*`.
-Environment variables win over the file. The hook posts session open and
-close to `POST /v1/sessions`. Grok sets `GROK_SESSION_ID` on that process;
-the event JSON field is `sessionId`. User hooks under `~/.grok/hooks/` are
-trusted. A project `.grok/hooks/` file is not, until that folder is trusted.
+**Working directory.** Grok CLI's telemetry carries none. The session hook
+that `sdf init grok --write` installs supplies it instead: Grok's hook input
+has `workspaceRoot` (the git toplevel of the session directory) and `cwd`,
+and the hook posts that path to `/v1/sessions`, where it is stored as
+`sdf.session.cwd` and used like any exported working directory (details and
+sources in [docs/receiver.md](receiver.md#one-step-setup)). Without the hook
+there is no checkout for a Grok session. Why the telemetry cannot carry one,
+checked against the public source at `xai-org/grok-build` commit `2bdd1d6`
+(synced 2026-09-29):
+
+- The resource is a fixed set: `service.name`, `service.version`,
+  `client.version`, `app.entrypoint`, `terminal.type`,
+  `grok_code.schema.version`
+  ([guide L207-L215](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L207-L215),
+  [`build_resource`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/providers.rs#L131-L154)).
+- `OTEL_RESOURCE_ATTRIBUTES` is ignored on purpose. The resource is built with
+  `Resource::builder_empty()` so the env detector never runs
+  ([guide L119-L120](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L119-L120),
+  [providers.rs L132](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/providers.rs#L132)).
+  `sdf init` cannot add a cwd attribute that way.
+- Log attributes are a closed enum with no cwd, workspace, or repository key
+  ([schema.rs L74-L196](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/schema.rs#L74-L196)).
+  `grok_code.session_start` has only the boolean `is_git_repo`
+  ([guide L287](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L287)).
+- `grok_code.tool_result` `file_path` is a per-tool file, sent only with
+  `OTEL_LOG_TOOL_DETAILS=1` ([guide L99](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L99)), and `$HOME` is rewritten
+  to `~` ([guide L312-L313](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L312-L313),
+  [`redact_user_paths`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-secrets/src/sanitizer.rs#L182-L185)).
+  sdf does not request that gate and does not guess a checkout from it.
+
+With the hook installed, a Grok session links by the heuristic (one commit
+in the session window), by the git hook, or by a trailer, with no `--repo`,
+and a `--repo` that names a different checkout leaves it unlinked as for
+other agents. Without the hook, use `sdf summary --repo PATH`: with one
+commit in the session window the link is `heuristic`. In that case the
+outcome reason says Grok's telemetry has no working directory and names both
+`sdf init grok --write` and `--repo`.
+
+**Traces.** Grok CLI's external OTEL stream has no traces exporter
+([guide L175-L176](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L175-L176)). Grok also has an internal span pipeline
+that normally goes to xAI. It can be pointed at sdf; this was checked live
+with `grok` 1.0.92 headless (`grok -p`) on 2026-11-23:
+
+```bash
+export GROK_INTERNAL_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+# Replaces the xAI bearer token on these exports. Use the sdf token if the
+# receiver has one, or any value if it does not. A literal space always works.
+export GROK_INTERNAL_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+```
+
+- The endpoint is used verbatim and wins over the legacy `OTEL_EXPORTER_OTLP_*`
+  fallback, which applies only while `GROK_EXTERNAL_OTEL` is off
+  ([endpoints.rs L68-L71](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L68-L71),
+  [L159-L177](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L159-L177)).
+- Without the header override every export carries `Authorization: Bearer`
+  with the user's xAI token. `GROK_INTERNAL_OTLP_HEADERS` is applied after
+  it and replaces it ([xai-grok-otel config.rs L87-L93](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L87-L93)).
+  In the live run the receiver had a token set and every `/v1/traces` POST
+  returned 200, so the override reached it. `x-userid`, `x-teamid`,
+  `x-grok-client-version`, and `X-XAI-Token-Auth: xai-grok-cli` are still
+  sent ([config.rs L53-L95](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L53-L95)).
+  sdf reads headers only to check the token and never stores them; no
+  stored row in the live database contained the token or `Authorization`.
+- Spans are exported only when Grok has a usable login and its telemetry
+  mode has session metrics on ([provider.rs L164](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/provider.rs#L164)).
+  Unauthenticated, no spans arrived. Signed in, spans arrived with and
+  without `GROK_TELEMETRY_ENABLED=true`. Turning Grok telemetry on also sends
+  Grok's own analytics to xAI. `OTEL_TRACES_EXPORTER=none` turns these spans
+  off ([endpoints.rs L212-L219](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L212-L219)).
+- This schema is internal to Grok and undocumented. The names below are what
+  1.0.92 sent; a newer release can change them.
+
+Resource: `service.name=grok-cli`, `service.version` (`1.0.92 (b06756fd6256)`),
+`client.name` (`grok-pager`), `client.version`, `app.entrypoint`
+(`headless`), `terminal.type`, `host.arch`, `os.type`, `os.version`, and
+`user.id` / `team.id` (also `organization.id`, `api_key.id`, `deployment.id`
+when known, [config.rs L96-L106](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L96-L106)).
+No working directory, on the resource or on any span. The only path seen was
+`file_path` on `tool.search_replace`.
+
+The session id is the snake_case span attribute `session_id`, not
+`session.id`. It is on `agent.prompt`, `session`, `session.spawn`,
+`session.process_conversation_turn`, `tools.execute`, `tool.execution`, and
+a few `session.*` spans. sdf reads `session_id` only on `grok-cli` spans; the
+rest of a trace joins by trace id, and parentless spans (for example
+`sampling.stream_decode`) by the session's time window. One prompt produced
+about 230 spans in some 40 traces. The prompt trace:
+
+```text
+agent.prompt                                session_id
+  session.handle_prompt
+    session.process_conversation_turn       session_id, model_id, input_tokens, output_tokens, cache_read_tokens, stop_reason, request_id
+      turn.sampling                         one model request
+        http.create_response_stream         model_id, success, status_code, ttft_ms, endpoint
+      tools.execute                         one tool batch; session_id, model_id
+        permission.wait
+        tool.decision                       tool_name, tool_use_id, decision
+        tool.execution                      tool_name, tool_use_id (= tool_call_id), success, outcome, tool_id, tool_input_size_bytes, tool_result_size_bytes
+          tool.search_replace | tool.run_terminal_cmd | ...
+```
+
+Startup (`startup.*`, `session.new_session`, `session.spawn`) is a separate
+trace, and teardown (`session_end.*`) hangs off a `session` span.
+
+sdf's default tree keeps `agent.prompt`, `session.process_conversation_turn`,
+`turn.sampling`, `http.create_response_stream`, `tools.execute`,
+`permission.wait`, and `tool.execution`; `--all-spans` shows the rest. Tool
+calls come from `tool.execution` joined to `grok_code.tool_result` on
+`tool_use_id` (source `traces tool.execution; logs grok_code.tool_result`).
+When there is no `session_end` or `turn_completed` log, duration is the sum
+of `agent.prompt` spans. Tokens and cost still come from the external metrics;
+the span token attributes are not added. Model requests outside the prompt
+trace (a `grok-4.6` request, a failed request) show as extra
+`http.create_response_stream` roots. The hand-written sample
+`tests/samples/grok_traces.json` (`sdf.fixture=sample`) follows these shapes;
+it is not the capture.
+
+Also seen in that run: the external stream accepted
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"` (logs
+and metrics POSTs returned 200 with a receiver token set), so 1.0.92 decodes
+`%20` there. A literal space always works (see
+[Optional receiver token](#optional-receiver-token)).
 
 ## Gemini CLI
 

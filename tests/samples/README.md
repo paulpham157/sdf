@@ -46,3 +46,11 @@ cumulative metrics with `session.id`, and `llm_call` / `tool_call` spans with
 `gen_ai.conversation.id`, as sent over OTLP/HTTP JSON with
 `telemetry.logPrompts=false` and `telemetry.traces=false`. They were not
 captured from a live session. Token counts are made up; the ids are fake.
+
+`grok_traces.json` holds Grok CLI internal spans (the pipeline sent when
+`GROK_INTERNAL_OTLP_TRACES_ENDPOINT` points at sdf). Its span names and
+attribute keys follow what grok 1.0.92 sends: one `agent.prompt` trace with
+four model requests and three `tool.execution` calls, a `session` teardown
+trace, and one parentless `sampling.stream_decode` span. It was not captured
+from a live session: timestamps and token counts are made up, the ids are
+fake, and there is no prompt text, path, or credential.

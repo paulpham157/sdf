@@ -28,6 +28,11 @@ const gitHookEvent = "sdf.git.commit"
 // OTEL_METRICS_INCLUDE_REPOSITORY=true. Those keys are documented at
 // https://code.claude.com/docs/en/monitoring-usage
 //
+// sdf.session.cwd is on the sdf.session.open and sdf.session.close logs the
+// Grok CLI session hook from `sdf init grok --write` posts. It is Grok's hook
+// workspaceRoot (or cwd), which Grok's telemetry does not carry, and it is
+// read only from those two logs.
+//
 // sdf.git.commit is the local git hook from `sdf init --git-hooks`. It is
 // already scoped to this session by the receiver's session id, so its SHA is
 // a hook commit and not an agent-exported SHA.
@@ -61,6 +66,9 @@ func repositoryFacts(records []record.Record) RepositoryFacts {
 			noteIdentity(&owner, &ownerSet, &facts.AmbiguousRepository, textAt(source, "vcs.owner.name"))
 			noteIdentity(&name, &nameSet, &facts.AmbiguousRepository, textAt(source, "vcs.repository.name"))
 			noteIdentity(&provider, &providerSet, &facts.AmbiguousRepository, textAt(source, "vcs.provider.name"))
+		}
+		if rec.Signal == "logs" && (deref(rec.Name) == "sdf.session.open" || deref(rec.Name) == "sdf.session.close") {
+			dirs = append(dirs, pathsFrom(rec.Attributes["sdf.session.cwd"], &facts.AmbiguousWorkDirs)...)
 		}
 		if rec.Signal == "logs" && deref(rec.Name) == "claude_code.tool_result" {
 			shas = append(shas, commitSHAs(rec.Attributes)...)

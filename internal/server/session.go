@@ -20,6 +20,11 @@ type sessionEvent struct {
 	SessionID string `json:"session_id"`
 	Edge      string `json:"edge"`
 	Reason    string `json:"reason"`
+	// Cwd is the working directory the hook read from the agent. Only the
+	// Grok CLI hook sends it, because Grok's telemetry has none. It is
+	// stored as sdf.session.cwd and the summary treats it as the session's
+	// working directory.
+	Cwd string `json:"cwd"`
 }
 
 // handleSession reads one hook event and stores it. The body is the hook's own
@@ -67,6 +72,7 @@ func sessionRecord(body []byte, now time.Time) (record.Record, error) {
 	ev.SessionID = strings.TrimSpace(ev.SessionID)
 	ev.Edge = strings.TrimSpace(ev.Edge)
 	ev.Reason = strings.TrimSpace(ev.Reason)
+	ev.Cwd = strings.TrimSpace(ev.Cwd)
 	switch ev.Tool {
 	case "claude-code", "codex", "opencode", "pi", "grok-cli":
 	default:
@@ -87,6 +93,12 @@ func sessionRecord(body []byte, now time.Time) (record.Record, error) {
 	attrs := map[string]any{"session.id": ev.SessionID}
 	if ev.Reason != "" {
 		attrs["sdf.session.reason"] = ev.Reason
+	}
+	if ev.Cwd != "" {
+		if len(ev.Cwd) > 4096 || strings.ContainsAny(ev.Cwd, "\x00\n\r") {
+			return record.Record{}, &bodyStatus{400, "session event cwd must be one line of at most 4096 bytes"}
+		}
+		attrs["sdf.session.cwd"] = ev.Cwd
 	}
 	return record.Record{
 		Signal:       "logs",
