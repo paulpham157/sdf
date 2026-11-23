@@ -433,6 +433,72 @@ cannot be written, such as a read-only copy, is opened without the table and
 reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
 
+### The decision graph (Decisions tab)
+
+`GET /api/decisions/graph` arranges the decision records into chapters for the
+UI's Decisions tab. `sdf decision graph --json` prints the same bytes for the
+same `--db`, `--prices`, `--repo`, and `--github`, because both call
+`decisiongraph.Build` on the same records and the same summarized sessions
+(`outcome.Summarize`, without the budget: a budget file that fails to load
+breaks `/api/summary`, not the Decisions tab). The route answers through the
+same buffered JSON writer as the other routes, with `Content-Length`. Under
+`sdf serve`, requests that arrive while the summary is being built share
+that build, so the page's parallel requests make one round of GitHub
+lookups.
+Without `--json` it prints one line per chapter with its facts and explored
+count, plus one line per item that needs attention. It opens the store
+read-only, like `sdf decision list`. It only reads; the tab has no write
+action.
+
+```bash
+sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]
+```
+
+- **Chapter.** One connected component of decisions. Decisions are joined by a
+  decision-to-decision edge, or by both linking the same session (a commit
+  counts as the session the report attributes it to). Its title is the git
+  branch of the hook commits, else the pull request, else the first session,
+  else the first decision id; `label_source` says which. The id is
+  `ch-` plus the first decision's id. Chapters are sorted newest first.
+- **Nodes.** `start`, `decision`, `alternative` (a not-taken option split from
+  `alternatives` on `;`, else on `, or `), and `ending`. `role` is one of
+  `path`, `locked`, `hypothesis`, `refinement`, `superseded`, `retracted`,
+  `not_taken`, `reached`, `unreached`, and `locked_ending`. `lane`
+  (`spine`, `left`, `right`, or `none` for an alternative folded into its
+  decision's "+N not taken") and `row` are computed here, so the page only maps
+  them to coordinates. Over 25 nodes a chapter is `compact` and folds every
+  alternative.
+- **Endings.** A linked session's pull request (reached when merged), else its
+  first commit, plus any linked commit no linked session stands for. A blocked
+  decision on the path with no ending gets a `locked_ending` that names its
+  open blockers. `via` lists the decisions that lead to it, `implements` and
+  `validates` first.
+- **Edges.** The stored edges between decisions, plus derived `next` (the
+  chosen path), `after`, `not_taken`, and `outcome`. `tension` marks
+  `conflicts_with` and `contradicts`, which the page hides until "Show
+  tensions" is on or one end is focused. `relation_types` lists every relation
+  with its glyph and label.
+- **Facts and explored.** `facts` counts endings reached and total, locked
+  records, active conflict pairs (a pair stored in both orders by an older
+  sdf is one pair, drawn once), and challenged decisions; `needs_attention`
+  lists them. They are the read-time `blocked`, `conflicted`, and
+  `challenged` fields above, so the same rules hold: a blocker with no head
+  is open when any path of its `supersedes` chain reaches a cycle, a
+  conflict pair needs both sides `active`, and only evidence from an active
+  decision (or any session or commit) counts; a challenged item names that
+  source. `explored` counts choice points only: decided ÷ (decided + not
+  taken + hypotheses + locked), rounded half up. A blocked record, decision
+  or hypothesis, counts as locked, in `facts.locked` and `explored.locked`
+  alike. Superseded and retracted decisions count as decided; a superseded
+  or retracted hypothesis, a refinement, and a commit do not count.
+- **Cost.** The sum of the chapter's sessions' computed cost: `known`, `partial`
+  when some session has no known cost, or `unknown`.
+- **What-if.** Each alternative carries `command`, an `sdf decision add ...
+  --status hypothesis` line the page copies to the clipboard. The page never
+  runs it. The new id is `PARENT-alt-N`; a parent longer than 110 characters
+  is cut to 100 and followed by `-` and 8 hex digits of its SHA-256, so the
+  id stays within 128 characters and two long parents do not collide.
+
 ### Auditing the graph
 
 `sdf decision audit` lists what the graph is missing, from stored structure
