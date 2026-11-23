@@ -31,6 +31,9 @@ const (
 	grokSessionEnd      = "grok_code.session_end"
 	grokTurnCompleted   = "grok_code.turn_completed"
 	grokToolResult      = "grok_code.tool_result"
+	geminiTokenMetric   = "gemini_cli.token.usage"
+	geminiAPIResponse   = "gemini_cli.api_response"
+	geminiToolCall      = "gemini_cli.tool_call"
 )
 
 var (
@@ -38,6 +41,7 @@ var (
 		"claude_code.tool_result": true,
 		"codex.tool_result":       true,
 		"grok_code.tool_result":   true,
+		"gemini_cli.tool_call":    true,
 	}
 	claudeSpans = map[string]bool{
 		"claude_code.interaction":          true,
@@ -141,6 +145,10 @@ var (
 		"grok_code.api_error":            true,
 		"grok_code.turn_completed":       true,
 		"grok_code.model_switched":       true,
+		"gemini_cli.config":              true,
+		"gemini_cli.api_request":         true,
+		"gemini_cli.api_response":        true,
+		"gemini_cli.api_error":           true,
 	}
 	modelSpans = map[string]bool{
 		"claude_code.interaction":          true,
@@ -207,7 +215,8 @@ func SummarizeWith(records []record.Record, allSpans bool, prices *pricing.Catal
 	return Report{Sessions: sessions, Unattributed: unattributed(leftover)}
 }
 
-// ToolOf classifies a record as claude-code, codex, opencode, pi, grok-cli, or unknown.
+// ToolOf classifies a record as claude-code, codex, opencode, gemini-cli, pi,
+// grok-cli, or unknown.
 func ToolOf(rec record.Record) string {
 	service := strings.ToLower(deref(rec.ServiceName))
 	name := deref(rec.Name)
@@ -226,6 +235,12 @@ func ToolOf(rec record.Record) string {
 	}
 	if service == "opencode" {
 		return "opencode"
+	}
+	// Gemini CLI sets service.name=gemini-cli on the resource and names every
+	// log in the event.name attribute (gemini_cli.*). Its metrics also record
+	// gen_ai.client.token.usage, so it is classified before Pi.
+	if service == "gemini-cli" || strings.HasPrefix(name, "gemini_cli.") || strings.HasPrefix(event, "gemini_cli.") {
+		return "gemini-cli"
 	}
 	if service == "pi" || system == "pi" || strings.HasPrefix(name, "pi.session.") || strings.HasPrefix(event, "pi.session.") {
 		return "pi"
@@ -811,6 +826,9 @@ func duration(records []record.Record, points []point) (*float64, *string) {
 	if len(turnDur) > 0 {
 		return record.Float(sum(turnDur)), record.Str("logs " + grokTurnCompleted)
 	}
+	if window := geminiWindow(records); window != nil {
+		return window, record.Str("logs and traces gemini_cli window")
+	}
 	var stampsAll []int64
 	for _, rec := range records {
 		stampsAll = append(stampsAll, stamps(rec)...)
@@ -884,6 +902,9 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 	}
 	if len(events) > 0 {
 		return codexSSETokens(events)
+	}
+	if gemini, source, method, ok := geminiTokens(records, points); ok {
+		return gemini, source, method
 	}
 	if opencode, method, ok := genAIUsage(records, func(name string) bool { return name == "SessionStep.attempt" }, true, nil); ok {
 		return opencode, record.Str("traces SessionStep.attempt"), method
@@ -1248,7 +1269,7 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 			continue
 		}
 		calls = append(calls, ToolCall{
-			Name:       record.SummaryText(rec.Attributes["tool_name"]),
+			Name:       logToolName(rec),
 			CallID:     id,
 			Success:    record.SummaryText(rec.Attributes["success"]),
 			DurationMS: record.Number(rec.Attributes["duration_ms"]),
@@ -1351,7 +1372,7 @@ func logLines(records []record.Record) []LogLine {
 		} else if toolLogs[name] && len(group) == 1 {
 			rec := group[0]
 			var parts []string
-			if text := record.SummaryText(rec.Attributes["tool_name"]); text != nil {
+			if text := logToolName(rec); text != nil {
 				parts = append(parts, *text)
 			}
 			if text := record.SummaryText(rec.Attributes["success"]); text != nil {
@@ -1429,6 +1450,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "no spans exported. Pi has no built-in OTLP exporter; install pi-otel and set OTEL_EXPORTER_OTLP_PROTOCOL=http/json."
 		case "grok-cli":
 			reason = "Grok CLI's external OTEL stream exports logs and metrics only (no traces). Documented in xAI monitoring-usage (alpha, grok_code.schema.version=v1)."
+		case "gemini-cli":
+			reason = "no spans attributed to this session. Gemini CLI spans carry gen_ai.conversation.id and are exported once telemetry.enabled is true and otlpEndpoint is set."
 		default:
 			reason = "no spans exported for this session."
 		}
@@ -1447,6 +1470,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "pi-otel logs only session start and end (pi.session.start, pi.session.end) and only when PI_OTEL_LOGS=1. None are attributed to this session."
 		case "grok-cli":
 			reason = "no log events attributed to this session. Set GROK_EXTERNAL_OTEL=1 and OTEL_LOGS_EXPORTER=otlp. Events carry session.id once a session exists."
+		case "gemini-cli":
+			reason = "no log events attributed to this session. Set telemetry.enabled=true and telemetry.otlpEndpoint in ~/.gemini/settings.json; telemetry.outfile overrides the endpoint."
 		default:
 			reason = "no log events exported for this session."
 		}
@@ -1507,10 +1532,18 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "pi-otel metrics have no session id and are off unless PI_OTEL_METRICS=1. None were attributed by trace, span, or this session's time window."
 		case "grok-cli":
 			reason = "no metrics attributed to this session. Set GROK_EXTERNAL_OTEL=1 and OTEL_METRICS_EXPORTER=otlp. session.id is on metrics by default (OTEL_METRICS_INCLUDE_SESSION_ID=1)."
+		case "gemini-cli":
+			reason = "no metrics attributed to this session. Gemini CLI exports cumulative metrics every 10 seconds, so a run shorter than one interval may end before the first export."
 		default:
 			reason = "no metrics exported for this session."
 		}
 		out = append(out, Missing{Signal: "metrics", Reason: reason})
+	}
+	if tool == "gemini-cli" {
+		out = append(out, Missing{
+			Signal: "agent cost",
+			Reason: "Gemini CLI exports no cost metric or cost attribute (docs/cli/telemetry.md). Agent-reported cost stays unknown; computed cost is shown only when a pricing rule covers the token source.",
+		})
 	}
 	return out
 }
@@ -2098,4 +2131,79 @@ func nonNilCalls(s []ToolCall) []ToolCall {
 		return []ToolCall{}
 	}
 	return s
+}
+
+// geminiTokens reads Gemini CLI token counts. gemini_cli.token.usage is a
+// cumulative counter by type (input, output, thought, cache, tool), so a
+// series keeps its latest point. Without those points it sums the token
+// attributes on gemini_cli.api_response. gen_ai.client.token.usage and the
+// gen_ai.client.inference.operation.details log repeat the same input and
+// output counts and are not added again. Field meanings follow
+// packages/core/src/telemetry (ApiResponseEvent): input_token_count is the
+// prompt count and includes cached_content_token_count; output_token_count
+// excludes thoughts_token_count; tool_token_count is the tool-use prompt.
+func geminiTokens(records []record.Record, points []point) (OrderedFloats, *string, *string, bool) {
+	var metricPoints []point
+	for _, p := range points {
+		if p.name == geminiTokenMetric {
+			metricPoints = append(metricPoints, p)
+		}
+	}
+	if len(metricPoints) > 0 {
+		return sumBy(metricPoints, "type"), record.Str("metrics " + geminiTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Gemini CLI type=input|output|thought|cache|tool; cache is a subset of input, thought and tool are not part of input or output"), true
+	}
+	totals := OrderedFloats{}
+	found := false
+	for _, rec := range records {
+		if rec.Signal != "logs" || logEventName(rec) != geminiAPIResponse {
+			continue
+		}
+		if addFields(&totals, rec, []string{"input_token_count", "output_token_count", "cached_content_token_count", "thoughts_token_count", "tool_token_count"}) {
+			found = true
+		}
+	}
+	if found {
+		return totals, record.Str("logs " + geminiAPIResponse), record.Str("sum of per-response token attributes from gemini_cli.api_response (input_token_count, output_token_count, cached_content_token_count, thoughts_token_count, tool_token_count); total_token_count is not added"), true
+	}
+	return OrderedFloats{}, nil, nil, false
+}
+
+// logToolName is the tool name on a tool-result log. Gemini CLI's
+// gemini_cli.tool_call uses function_name; the others use tool_name.
+func logToolName(rec record.Record) *string {
+	return firstText(rec.Attributes, "tool_name", "function_name")
+}
+
+// geminiWindow is the min-to-max timestamp of a Gemini CLI session's logs and
+// spans. Gemini CLI exports no session or turn duration. Its metrics are
+// cumulative, start at process start, and are exported every 10 seconds, so
+// they are left out of the window.
+func geminiWindow(records []record.Record) *float64 {
+	var lo, hi int64
+	seen := 0
+	gemini := false
+	for _, rec := range records {
+		if rec.Signal == "metrics" {
+			continue
+		}
+		if ToolOf(rec) != "gemini-cli" {
+			continue
+		}
+		if rec.Signal == "logs" && strings.HasPrefix(logEventName(rec), "gemini_cli.") {
+			gemini = true
+		}
+		for _, stamp := range stamps(rec) {
+			if seen == 0 || stamp < lo {
+				lo = stamp
+			}
+			if seen == 0 || stamp > hi {
+				hi = stamp
+			}
+			seen++
+		}
+	}
+	if !gemini || seen < 2 {
+		return nil
+	}
+	return record.Float(float64(hi-lo) / 1_000_000)
 }

@@ -759,7 +759,7 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok] [--write] [--global] [--install]"
+const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok|gemini] [--write] [--global] [--install]"
 
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	host := "127.0.0.1"
@@ -841,7 +841,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			grpcPort = n
-		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "qwen" || arg == "qwen-code" || arg == "grok":
+		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "qwen" || arg == "qwen-code" || arg == "grok" || arg == "gemini" || arg == "gemini-cli":
 			if agent != "" {
 				fmt.Fprintf(stderr, "sdf init: extra agent %s\n", arg)
 				return 2
