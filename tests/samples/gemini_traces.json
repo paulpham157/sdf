@@ -1,0 +1,279 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "gemini-cli"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "v22.20.0"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "gemini-cli",
+            "version": "v1"
+          },
+          "spans": [
+            {
+              "traceId": "5a3c0e9b1d2f4a6b8c7d9e0f1a2b3c4d",
+              "spanId": "0000000000009e01",
+              "name": "llm_call",
+              "kind": 1,
+              "startTimeUnixNano": "1800000001100000000",
+              "endTimeUnixNano": "1800000004000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "gemini-cli"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-gemini-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "llm_call"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gemini-2.5-pro"
+                  }
+                },
+                {
+                  "key": "gen_ai.prompt.name",
+                  "value": {
+                    "stringValue": "sample-gemini-1########1"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "5a3c0e9b1d2f4a6b8c7d9e0f1a2b3c4d",
+              "spanId": "0000000000009e02",
+              "name": "tool_call",
+              "kind": 1,
+              "startTimeUnixNano": "1800000004386000000",
+              "endTimeUnixNano": "1800000004400000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "gemini-cli"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-gemini-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "tool_call"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "5a3c0e9b1d2f4a6b8c7d9e0f1a2b3c4d",
+              "spanId": "0000000000009e03",
+              "name": "llm_call",
+              "kind": 1,
+              "startTimeUnixNano": "1800000007800000000",
+              "endTimeUnixNano": "1800000009500000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "gemini-cli"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-gemini-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "llm_call"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gemini-2.5-pro"
+                  }
+                },
+                {
+                  "key": "gen_ai.prompt.name",
+                  "value": {
+                    "stringValue": "sample-gemini-1########1"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "5a3c0e9b1d2f4a6b8c7d9e0f1a2b3c4d",
+              "spanId": "0000000000009e04",
+              "name": "tool_call",
+              "kind": 1,
+              "startTimeUnixNano": "1800000009790000000",
+              "endTimeUnixNano": "1800000012000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "gemini-cli"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-gemini-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "tool_call"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "replace"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            },
+            {
+              "traceId": "5a3c0e9b1d2f4a6b8c7d9e0f1a2b3c4d",
+              "spanId": "0000000000009e05",
+              "name": "tool_call",
+              "kind": 1,
+              "startTimeUnixNano": "1800000012370000000",
+              "endTimeUnixNano": "1800000013200000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "gemini-cli"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-gemini-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "tool_call"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                }
+              ],
+              "status": {
+                "code": 2,
+                "message": "Command exited with code 1."
+              }
+            },
+            {
+              "traceId": "5a3c0e9b1d2f4a6b8c7d9e0f1a2b3c4d",
+              "spanId": "0000000000009e06",
+              "name": "llm_call",
+              "kind": 1,
+              "startTimeUnixNano": "1800000014500000000",
+              "endTimeUnixNano": "1800000016000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "gemini-cli"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-gemini-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "llm_call"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "gemini-2.5-pro"
+                  }
+                },
+                {
+                  "key": "gen_ai.prompt.name",
+                  "value": {
+                    "stringValue": "sample-gemini-1########1"
+                  }
+                }
+              ],
+              "status": {
+                "code": 1
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

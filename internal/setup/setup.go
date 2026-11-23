@@ -14,11 +14,35 @@
 // against @opencode/cli 2.2.6 on 2026-11-10. The v1 experimental.openTelemetry
 // flag is not the v2 switch.
 //
+// GitHub Copilot CLI exports traces and metrics over OTLP/HTTP (http/json by
+// default) when OTEL_EXPORTER_OTLP_ENDPOINT is set. It has no OTLP log
+// signal and no settings-file key for the endpoint, so setup is environment
+// only. Content capture is off unless OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT
+// asks for it. An http:// endpoint is dropped when an OTLP certificate or
+// client key variable is set. Checked against `copilot help monitoring` in
+// Copilot CLI 1.0.114 on 2026-11-23.
+// https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference
+//
 // Pi has no built-in OTLP exporter. pi-otel 0.3.0 reads .pi/settings.json in
 // the project and ~/.pi/agent/settings.json, then OTEL_* and PI_OTEL_* env.
 // Its default protocol is grpc at 127.0.0.1:4317. This setup uses http/json
 // on the receiver's HTTP port. grpc on 4317 also reaches sdf serve.
 // https://github.com/NikiforovAll/pi-otel
+//
+// Gemini CLI reads the telemetry block of ~/.gemini/settings.json. A
+// workspace .gemini/settings.json (trusted folders only) overrides it, and the
+// system file /etc/gemini-cli/settings.json overrides both. GEMINI_TELEMETRY_*
+// env, then OTEL_EXPORTER_OTLP_ENDPOINT for the endpoint, override every file. Its default protocol is grpc at localhost:4317. This
+// setup selects http on the receiver's HTTP port, and sets logPrompts to false
+// only when the file does not already choose (Gemini's default is true).
+// https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md
+//
+// Grok CLI exports metrics and logs (no traces) when GROK_EXTERNAL_OTEL=1
+// and an OTLP exporter is set. The user config is $GROK_HOME/config.toml
+// (default ~/.grok/config.toml). A project .grok/config.toml cannot set
+// otel_*. Env vars win over that file. Checked against the xAI monitoring
+// guide and grok 1.0.92 on 2026-11-23.
+// https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
 package setup
 
 import (
@@ -32,6 +56,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -45,9 +70,11 @@ type Endpoint struct {
 
 // Request is one init invocation.
 type Request struct {
-	Agent      string
-	Home       string
-	CodexHome  string
+	Agent     string
+	Home      string
+	CodexHome string
+	// GrokHome is $GROK_HOME, or ~/.grok when that variable is unset.
+	GrokHome   string
 	ProjectDir string
 	Endpoint   Endpoint
 	Write      bool
@@ -74,6 +101,8 @@ func Run(req Request) (Result, error) {
 	switch req.Agent {
 	case "claude-code":
 		return claude(req)
+	case "copilot", "copilot-cli":
+		return copilot(req)
 	case "codex":
 		return codex(req)
 	case "opencode":
@@ -82,8 +111,12 @@ func Run(req Request) (Result, error) {
 		return qwen(req)
 	case "pi":
 		return pi(req)
+	case "grok":
+		return grok(req)
+	case "gemini", "gemini-cli":
+		return gemini(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok, gemini)", req.Agent)
 	}
 }
 
@@ -120,6 +153,13 @@ func normalize(req *Request) error {
 			req.CodexHome = filepath.Join(req.Home, ".codex")
 		}
 	}
+	if req.GrokHome == "" {
+		if env := os.Getenv("GROK_HOME"); env != "" {
+			req.GrokHome = env
+		} else {
+			req.GrokHome = filepath.Join(req.Home, ".grok")
+		}
+	}
 	if req.ProjectDir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -141,7 +181,7 @@ func claude(req Request) (Result, error) {
 	for _, key := range claudeOrder {
 		fmt.Fprintf(&b, "export %s=%s\n", key, env[key])
 	}
-	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
+	merge := func(root map[string]any) (bool, error) {
 		envChanged, err := mergeStringMap(root, "env", env)
 		if err != nil {
 			return false, err
@@ -151,9 +191,17 @@ func claude(req Request) (Result, error) {
 			return false, err
 		}
 		return envChanged || hooksChanged, nil
-	})
+	}
+	status, err := mergeJSON(path, req.Write, merge)
 	if err != nil {
 		return Result{}, err
+	}
+	if !req.Write {
+		envShape := map[string]any{}
+		for key, value := range env {
+			envShape[key] = value
+		}
+		status = previewJSON(path, merge, map[string]any{"env": envShape, "hooks": claudeHooks(req.Endpoint.base() + "/v1/sessions")})
 	}
 	b.WriteString("\n")
 	b.WriteString(status)
@@ -211,14 +259,14 @@ func codex(req Request) (Result, error) {
 	}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return Result{}, err
+		return Result{}, readErr(path, err)
 	}
 	if hasOtelTable(string(existing)) {
 		b.WriteString("\nnot written: " + path + " already has an [otel] table; it was not changed\n")
 		return Result{Text: b.String()}, nil
 	}
-	backup, err := copyAside(path)
-	if err != nil {
+	hooks := filepath.Join(req.CodexHome, "hooks.json")
+	if err := checkAllWritable(path, hooks); err != nil {
 		return Result{}, err
 	}
 	var body []byte
@@ -232,12 +280,13 @@ func codex(req Request) (Result, error) {
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
 	}
-	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
+	status, err := replaceFile(path, body, 0o600)
+	if err != nil {
 		return Result{}, err
 	}
 	b.WriteString("\n")
-	b.WriteString(wrote(path, backup))
-	hookStatus, err := codexHookFile(filepath.Join(req.CodexHome, "hooks.json"), req.Endpoint.base()+"/v1/sessions")
+	b.WriteString(status)
+	hookStatus, err := codexHookFile(hooks, req.Endpoint.base()+"/v1/sessions")
 	if err != nil {
 		return Result{}, err
 	}
@@ -286,12 +335,15 @@ func opencode(req Request) (Result, error) {
 		b.WriteString("not written (pass --write)\n")
 		return Result{Text: b.String()}, nil
 	}
+	plugin := filepath.Join(req.Home, ".config", "opencode", "plugins", "sdf-session.js")
+	if err := checkAllWritable(path, plugin); err != nil {
+		return Result{}, err
+	}
 	status, err := writeBytes(path, []byte("# source this file before starting opencode\n"+line), req.Write)
 	if err != nil {
 		return Result{}, err
 	}
 	b.WriteString(status)
-	plugin := filepath.Join(req.Home, ".config", "opencode", "plugins", "sdf-session.js")
 	hookStatus, err := writeBytes(plugin, []byte(opencodePlugin(req.Endpoint.base()+"/v1/sessions")), req.Write)
 	if err != nil {
 		return Result{}, err
@@ -326,18 +378,28 @@ func pi(req Request) (Result, error) {
 	fmt.Fprintf(&b, "export PI_OTEL_METRICS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_LOGS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_SPAN_NAMING=genai\n\n")
-	status, err := mergeJSON(target, req.Write, func(root map[string]any) (bool, error) {
-		return mergeAnyMap(root, "otel", otel)
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	b.WriteString(status)
 	piDir := filepath.Join(req.ProjectDir, ".pi", "extensions")
 	if req.Global {
 		piDir = filepath.Join(req.Home, ".pi", "agent", "extensions")
 	}
-	extStatus, err := writeBytes(filepath.Join(piDir, "sdf-session.js"), []byte(piExtension(req.Endpoint.base()+"/v1/sessions")), req.Write)
+	extension := filepath.Join(piDir, "sdf-session.js")
+	if req.Write {
+		if err := checkAllWritable(target, extension); err != nil {
+			return Result{}, err
+		}
+	}
+	merge := func(root map[string]any) (bool, error) {
+		return mergeAnyMap(root, "otel", otel)
+	}
+	status, err := mergeJSON(target, req.Write, merge)
+	if err != nil {
+		return Result{}, err
+	}
+	if !req.Write {
+		status = previewJSON(target, merge, map[string]any{"otel": piOtel(req.Endpoint)})
+	}
+	b.WriteString(status)
+	extStatus, err := writeBytes(extension, []byte(piExtension(req.Endpoint.base()+"/v1/sessions")), req.Write)
 	if err != nil {
 		return Result{}, err
 	}
@@ -355,6 +417,119 @@ func pi(req Request) (Result, error) {
 	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
 }
 
+func grok(req Request) (Result, error) {
+	path := filepath.Join(req.GrokHome, "config.toml")
+	hookPath := filepath.Join(req.GrokHome, "hooks", "sdf-session.json")
+	block := grokBlock(req.Endpoint)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Grok CLI exports metrics and logs, not traces, when GROK_EXTERNAL_OTEL=1 and an OTLP exporter is set.\n")
+	fmt.Fprintf(&b, "Set these in the shell that launches grok, or in %s under [telemetry].\n", path)
+	fmt.Fprintf(&b, "A project .grok/config.toml cannot set otel_*. Environment variables win over config.toml.\n")
+	fmt.Fprintf(&b, "Checked against grok 1.0.92 on 2026-11-23. The schema is grok_code.schema.version v1 (alpha).\n")
+	fmt.Fprintf(&b, "https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md\n\n")
+	for _, line := range grokEnv(req.Endpoint) {
+		fmt.Fprintf(&b, "export %s\n", line)
+	}
+	b.WriteString("\n")
+	b.WriteString(block)
+	b.WriteString("\n")
+	if !req.Write {
+		fmt.Fprintf(&b, "not written (pass --write to append this block to %s; an existing [telemetry] table is left unchanged)\n", path)
+		fmt.Fprintf(&b, "not written (pass --write to install %s)\n", hookPath)
+		return Result{Text: b.String()}, nil
+	}
+	configStatus, configWrote, err := writeGrokConfig(path, block)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(configStatus)
+	hookStatus, err := writeBytes(hookPath, []byte(grokHooks(req.Endpoint.base()+"/v1/sessions")), true)
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(hookStatus)
+	return Result{Text: b.String(), Wrote: configWrote || strings.HasPrefix(hookStatus, "wrote ")}, nil
+}
+
+func grokEnv(ep Endpoint) []string {
+	return []string{
+		"GROK_EXTERNAL_OTEL=1",
+		"OTEL_METRICS_EXPORTER=otlp",
+		"OTEL_LOGS_EXPORTER=otlp",
+		"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+		"OTEL_EXPORTER_OTLP_ENDPOINT=" + ep.base(),
+	}
+}
+
+func grokBlock(ep Endpoint) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+# Grok reads [telemetry] from $GROK_HOME/config.toml (default ~/.grok/config.toml).
+# A project .grok/config.toml cannot set otel_*. Env vars win over this file.
+# https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
+[telemetry]
+otel_enabled = true
+otel_metrics_exporter = "otlp"
+otel_logs_exporter = "otlp"
+otel_protocol = "http/protobuf"
+otel_endpoint = "%s"
+`, ep.base())) + "\n"
+}
+
+func writeGrokConfig(path, block string) (string, bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", false, err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return "", false, err
+	}
+	if hasTelemetryTable(string(existing)) {
+		return "not written: " + path + " already has a [telemetry] table; it was not changed\n", false, nil
+	}
+	backup, err := copyAside(path)
+	if err != nil {
+		return "", false, err
+	}
+	var body []byte
+	if len(bytes.TrimSpace(existing)) == 0 {
+		body = []byte(block)
+	} else {
+		body = existing
+		if !bytes.HasSuffix(body, []byte("\n")) {
+			body = append(body, '\n')
+		}
+		body = append(body, '\n')
+		body = append(body, []byte(block)...)
+	}
+	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
+		return "", false, err
+	}
+	return wrote(path, backup), true, nil
+}
+
+func hasTelemetryTable(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		if trim == "[telemetry]" || strings.HasPrefix(trim, "[telemetry.") {
+			return true
+		}
+	}
+	return false
+}
+
+func grokConfigured(req Request) string {
+	path := filepath.Join(req.GrokHome, "config.toml")
+	want := req.Endpoint.base()
+	envHit := (os.Getenv("GROK_EXTERNAL_OTEL") == "1" || os.Getenv("GROK_EXTERNAL_OTEL") == "true") &&
+		(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == want || strings.HasPrefix(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"), want+"/"))
+	body, err := os.ReadFile(path)
+	fileHit := err == nil && hasTelemetryTable(string(body)) && strings.Contains(string(body), want)
+	return fmt.Sprintf("grok process env points at %s: %t; %s has [telemetry] pointing at %s: %t\n", want, envHit, path, want, fileHit)
+}
+
 func piOtel(ep Endpoint) map[string]any {
 	return map[string]any{
 		"endpoint":   ep.base(),
@@ -366,6 +541,168 @@ func piOtel(ep Endpoint) map[string]any {
 			"logs":    true,
 		},
 	}
+}
+
+func gemini(req Request) (Result, error) {
+	path := filepath.Join(req.Home, ".gemini", "settings.json")
+	var b strings.Builder
+	fmt.Fprintf(&b, "Gemini CLI telemetry is off until telemetry.enabled is true.\n")
+	fmt.Fprintf(&b, "It exports logs, metrics, and spans with session.id (spans carry gen_ai.conversation.id).\n")
+	fmt.Fprintf(&b, "Its default is grpc at http://localhost:4317, which sdf serve also accepts. This setup selects http on %s.\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "logPrompts defaults to true in Gemini CLI. --write sets it to false unless %s already sets it.\n", path)
+	fmt.Fprintf(&b, "Precedence, lowest first: %s, a workspace .gemini/settings.json (only in a trusted folder), then %s.\n", path, geminiSystemSettings())
+	fmt.Fprintf(&b, "GEMINI_TELEMETRY_* overrides every file. OTEL_EXPORTER_OTLP_ENDPOINT overrides telemetry.otlpEndpoint when GEMINI_TELEMETRY_OTLP_ENDPOINT is unset.\n")
+	fmt.Fprintf(&b, "telemetry.outfile, when set, replaces the endpoint, and nothing reaches sdf.\n")
+	fmt.Fprintf(&b, "Docs: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md\n\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_ENABLED=true\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_TARGET=local\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_LOG_PROMPTS=false\n\n")
+	want := geminiTelemetry(req.Endpoint)
+	merge := func(root map[string]any) (bool, error) {
+		changed, err := mergeAnyMap(root, "telemetry", want)
+		if err != nil {
+			return false, err
+		}
+		telemetry := root["telemetry"].(map[string]any)
+		if _, ok := telemetry["logPrompts"]; !ok {
+			telemetry["logPrompts"] = false
+			changed = true
+		}
+		return changed, nil
+	}
+	var warnings strings.Builder
+	if root, err := readJSON(path); err == nil {
+		if telemetry, ok := root["telemetry"].(map[string]any); ok {
+			for _, key := range []string{"target", "otlpEndpoint", "otlpProtocol"} {
+				if old, ok := telemetry[key]; ok && !jsonEqual(old, want[key]) {
+					fmt.Fprintf(&warnings, "warning: %s telemetry.%s %s -> %s\n", path, key, jsonText(old), jsonText(want[key]))
+				}
+			}
+			if lp, ok := telemetry["logPrompts"].(bool); ok && lp {
+				fmt.Fprintf(&warnings, "warning: %s sets telemetry.logPrompts=true, so prompt text is exported to sdf. sdf leaves an explicit choice alone; set it to false to keep prompts out.\n", path)
+			}
+			if outfile, ok := telemetry["outfile"].(string); ok && outfile != "" {
+				fmt.Fprintf(&warnings, "warning: %s sets telemetry.outfile=%s, which replaces the endpoint. Remove it to send to sdf.\n", path, outfile)
+			}
+		}
+	}
+	var status string
+	if req.Write {
+		var err error
+		status, err = mergeJSON(path, true, merge)
+		if err != nil {
+			return Result{}, err
+		}
+	} else {
+		shape := map[string]any{"telemetry": map[string]any{"logPrompts": false}}
+		for key, value := range want {
+			shape["telemetry"].(map[string]any)[key] = value
+		}
+		status = previewJSON(path, merge, shape)
+	}
+	b.WriteString(status)
+	b.WriteString(warnings.String())
+	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
+}
+
+func jsonText(v any) string {
+	var buf bytes.Buffer
+	if err := encodeLeaf(&buf, v); err != nil {
+		return fmt.Sprint(v)
+	}
+	return buf.String()
+}
+
+func geminiTelemetry(ep Endpoint) map[string]any {
+	return map[string]any{
+		"enabled":      true,
+		"target":       "local",
+		"otlpEndpoint": ep.base(),
+		"otlpProtocol": "http",
+	}
+}
+
+// geminiSystemSettings is the system override file Gemini CLI loads after the
+// user and workspace files, so its telemetry keys win over both.
+// https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md
+func geminiSystemSettings() string {
+	if env := os.Getenv("GEMINI_CLI_SYSTEM_SETTINGS_PATH"); env != "" {
+		return env
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/GeminiCli/settings.json"
+	case "windows":
+		return `C:\ProgramData\gemini-cli\settings.json`
+	default:
+		return "/etc/gemini-cli/settings.json"
+	}
+}
+
+// geminiConflicts lists telemetry keys in path that would stop records from
+// reaching want.
+func geminiConflicts(path, want string) []string {
+	root, err := readJSON(path)
+	if err != nil {
+		return nil
+	}
+	telemetry, ok := root["telemetry"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	if v, ok := telemetry["enabled"]; ok && v != true {
+		out = append(out, "enabled="+jsonText(v))
+	}
+	if v, ok := telemetry["target"]; ok && v != "local" {
+		out = append(out, "target="+jsonText(v))
+	}
+	if v, ok := telemetry["otlpEndpoint"]; ok {
+		if s, _ := v.(string); !strings.Contains(s, want) {
+			out = append(out, "otlpEndpoint="+jsonText(v))
+		}
+	}
+	if v, ok := telemetry["otlpProtocol"]; ok && v != "http" {
+		out = append(out, "otlpProtocol="+jsonText(v))
+	}
+	if v, ok := telemetry["outfile"]; ok && v != "" {
+		out = append(out, "outfile="+jsonText(v))
+	}
+	return out
+}
+
+func geminiConfigured(req Request) string {
+	path := filepath.Join(req.Home, ".gemini", "settings.json")
+	want := req.Endpoint.base()
+	envHit := strings.Contains(os.Getenv("GEMINI_TELEMETRY_OTLP_ENDPOINT"), want)
+	fileHit := false
+	if root, err := readJSON(path); err == nil {
+		if telemetry, ok := root["telemetry"].(map[string]any); ok {
+			endpoint, _ := telemetry["otlpEndpoint"].(string)
+			enabled, _ := telemetry["enabled"].(bool)
+			fileHit = enabled && strings.Contains(endpoint, want)
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "gemini process env GEMINI_TELEMETRY_OTLP_ENDPOINT points at %s: %t; %s has telemetry enabled pointing at %s: %t\n", want, envHit, path, want, fileHit)
+	if os.Getenv("GEMINI_TELEMETRY_OTLP_ENDPOINT") == "" {
+		if otel := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otel != "" && !strings.Contains(otel, want) {
+			fmt.Fprintf(&b, "warning: OTEL_EXPORTER_OTLP_ENDPOINT=%s overrides telemetry.otlpEndpoint in every settings file, so gemini sends there, not to %s. Unset it or set GEMINI_TELEMETRY_OTLP_ENDPOINT=%s.\n", otel, want, want)
+		}
+	}
+	system := geminiSystemSettings()
+	if conflicts := geminiConflicts(system, want); len(conflicts) > 0 {
+		fmt.Fprintf(&b, "warning: system settings %s override %s and set telemetry %s. GEMINI_TELEMETRY_* env still wins over it.\n", system, path, strings.Join(conflicts, ", "))
+	}
+	workspace := filepath.Join(req.ProjectDir, ".gemini", "settings.json")
+	if workspace != path {
+		if conflicts := geminiConflicts(workspace, want); len(conflicts) > 0 {
+			fmt.Fprintf(&b, "warning: workspace settings %s set telemetry %s. They override %s only when this folder is trusted.\n", workspace, strings.Join(conflicts, ", "), path)
+		}
+	}
+	return b.String()
 }
 
 func runPiInstall(req Request) (string, error) {
@@ -468,6 +805,8 @@ func Configured(req Request) (string, error) {
 	switch req.Agent {
 	case "claude-code":
 		return claudeConfigured(req), nil
+	case "copilot", "copilot-cli":
+		return copilotConfigured(req), nil
 	case "codex":
 		return codexConfigured(req), nil
 	case "opencode":
@@ -476,6 +815,10 @@ func Configured(req Request) (string, error) {
 		return qwenConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
+	case "grok":
+		return grokConfigured(req), nil
+	case "gemini", "gemini-cli":
+		return geminiConfigured(req), nil
 	default:
 		return "", fmt.Errorf("unknown agent %q", req.Agent)
 	}
@@ -549,53 +892,6 @@ func readJSON(path string) (map[string]any, error) {
 	return root, nil
 }
 
-func mergeJSON(path string, write bool, merge func(map[string]any) (bool, error)) (string, error) {
-	if !write {
-		return "not written (pass --write to update " + path + "; an existing file is copied to a .sdf-bak sibling first)\n", nil
-	}
-	root := map[string]any{}
-	if body, err := os.ReadFile(path); err == nil {
-		if !json.Valid(body) {
-			return "", fmt.Errorf("%s is not JSON; it was not changed", path)
-		}
-		if err := json.Unmarshal(body, &root); err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
-		if root == nil {
-			root = map[string]any{}
-		}
-	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-	changed, err := merge(root)
-	if err != nil {
-		return "", err
-	}
-	if !changed {
-		return path + " already has these values\n", nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	backup, err := copyAside(path)
-	if err != nil {
-		return "", err
-	}
-	encoded, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	encoded = append(encoded, '\n')
-	mode := fileMode(path, 0o600)
-	if strings.Contains(path, string(filepath.Separator)+".pi"+string(filepath.Separator)) {
-		mode = fileMode(path, 0o644)
-	}
-	if err := os.WriteFile(path, encoded, mode); err != nil {
-		return "", err
-	}
-	return wrote(path, backup), nil
-}
-
 func mergeStringMap(root map[string]any, key string, values map[string]string) (bool, error) {
 	current, ok := root[key].(map[string]any)
 	if root[key] != nil && !ok {
@@ -633,7 +929,7 @@ func mergeInto(dst, src map[string]any) bool {
 	for key, value := range src {
 		child, ok := value.(map[string]any)
 		if !ok {
-			if fmt.Sprint(dst[key]) != fmt.Sprint(value) {
+			if have, ok := dst[key]; !ok || !jsonEqual(have, value) {
 				dst[key] = value
 				changed = true
 			}
@@ -659,45 +955,9 @@ func writeBytes(path string, body []byte, write bool) (string, error) {
 	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, body) {
 		return path + " already has these values\n", nil
 	} else if err != nil && !os.IsNotExist(err) {
-		return "", err
+		return "", readErr(path, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	backup, err := copyAside(path)
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
-		return "", err
-	}
-	return wrote(path, backup), nil
-}
-
-func copyAside(path string) (string, error) {
-	body, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	dest := path + ".sdf-bak"
-	if _, err := os.Stat(dest); err == nil {
-		dest = path + ".sdf-bak." + time.Now().UTC().Format("20060102T150405Z")
-	}
-	if err := os.WriteFile(dest, body, fileMode(path, 0o600)); err != nil {
-		return "", err
-	}
-	return dest, nil
-}
-
-func fileMode(path string, fallback os.FileMode) os.FileMode {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fallback
-	}
-	return info.Mode().Perm()
+	return replaceFile(path, body, 0o600)
 }
 
 func wrote(path, backup string) string {
