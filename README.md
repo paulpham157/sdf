@@ -142,10 +142,13 @@ refuses a `Host` other than `localhost`, `127.0.0.1`, or `[::1]`. The UI
 refuses that same foreign `Host` on every route. A token does not bypass
 those checks. Details are in [docs/receiver.md](docs/receiver.md).
 Before anything is stored, the receiver drops tool arguments
-(`function_args`) from every record, whatever agent sent them, and the tool
-error text from Qwen Code and Gemini CLI tool calls. It keeps the tool name,
-call id, duration, success, and error type, the dropped sizes
-(`function_args_bytes`, `error_bytes`), and the dropped keys in
+(`function_args`) and the GenAI content attributes (`gen_ai.tool.call.arguments`,
+`gen_ai.tool.call.result`, `gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.system_instructions`) from every log, span, and metric, whatever agent
+sent them and whatever its settings say, and the tool and hook error text
+from Qwen Code and Gemini CLI tool calls and Qwen Code hook spans. It keeps
+the tool name, call id, duration, success, and error type, the dropped sizes
+(`function_args_bytes`, `error_bytes`, ...), and the dropped keys in
 `sdf.redacted`; see [docs/gaps.md](docs/gaps.md).
 `GET http://127.0.0.1:4318/health` (the OTLP/HTTP port, not the UI port)
 stays open and returns `{"status":"ok"}`. `sdf init --check` probes it for you.

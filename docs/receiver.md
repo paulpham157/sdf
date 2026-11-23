@@ -258,7 +258,10 @@ hooks are shell commands), and the URL is single-quoted in both.
 the `telemetry` object of `$QWEN_HOME/settings.json` or
 `~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
 so sdf turns it off even when the file says `true`, and warns. It does the
-same for `includeSensitiveSpanAttributes`. Key order, indentation, a UTF-8
+same for `includeSensitiveSpanAttributes`. A workspace or system file can
+still turn them back on (see below), so the receiver drops the GenAI
+message and tool content and hook error text before storing anything,
+whatever the settings ([docs/gaps.md](gaps.md)). Key order, indentation, a UTF-8
 BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP

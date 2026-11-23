@@ -474,7 +474,13 @@ files Qwen read and its memory extractor's reads of `~/.qwen/memories/`),
 and response text go into the logs. `sdf init qwen` sets it to `false`,
 also when the file already says `true`. `includeSensitiveSpanAttributes`
 (default false) copies messages and tool data into spans; `sdf init qwen`
-sets it back to false when it finds it on.
+sets it back to false when it finds it on. A workspace or system settings
+file can still turn either back on, so sdf also drops the span and log
+content before storing it, whatever the settings: `gen_ai.tool.call.arguments`
+and `gen_ai.tool.call.result` (`qwen-code.tool`), `gen_ai.input.messages`,
+`gen_ai.output.messages`, and `gen_ai.system_instructions`
+(`qwen-code.llm_request`), and the error text and status message of
+`qwen-code.hook` spans (the status becomes "hook error").
 
 No setting turns off tool arguments: every `qwen-code.tool_call` log carries
 the full JSON arguments of the call in `function_args` (the shell command,
@@ -499,9 +505,11 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
   `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
   spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
   `thought`, `cache`). That counter belongs to the process, not the session:
-  sdf places its points by their own time, adds up process runs, and
-  subtracts what an earlier session in the same process had counted (see
-  [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
+  sdf places its points by their own time (a flush after the last log goes
+  to the latest session of that process run), adds up process runs, and
+  subtracts the run's last point before the session, which is what an
+  earlier session in the same process had counted; when that cannot be
+  told apart the tokens are unknown (see [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
   providers (the default) output includes thoughts, which Qwen estimates
   from text when the provider does not report them; with Gemini-native
   responses it does not. The totals include subagents and the background
@@ -524,8 +532,9 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
 - A published run of an earlier Qwen Code release (spencerclark.dev,
   2026-10-10; it predates v0.28.4 and was not repeated here) had every
   `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
-  detail" even with no hooks configured. The summary shows them as they
-  arrive.
+  detail" even with no hooks configured. The summary shows them marked
+  ERROR; sdf stores the status message as "hook error", because a hook's
+  error text can carry the hook command's output.
 
 ## OpenRouter
 
