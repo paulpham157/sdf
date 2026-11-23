@@ -64,33 +64,54 @@ agent's own settings say (`logPrompts`, `includeSensitiveSpanAttributes`,
 decides what sdf keeps. What is dropped (`record.Redact`):
 
 - Attributes whose key names content, in record attributes, in nested maps
-  at any depth, and in the resource. Keys are compared case-insensitively:
-  `prompt`, `request_text`, `response_text`, `tool_input`, `tool_output`,
-  `tool_parameters`, `full_command`, `function_args`, `arguments`,
-  `result`, `response`, `completion`, `messages`, `content`, `input`,
-  `output`, `gen_ai.input.messages_ref`, `gen_ai.output.messages_ref`,
-  `gen_ai.system_instructions_ref`, and any key equal to or under (`.`) one
-  of `gen_ai.prompt`, `gen_ai.completion`, `gen_ai.input.messages`,
-  `gen_ai.output.messages`, `gen_ai.system_instructions`,
-  `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`,
-  `gen_ai.tool.definitions`, `llm.input_messages`, `llm.output_messages`,
-  `llm.prompts`, `input.value`, `output.value` (so the indexed
-  `gen_ai.prompt.0.content` goes too). Only text is dropped: a number or
-  bool under one of these keys (a token count named `input`) is kept.
-- Error text on logs and spans: `error`, `error.message`, `error_message`,
-  `exception.message`, `exception.stacktrace`.
-- A log body other than the record's event name (`claude_code.api_request`
-  stays; Gemini's "API response from ..." sentence goes).
-- A span status message: "tool error" on tool spans, "hook error" on
-  `qwen-code.hook`, "error" elsewhere. The status code stays.
+  and lists at any depth, and in the resource. Keys are compared
+  case-insensitively: `prompt`, `request_text`, `response_text`,
+  `tool_input`, `tool_output`, `tool_parameters`, `full_command`,
+  `function_args`, `arguments`, `result`, `response`, `completion`,
+  `messages`, `message`, `content`, `text`, `input`, `output`, `stdout`,
+  `stderr`, `command`, `query`, `user_prompt`, `gen_ai.input.messages_ref`,
+  `gen_ai.output.messages_ref`, `gen_ai.system_instructions_ref`, and any
+  key equal to or under (`.`) one of `gen_ai.prompt`, `gen_ai.completion`,
+  `gen_ai.choice`, `gen_ai.input.messages`, `gen_ai.output.messages`,
+  `gen_ai.system_instructions`, `gen_ai.tool.call.arguments`,
+  `gen_ai.tool.call.result`, `gen_ai.tool.definitions`, `llm.input_messages`,
+  `llm.output_messages`, `llm.prompts`, `input.value`, `output.value`,
+  `tool.input`, `tool.output`, and `ai` (the Vercel AI SDK spans opencode
+  sends with `experimental.openTelemetry`: `ai.prompt`, `ai.response.text`,
+  `ai.toolCall.args`, and the rest). So the indexed `gen_ai.prompt.0.content`
+  goes too. Only text is dropped: a number or bool under one of these keys
+  (a token count named `input`, `ai.usage.promptTokens`) is kept.
+- Error text on logs and spans, at any depth: `error`, `error.message`,
+  `error_message`, `errorMessage`, `error.stack`, `exception.message`,
+  `exception.stacktrace`, `exception.stack`, `stack`, `stacktrace`.
+- An error class, code, or finish reason (`error.type`, `error_type`,
+  `exception.type`, `status_code`, `http.response.status_code`,
+  `http.status_code`, `rpc.grpc.status_code`, `finish_reason`,
+  `finish_reasons`, `gen_ai.response.finish_reasons`) is kept only while it
+  is a short token (`^[A-Za-z0-9_.:/-]{1,64}$`, or a list of them); free
+  text there is dropped.
+- A log body other than an event name (`claude_code.api_request` stays;
+  Gemini's "API response from ..." sentence goes). A log with no event name
+  gets its body as its name, so that name goes with the body.
+- A span status message. On an ERROR span sdf writes its own from the kept
+  fields only: "hook error" on hook spans, "tool error" on tool spans (by
+  the words of the span name in any case, such as `execute_tool bash`,
+  `Tool.execute`, `tool_call`, `Qwen-Code.Hook`, or a tool name attribute),
+  "error" elsewhere, followed by the error class and HTTP or gRPC code when
+  they are kept: `tool error: FileNotFoundError`,
+  `error: HTTP 429 Too Many Requests` (the reason phrase is Go's, not the
+  sent text). On an OK or UNSET span the message is cleared. The status
+  code stays, and the UI and `sdf summary` show `error_type` next to it.
 
-What stays: names, ids, models, token counts, cost, durations, success,
-`error.type`, status codes, and everything else the summary reads, so every
-summary, cost, and tool list is the same as before. The size of each dropped
-text value is recorded as `<key>_bytes` (`error_bytes`, `body_bytes`) and
-the dropped keys are listed in `sdf.redacted`. A `git_commit_id` inside
-Claude Code's `tool_parameters` is copied to `sdf.git_commit_id` first, so
-commit links still work. Span events and metric exemplars are never stored.
+What stays: names (span names included), ids, models, token counts, cost,
+durations, success, token-shaped error classes and status codes, and
+everything else the summary reads, so every summary, cost, and tool list
+is the same as before. The size of each dropped text value is recorded as
+`<key>_bytes` (`error_bytes`, `body_bytes`) and the dropped keys are listed
+in `sdf.redacted`. A `git_commit_id` inside Claude Code's `tool_parameters`
+is copied to `sdf.git_commit_id` first, so commit links still work. Span
+events and metric exemplars are never stored. Content under a key sdf does
+not know is stored; see [gaps](gaps.md).
 
 To keep the text, opt in when starting the receiver:
 

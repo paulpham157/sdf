@@ -2,7 +2,11 @@ package record
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -17,16 +21,20 @@ import (
 // text. sdf serve --store-content (RedactWith) is the only way to keep it.
 //
 // What goes (see IsContentKey for the key rules):
-//   - attributes whose key names content, at any depth of a nested map, in
-//     record attributes and in the resource, when the value is text (a
-//     string, list, or map; a number or bool under such a key, such as a
-//     token count named input, is kept);
-//   - on logs and spans, top-level error text: error, error.message,
-//     error_message, exception.message, exception.stacktrace (any case);
-//   - a log body other than the record's own event name;
-//   - a span status message, replaced by "tool error" on tool spans,
-//     "hook error" on Qwen hook spans, and "error" elsewhere. The status
-//     code, error.type, and success are kept.
+//   - attributes whose key names content, at any depth of nested maps and
+//     lists, in record attributes and in the resource, when the value is
+//     text (a string, list, or map; a number or bool under such a key, such
+//     as a token count named input, is kept);
+//   - on logs and spans, error text at any depth: error, error.message,
+//     error_message, errorMessage, error.stack, exception.message,
+//     exception.stacktrace, exception.stack, stack, stacktrace (any case);
+//   - an error class or code (error.type, exception.type, status codes,
+//     finish reasons; see errorInfoKeys) that is not a short token;
+//   - a log body other than an event name, and the record name too when
+//     the decoder copied the body into it (a log with no event name);
+//   - a span status message. On an ERROR span it is replaced by text built
+//     from the kept class and code only ("tool error: tool_error",
+//     "error: HTTP 429 Too Many Requests"); on any other span it is cleared.
 //
 // A git_commit_id inside tool_parameters (Claude Code's git commit tool
 // result) is copied to sdf.git_commit_id first, so commit links survive.
@@ -91,6 +99,13 @@ var contentKeys = map[string]bool{
 	"gen_ai.input.messages_ref":      true,
 	"gen_ai.output.messages_ref":     true,
 	"gen_ai.system_instructions_ref": true,
+	"stdout":                         true,
+	"stderr":                         true,
+	"command":                        true,
+	"query":                          true,
+	"user_prompt":                    true,
+	"message":                        true,
+	"text":                           true,
 }
 
 // contentPrefixes match the key itself or the key followed by "." and
@@ -109,15 +124,67 @@ var contentPrefixes = []string{
 	"llm.prompts",
 	"input.value",
 	"output.value",
+	"gen_ai.choice",
+	"tool.input",
+	"tool.output",
+	// Vercel AI SDK spans (opencode with experimental.openTelemetry):
+	// ai.prompt, ai.prompt.messages, ai.response.text, ai.toolCall.args,
+	// ai.toolCall.result, and the rest. Numbers (ai.usage.*) are kept.
+	"ai",
 }
 
 // errorKeys hold error text on logs and spans (compared lower-cased).
+// They are dropped at any depth.
 var errorKeys = map[string]bool{
 	"error":                true,
 	"error.message":        true,
 	"error_message":        true,
+	"errormessage":         true,
+	"error.stack":          true,
 	"exception.message":    true,
 	"exception.stacktrace": true,
+	"exception.stack":      true,
+	"stack":                true,
+	"stacktrace":           true,
+}
+
+// errorInfoKeys (compared lower-cased) hold an error class, a status code,
+// or a finish reason. They are kept, at any depth and on every signal, only
+// while the value is a short token (or a list of them); anything else could
+// be sent text and is dropped, its size recorded as error_bytes.
+var errorInfoKeys = map[string]bool{
+	"error.type":                     true,
+	"error_type":                     true,
+	"exception.type":                 true,
+	"status_code":                    true,
+	"http.response.status_code":      true,
+	"http.status_code":               true,
+	"rpc.grpc.status_code":           true,
+	"finish_reason":                  true,
+	"finish_reasons":                 true,
+	"gen_ai.response.finish_reasons": true,
+}
+
+var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,64}$`)
+
+// isToken reports whether v is a short token or a list of them.
+func isToken(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return tokenPattern.MatchString(t)
+	case []any:
+		for _, x := range t {
+			if s, ok := x.(string); ok {
+				if !tokenPattern.MatchString(s) {
+					return false
+				}
+			} else if textual(x) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // IsContentKey reports whether an attribute key names prompt, response,
@@ -147,13 +214,85 @@ var RedactedKeys = func() []string {
 	return out
 }()
 
-// statusText is what a span's status message becomes, by record name.
-var statusText = map[string]string{
-	"qwen-code.tool_call":      "tool error",
-	"qwen-code.tool":           "tool error",
-	"qwen-code.tool.execution": "tool error",
-	"qwen-code.hook":           "hook error",
-	"gemini_cli.tool_call":     "tool error",
+// errorKind is "hook error" for a hook span, "tool error" for a tool span,
+// and "error" otherwise. It reads the words of the span name in any case
+// and separator (Qwen-Code.Hook, execute_tool bash, Tool.execute,
+// tool_call), then gen_ai.operation.name and a tool name attribute.
+func errorKind(rec Record) string {
+	words := strings.FieldsFunc(strings.ToLower(name(rec)), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	has := func(w ...string) bool {
+		for _, x := range words {
+			for _, y := range w {
+				if x == y {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch {
+	case has("hook", "hooks"):
+		return "hook error"
+	case has("tool", "tools"):
+		return "tool error"
+	}
+	if op, ok := rec.Attributes["gen_ai.operation.name"].(string); ok && strings.EqualFold(op, "execute_tool") {
+		return "tool error"
+	}
+	for _, k := range []string{"gen_ai.tool.name", "tool_name", "tool.name"} {
+		if s, ok := rec.Attributes[k].(string); ok && s != "" {
+			return "tool error"
+		}
+	}
+	return "error"
+}
+
+// errorDetail is the kept error class and status code of a span, written
+// by sdf: "FileNotFoundError", "HTTP 429 Too Many Requests", "gRPC code
+// 14". Only token values are used, and the HTTP reason phrase comes from
+// net/http, never from the sent text.
+func errorDetail(attrs map[string]any) string {
+	var bits []string
+	for _, k := range []string{"error.type", "error_type", "exception.type"} {
+		if s, ok := attrs[k].(string); ok && tokenPattern.MatchString(s) {
+			bits = append(bits, s)
+			break
+		}
+	}
+	for _, k := range []string{"http.response.status_code", "http.status_code"} {
+		if code, ok := intOf(attrs[k]); ok && code >= 100 && code <= 999 {
+			if reason := http.StatusText(code); reason != "" {
+				bits = append(bits, fmt.Sprintf("HTTP %d %s", code, reason))
+			} else {
+				bits = append(bits, fmt.Sprintf("HTTP %d", code))
+			}
+			break
+		}
+	}
+	if code, ok := intOf(attrs["rpc.grpc.status_code"]); ok && code >= 0 && code <= 99 {
+		bits = append(bits, fmt.Sprintf("gRPC code %d", code))
+	}
+	return strings.Join(bits, ", ")
+}
+
+func intOf(v any) (int, bool) {
+	switch t := v.(type) {
+	case int64:
+		return int(t), true
+	case int:
+		return t, true
+	case float64:
+		if t == float64(int(t)) {
+			return int(t), true
+		}
+	case string:
+		if n, err := strconv.Atoi(t); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // eventPrefixes are the agent event-name prefixes a log body may carry.
@@ -202,8 +341,8 @@ func (s *scrub) drop(path, sizeKey string, v any) {
 	}
 }
 
-// walk returns m without content (and, if errs, top-level error text) keys
-// at any depth, or m itself when nothing matched.
+// walk returns m without content keys (and, if errs, error text keys) at
+// any depth of nested maps and lists, or m itself when nothing matched.
 func (s *scrub) walk(m map[string]any, path string, errs, sized bool) map[string]any {
 	var out map[string]any
 	edit := func() {
@@ -231,18 +370,20 @@ func (s *scrub) walk(m map[string]any, path string, errs, sized bool) map[string
 			if sized {
 				sizeKey = full + "_bytes"
 			}
-		case textual(v) && errs && path == "" && errorKeys[strings.ToLower(k)]:
+		case textual(v) && errs && errorKeys[strings.ToLower(k)]:
+			if sized {
+				sizeKey = "error_bytes"
+			}
+		case textual(v) && errorInfoKeys[strings.ToLower(k)] && !isToken(v):
 			if sized {
 				sizeKey = "error_bytes"
 			}
 		default:
-			if nested, ok := v.(map[string]any); ok {
-				before := len(s.dropped)
-				cleaned := s.walk(nested, full, errs, sized)
-				if len(s.dropped) != before {
-					edit()
-					out[k] = cleaned
-				}
+			before := len(s.dropped)
+			cleaned := s.value(v, full, errs, sized)
+			if len(s.dropped) != before {
+				edit()
+				out[k] = cleaned
 			}
 			continue
 		}
@@ -256,15 +397,39 @@ func (s *scrub) walk(m map[string]any, path string, errs, sized bool) map[string
 	return out
 }
 
-// bodyIsName keeps a log body that is only the record's event name; Claude
-// Code and Codex put it there and ToolOf reads it.
+// value walks the maps inside v (a map, or a list at any depth); list
+// elements share the list's path. It returns v itself when nothing matched.
+func (s *scrub) value(v any, path string, errs, sized bool) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return s.walk(t, path, errs, sized)
+	case []any:
+		var out []any
+		for i, x := range t {
+			before := len(s.dropped)
+			cleaned := s.value(x, path, errs, sized)
+			if len(s.dropped) != before {
+				if out == nil {
+					out = append([]any(nil), t...)
+				}
+				out[i] = cleaned
+			}
+		}
+		if out != nil {
+			return out
+		}
+	}
+	return v
+}
+
+// bodyIsName keeps a log body that is only an event name: the record's
+// event.name, or an agent-prefixed name (Claude Code and Codex put it
+// there and ToolOf reads it). The record name is not evidence: for a log
+// with no event name the decoder copies the body into it.
 func bodyIsName(rec Record) bool {
 	b := *rec.Body
 	if strings.ContainsAny(b, " \t\r\n") || len(b) > 128 {
 		return false
-	}
-	if rec.Name != nil && *rec.Name == b {
-		return true
 	}
 	if s, ok := rec.Attributes["event.name"].(string); ok && s == b {
 		return true
@@ -317,17 +482,31 @@ func redactOne(rec Record) (Record, bool) {
 	attrs := s.walk(rec.Attributes, "", errs, true)
 	resource := s.walk(rec.Resource, "resource", false, false)
 	if rec.Body != nil && *rec.Body != "" && !bodyIsName(rec) {
-		s.drop("body", "body_bytes", *rec.Body)
+		body := *rec.Body
+		s.drop("body", "body_bytes", body)
 		rec.Body = nil
+		// A log with no event name has its body copied into name
+		// (otlp.logName); that copy is the same text.
+		if rec.Name != nil && *rec.Name == body {
+			s.dropped = append(s.dropped, "name")
+			rec.Name = nil
+		}
 	}
 	if rec.StatusMessage != nil && *rec.StatusMessage != "" {
-		text, ok := statusText[name(rec)]
-		if !ok {
-			text = "error"
-		}
-		if *rec.StatusMessage != text {
+		if rec.StatusCode == "ERROR" {
+			text := errorKind(rec)
+			if detail := errorDetail(attrs); detail != "" {
+				text += ": " + detail
+			}
+			if *rec.StatusMessage != text {
+				s.dropped = append(s.dropped, "status.message")
+				rec.StatusMessage = &text
+			}
+		} else {
+			// An OK or UNSET span's message is not an error; it is
+			// sent text, and nothing reads it.
 			s.dropped = append(s.dropped, "status.message")
-			rec.StatusMessage = &text
+			rec.StatusMessage = nil
 		}
 	}
 	commit := ""

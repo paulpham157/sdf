@@ -64,13 +64,13 @@ L.append(log("claude-code", "claude_code.tool_result", {"tool_name": "Bash", "su
 
 S = []
 sp = [0]
-def span(name, attrs, status=None, service="qwen-code"):
+def span(name, attrs, status=None, service="qwen-code", code=2):
     sp[0] += 1
     s = {"traceId": "e" * 31 + "1", "spanId": "%016x" % sp[0], "name": name, "kind": 1,
          "startTimeUnixNano": str(T), "endTimeUnixNano": str(T + 10**9),
          "attributes": [kv(k, v) for k, v in dict({"session.id": SID}, **attrs).items()]}
     if status:
-        s["status"] = {"code": 2, "message": status}
+        s["status"] = {"code": code, "message": status}
     S.append(s)
 for name in ["qwen-code.llm_request", "chat gpt-5", "execute_tool bash", "invoke_agent"]:
     a = {k: tag("span-" + name + "-" + k) for k in LOGKEYS}
@@ -87,6 +87,28 @@ pts = [{"asInt": "1", "timeUnixNano": str(T), "startTimeUnixNano": str(T - 10**9
         "attributes": [kv(k, tag("metric-" + k)) for k in ["gen_ai.input.messages", "prompt", "Gen_AI.Input.Messages", "gen_ai.tool.call.arguments"]] + [kv("type", "input")]}]
 metrics = {"resourceMetrics": [{"resource": res("qwen-code"), "scopeMetrics": [{"scope": {"name": "qwen-code"}, "metrics": [
     {"name": "qwen-code.token.usage", "sum": {"aggregationTemporality": 2, "isMonotonic": True, "dataPoints": pts}}]}]}]}
+
+# Review of #224: a log with no event name (the decoder copies its body into
+# name), lists of maps, error text below the top level, Vercel AI SDK keys
+# (opencode experimental.openTelemetry), more content keys, an error class
+# that is free text, and an OK span carrying a message.
+AGENTS = ["claude-code", "codex", "gemini-cli", "qwen-code", "grok-cli", "github-copilot", "opencode", "pi"]
+for svc in AGENTS:
+    for body in ["the user typed " + tag(svc + "-noevent-prose"), tag(svc + "-noevent-token")]:
+        rec = {"timeUnixNano": str(T), "attributes": [kv("session.id", SID)], "body": val(body)}
+        L.append({"resource": res(svc), "scopeLogs": [{"scope": {"name": svc}, "logRecords": [rec]}]})
+L.append(log("opencode", "opencode.event", {
+    "conversation": [{"role": "user", "content": tag("list-content")}, [{"prompt": tag("list-in-list")}]],
+    "tool": {"name": "bash", "error": tag("nested-error"), "result": {"stack": tag("nested-stack")}},
+    "errorMessage": tag("camel-errorMessage"), "error.stack": tag("error.stack"), "exception.stack": tag("exception.stack")}))
+extra = {k: tag("span-extra-" + k) for k in ["ai.prompt", "ai.prompt.messages", "ai.response.text", "ai.response.toolCalls",
+         "ai.toolCall.args", "ai.toolCall.result", "stdout", "stderr", "command", "query", "user_prompt", "message", "text",
+         "gen_ai.choice", "tool.input", "tool.output"]}
+extra.update({"ai.usage.promptTokens": 10, "error.type": "free text " + tag("error.type-prose"), "session.id": SID})
+span("ai.streamText", extra, status=tag("ai-status"), service="opencode")
+span("execute_tool bash", {"gen_ai.tool.name": "bash", "error.type": "FileNotFoundError"}, status=tag("tool-status"))
+span("chat m-1", {"http.response.status_code": 429}, status=tag("http-status"))
+span("SessionStep.attempt", {}, status=tag("ok-status"), code=1)
 
 for name, body in [("logs", {"resourceLogs": L}), ("traces", traces), ("metrics", metrics)]:
     with open("tests/samples/leak_%s.json" % name, "w") as f:

@@ -124,6 +124,9 @@ func TestNoContentReachesTheDatabaseByDefault(t *testing.T) {
 			t.Fatalf("%s: content reached the database", protocol)
 		}
 		out := summarize(t, db, "--json")
+		if strings.Contains(out, "SDF-LEAK-") {
+			t.Fatalf("%s: content in the summary", protocol)
+		}
 		for _, want := range []string{`"session_id": "sample-leak-1"`, `"0123456789abcdef0123456789abcdef01234567"`} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("%s: summary lacks %s", protocol, want)
