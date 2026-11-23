@@ -97,6 +97,11 @@ func TestTaskDeclareAndShow(t *testing.T) {
 		t.Fatal("repo file rewritten")
 	}
 
+	sub := run(t, "task", "show", "add-widget", "--repo", filepath.Join(repo, "pkg", "a"))
+	if sub.code != 0 || !strings.Contains(sub.stdout, filepath.Join(".sdf", "tasks", "add-widget.json")+"\n") {
+		t.Fatalf("show from a subdirectory: %d %q %q", sub.code, sub.stdout, sub.stderr)
+	}
+
 	show := run(t, "task", "show", "add-widget", "--repo", repo)
 	if show.code != 0 || !strings.HasPrefix(show.stdout, "task add-widget "+hash+"\n") ||
 		!strings.Contains(show.stdout, "file pkg/a/a_test.go ") ||
@@ -136,6 +141,22 @@ func TestTaskDeclareFromFile(t *testing.T) {
 	}
 }
 
+func TestTaskShowStripsTerminalControls(t *testing.T) {
+	repo := taskRepo(t)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	title := "Fix \x1b]0;owned\x07it\u202e now"
+	if r := run(t, "task", "declare", "--repo", filepath.Join(repo, "pkg"), "--write", "--id", "esc", "--title", title, "--check", "a=true"); r.code != 0 {
+		t.Fatalf("%d %q", r.code, r.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".sdf", "tasks", "esc.json")); err != nil {
+		t.Fatalf("--repo subdir did not write at the root: %v", err)
+	}
+	r := run(t, "task", "show", "esc", "--repo", repo)
+	if r.code != 0 || strings.ContainsAny(r.stdout, "\x1b\x07\u202e") || !strings.Contains(r.stdout, "title Fix ]0;ownedit now\n") {
+		t.Fatalf("%q", r.stdout)
+	}
+}
+
 func TestTaskDeclareUsageErrors(t *testing.T) {
 	repo := taskRepo(t)
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -152,7 +173,7 @@ func TestTaskDeclareUsageErrors(t *testing.T) {
 			t.Errorf("%v: %d %q", args, r.code, r.stderr)
 		}
 	}
-	for _, id := range []string{"a\nb", "a\x01", string([]byte{'a', 0xff})} {
+	for _, id := range []string{"a\nb", "a\x01", string([]byte{'a', 0xff}), "Upper"} {
 		r := run(t, "task", "declare", "--repo", repo, "--id", id, "--title", "t", "--check", "a=true", "--write")
 		if r.code != 1 || !strings.Contains(r.stderr, "must match") {
 			t.Errorf("declare id %q: %d %q", id, r.code, r.stderr)

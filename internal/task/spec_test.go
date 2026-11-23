@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -266,5 +269,121 @@ func TestParseAndLoadRefuseABadID(t *testing.T) {
 	in.Criteria[0].Name = "unit\n"
 	if _, err := Build(context.Background(), dir, in); err == nil {
 		t.Fatal("build accepted a criterion name with a newline")
+	}
+}
+
+func symlinkRepo(t *testing.T, links map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	for p, c := range map[string]string{"tests/real_test.sh": "real\n", "tests/sub/x.sh": "x\n", "README": "r\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for p, target := range links {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, p)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "c")
+	return dir
+}
+
+func TestDesignatedSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	ctx := context.Background()
+	in := func(glob string) Input {
+		return Input{ID: "s", Title: "S", Criteria: []CriterionInput{{Name: "u", Argv: []string{"true"}, Designated: []string{glob}}}}
+	}
+	// In-repo links pin the link and, through a chain, the file it reaches.
+	dir := symlinkRepo(t, map[string]string{"tests/link_test.sh": "hop.sh", "tests/hop.sh": "real_test.sh"})
+	s, err := Build(ctx, dir, in("tests/link_test.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range s.DesignatedFiles {
+		got = append(got, f.Path+":"+f.Mode)
+	}
+	if strings.Join(got, " ") != "tests/hop.sh:120000 tests/link_test.sh:120000 tests/real_test.sh:100644" {
+		t.Fatalf("%v", got)
+	}
+	for name, target := range map[string]string{
+		"absolute":       "/etc/passwd",
+		"escapes":        "../../outside",
+		"to a directory": "sub",
+		"dangling":       "missing.sh",
+	} {
+		dir := symlinkRepo(t, map[string]string{"tests/bad_test.sh": target})
+		if _, err := Build(ctx, dir, in("tests/bad_test.sh")); err == nil {
+			t.Errorf("%s link accepted", name)
+		}
+	}
+}
+
+func TestValidateRefusesUncleanDesignatedPaths(t *testing.T) {
+	base := Spec{Schema: Schema, ID: "t", Title: "T", BaseSHA: strings.Repeat("a", 40), BaseTree: strings.Repeat("b", 40),
+		Criteria: []Criterion{{Name: "u", Argv: []string{"true"}, TimeoutS: 1}}}
+	for _, p := range []string{"/abs", "../x", "a/../b", "./a", "a//b", "a/", "a\nb", ".."} {
+		s := base
+		s.DesignatedFiles = []DesignatedFile{{Path: p, Mode: "100644", GitBlob: strings.Repeat("c", 40), SHA256: strings.Repeat("d", 64)}}
+		if err := s.Validate(); err == nil {
+			t.Errorf("path %q accepted", p)
+		}
+	}
+}
+
+func TestParseInputRefusesDuplicateAndCaseVariantKeys(t *testing.T) {
+	for _, doc := range []string{
+		`{"id":"a","ID":"b","title":"t","criteria":[]}`,
+		`{"Id":"a","title":"t","criteria":[]}`,
+		`{"id":"a","id":"b","title":"t","criteria":[]}`,
+		`{"id":"a","title":"t","criteria":[{"name":"u","Argv":["true"]}]}`,
+		`{"id":"a","title":"t","criteria":[{"name":"u","argv":["true"],"name":"v"}]}`,
+	} {
+		if _, err := ParseInput([]byte(doc)); err == nil {
+			t.Errorf("accepted %s", doc)
+		}
+	}
+	if _, err := ParseInput([]byte(`{"id":"a","title":"T","criteria":[{"name":"u","argv":["True"]}]}`)); err != nil {
+		t.Fatalf("values may have any case: %v", err)
+	}
+}
+
+func TestIDsAreLowercaseOnly(t *testing.T) {
+	for _, id := range []string{"T1", "Add-Widget", "aB"} {
+		if ValidID(id) {
+			t.Errorf("%q accepted", id)
+		}
+	}
+}
+
+func TestBuildFromASubdirectory(t *testing.T) {
+	dir, _ := testRepo(t, repoFiles)
+	root, err := RepoRoot(context.Background(), filepath.Join(dir, "pkg", "a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(dir)
+	if got, _ := filepath.EvalSymlinks(root); got != want {
+		t.Fatalf("root %s, want %s", got, want)
+	}
+	a, err := Build(context.Background(), filepath.Join(dir, "pkg", "a"), sampleInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := Build(context.Background(), dir, sampleInput())
+	if _, ha, _ := a.Hash(); func() string { _, hb, _ := b.Hash(); return hb }() != ha {
+		t.Fatal("subdirectory build differs")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/paulpham157/sdf/internal/task"
 )
@@ -203,7 +204,13 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	st, err := taskStore(repo, dataDir, noDataDir)
+	ctx := context.Background()
+	root, err := task.RepoRoot(ctx, repo)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: --repo %s is not in a git work tree: %v\n", prefix, repo, err)
+		return 1
+	}
+	st, err := taskStore(root, dataDir, noDataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 		return 1
@@ -213,8 +220,7 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: nowhere to store the task: pass --write, or drop --no-data-dir\n", prefix)
 		return 2
 	}
-	ctx := context.Background()
-	spec, err := task.Build(ctx, repo, in)
+	spec, err := task.Build(ctx, root, in)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 		return 1
@@ -299,7 +305,12 @@ func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, taskShowUsage)
 		return 2
 	}
-	st, err := taskStore(repo, dataDir, noDataDir)
+	root, err := task.RepoRoot(context.Background(), repo)
+	if err != nil {
+		// Outside a work tree only the data dir and ledger are read.
+		root = ""
+	}
+	st, err := taskStore(root, dataDir, noDataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 		return 1
@@ -325,24 +336,37 @@ func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 		stdout.Write(pretty.Bytes())
 		return 0
 	}
+	// Every string from the task is printed through clean: a title, path,
+	// or argv cannot carry terminal escapes or bidi controls to the screen.
 	fmt.Fprintf(stdout, "task %s %s\n", spec.ID, found[0].Hash)
-	fmt.Fprintf(stdout, "title %s\n", spec.Title)
+	fmt.Fprintf(stdout, "title %s\n", clean(spec.Title))
 	if spec.Objective != "" {
-		fmt.Fprintf(stdout, "objective %s\n", spec.Objective)
+		fmt.Fprintf(stdout, "objective %s\n", clean(spec.Objective))
 	}
 	fmt.Fprintf(stdout, "base %s tree %s\n", spec.BaseSHA, spec.BaseTree)
 	fmt.Fprintf(stdout, "secret scan %t\n", spec.SecretScan)
 	for _, c := range spec.Criteria {
-		fmt.Fprintf(stdout, "criterion %s: %s (timeout %ds, expect exit %d)\n", c.Name, strings.Join(c.Argv, " "), c.TimeoutS, c.ExpectExit)
+		fmt.Fprintf(stdout, "criterion %s: %s (timeout %ds, expect exit %d)\n", c.Name, clean(strings.Join(c.Argv, " ")), c.TimeoutS, c.ExpectExit)
 		for _, g := range c.Designated {
-			fmt.Fprintf(stdout, "  designated %s\n", g)
+			fmt.Fprintf(stdout, "  designated %s\n", clean(g))
 		}
 	}
 	for _, f := range spec.DesignatedFiles {
-		fmt.Fprintf(stdout, "file %s %s sha256:%s\n", f.Path, f.GitBlob, f.SHA256)
+		fmt.Fprintf(stdout, "file %s %s sha256:%s\n", clean(f.Path), f.GitBlob, f.SHA256)
 	}
 	for _, f := range found {
-		fmt.Fprintf(stdout, "copy %s\n", f.Where)
+		fmt.Fprintf(stdout, "copy %s\n", clean(f.Where))
 	}
 	return 0
+}
+
+// clean drops control characters (ESC included) and Unicode format
+// characters (bidi overrides, zero-width) from text shown on a terminal.
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, "\uFFFD"))
 }

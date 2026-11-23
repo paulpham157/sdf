@@ -12,7 +12,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"unicode/utf8"
 )
 
 // Input is what a caller declares. Build resolves it against a repository
@@ -37,8 +36,14 @@ type CriterionInput struct {
 	Designated []string `json:"designated,omitempty"`
 }
 
-// ParseInput reads an Input from JSON. Unknown fields are refused.
+// ParseInput reads an Input from JSON. Unknown fields are refused, and so
+// are a repeated key and a key that is not all lowercase: encoding/json
+// matches keys case-insensitively and keeps the last duplicate, so "ID" or
+// a second "id" would otherwise be read silently.
 func ParseInput(data []byte) (Input, error) {
+	if err := checkKeys(data); err != nil {
+		return Input{}, fmt.Errorf("task input: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var in Input
@@ -155,13 +160,48 @@ func Build(ctx context.Context, repoDir string, in Input) (Spec, error) {
 	}
 	sortCriteria(spec.Criteria)
 
+	// A designated symlink pins its target string; the file it points at
+	// is designated too, so a changed target file is caught. A link out of
+	// the repository, to a directory, or to nothing is refused: verify
+	// never follows it.
+	queue := make([]string, 0, len(designated))
+	for p := range designated {
+		queue = append(queue, p)
+	}
+	for hops := 0; len(queue) > 0; hops++ {
+		if hops > 10000 {
+			return Spec{}, errors.New("too many symlinks among designated files")
+		}
+		p := queue[0]
+		queue = queue[1:]
+		b := blobs[p]
+		if b.mode != "120000" {
+			continue
+		}
+		target, err := g.blob(ctx, b.oid)
+		if err != nil {
+			return Spec{}, err
+		}
+		resolved, err := linkTarget(p, string(target))
+		if err != nil {
+			return Spec{}, err
+		}
+		if _, ok := blobs[resolved]; !ok {
+			return Spec{}, fmt.Errorf("designated symlink %s points to %s, which is not a file at %s", p, resolved, sha)
+		}
+		if !designated[resolved] {
+			designated[resolved] = true
+			queue = append(queue, resolved)
+		}
+	}
+
 	for _, p := range paths {
 		if !designated[p] {
 			continue
 		}
 		b := blobs[p]
-		if !utf8.ValidString(p) {
-			return Spec{}, fmt.Errorf("designated path %q is not valid UTF-8", p)
+		if err := validRepoPath(p); err != nil {
+			return Spec{}, fmt.Errorf("designated %w", err)
 		}
 		content, err := g.blob(ctx, b.oid)
 		if err != nil {
@@ -320,3 +360,69 @@ func (g gitRepo) blob(ctx context.Context, oid string) ([]byte, error) {
 
 // MatchGlob reports whether the slash path p matches a designated glob.
 func MatchGlob(glob, p string) bool { return matchGlob(glob, p) }
+
+// checkKeys walks every JSON object in data and refuses a key that repeats
+// or is not lowercase.
+func checkKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var walk func() error
+	walk = func() error {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		d, ok := tok.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch d {
+		case '{':
+			seen := map[string]bool{}
+			for dec.More() {
+				kt, err := dec.Token()
+				if err != nil {
+					return err
+				}
+				k, _ := kt.(string)
+				if k != strings.ToLower(k) {
+					return fmt.Errorf("key %q is not lowercase", k)
+				}
+				if seen[k] {
+					return fmt.Errorf("key %q repeats", k)
+				}
+				seen[k] = true
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for dec.More() {
+				if err := walk(); err != nil {
+					return err
+				}
+			}
+		}
+		_, err = dec.Token() // closing delimiter
+		return err
+	}
+	return walk()
+}
+
+// RepoRoot returns the top level of the git work tree containing dir.
+func RepoRoot(ctx context.Context, dir string) (string, error) {
+	return gitRepo{dir: dir}.out(ctx, "rev-parse", "--show-toplevel")
+}
+
+// linkTarget resolves a symlink at repository path p with the given target
+// to a repository path, or refuses a target outside the repository.
+func linkTarget(p, target string) (string, error) {
+	if target == "" || path.IsAbs(target) || strings.Contains(target, "\\") || (len(target) > 1 && target[1] == ':') {
+		return "", fmt.Errorf("designated symlink %s points outside the repository (%q)", p, target)
+	}
+	r := path.Join(path.Dir(p), target)
+	if r == "." || r == ".." || strings.HasPrefix(r, "../") {
+		return "", fmt.Errorf("designated symlink %s points outside the repository (%q)", p, target)
+	}
+	return r, nil
+}
