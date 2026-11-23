@@ -18,6 +18,9 @@ func init() {
 	if len(os.Args) > 1 && os.Args[1] == nsInitArg {
 		os.Exit(nsInitMain(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == launchArg {
+		os.Exit(launcherMain(os.Args[2:]))
+	}
 }
 
 // nsConfig is what a criterion's namespace hides, keeps and lets it write.
@@ -29,6 +32,9 @@ type nsConfig struct {
 	ro      []string       // directories the check needs (toolchain, PATH, harness), bound back read-only when under a mask
 	overlay []overlayMount // trusted caches: read-only lower, writes go to a per-criterion upper
 	hostNet bool           // keep the host network instead of loopback only
+	// reportPid: pid 1 writes the check's pid (in the namespace) to fd 3,
+	// a pipe the verifier passes (the go test harness identifies go by it).
+	reportPid bool
 }
 
 // overlayMount is an overlayfs at target: lower is never written. With no
@@ -105,6 +111,7 @@ func (r *run) sandboxConfig(c task.Criterion, command, goroot string, h *harness
 	add(&cfg.rw, d.root)
 	if h != nil {
 		add(&cfg.ro, h.dir)
+		add(&cfg.ro, h.self) // go test -exec runs it as the launcher
 	}
 	for _, p := range filepath.SplitList(r.opt.Path) {
 		add(&cfg.ro, p)

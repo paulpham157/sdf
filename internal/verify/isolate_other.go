@@ -17,3 +17,5 @@ func probeIsolation() (bool, string) {
 }
 
 func nsInitMain([]string) int { return 125 }
+
+func launcherMain([]string) int { return 125 }

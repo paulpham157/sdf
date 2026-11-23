@@ -1171,7 +1171,7 @@ func (r *run) runCriterion(c task.Criterion) {
 			fail(CodeDesignatedTestMissing, "no designated test to require: designate the package's _test.go files")
 			return
 		}
-		if _, err := goTestArgv(argv, ""); err != nil {
+		if _, err := goTestArgv(argv, "", ""); err != nil {
 			fail(CodeCheckError, "%v", err)
 			return
 		}
@@ -1186,11 +1186,11 @@ func (r *run) runCriterion(c task.Criterion) {
 			return
 		}
 		ev["goroot"] = goroot
-		if h, err = r.newHarness(c, wantTests, goroot); err != nil {
+		if h, err = r.newHarness(c, wantTests, goroot, d); err != nil {
 			fail(CodeInfraError, "go test harness: %v", err)
 			return
 		}
-		argv, _ = goTestArgv(argv, h.overlay)
+		argv, _ = goTestArgv(argv, h.overlay, h.exec)
 		gotmp := d.gotmp
 		// No cgo: a C constructor would run before the hook's init.
 		env = append(env, "CGO_ENABLED=0", "GOTMPDIR="+gotmp)
@@ -1227,6 +1227,7 @@ func (r *run) runCriterion(c task.Criterion) {
 			ovl = append(ovl, o.lower)
 		}
 		ev["read_only_caches"] = nonNilStrings(ovl)
+		cfg.reportPid = h != nil
 		if cmd, err = isolatedCommand(ctx, command, argv, cfg); err != nil {
 			if h != nil {
 				h.finish()
@@ -1252,15 +1253,38 @@ func (r *run) runCriterion(c task.Criterion) {
 		return
 	}
 	cmd.Stdout, cmd.Stderr = so, se
+	var pidR, pidW *os.File
+	if h != nil && r.isolation == IsolationNamespace {
+		if pidR, pidW, err = os.Pipe(); err != nil {
+			h.finish()
+			fail(CodeInfraError, "%v", err)
+			return
+		}
+		cmd.ExtraFiles = []*os.File{pidW}
+	}
 	started := r.opt.Now()
 	r.ranCheck = true
 	runErr := cmd.Start()
+	if pidW != nil {
+		pidW.Close()
+	}
 	if runErr == nil {
 		if h != nil {
 			h.rootPid, h.isolated = cmd.Process.Pid, r.isolation == IsolationNamespace
+			if pidR != nil {
+				// pid 1 writes the go command's pid once it has started
+				// it, or exits without writing (no launcher is accepted).
+				var n int
+				if _, err := fmt.Fscan(pidR, &n); err == nil {
+					h.goNsPid = n
+				}
+			}
 			close(h.started)
 		}
 		runErr = cmd.Wait()
+	}
+	if pidR != nil {
+		pidR.Close()
 	}
 	// Isolated: pid 1 has exited, so the kernel has killed everything else
 	// in the namespace. Not isolated: kill the process group (a setsid

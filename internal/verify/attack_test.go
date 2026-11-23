@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,17 +43,26 @@ func goOpts(t *testing.T, f *fixture, sha string) Options {
 	return o
 }
 
-var goCache = func() string {
-	d, err := os.MkdirTemp("", "sdf-verify-test-gocache-")
-	if err != nil {
-		panic(err)
-	}
-	return d
-}()
+// goCache is made in TestMain, not as a package variable: this test binary
+// is re-executed as a namespace init and as the go test launcher, and those
+// copies run package variable initializers (and exit in an init) too, so
+// each one used to leave an empty sdf-verify-test-gocache-* behind.
+var goCache string
 
 func TestMain(m *testing.M) {
+	d, err := os.MkdirTemp("", "sdf-verify-test-gocache-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	goCache = d
 	code := m.Run()
-	_ = removeTree(goCache)
+	if err := removeTree(goCache); err != nil {
+		fmt.Fprintf(os.Stderr, "removing the test Go cache %s: %v\n", goCache, err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
 }
 

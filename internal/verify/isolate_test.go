@@ -23,11 +23,20 @@ import (
 func requireIsolation(t *testing.T) {
 	t.Helper()
 	if ok, why := isolationAvailable(); !ok {
-		t.Skipf("isolation unavailable here, so this isolation test cannot run: %s. "+
-			"On GitHub's ubuntu-24.04 runners AppArmor confines unprivileged user namespaces; "+
-			"a workflow step `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before `go test` enables these tests "+
-			"(not added: workflow changes need the owner's approval). The other tests run these checks unisolated (AllowUnisolated).", why)
+		t.Skipf("isolation unavailable here, so this isolation test cannot run: %s.%s "+
+			"The other tests run these checks unisolated (AllowUnisolated).", why, apparmorHint())
 	}
+}
+
+// apparmorHint names the AppArmor userns restriction only where it is on.
+func apparmorHint() string {
+	b, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+	if err != nil || strings.TrimSpace(string(b)) != "1" {
+		return ""
+	}
+	return " kernel.apparmor_restrict_unprivileged_userns is 1 here (as on GitHub's ubuntu-24.04 runners): " +
+		"`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before `go test` enables these tests " +
+		"(the CI workflow step is not added: workflow changes need the owner's approval)."
 }
 
 // B-3: a check leaves a setsid daemon that rewrites the next check's script

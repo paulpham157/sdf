@@ -58,37 +58,119 @@ func exeOf(pid int) (string, error) {
 	return os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
 }
 
-// checkTestBinary accepts pid only if it runs a test binary (*.test) whose
-// parent is a go command started directly by the verifier (not isolated)
-// or by the namespace's pid 1 (isolated). A process the code under test
-// forks has the test binary or pid 1 as its parent, so it is refused.
-func checkTestBinary(pid, root int, isolated bool) error {
-	exe, err := exeOf(pid)
+// checkLauncher accepts pid only if it runs this very executable (the
+// launcher; compared by inode, not name) and its parent is the criterion's
+// go command: isolated, the process pid 1 (root) started, whose pid in the
+// namespace pid 1 reported (goNsPid); not isolated, root itself (the go the
+// verifier started). It returns the
+// launcher's working directory, the package directory go runs the test in.
+//
+// Code under test cannot produce such a process: anything it starts
+// descends from its test binary. clone(CLONE_PARENT) and clone3 are refused
+// by the hook's seccomp filter, and isolated, a test binary runs in its
+// own pid namespace, so nothing it starts can have go as its parent. An
+// orphan is reparented to pid 1, not to go, and cannot take go's pid, which
+// go holds for as long as the namespace exists (pid 1 exits with go).
+func checkLauncher(pid int, self string, root, goNsPid int, isolated bool) (string, error) {
+	exe, err := os.Stat("/proc/" + strconv.Itoa(pid) + "/exe")
 	if err != nil {
-		return err
+		return "", err
 	}
-	if !strings.HasSuffix(exe, ".test") {
-		return fmt.Errorf("%s is not a test binary", exe)
+	me, err := os.Stat(self)
+	if err != nil {
+		return "", err
+	}
+	if !os.SameFile(exe, me) {
+		name, _ := exeOf(pid)
+		return "", fmt.Errorf("%s is not the verifier's launcher", name)
 	}
 	parent, err := ppidOf(pid)
 	if err != nil {
-		return err
+		return "", err
+	}
+	if isolated {
+		ns, err := nsPid(parent)
+		if err != nil {
+			return "", err
+		}
+		gp, err := ppidOf(parent)
+		if err != nil {
+			return "", err
+		}
+		if goNsPid <= 1 || ns != goNsPid || gp != root {
+			return "", fmt.Errorf("its parent (pid %d in the namespace) is not the go command pid 1 started (pid %d)", ns, goNsPid)
+		}
+	} else if parent != root {
+		return "", fmt.Errorf("its parent %d is not the go command the verifier started", parent)
 	}
 	pexe, err := exeOf(parent)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if b := filepath.Base(pexe); b != "go" && b != "go.exe" {
-		return fmt.Errorf("parent %s is not the go command", pexe)
+		return "", fmt.Errorf("parent %s is not the go command", pexe)
 	}
-	want := parent
-	if isolated {
-		if want, err = ppidOf(parent); err != nil {
-			return err
+	return os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+}
+
+// nsPid is pid's process id in its own (innermost) pid namespace.
+func nsPid(pid int) (int, error) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(line, "NSpid:"); ok {
+			f := strings.Fields(rest)
+			if len(f) < 2 {
+				return 0, fmt.Errorf("process %d is not in a nested pid namespace", pid)
+			}
+			return strconv.Atoi(f[len(f)-1])
 		}
 	}
-	if want != root {
-		return fmt.Errorf("the go command that started it was not started by the verifier")
+	return 0, fmt.Errorf("no NSpid for process %d", pid)
+}
+
+// socketPair is a connected pair of unix stream sockets.
+func socketPair() (mine net.Conn, theirs *os.File, err error) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil
+	a := os.NewFile(uintptr(fds[0]), "harness")
+	defer a.Close()
+	if mine, err = net.FileConn(a); err != nil {
+		syscall.Close(fds[1])
+		return nil, nil, err
+	}
+	return mine, os.NewFile(uintptr(fds[1]), "test-binary"), nil
+}
+
+// sendFD passes f over the unix connection c.
+func sendFD(c net.Conn, f *os.File) error {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return fmt.Errorf("not a unix socket")
+	}
+	_, _, err := uc.WriteMsgUnix([]byte{'f'}, syscall.UnixRights(int(f.Fd())), nil)
+	return err
+}
+
+// recvFD receives one file passed with sendFD.
+func recvFD(c *net.UnixConn) (*os.File, error) {
+	buf, oob := make([]byte, 1), make([]byte, syscall.CmsgSpace(4))
+	_, oobn, _, _, err := c.ReadMsgUnix(buf, oob)
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := syscall.ParseSocketControlMessage(oob[:oobn])
+	if err != nil || len(msgs) != 1 {
+		return nil, fmt.Errorf("no file passed (%v)", err)
+	}
+	fds, err := syscall.ParseUnixRights(&msgs[0])
+	if err != nil || len(fds) != 1 {
+		return nil, fmt.Errorf("no file passed (%v)", err)
+	}
+	syscall.CloseOnExec(fds[0])
+	return os.NewFile(uintptr(fds[0]), "harness"), nil
 }

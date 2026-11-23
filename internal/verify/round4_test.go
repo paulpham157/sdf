@@ -154,7 +154,7 @@ func TestHookSourceBuildsOnOtherPlatforms(t *testing.T) {
 	for _, p := range [][2]string{{"linux", "arm64"}, {"linux", "386"}, {"darwin", "arm64"}} {
 		dir := t.TempDir()
 		src := filepath.Join(dir, "hook.go")
-		if err := os.WriteFile(src, []byte(hookSourceFor("0123456789abcdef", "/x/s", p[0], p[1])), 0o644); err != nil {
+		if err := os.WriteFile(src, []byte(hookSourceFor("0123456789abcdef", p[0], p[1])), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		ov, _ := json.Marshal(map[string]any{"Replace": map[string]string{filepath.Join(testingDir, "zz_sdfverify_0123456789abcdef.go"): src}})

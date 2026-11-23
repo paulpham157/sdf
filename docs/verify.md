@@ -180,9 +180,10 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    The Action never allows unisolated runs.
 
    **Go test results.** `go test` stdout is not trusted: code under test can
-   print a fake `--- PASS`. Instead `go test` runs with `-count=1` and an
-   `-overlay` the verifier writes, placed after `-C dir` when the task uses
-   it (the task's argv may not set `-overlay`, `-exec` or `-toolexec`):
+   print a fake `--- PASS`. Instead `go test` runs with `-count=1`, an
+   `-overlay` the verifier writes, and `-exec` set to the verifier's own
+   launcher, placed after `-C dir` when the task uses it (the task's argv
+   may not set `-overlay`, `-exec` or `-toolexec`):
    - the overlay adds the hook, under random names, to the standard
      library's `testing` package in the criterion's GOROOT (nothing is
      written to the checkout), and a file importing `testing` to every
@@ -190,14 +191,37 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      `replace` directories and `vendor/`. Go initializes a package's imports
      first, so the hook's `init` runs before any `init` or package variable
      of the repository's code, including a `replace`d local module's;
-   - the hook connects to a unix socket the verifier owns, whose path is
-     compiled into it, and receives a fresh random key. The verifier only
-     answers a peer (checked with `SO_PEERCRED`) whose executable is a
-     `.test` binary started by the `go` command it launched, once per
-     process;
+   - go starts every test binary through the launcher (this `sdf`
+     binary), in the package's directory. The launcher connects to a unix
+     socket the verifier owns. The verifier accepts the connection only
+     from a peer (`SO_PEERCRED`) that runs this very executable (same
+     inode) and whose parent is the criterion's `go` command, identified
+     by pid (isolated: the pid the namespace's pid 1 reports for the `go`
+     it started; unisolated: the `go` the verifier started), and only once
+     per package directory. It then creates a socketpair bound to that
+     package, passes one end to the launcher (`SCM_RIGHTS`), and the
+     launcher hands it to the test binary as fd 3, and to nothing else;
+   - isolated, the launcher runs the test binary in its own nested user,
+     pid and mount namespaces, where every mount is read-only (go's work
+     directory with the other packages' test binaries, the build and
+     module caches, the toolchain, the checkout of a `go test` criterion)
+     except a fresh `TMPDIR` and `HOME` (and the checkout with
+     `--writable-checkout`). A test binary cannot swap another package's
+     test binary, poison the build cache, see `go` or the launcher, or
+     start anything outside its namespace. Tests that write elsewhere
+     (`-cover` profiles in go's work directory, `go build` into the cache,
+     fuzz corpora) fail there;
+   - the hook takes a fresh random key from fd 3 and never dials anything.
+     A process the code under test starts cannot get a channel: fd 3 is
+     close-on-exec after the hook takes it, and a launcher that is not a
+     child of that `go` is refused. Review's round-7 forgeries (atk_cloneparent:
+     a helper started with `CLONE_PARENT` as a sibling of the test binary,
+     so a child of `go`; atk_orphan: a fake `go`, reparented to pid 1, that
+     starts the helper) are refused that way;
    - each designated top-level test is wrapped in place so that, when it
      ends, the hook sends `pass`, `fail` or `skip` with an HMAC under that
-     key. Package names come from the nearest `go.mod`;
+     key. Package names come from the nearest `go.mod`. A report for a test
+     of another package than the channel's is `TEST_REPORT_INVALID`;
    - right after the key exchange, still before any code of the module
      runs, the hook makes the test process non-dumpable
      (`PR_SET_DUMPABLE 0`), so its `/proc/self/mem` (and `fd/`, `environ`)
@@ -209,7 +233,10 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      cannot be undone, and refuses `ptrace`, `process_vm_readv`,
      `process_vm_writev` and `pidfd_getfd` (`EPERM`), so a child or sibling
      of the same user cannot read or write the test process's memory that
-     way either (Review's atk_pvm). If any of it fails the test binary
+     way either (Review's atk_pvm), and refuses `clone` with
+     `CLONE_PARENT` (`EPERM`) and `clone3` (`ENOSYS`, so callers fall back
+     to `clone`), so nothing the test binary starts becomes a child of
+     `go`. If any of it fails the test binary
      exits 3. Side effects for tests: `/proc/self/fd` is not listable,
      set-uid programs run by a test do not gain privileges, and a test that
      runs a debugger or `strace` fails.
@@ -217,14 +244,17 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    **This resists only naive cheating. It is not a security boundary
    against an adversarial agent**: code in the test binary that uses
    `unsafe`, `//go:linkname` or assembly can still read the key or write
-   memory and forge a pass (see the tripwire, and "What this does not
+   memory and forge a pass. Out of process, code under test has so far
+   found two ways around earlier versions (round 7, closed as above), and
+   with `--allow-unisolated` more remain open (see "What this does not
    guarantee").
 
    Every designated test must report only `pass`, else
    `DESIGNATED_TEST_NOT_PASSED` (named as `TestX (package import/path)`; a
    `go test` criterion with no designated test fails the same way). Any
-   other connection, a second one from a process, or a frame with a bad
-   HMAC is `TEST_REPORT_INVALID` (FAIL). A `TestMain` or `init` that exits
+   other connection to the socket, a second launcher for a package, a
+   frame with a bad HMAC or another package's test is
+   `TEST_REPORT_INVALID` (FAIL). A `TestMain` or `init` that exits
    0, a `-run` filter or a skipped designated test reports no pass and
    fails. `CGO_ENABLED=0` is set for these runs, so no C constructor runs
    before the hook. A designated `_test.go` that no `go test` criterion
@@ -345,15 +375,31 @@ record.
 - `--task-ref` is read from the repository given. If the agent can move that
   ref locally, it is not protected: use the protected branch as just
   fetched from the remote, or `--task-hash`.
-- **Known gap: the go test harness is not a security boundary.** Code under
-  test runs in the same process as the hook. With `unsafe`,
-  `//go:linkname` or assembly it can read the key or call the hook's
-  report function (Review's atk_b1mem), or patch code or data in memory,
-  and forge a pass. The non-dumpable test process closes `/proc/self/mem`
-  (atk_tw5), and the tripwire turns the usual ways into
-  `TAMPER_CAPABLE_CODE`, but it catches known patterns only. Closing the
-  gap needs the tests to run in a process the code under test cannot
-  inspect; it is not built. Packages from the module cache (not vendored)
+- **Known gap: the go test harness is not a security boundary.** It is
+  not only an in-process gap.
+  - In process: code under test runs in the same process as the hook.
+    With `unsafe`, `//go:linkname` or assembly it can read the key or call
+    the hook's report function (Review's atk_b1mem), or patch code or data
+    in memory, and forge a pass. The non-dumpable test process closes
+    `/proc/self/mem` (atk_tw5), and the tripwire turns the usual ways into
+    `TAMPER_CAPABLE_CODE`, but it catches known patterns only. Closing it
+    needs the tests to run in a process the code under test cannot
+    inspect; it is not built.
+  - Out of process: earlier versions trusted any process that looked like
+    a test binary started by `go`, and code under test produced one
+    (round 7: atk_cloneparent, atk_orphan). The channel now goes only to
+    test binaries the verifier's launcher starts as a child of that exact
+    `go`, bound to one package. That rests on the kernel (`SO_PEERCRED`,
+    pid namespaces, the seccomp filter) and on code under test running
+    only inside test binaries (no cgo, no `-toolexec`). On architectures
+    other than amd64 and arm64 there is no seccomp filter, so
+    `CLONE_PARENT` is not refused: isolated, the nested pid namespace
+    still keeps such a process away from `go`; unisolated it does not.
+  - With `--allow-unisolated` (verdict `"isolation": "none"`) a test
+    binary can write go's work directory and build cache, so it can
+    replace another package's test binary before `go` starts it, or
+    poison an object a later link uses, and forge that package's results.
+    Only isolated verdicts should count. Packages from the module cache (not vendored)
   are not hooked, so a dependency's `init` may run before the hook. Which
   dependencies are used cannot change without a `go.mod`/`go.sum` change,
   which fails, and their sources come from a fresh download (checked

@@ -20,10 +20,11 @@ import (
 // goTestArgv adds -count=1 (unless the task sets -count) and the harness
 // overlay to a `go test` argv, right after "test", or after "-C dir", which
 // go requires to be the first flag. -count=1 keeps a cached
-// result from standing in for a run. It refuses -overlay and -exec, which
-// would replace the harness or put another process between go and the test
-// binary.
-func goTestArgv(argv []string, overlay string) ([]string, error) {
+// result from standing in for a run. With execProg it adds the verifier's
+// launcher as -exec. It refuses -overlay, -exec and -toolexec from the task,
+// which would replace the harness or put another process between go and
+// the test binary.
+func goTestArgv(argv []string, overlay, execProg string) ([]string, error) {
 	if !task.IsGoTest(argv) {
 		return argv, nil
 	}
@@ -50,6 +51,9 @@ func goTestArgv(argv []string, overlay string) ([]string, error) {
 	}
 	if overlay != "" {
 		out = append(out, "-overlay="+overlay)
+	}
+	if execProg != "" {
+		out = append(out, "-exec="+execProg)
 	}
 	return append(out, rest...), nil
 }

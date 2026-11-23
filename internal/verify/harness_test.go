@@ -56,8 +56,11 @@ func harnessSocketGlob(t *testing.T) string {
 	return strconv.Quote(filepath.Join(d, "sdfh*", "s"))
 }
 
-// B-1: code under test talks to the verifier's socket itself, or from a
-// process it starts. Both are refused, and refusing is a FAIL.
+// B-1: code under test talks to the verifier's socket itself, which is
+// refused, and refusing is a FAIL; or it starts its own test binary, which
+// gets no channel (fd 3 is close-on-exec and only the launcher passes one),
+// so its hook exits and nothing it could report reaches the verifier: the
+// honest test passes, with one keyed test binary.
 func TestB1ForgedReportsOnTheHarnessSocket(t *testing.T) {
 	cases := map[string]string{
 		// The socket path is compiled into the hook, but its directory can
@@ -86,11 +89,34 @@ func TestB1ForgedReportsOnTheHarnessSocket(t *testing.T) {
 			src := "package a\n\nimport (\n\t\"net\"\n\t\"os\"\n\t\"os/exec\"\n\t\"path/filepath\"\n\t\"strings\"\n)\n\nvar _ = exec.Command\nvar _ = filepath.Glob\n\nfunc init() {\n\tif strings.HasSuffix(os.Args[0], \".test\") {\n\t\t" + body + "\n\t}\n}\n\n" + strings.TrimPrefix(goodAdd, "package a\n\n")
 			sha := f.agentCommit(t, map[string]string{"a/a.go": src})
 			res := mustRun(t, goOpts(t, f, sha))
+			if name == "child process" {
+				if res.Status != StatusPass || keyedBinaries(res) != 1 {
+					t.Fatalf("%s %+v (keyed %d)", res.Status, res.Reasons, keyedBinaries(res))
+				}
+				return
+			}
 			if res.Status != StatusFail || !hasCode(res, CodeTestReportInvalid) {
 				t.Fatalf("%s %+v", res.Status, res.Reasons)
 			}
 		})
 	}
+}
+
+// keyedBinaries is how many test binaries got a harness channel in the
+// last go test criterion.
+func keyedBinaries(res Result) int {
+	n := -1
+	for _, e := range res.Evidence {
+		if v, ok := e.Value["harness_test_binaries"]; ok {
+			switch x := v.(type) {
+			case int:
+				n = x
+			case float64:
+				n = int(x)
+			}
+		}
+	}
+	return n
 }
 
 // B-2: a vendored dependency replaced by a fake (atk_vendor), or deleted.

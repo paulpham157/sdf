@@ -37,19 +37,35 @@ import (
 //     directories and vendor/. Go initializes a package's imports before
 //     the package, so the hook's init runs before any init or package
 //     variable in the repository's code.
-//   - The hook connects to a unix socket the verifier listens on, whose
-//     path is compiled into it (no environment variable to redirect), and
-//     reads a 32-byte key. The verifier accepts one connection per test binary
-//     process, and only from a process whose executable is a test binary
-//     and whose parent is the criterion's own go command; a second
-//     connection from the same process, or from anything else, is a
-//     violation.
+//   - go test also gets -exec=<this binary> __sdf-verify-launch, so go
+//     starts every test binary through the verifier's launcher (launch.go)
+//     instead of directly. The launcher connects to a unix socket the
+//     verifier listens on. The verifier accepts it only from a process
+//     running this very executable whose parent is the criterion's own go
+//     command (started by the namespace's pid 1, which reports its pid; or,
+//     not isolated, the go the verifier started), one per package directory (its working
+//     directory, which go sets). It then creates a socketpair bound to that
+//     package and passes one end to the launcher (SCM_RIGHTS), which hands
+//     it to the test binary as fd 3 and nothing else. Isolated, the test
+//     binary runs in its own nested user, pid and mount namespaces where
+//     every mount, including go's work directory and build cache, is
+//     read-only, except a fresh TMPDIR and HOME.
+//   - The hook reads a 32-byte key from fd 3 and keeps the connection; it
+//     never dials anything. Any connection to the verifier's socket that is
+//     not a launcher, a second launcher for a package, or a report naming
+//     another package is a violation.
 //   - Each designated test function is renamed in the overlay and wrapped:
 //     the wrapper runs it and, in a t.Cleanup registered first, reports
 //     pass only if the function returned and the test neither failed nor
 //     skipped. Reports are HMAC-SHA256'd with the key and numbered.
 //   - The verifier requires a valid pass for every designated test, and no
 //     invalid frame and no fail.
+//
+// Code under test therefore cannot obtain a channel of its own: a process
+// it starts is not a child of go (CLONE_PARENT and clone3 are refused by
+// the hook's seccomp filter; isolated, it is inside the test binary's own
+// pid namespace), and it cannot replace another package's test binary or
+// poison the build cache (read-only to it, when isolated).
 //
 // KNOWN GAP: the key and the report function are in the test binary's
 // memory, so code under test that reads its own process's memory or calls
@@ -63,16 +79,21 @@ type harness struct {
 	tag                  string // random suffix of the hook's names
 	ln                   net.Listener
 	expected             []string
+	checkout             string
+	self                 string // this executable, the launcher
+	exec                 string // the -exec value for go test
 
 	mu         sync.Mutex
 	results    map[string][]string // test -> reports
 	violations []string
 	pids       map[int]bool
+	pkgs       map[string]bool // package directories that got a channel
 	wg         sync.WaitGroup
 
 	// rootPid is the process the verifier started (pid 1 of the namespace,
 	// or go itself when not isolated); set before any test binary runs.
 	rootPid  int
+	goNsPid  int // isolated: go's pid inside the namespace, as pid 1 reported it
 	isolated bool
 	started  chan struct{}
 }
@@ -87,7 +108,7 @@ func randHex(n int) string {
 
 // newHarness writes the overlay for criterion c and listens on the socket.
 // goroot is the GOROOT of the go command the criterion runs.
-func (r *run) newHarness(c task.Criterion, expected []string, goroot string) (*harness, error) {
+func (r *run) newHarness(c task.Criterion, expected []string, goroot string, d checkDirs) (*harness, error) {
 	testingDir := filepath.Join(goroot, "src", "testing")
 	if fi, err := os.Stat(testingDir); err != nil || !fi.IsDir() {
 		return nil, fmt.Errorf("GOROOT %s has no src/testing", goroot)
@@ -97,9 +118,12 @@ func (r *run) newHarness(c task.Criterion, expected []string, goroot string) (*h
 	if err != nil {
 		return nil, err
 	}
-	h := &harness{dir: dir, tag: randHex(8), expected: expected,
-		results: map[string][]string{}, pids: map[int]bool{}, started: make(chan struct{})}
+	h := &harness{dir: dir, tag: randHex(8), expected: expected, checkout: r.checkout,
+		results: map[string][]string{}, pids: map[int]bool{}, pkgs: map[string]bool{}, started: make(chan struct{})}
 	h.socket = filepath.Join(dir, "s")
+	if h.self, err = launcherPath(); err != nil {
+		return nil, err
+	}
 	replace := map[string]string{}
 	add := func(target, content string) error {
 		src := filepath.Join(dir, "f"+strconv.Itoa(len(replace))+".go")
@@ -109,7 +133,7 @@ func (r *run) newHarness(c task.Criterion, expected []string, goroot string) (*h
 		replace[target] = src
 		return nil
 	}
-	if err := add(filepath.Join(testingDir, "zz_sdfverify_"+h.tag+".go"), hookSource(h.tag, h.socket)); err != nil {
+	if err := add(filepath.Join(testingDir, "zz_sdfverify_"+h.tag+".go"), hookSource(h.tag)); err != nil {
 		return nil, err
 	}
 	ctx := build.Default
@@ -160,6 +184,9 @@ func (r *run) newHarness(c task.Criterion, expected []string, goroot string) (*h
 	}
 	h.overlay = filepath.Join(dir, "overlay.json")
 	if err := os.WriteFile(h.overlay, b, 0o600); err != nil {
+		return nil, err
+	}
+	if h.exec, err = r.writeLaunchConfig(h, c, d); err != nil {
 		return nil, err
 	}
 	if h.ln, err = net.Listen("unix", h.socket); err != nil {
@@ -280,12 +307,13 @@ func wrapTests(file, pkg, tag string) (string, error) {
 // hookSource is the file the overlay adds to package testing. Every name
 // it declares, including its imports, carries the run's random tag, so it
 // cannot collide with testing's own and code under test cannot name it
-// without knowing the tag. The socket path is a constant in it.
-func hookSource(tag, socket string) string {
-	return hookSourceFor(tag, socket, runtime.GOOS, runtime.GOARCH)
+// without knowing the tag. Its channel to the verifier is fd 3, which only
+// the verifier's launcher gives it.
+func hookSource(tag string) string {
+	return hookSourceFor(tag, runtime.GOOS, runtime.GOARCH)
 }
 
-func hookSourceFor(tag, socket, goos, goarch string) string {
+func hookSourceFor(tag, goos, goarch string) string {
 	src := `package testing
 
 import (
@@ -314,9 +342,17 @@ func init() {
 		T_os.Stderr.WriteString("sdf verify hook: " + msg + "\n")
 		T_os.Exit(3)
 	}
-	c, err := T_net.Dial("unix", SOCKET)
+	// fd 3 is the socketpair end the verifier's launcher passed to this
+	// process alone. FileConn dups it close-on-exec; the original is closed,
+	// so no child process inherits the channel.
+	f := T_os.NewFile(3, "sdf-verify")
+	if f == nil {
+		die("no harness channel on fd 3 (not started by sdf verify's launcher)")
+	}
+	c, err := T_net.FileConn(f)
+	f.Close()
 	if err != nil {
-		die(err.Error())
+		die("harness channel on fd 3: " + err.Error())
 	}
 	key := make([]byte, 32)
 	if _, err := T_io.ReadFull(c, key); err != nil {
@@ -364,7 +400,6 @@ func T_send(msg string) {
 	}
 	src = strings.Replace(src, "IMPORTS", imports, 1)
 	src += hardenSource(goos, goarch)
-	src = strings.ReplaceAll(src, "SOCKET", strconv.Quote(socket))
 	src = strings.ReplaceAll(src, "SdfVerifyTRun", "SdfVerify"+tag+"Run")
 	return strings.ReplaceAll(src, "T_", "sdf"+tag+"_")
 }
@@ -373,7 +408,7 @@ func T_send(msg string) {
 // check's environment does not pass GOOS or GOARCH through).
 //
 // On Linux the test process makes itself non-dumpable, right after the key
-// exchange (the verifier's peer check reads its /proc entries first) and
+// exchange and
 // before any code of the module runs. A non-dumpable process's
 // /proc/<pid>/mem (and fd/, environ, ...) belong to root, so code under test
 // cannot open /proc/self/mem to patch the testing package's code
@@ -384,21 +419,23 @@ func T_send(msg string) {
 // process_vm_readv and process_vm_writev (another way to read the key or
 // write the process's memory, atk_pvm) and pidfd_getfd (taking the harness
 // connection from another process); and any system call of another
-// architecture's ABI. Tests that run debuggers or strace fail. It does not
-// stop code that uses unsafe or assembly from reading or writing memory
+// architecture's ABI; and clone with CLONE_PARENT (EPERM) and
+// clone3 (ENOSYS, so callers fall back to clone), so nothing the test
+// binary starts becomes a child of go (atk_cloneparent). Tests that run
+// debuggers or strace fail. It does not stop code that uses unsafe or assembly from reading or writing memory
 // directly: the tripwire flags those.
 func hardenSource(goos, goarch string) string {
 	if goos != "linux" {
 		return "\nfunc T_harden() string { return \"\" }\n"
 	}
 	// System call numbers: prctl, seccomp, ptrace, process_vm_readv,
-	// process_vm_writev, pidfd_getfd.
-	arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd := "", "", "", "", "", "", ""
+	// process_vm_writev, pidfd_getfd, clone, clone3.
+	arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 := "", "", "", "", "", "", "", "", ""
 	switch goarch {
 	case "amd64":
-		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd = "0xC000003E", "157", "317", "101", "310", "311", "438"
+		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 = "0xC000003E", "157", "317", "101", "310", "311", "438", "56", "435"
 	case "arm64":
-		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd = "0xC00000B7", "167", "277", "117", "270", "271", "438"
+		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 = "0xC00000B7", "167", "277", "117", "270", "271", "438", "220", "435"
 	}
 	src := `
 func T_harden() string {
@@ -409,18 +446,23 @@ func T_harden() string {
 	if ARCH != 0 {
 		filter := []T_sockFilter{
 			{0x20, 0, 0, 4},              // 0: A = arch
-			{0x15, 0, 10, ARCH},          // 1: not this ABI: deny
+			{0x15, 0, 14, ARCH},          // 1: not this ABI: deny
 			{0x20, 0, 0, 0},              // 2: A = nr
-			{0x45, 8, 0, 0x40000000},     // 3: x32 ABI: deny
-			{0x15, 7, 0, NR_PTRACE},      // 4: ptrace: deny
-			{0x15, 6, 0, NR_PVMR},        // 5: process_vm_readv: deny
-			{0x15, 5, 0, NR_PVMW},        // 6: process_vm_writev: deny
-			{0x15, 4, 0, NR_PIDFD_GETFD}, // 7: pidfd_getfd: deny
-			{0x15, 0, 2, NR_PRCTL},       // 8: not prctl: allow
-			{0x20, 0, 0, 16},             // 9: A = args[0]
-			{0x15, 1, 0, prSetDumpable},  // 10: PR_SET_DUMPABLE: deny
-			{0x06, 0, 0, 0x7fff0000},     // 11: allow
-			{0x06, 0, 0, 0x00050000 | 1}, // 12: EPERM
+			{0x45, 12, 0, 0x40000000},    // 3: x32 ABI: deny
+			{0x15, 11, 0, NR_PTRACE},     // 4: ptrace: deny
+			{0x15, 10, 0, NR_PVMR},       // 5: process_vm_readv: deny
+			{0x15, 9, 0, NR_PVMW},        // 6: process_vm_writev: deny
+			{0x15, 8, 0, NR_PIDFD_GETFD}, // 7: pidfd_getfd: deny
+			{0x15, 8, 0, NR_CLONE3},      // 8: clone3: ENOSYS (callers fall back to clone)
+			{0x15, 3, 0, NR_CLONE},       // 9: clone: check the flags
+			{0x15, 0, 4, NR_PRCTL},       // 10: not prctl: allow
+			{0x20, 0, 0, 16},             // 11: A = args[0]
+			{0x15, 3, 2, prSetDumpable},  // 12: PR_SET_DUMPABLE: deny, else allow
+			{0x20, 0, 0, 16},             // 13: A = clone flags
+			{0x45, 1, 0, 0x8000},         // 14: CLONE_PARENT: deny
+			{0x06, 0, 0, 0x7fff0000},     // 15: allow
+			{0x06, 0, 0, 0x00050000 | 1}, // 16: EPERM
+			{0x06, 0, 0, 0x00050000 | 38}, // 17: ENOSYS
 		}
 		prog := struct {
 			n uint16
@@ -451,7 +493,7 @@ type T_sockFilter struct {
 }
 `
 	if arch == "" {
-		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd = "0", "0", "0", "0", "0", "0", "0"
+		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 = "0", "0", "0", "0", "0", "0", "0", "0", "0"
 	}
 	src = strings.ReplaceAll(src, "ARCH", arch)
 	src = strings.ReplaceAll(src, "NR_PRCTL", prctl)
@@ -459,6 +501,8 @@ type T_sockFilter struct {
 	src = strings.ReplaceAll(src, "NR_PVMR", pvmr)
 	src = strings.ReplaceAll(src, "NR_PVMW", pvmw)
 	src = strings.ReplaceAll(src, "NR_PIDFD_GETFD", pidfdGetfd)
+	src = strings.ReplaceAll(src, "NR_CLONE3", clone3)
+	src = strings.ReplaceAll(src, "NR_CLONE", clone)
 	src = strings.ReplaceAll(src, "SYS_SECCOMP", seccomp)
 	return src
 }
@@ -492,18 +536,48 @@ func (h *harness) serve(c net.Conn) {
 		h.violate("connection with no peer process: %v", err)
 		return
 	}
-	if err := checkTestBinary(pid, h.rootPid, h.isolated); err != nil {
+	dir, err := checkLauncher(pid, h.self, h.rootPid, h.goNsPid, h.isolated)
+	if err != nil {
 		h.violate("connection from process %d: %v", pid, err)
 		return
 	}
-	h.mu.Lock()
-	dup := h.pids[pid]
-	h.pids[pid] = true
-	h.mu.Unlock()
-	if dup {
-		h.violate("second connection from test binary process %d", pid)
+	rel, err := filepath.Rel(h.checkout, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		h.violate("launcher %d runs in %s, outside the checkout", pid, dir)
 		return
 	}
+	pkg, err := importPath(h.checkout, filepath.ToSlash(rel))
+	if err != nil {
+		h.violate("launcher %d: %s: %v", pid, rel, err)
+		return
+	}
+	h.mu.Lock()
+	dup := h.pids[pid] || h.pkgs[dir]
+	h.pids[pid], h.pkgs[dir] = true, true
+	h.mu.Unlock()
+	if dup {
+		h.violate("second launcher for process %d or package %s", pid, pkg)
+		return
+	}
+	mine, theirs, err := socketPair()
+	if err != nil {
+		h.violate("socketpair: %v", err)
+		return
+	}
+	defer mine.Close()
+	err = sendFD(c, theirs)
+	theirs.Close()
+	if err != nil {
+		h.violate("launcher %d: passing the channel: %v", pid, err)
+		return
+	}
+	_ = c.Close()
+	h.reports(mine, pkg)
+}
+
+// reports reads one test binary's reports from its channel, which is
+// bound to package pkg: a report for any other package is a violation.
+func (h *harness) reports(c net.Conn, pkg string) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		h.violate("key: %v", err)
@@ -520,7 +594,7 @@ func (h *harness) serve(c net.Conn) {
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) != 5 {
-			h.violate("malformed report from process %d", pid)
+			h.violate("malformed report from package %s", pkg)
 			return
 		}
 		body := strings.Join(f[1:], " ")
@@ -529,14 +603,18 @@ func (h *harness) serve(c net.Conn) {
 		got, err := hex.DecodeString(f[0])
 		n, nerr := strconv.Atoi(f[1])
 		if err != nil || !hmac.Equal(got, m.Sum(nil)) || nerr != nil || n != seq+1 {
-			h.violate("report from process %d failed authentication", pid)
+			h.violate("report from package %s failed authentication", pkg)
 			return
 		}
 		seq = n
 		switch f[2] {
 		case "pass", "fail", "skip":
 		default:
-			h.violate("report from process %d has result %q", pid, f[2])
+			h.violate("report from package %s has result %q", pkg, f[2])
+			return
+		}
+		if f[3] != pkg {
+			h.violate("test binary of package %s reported a test of package %s", pkg, f[3])
 			return
 		}
 		name := f[3] + " " + f[4]

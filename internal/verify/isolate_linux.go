@@ -48,6 +48,9 @@ func (c nsConfig) args() []string {
 	if !c.hostNet {
 		a = append(a, "--lo")
 	}
+	if c.reportPid {
+		a = append(a, "--report-pid")
+	}
 	for _, m := range c.mask {
 		a = append(a, "--mask", m)
 	}
@@ -122,13 +125,17 @@ func nsInitMain(args []string) int {
 	runtime.LockOSThread()
 	var masks, rws, ros, command []string
 	var overlays []overlayMount
-	lo, probe := false, false
+	lo, probe, fd3, reportPid := false, false, false, false
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
 		case a == "--lo":
 			lo = true
 		case a == "--probe":
 			probe = true
+		case a == "--fd3":
+			fd3 = true
+		case a == "--report-pid":
+			reportPid = true
 		case (a == "--mask" || a == "--rw" || a == "--ro") && i+1 < len(args):
 			switch a {
 			case "--mask":
@@ -153,6 +160,11 @@ func nsInitMain(args []string) int {
 	die := func(format string, a ...any) int {
 		fmt.Fprintf(os.Stderr, "sdf verify: namespace init: "+format+"\n", a...)
 		return 125
+	}
+	if reportPid || fd3 {
+		// Inherited without close-on-exec; the check must not get it
+		// (with --fd3 it is passed on explicitly).
+		syscall.CloseOnExec(3)
 	}
 	// Every step is required, and the probe does them too: a user namespace
 	// without capabilities (Ubuntu's AppArmor restriction on unprivileged
@@ -304,10 +316,30 @@ func nsInitMain(args []string) int {
 	cmd := exec.Command(command[0], command[2:]...)
 	cmd.Args[0] = command[1]
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, os.Stdout, os.Stderr
+	if fd3 {
+		// A test binary's harness channel (launch_linux.go): passed on as
+		// fd 3, and closed here.
+		cmd.Stdin = os.Stdin
+		cmd.ExtraFiles = []*os.File{os.NewFile(3, "harness")}
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "sdf verify: %v\n", err)
 		return 126
+	}
+	if fd3 {
+		cmd.ExtraFiles[0].Close()
+	}
+	if reportPid {
+		// The verifier identifies the criterion's go command by this pid
+		// (checkLauncher): written once, then the pipe is closed.
+		f := os.NewFile(3, "pid")
+		_, err := fmt.Fprintf(f, "%d\n", cmd.Process.Pid)
+		f.Close()
+		if err != nil {
+			_ = cmd.Process.Kill()
+			return die("report pid: %v", err)
+		}
 	}
 	// Reap orphans reparented to pid 1 while the command runs.
 	for {
