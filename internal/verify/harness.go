@@ -55,6 +55,7 @@ import (
 const hookEnv = "SDF_VERIFY_HOOK"
 
 type harness struct {
+	keyed                int // test binaries that got a key
 	dir, overlay, socket string
 	hookPkg              string
 	ln                   net.Listener
@@ -283,10 +284,12 @@ func init() {
 	}
 	c, err := net.Dial("unix", p)
 	if err != nil {
+		os.Stderr.WriteString("sdf verify hook: " + err.Error() + "\n")
 		return
 	}
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(c, key); err != nil {
+		os.Stderr.WriteString("sdf verify hook: no key: " + err.Error() + "\n")
 		c.Close()
 		return
 	}
@@ -374,6 +377,9 @@ func (h *harness) serve(c net.Conn) {
 	if _, err := c.Write(key); err != nil {
 		return
 	}
+	h.mu.Lock()
+	h.keyed++
+	h.mu.Unlock()
 	sc := bufio.NewScanner(c)
 	seq := 0
 	for sc.Scan() {

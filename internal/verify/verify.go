@@ -1108,8 +1108,11 @@ func (r *run) runCriterion(c task.Criterion) {
 	so.Close()
 	se.Close()
 	var notPassed, violations []string
+	keyed := 0
 	if h != nil {
 		notPassed, violations = h.finish()
+		keyed = h.keyed
+		ev["harness_test_binaries"] = keyed
 		ev["designated_tests_not_passed"] = nonNilStrings(notPassed)
 		ev["test_report_violations"] = nonNilStrings(violations)
 	}
@@ -1153,6 +1156,9 @@ func (r *run) runCriterion(c task.Criterion) {
 		code, detail = CodeCheckFailed, fmt.Sprintf("exit %v, expected %d", exitCode, c.ExpectExit)
 	case goTest && c.ExpectExit == 0 && len(notPassed) > 0:
 		code, detail = CodeDesignatedTestMissing, fmt.Sprintf("%d of %d designated tests did not pass: %s", len(notPassed), len(wantTests), testList(notPassed))
+		if keyed == 0 {
+			detail += "; no test binary reached the verifier's harness"
+		}
 	}
 	st := "pass"
 	if code == CodeCheckError {

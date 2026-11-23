@@ -58,8 +58,16 @@ func TestMain(m *testing.M) {
 func TestGoHonestPass(t *testing.T) {
 	f := newGoFixture(t)
 	sha := f.agentCommit(t, map[string]string{"a/a.go": goodAdd})
-	res := mustRun(t, goOpts(t, f, sha))
+	o := goOpts(t, f, sha)
+	o.ArtifactsDir = t.TempDir()
+	res := mustRun(t, o)
 	if res.Status != StatusPass {
+		ents, _ := os.ReadDir(o.ArtifactsDir)
+		for _, e := range ents {
+			b, _ := os.ReadFile(filepath.Join(o.ArtifactsDir, e.Name()))
+			t.Logf("output %s:\n%s", e.Name(), b)
+		}
+		t.Logf("isolation %v", res.Verdict.Value["isolation"])
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
 	crit := res.Evidence[len(res.Evidence)-1].Value
