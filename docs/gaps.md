@@ -34,7 +34,9 @@
   and names that limit. Metrics stay unattributed when they do not fall
   inside exactly one Pi session.
 - Retried delta exports can be double-counted. Cumulative series use the
-  latest point. Codex and OpenCode input tokens use the max, not the sum, as
+  latest point of each process run and add the runs up (a new start time or
+  a value drop is a new run); two concurrent processes with the same
+  resource and no start time are over-counted. Codex and OpenCode input tokens use the max, not the sum, as
   described in [docs/summary.md](summary.md). Pi per-turn input and output are summed, and that sum is
   not added to `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,

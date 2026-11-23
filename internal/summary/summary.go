@@ -157,6 +157,11 @@ type point struct {
 	order       int64
 	unit        *string
 	attributes  map[string]any
+	// start is the point's StartTimeUnixNano, 0 when it was not sent.
+	// resource is the frozen resource. Both only split cumulative series
+	// into the runs of one process; see cumulativeTotal.
+	start    int64
+	resource string
 }
 
 type sessionKey struct {
@@ -1528,6 +1533,10 @@ func pointsOf(records []record.Record) []point {
 		if attrs == nil {
 			attrs = map[string]any{}
 		}
+		start := int64(0)
+		if rec.StartUnixNano != nil {
+			start = *rec.StartUnixNano
+		}
 		points = append(points, point{
 			name:        deref(rec.Name),
 			kind:        kind,
@@ -1537,6 +1546,8 @@ func pointsOf(records []record.Record) []point {
 			order:       rec.ID,
 			unit:        rec.MetricUnit,
 			attributes:  attrs,
+			start:       start,
+			resource:    freeze(rec.Resource),
 		})
 	}
 	return points
@@ -1559,9 +1570,12 @@ func reduce(points []point) []point {
 		if group[0].kind == "gauge" || group[0].temporality == "cumulative" {
 			best := group[0]
 			for _, item := range group[1:] {
-				if item.time > best.time || (item.time == best.time && item.order > best.order) {
+				if later(item, best) {
 					best = item
 				}
+			}
+			if group[0].kind != "gauge" {
+				best.value = cumulativeTotal(group)
 			}
 			reduced = append(reduced, best)
 			continue
@@ -1585,6 +1599,55 @@ func reduce(points []point) []point {
 		reduced = append(reduced, first)
 	}
 	return reduced
+}
+
+func later(a, b point) bool {
+	return a.time > b.time || (a.time == b.time && a.order > b.order)
+}
+
+// cumulativeTotal is the session total of one cumulative series (same name,
+// kind, and attributes). A cumulative counter restarts at 0 when its process
+// restarts, for example after `gemini --resume` reuses the session.id. Each
+// run is one segment, and the total is the sum of every segment's last value:
+// 1000 in the first run and 500 after a resume is 1500, not 500.
+//
+// Points are first split by resource and StartTimeUnixNano: the OTel SDK
+// keeps one start time for the life of a cumulative stream, so a new start
+// time is a new run, and two processes exporting at once (different start
+// times or resources) are each counted once, not interleaved. Within one
+// split, points are ordered by time and a value that drops below the previous
+// one also starts a new segment. That catches a reset from an exporter that
+// sends no start time (start 0). Two concurrent processes with identical
+// resources and no start time cannot be told apart, and their interleaved
+// points read as resets, which over-counts.
+func cumulativeTotal(group []point) float64 {
+	type runKey struct {
+		resource string
+		start    int64
+	}
+	var keys []runKey
+	runs := map[runKey][]point{}
+	for _, p := range group {
+		key := runKey{p.resource, p.start}
+		if _, ok := runs[key]; !ok {
+			keys = append(keys, key)
+		}
+		runs[key] = append(runs[key], p)
+	}
+	total := 0.0
+	for _, key := range keys {
+		run := append([]point(nil), runs[key]...)
+		sort.SliceStable(run, func(i, j int) bool { return later(run[j], run[i]) })
+		last := run[0].value
+		for _, p := range run[1:] {
+			if p.value < last {
+				total += last
+			}
+			last = p.value
+		}
+		total += last
+	}
+	return total
 }
 
 func sumBy(points []point, key string) OrderedFloats {
