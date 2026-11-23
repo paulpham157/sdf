@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/genai"
 )
 
 // Usage is the token total a summary already reduced.
@@ -280,7 +282,7 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 		}, "", "Codex response.completed counts use the summary's max for input, cached, and cache_write, and the sum for output and reasoning. cached and cache_write are subtracted from input; reasoning is subtracted from output")
 	case "traces SessionStep.attempt":
 		return openCodeBuckets(tokens)
-	case "traces chat", "metrics gen_ai.client.token.usage":
+	case "traces " + genai.OperationChat, "metrics " + genai.MetricClientTokenUsage:
 		return piBuckets(source, tokens)
 	case "metrics grok_code.token.usage":
 		return codexBuckets(tokens, map[string]string{
@@ -353,57 +355,24 @@ func codexBuckets(tokens map[string]float64, names map[string]string, ignore str
 	return overlapBuckets(values, method)
 }
 
-// usageModalities are the modality names accepted in gen_ai.usage.<modality>.*
-// breakdown keys. GenAI semconv v0.1.0 defines text, image, and audio; video
-// is accepted ahead of the spec. Any other modality is not recognized, so its
-// key leaves the OpenCode cost unknown rather than being skipped.
-//
-// TODO(PR 2): move the modality and usage key names into internal/genai with
-// the other pinned semconv names.
-var usageModalities = map[string]bool{
-	"text":  true,
-	"image": true,
-	"audio": true,
-	"video": true,
-}
-
-// usageModalityBucket maps a per-modality key suffix to the bucket whose
-// total already includes it. v0.1.0 defines input_tokens, output_tokens, and
-// cache_read.input_tokens per modality. cache_write.input_tokens per modality
-// is not in the v0.1.0 registry; it is accepted for forward compatibility
-// only.
-var usageModalityBucket = map[string]string{
-	"input_tokens":             "input",
-	"output_tokens":            "output",
-	"cache_read.input_tokens":  "cache_read",
-	"cache_write.input_tokens": "cache_write",
-}
-
 // IsModalityUsage reports whether label (a gen_ai.usage.* key without the
-// prefix) is a per-modality breakdown such as text.input_tokens. Such a count
-// is already part of the matching total (input_tokens, output_tokens, or a
-// cache total), so it is informational and never priced again.
+// prefix) is a per-modality breakdown such as text.input_tokens. It forwards
+// to genai.IsModalityUsage, where the modality allowlist now lives.
+//
+// It stays here only so internal/summary does not change while the fix for
+// issue #200 (which rewrites that code) is in flight; call
+// genai.IsModalityUsage directly once that lands.
 func IsModalityUsage(label string) bool {
-	_, ok := modalityBucket(label)
-	return ok
-}
-
-func modalityBucket(label string) (string, bool) {
-	modality, rest, ok := strings.Cut(label, ".")
-	if !ok || !usageModalities[modality] {
-		return "", false
-	}
-	bucket, ok := usageModalityBucket[rest]
-	return bucket, ok
+	return genai.IsModalityUsage(label)
 }
 
 // renamedUsage marks OpenCode token keys that GenAI semconv renamed. When one
 // of them shares a bucket with other keys, every key in that bucket is the
 // same quantity under an old and a new name, so the largest count is priced.
 var renamedUsage = map[string]bool{
-	"cache_creation.input_tokens": true,
-	"cache_creation_input_tokens": true,
-	"reasoning.output_tokens":     true,
+	genai.UsageLabelCacheCreationInputTokens:           true,
+	genai.UsageLabelCacheCreationInputTokensUnderscore: true,
+	genai.UsageLabelReasoningOutputTokens:              true,
 }
 
 func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
@@ -417,16 +386,16 @@ func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 	// so a caller that did not fold them still gets a price rather than
 	// unknown.
 	aliases := map[string]string{
-		"input_tokens":                "input",
-		"output_tokens":               "output",
-		"cache_read.input_tokens":     "cache_read",
-		"cache_read_input_tokens":     "cache_read",
-		"cache_write.input_tokens":    "cache_write",
-		"cache_write_input_tokens":    "cache_write",
-		"cache_creation.input_tokens": "cache_write",
-		"cache_creation_input_tokens": "cache_write",
-		"reasoning.output_tokens":     "reasoning",
-		"reasoning_tokens":            "reasoning",
+		genai.UsageLabelInputTokens:                        "input",
+		genai.UsageLabelOutputTokens:                       "output",
+		genai.UsageLabelCacheReadInputTokens:               "cache_read",
+		genai.UsageLabelCacheReadInputTokensUnderscore:     "cache_read",
+		genai.UsageLabelCacheWriteInputTokens:              "cache_write",
+		genai.UsageLabelCacheWriteInputTokensUnderscore:    "cache_write",
+		genai.UsageLabelCacheCreationInputTokens:           "cache_write",
+		genai.UsageLabelCacheCreationInputTokensUnderscore: "cache_write",
+		genai.UsageLabelReasoningOutputTokens:              "reasoning",
+		genai.UsageLabelReasoningTokens:                    "reasoning",
 	}
 	var keys []string
 	for key := range tokens {
@@ -436,7 +405,10 @@ func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 	groups := map[string][]string{}
 	var informational []string
 	for _, key := range keys {
-		if IsModalityUsage(key) {
+		// A breakdown with a modality genai does not recognize is not
+		// informational; it falls through to the alias lookup and leaves
+		// the cost unknown rather than being skipped.
+		if genai.IsModalityUsage(key) {
 			informational = append(informational, key)
 			continue
 		}
@@ -475,7 +447,9 @@ func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 		}
 	}
 	for _, key := range informational {
-		bucket, _ := modalityBucket(key)
+		// A per-modality total label maps to the same bucket as the total.
+		_, total, _ := genai.SplitModalityUsage(key)
+		bucket := aliases[total]
 		if values[bucket] == nil {
 			return nil, "", fmt.Sprintf("per-modality key %q is present without the %s total, so the counts were not priced", key, bucket)
 		}
@@ -490,13 +464,13 @@ func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 func piBuckets(source string, tokens map[string]float64) ([]bucket, string, string) {
 	allowed := map[string]bucketSpec{}
 	method := "Pi summarized tokens are input and output only; cache and reasoning attributes are excluded by the token rule and are not priced"
-	if source == "metrics gen_ai.client.token.usage" {
+	if source == "metrics "+genai.MetricClientTokenUsage {
 		allowed["input"] = bucketSpec{name: "input", priceKey: "prompt"}
 		allowed["output"] = bucketSpec{name: "output", priceKey: "completion"}
 		method = "Pi gen_ai.client.token.usage records input and output only; cache and reasoning are not on this metric and are not priced"
 	} else {
-		allowed["input_tokens"] = bucketSpec{name: "input", priceKey: "prompt"}
-		allowed["output_tokens"] = bucketSpec{name: "output", priceKey: "completion"}
+		allowed[genai.UsageLabelInputTokens] = bucketSpec{name: "input", priceKey: "prompt"}
+		allowed[genai.UsageLabelOutputTokens] = bucketSpec{name: "output", priceKey: "completion"}
 	}
 	return disjoint(tokens, allowed, method)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/paulpham157/sdf/internal/genai"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/record"
 )
@@ -46,10 +47,10 @@ var qwenLogTokens = []string{"input_token_count", "output_token_count", "cached_
 // qwenSpanTokens are the standard usage fields on qwen-code.llm_request,
 // plus the compatibility thoughts_token_count.
 var qwenSpanTokens = []string{
-	"gen_ai.usage.input_tokens",
-	"gen_ai.usage.output_tokens",
-	"gen_ai.usage.cache_read.input_tokens",
-	"gen_ai.usage.cache_creation.input_tokens",
+	genai.AttrUsageInputTokens,
+	genai.AttrUsageOutputTokens,
+	genai.AttrUsageCacheReadInputTokens,
+	genai.AttrUsageCacheCreationInputTokens,
 	"thoughts_token_count",
 }
 
@@ -305,7 +306,7 @@ func qwenModels(records []record.Record, points []point) []string {
 			addModel(&found, rec.Attributes)
 		case rec.Signal == "traces" && deref(rec.Name) == qwenLLMRequest:
 			addModel(&found, rec.Attributes)
-			if text := record.SummaryText(rec.Attributes["gen_ai.response.model"]); text != nil {
+			if text := record.SummaryText(rec.Attributes[genai.AttrResponseModel]); text != nil {
 				addModel(&found, map[string]any{"model": *text})
 			}
 		}
@@ -340,7 +341,7 @@ func qwenToolCalls(records []record.Record, points []point) []ToolCall {
 	seen := map[string]bool{}
 	var calls []ToolCall
 	for _, rec := range qwenRecords(records, "traces", qwenToolSpan) {
-		id := firstText(rec.Attributes, "gen_ai.tool.call.id", "tool.call_id")
+		id := firstText(rec.Attributes, genai.AttrToolCallID, "tool.call_id")
 		var log *record.Record
 		if id != nil {
 			seen[*id] = true
@@ -362,7 +363,7 @@ func qwenToolCalls(records []record.Record, points []point) []ToolCall {
 			}
 		}
 		calls = append(calls, ToolCall{
-			Name:            firstText(rec.Attributes, "gen_ai.tool.name", "tool.name"),
+			Name:            firstText(rec.Attributes, genai.AttrToolName, "tool.name"),
 			CallID:          id,
 			Success:         success,
 			DurationMS:      duration,

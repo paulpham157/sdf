@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/paulpham157/sdf/internal/genai"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -16,9 +17,9 @@ import (
 const (
 	copilotService      = "github-copilot"
 	copilotAgentID      = "github.copilot."
-	copilotUsagePrefix  = "gen_ai.usage."
+	copilotUsagePrefix  = genai.UsagePrefix
 	copilotNanoAIU      = "github.copilot.nano_aiu"
-	copilotMetricPrefix = "gen_ai.client.inference.usage."
+	copilotMetricPrefix = genai.MetricInferenceUsagePrefix
 )
 
 // copilotUsageKeys maps each summary key to the gen_ai.usage.* suffixes
@@ -33,11 +34,11 @@ var copilotUsageKeys = []struct {
 	key      string
 	suffixes []string
 }{
-	{"input_tokens", []string{"input_tokens"}},
-	{"output_tokens", []string{"output_tokens"}},
-	{"cache_read.input_tokens", []string{"cache_read.input_tokens", "cache_read_input_tokens"}},
-	{"cache_write.input_tokens", []string{"cache_write.input_tokens", "cache_creation.input_tokens", "cache_creation_input_tokens"}},
-	{"reasoning.output_tokens", []string{"reasoning.output_tokens", "reasoning_output_tokens"}},
+	{genai.UsageLabelInputTokens, []string{genai.UsageLabelInputTokens}},
+	{genai.UsageLabelOutputTokens, []string{genai.UsageLabelOutputTokens}},
+	{genai.UsageLabelCacheReadInputTokens, []string{genai.UsageLabelCacheReadInputTokens, genai.UsageLabelCacheReadInputTokensUnderscore}},
+	{genai.UsageLabelCacheWriteInputTokens, []string{genai.UsageLabelCacheWriteInputTokens, genai.UsageLabelCacheCreationInputTokens, genai.UsageLabelCacheCreationInputTokensUnderscore}},
+	{genai.UsageLabelReasoningOutputTokens, []string{genai.UsageLabelReasoningOutputTokens, genai.UsageLabelReasoningOutputTokensUnderscore}},
 }
 
 const (
@@ -52,7 +53,7 @@ func isCopilotRecord(service, name string, rec record.Record) bool {
 	if service == copilotService || strings.HasPrefix(name, "github.copilot.") {
 		return true
 	}
-	return strings.HasPrefix(strAttr(rec.Attributes, "gen_ai.agent.id"), copilotAgentID)
+	return strings.HasPrefix(strAttr(rec.Attributes, genai.AttrAgentID), copilotAgentID)
 }
 
 func copilotSpans(records []record.Record, head string) []record.Record {
@@ -120,13 +121,13 @@ func copilotAncestor(rec record.Record, byID map[string]record.Record, heads ...
 // them, as for any subagent.
 func copilotTopLevel(records []record.Record) []record.Record {
 	byID := copilotSpanIndex(records)
-	agents := copilotSpans(records, "invoke_agent")
+	agents := copilotSpans(records, genai.OperationInvokeAgent)
 	hasAddr, hasDefault := false, false
 	for _, rec := range agents {
 		if strAttr(rec.Attributes, copilotServerAddr) != "" {
 			hasAddr = true
 		}
-		if strAttr(rec.Attributes, "gen_ai.agent.id") == copilotDefaultAgent {
+		if strAttr(rec.Attributes, genai.AttrAgentID) == copilotDefaultAgent {
 			hasDefault = true
 		}
 	}
@@ -136,9 +137,9 @@ func copilotTopLevel(records []record.Record) []record.Record {
 		case hasAddr:
 			return strAttr(rec.Attributes, copilotServerAddr) != "" || parentless
 		case hasDefault:
-			return strAttr(rec.Attributes, "gen_ai.agent.id") == copilotDefaultAgent || parentless
+			return strAttr(rec.Attributes, genai.AttrAgentID) == copilotDefaultAgent || parentless
 		default:
-			_, nested := copilotAncestor(rec, byID, "invoke_agent")
+			_, nested := copilotAncestor(rec, byID, genai.OperationInvokeAgent)
 			return !nested
 		}
 	}
@@ -150,11 +151,11 @@ func copilotTopLevel(records []record.Record) []record.Record {
 		}
 		// A fleet subagent: its nearest agent-or-workflow ancestor is a
 		// workflow that no top-level invoke_agent contains.
-		up, ok := copilotAncestor(rec, byID, "invoke_agent", "invoke_workflow")
-		if !ok || spanHead(deref(up.Name)) != "invoke_workflow" {
+		up, ok := copilotAncestor(rec, byID, genai.OperationInvokeAgent, genai.OperationInvokeWorkflow)
+		if !ok || spanHead(deref(up.Name)) != genai.OperationInvokeWorkflow {
 			continue
 		}
-		if _, inside := copilotAncestor(up, byID, "invoke_agent"); !inside {
+		if _, inside := copilotAncestor(up, byID, genai.OperationInvokeAgent); !inside {
 			out = append(out, rec)
 		}
 	}
@@ -177,7 +178,7 @@ func copilotDuration(records []record.Record) (*float64, *string) {
 	for _, rec := range copilotTopLevel(records) {
 		add(rec)
 	}
-	for _, rec := range copilotSpans(records, "invoke_workflow") {
+	for _, rec := range copilotSpans(records, genai.OperationInvokeWorkflow) {
 		add(rec)
 	}
 	if len(spans) == 0 {
@@ -233,13 +234,13 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 	}
 	chat := OrderedFloats{}
 	found := false
-	for _, rec := range copilotSpans(records, "chat") {
+	for _, rec := range copilotSpans(records, genai.OperationChat) {
 		if copilotUsage(&chat, rec.Attributes) {
 			found = true
 		}
 	}
 	if found {
-		return chat, record.Str("traces chat github-copilot"), record.Str("sum of gen_ai.usage.* on chat spans; cache_read and cache_write are part of input_tokens, reasoning is part of output_tokens. invoke_agent totals repeat these counts and are not added"), true
+		return chat, record.Str("traces " + genai.OperationChat + " " + copilotService), record.Str("sum of gen_ai.usage.* on chat spans; cache_read and cache_write are part of input_tokens, reasoning is part of output_tokens. invoke_agent totals repeat these counts and are not added"), true
 	}
 	top := OrderedFloats{}
 	for _, rec := range copilotTopLevel(records) {
@@ -248,7 +249,7 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 		}
 	}
 	if found {
-		return top, record.Str("traces invoke_agent github-copilot"), record.Str("sum of gen_ai.usage.* on top-level invoke_agent spans (all turns of one user message); subagent invoke_agent spans are not added"), true
+		return top, record.Str("traces " + genai.OperationInvokeAgent + " " + copilotService), record.Str("sum of gen_ai.usage.* on top-level invoke_agent spans (all turns of one user message); subagent invoke_agent spans are not added"), true
 	}
 	metrics := OrderedFloats{}
 	for _, item := range copilotUsageKeys {
@@ -276,7 +277,7 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 // (and an ERROR status) only on failure and has no success attribute, so a
 // tool span without either is a success.
 func copilotToolSuccess(rec record.Record) (*string, *string, bool) {
-	if rec.Signal != "traces" || spanHead(deref(rec.Name)) != "execute_tool" || ToolOf(rec) != "copilot-cli" {
+	if rec.Signal != "traces" || spanHead(deref(rec.Name)) != genai.OperationExecuteTool || ToolOf(rec) != "copilot-cli" {
 		return nil, nil, false
 	}
 	if rec.StatusCode == "ERROR" || strAttr(rec.Attributes, "error.type") != "" {

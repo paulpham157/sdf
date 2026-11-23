@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/paulpham157/sdf/internal/genai"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/record"
 )
@@ -24,7 +25,7 @@ const (
 	claudeAPI           = "claude_code.api_request"
 	codexSSE            = "codex.sse_event"
 	codexTurnCost       = "codex.turn_cost"
-	piTokenMetric       = "gen_ai.client.token.usage"
+	piTokenMetric       = genai.MetricClientTokenUsage
 	grokTokenMetric     = "grok_code.token.usage"
 	grokCostMetric      = "grok_code.cost.usage"
 	grokAPI             = "grok_code.api_request"
@@ -81,10 +82,10 @@ var (
 		"POST":                  true,
 	}
 	piSpanHeads = map[string]bool{
-		"invoke_agent": true,
-		"pi.turn":      true,
-		"chat":         true,
-		"execute_tool": true,
+		genai.OperationInvokeAgent: true,
+		"pi.turn":                  true,
+		genai.OperationChat:        true,
+		genai.OperationExecuteTool: true,
 	}
 	piLogs = map[string]bool{
 		"pi.session.start": true,
@@ -159,8 +160,8 @@ var (
 	additiveTokenFields   = []string{"output_token_count", "reasoning_token_count"}
 	metricFail            = regexp.MustCompile(`metrics (?:histogram|counter|gauge) \[([^\]]+)\] failed: tag value contains invalid characters: (\S+)`)
 	metricDetailKeys      = []string{
-		"type", "token_type", "gen_ai.token.type", "model", "gen_ai.request.model",
-		"tool", "gen_ai.tool.name", "gen_ai.operation.name", "decision", "success",
+		"type", "token_type", genai.AttrTokenType, "model", genai.AttrRequestModel,
+		"tool", genai.AttrToolName, genai.AttrOperationName, "decision", "success",
 	}
 )
 
@@ -312,7 +313,7 @@ func hasAttr(attrs map[string]any, key string) bool {
 
 func genAISystem(rec record.Record) string {
 	for _, source := range []map[string]any{rec.Attributes, rec.Resource} {
-		if text := record.SummaryText(source["gen_ai.system"]); text != nil {
+		if text := record.SummaryText(source[genai.AttrSystem]); text != nil {
 			return strings.ToLower(*text)
 		}
 	}
@@ -785,8 +786,8 @@ func duration(records []record.Record, points []point) (*float64, *string) {
 	if len(turns) > 0 {
 		return record.Float(sum(turns)), record.Str("traces run_turn")
 	}
-	if invoke := sumSpanMS(records, func(name string) bool { return spanHead(name) == "invoke_agent" }); invoke != nil {
-		return invoke, record.Str("traces invoke_agent")
+	if invoke := sumSpanMS(records, func(name string) bool { return spanHead(name) == genai.OperationInvokeAgent }); invoke != nil {
+		return invoke, record.Str("traces " + genai.OperationInvokeAgent)
 	}
 	if drain := sumSpanMS(records, func(name string) bool { return name == "SessionRunner.drain" }); drain != nil {
 		return drain, record.Str("traces SessionRunner.drain")
@@ -922,7 +923,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(piMetrics) > 0 {
-		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
+		return sumBy(piMetrics, genai.AttrTokenType), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var grok []point
 	for _, p := range points {
@@ -1216,7 +1217,7 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 	piTotal := 0.0
 	piFound := false
 	for _, rec := range records {
-		if rec.Signal != "traces" || spanHead(deref(rec.Name)) != "chat" {
+		if rec.Signal != "traces" || spanHead(deref(rec.Name)) != genai.OperationChat {
 			continue
 		}
 		amount := record.Number(rec.Attributes["pi.cost.usd"])
@@ -1227,7 +1228,7 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 		piFound = true
 	}
 	if piFound {
-		return record.Float(piTotal), record.Str("traces chat pi.cost.usd"), nil
+		return record.Float(piTotal), record.Str("traces " + genai.OperationChat + " pi.cost.usd"), nil
 	}
 	return nil, nil, nil
 }
@@ -1580,7 +1581,7 @@ func models(records []record.Record, points []point) []string {
 	for _, rec := range records {
 		if rec.Signal == "logs" && rec.Name != nil && modelLogs[*rec.Name] {
 			addModel(&found, rec.Attributes)
-		} else if rec.Signal == "traces" && (modelSpans[deref(rec.Name)] || record.SummaryText(rec.Attributes["gen_ai.request.model"]) != nil) {
+		} else if rec.Signal == "traces" && (modelSpans[deref(rec.Name)] || record.SummaryText(rec.Attributes[genai.AttrRequestModel]) != nil) {
 			addModel(&found, rec.Attributes)
 		}
 	}
@@ -1591,7 +1592,7 @@ func models(records []record.Record, points []point) []string {
 }
 
 func addModel(found *[]string, attributes map[string]any) {
-	for _, key := range []string{"model", "gen_ai.request.model"} {
+	for _, key := range []string{"model", genai.AttrRequestModel} {
 		text := record.SummaryText(attributes[key])
 		if text == nil {
 			continue
@@ -1824,15 +1825,15 @@ func addFields(totals *OrderedFloats, rec record.Record, keys []string) bool {
 }
 
 func callID(rec record.Record) *string {
-	return firstText(rec.Attributes, "call_id", "tool_use_id", "gen_ai.tool.call.id")
+	return firstText(rec.Attributes, "call_id", "tool_use_id", genai.AttrToolCallID)
 }
 
 func toolName(rec record.Record) *string {
-	return firstText(rec.Attributes, "tool_name", "gen_ai.tool.name")
+	return firstText(rec.Attributes, "tool_name", genai.AttrToolName)
 }
 
 func isDirectToolSpan(name string) bool {
-	return name == "claude_code.tool" || name == "exec_command" || name == "Tool.execute" || spanHead(name) == "execute_tool"
+	return name == "claude_code.tool" || name == "exec_command" || name == "Tool.execute" || spanHead(name) == genai.OperationExecuteTool
 }
 
 func isToolCallSpan(name string) bool {
@@ -1872,7 +1873,7 @@ func reportedSuccess(rec record.Record) (*string, *string) {
 		return record.Str("false"), record.Str("traces status")
 	}
 	name := deref(rec.Name)
-	if name == "Tool.execute" || spanHead(name) == "execute_tool" {
+	if name == "Tool.execute" || spanHead(name) == genai.OperationExecuteTool {
 		return record.Str("unknown"), nil
 	}
 	return nil, nil
