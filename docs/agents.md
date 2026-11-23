@@ -626,3 +626,57 @@ stored unnamed records still summarize. The live model was `grok-4.7`.
 The official protocol list includes `grpc`. A cheap gRPC check is recorded
 in the 2026-11-23 notes when it was run; http/protobuf is the documented
 default and was used for the live capture.
+
+**Working directory.** Grok CLI's telemetry carries none. The session hook
+that `sdf init grok --write` installs supplies it instead: Grok's hook input
+has `workspaceRoot` (the git toplevel of the session directory) and `cwd`,
+and the hook posts that path to `/v1/sessions`, where it is stored as
+`sdf.session.cwd` and used like any exported working directory (details and
+sources in [docs/receiver.md](receiver.md#one-step-setup)). Without the hook
+there is no checkout for a Grok session. Why the telemetry cannot carry one,
+checked against the public source at `xai-org/grok-build` commit `2bdd1d6`
+(synced 2026-09-29):
+
+- The resource is a fixed set: `service.name`, `service.version`,
+  `client.version`, `app.entrypoint`, `terminal.type`,
+  `grok_code.schema.version`
+  ([guide L207-L215](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L207-L215),
+  [`build_resource`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/providers.rs#L131-L154)).
+- `OTEL_RESOURCE_ATTRIBUTES` is ignored on purpose. The resource is built with
+  `Resource::builder_empty()` so the env detector never runs
+  ([guide L119-L120](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L119-L120),
+  [providers.rs L132](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/providers.rs#L132)).
+  `sdf init` cannot add a cwd attribute that way.
+- Log attributes are a closed enum with no cwd, workspace, or repository key
+  ([schema.rs L74-L196](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/schema.rs#L74-L196)).
+  `grok_code.session_start` has only the boolean `is_git_repo`
+  ([guide L287](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L287)).
+- `grok_code.tool_result` `file_path` is a per-tool file, sent only with
+  `OTEL_LOG_TOOL_DETAILS=1` ([guide L99](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L99)), and `$HOME` is rewritten
+  to `~` ([guide L312-L313](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L312-L313),
+  [`redact_user_paths`](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-secrets/src/sanitizer.rs#L182-L185)).
+  sdf does not request that gate and does not guess a checkout from it.
+
+With the hook installed, a Grok session links by the heuristic (one commit
+in the session window), by the git hook, or by a trailer, with no `--repo`,
+and a `--repo` that names a different checkout leaves it unlinked as for
+other agents. Without the hook, use `sdf summary --repo PATH`: with one
+commit in the session window the link is `heuristic`. In that case the
+outcome reason says Grok's telemetry has no working directory and names both
+`sdf init grok --write` and `--repo`.
+
+**Traces.** Grok CLI has no customer-facing traces exporter. The guide says
+the external stream "exports **logs and metrics only**"
+([guide L175-L176](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L175-L176)), and its providers build only a logger and
+a meter ([providers.rs L1-L2](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/providers.rs#L1-L2)).
+`OTEL_TRACES_EXPORTER` does appear in the source, but it only turns Grok's
+internal span pipeline on or off
+([endpoints.rs L80-L82](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L80-L82),
+[L212-L219](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L212-L219)). That pipeline
+defaults to xAI's proxy, and every export carries `Authorization: Bearer`
+with the user's xAI token
+([endpoints.rs L159-L177](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L159-L177),
+[xai-grok-otel config.rs L87](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L87)).
+Its span schema is internal and not documented. sdf does not point it at the
+receiver and has no Grok span mapping. A Grok session's `missing` line for
+traces says so.

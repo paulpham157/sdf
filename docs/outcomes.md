@@ -50,6 +50,11 @@ disagrees with a directory the agent did export, the session stays unlinked.
 Without the git hooks, Codex and OpenCode do not export a working directory
 or a commit SHA on the signals this receiver stores, so those sessions stay
 unlinked unless you pass `--repo` and the time window contains one commit.
+Grok CLI's telemetry has none either, and Grok ignores
+`OTEL_RESOURCE_ATTRIBUTES`, so one cannot be added there; the Grok session
+hook from `sdf init grok --write` supplies `sdf.session.cwd`, and `--repo`
+remains the fallback when that hook is not installed (see
+[Grok CLI](agents.md#grok-cli)).
 Pi exports `pi.cwd` and can use the heuristic, and the hook when the
 session file stem matches `pi.session.id`. A commit with no session id is
 not attached to a session by the hook. Under Codex's default
