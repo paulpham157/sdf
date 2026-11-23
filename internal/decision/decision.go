@@ -57,12 +57,13 @@ var (
 	shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-// EffectiveActive and EffectiveSuperseded are the values of
+// EffectiveActive, EffectiveSuperseded, and EffectiveRetracted are the values of
 // Record.EffectiveStatus. They are computed when the graph is read and are
 // never stored.
 const (
 	EffectiveActive     = "active"
 	EffectiveSuperseded = "superseded"
+	EffectiveRetracted  = "retracted"
 )
 
 // Record is one decision. Status is StatusHypothesis or StatusDecision, as
@@ -76,17 +77,40 @@ const (
 // edge runs from another decision to it, and SupersededBy lists those
 // decisions' ids once each, in edge order. Otherwise it is EffectiveActive
 // and SupersededBy is empty.
+//
+// Retraction is set when the decision was retracted, and then
+// EffectiveStatus is EffectiveRetracted whatever the edges say: retracted
+// takes precedence over superseded. SupersededBy is still filled, so a
+// reader sees both facts.
 type Record struct {
-	ID              string   `json:"id"`
-	Statement       string   `json:"statement"`
-	Status          string   `json:"status"`
-	RecordedAt      string   `json:"recorded_at"`
-	Source          string   `json:"source,omitempty"`
-	DecidedBy       string   `json:"decided_by,omitempty"`
-	Alternatives    string   `json:"alternatives,omitempty"`
-	Reason          string   `json:"reason,omitempty"`
-	EffectiveStatus string   `json:"effective_status"`
-	SupersededBy    []string `json:"superseded_by,omitempty"`
+	ID              string      `json:"id"`
+	Statement       string      `json:"statement"`
+	Status          string      `json:"status"`
+	RecordedAt      string      `json:"recorded_at"`
+	Source          string      `json:"source,omitempty"`
+	DecidedBy       string      `json:"decided_by,omitempty"`
+	Alternatives    string      `json:"alternatives,omitempty"`
+	Reason          string      `json:"reason,omitempty"`
+	EffectiveStatus string      `json:"effective_status"`
+	SupersededBy    []string    `json:"superseded_by,omitempty"`
+	Retraction      *Retraction `json:"retraction,omitempty"`
+}
+
+// Retraction is the append-only record that a decision was withdrawn. It is
+// stored in its own table, never on the decision row. Reason and RetractedBy
+// are empty when the caller named none; RetractedBy is DecidedByUser or
+// DecidedByAgent when set.
+type Retraction struct {
+	RetractedAt string `json:"retracted_at"`
+	Reason      string `json:"reason,omitempty"`
+	RetractedBy string `json:"retracted_by,omitempty"`
+}
+
+// RetractInput is what a caller supplies to Retract.
+type RetractInput struct {
+	ID          string
+	Reason      string
+	RetractedBy string
 }
 
 // Endpoint is one end of an edge. Kind is KindDecision, KindSession, or
@@ -158,6 +182,11 @@ var (
 	ErrSupersedesKind  = errors.New("supersedes links a decision to a decision")
 	ErrSupersedesCycle = errors.New("supersedes cycle")
 	ErrDuplicateEdge   = errors.New("edge already recorded")
+	// ErrRetracted rejects a new edge with a retracted decision at either end.
+	ErrRetracted = errors.New("decision retracted")
+	// ErrAlreadyRetracted rejects retracting a decision a second time, as
+	// ErrDuplicateEdge rejects the same edge twice.
+	ErrAlreadyRetracted = errors.New("decision already retracted")
 )
 
 // Link stores one edge, after LinkWithWarnings' checks. It drops the
@@ -177,6 +206,7 @@ func Link(s *store.Store, in EdgeInput) (Edge, error) {
 //     decision, so both ends are decisions;
 //   - ErrUnknownRef: a session or commit the store has no telemetry for,
 //     or a decision id not stored;
+//   - ErrRetracted: either end is a retracted decision;
 //   - ErrDuplicateEdge: the same relation, from, and to already stored;
 //   - ErrSupersedesCycle: from supersedes to when to already reaches from
 //     through decision-to-decision supersedes edges, including to
@@ -185,11 +215,19 @@ func Link(s *store.Store, in EdgeInput) (Edge, error) {
 // It warns, and still stores the edge, when the same two endpoints, in
 // either direction, now have both a validates and a contradicts edge.
 //
-// The duplicate, cycle, and warning checks read the stored edges in the
-// same transaction as the insert (store.AppendDecisionEdge), so concurrent
-// links cannot both pass them. Nothing is updated or deleted. Edges an older
+// The retracted, duplicate, cycle, and warning checks read the stored
+// decision ids, edges, and retractions in the same transaction as the insert
+// (store.AppendDecisionEdge), so concurrent writers cannot slip a change
+// between the check and the insert: two links cannot both pass, and a
+// decision added meanwhile (for example one that turns a dangling edge into
+// a real supersedes step) is seen by the cycle check. Nothing is updated or deleted. Edges an older
 // sdf stored without these checks stay as they are; they are read back
 // unchanged and count as existing edges here.
+// beforeAppendEdge, when set by a test, runs after LinkWithWarnings' checks
+// that need no transaction and before store.AppendDecisionEdge. It is nil
+// in production.
+var beforeAppendEdge func()
+
 func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	edge, err := newEdge(in, now())
 	if err != nil {
@@ -212,16 +250,8 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	if err := known(s, edge.To); err != nil {
 		return Edge{}, nil, err
 	}
-	// The stored decision ids, for the cycle check. Decisions are
-	// append-only, so reading them before the transaction is safe: an id can
-	// appear but never disappear.
-	rows, err := s.LoadDecisions()
-	if err != nil {
-		return Edge{}, nil, err
-	}
-	stored := make(map[string]bool, len(rows))
-	for _, d := range rows {
-		stored[d.ID] = true
+	if beforeAppendEdge != nil {
+		beforeAppendEdge()
 	}
 	var warnings []string
 	err = s.AppendDecisionEdge(store.DecisionEdge{
@@ -231,9 +261,16 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 		ToKind:     edge.To.Kind,
 		ToRef:      edge.To.Ref,
 		RecordedAt: edge.RecordedAt,
-	}, func(rows []store.DecisionEdge) error {
-		existing := make([]Edge, 0, len(rows))
-		for _, r := range rows {
+	}, func(g store.DecisionGraph) error {
+		for _, r := range g.Retractions {
+			for _, end := range []Endpoint{edge.From, edge.To} {
+				if end.Kind == KindDecision && end.Ref == r.DecisionID {
+					return fmt.Errorf("%w: %s takes no new edges", ErrRetracted, endpointText(end))
+				}
+			}
+		}
+		existing := make([]Edge, 0, len(g.Edges))
+		for _, r := range g.Edges {
 			existing = append(existing, Edge{
 				Relation: r.Relation,
 				From:     Endpoint{Kind: r.FromKind, Ref: r.FromRef},
@@ -241,7 +278,7 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 			})
 		}
 		var err error
-		warnings, err = checkAgainst(edge, existing, stored)
+		warnings, err = checkAgainst(edge, existing, g.DecisionIDs)
 		return err
 	})
 	if err != nil {
@@ -340,6 +377,10 @@ func Load(s *store.Store) (Graph, error) {
 	if err != nil {
 		return Graph{}, err
 	}
+	retractions, err := s.LoadDecisionRetractions()
+	if err != nil {
+		return Graph{}, err
+	}
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
 		out.Decisions = append(out.Decisions, Record{
@@ -361,7 +402,61 @@ func Load(s *store.Store) (Graph, error) {
 			RecordedAt: e.RecordedAt,
 		})
 	}
+	byID := make(map[string]*Retraction, len(retractions))
+	for _, r := range retractions {
+		if _, dup := byID[r.DecisionID]; !dup {
+			byID[r.DecisionID] = &Retraction{RetractedAt: r.RecordedAt, Reason: r.Reason, RetractedBy: r.RetractedBy}
+		}
+	}
+	for i := range out.Decisions {
+		out.Decisions[i].Retraction = byID[out.Decisions[i].ID]
+	}
 	resolve(&out)
+	return out, nil
+}
+
+// Retract records that a decision is withdrawn. The decision must be
+// stored (ErrUnknownRef otherwise) and not already retracted
+// (ErrAlreadyRetracted). The reason is one line of up to 500 bytes;
+// RetractedBy is empty, DecidedByUser, or DecidedByAgent. It appends one
+// row to decision_retractions in a BEGIN IMMEDIATE transaction that first
+// reads the existing retractions, so concurrent retractions of one id store
+// one row. The decision row and its edges are not changed.
+func Retract(s *store.Store, in RetractInput) (Retraction, error) {
+	id := strings.TrimSpace(in.ID)
+	if !idPattern.MatchString(id) {
+		return Retraction{}, fmt.Errorf("decision id must be 1-128 letters, digits, dot, underscore, or dash")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if strings.ContainsAny(reason, "\r\n") || len(reason) > 500 {
+		return Retraction{}, fmt.Errorf("reason must be one line")
+	}
+	by := strings.TrimSpace(in.RetractedBy)
+	switch by {
+	case "", DecidedByUser, DecidedByAgent:
+	default:
+		return Retraction{}, fmt.Errorf("retracted-by must be %q or %q", DecidedByUser, DecidedByAgent)
+	}
+	if err := known(s, Endpoint{Kind: KindDecision, Ref: id}); err != nil {
+		return Retraction{}, err
+	}
+	out := Retraction{RetractedAt: now(), Reason: reason, RetractedBy: by}
+	err := s.AppendDecisionRetraction(store.DecisionRetraction{
+		DecisionID:  id,
+		Reason:      reason,
+		RetractedBy: by,
+		RecordedAt:  out.RetractedAt,
+	}, func(existing []store.DecisionRetraction) error {
+		for _, r := range existing {
+			if r.DecisionID == id {
+				return fmt.Errorf("%w: %s at %s", ErrAlreadyRetracted, id, r.RecordedAt)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Retraction{}, err
+	}
 	return out, nil
 }
 
@@ -371,7 +466,10 @@ func Load(s *store.Store) (Graph, error) {
 // other supersedes edge is still listed in Edges but changes no status.
 // Replacement is direct, not transitive: when b supersedes a and c
 // supersedes b, a is superseded by b and b by c. A reader follows the chain
-// through SupersededBy. Nothing here writes to the store.
+// through SupersededBy. A retracted record is EffectiveRetracted even when
+// it is also superseded, and its SupersededBy is still filled. Retracting a
+// decision does not change the status of the decisions it supersedes.
+// Nothing here writes to the store.
 func resolve(g *Graph) {
 	stored := make(map[string]bool, len(g.Decisions))
 	for _, d := range g.Decisions {
@@ -393,9 +491,12 @@ func resolve(g *Graph) {
 	for i := range g.Decisions {
 		d := &g.Decisions[i]
 		d.SupersededBy = by[d.ID]
-		if len(d.SupersededBy) > 0 {
+		switch {
+		case d.Retraction != nil:
+			d.EffectiveStatus = EffectiveRetracted
+		case len(d.SupersededBy) > 0:
 			d.EffectiveStatus = EffectiveSuperseded
-		} else {
+		default:
 			d.EffectiveStatus = EffectiveActive
 		}
 	}
@@ -422,7 +523,8 @@ func WriteJSON(w io.Writer, g Graph) error {
 // cannot break the columns or the terminal. An empty source or decided-by
 // prints as "-". EFFECTIVE is the read-time status Load computed, see
 // Record. Alternatives and reason, when set, follow the row on indented
-// "alternatives: " and "reason: " lines in the STATEMENT column.
+// "alternatives: " and "reason: " lines in the STATEMENT column, and a
+// retraction on a "retracted: TIME [by WHO][; reason: TEXT]" line.
 func WriteText(w io.Writer, g Graph) error {
 	if len(g.Decisions) == 0 && len(g.Edges) == 0 {
 		_, err := io.WriteString(w, "No decisions in the store.\n")
@@ -443,6 +545,18 @@ func WriteText(w io.Writer, g Graph) error {
 			}
 			line := make([]string, len(row))
 			line[len(row)-1] = extra[0] + ": " + cell(extra[1])
+			decisions = append(decisions, line)
+		}
+		if r := d.Retraction; r != nil {
+			text := "retracted: " + cell(r.RetractedAt)
+			if r.RetractedBy != "" {
+				text += " by " + cell(r.RetractedBy)
+			}
+			if r.Reason != "" {
+				text += "; reason: " + cell(r.Reason)
+			}
+			line := make([]string, len(row))
+			line[len(row)-1] = text
 			decisions = append(decisions, line)
 		}
 	}
@@ -470,6 +584,8 @@ func orDash(s string) string {
 // replacing ids. A record built by hand with no effective status prints "-".
 func effectiveText(d Record) string {
 	switch {
+	case d.EffectiveStatus == EffectiveRetracted && len(d.SupersededBy) > 0:
+		return "retracted, superseded by " + strings.Join(d.SupersededBy, ", ")
 	case d.EffectiveStatus == EffectiveSuperseded && len(d.SupersededBy) > 0:
 		return "superseded by " + strings.Join(d.SupersededBy, ", ")
 	case d.EffectiveStatus == "":

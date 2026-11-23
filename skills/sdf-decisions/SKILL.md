@@ -5,7 +5,7 @@ description: Record important user and agent choices as sdf decision records. Us
 
 # sdf decision records
 
-Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI, and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision link` print nothing on success; tell the user what you recorded.
+Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI, and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision retract` print nothing on success. `sdf decision link` prints nothing on success either, except when the new link leaves the same two endpoints with both a `validates` and a `contradicts` edge: the link is still stored and the command exits 0, but it writes one `sdf decision link: warning: …` line on stderr (see Link rules). So check stderr, not only the exit code, and tell the user what you recorded.
 
 ## When to record
 
@@ -131,7 +131,20 @@ sdf decision list [--db PATH] [--json]
 - `effective_status`: `superseded` when another stored decision supersedes it, otherwise `active`.
 - `superseded_by`: the ids of the decisions that supersede it. It is omitted when the record is active. Replacement is direct, so to find the current choice, follow `superseded_by` until a record is `active`.
 
-Never try to change a record to mark it replaced: the store is append-only. Add the new record and a `supersedes` link instead. The text table shows the same thing in its `EFFECTIVE` column (`active` or `superseded by ID`), plus `DECIDED BY`, and `alternatives:` / `reason:` lines when set.
+- `retraction`: present when the decision was retracted (`retracted_at`, and `reason` / `retracted_by` when given). `effective_status` is then `retracted`, even if it is also superseded; `superseded_by` is still listed.
+
+Never try to change or delete a record: the store is append-only. To mark it replaced, add the new record and a `supersedes` link. To withdraw it without a replacement, retract it. The text table shows the same thing in its `EFFECTIVE` column (`active`, `superseded by ID`, `retracted`, or `retracted, superseded by ID`) and a `retracted:` line, plus `DECIDED BY`, and `alternatives:` / `reason:` lines when set.
+
+## Retract a record
+
+```bash
+sdf decision retract --id ID [--reason TEXT] [--retracted-by user|agent] [--db PATH]
+```
+
+Retract when the user (or you) withdraws a decision or hypothesis and nothing replaces it, for example "forget that, we are not doing X". If a new choice replaces it, add the new record and link `supersedes` instead. Give `--reason` only when one was stated, quoted or faithfully paraphrased, and set `--retracted-by` to whoever withdrew it. A retraction is appended; the record and its links are not changed or deleted. On success it exits 0 and prints nothing on stdout or stderr; it has no warnings. Any stderr line means it failed (exit 1 or 2) and stored nothing.
+
+- A decision can be retracted once. A second retract is rejected.
+- A retracted decision takes no new links in either direction; edges from before stay.
 
 ## Errors
 
@@ -141,6 +154,9 @@ Never try to change a record to mark it replaced: the store is append-only. Add 
 - `edge already recorded: …`: that link exists already; nothing to do.
 - `an edge cannot link an endpoint to itself`, `supersedes links a decision to a decision`, or `supersedes cycle: …`: the link is invalid and was not stored. `supersedes` takes two decision endpoints, from the new decision to the one it replaces; do not supersede back along an existing chain.
 - `warning: … have both validates and contradicts edges`: the link was stored (exit 0). Tell the user the evidence now conflicts.
+- `decision already retracted: ID at …`: it was retracted before; nothing to do. Do not retract it again with a new reason.
+- `decision retracted: decision:ID takes no new edges`: do not link a retracted decision; record a new decision if the choice came back.
+- `unknown reference: decision ID` from retract: no such id; check `sdf decision list`.
 - Other validation errors (bad status, bad decided-by, bad id, multi-line statement, bad relation) come back on stderr. Fix the argument and retry. A failed add writes nothing.
 
-After a successful add or link, briefly confirm the id, who decided, statement, status, alternatives and reason if any, optional source, and any links made (or that the record was left unlinked).
+After a successful add, link, or retract, briefly confirm the id, who decided, statement, status, alternatives and reason if any, optional source, and any links made (or that the record was left unlinked).

@@ -396,3 +396,56 @@ func TestOpenReadOnlyFileWithoutTables(t *testing.T) {
 		t.Fatalf("file changed: %v %v", info, err)
 	}
 }
+
+// TestOpenReadOnlyOldDecisionTables reads decision tables written before
+// decided_by, alternatives, reason (#234) and decision_retractions (#255).
+// The compat views stand in for the missing columns, LoadDecisions keeps
+// insertion order through them (it orders by rowid), and the missing
+// retractions table reads as no retractions.
+func TestOpenReadOnlyOldDecisionTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.sqlite")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+		CREATE TABLE decisions (id TEXT PRIMARY KEY, statement TEXT NOT NULL, status TEXT NOT NULL, recorded_at TEXT NOT NULL, source TEXT);
+		INSERT INTO decisions (id, statement, status, recorded_at) VALUES ('zeta', 'first', 'decision', '2026-01-01T00:00:00.000000+00:00');
+		INSERT INTO decisions (id, statement, status, recorded_at) VALUES ('alpha', 'second', 'decision', '2026-01-01T00:00:00.000000+00:00');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	_ = raw.Close()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ID != "zeta" || rows[1].ID != "alpha" || rows[0].DecidedBy != "" {
+		t.Fatalf("%+v", rows)
+	}
+	edges, err := s.LoadDecisionEdges()
+	if err != nil || len(edges) != 0 {
+		t.Fatalf("%v %v", edges, err)
+	}
+	retractions, err := s.LoadDecisionRetractions()
+	if err != nil || len(retractions) != 0 {
+		t.Fatalf("%v %v", retractions, err)
+	}
+	_ = s.Close()
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("OpenReadOnly wrote the file")
+	}
+}
