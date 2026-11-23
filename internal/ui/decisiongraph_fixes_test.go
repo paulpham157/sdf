@@ -181,3 +181,44 @@ func TestDecisionShowFilterIsRadiogroup(t *testing.T) {
 	check(`key=ArrowRight@[data-focus-key="show:all"],key=ArrowDown,key=ArrowDown`, "all")
 	check(`click=~Agents,key=Home`, "all")
 }
+
+// / focuses Jump, t toggles tensions and ? the shortcut sheet, from
+// anywhere on the tab but a text field, and never with Ctrl, Meta or Alt.
+func TestDecisionShortcutKeys(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	node := `@[data-node="capture"]`
+	tensions := func(res pageResult) bool {
+		return strings.Contains(res.Markup, `aria-pressed="true" data-focus-key="tb:Show tensions"`)
+	}
+	help := func(res pageResult) bool { return strings.Contains(res.Text, "Shortcuts") }
+
+	if res := renderPage(t, srv, "#/decisions", "key=/"+node); !strings.Contains(res.Active, `class="dg-jump"`) {
+		t.Errorf("/ did not focus Jump: %q", res.Active)
+	}
+	if res := renderPage(t, srv, "#/decisions", `key=/@[data-focus-key="tb:Not taken"]`); !strings.Contains(res.Active, `class="dg-jump"`) {
+		t.Errorf("/ from the toolbar did not focus Jump: %q", res.Active)
+	}
+	for _, mod := range []string{"ctrl+", "meta+", "alt+"} {
+		if res := renderPage(t, srv, "#/decisions", "key="+mod+"/"+node); strings.Contains(res.Active, `class="dg-jump"`) {
+			t.Errorf("%s/ focused Jump", mod)
+		}
+		if res := renderPage(t, srv, "#/decisions", "key="+mod+"t"+node); tensions(res) {
+			t.Errorf("%st toggled tensions", mod)
+		}
+		if res := renderPage(t, srv, "#/decisions", "key="+mod+"shift+?"+node); help(res) {
+			t.Errorf("%s? opened the help", mod)
+		}
+	}
+	if res := renderPage(t, srv, "#/decisions", "key=t"+node); !tensions(res) {
+		t.Error("t did not toggle tensions")
+	}
+	if res := renderPage(t, srv, "#/decisions", "key=shift+?"+node); !help(res) {
+		t.Error("? did not open the help")
+	}
+	// Typed into Jump, the keys are text.
+	if res := renderPage(t, srv, "#/decisions", "focus=.dg-jump,key=t,key=shift+?"); tensions(res) || help(res) {
+		t.Error("t or ? in the Jump field acted as a shortcut")
+	}
+}

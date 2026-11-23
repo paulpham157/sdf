@@ -1377,6 +1377,7 @@
       placeholder: "Jump to id…",
       "aria-label": "Jump to a decision id",
       "data-focus-key": "jump",
+      "aria-keyshortcuts": "/",
       value: dgJumpValue || null,
       oninput: function (event) { dgJumpValue = String(event.target.value || ""); },
       onkeydown: function (event) {
@@ -1694,8 +1695,6 @@
           const key = event.key;
           if (event.target && event.target.tagName === "INPUT") return;
           if (key === "Escape") { dgClose(chapter, focus); return; }
-          if (key === "t") { dgTensions = !dgTensions; render(); return; }
-          if (key === "?") { dgHelp = !dgHelp; render(); return; }
           if (key === "ArrowDown" || key === "ArrowUp") {
             event.preventDefault();
             const list = dgOrderedNodes(chapter);
@@ -1803,6 +1802,41 @@
         render();
       });
   }
+
+  function dgTyping(target) {
+    if (!target) return false;
+    const tag = target.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!target.isContentEditable;
+  }
+
+  // Decisions tab shortcuts, from anywhere on the tab except a text field,
+  // and never with Ctrl, Meta or Alt (browser and OS shortcuts):
+  // / focuses Jump, t toggles tensions, ? opens the shortcut sheet.
+  window.addEventListener("keydown", function (event) {
+    const key = event.key;
+    if (key !== "/" && key !== "t" && key !== "?") return;
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (dgTyping(event.target)) return;
+    let current;
+    try {
+      current = route();
+    } catch (err) {
+      return;
+    }
+    if (current.name !== "decisions" || !app.querySelector) return;
+    if (key === "/") {
+      const jump = app.querySelector(".dg-jump");
+      if (!jump) return;
+      event.preventDefault();
+      jump.focus();
+      return;
+    }
+    if (!app.querySelector(".dg-toolbar")) return;
+    event.preventDefault();
+    if (key === "t") dgTensions = !dgTensions;
+    else dgHelp = !dgHelp;
+    render();
+  });
 
   // Navigation clears the status, and focus goes to the route's node.
   window.addEventListener("hashchange", function () {
