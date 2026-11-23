@@ -1102,16 +1102,32 @@
   function dgEdgePath(a, b, sa, sb) {
     const pa = dgPos(a);
     const pb = dgPos(b);
+    // pts is the drawn line as a polyline (a curve is sampled), span the
+    // part of it a mid-edge glyph may sit on, and len the visible length.
     if (a.row === b.row) {
       const dir = pb.x > pa.x ? 1 : -1;
-      return { d: "M" + (pa.x + dir * sa / 2) + "," + pa.y + " L" + (pb.x - dir * (sb / 2 + 3)) + "," + pb.y, mid: [(pa.x + pb.x) / 2, pa.y] };
+      const x0 = pa.x + dir * sa / 2;
+      const x1 = pb.x - dir * (sb / 2 + 3);
+      const flat = [[x0, pa.y], [x1, pb.y]];
+      return { d: "M" + x0 + "," + pa.y + " L" + x1 + "," + pb.y, mid: [(pa.x + pb.x) / 2, pa.y], pts: flat, span: flat, sameRow: true, len: Math.abs(x1 - x0) };
     }
     if (b.row > a.row) {
       const sy = pa.y + DG.nodeH / 2;
       const ty = pb.y - DG.nodeH / 2 - 3;
       const my = (sy + ty) / 2;
-      if (pa.x === pb.x) return { d: "M" + pa.x + "," + sy + " L" + pb.x + "," + ty, mid: [pa.x, my] };
-      return { d: "M" + pa.x + "," + sy + " C" + pa.x + "," + my + " " + pb.x + "," + my + " " + pb.x + "," + ty, mid: [(pa.x + pb.x) / 2, my] };
+      if (pa.x === pb.x) {
+        const line = [[pa.x, sy], [pb.x, ty]];
+        return { d: "M" + pa.x + "," + sy + " L" + pb.x + "," + ty, mid: [pa.x, my], pts: line, span: line };
+      }
+      const curve = [];
+      for (let i = 0; i <= 16; i++) {
+        const u = i / 16;
+        const v = 1 - u;
+        // Cubic Bezier with control points (pa.x, my) and (pb.x, my).
+        curve.push([v * v * v * pa.x + 3 * v * v * u * pa.x + 3 * v * u * u * pb.x + u * u * u * pb.x,
+          v * v * v * sy + 3 * v * v * u * my + 3 * v * u * u * my + u * u * u * ty]);
+      }
+      return { d: "M" + pa.x + "," + sy + " C" + pa.x + "," + my + " " + pb.x + "," + my + " " + pb.x + "," + ty, mid: [(pa.x + pb.x) / 2, my], pts: curve, span: curve };
     }
     // Upward: run along the gutter between the two lanes, or beside the lane.
     let gutter;
@@ -1132,7 +1148,54 @@
     const sy = pa.y - 10;
     const ty = pb.y + 8;
     const d = "M" + sx + "," + sy + " L" + gutter + "," + sy + " L" + gutter + "," + ty + " L" + tx + "," + ty;
-    return { d: d, mid: [gutter, (sy + ty) / 2] };
+    return { d: d, mid: [gutter, (sy + ty) / 2], pts: [[sx, sy], [gutter, sy], [gutter, ty], [tx, ty]], span: [[gutter, sy], [gutter, ty]] };
+  }
+
+  // The point a fraction f along a polyline.
+  function dgAlong(pts, f) {
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    let want = total * f;
+    for (let i = 1; i < pts.length; i++) {
+      const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+      if (want <= seg || i === pts.length - 1) {
+        const u = seg ? Math.min(1, want / seg) : 0;
+        return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * u, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * u];
+      }
+      want -= seg;
+    }
+    return pts[0];
+  }
+
+  function dgNearLine(p, pts, r) {
+    for (let i = 1; i < pts.length; i++) {
+      const ax = pts[i - 1][0];
+      const ay = pts[i - 1][1];
+      const dx = pts[i][0] - ax;
+      const dy = pts[i][1] - ay;
+      const l2 = dx * dx + dy * dy;
+      const u = l2 ? Math.max(0, Math.min(1, ((p[0] - ax) * dx + (p[1] - ay) * dy) / l2)) : 0;
+      if (Math.hypot(p[0] - ax - u * dx, p[1] - ay - u * dy) < r) return true;
+    }
+    return false;
+  }
+
+  // Where a mid-edge glyph goes: the middle of its span unless that lands
+  // on a node, on another edge of the chosen path (it would read as that
+  // edge's relation), or on a glyph already placed; then 30%, 70%, 40% or
+  // 60% along. A same-row edge under 40px gets no glyph: the node's own
+  // icon and the dash already say it.
+  function dgGlyphSpot(geo, edge, all, boxes, placed) {
+    if (geo.sameRow && geo.len < 40) return null;
+    const fracs = [0.5, 0.3, 0.7, 0.4, 0.6];
+    for (let i = 0; i < fracs.length; i++) {
+      const p = dgAlong(geo.span, fracs[i]);
+      const onNode = boxes.some(function (b) { return p[0] > b[0] - 12 && p[0] < b[2] + 12 && p[1] > b[1] - 12 && p[1] < b[3] + 12; });
+      const onPath = all.some(function (o) { return o.edge !== edge && o.edge.on_path && dgNearLine(p, o.geo.pts, 14); });
+      const onGlyph = placed.some(function (q) { return Math.hypot(q[0] - p[0], q[1] - p[1]) < 24; });
+      if (!onNode && !onPath && !onGlyph) return p;
+    }
+    return geo.mid;
   }
 
   function dgNeighbours(chapter, focus) {
@@ -1245,19 +1308,38 @@
     chapter.nodes.forEach(function (node) { width[node.id] = dgSize(node); });
     const off = [];
     const path = [];
+    const drawn = [];
     chapter.edges.forEach(function (edge) {
       const a = byId[edge.from];
       const b = byId[edge.to];
       if (!a || !b || !dgVisible(a) || !dgVisible(b)) return;
-      const type = dgRelation(edge.relation);
       const touches = focus && (edge.from === focus || edge.to === focus);
       if (edge.tension && !dgTensions && !touches) return;
-      const geo = dgEdgePath(a, b, width[a.id], width[b.id]);
+      drawn.push({ edge: edge, a: a, b: b, touches: touches, geo: dgEdgePath(a, b, width[a.id], width[b.id]) });
+    });
+    const boxes = chapter.nodes.filter(dgVisible).map(function (node) {
+      const p = dgPos(node);
+      return [p.x - width[node.id] / 2, p.y - DG.nodeH / 2, p.x + width[node.id] / 2, p.y + DG.nodeH / 2];
+    });
+    const placed = [];
+    drawn.forEach(function (item) {
+      const edge = item.edge;
+      const a = item.a;
+      const b = item.b;
+      const touches = item.touches;
+      const geo = item.geo;
+      const type = dgRelation(edge.relation);
       const cls = "dg-edge dg-" + type.style + (edge.on_path ? " dg-on-path" : "") + (b.role === "locked_ending" ? " dg-to-locked" : "");
       const parts = [s("title", null, [a.title + " " + type.label + " " + b.title])];
       if (edge.on_path) parts.push(s("path", { d: geo.d, class: "dg-halo" }));
       parts.push(s("path", { d: geo.d, class: cls, "marker-end": type.symmetric ? null : (edge.on_path ? "url(#dg-arrow-ink)" : "url(#dg-arrow)") }));
-      if (!edge.derived) parts.push(dgGlyph(type, geo.mid[0], geo.mid[1], type.label));
+      if (!edge.derived && (type.style === "lock" || type.style === "crack" || type.glyph)) {
+        const spot = dgGlyphSpot(geo, edge, drawn, boxes, placed);
+        if (spot) {
+          placed.push(spot);
+          parts.push(dgGlyph(type, spot[0], spot[1], type.label));
+        }
+      }
       const group = s("g", { class: focus && !touches ? "dg-dim" : null }, parts);
       (edge.on_path ? path : off).push(group);
     });

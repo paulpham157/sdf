@@ -392,3 +392,27 @@ func TestLongNodeTitleFitsItsNode(t *testing.T) {
 		t.Error("the full title is not in the node's <title>")
 	}
 }
+
+// A same-row edge shorter than 40px drops its mid-edge glyph (the node's
+// own lock icon and the amber dash already say it); a longer one keeps it.
+func TestShortSameRowEdgeDropsGlyph(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	// merge-first (right lane) blocks status-ui (spine) on the same row.
+	if res := renderPage(t, srv, "#/decisions", ""); strings.Count(res.Markup, `class="dg-glyph-lock"`) != 1 {
+		t.Errorf("the 60px blocks edge lost its glyph:\n%s", res.Markup)
+	}
+	wide := graphPage(t, srv, func(doc map[string]any) {
+		for _, c := range doc["chapters"].([]any) {
+			for _, n := range c.(map[string]any)["nodes"].([]any) {
+				if node := n.(map[string]any); node["id"] == "merge-first" {
+					node["detail"] = "Merge main first, then rebase every open branch."
+				}
+			}
+		}
+	}, "#/decisions", "")
+	if n := strings.Count(wide.Markup, `class="dg-glyph-lock"`); n != 0 {
+		t.Errorf("a blocks edge under 40px still draws %d glyphs", n)
+	}
+}
