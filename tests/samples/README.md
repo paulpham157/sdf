@@ -20,3 +20,13 @@ not that capture: the ids are fake and there is no prompt text.
 OpenCode v2 (`@opencode/cli`) and from Pi with the `pi-otel` extension.
 They are hand-written too: session ids, span ids, and tool call ids are
 fake, and there is no prompt text and no credential.
+
+`gemini_*.json` follow Gemini CLI's published telemetry
+([docs/cli/telemetry.md](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md))
+and its source (`packages/core/src/telemetry`) at
+google-gemini/gemini-cli `eecccfcd5aff25de5e78135ca20f7abe3f566955`
+(0.71.0-nightly): `service.name=gemini-cli`, `event.name` on every log,
+cumulative metrics with `session.id`, and `llm_call` / `tool_call` spans with
+`gen_ai.conversation.id`, as sent over OTLP/HTTP JSON with
+`telemetry.logPrompts=false` and `telemetry.traces=false`. They were not
+captured from a live session. Token counts are made up; the ids are fake.

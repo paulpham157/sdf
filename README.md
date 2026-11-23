@@ -3,9 +3,9 @@
 SDF collects traces of coding-agent work from OpenTelemetry the agents export,
 and summarizes a session from that telemetry.
 
-It does not launch, route, or sandbox agents. Codex CLI, Claude Code, and
-OpenCode v2 export their own telemetry. Pi does not; its section uses the
-community `pi-otel` extension. SDF listens.
+It does not launch, route, or sandbox agents. Codex CLI, Claude Code,
+OpenCode v2, and Gemini CLI export their own telemetry. Pi does not; its
+section uses the community `pi-otel` extension. SDF listens.
 
 The tools do not emit the same signals. A field the summary cannot find is
 reported as not present. SDF does not estimate tokens or duration. It does
@@ -18,6 +18,7 @@ reported. A model with no published price is `unknown`, not zero.
 | Claude Code | Beta spans when `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` and `OTEL_TRACES_EXPORTER=otlp` | Event catalog when `OTEL_LOGS_EXPORTER=otlp` | Counters, including tokens and cost, with `session.id` by default | Traces are off unless both flags are set. HTTP is port 4318. gRPC is port 4317. |
 | Codex CLI | Process spans when `otel.trace_exporter` is an OTLP/HTTP URL | Session record (`codex.sse_event`, `codex.tool_result`, and the other `codex.*` events) | Large catalog. Turn metrics carry `conversation.id` only when every tag is valid | Does not read `OTEL_*`. `metrics_exporter` defaults to `statsig`. A model id containing `:` drops the turn metrics. |
 | OpenCode v2 (`@opencode/cli`) | Built in. Chunked OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Runner spans set `session.id` | Process logs only (`cli starting`, watcher, shutdown). No `session.id` | Not exported | No per-session log catalog and no metrics. npm `opencode-ai` is v1, not this CLI. |
+| Gemini CLI (`@google/gemini-cli`) | Built in. `llm_call` and `tool_call` spans with `gen_ai.conversation.id`. Prompt and tool payloads only with `telemetry.traces=true` | `gemini_cli.*` events (`config`, `user_prompt`, `api_request`, `api_response`, `api_error`, `tool_call`, ...) with `session.id` | Cumulative counters, including `gemini_cli.token.usage`, with `session.id` | Off until `telemetry.enabled`. Default protocol is gRPC on port 4317. No cost metric. `logPrompts` defaults to true. Mapping is from the docs and source, not a live capture. |
 | Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC on port 4317, which this receiver accepts. |
 
 What each tool exports, and how to point it at the receiver, is in

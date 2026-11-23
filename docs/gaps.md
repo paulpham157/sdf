@@ -44,6 +44,12 @@
   It is not an invoice either: conditional overrides are refused, a missing
   component price is unknown, and per-request or web-search fees are not
   added.
+- Gemini CLI reports no cost, and `internal/pricing` has no rule for its
+  token sources yet, so both cost fields are unknown for a Gemini CLI session.
+  Its tool-call logs carry no call id, so a `tool_call` span and its log are
+  not joined; tool calls come from the logs. The Gemini CLI mapping and the
+  `gemini_*.json` samples come from the published docs and source, not from a
+  live session.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
   SQLite file.

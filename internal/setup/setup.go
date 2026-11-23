@@ -19,6 +19,13 @@
 // Its default protocol is grpc at 127.0.0.1:4317. This setup uses http/json
 // on the receiver's HTTP port. grpc on 4317 also reaches sdf serve.
 // https://github.com/NikiforovAll/pi-otel
+//
+// Gemini CLI reads the telemetry block of ~/.gemini/settings.json (a
+// workspace .gemini/settings.json overrides it) and GEMINI_TELEMETRY_* env,
+// which overrides both. Its default protocol is grpc at localhost:4317. This
+// setup selects http on the receiver's HTTP port, and sets logPrompts to false
+// only when the file does not already choose (Gemini's default is true).
+// https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md
 package setup
 
 import (
@@ -80,8 +87,10 @@ func Run(req Request) (Result, error) {
 		return opencode(req)
 	case "pi":
 		return pi(req)
+	case "gemini", "gemini-cli":
+		return gemini(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, gemini)", req.Agent)
 	}
 }
 
@@ -363,6 +372,71 @@ func piOtel(ep Endpoint) map[string]any {
 	}
 }
 
+func gemini(req Request) (Result, error) {
+	path := filepath.Join(req.Home, ".gemini", "settings.json")
+	var b strings.Builder
+	fmt.Fprintf(&b, "Gemini CLI telemetry is off until telemetry.enabled is true.\n")
+	fmt.Fprintf(&b, "It exports logs, metrics, and spans with session.id (spans carry gen_ai.conversation.id).\n")
+	fmt.Fprintf(&b, "Its default is grpc at http://localhost:4317, which sdf serve also accepts. This setup selects http on %s.\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "logPrompts defaults to true in Gemini CLI. --write sets it to false unless %s already sets it.\n", path)
+	fmt.Fprintf(&b, "A workspace .gemini/settings.json overrides %s. GEMINI_TELEMETRY_* overrides both.\n", path)
+	fmt.Fprintf(&b, "telemetry.outfile, when set, replaces the endpoint, and nothing reaches sdf.\n")
+	fmt.Fprintf(&b, "Docs: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md\n\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_ENABLED=true\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_TARGET=local\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http\n")
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_LOG_PROMPTS=false\n\n")
+	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
+		changed, err := mergeAnyMap(root, "telemetry", geminiTelemetry(req.Endpoint))
+		if err != nil {
+			return false, err
+		}
+		telemetry := root["telemetry"].(map[string]any)
+		if _, ok := telemetry["logPrompts"]; !ok {
+			telemetry["logPrompts"] = false
+			changed = true
+		}
+		return changed, nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	b.WriteString(status)
+	if root, err := readJSON(path); err == nil {
+		if telemetry, ok := root["telemetry"].(map[string]any); ok {
+			if outfile, ok := telemetry["outfile"].(string); ok && outfile != "" {
+				fmt.Fprintf(&b, "warning: %s sets telemetry.outfile=%s, which replaces the endpoint. Remove it to send to sdf.\n", path, outfile)
+			}
+		}
+	}
+	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
+}
+
+func geminiTelemetry(ep Endpoint) map[string]any {
+	return map[string]any{
+		"enabled":      true,
+		"target":       "local",
+		"otlpEndpoint": ep.base(),
+		"otlpProtocol": "http",
+	}
+}
+
+func geminiConfigured(req Request) string {
+	path := filepath.Join(req.Home, ".gemini", "settings.json")
+	want := req.Endpoint.base()
+	envHit := strings.Contains(os.Getenv("GEMINI_TELEMETRY_OTLP_ENDPOINT"), want)
+	fileHit := false
+	if root, err := readJSON(path); err == nil {
+		if telemetry, ok := root["telemetry"].(map[string]any); ok {
+			endpoint, _ := telemetry["otlpEndpoint"].(string)
+			enabled, _ := telemetry["enabled"].(bool)
+			fileHit = enabled && strings.Contains(endpoint, want)
+		}
+	}
+	return fmt.Sprintf("gemini process env GEMINI_TELEMETRY_OTLP_ENDPOINT points at %s: %t; %s has telemetry enabled pointing at %s: %t\n", want, envHit, path, want, fileHit)
+}
+
 func runPiInstall(req Request) (string, error) {
 	if req.RunInstall != nil {
 		return req.RunInstall(context.Background())
@@ -469,6 +543,8 @@ func Configured(req Request) (string, error) {
 		return opencodeConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
+	case "gemini", "gemini-cli":
+		return geminiConfigured(req), nil
 	default:
 		return "", fmt.Errorf("unknown agent %q", req.Agent)
 	}

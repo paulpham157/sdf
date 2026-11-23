@@ -73,6 +73,10 @@ func TestSamplesOverHTTPAndGRPC(t *testing.T) {
 		"  tool: pi\n",
 		"input_tokens=1245",
 		"output_tokens=832",
+		"session sample-gemini-1\n",
+		"  tool: gemini-cli\n",
+		"  duration_ms: 16000 (logs and traces gemini_cli window)\n",
+		"input=27354 output=369 cache=20480 thought=640 tool=0",
 	} {
 		if !strings.Contains(httpText, want) {
 			t.Fatalf("summary missing %q\n%s", want, httpText)
@@ -89,6 +93,7 @@ func TestSamplesOverHTTPAndGRPC(t *testing.T) {
 		`"session_id": "sample-codex-conv-1"`,
 		`"session_id": "ses_sampleopencode0001"`,
 		`"session_id": "2026-01-01T00-00-00-000Z_sample-pi-session"`,
+		`"session_id": "sample-gemini-1"`,
 	} {
 		if !strings.Contains(js, id) {
 			t.Fatalf("json summary missing %s\n%s", id, js)
@@ -362,6 +367,7 @@ func sampleFiles(t *testing.T) []string {
 		"codex_logs.json", "codex_metrics.json",
 		"opencode_logs.json", "opencode_traces.json",
 		"pi_logs.json", "pi_metrics.json", "pi_traces.json",
+		"gemini_logs.json", "gemini_metrics.json", "gemini_traces.json",
 	}
 	have := map[string]bool{}
 	for _, name := range names {

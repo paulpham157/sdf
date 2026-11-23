@@ -59,10 +59,20 @@ So the same numbers are not added twice:
   of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
   (active seconds, not wall clock), else Grok CLI `grok_code.session_end`
   `duration_secs`, else the sum of `grok_code.turn_completed` `duration_ms`,
-  else the min-to-max timestamp (`observed_window`).
+  else for Gemini CLI the min-to-max timestamp of its logs and spans (`logs
+  and traces gemini_cli window`; its cumulative metrics start at process
+  start and export every 10 seconds, so they are left out), else the
+  min-to-max timestamp (`observed_window`).
 - Tokens: `claude_code.token.usage` by `type`, else `codex.turn.token_usage`
   by `token_type`, else the sum of Claude `api_request` token attributes,
-  else Codex `response.completed` with the rule below, else OpenCode
+  else Codex `response.completed` with the rule below, else Gemini CLI
+  `gemini_cli.token.usage` by `type` (`input`, `output`, `thought`, `cache`,
+  `tool`; cumulative, so each series keeps its latest point), else the sum of
+  Gemini CLI `gemini_cli.api_response` `input_token_count`,
+  `output_token_count`, `cached_content_token_count`, `thoughts_token_count`,
+  and `tool_token_count` (`total_token_count` is not added). Gemini CLI's
+  `gen_ai.client.token.usage` and `gen_ai.client.inference.operation.details`
+  repeat the same input and output and are not added. Else OpenCode
   `SessionStep.attempt` `gen_ai.usage.*` (input and cache use the max, output
   is summed), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
   `output_tokens`. That Pi sum is not added to `gen_ai.client.token.usage`.
@@ -74,7 +84,7 @@ So the same numbers are not added twice:
   `claude_code.api_request`, else `usage.estimated_usd` on `codex.turn_cost`,
   else the sum of `pi.cost.usd` on Pi `chat` spans. Claude's figure is
   labeled as the agent's estimate, not the provider price. OpenCode emits
-  no cost. Grok CLI reports `grok_code.cost.usage` in USD (live 2026-11-23 capture; the published guide omitted it), else the sum of `grok_code.api_request` `cost_usd_micros` / 1,000,000. The text calls this `agent_reported_cost_usd`. `cost_usd` in
+  no cost. Gemini CLI emits no cost either. Grok CLI reports `grok_code.cost.usage` in USD (live 2026-11-23 capture; the published guide omitted it), else the sum of `grok_code.api_request` `cost_usd_micros` / 1,000,000. The text calls this `agent_reported_cost_usd`. `cost_usd` in
   the text and in `--json` is the same number.
 - Cost SDF computed: those same token totals, after the de-dup rule above,
   times the OpenRouter per-token price. See below.
@@ -137,6 +147,7 @@ How a count is turned into a bucket:
 | Claude Code `claude_code.token.usage` and `api_request` | `input` excludes cache read and cache creation. Each is priced on its own. [Monitoring](https://code.claude.com/docs/en/monitoring-usage) documents that split. |
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
 | OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
+| Gemini CLI `gemini_cli.token.usage` and `api_response` | No pricing rule yet, so computed cost is `unknown` with the reason `no pricing rule for token source`. From `ApiResponseEvent` in `packages/core/src/telemetry/types.ts`: `input` / `input_token_count` is Gemini's `promptTokenCount` and includes `cache` / `cached_content_token_count`; `output` excludes `thought`; `tool` is the tool-use prompt count. `google/gemini-2.5-pro` also has `pricing.overrides` in the bundled table. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
 | Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
 

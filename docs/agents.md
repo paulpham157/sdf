@@ -469,3 +469,90 @@ stored unnamed records still summarize. The live model was `grok-4.7`.
 The official protocol list includes `grpc`. A cheap gRPC check is recorded
 in the 2026-11-23 notes when it was run; http/protobuf is the documented
 default and was used for the live capture.
+
+## Gemini CLI
+
+> Mapping below is from Gemini CLI's published
+> [telemetry doc](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md)
+> and its telemetry source (`packages/core/src/telemetry`) at
+> google-gemini/gemini-cli `eecccfcd5aff25de5e78135ca20f7abe3f566955`
+> (0.71.0-nightly, 2026-11-20 UTC). It has not been checked against a live,
+> signed-in session.
+
+Gemini CLI exports traces, logs, and metrics once `telemetry.enabled` is
+true. Settings live in the `telemetry` object of `~/.gemini/settings.json`
+(a workspace `.gemini/settings.json` overrides it), and `GEMINI_TELEMETRY_*`
+variables override both. The default exporter is gRPC at
+`http://localhost:4317`, which reaches `sdf serve` as is. With
+`otlpProtocol: "http"` it posts OTLP/HTTP JSON to `<otlpEndpoint>/v1/traces`,
+`/v1/logs`, and `/v1/metrics`. `telemetry.outfile` replaces the endpoint, so
+nothing reaches the receiver while it is set. `target: "gcp"` without
+`useCollector` sends to Google Cloud instead.
+
+`service.name` is `gemini-cli` (`service.version` is the Node.js version).
+Every log and metric data point carries `session.id`, `installation.id`,
+`interactive`, and, when known, `auth_type` and `user.email` (when you are
+signed in with Google). Logs name themselves in the `event.name` attribute
+(`gemini_cli.config`, `gemini_cli.user_prompt`, `gemini_cli.api_request`,
+`gemini_cli.api_response`, `gemini_cli.api_error`, `gemini_cli.tool_call`,
+`gemini_cli.file_operation`, `gemini_cli.conversation_finished`, and more).
+The body is a sentence such as `Tool call: read_file. Decision: auto_accept.
+Success: true. Duration: 14ms.` Each `api_request`, `api_response`, and
+`api_error` is followed by a `gen_ai.client.inference.operation.details` log
+with the same counts under `gen_ai.usage.*`.
+
+Spans are named for the operation (`llm_call`, `tool_call`, `agent_call`,
+...). They carry `gen_ai.conversation.id` (the session id),
+`gen_ai.operation.name`, and `gen_ai.agent.name=gemini-cli`, and `llm_call`
+adds `gen_ai.request.model`. Prompts, outputs, and tool definitions are on
+spans only with `telemetry.traces=true`.
+
+Metrics are cumulative and exported every 10 seconds:
+`gemini_cli.session.count`, `gemini_cli.token.usage` (`model`, `type` =
+`input` | `output` | `thought` | `cache` | `tool`), `gemini_cli.api.request.count`,
+`gemini_cli.tool.call.count` (`function_name`, `success`, `decision`,
+`tool_type`), latency histograms, and the GenAI
+`gen_ai.client.token.usage` and `gen_ai.client.operation.duration`.
+
+What the summary takes from it:
+
+| Summary field | Gemini CLI source |
+| --- | --- |
+| session id | `session.id` on logs and metrics; `gen_ai.conversation.id` on spans |
+| tool | `gemini-cli` (from `service.name`, or a `gemini_cli.*` name) |
+| model | `model` on `config`, `api_request`, `api_response`, `api_error`, and metric points; `gen_ai.request.model` on spans |
+| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields |
+| duration | min-to-max of the session's logs and spans (no session or turn duration is exported) |
+| tool calls | `gemini_cli.tool_call` logs: `function_name`, `success`, `duration_ms` (no call id) |
+| errors | `gemini_cli.api_error` in the log events; failed tools as `success=false`; `ERROR` status on spans |
+| agent-reported cost | not exported |
+| computed cost | unknown: there is no pricing rule for the Gemini token sources yet |
+
+`input` (`input_token_count`) is Gemini's `promptTokenCount`, which includes
+the `cache` count. `output` excludes `thought`. `tool` is the tool-use prompt
+count. Prompts are in the logs by default: `telemetry.logPrompts` defaults to
+`true`, and it adds `prompt`, `request_text`, `response_text`, and
+`function_args`. Set it to `false` unless you want that text in the local
+SQLite file. `sdf init gemini --write` does that when the file has no
+`logPrompts` yet.
+
+## Point Gemini CLI at it
+
+```bash
+sdf init gemini --write
+gemini
+```
+
+Or without touching the settings file:
+
+```bash
+export GEMINI_TELEMETRY_ENABLED=true
+export GEMINI_TELEMETRY_TARGET=local
+export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318
+export GEMINI_TELEMETRY_OTLP_PROTOCOL=http
+export GEMINI_TELEMETRY_LOG_PROMPTS=false
+gemini
+```
+
+gRPC works too: leave the protocol at its default and set
+`GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4317`.

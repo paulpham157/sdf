@@ -99,6 +99,7 @@ sdf init opencode --write
 sdf init pi --write
 sdf init pi --write --global
 sdf init pi --install
+sdf init gemini --write
 sdf init --git-template --set-template-dir
 sdf init --check
 ```
@@ -137,6 +138,23 @@ protocol in that file is `http/json`. pi-otel's own default is gRPC on port
 4317, which this receiver also accepts. `sdf init --check pi` reports whether
 the process environment, the project file, and the global file point at this
 receiver.
+
+Gemini CLI's settings are from its
+[telemetry doc](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md).
+`sdf init gemini --write` (alias `gemini-cli`) merges `enabled: true`,
+`target: "local"`, `otlpEndpoint` (the HTTP receiver), and
+`otlpProtocol: "http"` into the `telemetry` object of
+`~/.gemini/settings.json`. It leaves every other key alone. It sets
+`logPrompts: false` only when the file does not already set `logPrompts`;
+Gemini CLI's own default is `true`. An existing file is copied to a
+`.sdf-bak` sibling. A file that is not plain JSON (Gemini CLI also accepts
+comments) is left untouched, and the printed `GEMINI_TELEMETRY_*` variables
+can be used instead. A `telemetry.outfile` already in the file wins over the
+endpoint in Gemini CLI, so it is reported, not removed. A workspace
+`.gemini/settings.json` overrides the user file. There is no session hook
+for Gemini CLI yet, so its window is inferred from the records.
+`sdf init --check gemini` reports whether `GEMINI_TELEMETRY_OTLP_ENDPOINT` or
+the user settings file point at this receiver.
 
 ## Git hooks
 
