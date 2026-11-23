@@ -92,6 +92,16 @@ var (
 		"cache_write.input_tokens": true,
 		"cache_write_input_tokens": true,
 	}
+	// usageAliases folds gen_ai.usage.* labels that name the same quantity
+	// into one key. GenAI semconv v0.1.0 renamed
+	// gen_ai.usage.cache_creation.input_tokens to
+	// gen_ai.usage.cache_write.input_tokens and removed the old name;
+	// OpenCode still sends the old one. When a span carries more than one of
+	// them, the largest value is kept; they are never added.
+	usageAliases = map[string]string{
+		"cache_creation.input_tokens": "cache_write.input_tokens",
+		"cache_creation_input_tokens": "cache_write.input_tokens",
+	}
 	usageOrder = []string{
 		"input_tokens",
 		"output_tokens",
@@ -99,6 +109,7 @@ var (
 		"cache_read_input_tokens",
 		"cache_write.input_tokens",
 		"cache_write_input_tokens",
+		"reasoning.output_tokens",
 		"reasoning_tokens",
 	}
 	sessionCodexMetrics = []string{
@@ -914,11 +925,17 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				continue
 			}
 			label := strings.TrimPrefix(key, "gen_ai.usage.")
+			if canonical, ok := usageAliases[label]; ok {
+				label = canonical
+			}
 			if len(only) > 0 && !onlySet[label] {
 				continue
 			}
 			amount := record.Number(value)
 			if amount == nil {
+				continue
+			}
+			if prev, ok := amounts[label]; ok && prev >= *amount {
 				continue
 			}
 			amounts[label] = *amount
@@ -966,7 +983,7 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				values = append(values, v)
 			}
 		}
-		if cumulativePrefix && cumulativeUsage[label] {
+		if cumulativePrefix && (cumulativeUsage[label] || modalityInput(label)) {
 			totals.Set(label, maxFloat(values))
 		} else {
 			totals.Set(label, sum(values))
@@ -979,6 +996,13 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 		method = "sum of per-turn input_tokens and output_tokens; they are additive and are not added to gen_ai.client.token.usage"
 	}
 	return totals, record.Str(method), true
+}
+
+// modalityInput reports whether label is a per-modality input breakdown such
+// as text.input_tokens or text.cache_read.input_tokens. Like input_tokens,
+// it repeats the conversation prefix on every request, so it takes the max.
+func modalityInput(label string) bool {
+	return pricing.IsModalityUsage(label) && strings.HasSuffix(label, "input_tokens")
 }
 
 func sumSpanMS(records []record.Record, match func(string) bool) *float64 {

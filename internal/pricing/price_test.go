@@ -224,3 +224,71 @@ func mustFixture(t *testing.T, models ...*Model) *Catalog {
 	}
 	return cat
 }
+
+func TestOpenCodeRenamedUsageKeys(t *testing.T) {
+	cat := mustFixture(t, &Model{
+		ID: "vendor/model",
+		Prices: map[string]string{
+			"prompt": "1", "completion": "1", "input_cache_read": "1", "input_cache_write": "1", "internal_reasoning": "1",
+		},
+	})
+	price := func(tokens map[string]float64) Cost {
+		return Price(cat, Usage{Models: []string{"vendor/model"}, Source: "traces SessionStep.attempt", Tokens: tokens})
+	}
+	tokensOf := func(cost Cost, name string) string {
+		for _, item := range cost.Components {
+			if item.Name == name {
+				return item.Tokens
+			}
+		}
+		return ""
+	}
+	// The pre-v0.1.0 name alone is priced as cache write.
+	old := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_creation.input_tokens": 20})
+	if old.Status != "known" || tokensOf(old, "cache_write") != "20" || tokensOf(old, "input") != "80" {
+		t.Fatalf("%+v", old)
+	}
+	// Old and new names for the same quantity: the max, never the sum.
+	both := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_write.input_tokens": 20, "cache_creation.input_tokens": 25, "cache_creation_input_tokens": 5})
+	if both.Status != "known" || tokensOf(both, "cache_write") != "25" || tokensOf(both, "input") != "75" {
+		t.Fatalf("%+v", both)
+	}
+	reasoning := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "reasoning.output_tokens": 4, "reasoning_tokens": 3})
+	if reasoning.Status != "known" || tokensOf(reasoning, "reasoning") != "4" || tokensOf(reasoning, "output") != "6" {
+		t.Fatalf("%+v", reasoning)
+	}
+	modality := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "text.input_tokens": 100, "image.output_tokens": 2, "text.cache_read.input_tokens": 1})
+	if modality.Status != "known" || tokensOf(modality, "input") != "100" || !strings.Contains(modality.Method, "per-modality") {
+		t.Fatalf("%+v", modality)
+	}
+	// Two pre-existing names for one bucket still refuse to guess.
+	dup := price(map[string]float64{"input_tokens": 100, "cache_read.input_tokens": 1, "cache_read_input_tokens": 1})
+	if dup.Status != "unknown" || !strings.Contains(dup.Reason, "twice") {
+		t.Fatalf("%+v", dup)
+	}
+	// A key that is neither a known total nor a modality breakdown is still unknown.
+	other := price(map[string]float64{"input_tokens": 100, "mystery_tokens": 1})
+	if other.Status != "unknown" || !strings.Contains(other.Reason, "mystery_tokens") {
+		t.Fatalf("%+v", other)
+	}
+}
+
+func TestIsModalityUsage(t *testing.T) {
+	for label, want := range map[string]bool{
+		"text.input_tokens":             true,
+		"image.output_tokens":           true,
+		"audio.cache_read.input_tokens": true,
+		"video.input_tokens":            true,
+		"cache_read.input_tokens":       false,
+		"cache_write.input_tokens":      false,
+		"cache_creation.input_tokens":   false,
+		"reasoning.output_tokens":       false,
+		"input_tokens":                  false,
+		"text.total_tokens":             false,
+		"Text.input_tokens":             false,
+	} {
+		if got := IsModalityUsage(label); got != want {
+			t.Errorf("%s: got %v want %v", label, got, want)
+		}
+	}
+}

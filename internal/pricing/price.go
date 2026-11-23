@@ -352,42 +352,114 @@ func codexBuckets(tokens map[string]float64, names map[string]string, ignore str
 	return overlapBuckets(values, method)
 }
 
+// usageModalityRest lists the gen_ai.usage.<modality>.* suffixes that
+// OpenTelemetry GenAI semconv v0.1.0 defines as per-modality breakdowns
+// (gen_ai.usage.{text,image,audio}.{input_tokens,output_tokens,
+// cache_read.input_tokens}). cache_write is listed so a later modality key
+// of that shape is recognized too.
+var usageModalityRest = []string{
+	"input_tokens",
+	"output_tokens",
+	"cache_read.input_tokens",
+	"cache_write.input_tokens",
+}
+
+// IsModalityUsage reports whether label (a gen_ai.usage.* key without the
+// prefix) is a per-modality breakdown such as text.input_tokens. Such a count
+// is already part of the matching total (input_tokens, output_tokens, or
+// cache_read.input_tokens), so it is informational and never priced again.
+// Any lowercase modality name is accepted, including ones the spec does not
+// list yet.
+func IsModalityUsage(label string) bool {
+	modality, rest, ok := strings.Cut(label, ".")
+	if !ok || modality == "" {
+		return false
+	}
+	switch modality {
+	case "cache_read", "cache_write", "cache_creation", "reasoning":
+		return false
+	}
+	for _, c := range modality {
+		if (c < 'a' || c > 'z') && c != '_' {
+			return false
+		}
+	}
+	for _, want := range usageModalityRest {
+		if rest == want {
+			return true
+		}
+	}
+	return false
+}
+
+// renamedUsage marks OpenCode token keys that GenAI semconv renamed. When one
+// of them arrives next to another key for the same bucket, the two are the
+// same quantity under an old and a new name, so the larger one is priced.
+var renamedUsage = map[string]bool{
+	"cache_creation.input_tokens": true,
+	"cache_creation_input_tokens": true,
+	"reasoning.output_tokens":     true,
+}
+
 func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 	// gen_ai.usage.cache_read.input_tokens is the OpenTelemetry name for cache
 	// reads included in input tokens. The summary has already replaced repeated
-	// prefix counts with the max.
+	// prefix counts with the max, and has already folded
+	// gen_ai.usage.cache_creation.input_tokens (renamed to
+	// cache_write.input_tokens in GenAI semconv v0.1.0) into
+	// cache_write.input_tokens. The cache_creation keys stay here so a caller
+	// that did not fold them still gets a price rather than unknown.
 	aliases := map[string]string{
-		"input_tokens":             "input",
-		"output_tokens":            "output",
-		"cache_read.input_tokens":  "cache_read",
-		"cache_read_input_tokens":  "cache_read",
-		"cache_write.input_tokens": "cache_write",
-		"cache_write_input_tokens": "cache_write",
-		"reasoning_tokens":         "reasoning",
+		"input_tokens":                "input",
+		"output_tokens":               "output",
+		"cache_read.input_tokens":     "cache_read",
+		"cache_read_input_tokens":     "cache_read",
+		"cache_write.input_tokens":    "cache_write",
+		"cache_write_input_tokens":    "cache_write",
+		"cache_creation.input_tokens": "cache_write",
+		"cache_creation_input_tokens": "cache_write",
+		"reasoning.output_tokens":     "reasoning",
+		"reasoning_tokens":            "reasoning",
 	}
 	seen := map[string]string{}
 	values := map[string]*big.Rat{}
 	var keys []string
+	var informational []string
 	for key := range tokens {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
+		if IsModalityUsage(key) {
+			informational = append(informational, key)
+			continue
+		}
 		label, ok := aliases[key]
 		if !ok {
 			return nil, "", fmt.Sprintf("token key %q is not part of the OpenCode pricing rule", key)
 		}
-		if prev, ok := seen[label]; ok {
-			return nil, "", fmt.Sprintf("token keys %q and %q would price %s twice", prev, key, label)
-		}
-		seen[label] = key
 		amount, err := parseTokens(tokens[key])
 		if err != nil {
 			return nil, "", err.Error()
 		}
+		if prev, ok := seen[label]; ok {
+			if !renamedUsage[prev] && !renamedUsage[key] {
+				return nil, "", fmt.Sprintf("token keys %q and %q would price %s twice", prev, key, label)
+			}
+			// A semconv rename reports the same quantity under two names.
+			// Keep the larger count; never add them.
+			if values[label].Cmp(amount) >= 0 {
+				continue
+			}
+		}
+		seen[label] = key
 		values[label] = amount
 	}
-	return overlapBuckets(values, "OpenCode input and cache totals already use the max across requests; cache read and cache write are priced as subsets of input, and reasoning as a subset of output")
+	method := "OpenCode input and cache totals already use the max across requests; cache read and cache write are priced as subsets of input, and reasoning as a subset of output"
+	if len(informational) > 0 {
+		method += "; per-modality breakdown keys (" + strings.Join(informational, ", ") + ") are already part of the totals and are not priced again"
+	}
+	return overlapBuckets(values, method)
 }
 
 func piBuckets(source string, tokens map[string]float64) ([]bucket, string, string) {

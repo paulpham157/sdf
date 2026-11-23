@@ -64,7 +64,8 @@ So the same numbers are not added twice:
   by `token_type`, else the sum of Claude `api_request` token attributes,
   else Codex `response.completed` with the rule below, else OpenCode
   `SessionStep.attempt` `gen_ai.usage.*` (input and cache use the max, output
-  is summed), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
+  and reasoning are summed; `cache_creation.input_tokens` is read as
+  `cache_write.input_tokens`), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
   `output_tokens`. That Pi sum is not added to `gen_ai.client.token.usage`.
   If the chat spans have no usage attributes, the Pi token metric is the
   fallback. Else Grok CLI `grok_code.token.usage` by `type`, else the sum of
@@ -136,7 +137,7 @@ How a count is turned into a bucket:
 | --- | --- |
 | Claude Code `claude_code.token.usage` and `api_request` | `input` excludes cache read and cache creation. Each is priced on its own. [Monitoring](https://code.claude.com/docs/en/monitoring-usage) documents that split. |
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
-| OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
+| OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. `gen_ai.usage.cache_creation.input_tokens` (what OpenCode sends) and `cache_creation_input_tokens` are the pre-v0.1.0 names for `gen_ai.usage.cache_write.input_tokens`; the summary folds them into `cache_write.input_tokens`, and when a span carries more than one of them the largest is kept, never the sum. Cache write is priced as a subset of input. `gen_ai.usage.reasoning.output_tokens` (or `reasoning_tokens`) is priced as a subset of output. Per-modality keys such as `gen_ai.usage.text.input_tokens` are breakdowns of the totals: they stay in the token map, use the same max or sum rule as their total, are not priced again, and are named in the cost `method`. Any other unrecognized key still leaves the computed cost unknown. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
 | Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
 
