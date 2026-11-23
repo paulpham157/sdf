@@ -135,6 +135,8 @@ func TestStatusColumnsMigrateAndMissingMeansUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer opened.Close()
+	// Keep the status text so the column round-trip is visible.
+	opened.KeepContent(func(record.Record) bool { return true })
 	if _, err := opened.Insert([]record.Record{{
 		Signal:        "traces",
 		ServiceName:   record.Str("opencode"),

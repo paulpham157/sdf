@@ -55,6 +55,61 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
+## Content storage
+
+sdf drops content before anything is stored, for every agent, whatever the
+agent's own settings say (`logPrompts`, `includeSensitiveSpanAttributes`,
+`OTEL_LOG_*`, `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`,
+`telemetry.traces`). Those settings decide what an agent sends; this
+decides what sdf keeps. What is dropped (`record.Redact`):
+
+- Attributes whose key names content, in record attributes, in nested maps
+  at any depth, and in the resource. Keys are compared case-insensitively:
+  `prompt`, `request_text`, `response_text`, `tool_input`, `tool_output`,
+  `tool_parameters`, `full_command`, `function_args`, `arguments`,
+  `result`, `response`, `completion`, `messages`, `content`, `input`,
+  `output`, `gen_ai.input.messages_ref`, `gen_ai.output.messages_ref`,
+  `gen_ai.system_instructions_ref`, and any key equal to or under (`.`) one
+  of `gen_ai.prompt`, `gen_ai.completion`, `gen_ai.input.messages`,
+  `gen_ai.output.messages`, `gen_ai.system_instructions`,
+  `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`,
+  `gen_ai.tool.definitions`, `llm.input_messages`, `llm.output_messages`,
+  `llm.prompts`, `input.value`, `output.value` (so the indexed
+  `gen_ai.prompt.0.content` goes too). Only text is dropped: a number or
+  bool under one of these keys (a token count named `input`) is kept.
+- Error text on logs and spans: `error`, `error.message`, `error_message`,
+  `exception.message`, `exception.stacktrace`.
+- A log body other than the record's event name (`claude_code.api_request`
+  stays; Gemini's "API response from ..." sentence goes).
+- A span status message: "tool error" on tool spans, "hook error" on
+  `qwen-code.hook`, "error" elsewhere. The status code stays.
+
+What stays: names, ids, models, token counts, cost, durations, success,
+`error.type`, status codes, and everything else the summary reads, so every
+summary, cost, and tool list is the same as before. The size of each dropped
+text value is recorded as `<key>_bytes` (`error_bytes`, `body_bytes`) and
+the dropped keys are listed in `sdf.redacted`. A `git_commit_id` inside
+Claude Code's `tool_parameters` is copied to `sdf.git_commit_id` first, so
+commit links still work. Span events and metric exemplars are never stored.
+
+To keep the text, opt in when starting the receiver:
+
+```bash
+sdf serve --store-content                      # every agent
+sdf serve --store-content=claude-code,qwen     # only these agents
+SDF_STORE_CONTENT=1 sdf serve                  # same as --store-content
+SDF_STORE_CONTENT=qwen sdf serve               # a list works here too
+```
+
+Agent names are `claude-code` (`claude`), `codex`, `opencode`, `pi`,
+`gemini-cli` (`gemini`), `qwen-code` (`qwen`), `grok-cli` (`grok`), and
+`copilot-cli` (`copilot`); an unknown name is an error. The flag wins over
+the variable, and `0`, `false`, or `off` turns it off. `sdf serve` prints a
+line saying whose content it stores, and those rows carry
+`sdf.content=kept`. The text then sits in the local SQLite file.
+
+Rows written by an older sdf are not changed when the database is opened.
+
 ## Try it without an agent
 
 `sdf demo` runs the same receiver on free localhost ports, sends one
@@ -273,9 +328,8 @@ the `telemetry` object of `$QWEN_HOME/settings.json` or
 `~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
 so sdf turns it off even when the file says `true`, and warns. It does the
 same for `includeSensitiveSpanAttributes`. A workspace or system file can
-still turn them back on (see below), so the receiver drops the GenAI
-message and tool content and hook error text before storing anything,
-whatever the settings ([docs/gaps.md](gaps.md)). Key order, indentation, a UTF-8
+still turn them back on (see below); the receiver drops that content before
+storing anything, whatever the settings ([content storage](#content-storage)). Key order, indentation, a UTF-8
 BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP
@@ -370,7 +424,9 @@ works from fish, which has no POSIX subshell):
 merges in place: line order and unrelated lines are kept, the endpoint and
 protocol lines are replaced (with a warning when the old value differed),
 and a capture-content line you already set is kept, with a warning when it
-puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). The write goes to a temp file in the same directory,
+puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). That setting decides
+what Copilot CLI sends; sdf still drops the content before storing it unless
+`sdf serve --store-content` is on ([content storage](#content-storage)). The write goes to a temp file in the same directory,
 is fsynced, keeps the file mode (and the owner and group when the process
 may set them), and is renamed into place. Because the file is replaced,
 other hard links keep the old contents (a note is printed) and extended

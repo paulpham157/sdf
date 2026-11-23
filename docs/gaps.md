@@ -79,29 +79,21 @@
   not joined; tool calls come from the logs. The Gemini CLI mapping and the
   `gemini_*.json` samples come from the published docs and source, not from a
   live session.
-- Prompt and tool content are not requested by the setup in
-  [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
-  SQLite file. The exception is tool arguments: Qwen Code sends the full
-  arguments of every tool call (`function_args`: shell commands, the content
-  of `write_file` and `edit`) and the tool's error text on
-  `qwen-code.tool_call` whatever `logPrompts` says, and Gemini CLI sends
-  `function_args` when its `logPrompts` is on. A Qwen workspace
-  (`<cwd>/.qwen/settings.json`) or system settings file can also turn
-  `includeSensitiveSpanAttributes` or `logPrompts` back on over what
-  `sdf init qwen` wrote, which puts tool call arguments and results and the
-  model's input, output, and system messages on `qwen-code.tool` and
-  `qwen-code.llm_request` spans. sdf drops `function_args`,
-  `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`,
-  `gen_ai.input.messages`, `gen_ai.output.messages`, and
-  `gen_ai.system_instructions` from every log, span, and metric of every
-  agent, whatever its settings (a key of those names from any agent is
-  never stored), and `error` / `error.message` from Qwen and Gemini
-  tool-call records, Qwen tool spans (whose status message becomes
-  "tool error"), and Qwen `qwen-code.hook` spans (whose status message
-  becomes "hook error"), before anything is stored. It keeps the tool name,
-  call id, duration, success, and error type, the dropped sizes
-  (`function_args_bytes`, `gen_ai.input.messages_bytes`, ...,
-  `error_bytes`; strings only), and the dropped keys in `sdf.redacted`.
+- Content is dropped by default. Agents can send prompts, responses,
+  messages, tool arguments and output, and error text: Qwen Code sends
+  `function_args` and tool error text whatever `logPrompts` says, and a Qwen
+  workspace or system settings file can turn `logPrompts` and
+  `includeSensitiveSpanAttributes` back on over what `sdf init qwen` wrote;
+  Copilot CLI puts messages on spans with `SPAN_ONLY` or `SPAN_AND_EVENT`;
+  Gemini CLI with `logPrompts` and `telemetry.traces`; Claude Code and Grok
+  CLI with `OTEL_LOG_*`. sdf drops that text from every agent before it is
+  stored, whatever those settings say, and keeps it only under
+  `sdf serve --store-content`. The rules, what is kept, and how to scrub a
+  database written by an older sdf are in
+  [content storage](receiver.md#content-storage). Limits: the rules are by
+  key name, so content under a key they do not know (an agent's own
+  attribute name) is stored; span events and metric exemplars are not
+  stored at all.
 - Qwen Code reports no cost, and `internal/pricing` has no rule for its
   token sources, so both cost fields are unknown. Its token totals include
   subagents and the background memory extractor. Its metrics carry no

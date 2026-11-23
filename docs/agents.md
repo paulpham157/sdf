@@ -64,7 +64,10 @@ current builds is the dotted name):
 `tool_result` carries `tool_name`, `tool_use_id`, `success`, and `duration_ms`.
 Prompt text, tool arguments, and tool output stay redacted unless you set
 `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, or `OTEL_LOG_TOOL_CONTENT`.
-The setup below does not set those.
+The setup below does not set those, and if you do, sdf still drops that
+text (`prompt`, `tool_parameters`, `tool_input`, ...) before storing it
+unless `sdf serve --store-content` is on; see [content storage](receiver.md#content-storage). A
+commit SHA inside `tool_parameters` is kept as `sdf.git_commit_id`.
 
 Beta trace spans, when tracing is on:
 
@@ -461,22 +464,28 @@ files Qwen read and its memory extractor's reads of `~/.qwen/memories/`),
 and response text go into the logs. `sdf init qwen` sets it to `false`,
 also when the file already says `true`. `includeSensitiveSpanAttributes`
 (default false) copies messages and tool data into spans; `sdf init qwen`
-sets it back to false when it finds it on. A workspace or system settings
-file can still turn either back on, so sdf also drops the span and log
-content before storing it, whatever the settings: `gen_ai.tool.call.arguments`
-and `gen_ai.tool.call.result` (`qwen-code.tool`), `gen_ai.input.messages`,
-`gen_ai.output.messages`, and `gen_ai.system_instructions`
-(`qwen-code.llm_request`), and the error text and status message of
-`qwen-code.hook` spans (the status becomes "hook error").
+sets it back to false when it finds it on. Those settings decide what Qwen
+Code sends; they do not decide what sdf stores. A workspace or system
+settings file can turn either back on over what `sdf init qwen` wrote, so
+sdf drops the content itself before storing anything, whatever the
+settings: in logs, `prompt`, `request_text` (which can hold file contents
+and `~/.qwen/memories/`), `response_text`, and `function_args`; on spans,
+`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`
+(`qwen-code.tool`) and `gen_ai.input.messages`, `gen_ai.output.messages`,
+and `gen_ai.system_instructions` (`qwen-code.llm_request`); error text; and
+span status messages (`qwen-code.hook` becomes "hook error", tool spans
+"tool error"). Only `sdf serve --store-content` keeps them; see
+[content storage](receiver.md#content-storage).
 
 No setting turns off tool arguments: every `qwen-code.tool_call` log carries
 the full JSON arguments of the call in `function_args` (the shell command,
 the whole content passed to `write_file` or `edit`), and a failed call
 carries the tool's error text in `error` and `error.message`
 (`logToolCall`, `packages/core/src/telemetry/loggers.ts`, v0.28.4). Its
-tool spans repeat the error text. sdf discards these before storing
-anything: it keeps the tool name, call id, duration, success, and error
-type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
+tool spans repeat the error text. sdf drops these too (unless
+`--store-content`): it keeps the tool name, call id, duration, success, and
+error type, and records `function_args_bytes`, `error_bytes`, and
+`sdf.redacted`.
 
 - Session: logs and spans carry `session.id` (LLM and interaction spans also
   `gen_ai.conversation.id`). The auto-instrumented HTTP `POST` child spans
@@ -668,7 +677,11 @@ set; changelog 1.0.107 says the same for `copilot help monitoring`.
 (`EVENT_ONLY` puts them on span events, which sdf does not store). The legacy
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` counts only when the
 standard variable is empty or unset, though it alone still adds tool schemas
-(`gen_ai.tool.definitions`). The user id is the pseudonymous
+(`gen_ai.tool.definitions`). Whatever these say, sdf drops the span content
+(`gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.system_instructions`, `gen_ai.tool.call.arguments`,
+`gen_ai.tool.call.result`, `gen_ai.tool.definitions`) before storing it
+unless `sdf serve --store-content` is on; see [content storage](receiver.md#content-storage). The user id is the pseudonymous
 `enduser.pseudo.id`.
 
 `service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
@@ -939,7 +952,8 @@ Spans are named for the operation (`llm_call`, `tool_call`, `agent_call`,
 ...). They carry `gen_ai.conversation.id` (the session id),
 `gen_ai.operation.name`, and `gen_ai.agent.name=gemini-cli`, and `llm_call`
 adds `gen_ai.request.model`. Prompts, outputs, and tool definitions are on
-spans only with `telemetry.traces=true`.
+spans only with `telemetry.traces=true`; sdf drops them before storing
+unless `sdf serve --store-content` is on.
 
 Metrics are cumulative and exported every 10 seconds:
 `gemini_cli.session.count`, `gemini_cli.token.usage` (`model`, `type` =
@@ -966,9 +980,10 @@ What the summary takes from it:
 the `cache` count. `output` excludes `thought`. `tool` is the tool-use prompt
 count. Prompts are in the logs by default: `telemetry.logPrompts` defaults to
 `true`, and it adds `prompt`, `request_text`, `response_text`, and
-`function_args`. Set it to `false` unless you want that text in the local
-SQLite file. `sdf init gemini --write` does that when the file has no
-`logPrompts` yet.
+`function_args`. sdf drops those keys before storing them unless
+`sdf serve --store-content` is on (see [content storage](receiver.md#content-storage)), but setting
+`logPrompts` to `false` keeps the text off the wire too. `sdf init gemini
+--write` does that when the file has no `logPrompts` yet.
 
 ## Point Gemini CLI at it
 

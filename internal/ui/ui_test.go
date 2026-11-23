@@ -396,6 +396,9 @@ func TestPageRendersOverAndUnknownBudgets(t *testing.T) {
 
 func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	db := openDB(t)
+	// Status messages are error text, dropped by default; keep them so the
+	// page's escaping of a hostile message is still exercised.
+	db.KeepContent(func(record.Record) bool { return true })
 	xssName := "<script>alert(1)</script>"
 	xssMsg := "</li><img src=x onerror=alert(1)>"
 	parent := record.Record{

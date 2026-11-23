@@ -1,0 +1,1952 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "qwen-code.api_request"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-01-qwen_code_log_prompt"
+         }
+        },
+        {
+         "key": "request_text",
+         "value": {
+          "stringValue": "SDF-LEAK-02-qwen_code_log_request_text"
+         }
+        },
+        {
+         "key": "response_text",
+         "value": {
+          "stringValue": "SDF-LEAK-03-qwen_code_log_response_text"
+         }
+        },
+        {
+         "key": "tool_input",
+         "value": {
+          "stringValue": "SDF-LEAK-04-qwen_code_log_tool_input"
+         }
+        },
+        {
+         "key": "tool_output",
+         "value": {
+          "stringValue": "SDF-LEAK-05-qwen_code_log_tool_output"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "SDF-LEAK-06-qwen_code_log_tool_parameters"
+         }
+        },
+        {
+         "key": "full_command",
+         "value": {
+          "stringValue": "SDF-LEAK-07-qwen_code_log_full_command"
+         }
+        },
+        {
+         "key": "arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-08-qwen_code_log_arguments"
+         }
+        },
+        {
+         "key": "result",
+         "value": {
+          "stringValue": "SDF-LEAK-09-qwen_code_log_result"
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "SDF-LEAK-10-qwen_code_log_response"
+         }
+        },
+        {
+         "key": "completion",
+         "value": {
+          "stringValue": "SDF-LEAK-11-qwen_code_log_completion"
+         }
+        },
+        {
+         "key": "messages",
+         "value": {
+          "stringValue": "SDF-LEAK-12-qwen_code_log_messages"
+         }
+        },
+        {
+         "key": "content",
+         "value": {
+          "stringValue": "SDF-LEAK-13-qwen_code_log_content"
+         }
+        },
+        {
+         "key": "input",
+         "value": {
+          "stringValue": "SDF-LEAK-14-qwen_code_log_input"
+         }
+        },
+        {
+         "key": "output",
+         "value": {
+          "stringValue": "SDF-LEAK-15-qwen_code_log_output"
+         }
+        },
+        {
+         "key": "function_args",
+         "value": {
+          "stringValue": "SDF-LEAK-16-qwen_code_log_function_args"
+         }
+        },
+        {
+         "key": "gen_ai.prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-17-qwen_code_log_gen_ai_prompt"
+         }
+        },
+        {
+         "key": "gen_ai.completion",
+         "value": {
+          "stringValue": "SDF-LEAK-18-qwen_code_log_gen_ai_completion"
+         }
+        },
+        {
+         "key": "gen_ai.prompt.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-19-qwen_code_log_gen_ai_prompt_0_content"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-20-qwen_code_log_gen_ai_input_messages_0_content"
+         }
+        },
+        {
+         "key": "llm.input_messages",
+         "value": {
+          "stringValue": "SDF-LEAK-21-qwen_code_log_llm_input_messages"
+         }
+        },
+        {
+         "key": "llm.output_messages.0.message.content",
+         "value": {
+          "stringValue": "SDF-LEAK-22-qwen_code_log_llm_output_messages_0_message_content"
+         }
+        },
+        {
+         "key": "input.value",
+         "value": {
+          "stringValue": "SDF-LEAK-23-qwen_code_log_input_value"
+         }
+        },
+        {
+         "key": "output.value",
+         "value": {
+          "stringValue": "SDF-LEAK-24-qwen_code_log_output_value"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "SDF-LEAK-25-qwen_code_log_gen_ai_tool_definitions"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages_ref",
+         "value": {
+          "stringValue": "SDF-LEAK-26-qwen_code_log_gen_ai_input_messages_ref"
+         }
+        },
+        {
+         "key": "Gen_AI.Input.Messages",
+         "value": {
+          "stringValue": "SDF-LEAK-27-qwen_code_log_Gen_AI_Input_Messages"
+         }
+        },
+        {
+         "key": "GEN_AI.OUTPUT.MESSAGES",
+         "value": {
+          "stringValue": "SDF-LEAK-28-qwen_code_log_GEN_AI_OUTPUT_MESSAGES"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-29-qwen_code_log_gen_ai_input_messages"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-30-qwen_code_log_gen_ai_output_messages"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "SDF-LEAK-31-qwen_code_log_gen_ai_system_instructions"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-32-qwen_code_log_gen_ai_tool_call_arguments"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "SDF-LEAK-33-qwen_code_log_gen_ai_tool_call_result"
+         }
+        },
+        {
+         "key": "Prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-34-qwen_code_log_Prompt"
+         }
+        },
+        {
+         "key": "TOOL_INPUT",
+         "value": {
+          "stringValue": "SDF-LEAK-35-qwen_code_log_TOOL_INPUT"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "1200"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "intValue": "42"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_shell_command"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "m-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "qwen-code.api_request"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "github-copilot"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "github-copilot"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "gen_ai.client.inference.operation.details"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-36-github_copilot_log_prompt"
+         }
+        },
+        {
+         "key": "request_text",
+         "value": {
+          "stringValue": "SDF-LEAK-37-github_copilot_log_request_text"
+         }
+        },
+        {
+         "key": "response_text",
+         "value": {
+          "stringValue": "SDF-LEAK-38-github_copilot_log_response_text"
+         }
+        },
+        {
+         "key": "tool_input",
+         "value": {
+          "stringValue": "SDF-LEAK-39-github_copilot_log_tool_input"
+         }
+        },
+        {
+         "key": "tool_output",
+         "value": {
+          "stringValue": "SDF-LEAK-40-github_copilot_log_tool_output"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "SDF-LEAK-41-github_copilot_log_tool_parameters"
+         }
+        },
+        {
+         "key": "full_command",
+         "value": {
+          "stringValue": "SDF-LEAK-42-github_copilot_log_full_command"
+         }
+        },
+        {
+         "key": "arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-43-github_copilot_log_arguments"
+         }
+        },
+        {
+         "key": "result",
+         "value": {
+          "stringValue": "SDF-LEAK-44-github_copilot_log_result"
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "SDF-LEAK-45-github_copilot_log_response"
+         }
+        },
+        {
+         "key": "completion",
+         "value": {
+          "stringValue": "SDF-LEAK-46-github_copilot_log_completion"
+         }
+        },
+        {
+         "key": "messages",
+         "value": {
+          "stringValue": "SDF-LEAK-47-github_copilot_log_messages"
+         }
+        },
+        {
+         "key": "content",
+         "value": {
+          "stringValue": "SDF-LEAK-48-github_copilot_log_content"
+         }
+        },
+        {
+         "key": "input",
+         "value": {
+          "stringValue": "SDF-LEAK-49-github_copilot_log_input"
+         }
+        },
+        {
+         "key": "output",
+         "value": {
+          "stringValue": "SDF-LEAK-50-github_copilot_log_output"
+         }
+        },
+        {
+         "key": "function_args",
+         "value": {
+          "stringValue": "SDF-LEAK-51-github_copilot_log_function_args"
+         }
+        },
+        {
+         "key": "gen_ai.prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-52-github_copilot_log_gen_ai_prompt"
+         }
+        },
+        {
+         "key": "gen_ai.completion",
+         "value": {
+          "stringValue": "SDF-LEAK-53-github_copilot_log_gen_ai_completion"
+         }
+        },
+        {
+         "key": "gen_ai.prompt.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-54-github_copilot_log_gen_ai_prompt_0_content"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-55-github_copilot_log_gen_ai_input_messages_0_content"
+         }
+        },
+        {
+         "key": "llm.input_messages",
+         "value": {
+          "stringValue": "SDF-LEAK-56-github_copilot_log_llm_input_messages"
+         }
+        },
+        {
+         "key": "llm.output_messages.0.message.content",
+         "value": {
+          "stringValue": "SDF-LEAK-57-github_copilot_log_llm_output_messages_0_message_content"
+         }
+        },
+        {
+         "key": "input.value",
+         "value": {
+          "stringValue": "SDF-LEAK-58-github_copilot_log_input_value"
+         }
+        },
+        {
+         "key": "output.value",
+         "value": {
+          "stringValue": "SDF-LEAK-59-github_copilot_log_output_value"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "SDF-LEAK-60-github_copilot_log_gen_ai_tool_definitions"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages_ref",
+         "value": {
+          "stringValue": "SDF-LEAK-61-github_copilot_log_gen_ai_input_messages_ref"
+         }
+        },
+        {
+         "key": "Gen_AI.Input.Messages",
+         "value": {
+          "stringValue": "SDF-LEAK-62-github_copilot_log_Gen_AI_Input_Messages"
+         }
+        },
+        {
+         "key": "GEN_AI.OUTPUT.MESSAGES",
+         "value": {
+          "stringValue": "SDF-LEAK-63-github_copilot_log_GEN_AI_OUTPUT_MESSAGES"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-64-github_copilot_log_gen_ai_input_messages"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-65-github_copilot_log_gen_ai_output_messages"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "SDF-LEAK-66-github_copilot_log_gen_ai_system_instructions"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-67-github_copilot_log_gen_ai_tool_call_arguments"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "SDF-LEAK-68-github_copilot_log_gen_ai_tool_call_result"
+         }
+        },
+        {
+         "key": "Prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-69-github_copilot_log_Prompt"
+         }
+        },
+        {
+         "key": "TOOL_INPUT",
+         "value": {
+          "stringValue": "SDF-LEAK-70-github_copilot_log_TOOL_INPUT"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "1200"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "intValue": "42"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_shell_command"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "m-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "gen_ai.client.inference.operation.details"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "grok-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "grok-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "grok_code.tool_result"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-71-grok_cli_log_prompt"
+         }
+        },
+        {
+         "key": "request_text",
+         "value": {
+          "stringValue": "SDF-LEAK-72-grok_cli_log_request_text"
+         }
+        },
+        {
+         "key": "response_text",
+         "value": {
+          "stringValue": "SDF-LEAK-73-grok_cli_log_response_text"
+         }
+        },
+        {
+         "key": "tool_input",
+         "value": {
+          "stringValue": "SDF-LEAK-74-grok_cli_log_tool_input"
+         }
+        },
+        {
+         "key": "tool_output",
+         "value": {
+          "stringValue": "SDF-LEAK-75-grok_cli_log_tool_output"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "SDF-LEAK-76-grok_cli_log_tool_parameters"
+         }
+        },
+        {
+         "key": "full_command",
+         "value": {
+          "stringValue": "SDF-LEAK-77-grok_cli_log_full_command"
+         }
+        },
+        {
+         "key": "arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-78-grok_cli_log_arguments"
+         }
+        },
+        {
+         "key": "result",
+         "value": {
+          "stringValue": "SDF-LEAK-79-grok_cli_log_result"
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "SDF-LEAK-80-grok_cli_log_response"
+         }
+        },
+        {
+         "key": "completion",
+         "value": {
+          "stringValue": "SDF-LEAK-81-grok_cli_log_completion"
+         }
+        },
+        {
+         "key": "messages",
+         "value": {
+          "stringValue": "SDF-LEAK-82-grok_cli_log_messages"
+         }
+        },
+        {
+         "key": "content",
+         "value": {
+          "stringValue": "SDF-LEAK-83-grok_cli_log_content"
+         }
+        },
+        {
+         "key": "input",
+         "value": {
+          "stringValue": "SDF-LEAK-84-grok_cli_log_input"
+         }
+        },
+        {
+         "key": "output",
+         "value": {
+          "stringValue": "SDF-LEAK-85-grok_cli_log_output"
+         }
+        },
+        {
+         "key": "function_args",
+         "value": {
+          "stringValue": "SDF-LEAK-86-grok_cli_log_function_args"
+         }
+        },
+        {
+         "key": "gen_ai.prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-87-grok_cli_log_gen_ai_prompt"
+         }
+        },
+        {
+         "key": "gen_ai.completion",
+         "value": {
+          "stringValue": "SDF-LEAK-88-grok_cli_log_gen_ai_completion"
+         }
+        },
+        {
+         "key": "gen_ai.prompt.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-89-grok_cli_log_gen_ai_prompt_0_content"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-90-grok_cli_log_gen_ai_input_messages_0_content"
+         }
+        },
+        {
+         "key": "llm.input_messages",
+         "value": {
+          "stringValue": "SDF-LEAK-91-grok_cli_log_llm_input_messages"
+         }
+        },
+        {
+         "key": "llm.output_messages.0.message.content",
+         "value": {
+          "stringValue": "SDF-LEAK-92-grok_cli_log_llm_output_messages_0_message_content"
+         }
+        },
+        {
+         "key": "input.value",
+         "value": {
+          "stringValue": "SDF-LEAK-93-grok_cli_log_input_value"
+         }
+        },
+        {
+         "key": "output.value",
+         "value": {
+          "stringValue": "SDF-LEAK-94-grok_cli_log_output_value"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "SDF-LEAK-95-grok_cli_log_gen_ai_tool_definitions"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages_ref",
+         "value": {
+          "stringValue": "SDF-LEAK-96-grok_cli_log_gen_ai_input_messages_ref"
+         }
+        },
+        {
+         "key": "Gen_AI.Input.Messages",
+         "value": {
+          "stringValue": "SDF-LEAK-97-grok_cli_log_Gen_AI_Input_Messages"
+         }
+        },
+        {
+         "key": "GEN_AI.OUTPUT.MESSAGES",
+         "value": {
+          "stringValue": "SDF-LEAK-98-grok_cli_log_GEN_AI_OUTPUT_MESSAGES"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-99-grok_cli_log_gen_ai_input_messages"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-100-grok_cli_log_gen_ai_output_messages"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "SDF-LEAK-101-grok_cli_log_gen_ai_system_instructions"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-102-grok_cli_log_gen_ai_tool_call_arguments"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "SDF-LEAK-103-grok_cli_log_gen_ai_tool_call_result"
+         }
+        },
+        {
+         "key": "Prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-104-grok_cli_log_Prompt"
+         }
+        },
+        {
+         "key": "TOOL_INPUT",
+         "value": {
+          "stringValue": "SDF-LEAK-105-grok_cli_log_TOOL_INPUT"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "1200"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "intValue": "42"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_shell_command"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "m-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "grok_code.tool_result"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "claude-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "claude_code.user_prompt"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-106-claude_code_log_prompt"
+         }
+        },
+        {
+         "key": "request_text",
+         "value": {
+          "stringValue": "SDF-LEAK-107-claude_code_log_request_text"
+         }
+        },
+        {
+         "key": "response_text",
+         "value": {
+          "stringValue": "SDF-LEAK-108-claude_code_log_response_text"
+         }
+        },
+        {
+         "key": "tool_input",
+         "value": {
+          "stringValue": "SDF-LEAK-109-claude_code_log_tool_input"
+         }
+        },
+        {
+         "key": "tool_output",
+         "value": {
+          "stringValue": "SDF-LEAK-110-claude_code_log_tool_output"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "SDF-LEAK-111-claude_code_log_tool_parameters"
+         }
+        },
+        {
+         "key": "full_command",
+         "value": {
+          "stringValue": "SDF-LEAK-112-claude_code_log_full_command"
+         }
+        },
+        {
+         "key": "arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-113-claude_code_log_arguments"
+         }
+        },
+        {
+         "key": "result",
+         "value": {
+          "stringValue": "SDF-LEAK-114-claude_code_log_result"
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "SDF-LEAK-115-claude_code_log_response"
+         }
+        },
+        {
+         "key": "completion",
+         "value": {
+          "stringValue": "SDF-LEAK-116-claude_code_log_completion"
+         }
+        },
+        {
+         "key": "messages",
+         "value": {
+          "stringValue": "SDF-LEAK-117-claude_code_log_messages"
+         }
+        },
+        {
+         "key": "content",
+         "value": {
+          "stringValue": "SDF-LEAK-118-claude_code_log_content"
+         }
+        },
+        {
+         "key": "input",
+         "value": {
+          "stringValue": "SDF-LEAK-119-claude_code_log_input"
+         }
+        },
+        {
+         "key": "output",
+         "value": {
+          "stringValue": "SDF-LEAK-120-claude_code_log_output"
+         }
+        },
+        {
+         "key": "function_args",
+         "value": {
+          "stringValue": "SDF-LEAK-121-claude_code_log_function_args"
+         }
+        },
+        {
+         "key": "gen_ai.prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-122-claude_code_log_gen_ai_prompt"
+         }
+        },
+        {
+         "key": "gen_ai.completion",
+         "value": {
+          "stringValue": "SDF-LEAK-123-claude_code_log_gen_ai_completion"
+         }
+        },
+        {
+         "key": "gen_ai.prompt.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-124-claude_code_log_gen_ai_prompt_0_content"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-125-claude_code_log_gen_ai_input_messages_0_content"
+         }
+        },
+        {
+         "key": "llm.input_messages",
+         "value": {
+          "stringValue": "SDF-LEAK-126-claude_code_log_llm_input_messages"
+         }
+        },
+        {
+         "key": "llm.output_messages.0.message.content",
+         "value": {
+          "stringValue": "SDF-LEAK-127-claude_code_log_llm_output_messages_0_message_content"
+         }
+        },
+        {
+         "key": "input.value",
+         "value": {
+          "stringValue": "SDF-LEAK-128-claude_code_log_input_value"
+         }
+        },
+        {
+         "key": "output.value",
+         "value": {
+          "stringValue": "SDF-LEAK-129-claude_code_log_output_value"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "SDF-LEAK-130-claude_code_log_gen_ai_tool_definitions"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages_ref",
+         "value": {
+          "stringValue": "SDF-LEAK-131-claude_code_log_gen_ai_input_messages_ref"
+         }
+        },
+        {
+         "key": "Gen_AI.Input.Messages",
+         "value": {
+          "stringValue": "SDF-LEAK-132-claude_code_log_Gen_AI_Input_Messages"
+         }
+        },
+        {
+         "key": "GEN_AI.OUTPUT.MESSAGES",
+         "value": {
+          "stringValue": "SDF-LEAK-133-claude_code_log_GEN_AI_OUTPUT_MESSAGES"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-134-claude_code_log_gen_ai_input_messages"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-135-claude_code_log_gen_ai_output_messages"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "SDF-LEAK-136-claude_code_log_gen_ai_system_instructions"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-137-claude_code_log_gen_ai_tool_call_arguments"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "SDF-LEAK-138-claude_code_log_gen_ai_tool_call_result"
+         }
+        },
+        {
+         "key": "Prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-139-claude_code_log_Prompt"
+         }
+        },
+        {
+         "key": "TOOL_INPUT",
+         "value": {
+          "stringValue": "SDF-LEAK-140-claude_code_log_TOOL_INPUT"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "1200"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "intValue": "42"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_shell_command"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "m-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "claude_code.user_prompt"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "codex"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "codex"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "codex.tool_result"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-141-codex_log_prompt"
+         }
+        },
+        {
+         "key": "request_text",
+         "value": {
+          "stringValue": "SDF-LEAK-142-codex_log_request_text"
+         }
+        },
+        {
+         "key": "response_text",
+         "value": {
+          "stringValue": "SDF-LEAK-143-codex_log_response_text"
+         }
+        },
+        {
+         "key": "tool_input",
+         "value": {
+          "stringValue": "SDF-LEAK-144-codex_log_tool_input"
+         }
+        },
+        {
+         "key": "tool_output",
+         "value": {
+          "stringValue": "SDF-LEAK-145-codex_log_tool_output"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "SDF-LEAK-146-codex_log_tool_parameters"
+         }
+        },
+        {
+         "key": "full_command",
+         "value": {
+          "stringValue": "SDF-LEAK-147-codex_log_full_command"
+         }
+        },
+        {
+         "key": "arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-148-codex_log_arguments"
+         }
+        },
+        {
+         "key": "result",
+         "value": {
+          "stringValue": "SDF-LEAK-149-codex_log_result"
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "SDF-LEAK-150-codex_log_response"
+         }
+        },
+        {
+         "key": "completion",
+         "value": {
+          "stringValue": "SDF-LEAK-151-codex_log_completion"
+         }
+        },
+        {
+         "key": "messages",
+         "value": {
+          "stringValue": "SDF-LEAK-152-codex_log_messages"
+         }
+        },
+        {
+         "key": "content",
+         "value": {
+          "stringValue": "SDF-LEAK-153-codex_log_content"
+         }
+        },
+        {
+         "key": "input",
+         "value": {
+          "stringValue": "SDF-LEAK-154-codex_log_input"
+         }
+        },
+        {
+         "key": "output",
+         "value": {
+          "stringValue": "SDF-LEAK-155-codex_log_output"
+         }
+        },
+        {
+         "key": "function_args",
+         "value": {
+          "stringValue": "SDF-LEAK-156-codex_log_function_args"
+         }
+        },
+        {
+         "key": "gen_ai.prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-157-codex_log_gen_ai_prompt"
+         }
+        },
+        {
+         "key": "gen_ai.completion",
+         "value": {
+          "stringValue": "SDF-LEAK-158-codex_log_gen_ai_completion"
+         }
+        },
+        {
+         "key": "gen_ai.prompt.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-159-codex_log_gen_ai_prompt_0_content"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages.0.content",
+         "value": {
+          "stringValue": "SDF-LEAK-160-codex_log_gen_ai_input_messages_0_content"
+         }
+        },
+        {
+         "key": "llm.input_messages",
+         "value": {
+          "stringValue": "SDF-LEAK-161-codex_log_llm_input_messages"
+         }
+        },
+        {
+         "key": "llm.output_messages.0.message.content",
+         "value": {
+          "stringValue": "SDF-LEAK-162-codex_log_llm_output_messages_0_message_content"
+         }
+        },
+        {
+         "key": "input.value",
+         "value": {
+          "stringValue": "SDF-LEAK-163-codex_log_input_value"
+         }
+        },
+        {
+         "key": "output.value",
+         "value": {
+          "stringValue": "SDF-LEAK-164-codex_log_output_value"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "SDF-LEAK-165-codex_log_gen_ai_tool_definitions"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages_ref",
+         "value": {
+          "stringValue": "SDF-LEAK-166-codex_log_gen_ai_input_messages_ref"
+         }
+        },
+        {
+         "key": "Gen_AI.Input.Messages",
+         "value": {
+          "stringValue": "SDF-LEAK-167-codex_log_Gen_AI_Input_Messages"
+         }
+        },
+        {
+         "key": "GEN_AI.OUTPUT.MESSAGES",
+         "value": {
+          "stringValue": "SDF-LEAK-168-codex_log_GEN_AI_OUTPUT_MESSAGES"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-169-codex_log_gen_ai_input_messages"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-170-codex_log_gen_ai_output_messages"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "SDF-LEAK-171-codex_log_gen_ai_system_instructions"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "SDF-LEAK-172-codex_log_gen_ai_tool_call_arguments"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "SDF-LEAK-173-codex_log_gen_ai_tool_call_result"
+         }
+        },
+        {
+         "key": "Prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-174-codex_log_Prompt"
+         }
+        },
+        {
+         "key": "TOOL_INPUT",
+         "value": {
+          "stringValue": "SDF-LEAK-175-codex_log_TOOL_INPUT"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "1200"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "intValue": "42"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_shell_command"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "m-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "codex.tool_result"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "qwen-code.api_request"
+         }
+        },
+        {
+         "key": "gen_ai",
+         "value": {
+          "kvlistValue": {
+           "values": [
+            {
+             "key": "input",
+             "value": {
+              "kvlistValue": {
+               "values": [
+                {
+                 "key": "messages",
+                 "value": {
+                  "stringValue": "SDF-LEAK-176-nested_genai"
+                 }
+                }
+               ]
+              }
+             }
+            }
+           ]
+          }
+         }
+        },
+        {
+         "key": "meta",
+         "value": {
+          "kvlistValue": {
+           "values": [
+            {
+             "key": "prompt",
+             "value": {
+              "stringValue": "SDF-LEAK-177-nested_prompt"
+             }
+            },
+            {
+             "key": "count",
+             "value": {
+              "intValue": "3"
+             }
+            }
+           ]
+          }
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "qwen-code.api_request"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     },
+     {
+      "key": "gen_ai.input.messages",
+      "value": {
+       "stringValue": "SDF-LEAK-178-resource_genai"
+      }
+     },
+     {
+      "key": "prompt",
+      "value": {
+       "stringValue": "SDF-LEAK-179-resource_prompt"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "qwen-code.api_request"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "qwen-code.api_request"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "github-copilot"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "github-copilot"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "gen_ai.client.inference.operation.details"
+         }
+        }
+       ],
+       "body": {
+        "kvlistValue": {
+         "values": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "SDF-LEAK-180-body_kvlist"
+           }
+          }
+         ]
+        }
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "github-copilot"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "github-copilot"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "gen_ai.client.inference.operation.details"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-181-body_string"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "gemini-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "gemini-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "gemini_cli.api_response"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "API response SDF-LEAK-182-gemini_body_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "grok-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "grok-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "grok_code.tool_result"
+         }
+        },
+        {
+         "key": "error_message",
+         "value": {
+          "stringValue": "SDF-LEAK-183-grok_error_message"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "grok_code.tool_result"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "qwen-code.api_error"
+         }
+        },
+        {
+         "key": "error",
+         "value": {
+          "stringValue": "SDF-LEAK-184-qwen_api_error_error"
+         }
+        },
+        {
+         "key": "error.message",
+         "value": {
+          "stringValue": "SDF-LEAK-185-qwen_api_error_error_message"
+         }
+        },
+        {
+         "key": "error.type",
+         "value": {
+          "stringValue": "rate_limit"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "qwen-code.api_error"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "claude-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "claude_code.api_error"
+         }
+        },
+        {
+         "key": "error",
+         "value": {
+          "stringValue": "SDF-LEAK-186-claude_api_error_error"
+         }
+        },
+        {
+         "key": "status_code",
+         "value": {
+          "stringValue": "529"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "claude_code.api_error"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "claude-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "claude_code.tool_result"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Bash"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "stringValue": "true"
+         }
+        },
+        {
+         "key": "tool_parameters",
+         "value": {
+          "stringValue": "{\"bash_command\": \"git commit -m 'SDF-LEAK-187-claude_commit_message'\", \"git_commit_id\": \"0123456789abcdef0123456789abcdef01234567\"}"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "claude_code.tool_result"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

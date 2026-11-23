@@ -159,6 +159,11 @@ func commitSHAs(attributes map[string]any) []string {
 	if sha, ok := fullCommit(textAt(attributes, "git_commit_id")); ok {
 		out = append(out, sha)
 	}
+	// Ingest copies tool_parameters.git_commit_id here before it drops
+	// tool_parameters (content); see record.Redact.
+	if sha, ok := fullCommit(textAt(attributes, "sdf.git_commit_id")); ok {
+		out = append(out, sha)
+	}
 	out = append(out, parameterCommit(attributes["tool_parameters"])...)
 	return out
 }
