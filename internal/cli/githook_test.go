@@ -231,7 +231,7 @@ func isolateAgentGit(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
-	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GROK_SESSION_ID", "AI_AGENT"} {
+	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GROK_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "QWEN_CODE_SESSION_ID", "AI_AGENT"} {
 		t.Setenv(key, "")
 	}
 }
@@ -240,6 +240,7 @@ func agentGitEnv(extra ...string) []string {
 	drop := map[string]bool{
 		"PI_SESSION_FILE": true, "PI_SESSION_ID": true, "OPENCODE_SESSION_ID": true,
 		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "GROK_SESSION_ID": true, "AI_AGENT": true,
+		"CLAUDE_CODE_SESSION_ID": true, "QWEN_CODE_SESSION_ID": true,
 	}
 	var out []string
 	for _, env := range os.Environ() {

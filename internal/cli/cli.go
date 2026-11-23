@@ -493,7 +493,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|retract|brief|check> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list|retract|audit|brief|check> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -511,6 +511,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionBrief(args[1:], stdout, stderr)
 	case "retract":
 		return cmdDecisionRetract(args[1:], stdout, stderr)
+	case "audit":
+		return cmdDecisionAudit(args[1:], stdout, stderr)
 	case "check":
 		return cmdDecisionCheck(args[1:], stdout, stderr)
 	case "--help", "-h":

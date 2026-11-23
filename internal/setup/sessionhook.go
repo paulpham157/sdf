@@ -178,26 +178,39 @@ func insertGuard(command, guard string) string {
 	return strings.Replace(command, marker, marker+guard, 1)
 }
 
-// opencodePlugin subscribes to session.created and posts the open. OpenCode has
-// no event for the close: session.deleted fires when a session is deleted, and
-// session.status going idle is the gap between turns. The in-process bus does
-// not drop events the way the /api/event stream does.
+// opencodePlugin is a V2 OpenCode plugin: a default export with an id and a
+// setup function. V2 refuses any other shape ("Plugin must export a default
+// definition with an id and an effect or setup function"), so a V1 named
+// export never runs (#290; https://opencode.ai/docs/build/plugins/migrate-v1/).
+// setup subscribes to session.created on the in-process event bus, which does
+// not drop events the way the /api/event stream does, and posts the open. In
+// V2 ctx.event.subscribe returns an async iterable, and the id is
+// ev.data.sessionID (checked live with @opencode/cli 2.4.1 on 2026-11-23).
+// The cleanup setup returns aborts the subscription when the plugin unloads.
+//
+// OpenCode has no event for the close: session.deleted fires when a session is
+// deleted, session.idle and session.status going idle are the gap between
+// turns, and the cleanup runs on unload, not when a session ends.
 func opencodePlugin(url string) string {
 	return fmt.Sprintf(`// Reports a session opening to the local sdf collector.
 %s
-export const SdfSession = async (ctx) => {
-  ctx.event.subscribe({ types: ["session.created"] }).then(async (stream) => {
-    for await (const ev of stream) {
-      const id = ev && ev.sessionID
-      if (!id) continue
-      fetch(%q, {
-        method: "POST",
-        headers: sdfHeaders(),
-        body: JSON.stringify({ tool: "opencode", session_id: id, edge: "open", reason: "" }),
-      }).catch(() => {})
-    }
-  })
-  return {}
+export default {
+  id: "sdf-session",
+  setup(ctx) {
+    const controller = new AbortController()
+    void (async () => {
+      for await (const ev of ctx.event.subscribe({ types: ["session.created"], signal: controller.signal })) {
+        const id = ev && ev.data && ev.data.sessionID
+        if (!id) continue
+        fetch(%q, {
+          method: "POST",
+          headers: sdfHeaders(),
+          body: JSON.stringify({ tool: "opencode", session_id: id, edge: "open", reason: "" }),
+        }).catch(() => {})
+      }
+    })().catch(() => {})
+    return () => controller.abort()
+  },
 }
 `, jsHeaders(url), url)
 }

@@ -169,7 +169,7 @@ Read the environment of the shell you are running in. Use the first value that i
 - Pi: the basename of `$PI_SESSION_FILE` with a trailing `.jsonl` removed. Do not use `$PI_SESSION_ID` (it is only the short trailing id).
 - Grok CLI: `$GROK_SESSION_ID`.
 
-The sdf git hook reads `$CODEX_THREAD_ID`, `$OPENCODE_SESSION_ID`, `$PI_SESSION_FILE`, and `$GROK_SESSION_ID`. It does not read Claude Code or Qwen variables. If no session id is available, or a link returns `unknown reference`, keep the record and skip the session link.
+The sdf git hook reads `$CLAUDE_CODE_SESSION_ID`, `$CODEX_THREAD_ID`, `$QWEN_CODE_SESSION_ID`, `$OPENCODE_SESSION_ID`, `$PI_SESSION_FILE`, and `$GROK_SESSION_ID`, and attributes a commit only when exactly one of them is set. If no session id is available, or a link returns `unknown reference`, keep the record and skip the session link.
 
 For a commit SHA, `git rev-parse HEAD` is the usual source, but link it only when it is already in the store.
 
@@ -205,6 +205,16 @@ Retract when the user (or you) withdraws a decision or hypothesis and nothing re
 
 - A decision can be retracted once. A second retract is rejected.
 - A retracted decision takes no new links in either direction; edges from before stay.
+
+## Check for gaps
+
+```bash
+sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
+```
+
+Read-only; it never writes or infers a record. It lists active decisions no `implements` edge points at, commits (from the git hook or a Claude Code tool result) whose session is not linked to any decision and that are not linked themselves, and edges that touch a retracted or superseded decision. Exit 0 means nothing to do, 1 means findings, 2 a usage error, 3 the store could not be read.
+
+Run it before you finish a task that recorded decisions or made commits. For each finding, link only what you know: an `implements` edge from the session or commit that did the work, if it really implements that decision. Do not add a decision just to clear a finding, and do not link a commit to a decision it did not implement; an unlinked finding is better than a wrong edge. A stale edge needs no fix unless the work now follows a newer decision, in which case link it to that one.
 
 ## Errors
 

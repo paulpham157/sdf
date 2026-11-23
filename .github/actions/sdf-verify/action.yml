@@ -29,6 +29,13 @@ inputs:
     description: Protected branch the task file is read from, as `.sdf/tasks/<id>.json`.
     required: false
     default: ${{ github.base_ref }}
+  protected-branches:
+    description: >-
+      Space-separated branches a task may be read from. base-ref defaults to the
+      pull request's base, which its author picks; a base not listed here is ERROR.
+      Defaults to the repository's default branch. List only protected branches.
+    required: false
+    default: ${{ github.event.repository.default_branch }}
   repository:
     description: Repository holding the commit.
     required: false
@@ -37,6 +44,10 @@ inputs:
     description: Where to check the commit out, under the workspace.
     required: false
     default: sdf-subject
+  configure-runner:
+    description: "`auto` (default) prepares GitHub-hosted runners only: allows unprivileged user namespaces (sudo sysctl) and stops docker/containerd. `true` does it on any runner (it changes the host); `false` never. Without user namespaces the verdict is ERROR ISOLATION_UNAVAILABLE."
+    required: false
+    default: auto
   artifact-name:
     description: Name of the uploaded verdict artifact. Empty skips the upload.
     required: false
@@ -68,6 +79,12 @@ runs:
       shell: bash
       run: '"$GITHUB_ACTION_PATH/build.sh"'
 
+    # Each check runs in its own namespaces; let it, and take docker away.
+    - shell: bash
+      env:
+        SDF_CONFIGURE_RUNNER: ${{ inputs.configure-runner }}
+      run: '"$GITHUB_ACTION_PATH/runner-setup.sh"'
+
     # Full history, so the base branch is there as origin/<base-ref>.
     # persist-credentials: false keeps the token out of .git/config, where
     # the checks (pull request code) could read it.
@@ -88,6 +105,7 @@ runs:
         SDF_LABELS: ${{ inputs.labels }}
         SDF_SHA: ${{ inputs.sha }}
         SDF_BASE_REF: ${{ inputs.base-ref }}
+        SDF_PROTECTED_BRANCHES: ${{ inputs.protected-branches }}
         SDF_REPO: ${{ github.workspace }}/${{ inputs.path }}
       run: '"$GITHUB_ACTION_PATH/verify.sh"'
 
@@ -98,7 +116,8 @@ runs:
         path: ${{ steps.verify.outputs.out-dir }}
         if-no-files-found: warn
 
-    # Fail closed: anything but PASS, including no verdict at all, fails.
+    # The verify step already exits non-zero unless PASS. This repeats it so
+    # that a verify step that never ran or set no status fails the job too.
     - if: always()
       shell: bash
       env:

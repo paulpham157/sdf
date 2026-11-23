@@ -139,7 +139,8 @@ func cleanEnv(extra ...string) []string {
 		key, _, _ := strings.Cut(item, "=")
 		switch key {
 		case "HOME", "GROK_HOME", "SDF_OTLP_TOKEN", "SDF_OTLP_TOKEN_FILE", "GROK_HOOK_EVENT", "GROK_SESSION_ID",
-			"CODEX_THREAD_ID", "CODEX_SESSION_ID", "OPENCODE_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_ID", "AI_AGENT":
+			"CODEX_THREAD_ID", "CODEX_SESSION_ID", "OPENCODE_SESSION_ID", "PI_SESSION_FILE", "PI_SESSION_ID", "AI_AGENT",
+			"CLAUDE_CODE_SESSION_ID", "QWEN_CODE_SESSION_ID":
 			continue
 		}
 		out = append(out, item)
