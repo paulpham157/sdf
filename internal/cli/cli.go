@@ -39,6 +39,7 @@ func Main(args []string) int {
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usageLine)
+		fmt.Fprintln(stderr, "Run sdf --help for what each command does. New here? Start with sdf demo.")
 		return 2
 	}
 	switch args[0] {
@@ -64,11 +65,13 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdAudit(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
-	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, usageLine)
+	case "-h", "--help":
+		writeTopHelp(stdout)
 		return 0
+	case "help":
+		return cmdHelp(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
+		fmt.Fprintf(stderr, "unrecognized command %q; run sdf --help for the list\n", args[0])
 		return 2
 	}
 }
@@ -113,6 +116,8 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
 			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, serveHelp)
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -343,6 +348,8 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, summaryHelp)
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -473,6 +480,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionLink(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, decisionHelp)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
@@ -664,6 +673,8 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, "usage: sdf check [--cases DIR]")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, checkHelp)
 			return 0
 		case arg == "--cases":
 			v, ok := take(&i, args)
@@ -705,8 +716,10 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: sdf prices refresh [--url URL] [--out PATH]")
 		return 2
 	}
-	if args[0] == "--help" || args[0] == "-h" {
+	if args[0] == "--help" || args[0] == "-h" || (len(args) > 1 && (args[1] == "--help" || args[1] == "-h")) {
 		fmt.Fprintln(stdout, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, pricesHelp)
 		return 0
 	}
 	pageURL := ""
@@ -787,6 +800,8 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, initUsage)
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, initHelp)
 			return 0
 		case arg == "--write":
 			write = true
