@@ -1,5 +1,10 @@
 package store
 
+import (
+	"context"
+	"database/sql"
+)
+
 // Schema is the store schema, for tests that build a database by hand.
 const Schema = schema
 
@@ -15,4 +20,27 @@ func Pragmas(s *Store) (mode string, busyTimeout int, err error) {
 	}
 	err = s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout)
 	return mode, busyTimeout, err
+}
+
+// DropRetractionsForTest removes decision_retractions from a file, to stand
+// in for a database the migration could not write.
+func DropRetractionsForTest(path string) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.Exec(`DROP TABLE IF EXISTS decision_retractions`)
+	return err
+}
+
+// LoadDecisionRetractionsAt reads retractions from path without running the
+// migration, as a read-only open would.
+func LoadDecisionRetractionsAt(path string) ([]DecisionRetraction, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return loadDecisionRetractions(context.Background(), db)
 }

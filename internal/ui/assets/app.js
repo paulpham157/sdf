@@ -227,21 +227,34 @@
     } else {
       records.forEach(function (record) {
         const by = Array.isArray(record.superseded_by) ? record.superseded_by : [];
-        const superseded = record.effective_status === "superseded" && by.length > 0;
+        const retraction = record.effective_status === "retracted" && record.retraction ? record.retraction : null;
+        const superseded = by.length > 0 && (retraction || record.effective_status === "superseded");
         const line = [
           h("span", { class: "status" }, [record.status || "unknown"]),
         ];
         if (record.decided_by) {
           line.push(h("span", { class: "status" }, [record.decided_by]));
         }
+        if (retraction) {
+          line.push(h("span", { class: "retracted" }, ["retracted"]));
+        }
         if (superseded) {
           line.push(h("span", { class: "superseded-by" }, ["superseded by " + by.join(", ")]));
         }
         line.push(document.createTextNode(record.statement || ""));
-        kids.push(h("p", { class: superseded ? "decision superseded" : "decision" }, line));
+        let cls = "decision";
+        if (retraction) cls = "decision retracted-record";
+        else if (superseded) cls = "decision superseded";
+        kids.push(h("p", { class: cls }, line));
         const extra = [];
         if (record.alternatives) extra.push("alternatives " + record.alternatives);
         if (record.reason) extra.push("reason " + record.reason);
+        if (retraction) {
+          const parts = ["retraction " + (retraction.retracted_at || "")];
+          if (retraction.retracted_by) parts.push("by " + retraction.retracted_by);
+          if (retraction.reason) parts.push(retraction.reason);
+          extra.push(parts.join(" "));
+        }
         if (extra.length) {
           kids.push(h("p", { class: "detail" }, [extra.join(" · ")]));
         }

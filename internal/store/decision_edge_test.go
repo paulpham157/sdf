@@ -29,7 +29,7 @@ func TestAppendDecisionEdgeChecksAndInsertsInOneTransaction(t *testing.T) {
 	entered := make(chan struct{})
 	firstDone := make(chan error, 1)
 	go func() {
-		firstDone <- first.AppendDecisionEdge(edge, func(existing []store.DecisionEdge) error {
+		firstDone <- first.AppendDecisionEdge(edge, func(store.DecisionGraph) error {
 			close(entered)
 			time.Sleep(300 * time.Millisecond)
 			return nil
@@ -38,9 +38,9 @@ func TestAppendDecisionEdgeChecksAndInsertsInOneTransaction(t *testing.T) {
 	<-entered
 	seen := -1
 	errDup := errors.New("duplicate")
-	err := second.AppendDecisionEdge(edge, func(existing []store.DecisionEdge) error {
-		seen = len(existing)
-		if len(existing) > 0 {
+	err := second.AppendDecisionEdge(edge, func(g store.DecisionGraph) error {
+		seen = len(g.Edges)
+		if len(g.Edges) > 0 {
 			return errDup
 		}
 		return nil
@@ -68,7 +68,7 @@ func TestAppendDecisionEdgeWritesNothingWhenTheCheckFails(t *testing.T) {
 	defer s.Close()
 	no := errors.New("no")
 	edge := store.DecisionEdge{Relation: "implements", FromKind: "decision", FromRef: "a", ToKind: "decision", ToRef: "b", RecordedAt: "x"}
-	if err := s.AppendDecisionEdge(edge, func([]store.DecisionEdge) error { return no }); !errors.Is(err, no) {
+	if err := s.AppendDecisionEdge(edge, func(store.DecisionGraph) error { return no }); !errors.Is(err, no) {
 		t.Fatalf("err %v", err)
 	}
 	edges, err := s.LoadDecisionEdges()
@@ -76,7 +76,37 @@ func TestAppendDecisionEdgeWritesNothingWhenTheCheckFails(t *testing.T) {
 		t.Fatalf("%d edges, %v", len(edges), err)
 	}
 	// The store is still usable: the failed transaction was rolled back.
-	if err := s.AppendDecisionEdge(edge, func([]store.DecisionEdge) error { return nil }); err != nil {
+	if err := s.AppendDecisionEdge(edge, func(store.DecisionGraph) error { return nil }); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestAppendDecisionEdgeGivesCheckTheDecisionIDs: the check gets every
+// stored decision id, read in the edge's own transaction, including one
+// another Store (another process) committed after this Store opened.
+func TestAppendDecisionEdgeGivesCheckTheDecisionIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ids.sqlite")
+	open := func() *store.Store {
+		s, err := store.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	linker, writer := open(), open()
+	for _, id := range []string{"a", "late"} {
+		if err := writer.InsertDecision(store.Decision{ID: id, Statement: id, Status: "decision", RecordedAt: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ids map[string]bool
+	err := linker.AppendDecisionEdge(store.DecisionEdge{Relation: "validates", FromKind: "decision", FromRef: "a", ToKind: "decision", ToRef: "late", RecordedAt: "y"},
+		func(g store.DecisionGraph) error {
+			ids = g.DecisionIDs
+			return nil
+		})
+	if err != nil || len(ids) != 2 || !ids["a"] || !ids["late"] {
+		t.Fatalf("ids %v, %v", ids, err)
 	}
 }
