@@ -506,29 +506,36 @@ error type, and records `function_args_bytes`, `error_bytes`, and
   no `session.id` unless `telemetry.metrics.includeSessionId` is true, so
   they reach a session only by time window.
 - Duration is the sum of `qwen-code.interaction` spans (one trace root per
-  prompt, including tool approval waits). Without spans it is the
-  min-to-max timestamp of Qwen logs (`logs qwen-code window`).
+  prompt, including tool approval waits); a span stored twice (same trace
+  and span id) counts once. Without spans it is the min-to-max timestamp
+  of Qwen logs (`logs qwen-code window`).
 - Tokens are the sum of `input_token_count`, `output_token_count`,
   `cached_content_token_count`, and `thoughts_token_count` on
-  `qwen-code.api_response` logs (`total_token_count` is not added), else
-  `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
-  spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
-  `thought`, `cache`). That counter belongs to the process, not the session:
-  sdf places its points by their own time (a flush after the last log goes
-  to the latest session of that process run), adds up process runs, and
-  subtracts the run's last point before the session, which is what an
-  earlier session in the same process had counted; when that cannot be
-  told apart the tokens are unknown (see [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
-  providers (the default) output includes thoughts, which Qwen estimates
-  from text when the provider does not report them; with Gemini-native
-  responses it does not. The totals include subagents and the background
-  memory extractor (its spans are separate single-span traces with
-  `llm_request.context=standalone`); Qwen does not split them out.
+  `qwen-code.api_response` logs (`total_token_count` is not added; an exact
+  copy of a log, same session, time, body, and attributes, counts once),
+  else `gen_ai.usage.*` and `thoughts_token_count` on
+  `qwen-code.llm_request` spans (a span stored twice, same trace and span
+  id, counts once), else `qwen-code.token.usage` by `type` (`input`,
+  `output`, `thought`, `cache`). That counter belongs to the process, not
+  the session: sdf places its points by their own time (a flush after the
+  last log goes to the latest session of that process run), adds up process
+  runs, and subtracts the run's last point before the session, which is what
+  an earlier session in the same process had counted; when that cannot be
+  told apart the tokens are unknown (see [docs/gaps.md](gaps.md)). Input
+  includes cached tokens. With OpenAI-compatible providers (the default)
+  output includes thoughts, which Qwen estimates from text when the provider
+  does not report them; with Gemini-native responses it does not. The totals
+  include subagents and the background memory extractor (its spans are
+  separate single-span traces with `llm_request.context=standalone`); Qwen
+  does not split them out.
 - Tool calls come from `qwen-code.tool` spans: wait from the
   `qwen-code.tool.blocked_on_user` child, execution from
   `qwen-code.tool.execution`, joined to the `qwen-code.tool_call` log by call
   id for `success`. Without spans the logs are used, then
-  `qwen-code.tool.call.count`.
+  `qwen-code.tool.call.count`. A tool span stored twice (same trace and
+  span id) is one call, and a span without both ids is never merged. A
+  `qwen-code.tool_call` log stored twice is one call only when it is an
+  exact copy (same session, log time, body, and every attribute).
 - Cost: Qwen Code exports none. Computed cost is unknown until
   `internal/pricing` has a rule for the Qwen token sources.
 - Differences from Gemini CLI: `qwen-code.*` instead of `gemini_cli.*`; no
