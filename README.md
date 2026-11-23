@@ -141,7 +141,9 @@ names, ids, tokens, cost, durations, success, error type and status code,
 the dropped sizes (`<key>_bytes`), and the dropped keys in `sdf.redacted`,
 so every summary is the same. `sdf serve --store-content` (or
 `SDF_STORE_CONTENT=1`, or a list of agents) is the only way to keep the
-text. See [Content storage](docs/receiver.md#content-storage).
+text. A database written by an older sdf keeps its rows until you run
+`sdf redact --db PATH` (`sdf serve` warns at start). See
+[Content storage](docs/receiver.md#content-storage).
 `GET http://127.0.0.1:4318/health` (the OTLP/HTTP port, not the UI port)
 stays open and returns `{"status":"ok"}`. `sdf init --check` probes it for you.
 

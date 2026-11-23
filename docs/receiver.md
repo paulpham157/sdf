@@ -108,7 +108,24 @@ the variable, and `0`, `false`, or `off` turns it off. `sdf serve` prints a
 line saying whose content it stores, and those rows carry
 `sdf.content=kept`. The text then sits in the local SQLite file.
 
-Rows written by an older sdf are not changed when the database is opened.
+Rows written by an older sdf are not changed when the database is opened;
+sdf never scrubs on its own. A new database is stamped (`PRAGMA
+user_version = 1`) as written under these rules. A database that already
+had rows and no stamp was written by an older sdf, and `sdf serve` prints
+one warning line at start while that is so. To remove the text from it,
+stop `sdf serve` on that file and run:
+
+```bash
+sdf redact --db sdf-telemetry.sqlite --dry-run   # count the rows that would change
+sdf redact --db sdf-telemetry.sqlite
+```
+
+`sdf redact` applies the same rules to every stored row, including rows kept
+with `--store-content` (their `sdf.content` mark goes too), rewrites the rows
+that changed with `secure_delete` on, checkpoints and truncates the WAL, runs
+`VACUUM` so the old text does not stay in free pages, and stamps the file.
+Running it again changes nothing. Copies of the file elsewhere (backups,
+Time Machine, `.sdf-bak`) are not touched.
 
 ## Try it without an agent
 

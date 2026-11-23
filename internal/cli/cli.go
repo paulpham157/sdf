@@ -62,6 +62,8 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdDemo(args[1:], stdout, stderr)
 	case "audit":
 		return cmdAudit(args[1:], stdout, stderr)
+	case "redact":
+		return cmdRedact(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -73,7 +75,7 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|task|verify|version> [flags]"
+const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|task|verify|redact|version> [flags]"
 
 func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	for _, arg := range args {
@@ -286,6 +288,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	warnUnscrubbed(db, dbPath, stderr)
 	if content.on() {
 		db.KeepContent(content.keep())
 		fmt.Fprintf(stderr, "sdf serve: storing prompt, response, tool, and error text for %s (%s); rows are marked sdf.content=kept\n", content.describe(), contentSource)
