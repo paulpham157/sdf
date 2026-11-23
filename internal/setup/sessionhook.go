@@ -20,17 +20,30 @@ func fieldExpr(name string) string {
 
 // hookTokenSh sets sdf_auth to an Authorization header line when a receiver
 // token is available to the hook process, and to an empty string otherwise.
-// It reads the same variables sdf serve reads: SDF_OTLP_TOKEN, else the file
-// named by SDF_OTLP_TOKEN_FILE, with whitespace removed. The token is never
-// written into a hook file. The header reaches curl on stdin (-H @-), so it
-// is not in curl's argument list, where other local users could read it; an
-// empty line adds no header, so a receiver without a token works as before.
-// Every name is either sdf_-prefixed and assigned in the command, or uses the
-// ${NAME:-} form, so Grok's load-time $VAR substitution leaves it alone.
-const hookTokenSh = `sdf_tok=$(printf '%s' "${SDF_OTLP_TOKEN:-}" | tr -d '[:space:]'); ` +
-	`if [ -z "$sdf_tok" ] && [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then ` +
-	`sdf_tok=$(tr -d '[:space:]' < "${SDF_OTLP_TOKEN_FILE:-}" 2>/dev/null); fi; ` +
-	`sdf_auth=; [ -z "$sdf_tok" ] || sdf_auth="Authorization: Bearer $sdf_tok"; `
+// It reads the same variables, the same way, as sdf serve
+// (resolveServeOTLPToken): SDF_OTLP_TOKEN, else the file named by
+// SDF_OTLP_TOKEN_FILE, with whitespace trimmed from the ends only (blank
+// lines and a CR are dropped; spaces inside the token are kept). When both
+// variables are set, sdf serve refuses to start, so the hook sends no token
+// and says why on stderr. The token is never written into a hook file. The
+// header reaches curl on stdin (-H @-), so it is not in curl's argument
+// list; an empty line adds no header, so a receiver without a token works
+// as before. Every name is sdf_-prefixed and assigned in the command, or
+// uses the ${NAME:-} form, so Grok's load-time $VAR substitution leaves it
+// alone. sdf_line is read with the shell's read builtin, whose default IFS
+// trims leading and trailing blanks.
+const hookTokenSh = `sdf_tok=; sdf_line=; sdf_auth=; ` +
+	`sdf_tok=$(printf '%s\n' "${SDF_OTLP_TOKEN:-}" | tr -d '\r' | ` + hookTrimSh + `); ` +
+	`if [ -n "$sdf_tok" ] && [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then ` +
+	`echo 'sdf: SDF_OTLP_TOKEN and SDF_OTLP_TOKEN_FILE are both set (sdf serve refuses that too); not sending a token' >&2; sdf_tok=; ` +
+	`elif [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then ` +
+	`sdf_tok=$(tr -d '\r' 2>/dev/null < "${SDF_OTLP_TOKEN_FILE:-}" | ` + hookTrimSh + `); fi; ` +
+	`[ -z "$sdf_tok" ] || sdf_auth="Authorization: Bearer $sdf_tok"; `
+
+// hookTrimSh prints the first non-blank line of its input with leading and
+// trailing blanks removed, which is strings.TrimSpace for a one-line token.
+// A last line without a newline is still read.
+const hookTrimSh = `{ while read -r sdf_line && [ -z "$sdf_line" ]; do :; done; printf '%s' "$sdf_line"; }`
 
 // hookTokenShFor is hookTokenSh when u is a loopback receiver, and an empty
 // sdf_auth otherwise: the token is only ever sent to localhost, 127.0.0.0/8,
@@ -63,15 +76,20 @@ func loopbackURL(u string) bool {
 const jsTokenHeaders = `import { readFileSync } from "node:fs"
 
 // The receiver token, read when the hook posts from SDF_OTLP_TOKEN, else the
-// file named by SDF_OTLP_TOKEN_FILE, the same variables sdf serve reads. It is
-// not stored in this file. No token sends no Authorization header.
+// file named by SDF_OTLP_TOKEN_FILE, the same variables sdf serve reads, the same
+// way. It is not stored in this file. No token sends no Authorization header.
 const sdfHeaders = () => {
-  let token = (process.env.SDF_OTLP_TOKEN || "").replace(/\s/g, "")
-  if (!token && process.env.SDF_OTLP_TOKEN_FILE) {
-    try { token = readFileSync(process.env.SDF_OTLP_TOKEN_FILE, "utf8").replace(/\s/g, "") } catch (e) {}
-  }
   const headers = { "content-type": "application/json" }
-  if (token) headers.authorization = "Bearer " + token
+  // Trimmed at the ends only, and both variables set is refused, as sdf serve does.
+  let token = (process.env.SDF_OTLP_TOKEN || "").trim()
+  if (token && process.env.SDF_OTLP_TOKEN_FILE) {
+    console.error("sdf: SDF_OTLP_TOKEN and SDF_OTLP_TOKEN_FILE are both set (sdf serve refuses that too); not sending a token")
+    return headers
+  }
+  if (!token && process.env.SDF_OTLP_TOKEN_FILE) {
+    try { token = readFileSync(process.env.SDF_OTLP_TOKEN_FILE, "utf8").trim() } catch (e) {}
+  }
+  if (token && !/[\r\n]/.test(token)) headers.authorization = "Bearer " + token
   return headers
 }
 `

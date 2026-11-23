@@ -230,11 +230,12 @@ func qwenEnvWarnings(ep Endpoint) []string {
 }
 
 func qwen(req Request) (Result, error) {
-	ep, err := qwenCheckEndpoint(req.Endpoint)
-	if err != nil {
+	// Run has already validated the endpoint (normalize); checking again
+	// keeps qwen safe if it is ever called on its own. checkEndpoint and
+	// shQuote are the helpers every agent uses (shellquote.go).
+	if err := checkEndpoint(&req.Endpoint); err != nil {
 		return Result{}, err
 	}
-	req.Endpoint = ep
 	path := qwenUserSettingsPath(req)
 	target, err := qwenResolveLink(path)
 	if err != nil {
@@ -256,8 +257,8 @@ func qwen(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Overrides, highest first: CLI flags, QWEN_TELEMETRY_* and OTEL_EXPORTER_OTLP_ENDPOINT, system settings %s, a trusted workspace .qwen/settings.json, then this file.\n\n", qwenSystemSettingsPath())
 	merged, tel, warnings, changed, mergeErr := qwenMerge(existing, req.Endpoint)
 	fmt.Fprintf(&b, "export %s=%s\nexport %s=%s\nexport %s=%s\nexport %s=%s\n\n",
-		qwenEnabledEnv, qwenShQuote("true"), qwenEndpointEnv, qwenShQuote(req.Endpoint.base()),
-		qwenProtocolEnv, qwenShQuote("http"), qwenPromptsEnv, qwenShQuote("false"))
+		qwenEnabledEnv, shQuote("true"), qwenEndpointEnv, shQuote(req.Endpoint.base()),
+		qwenProtocolEnv, shQuote("http"), qwenPromptsEnv, shQuote("false"))
 	if mergeErr != nil {
 		fmt.Fprintf(&b, "%s was not changed: %v\n", path, mergeErr)
 		fmt.Fprintf(&b, "Put these keys in its \"telemetry\" object, or use the variables above:\n  \"enabled\": true, \"otlpEndpoint\": %q, \"otlpProtocol\": \"http\", \"logPrompts\": false\n", req.Endpoint.base())

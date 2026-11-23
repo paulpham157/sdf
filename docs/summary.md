@@ -85,7 +85,8 @@ So the same numbers are not added twice:
   by `token_type`, else the sum of Claude `api_request` token attributes,
   else Codex `response.completed` with the rule below, else Gemini CLI
   `gemini_cli.token.usage` by `type` (`input`, `output`, `thought`, `cache`,
-  `tool`; cumulative, so each series keeps its latest point), else the sum of
+  `tool`; cumulative, so each series adds up the latest point of each process
+  run), else the sum of
   Gemini CLI `gemini_cli.api_response` `input_token_count`,
   `output_token_count`, `cached_content_token_count`, `thoughts_token_count`,
   and `tool_token_count` (`total_token_count` is not added). Gemini CLI's

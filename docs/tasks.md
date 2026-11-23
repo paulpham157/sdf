@@ -45,7 +45,9 @@ the repository's top level.
 
 The task is pinned to a **base revision** (`--base`, default `HEAD`),
 resolved to a full commit SHA and its tree id. Only committed content
-counts: an uncommitted edit in the working tree is not read.
+counts: an uncommitted edit in the working tree is not read. A base that
+starts with `-` is refused (exit 1) before git runs, so it can never be read
+as a git option.
 
 Each criterion has a name, an argv, a timeout (default 600 s), an expected
 exit code (default 0), and **designated** globs: the files the check depends
