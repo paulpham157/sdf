@@ -33,11 +33,12 @@ quoting and runs without a shell. Use the file for anything else.
 
 ## What is declared
 
-A task id, and each criterion name, is 1 to 128 lowercase ASCII letters,
-digits, `.`, `_`, or `-`, starting with a letter or digit. Lowercase only,
-so two ids never differ by case alone. Such an id is also valid UTF-8 with
-no newline or control character, which the planned ledger will require of
-every id.
+A task id, and each criterion name, is 1 to 128 ASCII letters, digits,
+`.`, `_`, or `-`, starting with a letter or digit. Case is kept (a ULID is a
+valid id), but declaring an id that differs only by case from a task already
+in `.sdf/tasks` or the data dir is refused. Such an id is also valid UTF-8
+with no newline or control character, which the planned ledger will require
+of every id.
 
 `--repo` may be any directory inside the work tree; the task file goes under
 the repository's top level.

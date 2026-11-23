@@ -153,3 +153,38 @@ func TestLoadReportsMissingAndTampered(t *testing.T) {
 		t.Fatal("tampered file loaded")
 	}
 }
+
+func TestDeclareRefusesACaseVariantID(t *testing.T) {
+	ctx := context.Background()
+	dir, _ := testRepo(t, repoFiles)
+	in := sampleInput()
+	in.ID = "Feat-1"
+	s, err := Build(ctx, dir, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := t.TempDir()
+	if _, err := Declare(ctx, s, Store{RepoDir: dir, WriteRepo: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Declare(ctx, s, Store{DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	in.ID = "feat-1"
+	lower, err := Build(ctx, dir, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, st := range map[string]Store{
+		"repo":     {RepoDir: dir, WriteRepo: true},
+		"data dir": {DataDir: data},
+	} {
+		if _, err := Declare(ctx, lower, st); !errors.Is(err, ErrIDCaseCollision) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// The same id, same case, is still the idempotent path.
+	if _, err := Declare(ctx, s, Store{RepoDir: dir, WriteRepo: true, DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+}
