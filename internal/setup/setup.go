@@ -515,6 +515,13 @@ otel_metrics_exporter = "otlp"
 otel_logs_exporter = "otlp"
 otel_protocol = "http/protobuf"
 otel_endpoint = "%s"
+# Content and detail gates, pinned off. Grok's defaults are off too, but
+# otel_log_assistant_responses follows otel_log_user_prompts when unset, so
+# all four are written explicitly. An OTEL_LOG_* env var still wins.
+otel_log_user_prompts = false
+otel_log_assistant_responses = false
+otel_log_tool_details = false
+otel_log_tool_content = false
 `, ep.base())) + "\n"
 }
 

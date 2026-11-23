@@ -324,7 +324,10 @@ records.
 lines, the receiver-token header, and the same settings as a `[telemetry]`
 table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
-`otel_endpoint` (the HTTP receiver). `--write` appends that table to
+`otel_endpoint` (the HTTP receiver), plus the four content gates pinned
+off: `otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` all `= false` (an
+`OTEL_LOG_*` environment variable still wins). `--write` appends that table to
 `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
 no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
 directory. Both files are checked before either is written, as for the

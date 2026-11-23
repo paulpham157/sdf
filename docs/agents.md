@@ -349,7 +349,12 @@ config-file key for headers.
 `sdf init grok` prints those lines and the matching `[telemetry]` table
 (`otel_enabled`, `otel_metrics_exporter`, `otel_logs_exporter`,
 `otel_protocol`, `otel_endpoint`, the names in the guide's "Config file"
-section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`).
+section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`), with
+`otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` pinned to `false`.
+Unset, `otel_log_assistant_responses` follows `otel_log_user_prompts`, so
+all four are written; an `OTEL_LOG_*` variable in the environment still
+wins over the file.
 `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
 (default `~/.grok/config.toml`) when the file has no `[telemetry]` table;
 an existing `[telemetry]` table is left unchanged. A project

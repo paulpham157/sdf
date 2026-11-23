@@ -178,3 +178,84 @@ func TestGrokHookCommandSendsTheWorkingDirectory(t *testing.T) {
 		t.Fatalf("no directory: %v", posts[2])
 	}
 }
+
+// The [telemetry] table sdf writes pins all four otel_log_* gates off, so a
+// config.toml written by sdf never turns content export on by omission
+// (otel_log_assistant_responses follows otel_log_user_prompts when unset).
+func TestGrokConfigPinsOtelLogGatesOff(t *testing.T) {
+	clearGrokEnv(t)
+	home := t.TempDir()
+	res, err := Run(grokReq(home, true))
+	if err != nil || !res.Wrote {
+		t.Fatal(err, res.Text)
+	}
+	body, err := os.ReadFile(filepath.Join(home, ".grok", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gates := []string{"otel_log_user_prompts", "otel_log_assistant_responses", "otel_log_tool_details", "otel_log_tool_content"}
+	seen := map[string]int{}
+	inTelemetry := false
+	for _, line := range strings.Split(string(body), "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "[") {
+			inTelemetry = trim == "[telemetry]"
+			continue
+		}
+		key, value, ok := strings.Cut(trim, "=")
+		if !ok || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if strings.HasPrefix(key, "otel_log_") {
+			if !inTelemetry {
+				t.Fatalf("%s is outside [telemetry]:\n%s", key, body)
+			}
+			if strings.TrimSpace(value) != "false" {
+				t.Fatalf("%s = %s, want false:\n%s", key, strings.TrimSpace(value), body)
+			}
+			seen[key]++
+		}
+	}
+	for _, gate := range gates {
+		if seen[gate] != 1 {
+			t.Fatalf("%s appears %d times, want once:\n%s", gate, seen[gate], body)
+		}
+	}
+	if len(seen) != len(gates) {
+		t.Fatalf("unexpected otel_log_* keys %v", seen)
+	}
+	// The dry run prints the same table.
+	dry, err := Run(grokReq(t.TempDir(), false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gate := range gates {
+		if !strings.Contains(dry.Text, gate+" = false\n") {
+			t.Fatalf("dry run is missing %s = false:\n%s", gate, dry.Text)
+		}
+	}
+}
+
+// grokSessionHookCommand single-quotes the receiver URL with shQuote.
+// checkEndpoint already keeps --host inert, so this pins the second layer:
+// a URL that reached the hook with shell syntax in it (a quote, $(...), a
+// backtick, ;) stays one curl argument and runs nothing.
+func TestGrokHookQuotesTheURL(t *testing.T) {
+	clearGrokEnv(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "pwned")
+	url := "http://127.0.0.1:1/v1/sessions?a='$(touch " + marker + ")`touch " + marker + "`;touch " + marker
+	cmd := grokSessionHookCommand("open", url)
+	if !strings.Contains(cmd, " "+shQuote(url)+" >/dev/null") {
+		t.Fatalf("URL is not single-quoted in\n%s", cmd)
+	}
+	plain := grokSessionHookCommand("open", "http://127.0.0.1:4318/v1/sessions")
+	if !strings.Contains(plain, " 'http://127.0.0.1:4318/v1/sessions' >/dev/null") {
+		t.Fatalf("URL is not single-quoted in\n%s", plain)
+	}
+	runHook(t, cmd, `{"sessionId":"s1","source":"startup","cwd":"/tmp"}`)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the quoted URL ran a command (marker exists, err=%v)", err)
+	}
+}
