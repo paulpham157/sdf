@@ -2,7 +2,6 @@ package otlp
 
 import (
 	"testing"
-
 )
 
 func TestDecodeLogRecordEventNameField(t *testing.T) {

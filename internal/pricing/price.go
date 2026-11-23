@@ -291,11 +291,11 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 		}, "", "Live Grok CLI 1.0.92 (2026-11-23) token types: cache_read is a subset of input and reasoning is a subset of output. OpenRouter base rates matched grok_code.cost.usage / api_request cost_usd_micros only under that overlap. Reasoning uses internal_reasoning when the catalog row has it, otherwise completion")
 	case "logs grok_code.api_request":
 		return codexBuckets(tokens, map[string]string{
-			"input_tokens":           "input",
-			"output_tokens":          "output",
-			"cache_read_tokens":      "cache_read",
-			"cache_creation_tokens":  "cache_write",
-			"reasoning_tokens":       "reasoning",
+			"input_tokens":          "input",
+			"output_tokens":         "output",
+			"cache_read_tokens":     "cache_read",
+			"cache_creation_tokens": "cache_write",
+			"reasoning_tokens":      "reasoning",
 		}, "", "Live Grok CLI api_request fields: cache_read_tokens is a subset of input_tokens, cache_creation_tokens (when present) is also subtracted from input, and reasoning_tokens is a subset of output_tokens. Reasoning uses internal_reasoning when the catalog row has it, otherwise completion")
 	default:
 		if source == "" {

@@ -202,7 +202,6 @@ func TestCapturedGrokStartupMetricsWithoutSessionStayUnattributed(t *testing.T) 
 	}
 }
 
-
 func grokUnnamedLog(session string, when int64, attrs map[string]any) record.Record {
 	all := map[string]any{"session.id": session}
 	for k, v := range attrs {
@@ -316,7 +315,7 @@ func TestGrokLiveRequestCostMatchesOverlapPricing(t *testing.T) {
 	session := "ses_live_grok_overlap"
 	rows := []record.Record{
 		grokLog("grok_code.api_request", session, 1, map[string]any{
-			"model": "openai/gpt-4o",
+			"model":        "openai/gpt-4o",
 			"input_tokens": 14454, "output_tokens": 177,
 			"reasoning_tokens": 121, "cache_read_tokens": 10112,
 			"cost_usd_micros": 14802,
