@@ -868,6 +868,9 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			agent = arg
+		case !strings.HasPrefix(arg, "-"):
+			fmt.Fprintln(stderr, unknownAgentMessage(arg))
+			return 2
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
