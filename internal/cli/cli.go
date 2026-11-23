@@ -101,12 +101,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	tokenFlagSet := false
 	tokenFileFlag := ""
 	tokenFileFlagSet := false
+	contentFlag := ""
+	contentFlagSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH] [--store-content[=AGENTS]]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
+			fmt.Fprintln(stdout, "Prompt, response, tool, and error text is dropped before storing, for every agent. --store-content (or SDF_STORE_CONTENT=1) keeps it; --store-content=qwen,claude-code (or SDF_STORE_CONTENT=qwen,claude-code) keeps it for those agents only.")
 			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
 			return 0
 		case arg == "--host":
@@ -229,6 +232,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--otlp-token-file="):
 			tokenFileFlag = strings.TrimPrefix(arg, "--otlp-token-file=")
 			tokenFileFlagSet = true
+		case arg == "--store-content":
+			contentFlag, contentFlagSet = "all", true
+		case strings.HasPrefix(arg, "--store-content="):
+			contentFlag, contentFlagSet = strings.TrimPrefix(arg, "--store-content="), true
+			if strings.TrimSpace(contentFlag) == "" {
+				fmt.Fprintln(stderr, "sdf serve: --store-content= needs all or a list of agents")
+				return 2
+			}
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
@@ -244,6 +255,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		} else {
 			fmt.Fprintln(stderr, "warning: a shared bearer token is not a substitute for a trusted network; binding beyond localhost still exposes telemetry that can include prompts and paths. The UI does not follow --host.")
 		}
+	}
+	contentSource := "--store-content"
+	if !contentFlagSet {
+		contentFlag, contentSource = os.Getenv("SDF_STORE_CONTENT"), "SDF_STORE_CONTENT"
+	}
+	content, err := parseStoreContent(contentFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf serve: %s: %v\n", contentSource, err)
+		return 2
 	}
 	if _, err := summary.LoadBudget(budgetPath); err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
@@ -261,6 +281,10 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	if content.on() {
+		db.KeepContent(content.keep())
+		fmt.Fprintf(stderr, "sdf serve: storing prompt, response, tool, and error text for %s (%s); rows are marked sdf.content=kept\n", content.describe(), contentSource)
+	}
 	srv := &server.Server{
 		Host:     host,
 		HTTPPort: port,

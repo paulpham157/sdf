@@ -52,9 +52,14 @@ calls come from `execute_tool` (`gen_ai.tool.name`, `gen_ai.tool.call.id`,
 `pi.tool.is_error`). Success comes from the log when the span has none. An
 OpenCode tool span has no success flag, so the call is `unknown`, unless the
 span status is `ERROR`. An `ERROR` span is marked in the text tree
-(`status=ERROR`, plus the status message when one was exported). `--json`
-includes `status_code` and `status_message` on every span; a span with no
-status is `UNSET`. A tool-call span whose status is `ERROR` and that has no
+(`status=ERROR`, plus the status message when one was exported, and
+`error_type=` when the span's `error.type`, `error_type`, or
+`exception.type` is not already in that message). By default the stored
+message is sdf's own, built from the kept error class and code, such as
+`tool error: FileNotFoundError` (see
+[content storage](receiver.md#content-storage)). `--json` includes
+`status_code`, `status_message`, and `error_type` on every span; a span
+with no status is `UNSET`. A tool-call span whose status is `ERROR` and that has no
 `success` attribute, no `pi.tool.is_error`, and no joined tool-result log is
 `success=false`. An explicit flag still wins. Duration prefers the execution
 child span, then the tool span, then the log.

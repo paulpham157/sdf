@@ -79,6 +79,16 @@ type Store struct {
 	path string
 	mu   sync.Mutex
 	db   *sql.DB
+	keep func(record.Record) bool
+}
+
+// KeepContent sets which records Insert stores with their prompt, tool, and
+// error text (sdf serve --store-content). Nil, the default, drops that
+// content from every record; see record.Redact.
+func (s *Store) KeepContent(keep func(record.Record) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keep = keep
 }
 
 // busyTimeoutMS is how long a connection waits for another connection's
@@ -117,6 +127,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.markNewDatabase(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -245,7 +259,10 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
-	records = record.Redact(records)
+	s.mu.Lock()
+	keep := s.keep
+	s.mu.Unlock()
+	records = record.RedactWith(records, keep)
 	received := time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -557,8 +574,11 @@ func (s *Store) KnownSession(id string) (bool, error) {
 
 // KnownCommit reports whether telemetry already names this full commit SHA.
 // A SHA is known from an sdf.git.commit hook event, or from a
-// claude_code.tool_result log: vcs.ref.head.revision, git_commit_id, or a
-// git_commit_id nested inside tool_parameters. tool_parameters is read both
+// claude_code.tool_result log: sdf.git_commit_id (copied out of
+// tool_parameters at ingest, because tool_parameters itself is content and
+// is not stored by default), vcs.ref.head.revision, git_commit_id, or a
+// git_commit_id nested inside tool_parameters (rows stored before that, or
+// under --store-content). tool_parameters is read both
 // as an object and as a JSON string, matching how the outcome linker reads
 // it. The comparison ignores case, so a SHA stored in its original case
 // still matches the lowercase ref the decision endpoint passes in. This
@@ -572,13 +592,14 @@ func (s *Store) KnownCommit(sha string) (bool, error) {
 		WHERE signal = 'logs' AND (
 			(name = 'sdf.git.commit' AND json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE)
 			OR (name = 'claude_code.tool_result' AND (
-				json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE
+				json_extract(attributes_json, '$."sdf.git_commit_id"') = ? COLLATE NOCASE
+				OR json_extract(attributes_json, '$."vcs.ref.head.revision"') = ? COLLATE NOCASE
 				OR json_extract(attributes_json, '$.git_commit_id') = ? COLLATE NOCASE
 				OR json_extract(attributes_json, '$.tool_parameters.git_commit_id') = ? COLLATE NOCASE
 				OR json_extract(json_extract(attributes_json, '$.tool_parameters'), '$.git_commit_id') = ? COLLATE NOCASE
 			))
 		)
-	`, sha, sha, sha, sha, sha).Scan(&n)
+	`, sha, sha, sha, sha, sha, sha).Scan(&n)
 	return n > 0, err
 }
 
