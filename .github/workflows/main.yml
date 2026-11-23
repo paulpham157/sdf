@@ -28,6 +28,7 @@ jobs:
         with:
           go-version: stable
           cache: true
+          cache-dependency-path: go.sum
       - name: Test
         run: make test
 
@@ -41,6 +42,7 @@ jobs:
         with:
           go-version: stable
           cache: true
+          cache-dependency-path: go.sum
       # The race detector needs cgo. Do not export CGO_ENABLED=0 here.
       - name: Test with the race detector
         run: make race
@@ -55,6 +57,7 @@ jobs:
         with:
           go-version: stable
           cache: true
+          cache-dependency-path: go.sum
       # make e2e is CGO_ENABLED=0 go build -trimpath -ldflags="-s -w", then
       # the tests/e2e binary check, sample ingest over HTTP and gRPC, and
       # `sdf summary`.
@@ -76,6 +79,7 @@ jobs:
         with:
           go-version: stable
           cache: true
+          cache-dependency-path: go.sum
       - name: Snapshot build
         # --snapshot never creates a GitHub release or uploads anything.
         # Archives land in dist/. Real (draft) releases come only from
@@ -110,12 +114,13 @@ jobs:
         with:
           go-version: stable
           cache: true
-      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+          cache-dependency-path: go.sum
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: go
           build-mode: autobuild
           queries: security-extended
-      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: "/language:go"
 
