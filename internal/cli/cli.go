@@ -34,7 +34,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
+		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check|decision|audit> [flags]")
 		return 2
 	}
 	switch args[0] {
@@ -50,8 +50,10 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdCheck(args[1:], stdout, stderr)
 	case "decision":
 		return cmdDecision(args[1:], stdout, stderr)
+	case "audit":
+		return cmdAudit(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
+		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check|decision|audit> [flags]")
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
