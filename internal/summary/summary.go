@@ -214,9 +214,10 @@ func Summarize(records []record.Record, allSpans bool) Report {
 // leaves computed cost unknown.
 func SummarizeWith(records []record.Record, allSpans bool, prices *pricing.Catalog) Report {
 	attributed, leftover := attribute(records)
+	qwen := buildQwenIndex(records)
 	sessions := make([]SessionSummary, 0, len(attributed))
 	for key, grouped := range attributed {
-		sessions = append(sessions, summarizeBucket(key.tool, key.id, grouped, allSpans, prices))
+		sessions = append(sessions, summarizeBucket(key.tool, key.id, grouped, allSpans, prices, qwen))
 	}
 	sort.SliceStable(sessions, func(i, j int) bool {
 		if sessions[i].Tool != sessions[j].Tool {
@@ -477,6 +478,9 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 	if len(matches) == 1 {
 		return matches[0], true
 	}
+	if len(matches) == 0 {
+		return qwenLateFlush(tool, rec, stamp, bounds)
+	}
 	return sessionKey{}, false
 }
 
@@ -529,7 +533,7 @@ func unattributed(records []record.Record) []Unattributed {
 	return groups
 }
 
-func summarizeBucket(tool, sessionID string, records []record.Record, allSpans bool, prices *pricing.Catalog) SessionSummary {
+func summarizeBucket(tool, sessionID string, records []record.Record, allSpans bool, prices *pricing.Catalog, qwen *qwenIndex) SessionSummary {
 	points := reduce(pointsOf(records))
 	spans, hidden := spanTree(records, allSpans)
 	durationMS, durationSource := duration(records, points)
@@ -572,7 +576,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Repository:              repositoryFacts(records),
 	}
 	if tool == "qwen-code" {
-		summary = qwenSummary(summary, records, points, prices)
+		summary = qwenSummary(summary, records, points, prices, qwen)
 	}
 	return summary
 }
