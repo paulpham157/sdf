@@ -105,7 +105,31 @@ const busyTimeoutMS = 5000
 // is a property of the file and persists, so it is set once after opening
 // (not as a DSN pragma, which can fail with SQLITE_BUSY while a connection
 // opens, before the busy timeout applies).
+//
+// An error names a file database by its absolute path.
 func Open(path string) (*Store, error) {
+	s, err := open(path)
+	if err != nil {
+		if private(path) {
+			return nil, err
+		}
+		if strings.Contains(err.Error(), "unable to open database file") {
+			return nil, fmt.Errorf("database %s: %w; check that its directory exists and is writable", AbsPath(path), err)
+		}
+		return nil, fmt.Errorf("database %s: %w", AbsPath(path), err)
+	}
+	return s, nil
+}
+
+// AbsPath is path made absolute for messages; path itself when that fails.
+func AbsPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+func open(path string) (*Store, error) {
 	name, err := dsn(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeoutMS))
 	if err != nil {
 		return nil, err

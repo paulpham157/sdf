@@ -222,7 +222,10 @@ OpenCode v2 is the `@opencode/cli` package, not npm `opencode-ai` (that package
 is still v1). v1's `experimental.openTelemetry` flag is ignored by v2. Export
 turns on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `sdf init opencode --write`
 also installs a plugin that posts when a session is created. OpenCode has no
-event for a session ending.
+event for a session ending. The plugin is a V2 plugin, a default export with
+an `id` and `setup`. V2 refuses a V1 named export with "Plugin must export a
+default definition with an id and an effect or setup function" and never runs
+it. Checked live with `@opencode/cli` 2.4.1 on 2026-11-23.
 
 The bundled exporter posts traces to `${endpoint}/v1/traces` and logs to
 `${endpoint}/v1/logs` as `application/json`. Trace batches use
@@ -230,9 +233,12 @@ The bundled exporter posts traces to `${endpoint}/v1/traces` and logs to
 exporter. `service.name` is `opencode`.
 
 Session spans (`SessionRunner.drain`, `SessionRunner.runStep`,
-`SessionStep.attempt`, `Tool.execute`) carry `session.id`. Startup spans and
-the process logs do not, so the summary leaves them unattributed instead of
-attaching them because the timestamps overlap. `SessionStep.attempt` carries
+`SessionStep.attempt`, `Tool.execute`) carry `session.id`. Session error
+logs such as `Failed to drain Session` carry camelCase `sessionID`, which
+the collector treats as an alias of `session.id`, so those logs are
+attributed to the session. Startup spans and process, CLI, and watcher
+logs that have no session id stay unattributed instead of being attached
+because the timestamps overlap. `SessionStep.attempt` carries
 `gen_ai.request.model` and `gen_ai.usage.*`. One attempt span is one provider
 request: OpenCode annotates it with the finish usage of that single
 `llm.stream` call (`packages/core/src/session/runner/step.ts`), not a

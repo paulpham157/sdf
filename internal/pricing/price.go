@@ -25,6 +25,9 @@ type Usage struct {
 	// pricing rule for Source. Each request is priced with its own
 	// override tier and the USD totals are added.
 	Requests []map[string]float64
+	// RequestSkipReason is set when per-request counts were present but
+	// were not used (for example they did not match the metric totals).
+	RequestSkipReason string
 }
 
 // Cost is the computed price for one session.
@@ -131,7 +134,15 @@ func Price(cat *Catalog, usage Usage) Cost {
 	if len(usage.Requests) > 0 {
 		return priceRequests(out, match.Model, usage)
 	}
-	return priceTokens(out, match.Model, usage.Source, usage.Tokens, false)
+	out = priceTokens(out, match.Model, usage.Source, usage.Tokens, false)
+	if out.Status == "unknown" && usage.RequestSkipReason != "" {
+		if out.Reason != "" {
+			out.Reason = out.Reason + "; " + usage.RequestSkipReason
+		} else {
+			out.Reason = usage.RequestSkipReason
+		}
+	}
+	return out
 }
 
 func priceRequests(out Cost, model *Model, usage Usage) Cost {

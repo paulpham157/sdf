@@ -85,8 +85,10 @@ or disconnects (`packages/protocol/src/groups/event.ts`). A plugin on the
 in-process bus does not (`packages/core/src/bus.ts`).
 
 Plugins load from `.opencode/plugins/` and `~/.config/opencode/plugins/`, or
-from the `plugins` array in `opencode.jsonc`. The plugin's `setup` subscribes
-to `session.created` and posts `{sessionID}` to `127.0.0.1:4318`. There is no
+from the `plugins` array in `opencode.jsonc`. A V2 plugin is a default export
+with an `id` and `setup`; a V1 named export is refused at load. The plugin's
+`setup` iterates `ctx.event.subscribe({ types: ["session.created"] })`, an
+async iterable, and posts the event's `data.sessionID` to `127.0.0.1:4318`. There is no
 event to post for the close, and the cleanup function `setup` may return only
 runs when the plugin is unloaded.
 
