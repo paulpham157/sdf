@@ -49,7 +49,15 @@ come from `Tool.execute` (`gen_ai.tool.name`, `gen_ai.tool.call.id`). Grok CLI t
 `success`) joined to `grok_code.tool_result` on `tool_use_id`; without spans
 they come from the log alone. Pi tool
 calls come from `execute_tool` (`gen_ai.tool.name`, `gen_ai.tool.call.id`,
-`pi.tool.is_error`). Success comes from the log when the span has none. An
+`pi.tool.is_error`). Success comes from the log when the span has none.
+A tool span stored twice (same trace id and span id, for example after an
+OTLP export retry) is one call, and a span without both ids is never merged.
+A tool log (`claude_code.tool_result`, `codex.tool_result`,
+`grok_code.tool_result`, `gemini_cli.tool_call`) stored twice is one call
+only when it is an exact copy (same session, log time, body, and every
+attribute); `gemini_cli.tool_call` has no call id, so two calls of the same
+tool with the same result are both listed (issue #258). Qwen Code tool
+calls are not de-duplicated yet. An
 OpenCode tool span has no success flag, so the call is `unknown`, unless the
 span status is `ERROR`. An `ERROR` span is marked in the text tree
 (`status=ERROR`, plus the status message when one was exported, and

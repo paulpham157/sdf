@@ -1490,6 +1490,7 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 			}
 		}
 	}
+	logs = uniqueExactCopies(logs)
 	logByID := map[string]record.Record{}
 	for _, rec := range logs {
 		if id := callID(rec); id != nil {
@@ -1498,8 +1499,22 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 	}
 	var primary []record.Record
 	seen := map[string]bool{}
+	// A tool span stored twice (same trace id and span id) is one call
+	// (issue #258). A span without both ids is never merged.
+	seenSpan := map[string]bool{}
+	firstCopy := func(rec record.Record) bool {
+		key, ok := spanKey(rec)
+		if !ok {
+			return true
+		}
+		if seenSpan[key] {
+			return false
+		}
+		seenSpan[key] = true
+		return true
+	}
 	for _, rec := range spans {
-		if !isDirectToolSpan(deref(rec.Name)) {
+		if !isDirectToolSpan(deref(rec.Name)) || !firstCopy(rec) {
 			continue
 		}
 		if id := callID(rec); id != nil {
@@ -1508,7 +1523,7 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 		primary = append(primary, rec)
 	}
 	for _, rec := range spans {
-		if deref(rec.Name) != "unified_exec.exec_command" {
+		if deref(rec.Name) != "unified_exec.exec_command" || !firstCopy(rec) {
 			continue
 		}
 		id := callID(rec)
@@ -1559,6 +1574,25 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 		})
 	}
 	return calls
+}
+
+// uniqueExactCopies drops tool logs whose exactCopyKey was already seen,
+// keeping the first copy (issue #258). gemini_cli.tool_call carries no call
+// id, so nothing looser than an exact copy can tell a re-sent log from a
+// second call of the same tool with the same result.
+func uniqueExactCopies(records []record.Record) []record.Record {
+	seen := map[string]bool{}
+	out := records[:0:0]
+	for _, rec := range records {
+		if key := exactCopyKey(rec); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 func callFromSpan(rec record.Record, log *record.Record, spans []record.Record) ToolCall {
@@ -2476,6 +2510,15 @@ const geminiResponseDedupMethod = "a log stored twice (same session, log time, b
 // time. The key is empty, and the record is never merged, when it has
 // neither event.timestamp nor a log time.
 func geminiResponseKey(rec record.Record) string {
+	return exactCopyKey(rec)
+}
+
+// exactCopyKey identifies a log record by everything it carries: session id,
+// log record time, body, and every attribute. Only a record stored twice
+// (for example after an OTLP export retry) shares it with another. It is
+// empty, and the record is never merged, when the record has neither
+// event.timestamp nor a log time.
+func exactCopyKey(rec record.Record) string {
 	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
 		return ""
 	}

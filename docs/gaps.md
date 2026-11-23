@@ -72,6 +72,10 @@
   `gemini_cli.api_response` logs stored twice (same session, log time,
   body, and every attribute) count once (issue #248). A re-sent Gemini log
   that differs from the first copy in any attribute is still counted twice.
+  Tool calls from a re-sent export are listed once (issue #258): spans by
+  trace and span id, tool logs only as exact copies. A tool span without
+  both ids, or a re-sent tool log that differs from the first copy, is
+  still listed twice, and Qwen Code tool calls are not de-duplicated yet.
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
