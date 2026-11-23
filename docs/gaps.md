@@ -168,7 +168,8 @@
   [#281](https://github.com/paulpham157/sdf/issues/281) reads it, and nothing
   adds the trailer automatically. The check reads that one trailer from the
   commit message locally (the other hooks read no message). It does not look
-  at which constraints a commit touches. The store path is fixed when the hook
+  at which constraints a commit touches
+  ([#305](https://github.com/paulpham157/sdf/issues/305)). The store path is fixed when the hook
   is installed (`--db`) or taken from `SDF_PRE_PUSH_DB`; without either the
   check is skipped with a note. A hook installed by an older sdf has no
   pre-push; run `sdf init --git-hooks --db PATH` again. Tested with real
