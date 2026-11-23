@@ -111,9 +111,11 @@ it, so protect the copy you trust (review on the protected branch).
   place, so a copy is never half written and never replaced.
   `--data-dir DIR` moves it, `--no-data-dir` skips it.
 - The SDF ledger ([docs/ledger.md](ledger.md)), the hash-chained store for
-  tasks, evidence, and verdicts. The task code uses its types and rules,
-  but `sdf task declare` does not open a ledger file yet; writing there is
-  a follow-up.
+  tasks, evidence, and verdicts, only when you pass `--ledger PATH` or set
+  `$SDF_LEDGER`. There is no default ledger path for `sdf task`. The ledger
+  is prepared before any copy is written, so a ledger that cannot be
+  written stops the declaration (exit 1) with nothing written anywhere.
+  `sdf task show --ledger PATH` reads it and never creates it.
 
 Every place is read before anything is written. If any one already holds
 the id with a different hash, nothing is written. `sdf task show` reads
