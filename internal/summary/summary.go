@@ -248,6 +248,9 @@ func ToolOf(rec record.Record) string {
 	if service == "grok-cli" || strings.HasPrefix(name, "grok_code.") || strings.HasPrefix(body, "grok_code.") || strings.HasPrefix(event, "grok_code.") {
 		return "grok-cli"
 	}
+	if isCopilotRecord(service, name, rec) {
+		return "copilot-cli"
+	}
 	return "unknown"
 }
 
@@ -749,6 +752,9 @@ func childDuration(rec record.Record, spans []record.Record, names map[string]bo
 }
 
 func duration(records []record.Record, points []point) (*float64, *string) {
+	if total, source := copilotDuration(records); total != nil {
+		return total, source
+	}
 	var interactions []float64
 	for _, rec := range records {
 		if rec.Signal != "traces" || deref(rec.Name) != "claude_code.interaction" {
@@ -860,6 +866,9 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 }
 
 func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, *string) {
+	if tokens, source, method, ok := copilotTokens(records, points); ok {
+		return tokens, source, method
+	}
 	var claude []point
 	for _, p := range points {
 		if p.name == claudeTokenMetric {
@@ -1436,6 +1445,9 @@ func metricFailures(records []record.Record) [][2]string {
 }
 
 func missing(tool string, records []record.Record, points []point, failures [][2]string) []Missing {
+	if tool == "copilot-cli" {
+		return copilotMissing(records, points)
+	}
 	var out []Missing
 	if countSignal(records, "traces") == 0 {
 		var reason string
@@ -1825,6 +1837,9 @@ func statusCodeOf(rec record.Record) string {
 // labeled, the source. An explicit success attribute or pi.tool.is_error wins.
 // A tool-call span with OTLP status ERROR and no explicit flag is false.
 func reportedSuccess(rec record.Record) (*string, *string) {
+	if success, source, ok := copilotToolSuccess(rec); ok {
+		return success, source
+	}
 	if _, ok := rec.Attributes["pi.tool.is_error"]; ok {
 		flag, parsed := record.Boolish(rec.Attributes["pi.tool.is_error"])
 		if !parsed {

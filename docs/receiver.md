@@ -198,6 +198,7 @@ sdf init claude-code --write
 sdf init codex --write
 sdf init qwen --write
 sdf init opencode --write
+sdf init copilot --write
 sdf init pi --write
 sdf init pi --write --global
 sdf init pi --install
@@ -277,6 +278,49 @@ reports the shared session id while its spans carry the thread id. OpenCode
 has no close event, so only the open is posted. Pi reads the session id from
 the session manager rather than from the file name pi-otel exports. Grok
 posts both edges and reads `GROK_SESSION_ID`, then `sessionId`.
+
+GitHub Copilot CLI is configured by environment only (see
+[docs/agents.md](agents.md#github-copilot-cli)); it reads no settings-file
+key for the endpoint. `sdf init copilot` (alias `copilot-cli`) prints the
+lines of `~/.config/sdf/copilot.env` that sdf manages (never your other
+lines, which can hold tokens; it says how many it keeps):
+`OTEL_EXPORTER_OTLP_ENDPOINT` (the HTTP receiver),
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT`, each value in
+single quotes. `--host` must be a host name, an IPv4 address, or an IPv6
+address (bracketed or bare) and `--port` must be 1-65535, so nothing in the
+file can run when it is sourced. Copilot does not load the file; run
+copilot through `sh` so the variables do not stay in your shell (this also
+works from fish, which has no POSIX subshell):
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`. `--write`
+merges in place: line order and unrelated lines are kept, the endpoint and
+protocol lines are replaced (with a warning when the old value differed),
+and a capture-content line you already set is kept, with a warning when it
+puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). The write goes to a temp file in the same directory,
+is fsynced, keeps the file mode (and the owner and group when the process
+may set them), and is renamed into place. Because the file is replaced,
+other hard links keep the old contents (a note is printed) and extended
+attributes and ACLs are not copied. A file that exists but that sdf may not
+write, or that has no write bit (`0400`, even for root), is refused before
+anything else. A symlinked file is written through to its target; a link
+to a file that does not exist yet (stow-style, relative links read from the
+link's directory) creates that file, and creates its missing parent
+directories with mode 0700. The old file is copied to
+`.sdf-bak`; a different existing `.sdf-bak` is never overwritten
+(`.sdf-bak.1`, `.sdf-bak.2`, ... are used), and a backup made by a failed
+write is removed.
+
+What wins: the environment of the `copilot` process. Per-signal variables
+(`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+and the `_PROTOCOL` pair) override the generic ones, and
+`COPILOT_OTEL_EXPORTER_TYPE=file` or `COPILOT_OTEL_FILE_EXPORTER_PATH` sends
+export to a file instead. Any OTLP certificate or client key variable makes
+Copilot drop an `http://` endpoint. Organization or device managed settings
+can also configure export; sdf cannot read them. `sdf init copilot` and
+`sdf init --check copilot` warn about each of these that is set in the
+current environment or the snippet, and `--check` reports whether the
+process environment and the snippet point at this receiver. There is no
+session hook for Copilot CLI, so its window is inferred from the records.
 
 The settings are the ones in [docs/agents.md](agents.md). Claude Code's variables are
 from the [monitoring doc](https://code.claude.com/docs/en/monitoring-usage)

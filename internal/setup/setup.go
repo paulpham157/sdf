@@ -14,6 +14,15 @@
 // against @opencode/cli 2.2.6 on 2026-11-10. The v1 experimental.openTelemetry
 // flag is not the v2 switch.
 //
+// GitHub Copilot CLI exports traces and metrics over OTLP/HTTP (http/json by
+// default) when OTEL_EXPORTER_OTLP_ENDPOINT is set. It has no OTLP log
+// signal and no settings-file key for the endpoint, so setup is environment
+// only. Content capture is off unless OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT
+// asks for it. An http:// endpoint is dropped when an OTLP certificate or
+// client key variable is set. Checked against `copilot help monitoring` in
+// Copilot CLI 1.0.114 on 2026-11-23.
+// https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference
+//
 // Pi has no built-in OTLP exporter. pi-otel 0.3.0 reads .pi/settings.json in
 // the project and ~/.pi/agent/settings.json, then OTEL_* and PI_OTEL_* env.
 // Its default protocol is grpc at 127.0.0.1:4317. This setup uses http/json
@@ -92,6 +101,8 @@ func Run(req Request) (Result, error) {
 	switch req.Agent {
 	case "claude-code":
 		return claude(req)
+	case "copilot", "copilot-cli":
+		return copilot(req)
 	case "codex":
 		return codex(req)
 	case "opencode":
@@ -794,6 +805,8 @@ func Configured(req Request) (string, error) {
 	switch req.Agent {
 	case "claude-code":
 		return claudeConfigured(req), nil
+	case "copilot", "copilot-cli":
+		return copilotConfigured(req), nil
 	case "codex":
 		return codexConfigured(req), nil
 	case "opencode":

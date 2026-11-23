@@ -555,6 +555,96 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
 
+## GitHub Copilot CLI
+
+> Mapping below is from the
+> [Copilot CLI OpenTelemetry reference](https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference),
+> `copilot help monitoring` in `@github/copilot` 1.0.114, and the
+> [copilot-cli changelog](https://github.com/github/copilot-cli/blob/main/changelog.md),
+> checked 2026-11-23. It was not checked against a live session: a live run
+> needs a Copilot subscription. `tests/samples/copilot_*.json` are built
+> from those documents.
+
+Copilot CLI exports **traces and metrics, no logs**. Export turns on when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set (or `COPILOT_OTEL_ENABLED=true`, or a
+file exporter path). It speaks OTLP/HTTP only: `OTEL_EXPORTER_OTLP_PROTOCOL`
+is `http/json` (default) or `http/protobuf` (1.0.61 and later). `grpc` is not
+supported and falls back with a warning, so use port 4318.
+
+```bash
+npm install -g @github/copilot
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT
+copilot
+```
+
+These `export` lines stay in that shell after `copilot` exits, so other
+OTel programs started there will send to sdf too. To scope them to one run,
+run copilot through `sh`, which works from bash, zsh, and fish:
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`.
+
+`sdf init copilot --write` merges these lines into
+`~/.config/sdf/copilot.env` for you to source (details and precedence in
+[docs/receiver.md](receiver.md#one-step-setup)). Copilot CLI has no
+settings-file key for the endpoint; the process environment wins, and
+per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` override the generic endpoint.
+Organization or device managed settings can also configure export.
+A plain `http://` endpoint such as this receiver exports normally. The
+warning in the docs that an `http://` endpoint disables export sits in the
+Transport security section and applies when one of the certificate or
+client-key variables (`OTEL_EXPORTER_OTLP_*CERTIFICATE`, `*CLIENT_KEY`) is
+set; changelog 1.0.107 says the same for `copilot help monitoring`.
+`sdf init copilot` warns when one is set. Content capture
+(`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`) defaults to `NO_CONTENT`; only
+`SPAN_ONLY` and `SPAN_AND_EVENT` put prompts and responses on spans
+(`EVENT_ONLY` puts them on span events, which sdf does not store). The legacy
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` counts only when the
+standard variable is empty or unset, though it alone still adds tool schemas
+(`gen_ai.tool.definitions`). The user id is the pseudonymous
+`enduser.pseudo.id`.
+
+`service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
+summary also recognizes `gen_ai.agent.id` = `github.copilot.*`). Each user
+message is one `invoke_agent` span carrying `gen_ai.conversation.id`, with a
+`chat {model}` CLIENT span per model request and an `execute_tool {tool}`
+span per tool call. Subagents (`explore`, `task`) are nested `invoke_agent`
+spans in the same trace. Tool and subagent spans are attributed through the
+trace id.
+
+- Top-level `invoke_agent` spans are the ones with `server.address` (the
+  docs say subagents have none), else `gen_ai.agent.id` =
+  `github.copilot.default`, else those with no `invoke_agent` above them.
+  In fleet mode (`invoke_workflow`), the subagents directly under a workflow
+  that no top-level `invoke_agent` contains are counted like top-level ones.
+- Duration is the union of the time covered by top-level `invoke_agent`
+  and `invoke_workflow` spans, so parallel runs count once (0-10 s and
+  5-15 s is 15 s). Nested subagent spans are inside them.
+- Tokens are the sum of `gen_ai.usage.input_tokens`, `output_tokens`,
+  `cache_read.input_tokens`, `cache_write.input_tokens`, and
+  `reasoning.output_tokens` on `chat` spans (compaction requests included).
+  Input includes cache read and write; output includes reasoning. Without
+  chat usage the top-level `invoke_agent` totals are used, then the
+  `gen_ai.client.inference.usage.*` counters. 1.0.64 named the cache write
+  count `cache_creation.input_tokens`, and earlier builds used underscore
+  names (`cache_read_input_tokens`, `cache_creation_input_tokens`,
+  `reasoning_output_tokens`); they are read too, and only the first name
+  present on a span counts.
+- Tool calls come from `execute_tool` spans. There is no success flag:
+  `error.type` or an ERROR status is a failure, anything else a success.
+- Cost: Copilot reports no USD. `github.copilot.cost` is a billing
+  multiplier, not money. `github.copilot.nano_aiu` (AI units / 1e9) is read
+  from top-level `invoke_agent` spans only and shown on the `agent cost`
+  missing line. Computed cost is always unknown: Copilot is billed in
+  premium requests and AI units, not per token, so sdf never prices its
+  token counts (a test in `internal/summary` keeps it that way).
+- `github.copilot.session.shutdown` (`total_premium_requests`, lines
+  added/removed), `gen_ai.client.operation.exception`, hook and compaction
+  events are span events. sdf does not store span events yet.
+- Metrics carry no session id. A point is attached to a session only when it
+  falls inside exactly one Copilot session window.
+
 ## Grok CLI
 
 > Mapping below was first sketched from the public xAI guide

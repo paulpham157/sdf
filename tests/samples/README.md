@@ -17,6 +17,13 @@ Every resource carries `sdf.fixture=sample`. The shapes follow the attribute
 names documented for each tool (see the repository README) so ingest and
 summary tests can run without either CLI.
 
+`copilot_traces.json` and `copilot_metrics.json` follow the GitHub Copilot
+CLI OpenTelemetry reference on docs.github.com and `copilot help monitoring`
+from `@github/copilot` 1.0.114. They were not captured from a live session
+(that needs a Copilot subscription). Ids are fake and there is no prompt or
+tool content. Copilot CLI has no log signal, so there is no
+`copilot_logs.json`.
+
 The Go tests in `internal/summary/live_shapes_test.go` build a second sample
 in code, also marked `sdf.fixture=sample`, whose field names follow a live
 OpenRouter capture. It covers Claude Code and Codex. The Codex half uses

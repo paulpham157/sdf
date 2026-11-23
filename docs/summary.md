@@ -58,6 +58,14 @@ child span, then the tool span, then the log.
 
 So the same numbers are not added twice:
 
+- GitHub Copilot CLI sessions are read first and on their own: duration is
+  the union of the intervals of top-level `invoke_agent` and
+  `invoke_workflow` spans (`traces invoke_agent and invoke_workflow
+  (top-level, union of intervals, github-copilot)`; parallel runs and nested
+  subagent spans count once), and tokens are the
+  sum of `gen_ai.usage.*` on `chat` spans (`traces chat github-copilot`),
+  else the top-level `invoke_agent` totals, else the
+  `gen_ai.client.inference.usage.*` counters. Copilot reports no USD cost.
 - Duration: sum of `claude_code.interaction` spans, else `codex.turn.e2e_duration_ms`,
   else sum of `run_turn` spans, else sum of Pi `invoke_agent` spans, else sum
   of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
@@ -185,6 +193,7 @@ How a count is turned into a bucket:
 | OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. `gen_ai.usage.cache_creation.input_tokens` (what OpenCode sends) and `cache_creation_input_tokens` are the pre-v0.1.0 names for `gen_ai.usage.cache_write.input_tokens`; the summary folds them into `cache_write.input_tokens`, and when a span carries more than one of them the largest is kept, never the sum. Cache write is priced as a subset of input. When old and new names for one bucket arrive together, the largest is priced whatever the key order; two spellings of one bucket with no renamed key among them (for example `cache_write.input_tokens` and `cache_write_input_tokens`) still leave the cost unknown. `gen_ai.usage.reasoning.output_tokens` (the summary folds `reasoning_tokens` into it) is priced as a subset of output. Per-modality keys `gen_ai.usage.{text,image,audio,video}.{input_tokens,output_tokens,cache_read.input_tokens,cache_write.input_tokens}` are breakdowns of the totals: they stay in the token map, use the same max or sum rule as their total, are not priced again, and are named in the cost `method`. If the matching total is missing (for example only `text.input_tokens` and `text.output_tokens`), the cost is unknown, not $0. The v0.1.0 registry defines only text, image, and audio with `input_tokens`, `output_tokens`, and `cache_read.input_tokens`; `video.*` and `<modality>.cache_write.input_tokens` are not in it and are accepted for forward compatibility only. Any other modality or unrecognized key still leaves the computed cost unknown. |
 | Gemini CLI `gemini_cli.token.usage` and `api_response` | No pricing rule yet, so computed cost is `unknown` with the reason `no pricing rule for token source`. From `ApiResponseEvent` in `packages/core/src/telemetry/types.ts`: `input` / `input_token_count` is Gemini's `promptTokenCount` and includes `cache` / `cached_content_token_count`; `output` excludes `thought`; `tool` is the tool-use prompt count. `google/gemini-2.5-pro` also has `pricing.overrides` in the bundled table. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
+| GitHub Copilot CLI `chat` spans, `invoke_agent`, and `gen_ai.client.inference.usage.*` | Never priced per token, so computed cost is always `unknown`. Copilot bills premium requests (`github.copilot.cost` multiplier) and AI units (`nano_aiu`), not tokens, and a token price would mislead. `TestCopilotIsNeverPricedPerToken` fails if a pricing rule for these sources is added. For reference, per the Copilot docs `input_tokens` includes `cache_read` and `cache_write`, and `output_tokens` includes `reasoning`. |
 | Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
 
 Cache-creation counts mix the five-minute and one-hour lifetimes. If the
