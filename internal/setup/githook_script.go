@@ -40,13 +40,24 @@ sdf_json_escape() {
 # this script does not read CODEX_SESSION_ID. Grok CLI puts GROK_SESSION_ID
 # in the environment of its shell tool (grok-build xai-grok-shell
 # session/agent_rebuild.rs adds it to session_env, which the bash tool passes
-# to the command); it is the session id Grok's hooks receive. More than one of
-# Pi, OpenCode, Codex, and Grok CLI set means the commit is not attributed.
+# to the command); it is the session id Grok's hooks receive. Claude Code
+# (v2.1.132 and later) sets CLAUDE_CODE_SESSION_ID in its Bash and PowerShell
+# tool and hook subprocesses; code.claude.com/docs/en/env-vars says it matches
+# the hook session_id, which is the session.id on Claude Code telemetry and
+# what sdf's Claude session hook posts. Qwen Code (v0.28.4) sets
+# process.env QWEN_CODE_SESSION_ID to Config.getSessionId() (config.ts) and
+# passes it to its shell tool (services/shellContextEnv.ts, from QwenLM
+# qwen-code #4649); telemetry/loggers.ts puts the same getSessionId() in
+# session.id. More than one of Pi, OpenCode, Codex, Grok CLI, Claude Code,
+# and Qwen Code set means the commit is not attributed: a Qwen started from
+# Claude Code's Bash tool inherits CLAUDE_CODE_SESSION_ID, for example.
 sdf_session() {
   pi_id=''
   oc_id=''
   cx_id=''
   gk_id=''
+  cc_id=''
+  qw_id=''
   n=0
   if [ -n "${PI_SESSION_FILE:-}" ]; then
     pi_base=$(basename -- "$PI_SESSION_FILE")
@@ -73,6 +84,14 @@ sdf_session() {
     gk_id=$GROK_SESSION_ID
     n=$((n + 1))
   fi
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    cc_id=$CLAUDE_CODE_SESSION_ID
+    n=$((n + 1))
+  fi
+  if [ -n "${QWEN_CODE_SESSION_ID:-}" ]; then
+    qw_id=$QWEN_CODE_SESSION_ID
+    n=$((n + 1))
+  fi
   if [ "$n" -ne 1 ]; then
     return 0
   fi
@@ -82,6 +101,10 @@ sdf_session() {
     printf '%s\n' "opencode $oc_id"
   elif [ -n "$gk_id" ]; then
     printf '%s\n' "grok-cli $gk_id"
+  elif [ -n "$cc_id" ]; then
+    printf '%s\n' "claude-code $cc_id"
+  elif [ -n "$qw_id" ]; then
+    printf '%s\n' "qwen-code $qw_id"
   else
     printf '%s\n' "codex $cx_id"
   fi
@@ -311,8 +334,8 @@ sdf_send_one() {
       service=opencode
       sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
       ;;
-    grok-cli)
-      service=grok-cli
+    grok-cli|claude-code|qwen-code)
+      service=$agent
       sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
       ;;
     codex)

@@ -34,16 +34,52 @@ skipped, so it cannot block the existing checks.
    `sdf-task:<id>` (`task-source: label`, the default). `trailer` or
    `label-or-trailer` also accept an `SDF-Task: <id>` trailer on the head
    commit. Zero or several candidates, or an invalid id, is ERROR.
-4. Runs `sdf verify <head sha> --task <id> --task-ref origin/<base branch>
-   --no-data-dir`, so the task comes only from `.sdf/tasks/<id>.json` on the
-   base branch as GitHub served it. An id that is not declared there is
+4. Checks that the base branch (input `base-ref`, by default the pull
+   request's base) is one of `protected-branches` (by default the
+   repository's default branch), else ERROR: the pull request's author
+   picks its base, and a branch they pushed with an easier task file would
+   otherwise do. Then resolves `refs/remotes/origin/<base branch>`, which the checkout step
+   just fetched from the base repository (no local branch is created or
+   read), to a commit, and runs `sdf verify <head sha> --task <id>
+   --task-ref <that commit> --no-data-dir`, so the task comes only from
+   `.sdf/tasks/<id>.json` on the base branch as GitHub served it. The
+   summary records that commit. An id that is not declared there is
    `TASK_SNAPSHOT_MISSING`, a FAIL.
 5. Writes the status, task, commit, verdict hash, and every reason code to
    the job summary, and uploads `verdict.json` plus check output (named by
    sha256) as the `sdf-verdict` artifact.
-6. Fails the job unless the status is PASS. A missing verdict, a verdict
+6. The verify step's own exit code is the verdict: 0 PASS, 1 FAIL, 3 ERROR,
+   so the step and the job fail unless PASS. A missing verdict, a verdict
    file that disagrees with `sdf verify`'s exit code, or a script error is
-   ERROR, which fails too.
+   ERROR. A last step repeats the check, for a verify step that never ran.
+
+**Runner setup.** Before the checkout, a step (`runner-setup.sh`, input
+`configure-runner`) prepares the runner, and says what it changed with a
+`::notice`:
+- it allows unprivileged user namespaces: ubuntu-24.04 (`ubuntu-latest`)
+  blocks them through AppArmor, so it runs `sudo sysctl -w
+  kernel.apparmor_restrict_unprivileged_userns=0`;
+- it stops docker and containerd and locks their sockets (`chmod 000`).
+  The runner user is in the `docker` group, and a container would run
+  outside the check's namespaces. Checks already cannot see `/run` or reach
+  the host network; this is a second lock. Later steps in the same job
+  cannot use docker, so run the action in its own job.
+
+With `configure-runner: auto` (the default) this happens only when
+`RUNNER_ENVIRONMENT` is `github-hosted`. That is safe enough there: a
+GitHub-hosted runner is a VM used for one job and then discarded, and it
+gives the job passwordless sudo, which the pull request's code could use
+anyway, so lifting the restriction grants it nothing new. On a self-hosted
+or long-lived runner these are host-wide changes that outlive the job:
+`configure-runner: true` makes them anyway, and the default leaves the host
+alone. `false` never changes anything.
+
+`sdf verify` runs every check in its own user, pid, mount, IPC, UTS and
+network namespaces, with every host directory read-only, and the action
+never passes `--allow-unisolated` or
+`--allow-network`, so on a runner where namespaces do not work the verdict
+is ERROR `ISOLATION_UNAVAILABLE`, never an unisolated PASS. Checks have no
+network: a task whose `go test` needs module downloads must vendor them.
 
 Outputs: `status`, `task`, `verdict-hash`.
 
@@ -70,14 +106,20 @@ asks for nothing more: `contents: read`, no secrets, no cache.
 - The verifier: built from a pinned commit of this repository (or the base
   commit, in this repository), never from the pull request.
 - The task: read from the base branch through `--task-ref`, never from the
-  working tree or the head commit. A head commit that changes
+  working tree or the head commit, and only from a branch listed in
+  `protected-branches`: list only branches that are protected (push and
+  force-push restricted), since whoever can push there decides the task. A head commit that changes
   `.sdf/tasks/<id>.json` fails with `TASK_FILE_MODIFIED`.
 - The task id: a label, which only people with triage access can set. A
   trailer is written by the pull request author, who could then pick an
   easier declared task, so it is off by default.
-- The credentials: not written to `.git/config`, and the checks get an
-  allowlisted environment without the runner's `ACTIONS_*`/`GITHUB_*`
-  variables.
+- The credentials: the token is not written to `.git/config`, and the
+  checks get an allowlisted environment without the runner's
+  `ACTIONS_*`/`GITHUB_*` variables. That is not the same as "no
+  credentials on the runner": a check can still read what the runner user
+  can outside the masked directories (`/tmp`, `/run`, `/dev/shm` and the
+  home directory are masked in its namespace). Do not add secrets to this
+  workflow.
 
 **What it does not protect against.**
 - *The workflow file itself.* With `pull_request`, GitHub runs the workflow
@@ -90,13 +132,40 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   not come from the pull request); or a designated glob covering `.github/**` in the task,
   so such a change fails verification when the job does run.
 - *Code that attacks the job it runs in.* The checks run as the runner's
-  user. `sdf verify` kills each check's process group when it exits, but a
-  process that detaches into its own session can outlive it and, as the
-  same user, rewrite the verdict file, the step output file, or write to
-  the job log. The exit code of the step that ran `sdf verify` and the
-  verdict hash it printed to the log are the record to trust, not the
-  artifact. Running the checks as a separate unprivileged OS user (hosted
-  runners allow creating one with sudo) would close this; it is not built.
+  user. Each check runs in its own pid namespace, which the kernel empties
+  when the check exits, so a process that detaches (`setsid`, a double
+  fork) does not outlive it, and it cannot reach the runner's other
+  processes through sockets under `/tmp` or `/run`, the network, or docker.
+  Every host directory is read-only inside a check (the toolchain, `PATH`,
+  the job's workspace and other files), so a check cannot change what a
+  later step runs; each criterion starts from a fresh copy of the
+  submitted tree, a `go test`/`go vet` criterion cannot write the
+  checkout, and code a check adds to it is `CHECK_ADDED_CODE`. A check
+  can still read what the runner user can outside the masked
+  directories. The verify step's exit code (the verdict, see above)
+  and the verdict hash it printed to the log are the record to trust, not
+  the artifact. Running the checks as a separate unprivileged OS user
+  would close the rest; it is not built.
+- *Forgery in a `go test` criterion.* The harness that reports designated
+  test results resists only naive cheating; it is **not a security
+  boundary against an adversarial agent**, and not only in process. Code
+  in the test binary that uses `unsafe`, `//go:linkname` or assembly can
+  still call the harness's report code or patch memory and forge a pass;
+  the tripwire (`TAMPER_CAPABLE_CODE`) flags known patterns only. The
+  harness key is not secret from code under test (Review's round-2 attack
+  read it from a heap dump): on amd64 and arm64 (GitHub's hosted runners)
+  the channel is sealed by seccomp so that only the harness's own write
+  instruction can use it; elsewhere a heap dump is enough to forge, and
+  only the tripwire flags it. Out of
+  process, earlier versions accepted a helper the code under test started
+  (Review's atk_cloneparent and atk_orphan); the channel now goes only to
+  test binaries the verifier's launcher starts as children of the
+  criterion's own `go`, each bound to its package, and isolated test
+  binaries cannot write go's work directory or build cache. That rests on
+  kernel mechanisms and on the checks staying isolated (the Action never
+  allows unisolated runs). See "What this does not guarantee" in
+  [verify.md](verify.md). Treat a PASS as evidence for a reviewer, not as a
+  substitute for review.
 - *A dishonest base branch.* Whoever can push to the base branch decides
   the task. Protect it.
 - No signature: the verdict is hashed, not signed. A ledger prefix or head

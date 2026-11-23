@@ -5,6 +5,17 @@
 # declared in .sdf/tasks on the base branch. Without that label the job is
 # skipped, so it cannot block or slow the existing checks, and it is not a
 # required check. See docs/action.md for the threat model.
+#
+# On a GitHub-hosted runner the action (configure-runner: auto, the default)
+# allows unprivileged user namespaces with sudo sysctl and stops docker and
+# containerd, so later steps in this job cannot use docker: keep it in its
+# own job. configure-runner: false changes nothing; where user namespaces
+# are blocked the verdict is then ERROR ISOLATION_UNAVAILABLE. See "Runner
+# setup" in docs/action.md.
+#
+# The task is read only from a protected branch: a pull request into any
+# branch other than the default one is ERROR unless the action's
+# protected-branches input lists it.
 name: sdf verify
 
 on:

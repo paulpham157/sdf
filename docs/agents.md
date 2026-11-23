@@ -266,7 +266,10 @@ OpenCode v2 is the `@opencode/cli` package, not npm `opencode-ai` (that package
 is still v1). v1's `experimental.openTelemetry` flag is ignored by v2. Export
 turns on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `sdf init opencode --write`
 also installs a plugin that posts when a session is created. OpenCode has no
-event for a session ending.
+event for a session ending. The plugin is a V2 plugin, a default export with
+an `id` and `setup`. V2 refuses a V1 named export with "Plugin must export a
+default definition with an id and an effect or setup function" and never runs
+it. Checked live with `@opencode/cli` 2.4.1 on 2026-11-23.
 
 The bundled exporter posts traces to `${endpoint}/v1/traces` and logs to
 `${endpoint}/v1/logs` as `application/json`. Trace batches use
