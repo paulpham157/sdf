@@ -1,6 +1,7 @@
-//go:build reviewbugs
-
 package decisiongraph_test
+
+// Was behind the reviewbugs tag (failed at 5f0768e); the conflicts_with
+// dedupe key is now order-independent, so it runs in the default suite.
 
 import (
 	"testing"

@@ -775,8 +775,21 @@ func countsAsEvidence(e Edge, stored map[string]bool, active func(string) bool) 
 // decision id, in edge order, that counts toward Challenged, and false when
 // none does. g must come from Load, so EffectiveStatus is resolved. A
 // record's Challenged is true exactly when it is active and this edge is
-// contradicts.
+// contradicts. To ask for many decisions, use LatestEvidenceByDecision,
+// which reads the edges once.
 func LatestEvidence(g Graph, id string) (Edge, bool) {
+	e, ok := latestEvidence(g, func(ref string) bool { return ref == id })[id]
+	return e, ok
+}
+
+// LatestEvidenceByDecision is LatestEvidence for every decision at once: a
+// map from decision id to its latest counted validates or contradicts
+// edge, built in one pass over g.Edges. A decision with none is absent.
+func LatestEvidenceByDecision(g Graph) map[string]Edge {
+	return latestEvidence(g, func(string) bool { return true })
+}
+
+func latestEvidence(g Graph, want func(id string) bool) map[string]Edge {
 	stored := make(map[string]bool, len(g.Decisions))
 	isActive := make(map[string]bool, len(g.Decisions))
 	for _, d := range g.Decisions {
@@ -786,14 +799,13 @@ func LatestEvidence(g Graph, id string) (Edge, bool) {
 		}
 	}
 	active := func(ref string) bool { return isActive[ref] }
-	var last Edge
-	found := false
+	out := map[string]Edge{}
 	for _, e := range g.Edges {
-		if e.To.Kind == KindDecision && e.To.Ref == id && countsAsEvidence(e, stored, active) {
-			last, found = e, true
+		if e.To.Kind == KindDecision && want(e.To.Ref) && countsAsEvidence(e, stored, active) {
+			out[e.To.Ref] = e
 		}
 	}
-	return last, found
+	return out
 }
 
 // headInfo is what following supersedes from one decision resolves to.

@@ -133,3 +133,57 @@ func TestGraphChallengedUsesActiveSourcesOnly(t *testing.T) {
 		t.Fatalf("challenged attention = %+v, want a, named by session s3", got)
 	}
 }
+
+// Facts.Locked and Explored.Locked count the same records: a blocked
+// hypothesis is locked in both, as a blocked decision is. A blocked
+// refinement is not a choice point, so it is in neither.
+func TestGraphLockedFactsAndExploredAgree(t *testing.T) {
+	db := openDB(t)
+	add(t, db, decision.RecordInput{ID: "q", Status: decision.StatusHypothesis})
+	add(t, db, decision.RecordInput{ID: "blocked-decision"})
+	add(t, db, decision.RecordInput{ID: "blocked-hypothesis", Status: decision.StatusHypothesis})
+	add(t, db, decision.RecordInput{ID: "blocked-refinement"})
+	link(t, db, "blocks", "decision:q", "decision:blocked-decision")
+	link(t, db, "blocks", "decision:q", "decision:blocked-hypothesis")
+	link(t, db, "refines", "decision:blocked-refinement", "decision:blocked-decision")
+	link(t, db, "blocks", "decision:q", "decision:blocked-refinement")
+	v := decisiongraph.Build(load(t, db), nil)
+	if len(v.Chapters) != 1 {
+		t.Fatalf("%d chapters", len(v.Chapters))
+	}
+	c := v.Chapters[0]
+	if c.Facts.Locked != 2 || c.Explored.Locked != 2 {
+		t.Fatalf("facts.locked %d, explored.locked %d, want 2 and 2", c.Facts.Locked, c.Explored.Locked)
+	}
+	if got := attention(c.Attention, "locked"); len(got) != 2 {
+		t.Fatalf("locked attention %+v, want 2 rows", got)
+	}
+	// q is the open hypothesis; the blocked hypothesis is locked, not open.
+	if c.Explored.Hypotheses != 1 || c.Explored.Decided != 0 {
+		t.Fatalf("explored %+v", c.Explored)
+	}
+}
+
+// Two parents longer than the cut that share their first 110 characters
+// get different what-if ids, each within the 128-character limit; a short
+// parent is unchanged.
+func TestWhatIfCommandLongParentsDoNotCollide(t *testing.T) {
+	idOf := func(cmd string) string { return strings.Fields(cmd)[4] }
+	prefix := strings.Repeat("p", 110)
+	a := idOf(decisiongraph.WhatIfCommand(prefix+"-alpha", 1, "x"))
+	b := idOf(decisiongraph.WhatIfCommand(prefix+"-beta", 1, "x"))
+	if a == b {
+		t.Fatalf("both parents map to %s", a)
+	}
+	for _, id := range []string{a, b} {
+		if len(id) > 128 || !strings.HasSuffix(id, "-alt-1") || !strings.HasPrefix(id, strings.Repeat("p", 100)+"-") {
+			t.Fatalf("id %q (%d chars)", id, len(id))
+		}
+	}
+	if a != idOf(decisiongraph.WhatIfCommand(prefix+"-alpha", 1, "y")) {
+		t.Fatal("the id depends only on the parent and n")
+	}
+	if got := idOf(decisiongraph.WhatIfCommand("short", 3, "x")); got != "short-alt-3" {
+		t.Fatalf("short parent: %q", got)
+	}
+}
