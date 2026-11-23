@@ -150,7 +150,7 @@ func TestDecisionListUsage(t *testing.T) {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	top := run(t, "decision", "--help")
-	if top.code != 0 || !strings.Contains(top.stdout, "<add|link|list>") {
+	if top.code != 0 || !strings.Contains(top.stdout, "|list") {
 		t.Fatalf("%d %q", top.code, top.stdout)
 	}
 	bad := run(t, "decision", "list", "--db")

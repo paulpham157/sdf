@@ -29,7 +29,7 @@ func TestAppendDecisionEdgeChecksAndInsertsInOneTransaction(t *testing.T) {
 	entered := make(chan struct{})
 	firstDone := make(chan error, 1)
 	go func() {
-		firstDone <- first.AppendDecisionEdge(edge, func(existing []store.DecisionEdge) error {
+		firstDone <- first.AppendDecisionEdge(edge, func(existing []store.DecisionEdge, _ []store.DecisionRetraction) error {
 			close(entered)
 			time.Sleep(300 * time.Millisecond)
 			return nil
@@ -38,7 +38,7 @@ func TestAppendDecisionEdgeChecksAndInsertsInOneTransaction(t *testing.T) {
 	<-entered
 	seen := -1
 	errDup := errors.New("duplicate")
-	err := second.AppendDecisionEdge(edge, func(existing []store.DecisionEdge) error {
+	err := second.AppendDecisionEdge(edge, func(existing []store.DecisionEdge, _ []store.DecisionRetraction) error {
 		seen = len(existing)
 		if len(existing) > 0 {
 			return errDup
@@ -68,7 +68,7 @@ func TestAppendDecisionEdgeWritesNothingWhenTheCheckFails(t *testing.T) {
 	defer s.Close()
 	no := errors.New("no")
 	edge := store.DecisionEdge{Relation: "implements", FromKind: "decision", FromRef: "a", ToKind: "decision", ToRef: "b", RecordedAt: "x"}
-	if err := s.AppendDecisionEdge(edge, func([]store.DecisionEdge) error { return no }); !errors.Is(err, no) {
+	if err := s.AppendDecisionEdge(edge, func([]store.DecisionEdge, []store.DecisionRetraction) error { return no }); !errors.Is(err, no) {
 		t.Fatalf("err %v", err)
 	}
 	edges, err := s.LoadDecisionEdges()
@@ -76,7 +76,7 @@ func TestAppendDecisionEdgeWritesNothingWhenTheCheckFails(t *testing.T) {
 		t.Fatalf("%d edges, %v", len(edges), err)
 	}
 	// The store is still usable: the failed transaction was rolled back.
-	if err := s.AppendDecisionEdge(edge, func([]store.DecisionEdge) error { return nil }); err != nil {
+	if err := s.AppendDecisionEdge(edge, func([]store.DecisionEdge, []store.DecisionRetraction) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }

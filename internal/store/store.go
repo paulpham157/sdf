@@ -189,7 +189,10 @@ func (s *Store) migrate() error {
 	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
 		return err
 	}
-	return s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"})
+	if err := s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"}); err != nil {
+		return err
+	}
+	return s.migrateRetractions()
 }
 
 func (s *Store) addMissingColumns(table string, cols []string) error {
@@ -464,8 +467,9 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	return out, rows.Err()
 }
 
-// AppendDecisionEdge appends e only if check, given every edge already
-// stored, returns nil; otherwise it writes nothing and returns check's error.
+// AppendDecisionEdge appends e only if check, given every edge and every
+// retraction already stored, returns nil; otherwise it writes nothing and
+// returns check's error.
 // The read, the check, and the insert run in one BEGIN IMMEDIATE
 // transaction. IMMEDIATE takes SQLite's write lock before reading, so
 // another Store or process appending at the same time waits (busy_timeout)
@@ -473,7 +477,7 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 // pass a check that only one of them should. The caller has already checked
 // that both endpoints name something the store knows. Nothing is updated or
 // deleted.
-func (s *Store) AppendDecisionEdge(e DecisionEdge, check func(existing []DecisionEdge) error) (err error) {
+func (s *Store) AppendDecisionEdge(e DecisionEdge, check func(existing []DecisionEdge, retracted []DecisionRetraction) error) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ctx := context.Background()
@@ -495,7 +499,11 @@ func (s *Store) AppendDecisionEdge(e DecisionEdge, check func(existing []Decisio
 	if err != nil {
 		return err
 	}
-	if err := check(existing); err != nil {
+	retracted, err := loadDecisionRetractions(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := check(existing, retracted); err != nil {
 		return err
 	}
 	if _, err := conn.ExecContext(ctx, `

@@ -374,6 +374,32 @@ func TestPageShowsSupersededDecisions(t *testing.T) {
 	}
 }
 
+func TestPageShowsRetractedDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "pure-go"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Retract(db, decision.RetractInput{ID: "keep-sqlite", Reason: "Benchmark was wrong."}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "retracted"`) || !strings.Contains(api, `"retraction": {`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "retracted") || !strings.Contains(page, "Benchmark was wrong.") {
+			t.Fatalf("%q did not render the retraction:\n%s", hash, page)
+		}
+		if strings.Count(page, "retracted") != 1 {
+			t.Fatalf("%q: only keep-sqlite is retracted:\n%s", hash, page)
+		}
+	}
+}
+
 func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{

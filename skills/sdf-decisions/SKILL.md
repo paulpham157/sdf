@@ -131,7 +131,20 @@ sdf decision list [--db PATH] [--json]
 - `effective_status`: `superseded` when another stored decision supersedes it, otherwise `active`.
 - `superseded_by`: the ids of the decisions that supersede it. It is omitted when the record is active. Replacement is direct, so to find the current choice, follow `superseded_by` until a record is `active`.
 
-Never try to change a record to mark it replaced: the store is append-only. Add the new record and a `supersedes` link instead. The text table shows the same thing in its `EFFECTIVE` column (`active` or `superseded by ID`), plus `DECIDED BY`, and `alternatives:` / `reason:` lines when set.
+- `retraction`: present when the decision was retracted (`retracted_at`, and `reason` / `retracted_by` when given). `effective_status` is then `retracted`, even if it is also superseded; `superseded_by` is still listed.
+
+Never try to change or delete a record: the store is append-only. To mark it replaced, add the new record and a `supersedes` link. To withdraw it without a replacement, retract it. The text table shows the same thing in its `EFFECTIVE` column (`active`, `superseded by ID`, `retracted`, or `retracted, superseded by ID`) and a `retracted:` line, plus `DECIDED BY`, and `alternatives:` / `reason:` lines when set.
+
+## Retract a record
+
+```bash
+sdf decision retract --id ID [--reason TEXT] [--retracted-by user|agent] [--db PATH]
+```
+
+Retract when the user (or you) withdraws a decision or hypothesis and nothing replaces it, for example "forget that, we are not doing X". If a new choice replaces it, add the new record and link `supersedes` instead. Give `--reason` only when one was stated, quoted or faithfully paraphrased, and set `--retracted-by` to whoever withdrew it. A retraction is appended; the record and its links are not changed or deleted. It prints nothing on success.
+
+- A decision can be retracted once. A second retract is rejected.
+- A retracted decision takes no new links in either direction; edges from before stay.
 
 ## Errors
 
@@ -141,6 +154,9 @@ Never try to change a record to mark it replaced: the store is append-only. Add 
 - `edge already recorded: …`: that link exists already; nothing to do.
 - `an edge cannot link an endpoint to itself`, `supersedes links a decision to a decision`, or `supersedes cycle: …`: the link is invalid and was not stored. `supersedes` takes two decision endpoints, from the new decision to the one it replaces; do not supersede back along an existing chain.
 - `warning: … have both validates and contradicts edges`: the link was stored (exit 0). Tell the user the evidence now conflicts.
+- `decision already retracted: ID at …`: it was retracted before; nothing to do. Do not retract it again with a new reason.
+- `decision retracted: decision:ID takes no new edges`: do not link a retracted decision; record a new decision if the choice came back.
+- `unknown reference: decision ID` from retract: no such id; check `sdf decision list`.
 - Other validation errors (bad status, bad decided-by, bad id, multi-line statement, bad relation) come back on stderr. Fix the argument and retry. A failed add writes nothing.
 
-After a successful add or link, briefly confirm the id, who decided, statement, status, alternatives and reason if any, optional source, and any links made (or that the record was left unlinked).
+After a successful add, link, or retract, briefly confirm the id, who decided, statement, status, alternatives and reason if any, optional source, and any links made (or that the record was left unlinked).

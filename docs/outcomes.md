@@ -131,6 +131,10 @@ Every relation also has these rules:
 
 - **Self-link.** `from` and `to` cannot be the same endpoint. The message is
   `an edge cannot link an endpoint to itself: decision:a`.
+- **Retracted.** A retracted decision takes no new edges, at either end and
+  for any relation. The message is
+  `decision retracted: decision:a takes no new edges`. Edges recorded before
+  the retraction stay. See Retracting a decision.
 - **Duplicate.** The same relation, `from`, and `to` cannot be stored twice.
   A commit SHA is compared in lowercase. The message is
   `edge already recorded: decision:a implements decision:b`. The other
@@ -217,6 +221,7 @@ sdf decision link --relation implements --from session:SESSION_ID \
 sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
+sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
 ```
 
 ```text
@@ -233,6 +238,67 @@ RELATION    FROM              TO                   RECORDED AT
 implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
 supersedes  decision:use-wal  decision:use-sqlite  2026-11-23T15:00:04.000000+00:00
 ```
+
+### Retracting a decision
+
+`sdf decision retract --id ID [--reason TEXT] [--retracted-by user|agent]`
+withdraws a decision without deleting or changing it. It appends one row to its
+own table, `decision_retractions`: the decision id, the optional one-line
+reason, who retracted it (`user` or `agent`, optional), and when, filled by sdf.
+The `decisions` and `decision_edges` rows stay exactly as they were. Like `add`
+and `link`, it prints nothing on success. It exits 1 when the store refuses and
+2 on a usage error.
+
+A retraction is a row in its own table and not an edge, for three reasons:
+
+- It has one subject and a reason, which an edge has no column for.
+- A `UNIQUE` decision id lets the database itself hold "at most once".
+- An older sdf ignores a table it does not know, while it would list an
+  unknown `retracts` edge.
+
+Rules:
+
+- **Unknown id.** Retracting an id that was never recorded is rejected with
+  `unknown reference: decision ID`.
+- **Already retracted.** Retracting a decision a second time is rejected, as a
+  duplicate edge is, with
+  `decision already retracted: ID at RETRACTED_AT`. The first retraction, and
+  its reason, stay as recorded. The check and the insert run in one
+  `BEGIN IMMEDIATE` transaction, so concurrent retracts store one row.
+- **No new edges.** A retracted decision cannot be linked or superseded again,
+  in either direction. To replace a retracted choice, add a new decision; it
+  needs no `supersedes` edge to the retracted one. Edges recorded before the
+  retraction stay and are still listed.
+
+At read time, `effective_status` is `retracted`. A `retraction` object carries
+`retracted_at`, plus `reason` and `retracted_by` when set. Precedence is
+**retracted > superseded > active**. A decision that is both retracted and
+superseded reads `retracted`, and `superseded_by` is still listed, so neither
+fact is lost. Retraction changes only the retracted record. If `b` supersedes
+`a` and `b` is later retracted, `a` stays `superseded` (by `b`). sdf does not
+guess that `a` is back in force; record a new decision if it is.
+`sdf decision list` shows `retracted` (or `retracted, superseded by ID`) in
+`EFFECTIVE`, and a
+`retracted: TIME [by WHO][; reason: TEXT]` line under the statement, quoted by
+the same cell rule as every column. The UI shows the same, and `--json` equals
+`GET /api/decisions`.
+
+```text
+ID          STATUS    EFFECTIVE                         DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
+use-sqlite  decision  retracted, superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  -       Store telemetry in SQLite
+                                                                                                              retracted: 2026-11-23T15:00:03.000000+00:00 by user; reason: Benchmark was wrong
+use-wal     decision  active                            -           2026-11-23T15:00:01.000000+00:00  -       Store telemetry in SQLite with WAL
+```
+
+**Migration.** Opening a store runs `CREATE TABLE IF NOT EXISTS
+decision_retractions`, in its own migration step, after the existing column
+migration. It only adds a table: no column or table changes, and running it
+again does nothing. A database written before this, including the Python
+receiver's, gains the empty table on its first open. An older sdf binary reads
+a newer database as before. It does not know the table, so it shows a retracted
+decision by its stored status and edges, without the retraction. A file that
+cannot be written, such as a read-only copy, is opened without the table and
+reads as having no retractions. `retract` then fails on it.
 
 ## Local budget
 
