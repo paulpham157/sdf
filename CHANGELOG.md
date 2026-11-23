@@ -88,6 +88,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Prompt and response content is now dropped before storing unless `sdf serve --store-content` is set. Tool and error text is dropped too ([#224](https://github.com/paulpham157/sdf/pull/224)).
 - Validate `sdf init --host` / `--port` and quote shell snippets ([#195](https://github.com/paulpham157/sdf/pull/195)).
 - Reject forged OTLP posts and rebound UI hosts ([#199](https://github.com/paulpham157/sdf/pull/199)).
+- Create the telemetry database 0600 (so its `-wal` and `-shm` are 0600 too) and a missing parent directory 0700; tighten an existing telemetry or ledger database, and its `-wal`/`-shm`/`-journal`, that group or others can read, warning when it cannot ([#304](https://github.com/paulpham157/sdf/issues/304)).
 
 ### Docs
 
