@@ -18,6 +18,7 @@ import (
 
 	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/decision"
+	"github.com/paulpham157/sdf/internal/decisiongraph"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -502,7 +503,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|retract|audit> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list|graph|retract|audit> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -516,6 +517,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionLink(args[1:], stdout, stderr)
 	case "list":
 		return cmdDecisionList(args[1:], stdout, stderr)
+	case "graph":
+		return cmdDecisionGraph(args[1:], stdout, stderr)
 	case "retract":
 		return cmdDecisionRetract(args[1:], stdout, stderr)
 	case "audit":
@@ -788,6 +791,97 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	}
 	if err := write(stdout, graph); err != nil {
 		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const decisionGraphUsage = "usage: sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]"
+
+// cmdDecisionGraph prints the Decisions tab document. With --json it is the
+// same bytes as GET /api/decisions/graph on a sdf serve started with the
+// same --db, --prices, --repo, and --github; without it, one headline line
+// per chapter. It opens the store read-only.
+func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	pricesSpec := ""
+	repoPath := ""
+	github := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionGraphUsage)
+			return 0
+		case arg == "--db", arg == "--prices", arg == "--repo":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintf(stderr, "sdf decision graph: %s requires a value\n", arg)
+				return 2
+			}
+			switch arg {
+			case "--db":
+				dbPath = v
+			case "--prices":
+				pricesSpec = v
+			default:
+				repoPath = v
+			}
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case strings.HasPrefix(arg, "--prices="):
+			pricesSpec = strings.TrimPrefix(arg, "--prices=")
+		case strings.HasPrefix(arg, "--repo="):
+			repoPath = strings.TrimPrefix(arg, "--repo=")
+		case arg == "--github":
+			github = true
+		case arg == "--json":
+			asJSON = true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	prices, err := pricing.ResolveCatalog(pricesSpec)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		return 1
+	}
+	db, err := store.OpenReadOnly(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		return 1
+	}
+	defer func() { _ = db.Close() }()
+	records, err := db.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		return 1
+	}
+	gitOpt := outcome.Options{Repo: repoPath}
+	if github {
+		lookup, err := outcome.NewGitHub()
+		if err != nil {
+			gitOpt.GitHubNote = err.Error()
+			fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		} else {
+			gitOpt.Lookup = lookup
+		}
+	}
+	// The same report GET /api/decisions/graph reads: no budget.
+	report := outcome.Summarize(records, prices, gitOpt)
+	view, err := decisiongraph.FromStore(db, report)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
+		return 1
+	}
+	write := decisiongraph.WriteText
+	if asJSON {
+		write = decisiongraph.WriteJSON
+	}
+	if err := write(stdout, view); err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
 		return 1
 	}
 	return 0
