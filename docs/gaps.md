@@ -37,8 +37,8 @@
   (`github.copilot.session.shutdown` with `total_premium_requests`,
   exceptions, hooks) are span events, which sdf does not store. Its metrics
   carry no session id. It reports AI units and a billing multiplier, not
-  USD, and `internal/pricing` has no rule for its token sources, so both cost
-  fields are unknown. The mapping and the `copilot_*.json` samples come from
+  USD, and sdf deliberately does not price its tokens, so both cost fields
+  are unknown. The mapping and the `copilot_*.json` samples come from
   the docs and `copilot help monitoring` (1.0.114), not a live session.
 - Retried delta exports can be double-counted. Cumulative series use the
   latest point. Codex and OpenCode input tokens use the max, not the sum, as

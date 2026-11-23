@@ -55,8 +55,10 @@ child span, then the tool span, then the log.
 So the same numbers are not added twice:
 
 - GitHub Copilot CLI sessions are read first and on their own: duration is
-  the sum of top-level `invoke_agent` spans (`traces invoke_agent (top-level,
-  github-copilot)`; nested subagent spans are not added), and tokens are the
+  the union of the intervals of top-level `invoke_agent` and
+  `invoke_workflow` spans (`traces invoke_agent and invoke_workflow
+  (top-level, union of intervals, github-copilot)`; parallel runs and nested
+  subagent spans count once), and tokens are the
   sum of `gen_ai.usage.*` on `chat` spans (`traces chat github-copilot`),
   else the top-level `invoke_agent` totals, else the
   `gen_ai.client.inference.usage.*` counters. Copilot reports no USD cost.
@@ -144,7 +146,7 @@ How a count is turned into a bucket:
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
 | OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
-| GitHub Copilot CLI `chat` spans, `invoke_agent`, and `gen_ai.client.inference.usage.*` | No pricing rule yet, so computed cost is `unknown`. Per the Copilot docs, `input_tokens` includes `cache_read` and `cache_write`, and `output_tokens` includes `reasoning`. What the user pays is premium requests (`github.copilot.cost` multiplier, `nano_aiu`), not per-token rates. |
+| GitHub Copilot CLI `chat` spans, `invoke_agent`, and `gen_ai.client.inference.usage.*` | Never priced per token, so computed cost is always `unknown`. Copilot bills premium requests (`github.copilot.cost` multiplier) and AI units (`nano_aiu`), not tokens, and a token price would mislead. `TestCopilotIsNeverPricedPerToken` fails if a pricing rule for these sources is added. For reference, per the Copilot docs `input_tokens` includes `cache_read` and `cache_write`, and `output_tokens` includes `reasoning`. |
 | Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
 
 Cache-creation counts mix the five-minute and one-hour lifetimes. If the

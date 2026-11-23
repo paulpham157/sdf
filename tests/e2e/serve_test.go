@@ -67,7 +67,7 @@ func TestSamplesOverHTTPAndGRPC(t *testing.T) {
 		"output=30",
 		"session sample-copilot-1\n",
 		"  tool: copilot-cli\n",
-		"  duration_ms: 29400 (traces invoke_agent (top-level, github-copilot))\n",
+		"  duration_ms: 29400 (traces invoke_agent and invoke_workflow (top-level, union of intervals, github-copilot))\n",
 		"input_tokens=63600 output_tokens=990",
 		"session ses_sampleopencode0001\n",
 		"  tool: opencode\n",

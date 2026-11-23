@@ -440,6 +440,10 @@ export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT
 copilot
 ```
 
+These `export` lines stay in that shell after `copilot` exits, so other
+OTel programs started there will send to sdf too. To scope them to one run,
+use a subshell: `(. ~/.config/sdf/copilot.env && copilot)`.
+
 `sdf init copilot --write` merges these lines into
 `~/.config/sdf/copilot.env` for you to source (details and precedence in
 [docs/receiver.md](receiver.md#one-step-setup)). Copilot CLI has no
@@ -447,11 +451,19 @@ settings-file key for the endpoint; the process environment wins, and
 per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
 `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` override the generic endpoint.
 Organization or device managed settings can also configure export.
-The docs say a plain `http://` endpoint disables export; changelog 1.0.107
-narrows that to the case where an `OTEL_EXPORTER_OTLP_*CERTIFICATE` or
-`*CLIENT_KEY` variable is also set. `sdf init copilot` warns when one is.
-Content capture (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`) defaults to
-`NO_CONTENT`; the user id is the pseudonymous `enduser.pseudo.id`.
+A plain `http://` endpoint such as this receiver exports normally. The
+warning in the docs that an `http://` endpoint disables export sits in the
+Transport security section and applies when one of the certificate or
+client-key variables (`OTEL_EXPORTER_OTLP_*CERTIFICATE`, `*CLIENT_KEY`) is
+set; changelog 1.0.107 says the same for `copilot help monitoring`.
+`sdf init copilot` warns when one is set. Content capture
+(`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`) defaults to `NO_CONTENT`; only
+`SPAN_ONLY` and `SPAN_AND_EVENT` put prompts and responses on spans
+(`EVENT_ONLY` puts them on span events, which sdf does not store). The legacy
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` counts only when the
+standard variable is empty or unset, though it alone still adds tool schemas
+(`gen_ai.tool.definitions`). The user id is the pseudonymous
+`enduser.pseudo.id`.
 
 `service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
 summary also recognizes `gen_ai.agent.id` = `github.copilot.*`). Each user
@@ -461,23 +473,32 @@ span per tool call. Subagents (`explore`, `task`) are nested `invoke_agent`
 spans in the same trace. Tool and subagent spans are attributed through the
 trace id.
 
-- Duration is the sum of top-level `invoke_agent` spans. Nested subagent
-  spans are inside them and are not added.
+- Top-level `invoke_agent` spans are the ones with `server.address` (the
+  docs say subagents have none), else `gen_ai.agent.id` =
+  `github.copilot.default`, else those with no `invoke_agent` above them.
+  In fleet mode (`invoke_workflow`), the subagents directly under a workflow
+  that no top-level `invoke_agent` contains are counted like top-level ones.
+- Duration is the union of the time covered by top-level `invoke_agent`
+  and `invoke_workflow` spans, so parallel runs count once (0-10 s and
+  5-15 s is 15 s). Nested subagent spans are inside them.
 - Tokens are the sum of `gen_ai.usage.input_tokens`, `output_tokens`,
   `cache_read.input_tokens`, `cache_write.input_tokens`, and
   `reasoning.output_tokens` on `chat` spans (compaction requests included).
   Input includes cache read and write; output includes reasoning. Without
   chat usage the top-level `invoke_agent` totals are used, then the
   `gen_ai.client.inference.usage.*` counters. 1.0.64 named the cache write
-  count `cache_creation.input_tokens`; it is read as `cache_write`.
+  count `cache_creation.input_tokens`, and earlier builds used underscore
+  names (`cache_read_input_tokens`, `cache_creation_input_tokens`,
+  `reasoning_output_tokens`); they are read too, and only the first name
+  present on a span counts.
 - Tool calls come from `execute_tool` spans. There is no success flag:
   `error.type` or an ERROR status is a failure, anything else a success.
 - Cost: Copilot reports no USD. `github.copilot.cost` is a billing
   multiplier, not money. `github.copilot.nano_aiu` (AI units / 1e9) is read
   from top-level `invoke_agent` spans only and shown on the `agent cost`
-  missing line. Computed cost is unknown: `internal/pricing` has no rule for
-  Copilot token sources, and the user's Copilot plan, not per-token rates,
-  is what they pay.
+  missing line. Computed cost is always unknown: Copilot is billed in
+  premium requests and AI units, not per token, so sdf never prices its
+  token counts (a test in `internal/summary` keeps it that way).
 - `github.copilot.session.shutdown` (`total_premium_requests`, lines
   added/removed), `gen_ai.client.operation.exception`, hook and compaction
   events are span events. sdf does not store span events yet.

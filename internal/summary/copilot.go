@@ -1,6 +1,7 @@
 package summary
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/paulpham157/sdf/internal/record"
@@ -20,18 +21,29 @@ const (
 	copilotMetricPrefix = "gen_ai.client.inference.usage."
 )
 
-// copilotUsageKeys maps a gen_ai.usage.* suffix (span) or a
-// gen_ai.client.inference.usage.* suffix (metric) to the summary key.
-// cache_creation is the name Copilot CLI 1.0.64 used; later builds and the
-// docs use cache_write.
-var copilotUsageKeys = []struct{ suffix, key string }{
-	{"input_tokens", "input_tokens"},
-	{"output_tokens", "output_tokens"},
-	{"cache_read.input_tokens", "cache_read.input_tokens"},
-	{"cache_write.input_tokens", "cache_write.input_tokens"},
-	{"cache_creation.input_tokens", "cache_write.input_tokens"},
-	{"reasoning.output_tokens", "reasoning.output_tokens"},
+// copilotUsageKeys maps each summary key to the gen_ai.usage.* suffixes
+// (span) or gen_ai.client.inference.usage.* suffixes (metric) that carry it,
+// current name first. Only the first one present on a span (or, for metrics,
+// in the session) is read, so a build that sends two names is not counted
+// twice. cache_creation is the name Copilot CLI 1.0.64 used; later builds and
+// the docs use cache_write. Builds before that used underscore names
+// (cache_read_input_tokens, cache_creation_input_tokens,
+// reasoning_output_tokens; changelog 1.0.64).
+var copilotUsageKeys = []struct {
+	key      string
+	suffixes []string
+}{
+	{"input_tokens", []string{"input_tokens"}},
+	{"output_tokens", []string{"output_tokens"}},
+	{"cache_read.input_tokens", []string{"cache_read.input_tokens", "cache_read_input_tokens"}},
+	{"cache_write.input_tokens", []string{"cache_write.input_tokens", "cache_creation.input_tokens", "cache_creation_input_tokens"}},
+	{"reasoning.output_tokens", []string{"reasoning.output_tokens", "reasoning_output_tokens"}},
 }
+
+const (
+	copilotDefaultAgent = "github.copilot.default"
+	copilotServerAddr   = "server.address"
+)
 
 // isCopilotRecord is true for the default service.name, a github.copilot.*
 // record name, or a span whose gen_ai.agent.id is a Copilot agent (the
@@ -53,61 +65,140 @@ func copilotSpans(records []record.Record, head string) []record.Record {
 	return out
 }
 
-// copilotTopLevel keeps the invoke_agent spans with no invoke_agent
-// ancestor. A subagent's invoke_agent sits inside the parent's span, so
-// summing every invoke_agent would count that time and usage twice.
-func copilotTopLevel(records []record.Record) []record.Record {
+func copilotSpanIndex(records []record.Record) map[string]record.Record {
 	byID := map[string]record.Record{}
 	for _, rec := range records {
 		if rec.Signal == "traces" && rec.SpanID != nil {
 			byID[*rec.SpanID] = rec
 		}
 	}
-	var out []record.Record
-	for _, rec := range copilotSpans(records, "invoke_agent") {
-		nested := false
-		seen := map[string]bool{}
-		parent := rec.ParentSpanID
-		for parent != nil && *parent != "" && !seen[*parent] {
-			seen[*parent] = true
-			up, ok := byID[*parent]
-			if !ok {
-				break
-			}
-			if spanHead(deref(up.Name)) == "invoke_agent" {
-				nested = true
-				break
-			}
-			parent = up.ParentSpanID
+	return byID
+}
+
+// copilotAncestor returns the nearest ancestor of rec whose span head is one
+// of heads.
+func copilotAncestor(rec record.Record, byID map[string]record.Record, heads ...string) (record.Record, bool) {
+	seen := map[string]bool{}
+	parent := rec.ParentSpanID
+	for parent != nil && *parent != "" && !seen[*parent] {
+		seen[*parent] = true
+		up, ok := byID[*parent]
+		if !ok {
+			break
 		}
-		if !nested {
+		head := spanHead(deref(up.Name))
+		for _, h := range heads {
+			if head == h {
+				return up, true
+			}
+		}
+		parent = up.ParentSpanID
+	}
+	return record.Record{}, false
+}
+
+// copilotTopLevel is the set of invoke_agent spans whose usage and AIU are
+// added up, so a subagent is never counted on top of its parent.
+//
+// Per the Copilot docs, a top-level invoke_agent carries server.address and
+// server.port and a subagent does not, and the top-level default agent id is
+// github.copilot.default. The first of those markers present on any span in
+// the session decides; without either (older builds) a span is top-level
+// when no invoke_agent is above it. In fleet mode an invoke_workflow span
+// runs subagents in parallel. When that workflow is not inside a top-level
+// invoke_agent, its direct invoke_agent children carry the usage and are
+// counted. When it is inside one, the parent's totals are assumed to include
+// them, as for any subagent.
+func copilotTopLevel(records []record.Record) []record.Record {
+	byID := copilotSpanIndex(records)
+	agents := copilotSpans(records, "invoke_agent")
+	hasAddr, hasDefault := false, false
+	for _, rec := range agents {
+		if strAttr(rec.Attributes, copilotServerAddr) != "" {
+			hasAddr = true
+		}
+		if strAttr(rec.Attributes, "gen_ai.agent.id") == copilotDefaultAgent {
+			hasDefault = true
+		}
+	}
+	isTop := func(rec record.Record) bool {
+		switch {
+		case hasAddr:
+			return strAttr(rec.Attributes, copilotServerAddr) != ""
+		case hasDefault:
+			return strAttr(rec.Attributes, "gen_ai.agent.id") == copilotDefaultAgent
+		default:
+			_, nested := copilotAncestor(rec, byID, "invoke_agent")
+			return !nested
+		}
+	}
+	var out []record.Record
+	for _, rec := range agents {
+		if isTop(rec) {
+			out = append(out, rec)
+			continue
+		}
+		// A fleet subagent: its nearest agent-or-workflow ancestor is a
+		// workflow that no top-level invoke_agent contains.
+		up, ok := copilotAncestor(rec, byID, "invoke_agent", "invoke_workflow")
+		if !ok || spanHead(deref(up.Name)) != "invoke_workflow" {
+			continue
+		}
+		if _, inside := copilotAncestor(up, byID, "invoke_agent"); !inside {
 			out = append(out, rec)
 		}
 	}
 	return out
 }
 
-// copilotDuration sums top-level invoke_agent spans: agent time for each
-// user message, not wall clock between messages.
+// copilotDuration is the union of the time covered by top-level invoke_agent
+// spans and invoke_workflow (fleet mode) spans: agent time for each user
+// message, not wall clock between messages. Overlapping spans (parallel
+// runs, a workflow and its subagents) count once: 0-10 s and 5-15 s is
+// 15 s, not 20 s.
 func copilotDuration(records []record.Record) (*float64, *string) {
-	var total []float64
-	for _, rec := range copilotTopLevel(records) {
-		if ms := spanMS(rec); ms != nil {
-			total = append(total, *ms)
+	type interval struct{ start, end int64 }
+	var spans []interval
+	add := func(rec record.Record) {
+		if spanMS(rec) != nil {
+			spans = append(spans, interval{*rec.StartUnixNano, *rec.EndUnixNano})
 		}
 	}
-	if len(total) == 0 {
+	for _, rec := range copilotTopLevel(records) {
+		add(rec)
+	}
+	for _, rec := range copilotSpans(records, "invoke_workflow") {
+		add(rec)
+	}
+	if len(spans) == 0 {
 		return nil, nil
 	}
-	return record.Float(sum(total)), record.Str("traces invoke_agent (top-level, github-copilot)")
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
+	total := int64(0)
+	cur := spans[0]
+	for _, next := range spans[1:] {
+		if next.start <= cur.end {
+			if next.end > cur.end {
+				cur.end = next.end
+			}
+			continue
+		}
+		total += cur.end - cur.start
+		cur = next
+	}
+	total += cur.end - cur.start
+	return record.Float(float64(total) / 1_000_000), record.Str("traces invoke_agent and invoke_workflow (top-level, union of intervals, github-copilot)")
 }
 
 func copilotUsage(totals *OrderedFloats, attrs map[string]any) bool {
 	found := false
 	for _, item := range copilotUsageKeys {
-		if amount := record.Number(attrs[copilotUsagePrefix+item.suffix]); amount != nil {
-			totals.Add(item.key, *amount)
-			found = true
+		for _, suffix := range item.suffixes {
+			if amount := record.Number(attrs[copilotUsagePrefix+suffix]); amount != nil {
+				totals.Add(item.key, *amount)
+				found = true
+				break
+			}
 		}
 	}
 	return found
@@ -151,10 +242,17 @@ func copilotTokens(records []record.Record, points []point) (OrderedFloats, *str
 	}
 	metrics := OrderedFloats{}
 	for _, item := range copilotUsageKeys {
-		for _, p := range points {
-			if p.name == copilotMetricPrefix+item.suffix {
-				metrics.Add(item.key, p.value)
+		for _, suffix := range item.suffixes {
+			hit := false
+			for _, p := range points {
+				if p.name == copilotMetricPrefix+suffix {
+					metrics.Add(item.key, p.value)
+					hit = true
+				}
+			}
+			if hit {
 				found = true
+				break
 			}
 		}
 	}

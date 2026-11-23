@@ -126,7 +126,7 @@ func TestCopilotSampleSessionTokensToolsDurationAndCost(t *testing.T) {
 	}
 	// Two top-level invoke_agent spans: 15.8 s + 13.6 s. The nested explore
 	// subagent (5.35 s) is inside the first and is not added.
-	if s.DurationMS == nil || *s.DurationMS != 29400 || deref(s.DurationSource) != "traces invoke_agent (top-level, github-copilot)" {
+	if s.DurationMS == nil || *s.DurationMS != 29400 || deref(s.DurationSource) != "traces invoke_agent and invoke_workflow (top-level, union of intervals, github-copilot)" {
 		t.Fatalf("duration %v %q", s.DurationMS, deref(s.DurationSource))
 	}
 	if s.CostUSD != nil || s.AgentReportedCostUSD != nil {

@@ -348,16 +348,20 @@
             },
             {
               "name": "github.copilot.agent.turn.count",
-              "description": "Agent turns",
+              "description": "LLM round-trips per agent invocation",
               "unit": "{turn}",
-              "sum": {
+              "histogram": {
                 "aggregationTemporality": 2,
-                "isMonotonic": true,
                 "dataPoints": [
                   {
                     "startTimeUnixNano": "1800000098500000000",
                     "timeUnixNano": "1800000153800000000",
-                    "asInt": "5",
+                    "count": "2",
+                    "sum": 5,
+                    "min": 2,
+                    "max": 3,
+                    "bucketCounts": ["0", "1", "1", "0"],
+                    "explicitBounds": [1, 2, 5],
                     "attributes": []
                   }
                 ]
