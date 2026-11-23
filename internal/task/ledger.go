@@ -14,10 +14,14 @@ import (
 	"unicode/utf8"
 )
 
-// The names below mirror the interface the ledger package will export
-// (internal/ledger, owned separately). When it lands, callers switch from
-// task.Ledger to ledger.Ledger with no change in semantics. Until then
-// MemLedger is the only implementation, and only tests use it.
+// Ledger, Kind, Entry, and the errors below are a stand-in for the ledger
+// package (internal/ledger, pull request #189), which is not merged. They
+// follow the method set and hash rules agreed for it, but they are not its
+// types: the real ledger.Store will differ in details (for example a
+// corrupt-payload error from Get, and its own Open and path handling). When
+// #189 merges, these are deleted and callers use the ledger package's
+// types; anything that differs is fixed then. MemLedger is the only
+// implementation here, and only tests use it.
 
 // Kind is the record type and the hash domain, for example "sdf.task/v1".
 type Kind string
