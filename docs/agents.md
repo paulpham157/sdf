@@ -598,3 +598,13 @@ stored unnamed records still summarize. The live model was `grok-4.7`.
 The official protocol list includes `grpc`. A cheap gRPC check is recorded
 in the 2026-11-23 notes when it was run; http/protobuf is the documented
 default and was used for the live capture.
+
+`sdf init grok` prints the variables above and the matching `[telemetry]`
+table. `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
+(default `~/.grok/config.toml`) when the file has no `[telemetry]` table, and
+installs `hooks/sdf-session.json` beside it. An existing `[telemetry]` table
+is left unchanged. A project `.grok/config.toml` cannot set `otel_*`.
+Environment variables win over the file. The hook posts session open and
+close to `POST /v1/sessions`. Grok sets `GROK_SESSION_ID` on that process;
+the event JSON field is `sessionId`. User hooks under `~/.grok/hooks/` are
+trusted. A project `.grok/hooks/` file is not, until that folder is trusted.

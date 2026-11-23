@@ -88,6 +88,35 @@ func TestNilCatalogLeavesAPricedCaseUnchecked(t *testing.T) {
 	}
 }
 
+func TestTrimmedModulePathLoadsEmbeddedCases(t *testing.T) {
+	trimmed := "github.com/paulpham157/sdf/internal/check/check.go"
+	if _, err := os.Stat(filepath.Join(filepath.Dir(trimmed), "testdata", "cases")); err == nil {
+		t.Fatal("trimmed module path exists on disk; this would not catch the -trimpath failure")
+	}
+	cases, err := loadDefaultAt(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk, err := Load(filepath.Join("testdata", "cases"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != len(disk) || len(cases) < 4 {
+		t.Fatalf("embedded %d disk %d", len(cases), len(disk))
+	}
+	report := Run(cases)
+	if report.Failed != 0 {
+		t.Fatal(Format(report))
+	}
+	got := map[string]string{}
+	for _, result := range report.Results {
+		got[result.ID] = result.Status
+	}
+	if got["priced-session"] != Pass || got["unknown-price"] != NotChecked {
+		t.Fatalf("%v", got)
+	}
+}
+
 func TestLoadRejectsACaseWithTwoInputs(t *testing.T) {
 	dir := t.TempDir()
 	body := `{
