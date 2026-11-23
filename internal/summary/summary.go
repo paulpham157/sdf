@@ -208,6 +208,9 @@ func ToolOf(rec record.Record) string {
 	if service == "codex" || strings.Contains(service, "codex") || strings.HasPrefix(strings.ToLower(origin), "codex") || strings.HasPrefix(name, "codex.") || strings.HasPrefix(body, "codex.") || strings.HasPrefix(event, "codex.") {
 		return "codex"
 	}
+	if isQwenRecord(service, name, event) {
+		return "qwen-code"
+	}
 	if service == "opencode" {
 		return "opencode"
 	}
@@ -408,6 +411,7 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 		return sessionKey{}, false
 	}
 	st := stamps(rec)
+	st = qwenStamps(tool, rec, st)
 	if len(st) == 0 || tool == "unknown" {
 		return sessionKey{}, false
 	}
@@ -495,7 +499,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Source: deref(tokensSource),
 	})
 	failures := metricFailures(records)
-	return SessionSummary{
+	summary := SessionSummary{
 		SessionID:               sessionID,
 		Tool:                    tool,
 		ServiceNames:            serviceNames(records),
@@ -523,6 +527,10 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		ToolCalls:               nonNilCalls(toolCalls(records, points)),
 		Repository:              repositoryFacts(records),
 	}
+	if tool == "qwen-code" {
+		summary = qwenSummary(summary, records, points, prices)
+	}
+	return summary
 }
 
 func spanTree(records []record.Record, allSpans bool) ([]SpanNode, int) {
@@ -615,6 +623,9 @@ func shownParent(rec record.Record, byID map[string]record.Record, shownIDs map[
 func interestingSpan(rec record.Record) bool {
 	name := deref(rec.Name)
 	if claudeSpans[name] || codexSpans[name] || strings.HasPrefix(name, "claude_code.") {
+		return true
+	}
+	if strings.HasPrefix(name, qwenPrefix) && ToolOf(rec) == "qwen-code" {
 		return true
 	}
 	if opencodeSpans[name] || piSpanHeads[spanHead(name)] {

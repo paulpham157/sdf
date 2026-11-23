@@ -368,6 +368,90 @@ sqlite3 sdf-telemetry.sqlite \
 the datapoint attributes or the resource. Codex uses `conversation.id`.
 Claude Code and OpenCode use `session.id`. Pi logs set only `pi.session.id`.
 
+## Qwen Code
+
+> Mapping below is from QwenLM/qwen-code v0.28.4 (e8424c88, released
+> 2026-11-22): [docs/developers/development/telemetry.md](https://github.com/QwenLM/qwen-code/blob/v0.28.4/docs/developers/development/telemetry.md)
+> and `packages/core/src/telemetry`. It was not checked against a live
+> session. `tests/samples/qwen_*.json` are built from those sources with
+> `logPrompts: false`.
+
+Qwen Code forked Gemini CLI's telemetry and renamed it: events, metrics,
+and spans use `qwen-code.*` and `service.name` is `qwen-code`. It is off
+until `telemetry.enabled` is true. The default protocol is gRPC on port
+4317; `otlpProtocol: "http"` sends OTLP/JSON and appends `/v1/traces`,
+`/v1/logs`, and `/v1/metrics` to `otlpEndpoint`. `telemetry.outfile` turns
+OTLP export off.
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "otlpEndpoint": "http://127.0.0.1:4318",
+    "otlpProtocol": "http",
+    "logPrompts": false
+  }
+}
+```
+
+`logPrompts` defaults to **true**: prompts, API request text (which includes
+files Qwen read and its memory extractor's reads of `~/.qwen/memories/`),
+and response text go into the logs. `sdf init qwen` sets it to `false`,
+also when the file already says `true`. `includeSensitiveSpanAttributes`
+(default false) copies messages and tool data into spans; `sdf init qwen`
+sets it back to false when it finds it on.
+
+No setting turns off tool arguments: every `qwen-code.tool_call` log carries
+the full JSON arguments of the call in `function_args` (the shell command,
+the whole content passed to `write_file` or `edit`), and a failed call
+carries the tool's error text in `error` and `error.message`
+(`logToolCall`, `packages/core/src/telemetry/loggers.ts`, v0.28.4). Its
+tool spans repeat the error text. sdf discards these before storing
+anything: it keeps the tool name, call id, duration, success, and error
+type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
+
+- Session: logs and spans carry `session.id` (LLM and interaction spans also
+  `gen_ai.conversation.id`). The auto-instrumented HTTP `POST` child spans
+  have no session id and are attributed through the trace id. Metrics carry
+  no `session.id` unless `telemetry.metrics.includeSessionId` is true, so
+  they reach a session only by time window.
+- Duration is the sum of `qwen-code.interaction` spans (one trace root per
+  prompt, including tool approval waits). Without spans it is the
+  min-to-max timestamp of Qwen logs (`logs qwen-code window`).
+- Tokens are the sum of `input_token_count`, `output_token_count`,
+  `cached_content_token_count`, and `thoughts_token_count` on
+  `qwen-code.api_response` logs (`total_token_count` is not added), else
+  `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
+  spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
+  `thought`, `cache`). That counter belongs to the process, not the session:
+  sdf places its points by their own time, adds up process runs, and
+  subtracts what an earlier session in the same process had counted (see
+  [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
+  providers (the default) output includes thoughts, which Qwen estimates
+  from text when the provider does not report them; with Gemini-native
+  responses it does not. The totals include subagents and the background
+  memory extractor (its spans are separate single-span traces with
+  `llm_request.context=standalone`); Qwen does not split them out.
+- Tool calls come from `qwen-code.tool` spans: wait from the
+  `qwen-code.tool.blocked_on_user` child, execution from
+  `qwen-code.tool.execution`, joined to the `qwen-code.tool_call` log by call
+  id for `success`. Without spans the logs are used, then
+  `qwen-code.tool.call.count`.
+- Cost: Qwen Code exports none. Computed cost is unknown until
+  `internal/pricing` has a rule for the Qwen token sources.
+- Differences from Gemini CLI: `qwen-code.*` instead of `gemini_cli.*`; no
+  `tool_token_count` and no `tool` token type; metrics drop `session.id` by
+  default; span names follow Claude Code's shape (`interaction`,
+  `llm_request`, `tool`, `blocked_on_user`, `execution`, `hook`) with
+  `gen_ai.operation.name`; `QWEN_TELEMETRY_*` instead of
+  `GEMINI_TELEMETRY_*`, and `OTEL_EXPORTER_OTLP_ENDPOINT` also sets the
+  endpoint.
+- A published run of an earlier Qwen Code release (spencerclark.dev,
+  2026-10-10; it predates v0.28.4 and was not repeated here) had every
+  `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
+  detail" even with no hooks configured. The summary shows them as they
+  arrive.
+
 ## OpenRouter
 
 Claude Code and Codex can call a free OpenRouter model. The id is the provider slug,

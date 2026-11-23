@@ -139,6 +139,7 @@ left untouched. An existing Codex `[otel]` table is left untouched.
 sdf init claude-code
 sdf init claude-code --write
 sdf init codex --write
+sdf init qwen --write
 sdf init opencode --write
 sdf init pi --write
 sdf init pi --write --global
@@ -155,6 +156,50 @@ in brackets), and the ports must be 1-65535; anything else is refused
 before a file is written. Those values end up in files other programs run
 (`opencode.env` is sourced by a shell, the Claude Code and Codex session
 hooks are shell commands), and the URL is single-quoted in both.
+
+`sdf init qwen` (alias `qwen-code`) merges `enabled: true`, `otlpEndpoint`
+(the HTTP receiver), `otlpProtocol: "http"`, and `logPrompts: false` into
+the `telemetry` object of `$QWEN_HOME/settings.json` or
+`~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
+so sdf turns it off even when the file says `true`, and warns. It does the
+same for `includeSensitiveSpanAttributes`. Key order, indentation, a UTF-8
+BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
+touched. The dry run prints only the telemetry keys sdf manages, not the
+rest of the file or other telemetry keys, which may hold secrets (MCP
+server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
+or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+variables are printed instead; with `--write` that is an error (non-zero
+exit). `telemetry.outfile`
+and per-signal `otlp*Endpoint` keys are kept and reported, because they
+override the endpoint. The write refuses a file the user cannot write. It
+goes through a temp file in the same directory (fsync, rename), keeps the
+mode and, where the process may, the owner. The rename gives the file a new
+inode, so a hard link keeps the old content and extended attributes or ACLs
+are not copied. A symlink is followed with `readlink`. It must end at a
+`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+not exist yet (stow-style) creates it: inside the settings directory,
+missing parent directories are created with mode 0700; outside it, only
+when the target's directory already exists, so sdf never creates
+directories elsewhere. The old file is copied
+to `.sdf-bak`; a different existing backup is kept and `.sdf-bak.1`, ... is
+used, and a backup made by a failed write is removed.
+
+What wins, from Qwen Code's `resolveTelemetrySettings` and `mergeSettings`:
+CLI flags (`--telemetry`, `--telemetry-otlp-endpoint`,
+`--telemetry-otlp-protocol`, `--telemetry-log-prompts`,
+`--telemetry-outfile`), then `QWEN_TELEMETRY_*` (and
+`OTEL_EXPORTER_OTLP_ENDPOINT` for the endpoint; `QWEN_TELEMETRY_OTLP_*` and
+`OTEL_EXPORTER_OTLP_*` per-signal endpoints), then the merged settings:
+system (`/etc/qwen-code/settings.json`, or `QWEN_CODE_SYSTEM_SETTINGS_PATH`)
+over the workspace `<cwd>/.qwen/settings.json` over the user file over
+system defaults (`system-defaults.json` beside the system file, or
+`QWEN_CODE_SYSTEM_DEFAULTS_PATH`). The workspace file is ignored when
+`security.folderTrust.enabled` is true and the folder is not trusted (folder
+trust is off by default). `sdf init --check qwen` reads every layer, shows
+which one sets each key, applies the environment, says whether Qwen Code
+points at this receiver over HTTP, and warns when `logPrompts` is on.
+There is no session hook for Qwen Code, so its window is inferred from the
+records.
 
 `--write` also installs a session hook for that agent. The hook posts to
 `POST /v1/sessions` when a session opens and, where the agent has such an

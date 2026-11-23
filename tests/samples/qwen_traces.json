@@ -1,0 +1,2191 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "qwen-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.28.4"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "qwen-code"
+          },
+          "spans": [
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000001",
+              "name": "qwen-code.interaction",
+              "kind": 1,
+              "startTimeUnixNano": "1800000200000000000",
+              "endTimeUnixNano": "1800000220000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "qwen-code"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "qwen-code.message_type",
+                  "value": {
+                    "stringValue": "user_query"
+                  }
+                },
+                {
+                  "key": "qwen-code.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "qwen-code.approval_mode",
+                  "value": {
+                    "stringValue": "default"
+                  }
+                },
+                {
+                  "key": "interaction.sequence",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "interaction.duration_ms",
+                  "value": {
+                    "intValue": "20000"
+                  }
+                },
+                {
+                  "key": "qwen-code.turn_status",
+                  "value": {
+                    "stringValue": "ok"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000002",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800000200500000000",
+              "endTimeUnixNano": "1800000205000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "dashscope"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample-02"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "tool_calls"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "doubleValue": 1.9
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "9000"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "300"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4500"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "finish_reason",
+                  "value": {
+                    "stringValue": "tool_calls"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "120"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read.input_tokens",
+                  "value": {
+                    "intValue": "4096"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000001"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000066",
+              "name": "POST",
+              "kind": 3,
+              "startTimeUnixNano": "1800000200550000000",
+              "endTimeUnixNano": "1800000204950000000",
+              "attributes": [
+                {
+                  "key": "http.request.method",
+                  "value": {
+                    "stringValue": "POST"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "stringValue": "dashscope.aliyuncs.com"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000002"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000003",
+              "name": "qwen-code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205100000000",
+              "endTimeUnixNano": "1800000205300000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.type",
+                  "value": {
+                    "stringValue": "function"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_01"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_01"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000001"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000004",
+              "name": "qwen-code.tool.blocked_on_user",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205100000000",
+              "endTimeUnixNano": "1800000205110000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_01"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "10"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_approved"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "auto"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000003"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000000e",
+              "name": "qwen-code.hook",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205105000000",
+              "endTimeUnixNano": "1800000205108000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "hook_event",
+                  "value": {
+                    "stringValue": "PreToolUse"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "3"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "error",
+                  "value": {
+                    "stringValue": "hook runner returned no output without error detail"
+                  }
+                }
+              ],
+              "status": {
+                "code": 2,
+                "message": "hook runner returned no output without error detail"
+              },
+              "parentSpanId": "9e11000000000003"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000005",
+              "name": "qwen-code.tool.execution",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205115000000",
+              "endTimeUnixNano": "1800000205295000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_01"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "180"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000003"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000006",
+              "name": "qwen-code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205400000000",
+              "endTimeUnixNano": "1800000212100000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.type",
+                  "value": {
+                    "stringValue": "function"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_02"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_02"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "6699"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000001"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000007",
+              "name": "qwen-code.tool.blocked_on_user",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205400000000",
+              "endTimeUnixNano": "1800000205410000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "agent"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_02"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "10"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_approved"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "auto"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000006"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000008",
+              "name": "qwen-code.tool.execution",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205415000000",
+              "endTimeUnixNano": "1800000212095000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "agent"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_02"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "6680"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000006"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000009",
+              "name": "qwen-code.subagent",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205500000000",
+              "endTimeUnixNano": "1800000212000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.description",
+                  "value": {
+                    "stringValue": "Read-only codebase exploration"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.id",
+                  "value": {
+                    "stringValue": "sub-sample-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.name",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.invocation_kind",
+                  "value": {
+                    "stringValue": "foreground"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.is_built_in",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.depth",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.status",
+                  "value": {
+                    "stringValue": "completed"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.terminate_reason",
+                  "value": {
+                    "stringValue": "GOAL"
+                  }
+                },
+                {
+                  "key": "qwen-code.subagent.duration_ms",
+                  "value": {
+                    "intValue": "6500"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000008"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000000a",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800000205600000000",
+              "endTimeUnixNano": "1800000206900000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "dashscope"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample-10"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "tool_calls"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "doubleValue": 1.9
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "6000"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "subagent"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1300"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "finish_reason",
+                  "value": {
+                    "stringValue": "tool_calls"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "subagent_name",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000009"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000006e",
+              "name": "POST",
+              "kind": 3,
+              "startTimeUnixNano": "1800000205650000000",
+              "endTimeUnixNano": "1800000206850000000",
+              "attributes": [
+                {
+                  "key": "http.request.method",
+                  "value": {
+                    "stringValue": "POST"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "stringValue": "dashscope.aliyuncs.com"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000000a"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000000b",
+              "name": "qwen-code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1800000207000000000",
+              "endTimeUnixNano": "1800000207050000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "glob"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.type",
+                  "value": {
+                    "stringValue": "function"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_03"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_03"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "49"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000009"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000000c",
+              "name": "qwen-code.tool.blocked_on_user",
+              "kind": 1,
+              "startTimeUnixNano": "1800000207000000000",
+              "endTimeUnixNano": "1800000207005000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "glob"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_03"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_approved"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "auto"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000000b"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000000d",
+              "name": "qwen-code.tool.execution",
+              "kind": 1,
+              "startTimeUnixNano": "1800000207010000000",
+              "endTimeUnixNano": "1800000207045000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "glob"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_03"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "34"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000000b"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e1100000000000f",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800000212300000000",
+              "endTimeUnixNano": "1800000219800000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "dashscope"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample-15"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "stop"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "doubleValue": 1.9
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "15500"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "640"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "7500"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "finish_reason",
+                  "value": {
+                    "stringValue": "stop"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "380"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read.input_tokens",
+                  "value": {
+                    "intValue": "9000"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000001"
+            },
+            {
+              "traceId": "9e110000000000000000000000000001",
+              "spanId": "9e11000000000073",
+              "name": "POST",
+              "kind": 3,
+              "startTimeUnixNano": "1800000212350000000",
+              "endTimeUnixNano": "1800000219750000000",
+              "attributes": [
+                {
+                  "key": "http.request.method",
+                  "value": {
+                    "stringValue": "POST"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "stringValue": "dashscope.aliyuncs.com"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000000f"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e11000000000015",
+              "name": "qwen-code.interaction",
+              "kind": 1,
+              "startTimeUnixNano": "1800000240000000000",
+              "endTimeUnixNano": "1800000258000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "invoke_agent"
+                  }
+                },
+                {
+                  "key": "gen_ai.agent.name",
+                  "value": {
+                    "stringValue": "qwen-code"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "qwen-code.message_type",
+                  "value": {
+                    "stringValue": "user_query"
+                  }
+                },
+                {
+                  "key": "qwen-code.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "qwen-code.approval_mode",
+                  "value": {
+                    "stringValue": "default"
+                  }
+                },
+                {
+                  "key": "interaction.sequence",
+                  "value": {
+                    "intValue": "2"
+                  }
+                },
+                {
+                  "key": "interaction.duration_ms",
+                  "value": {
+                    "intValue": "18000"
+                  }
+                },
+                {
+                  "key": "qwen-code.turn_status",
+                  "value": {
+                    "stringValue": "ok"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e11000000000016",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800000240300000000",
+              "endTimeUnixNano": "1800000246000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "dashscope"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample-22"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "tool_calls"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "doubleValue": 1.9
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "16800"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "220"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5700"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "finish_reason",
+                  "value": {
+                    "stringValue": "tool_calls"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "60"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read.input_tokens",
+                  "value": {
+                    "intValue": "15000"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000015"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e1100000000007a",
+              "name": "POST",
+              "kind": 3,
+              "startTimeUnixNano": "1800000240350000000",
+              "endTimeUnixNano": "1800000245950000000",
+              "attributes": [
+                {
+                  "key": "http.request.method",
+                  "value": {
+                    "stringValue": "POST"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "stringValue": "dashscope.aliyuncs.com"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000016"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e11000000000017",
+              "name": "qwen-code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1800000246100000000",
+              "endTimeUnixNano": "1800000251400000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "write_file"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.type",
+                  "value": {
+                    "stringValue": "function"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_04"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_04"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5299"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000015"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e11000000000018",
+              "name": "qwen-code.tool.blocked_on_user",
+              "kind": 1,
+              "startTimeUnixNano": "1800000246100000000",
+              "endTimeUnixNano": "1800000251000000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "write_file"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_04"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4900"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "proceed_once"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "cli"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000017"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e11000000000019",
+              "name": "qwen-code.tool.execution",
+              "kind": 1,
+              "startTimeUnixNano": "1800000251005000000",
+              "endTimeUnixNano": "1800000251395000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "write_file"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_04"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "389"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000017"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e1100000000001a",
+              "name": "qwen-code.tool",
+              "kind": 1,
+              "startTimeUnixNano": "1800000252100000000",
+              "endTimeUnixNano": "1800000253500000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "execute_tool"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.type",
+                  "value": {
+                    "stringValue": "function"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.call.id",
+                  "value": {
+                    "stringValue": "call_sample_05"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_05"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1399"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "error.type",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                },
+                {
+                  "key": "tool.failure_kind",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                },
+                {
+                  "key": "error",
+                  "value": {
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+                  }
+                }
+              ],
+              "status": {
+                "code": 2,
+                "message": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+              },
+              "parentSpanId": "9e11000000000015"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e1100000000001b",
+              "name": "qwen-code.tool.blocked_on_user",
+              "kind": 1,
+              "startTimeUnixNano": "1800000252100000000",
+              "endTimeUnixNano": "1800000252120000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "tool.name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_05"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "20"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_approved"
+                  }
+                },
+                {
+                  "key": "source",
+                  "value": {
+                    "stringValue": "auto"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000001a"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e1100000000001c",
+              "name": "qwen-code.tool.execution",
+              "kind": 1,
+              "startTimeUnixNano": "1800000252125000000",
+              "endTimeUnixNano": "1800000253495000000",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.tool.name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                },
+                {
+                  "key": "tool.call_id",
+                  "value": {
+                    "stringValue": "call_sample_05"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1369"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "error"
+                  }
+                },
+                {
+                  "key": "error_type",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                },
+                {
+                  "key": "error.type",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                },
+                {
+                  "key": "error",
+                  "value": {
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+                  }
+                }
+              ],
+              "status": {
+                "code": 2,
+                "message": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+              },
+              "parentSpanId": "9e1100000000001a"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e1100000000001d",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800000253600000000",
+              "endTimeUnixNano": "1800000257800000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "dashscope"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample-29"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "stop"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "doubleValue": 1.9
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "17500"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "410"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "interaction"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4199"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "finish_reason",
+                  "value": {
+                    "stringValue": "stop"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "150"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.cache_read.input_tokens",
+                  "value": {
+                    "intValue": "16500"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e11000000000015"
+            },
+            {
+              "traceId": "9e110000000000000000000000000002",
+              "spanId": "9e11000000000081",
+              "name": "POST",
+              "kind": 3,
+              "startTimeUnixNano": "1800000253650000000",
+              "endTimeUnixNano": "1800000257750000000",
+              "attributes": [
+                {
+                  "key": "http.request.method",
+                  "value": {
+                    "stringValue": "POST"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "stringValue": "dashscope.aliyuncs.com"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000001d"
+            },
+            {
+              "traceId": "9e110000000000000000000000000003",
+              "spanId": "9e1100000000001f",
+              "name": "qwen-code.llm_request",
+              "kind": 1,
+              "startTimeUnixNano": "1800000260000000000",
+              "endTimeUnixNano": "1800000264000000000",
+              "attributes": [
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.provider.name",
+                  "value": {
+                    "stringValue": "dashscope"
+                  }
+                },
+                {
+                  "key": "gen_ai.conversation.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.stream",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "gen_ai.response.id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample-31"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.response.finish_reasons",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "stringValue": "tool_calls"
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "key": "gen_ai.response.time_to_first_chunk",
+                  "value": {
+                    "doubleValue": 1.9
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.input_tokens",
+                  "value": {
+                    "intValue": "3000"
+                  }
+                },
+                {
+                  "key": "gen_ai.usage.output_tokens",
+                  "value": {
+                    "intValue": "150"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "qwen-code.prompt_id",
+                  "value": {
+                    "stringValue": "memory_extract_sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "llm_request.context",
+                  "value": {
+                    "stringValue": "standalone"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4000"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                },
+                {
+                  "key": "attempt",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "finish_reason",
+                  "value": {
+                    "stringValue": "tool_calls"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                }
+              ],
+              "status": {}
+            },
+            {
+              "traceId": "9e110000000000000000000000000003",
+              "spanId": "9e11000000000083",
+              "name": "POST",
+              "kind": 3,
+              "startTimeUnixNano": "1800000260050000000",
+              "endTimeUnixNano": "1800000263950000000",
+              "attributes": [
+                {
+                  "key": "http.request.method",
+                  "value": {
+                    "stringValue": "POST"
+                  }
+                },
+                {
+                  "key": "server.address",
+                  "value": {
+                    "stringValue": "dashscope.aliyuncs.com"
+                  }
+                },
+                {
+                  "key": "http.response.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ],
+              "status": {},
+              "parentSpanId": "9e1100000000001f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
