@@ -10,12 +10,12 @@ import (
 	"github.com/paulpham157/sdf/internal/decision"
 )
 
-func rec(id, by, statement string) decision.Record {
+func stated(id, by, statement string) decision.Record {
 	return decision.Record{ID: id, DecidedBy: by, Statement: statement}
 }
 
 func TestCheckActionMatch(t *testing.T) {
-	push := rec("dont-push", decision.DecidedByUser, "Do not push until the user says so.")
+	push := stated("dont-push", decision.DecidedByUser, "Do not push until the user says so.")
 	tests := []struct {
 		name    string
 		action  string
@@ -27,34 +27,34 @@ func TestCheckActionMatch(t *testing.T) {
 	}{
 		{name: "phrase", action: "push", recs: []decision.Record{push}, kind: "push", id: "dont-push", match: "do not push"},
 		{name: "case and whitespace", action: "  PUSH ", recs: []decision.Record{push}, kind: "push", id: "dont-push", match: "do not push"},
-		{name: "dont ascii", action: "push", recs: []decision.Record{rec("a", "user", "Don't push.")}, kind: "push", id: "a", match: "don't push"},
-		{name: "dont curly", action: "push", recs: []decision.Record{rec("a", "agent", "Don’t push.")}, kind: "push", id: "a", match: "don’t push"},
-		{name: "dont smashed", action: "push", recs: []decision.Record{rec("a", "user", "DONT PUSH")}, kind: "push", id: "a", match: "dont push"},
-		{name: "never", action: "merge", recs: []decision.Record{rec("a", "user", "Never merge to main.")}, kind: "merge", id: "a", match: "never merge"},
-		{name: "must not", action: "deploy", recs: []decision.Record{rec("a", "agent", "Must not deploy this build.")}, kind: "deploy", id: "a", match: "must not deploy"},
-		{name: "forbidden to", action: "release", recs: []decision.Record{rec("a", "user", "Forbidden to release today.")}, kind: "release", id: "a", match: "forbidden to release"},
-		{name: "forbid word", action: "release", recs: []decision.Record{rec("a", "user", "Forbid release.")}, kind: "release", id: "a", match: "forbid release"},
-		{name: "tag", action: "push", recs: []decision.Record{rec("a", "", "Ship it. forbid:push stays.")}, kind: "push", id: "a", match: "forbid:push"},
-		{name: "tag wins over phrase", action: "push", recs: []decision.Record{rec("a", "user", "Do not push (forbid:PUSH).")}, kind: "push", id: "a", match: "forbid:push"},
-		{name: "tag is a whole token", action: "push", recs: []decision.Record{rec("a", "user", "forbid:pushing is not a tag")}, kind: "push", allowed: true},
-		{name: "no at end", action: "release", recs: []decision.Record{rec("a", "user", "no release")}, kind: "release", id: "a", match: "no release"},
-		{name: "no before punctuation", action: "release", recs: []decision.Record{rec("a", "user", "no release.")}, kind: "release", id: "a", match: "no release"},
-		{name: "no followed by a word", action: "push", recs: []decision.Record{rec("a", "user", "no push notification")}, kind: "push", allowed: true},
-		{name: "cue not followed by the action", action: "push", recs: []decision.Record{rec("a", "user", "Do not wait; we will push later.")}, kind: "push", allowed: true},
-		{name: "gerund", action: "push", recs: []decision.Record{rec("a", "user", "Do not pushing.")}, kind: "push", allowed: true},
+		{name: "dont ascii", action: "push", recs: []decision.Record{stated("a", "user", "Don't push.")}, kind: "push", id: "a", match: "don't push"},
+		{name: "dont curly", action: "push", recs: []decision.Record{stated("a", "agent", "Don’t push.")}, kind: "push", id: "a", match: "don’t push"},
+		{name: "dont smashed", action: "push", recs: []decision.Record{stated("a", "user", "DONT PUSH")}, kind: "push", id: "a", match: "dont push"},
+		{name: "never", action: "merge", recs: []decision.Record{stated("a", "user", "Never merge to main.")}, kind: "merge", id: "a", match: "never merge"},
+		{name: "must not", action: "deploy", recs: []decision.Record{stated("a", "agent", "Must not deploy this build.")}, kind: "deploy", id: "a", match: "must not deploy"},
+		{name: "forbidden to", action: "release", recs: []decision.Record{stated("a", "user", "Forbidden to release today.")}, kind: "release", id: "a", match: "forbidden to release"},
+		{name: "forbid word", action: "release", recs: []decision.Record{stated("a", "user", "Forbid release.")}, kind: "release", id: "a", match: "forbid release"},
+		{name: "tag", action: "push", recs: []decision.Record{stated("a", "", "Ship it. forbid:push stays.")}, kind: "push", id: "a", match: "forbid:push"},
+		{name: "tag wins over phrase", action: "push", recs: []decision.Record{stated("a", "user", "Do not push (forbid:PUSH).")}, kind: "push", id: "a", match: "forbid:push"},
+		{name: "tag is a whole token", action: "push", recs: []decision.Record{stated("a", "user", "forbid:pushing is not a tag")}, kind: "push", allowed: true},
+		{name: "no at end", action: "release", recs: []decision.Record{stated("a", "user", "no release")}, kind: "release", id: "a", match: "no release"},
+		{name: "no before punctuation", action: "release", recs: []decision.Record{stated("a", "user", "no release.")}, kind: "release", id: "a", match: "no release"},
+		{name: "no followed by a word", action: "push", recs: []decision.Record{stated("a", "user", "no push notification")}, kind: "push", allowed: true},
+		{name: "cue not followed by the action", action: "push", recs: []decision.Record{stated("a", "user", "Do not wait; we will push later.")}, kind: "push", allowed: true},
+		{name: "gerund", action: "push", recs: []decision.Record{stated("a", "user", "Do not pushing.")}, kind: "push", allowed: true},
 		{name: "other action", action: "merge", recs: []decision.Record{push}, kind: "merge", allowed: true},
 		{name: "reason is not the statement", action: "push", recs: []decision.Record{{ID: "a", Statement: "Ship it.", Reason: "Do not push.", DecidedBy: "user"}}, kind: "push", allowed: true},
-		{name: "unrelated", action: "push", recs: []decision.Record{rec("use-sqlite", "agent", "Keep the collector store in SQLite.")}, kind: "push", allowed: true},
+		{name: "unrelated", action: "push", recs: []decision.Record{stated("use-sqlite", "agent", "Keep the collector store in SQLite.")}, kind: "push", allowed: true},
 		{name: "git push is architecture", action: "git push", recs: []decision.Record{push}, kind: "architecture", allowed: true},
-		{name: "architecture phrase", action: "replace sqlite", recs: []decision.Record{rec("arch", "user", "Do not change the architecture.")}, kind: "architecture", id: "arch", match: "do not change the architecture"},
-		{name: "architecture tag", action: "rename the package", recs: []decision.Record{rec("arch", "agent", "forbid:architecture")}, kind: "architecture", id: "arch", match: "forbid:architecture"},
-		{name: "architecture word itself", action: "architecture", recs: []decision.Record{rec("arch", "user", "Never change architecture.")}, kind: "architecture", id: "arch", match: "never change architecture"},
-		{name: "no architecture change", action: "swap the driver", recs: []decision.Record{rec("arch", "user", "no architecture change")}, kind: "architecture", id: "arch", match: "no architecture change"},
-		{name: "no architecture changes", action: "swap the driver", recs: []decision.Record{rec("arch", "user", "No architecture changes.")}, kind: "architecture", id: "arch", match: "no architecture changes"},
-		{name: "no architecture decision is not a forbid", action: "swap the driver", recs: []decision.Record{rec("arch", "user", "There is no architecture decision yet.")}, kind: "architecture", allowed: true},
-		{name: "architecture window", action: "swap the driver", recs: []decision.Record{rec("arch", "user", "Do not document the public architecture.")}, kind: "architecture", id: "arch", match: "do not document the public architecture"},
-		{name: "outside the architecture window", action: "swap the driver", recs: []decision.Record{rec("arch", "user", "Do not rewrite every public exported method in the architecture.")}, kind: "architecture", allowed: true},
-		{name: "architecture forbid does not block push", action: "push", recs: []decision.Record{rec("arch", "user", "Do not change the architecture.")}, kind: "push", allowed: true},
+		{name: "architecture phrase", action: "replace sqlite", recs: []decision.Record{stated("arch", "user", "Do not change the architecture.")}, kind: "architecture", id: "arch", match: "do not change the architecture"},
+		{name: "architecture tag", action: "rename the package", recs: []decision.Record{stated("arch", "agent", "forbid:architecture")}, kind: "architecture", id: "arch", match: "forbid:architecture"},
+		{name: "architecture word itself", action: "architecture", recs: []decision.Record{stated("arch", "user", "Never change architecture.")}, kind: "architecture", id: "arch", match: "never change architecture"},
+		{name: "no architecture change", action: "swap the driver", recs: []decision.Record{stated("arch", "user", "no architecture change")}, kind: "architecture", id: "arch", match: "no architecture change"},
+		{name: "no architecture changes", action: "swap the driver", recs: []decision.Record{stated("arch", "user", "No architecture changes.")}, kind: "architecture", id: "arch", match: "no architecture changes"},
+		{name: "no architecture decision is not a forbid", action: "swap the driver", recs: []decision.Record{stated("arch", "user", "There is no architecture decision yet.")}, kind: "architecture", allowed: true},
+		{name: "architecture window", action: "swap the driver", recs: []decision.Record{stated("arch", "user", "Do not document the public architecture.")}, kind: "architecture", id: "arch", match: "do not document the public architecture"},
+		{name: "outside the architecture window", action: "swap the driver", recs: []decision.Record{stated("arch", "user", "Do not rewrite every public exported method in the architecture.")}, kind: "architecture", allowed: true},
+		{name: "architecture forbid does not block push", action: "push", recs: []decision.Record{stated("arch", "user", "Do not change the architecture.")}, kind: "push", allowed: true},
 		{name: "push forbid does not block architecture", action: "replace sqlite", recs: []decision.Record{push}, kind: "architecture", allowed: true},
 		{name: "empty store", action: "deploy", kind: "deploy", allowed: true},
 	}
@@ -82,9 +82,9 @@ func TestCheckActionMatch(t *testing.T) {
 
 func TestCheckActionListsEveryBlockerInOrder(t *testing.T) {
 	recs := []decision.Record{
-		rec("later", "agent", "Keep SQLite."),
-		rec("user-push", "user", "forbid:push"),
-		rec("agent-push", "agent", "Do not push the branch."),
+		stated("later", "agent", "Keep SQLite."),
+		stated("user-push", "user", "forbid:push"),
+		stated("agent-push", "agent", "Do not push the branch."),
 	}
 	got, err := decision.CheckAction(recs, "push")
 	if err != nil {

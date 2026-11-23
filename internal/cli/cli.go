@@ -943,25 +943,14 @@ func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// activeForCheck is the set sdf decision check matches: every settled
-// decision that is still in force, in insertion order, whether the user or
-// the agent decided it. Blocked and conflicted records stay. Hypotheses,
-// retracted records, and superseded records do not.
-//
-// brief.Classify is a different set. It keeps a decision only when the user
-// decided it or it is the source of a constrains edge, so an agent's
-// "Do not push" with no constrains edge would disappear.
-//
-// Replace the body with `return decision.Active(g)` when that function is
-// exported. It returns this same set.
+// activeForCheck is the set sdf decision check matches. decision.Active is
+// that set: every settled decision still in force, user or agent, including
+// blocked and conflicted records, in insertion order. brief.Classify is
+// narrower. It keeps a decision only when the user decided it or it is the
+// source of a constrains edge, so an agent's "Do not push" with no
+// constrains edge would disappear.
 func activeForCheck(g decision.Graph) []decision.Record {
-	out := make([]decision.Record, 0)
-	for _, d := range g.Decisions {
-		if d.EffectiveStatus == decision.EffectiveActive && d.Status == decision.StatusDecision {
-			out = append(out, d)
-		}
-	}
-	return out
+	return decision.Active(g)
 }
 
 func parseEndpoint(v string) (decision.Endpoint, error) {
