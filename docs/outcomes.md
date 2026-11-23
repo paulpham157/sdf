@@ -234,8 +234,10 @@ once each, in the order the edges were recorded.
   hypothesis stays open when another hypothesis replaces it, and clears once a
   `decision` record replaces it or it is retracted. A blocker that was
   recorded as a `decision` is settled from the start. A blocker that reaches
-  no head only because its `supersedes` chain runs into a cycle (rows an older
-  sdf stored) is open: no decision record settled it.
+  no head is open when any path of its `supersedes` chain runs into a cycle
+  (rows an older sdf stored), even if its other paths end in a retraction: no
+  decision record settled it. It is settled only when every path ends in a
+  retraction.
 - `blocked`: `true` when the record is `active` and `open_blockers` is not
   empty. A superseded or retracted record is never blocked, though its
   `blocked_by` and `open_blockers` are still listed.
@@ -281,10 +283,11 @@ refines         decision:push-after-ok  decision:dont-push      2026-11-23T17:18
 
 The edges above were written with `depends_on` (design-schema on which-db),
 `conflicts_with` from use-sqlite to use-postgres, and `refines`; the table
-shows the stored, canonical form. The UI shows "blocked by" (open blockers),
-"conflicts with" (only the sides still active), and "challenged" next to the
-record, and "refined by", settled or still-open blockers of a record that is
-not blocked, and resolved conflicts on its detail line.
+shows the stored, canonical form. The UI writes blockers as the list does,
+"blocked by IDS (open: IDS)" or "blocked by IDS (settled)": next to a blocked
+record, else on its detail line. It shows "conflicts with" (only the sides
+still active) and "challenged" next to the record, and "refined by" and
+resolved conflicts on its detail line.
 
 ### Superseded at read time
 
