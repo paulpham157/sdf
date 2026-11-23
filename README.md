@@ -175,5 +175,6 @@ that writes or deletes. The page loads nothing from the network.
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
 | [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
+| [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [docs/gaps.md](docs/gaps.md) | Known limits of the collector and the summary |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests and continuous integration |
