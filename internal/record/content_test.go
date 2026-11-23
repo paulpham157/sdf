@@ -75,8 +75,15 @@ func TestRedactNestedResourceBodyAndNumbers(t *testing.T) {
 }
 
 func TestRedactKeepsEventNameBodies(t *testing.T) {
-	for _, body := range []string{"claude_code.api_request", "codex.sse_event", "custom.event"} {
+	for _, body := range []string{"claude_code.api_request", "codex.sse_event"} {
 		rec := Record{Signal: "logs", Name: Str("custom.event"), Body: Str(body), Attributes: map[string]any{}}
+		out := Redact([]Record{rec})[0]
+		if deref(out.Body) != body {
+			t.Errorf("body %q dropped", body)
+		}
+	}
+	for _, body := range []string{"custom.event"} {
+		rec := Record{Signal: "logs", Name: Str("custom.event"), Body: Str(body), Attributes: map[string]any{"event.name": "custom.event"}}
 		out := Redact([]Record{rec})[0]
 		if deref(out.Body) != body {
 			t.Errorf("body %q dropped", body)
@@ -105,7 +112,7 @@ func TestRedactWithKeepsContentForChosenRecords(t *testing.T) {
 	msg := "upstream 503"
 	in := []Record{
 		{Signal: "traces", Name: Str("keep"), StatusMessage: &msg, Attributes: map[string]any{"prompt": "hello", "tool_parameters": `{"git_commit_id":"0123456789abcdef0123456789abcdef01234567"}`}},
-		{Signal: "traces", Name: Str("drop"), StatusMessage: &msg, Attributes: map[string]any{"prompt": "hello"}},
+		{Signal: "traces", Name: Str("drop"), StatusCode: "ERROR", StatusMessage: &msg, Attributes: map[string]any{"prompt": "hello"}},
 	}
 	out := RedactWith(in, func(r Record) bool { return deref(r.Name) == "keep" })
 	k, d := out[0], out[1]

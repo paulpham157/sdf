@@ -114,3 +114,27 @@ func TestUnsetStatusIsTheDefault(t *testing.T) {
 		t.Fatalf("unset should stay unmarked\n%s", text)
 	}
 }
+
+func TestSpanErrorTypeIsShownOnceInTheTree(t *testing.T) {
+	span := func(id, msg, typ string) record.Record {
+		return record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("s"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str(id),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
+			StatusCode: "ERROR", StatusMessage: record.Str(msg),
+			Attributes: map[string]any{"exception.type": typ, "gen_ai.tool.call.id": id}, Resource: map[string]any{},
+		}
+	}
+	report := Summarize([]record.Record{span("a", "tool error: FileNotFoundError", "FileNotFoundError"), span("b", "write failed", "EACCES")}, false)
+	nodes := report.Sessions[0].Spans
+	if len(nodes) != 2 || deref(nodes[0].ErrorType) != "FileNotFoundError" || deref(nodes[1].ErrorType) != "EACCES" {
+		t.Fatalf("%+v", nodes)
+	}
+	text := Format(report)
+	if !strings.Contains(text, "status=ERROR (tool error: FileNotFoundError)") || strings.Contains(text, "error_type=FileNotFoundError") {
+		t.Fatalf("type in the message should not repeat:\n%s", text)
+	}
+	if !strings.Contains(text, "status=ERROR (write failed) error_type=EACCES") {
+		t.Fatalf("type missing:\n%s", text)
+	}
+}

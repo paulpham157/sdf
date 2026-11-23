@@ -32,7 +32,8 @@ type storeContentSpec struct {
 func (s storeContentSpec) on() bool { return s.all || len(s.agents) > 0 }
 
 // parseStoreContent reads "", "0", "false", "off" (off); "1", "true", "on",
-// "all" (every agent); or a comma-separated list of agent names.
+// "all" (every agent); or a comma-separated list of agent names, where all
+// in the list means every agent.
 func parseStoreContent(v string) (storeContentSpec, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "", "0", "false", "off", "no":
@@ -41,9 +42,14 @@ func parseStoreContent(v string) (storeContentSpec, error) {
 		return storeContentSpec{all: true}, nil
 	}
 	spec := storeContentSpec{agents: map[string]bool{}}
+	all := false
 	for _, part := range strings.Split(v, ",") {
 		name := strings.ToLower(strings.TrimSpace(part))
 		if name == "" {
+			continue
+		}
+		if name == "all" {
+			all = true
 			continue
 		}
 		tool, ok := contentAgents[name]
@@ -51,6 +57,10 @@ func parseStoreContent(v string) (storeContentSpec, error) {
 			return storeContentSpec{}, fmt.Errorf("unknown agent %q (want all, or a list of: claude-code, codex, opencode, pi, gemini-cli, qwen-code, grok-cli, copilot-cli)", part)
 		}
 		spec.agents[tool] = true
+	}
+	if all {
+		// all,qwen is every agent; the other names are still checked.
+		return storeContentSpec{all: true}, nil
 	}
 	if len(spec.agents) == 0 {
 		return storeContentSpec{}, nil

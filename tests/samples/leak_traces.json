@@ -1206,6 +1206,212 @@
         "code": 2,
         "message": "SDF-LEAK-342-casehook_status"
        }
+      },
+      {
+       "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1",
+       "spanId": "000000000000000a",
+       "name": "ai.streamText",
+       "kind": 1,
+       "startTimeUnixNano": "1800002000000000000",
+       "endTimeUnixNano": "1800002001000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "ai.prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-371-span_extra_ai_prompt"
+         }
+        },
+        {
+         "key": "ai.prompt.messages",
+         "value": {
+          "stringValue": "SDF-LEAK-372-span_extra_ai_prompt_messages"
+         }
+        },
+        {
+         "key": "ai.response.text",
+         "value": {
+          "stringValue": "SDF-LEAK-373-span_extra_ai_response_text"
+         }
+        },
+        {
+         "key": "ai.response.toolCalls",
+         "value": {
+          "stringValue": "SDF-LEAK-374-span_extra_ai_response_toolCalls"
+         }
+        },
+        {
+         "key": "ai.toolCall.args",
+         "value": {
+          "stringValue": "SDF-LEAK-375-span_extra_ai_toolCall_args"
+         }
+        },
+        {
+         "key": "ai.toolCall.result",
+         "value": {
+          "stringValue": "SDF-LEAK-376-span_extra_ai_toolCall_result"
+         }
+        },
+        {
+         "key": "stdout",
+         "value": {
+          "stringValue": "SDF-LEAK-377-span_extra_stdout"
+         }
+        },
+        {
+         "key": "stderr",
+         "value": {
+          "stringValue": "SDF-LEAK-378-span_extra_stderr"
+         }
+        },
+        {
+         "key": "command",
+         "value": {
+          "stringValue": "SDF-LEAK-379-span_extra_command"
+         }
+        },
+        {
+         "key": "query",
+         "value": {
+          "stringValue": "SDF-LEAK-380-span_extra_query"
+         }
+        },
+        {
+         "key": "user_prompt",
+         "value": {
+          "stringValue": "SDF-LEAK-381-span_extra_user_prompt"
+         }
+        },
+        {
+         "key": "message",
+         "value": {
+          "stringValue": "SDF-LEAK-382-span_extra_message"
+         }
+        },
+        {
+         "key": "text",
+         "value": {
+          "stringValue": "SDF-LEAK-383-span_extra_text"
+         }
+        },
+        {
+         "key": "gen_ai.choice",
+         "value": {
+          "stringValue": "SDF-LEAK-384-span_extra_gen_ai_choice"
+         }
+        },
+        {
+         "key": "tool.input",
+         "value": {
+          "stringValue": "SDF-LEAK-385-span_extra_tool_input"
+         }
+        },
+        {
+         "key": "tool.output",
+         "value": {
+          "stringValue": "SDF-LEAK-386-span_extra_tool_output"
+         }
+        },
+        {
+         "key": "ai.usage.promptTokens",
+         "value": {
+          "intValue": "10"
+         }
+        },
+        {
+         "key": "error.type",
+         "value": {
+          "stringValue": "free text SDF-LEAK-387-error_type_prose"
+         }
+        }
+       ],
+       "status": {
+        "code": 2,
+        "message": "SDF-LEAK-388-ai_status"
+       }
+      },
+      {
+       "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1",
+       "spanId": "000000000000000b",
+       "name": "execute_tool bash",
+       "kind": 1,
+       "startTimeUnixNano": "1800002000000000000",
+       "endTimeUnixNano": "1800002001000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "gen_ai.tool.name",
+         "value": {
+          "stringValue": "bash"
+         }
+        },
+        {
+         "key": "error.type",
+         "value": {
+          "stringValue": "FileNotFoundError"
+         }
+        }
+       ],
+       "status": {
+        "code": 2,
+        "message": "SDF-LEAK-389-tool_status"
+       }
+      },
+      {
+       "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1",
+       "spanId": "000000000000000c",
+       "name": "chat m-1",
+       "kind": 1,
+       "startTimeUnixNano": "1800002000000000000",
+       "endTimeUnixNano": "1800002001000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "http.response.status_code",
+         "value": {
+          "intValue": "429"
+         }
+        }
+       ],
+       "status": {
+        "code": 2,
+        "message": "SDF-LEAK-390-http_status"
+       }
+      },
+      {
+       "traceId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1",
+       "spanId": "000000000000000d",
+       "name": "SessionStep.attempt",
+       "kind": 1,
+       "startTimeUnixNano": "1800002000000000000",
+       "endTimeUnixNano": "1800002001000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "status": {
+        "code": 1,
+        "message": "SDF-LEAK-391-ok_status"
+       }
       }
      ]
     }

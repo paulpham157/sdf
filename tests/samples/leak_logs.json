@@ -1947,6 +1947,808 @@
      ]
     }
    ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "claude-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-348-claude_code_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "claude-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-349-claude_code_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "codex"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "codex"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-350-codex_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "codex"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "codex"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-351-codex_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "gemini-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "gemini-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-352-gemini_cli_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "gemini-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "gemini-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-353-gemini_cli_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-354-qwen_code_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-355-qwen_code_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "grok-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "grok-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-356-grok_cli_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "grok-cli"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "grok-cli"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-357-grok_cli_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "github-copilot"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "github-copilot"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-358-github_copilot_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "github-copilot"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "github-copilot"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-359-github_copilot_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "opencode"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "opencode"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-360-opencode_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "opencode"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "opencode"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-361-opencode_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "pi"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "pi"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "the user typed SDF-LEAK-362-pi_noevent_prose"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "pi"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "pi"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "SDF-LEAK-363-pi_noevent_token"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "opencode"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "opencode"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1800002000000000000",
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "sample-leak-1"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "opencode.event"
+         }
+        },
+        {
+         "key": "conversation",
+         "value": {
+          "arrayValue": {
+           "values": [
+            {
+             "kvlistValue": {
+              "values": [
+               {
+                "key": "role",
+                "value": {
+                 "stringValue": "user"
+                }
+               },
+               {
+                "key": "content",
+                "value": {
+                 "stringValue": "SDF-LEAK-364-list_content"
+                }
+               }
+              ]
+             }
+            },
+            {
+             "arrayValue": {
+              "values": [
+               {
+                "kvlistValue": {
+                 "values": [
+                  {
+                   "key": "prompt",
+                   "value": {
+                    "stringValue": "SDF-LEAK-365-list_in_list"
+                   }
+                  }
+                 ]
+                }
+               }
+              ]
+             }
+            }
+           ]
+          }
+         }
+        },
+        {
+         "key": "tool",
+         "value": {
+          "kvlistValue": {
+           "values": [
+            {
+             "key": "name",
+             "value": {
+              "stringValue": "bash"
+             }
+            },
+            {
+             "key": "error",
+             "value": {
+              "stringValue": "SDF-LEAK-366-nested_error"
+             }
+            },
+            {
+             "key": "result",
+             "value": {
+              "kvlistValue": {
+               "values": [
+                {
+                 "key": "stack",
+                 "value": {
+                  "stringValue": "SDF-LEAK-367-nested_stack"
+                 }
+                }
+               ]
+              }
+             }
+            }
+           ]
+          }
+         }
+        },
+        {
+         "key": "errorMessage",
+         "value": {
+          "stringValue": "SDF-LEAK-368-camel_errorMessage"
+         }
+        },
+        {
+         "key": "error.stack",
+         "value": {
+          "stringValue": "SDF-LEAK-369-error_stack"
+         }
+        },
+        {
+         "key": "exception.stack",
+         "value": {
+          "stringValue": "SDF-LEAK-370-exception_stack"
+         }
+        }
+       ],
+       "body": {
+        "stringValue": "opencode.event"
+       }
+      }
+     ]
+    }
+   ]
   }
  ]
 }

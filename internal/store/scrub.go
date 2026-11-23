@@ -6,36 +6,6 @@ import (
 	"github.com/paulpham157/sdf/internal/record"
 )
 
-// contentPolicyVersion is PRAGMA user_version for a database whose rows
-// were all written, or scrubbed, under the default content drop
-// (record.Redact). An older database is 0.
-const contentPolicyVersion = 1
-
-func (s *Store) userVersion() (int, error) {
-	var v int
-	err := s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
-	return v, err
-}
-
-// markNewDatabase stamps a database with no telemetry rows as written under
-// the content policy. A database that already has rows is left alone: Open
-// never changes stored rows; only Scrub (sdf redact) does.
-func (s *Store) markNewDatabase() error {
-	v, err := s.userVersion()
-	if err != nil || v >= contentPolicyVersion {
-		return err
-	}
-	var n int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM records`).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	_, err = s.db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, contentPolicyVersion))
-	return err
-}
-
 // NeedsScrub reports whether the database holds rows written by an sdf that
 // stored content (before content was dropped by default) and has not been
 // scrubbed since.

@@ -363,6 +363,10 @@ func formatSpan(lines *[]string, node SpanNode, indent int) {
 		} else {
 			bits = append(bits, "status=ERROR")
 		}
+		// sdf's replacement message usually names the type already.
+		if node.ErrorType != nil && *node.ErrorType != "" && (node.StatusMessage == nil || !strings.Contains(*node.StatusMessage, *node.ErrorType)) {
+			bits = append(bits, "error_type="+*node.ErrorType)
+		}
 	}
 	if node.Success != nil && *node.Success != "" {
 		if node.SuccessSource != nil && *node.SuccessSource != "" {

@@ -473,8 +473,8 @@ and `~/.qwen/memories/`), `response_text`, and `function_args`; on spans,
 `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`
 (`qwen-code.tool`) and `gen_ai.input.messages`, `gen_ai.output.messages`,
 and `gen_ai.system_instructions` (`qwen-code.llm_request`); error text; and
-span status messages (`qwen-code.hook` becomes "hook error", tool spans
-"tool error"). Only `sdf serve --store-content` keeps them; see
+span status messages (an ERROR `qwen-code.hook` becomes "hook error", a tool
+span "tool error: tool_error", with the kept `error.type`). Only `sdf serve --store-content` keeps them; see
 [content storage](receiver.md#content-storage).
 
 No setting turns off tool arguments: every `qwen-code.tool_call` log carries

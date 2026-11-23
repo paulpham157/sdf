@@ -27,6 +27,12 @@ func TestParseStoreContent(t *testing.T) {
 	if !keep(record.Record{ServiceName: record.Str("claude-code")}) || keep(record.Record{ServiceName: record.Str("codex")}) {
 		t.Fatal("per-agent keep")
 	}
+	if spec, err := parseStoreContent("all,qwen"); err != nil || !spec.all {
+		t.Fatalf("all,qwen: %+v %v", spec, err)
+	}
+	if _, err := parseStoreContent("all,cursor"); err == nil {
+		t.Fatal("unknown agent accepted next to all")
+	}
 	if _, err := parseStoreContent("claude,cursor"); err == nil {
 		t.Fatal("unknown agent accepted")
 	}

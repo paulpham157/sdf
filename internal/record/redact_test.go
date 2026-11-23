@@ -40,7 +40,7 @@ func TestRedactToolSpanStatusMessage(t *testing.T) {
 	if *in[0].StatusMessage != msg {
 		t.Fatal("caller's record changed")
 	}
-	if deref(out[0].StatusMessage) != "tool error" || out[0].Attributes["error"] != nil || out[0].Attributes["error.type"] != "tool_error" || out[0].Attributes["sdf.redacted"] != "error,status.message" {
+	if deref(out[0].StatusMessage) != "tool error: tool_error" || out[0].Attributes["error"] != nil || out[0].Attributes["error.type"] != "tool_error" || out[0].Attributes["sdf.redacted"] != "error,status.message" {
 		t.Fatalf("%v %q", out[0].Attributes, deref(out[0].StatusMessage))
 	}
 	clean := []Record{{Signal: "traces", Name: Str("qwen-code.tool"), StatusCode: "OK", Attributes: map[string]any{"success": true}}}
