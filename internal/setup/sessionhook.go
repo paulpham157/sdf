@@ -96,6 +96,38 @@ export const SdfSession = async (ctx) => {
 `, url)
 }
 
+// grokHooks is $GROK_HOME/hooks/sdf-session.json. Grok's hook JSON matches
+// Claude's command-hook shape. The process receives GROK_SESSION_ID, and the
+// event JSON uses sessionId rather than session_id. User hooks are trusted;
+// a project .grok/hooks file is not, until the folder is trusted.
+func grokHooks(url string) string {
+	return fmt.Sprintf(`{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": %q}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": %q}]}
+    ]
+  }
+}
+`, grokSessionHookCommand("open", url), grokSessionHookCommand("close", url))
+}
+
+// grokSessionHookCommand posts one edge. GROK_SESSION_ID is the id Grok puts
+// in the hook environment. sessionId is the same value in the JSON on stdin.
+func grokSessionHookCommand(edge, url string) string {
+	body := fmt.Sprintf(`{"tool":"grok-cli","session_id":"%%s","edge":%q,"reason":"%%s"}`, edge)
+	return fmt.Sprintf(`export PATH="$PATH:/usr/bin:/bin"; json=$(cat); `+
+		`sid=${GROK_SESSION_ID:-}; [ -n "$sid" ] || sid=$(printf '%%s' "$json" | %s); [ -n "$sid" ] || exit 0; `+
+		`reason=$(printf '%%s' "$json" | %s); `+
+		`[ -n "$reason" ] || reason=$(printf '%%s' "$json" | %s); `+
+		`payload=$(printf '%s' "$sid" "$reason"); `+
+		`curl -sf -m 2 -X POST -H 'content-type: application/json' `+
+		`--data "$payload" %s >/dev/null 2>&1 || true`,
+		fieldExpr("sessionId"), fieldExpr("source"), fieldExpr("reason"), body, url)
+}
+
 // piExtension reads the real session id. pi-otel derives pi.session.id from the
 // session file name, which is the timestamp plus the id, so the collector would
 // not join it to the spans. session_shutdown also fires when a session is

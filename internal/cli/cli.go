@@ -34,7 +34,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
+		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
 	switch args[0] {
@@ -50,13 +50,33 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdCheck(args[1:], stdout, stderr)
 	case "decision":
 		return cmdDecision(args[1:], stdout, stderr)
+	case "version", "--version", "-v":
+		return cmdVersion(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
+		fmt.Fprintln(stdout, usageLine)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
 		return 2
 	}
+}
+
+const usageLine = "usage: sdf <serve|summary|prices|init|check|decision|version> [flags]"
+
+func cmdVersion(args []string, stdout, stderr io.Writer) int {
+	for _, arg := range args {
+		switch arg {
+		case "--help", "-h":
+			fmt.Fprintln(stdout, "usage: sdf version")
+			fmt.Fprintln(stdout, "sdf --version and sdf -v print the same line.")
+			return 0
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	fmt.Fprintf(stdout, "sdf %s\n", Version())
+	return 0
 }
 
 func cmdServe(args []string, stdout, stderr io.Writer) int {
@@ -590,7 +610,7 @@ func parseEndpoint(v string) (decision.Endpoint, error) {
 }
 
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
-	dir := check.DefaultDir()
+	dir := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -611,7 +631,15 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	cases, err := check.Load(dir)
+	var (
+		cases []check.Case
+		err   error
+	)
+	if dir == "" {
+		cases, err = check.LoadDefault()
+	} else {
+		cases, err = check.Load(dir)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf check: %v\n", err)
 		return 1
@@ -689,7 +717,7 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi] [--write] [--global] [--install]"
+const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|grok] [--write] [--global] [--install]"
 
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	host := "127.0.0.1"
@@ -771,7 +799,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			grpcPort = n
-		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi":
+		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "grok":
 			if agent != "" {
 				fmt.Fprintf(stderr, "sdf init: extra agent %s\n", arg)
 				return 2

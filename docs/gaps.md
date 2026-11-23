@@ -33,6 +33,11 @@
   end, and only when `PI_OTEL_LOGS=1`. The summary keeps those two events
   and names that limit. Metrics stay unattributed when they do not fall
   inside exactly one Pi session.
+- Grok CLI's external stream exports no traces. Startup metrics
+  (`grok_code.startup.*`) in the 2026-11-23 capture had no `session.id` and
+  stay unattributed. The CLI sends no working-directory attribute, and the
+  git hook does not read a Grok session id, so those sessions are not linked
+  to a commit.
 - Retried delta exports can be double-counted. Cumulative series use the
   latest point. Codex and OpenCode input tokens use the max, not the sum, as
   described in [docs/summary.md](summary.md). Pi per-turn input and output are summed, and that sum is

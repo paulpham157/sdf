@@ -3,9 +3,9 @@
 SDF collects traces of coding-agent work from OpenTelemetry the agents export,
 and summarizes a session from that telemetry.
 
-It does not launch, route, or sandbox agents. Codex CLI, Claude Code, and
-OpenCode v2 export their own telemetry. Pi does not; its section uses the
-community `pi-otel` extension. SDF listens.
+It does not launch, route, or sandbox agents. Codex CLI, Claude Code,
+OpenCode v2, and Grok CLI export their own telemetry. Pi does not; its
+section uses the community `pi-otel` extension. SDF listens.
 
 The tools do not emit the same signals. A field the summary cannot find is
 reported as not present. SDF does not estimate tokens or duration. It does
@@ -19,6 +19,7 @@ reported. A model with no published price is `unknown`, not zero.
 | Codex CLI | Process spans when `otel.trace_exporter` is an OTLP/HTTP URL | Session record (`codex.sse_event`, `codex.tool_result`, and the other `codex.*` events) | Large catalog. Turn metrics carry `conversation.id` only when every tag is valid | Does not read `OTEL_*`. `metrics_exporter` defaults to `statsig`. A model id containing `:` drops the turn metrics. |
 | OpenCode v2 (`@opencode/cli`) | Built in. Chunked OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Runner spans set `session.id` | Process logs only (`cli starting`, watcher, shutdown). No `session.id` | Not exported | No per-session log catalog and no metrics. npm `opencode-ai` is v1, not this CLI. |
 | Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC on port 4317, which this receiver accepts. |
+| Grok CLI | Not exported. The external stream is metrics and logs only | `grok_code.*` events when `GROK_EXTERNAL_OTEL=1` and `OTEL_LOGS_EXPORTER=otlp`. Events carry `session.id` | Counters, including tokens and cost. `session.id` is on unless `OTEL_METRICS_INCLUDE_SESSION_ID=0` | Off until the master switch and an exporter are both set. HTTP protobuf uses port 4318. gRPC uses port 4317. |
 
 What each tool exports, and how to point it at the receiver, is in
 [docs/agents.md](docs/agents.md).
@@ -53,17 +54,24 @@ on either receiver port; keep the bind address on localhost. `GET /health`
 returns `{"status":"ok"}`.
 
 ```bash
+./sdf version          # module version recorded in this binary
 ./sdf summary          # one block per session, then unattributed records
 ./sdf summary --json
+./sdf decision add --id ID --statement TEXT --status hypothesis
 ./sdf prices refresh   # the only command that calls the network for prices
 ./sdf init claude-code # print exporter settings; --write changes a file
+./sdf init grok        # Grok CLI external OTEL; --write updates ~/.grok/config.toml
 ./sdf init --git-hooks # record the commit SHA the agent does not export
-./sdf check            # local cases against the summary; no network
+./sdf check            # embedded local cases against the summary; no network
 ```
 
-`--host`, `--port`, `--grpc-port`, and `--db` override the defaults. `--no-ui`
-leaves the OTLP ports only. `--prices`, `--repo`, and `--github` match
-`sdf summary` and apply to the page.
+`sdf version` prints the main module version embedded by the go tool. A
+build from this tree is `v0.0.0-<commit time>-<revision>`, with `+dirty` when
+the tree was modified. `sdf --version` and `sdf -v` print the same line.
+`--host`, `--port`, `--grpc-port`, `--db`, `--ui-addr`, and `--budget`
+override the `sdf serve` defaults. `--no-ui` leaves the OTLP ports only.
+`--prices`, `--repo`, `--github`, and `--budget` match `sdf summary` and
+apply to the page.
 
 The UI page has three views: an overview of totals and cost per accepted
 outcome, a session list, and one session. `GET /api/summary`,

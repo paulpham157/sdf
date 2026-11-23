@@ -582,6 +582,56 @@ func copyCase(t *testing.T, from, to, name string) {
 	}
 }
 
+func TestVersionMatchesTheSnapshotForm(t *testing.T) {
+	want := "sdf " + cli.Version() + "\n"
+	out := run(t, "version")
+	flag := run(t, "--version")
+	short := run(t, "-v")
+	if out.code != 0 || out.stdout != want || flag.stdout != want || short.stdout != want {
+		t.Fatalf("want %q\nversion %d %q\nflag %d %q\nshort %d %q", want, out.code, out.stdout, flag.code, flag.stdout, short.code, short.stdout)
+	}
+	line := strings.TrimSuffix(strings.TrimPrefix(want, "sdf "), "\n")
+	if line == "" {
+		t.Fatal(want)
+	}
+	help := run(t, "version", "--help")
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf version") || !strings.Contains(help.stdout, "sdf --version") {
+		t.Fatalf("%d %s", help.code, help.stdout)
+	}
+	top := run(t, "--help")
+	if top.code != 0 || !strings.Contains(top.stdout, "version") || !strings.Contains(top.stdout, "decision") {
+		t.Fatalf("%d %s", top.code, top.stdout)
+	}
+	bad := run(t, "version", "--db")
+	if bad.code != 2 || !strings.Contains(bad.stderr, "unrecognized") {
+		t.Fatalf("%d %s", bad.code, bad.stderr)
+	}
+}
+
+func TestCheckWithNoArgumentsUsesTheCommittedCases(t *testing.T) {
+	out := run(t, "check")
+	if out.code != 0 || !strings.Contains(out.stdout, "priced-session pass") || strings.Contains(out.stdout, " fail ") {
+		t.Fatalf("%d\n%s%s", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestInitGrokPrintsTheExternalOTELSwitch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", filepath.Join(home, "grok-home"))
+	out := run(t, "init", "grok")
+	if out.code != 0 || !strings.Contains(out.stdout, "GROK_EXTERNAL_OTEL=1") || !strings.Contains(out.stdout, "otel_endpoint") || !strings.Contains(out.stdout, "not written") {
+		t.Fatalf("%d %s %s", out.code, out.stdout, out.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, "grok-home")); !os.IsNotExist(err) {
+		t.Fatal("grok config was written")
+	}
+	help := run(t, "init", "--help")
+	if help.code != 0 || !strings.Contains(help.stdout, "grok") {
+		t.Fatalf("%d %s", help.code, help.stdout)
+	}
+}
+
 func TestUnknownCommand(t *testing.T) {
 	out := run(t, "nope")
 	if out.code != 2 || !strings.Contains(out.stderr, "unrecognized command") {

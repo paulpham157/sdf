@@ -17,5 +17,9 @@ be priced or cannot be linked. `not_checked` is reported and is not a failure.
 Unknown is not zero, and it is not a pass. The command exits non-zero when any
 case fails. It makes no network call.
 
-The cases committed with the collector live in `internal/check/testdata/cases`.
-`--cases` points at a different directory of the same JSON files.
+The cases committed with the collector live in `internal/check/testdata/cases`
+and are embedded in the binary. `./sdf check` runs that embedded set. It does
+not look the files up next to the compiled source: `make build` and the
+Goreleaser snapshot pass `-trimpath`, so the recorded path is the module path
+and is not a directory on disk. `--cases` points at a different directory of
+the same JSON files.
