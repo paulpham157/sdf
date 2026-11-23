@@ -28,6 +28,7 @@ const (
 	auditSHAGrok       = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 	auditSHANoSession  = "9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a291807"
 	auditSHAClaude     = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"
+	auditSHACodex2     = "5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8"
 )
 
 // hookPayload is the OTLP/JSON body the post-commit hook from
@@ -82,7 +83,8 @@ func mustRun(t *testing.T, args ...string) {
 var auditBase = time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC)
 
 // seedAuditStore builds one store with every finding kind:
-//   - commits: a Codex commit whose session implements use-sqlite (linked),
+//   - commits: two Codex commits whose session implements use-sqlite, one
+//     of them with its own implements edge (linked) and one without,
 //     a Grok CLI commit whose session has no edge (finding b), a Claude Code
 //     commit stored with no session (counted, never a finding), and a Claude Code
 //     tool_result commit with an implements edge of its own (linked);
@@ -122,6 +124,7 @@ func seedAuditStore(t *testing.T, dbPath string) {
 	ingest(t, dbPath, [][]byte{
 		hookPayload("codex_exec", "codex", auditCodexSession, auditSHACodex, "/home/dev/sdf", "feat/store", auditBase),
 		hookPayload("grok-cli", "grok-cli", auditGrokSession, auditSHAGrok, "/home/dev/sdf", "fix/wal", auditBase.Add(10*time.Minute)),
+		hookPayload("codex_exec", "codex", auditCodexSession, auditSHACodex2, "/home/dev/sdf", "feat/store", auditBase.Add(30*time.Minute)),
 	}, claude, noSession)
 	add := func(id, status, statement string) {
 		mustRun(t, "decision", "add", "--db", dbPath, "--id", id, "--status", status, "--statement", statement)
@@ -138,6 +141,7 @@ func seedAuditStore(t *testing.T, dbPath string) {
 	link("implements", "commit:"+auditSHAClaude, "decision:pure-go")
 	link("validates", "session:"+auditCodexSession, "decision:store-json")
 	link("validates", "commit:"+auditSHACodex, "decision:drop-cgo")
+	link("implements", "commit:"+auditSHACodex2, "decision:use-sqlite")
 	link("supersedes", "decision:store-columns", "decision:store-json")
 	mustRun(t, "decision", "retract", "--db", dbPath, "--id", "drop-cgo", "--reason", "release builds still need CGO on Windows", "--retracted-by", "user")
 }
@@ -189,6 +193,7 @@ type auditDoc struct {
 	Schema       string            `json:"schema"`
 	Window       map[string]string `json:"window"`
 	Totals       map[string]int    `json:"totals"`
+	Commits      []map[string]any  `json:"commits"`
 	FindingCount int               `json:"finding_count"`
 	Findings     struct {
 		ActiveWithoutImplements []map[string]any `json:"active_without_implements"`
@@ -228,15 +233,35 @@ func TestDecisionAuditReportsEveryFindingKind(t *testing.T) {
 	if doc.Schema != "sdf.decision.audit/v1" {
 		t.Fatalf("schema %q", doc.Schema)
 	}
+	var top map[string]any
+	if err := json.Unmarshal([]byte(out.stdout), &top); err != nil {
+		t.Fatal(err)
+	}
+	if got := keysOf(top); !reflect.DeepEqual(got, []string{"commits", "finding_count", "findings", "schema", "totals", "window"}) {
+		t.Fatalf("top-level keys %v", got)
+	}
+	if got := keysOf(top["findings"].(map[string]any)); !reflect.DeepEqual(got, []string{"active_without_implements", "stale_edges", "unlinked_session_commits"}) {
+		t.Fatalf("findings keys %v", got)
+	}
 	wantTotals := map[string]int{
-		"commits_total": 4, "commits_with_session": 3, "commits_linked": 2,
-		"decisions_active": 3, "decisions_active_with_implements": 2, "edges_checked": 4,
+		"commits_total": 5, "commits_with_session": 4, "commits_in_decision_sessions": 2, "commits_linked": 1,
+		"decisions_active": 3, "decisions_active_with_implements": 2, "edges_checked": 5,
 	}
 	if !reflect.DeepEqual(doc.Totals, wantTotals) {
 		t.Fatalf("totals = %v, want %v", doc.Totals, wantTotals)
 	}
 	if doc.FindingCount != 4 {
 		t.Fatalf("finding_count = %d\n%s", doc.FindingCount, out.stdout)
+	}
+	ts := func(m time.Duration) string { return auditBase.Add(m).Format("2006-01-02T15:04:05.000000-07:00") }
+	wantCommits := []map[string]any{
+		{"sha": auditSHACodex, "session_id": auditCodexSession, "source": "event", "timestamp": ts(0), "session_has_decision": true, "linked": false},
+		{"sha": auditSHAGrok, "session_id": auditGrokSession, "source": "event", "timestamp": ts(10 * time.Minute), "session_has_decision": false, "linked": false},
+		{"sha": auditSHACodex2, "session_id": auditCodexSession, "source": "event", "timestamp": ts(30 * time.Minute), "session_has_decision": true, "linked": true},
+		{"sha": auditSHAClaude, "session_id": auditClaudeSession, "source": "event", "timestamp": ts(40 * time.Minute), "session_has_decision": false, "linked": false},
+	}
+	if !reflect.DeepEqual(doc.Commits, wantCommits) {
+		t.Fatalf("commits = %v\nwant %v", doc.Commits, wantCommits)
 	}
 
 	a := doc.Findings.ActiveWithoutImplements
@@ -295,9 +320,9 @@ func TestDecisionAuditReportsEveryFindingKind(t *testing.T) {
 		"Findings: 4",
 		"Active decisions with no implements edge: 1 of 3",
 		"  decision:store-columns  decision  ",
-		"Commits whose session is not linked to a decision: 1 of 3 with a session",
+		"Commits whose session is not linked to a decision: 1 of 4 with a session",
 		"  commit:" + auditSHAGrok + "  session:" + auditGrokSession + "  2026-11-20T14:40:00.000000+00:00  (event sdf.git.commit)",
-		"Edges at a retracted or superseded decision: 2 of 4 checked",
+		"Edges at a retracted or superseded decision: 2 of 5 checked",
 		"(to store-json superseded by store-columns)",
 		"(to drop-cgo retracted)",
 	} {
@@ -315,7 +340,15 @@ func TestDecisionAuditCleanStoreExitsZero(t *testing.T) {
 	mustRun(t, "decision", "add", "--db", dbPath, "--id", "use-sqlite", "--status", "decision", "--statement", "Keep the collector store in SQLite.")
 	mustRun(t, "decision", "link", "--db", dbPath, "--relation", "implements", "--from", "session:"+auditCodexSession, "--to", "decision:use-sqlite")
 
+	// The session's link alone clears the finding; the commit is not yet linked.
 	doc, out := auditJSON(t, "--db", dbPath)
+	if out.code != 0 || doc.Totals["commits_in_decision_sessions"] != 1 || doc.Totals["commits_linked"] != 0 ||
+		len(doc.Commits) != 1 || doc.Commits[0]["session_has_decision"] != true || doc.Commits[0]["linked"] != false {
+		t.Fatalf("session linked only: %d %s", out.code, out.stdout)
+	}
+	mustRun(t, "decision", "link", "--db", dbPath, "--relation", "implements", "--from", "commit:"+auditSHACodex, "--to", "decision:use-sqlite")
+
+	doc, out = auditJSON(t, "--db", dbPath)
 	if out.code != 0 || out.stderr != "" || doc.FindingCount != 0 {
 		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
 	}
@@ -328,14 +361,17 @@ func TestDecisionAuditCleanStoreExitsZero(t *testing.T) {
 		t.Fatalf("unbounded window must be {}:\n%s", out.stdout)
 	}
 	wantTotals := map[string]int{
-		"commits_total": 1, "commits_with_session": 1, "commits_linked": 1,
-		"decisions_active": 1, "decisions_active_with_implements": 1, "edges_checked": 1,
+		"commits_total": 1, "commits_with_session": 1, "commits_in_decision_sessions": 1, "commits_linked": 1,
+		"decisions_active": 1, "decisions_active_with_implements": 1, "edges_checked": 2,
 	}
 	if !reflect.DeepEqual(doc.Totals, wantTotals) {
 		t.Fatalf("totals %v", doc.Totals)
 	}
+	if len(doc.Commits) != 1 || doc.Commits[0]["linked"] != true || doc.Commits[0]["sha"] != auditSHACodex {
+		t.Fatalf("commits %v", doc.Commits)
+	}
 	text := run(t, "decision", "audit", "--db", dbPath)
-	if text.code != 0 || text.stdout != "No findings: 1 active decisions, 1 commits (1 with a session, 1 linked), 1 edges checked.\n" {
+	if text.code != 0 || text.stdout != "No findings: 1 active decisions, 1 commits (1 with a session, 1 in a decision session, 1 linked), 2 edges checked.\n" {
 		t.Fatalf("%d %q", text.code, text.stdout)
 	}
 }
@@ -447,7 +483,8 @@ func TestDecisionAuditWindow(t *testing.T) {
 	if out.code != 1 || early.Window["until"] != split || early.Window["since"] != "" {
 		t.Fatalf("until: %d %q", out.code, out.stdout)
 	}
-	if early.Totals["decisions_active"] != 1 || early.Totals["commits_total"] != 1 || early.Totals["commits_linked"] != 0 || early.Totals["edges_checked"] != 0 ||
+	if early.Totals["decisions_active"] != 1 || early.Totals["commits_total"] != 1 || early.Totals["commits_in_decision_sessions"] != 0 || early.Totals["edges_checked"] != 0 ||
+		len(early.Commits) != 1 || early.Commits[0]["sha"] != auditSHAGrok ||
 		len(early.Findings.ActiveWithoutImplements) != 1 || early.Findings.ActiveWithoutImplements[0]["id"] != "old-choice" ||
 		len(early.Findings.UnlinkedSessionCommits) != 1 || early.Findings.UnlinkedSessionCommits[0]["sha"] != auditSHAGrok {
 		t.Fatalf("until window: %s", out.stdout)
@@ -458,11 +495,14 @@ func TestDecisionAuditWindow(t *testing.T) {
 		t.Fatalf("since: %d %q", out.code, out.stdout)
 	}
 	wantLate := map[string]int{
-		"commits_total": 1, "commits_with_session": 1, "commits_linked": 1,
+		"commits_total": 1, "commits_with_session": 1, "commits_in_decision_sessions": 1, "commits_linked": 0,
 		"decisions_active": 1, "decisions_active_with_implements": 1, "edges_checked": 1,
 	}
 	if !reflect.DeepEqual(late.Totals, wantLate) {
 		t.Fatalf("since totals %v", late.Totals)
+	}
+	if len(late.Commits) != 1 || late.Commits[0]["sha"] != auditSHACodex || late.Commits[0]["session_has_decision"] != true {
+		t.Fatalf("since commits %v", late.Commits)
 	}
 	// since is inclusive: a bound equal to the commit time keeps it, and an
 	// until equal to it drops it.
@@ -470,7 +510,7 @@ func TestDecisionAuditWindow(t *testing.T) {
 	if doc, _ := auditJSON(t, "--db", dbPath, "--since", at); doc.Totals["commits_total"] != 1 {
 		t.Fatalf("since == commit time: %v", doc.Totals)
 	}
-	if doc, _ := auditJSON(t, "--db", dbPath, "--since", split, "--until", at); doc.Totals["commits_total"] != 0 {
+	if doc, _ := auditJSON(t, "--db", dbPath, "--since", split, "--until", at); doc.Totals["commits_total"] != 0 || len(doc.Commits) != 0 {
 		t.Fatalf("until == commit time: %v", doc.Totals)
 	}
 }

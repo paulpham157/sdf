@@ -92,7 +92,16 @@ func TestDecisionAuditFindsAHookCommitUntilItsSessionIsLinked(t *testing.T) {
 	if code != 0 || doc["finding_count"] != 0.0 {
 		t.Fatalf("after linking: exit %d\n%v", code, doc)
 	}
-	if totals := doc["totals"].(map[string]any); totals["commits_linked"] != 1.0 || totals["decisions_active_with_implements"] != 1.0 {
-		t.Fatalf("totals after linking %v", totals)
+	if totals := doc["totals"].(map[string]any); totals["commits_in_decision_sessions"] != 1.0 || totals["commits_linked"] != 0.0 ||
+		totals["decisions_active_with_implements"] != 1.0 {
+		t.Fatalf("totals after linking the session %v", totals)
+	}
+	sh(gitEnv, dir, binPath(t), "decision", "link", "--db", db, "--relation", "implements",
+		"--from", "commit:"+inSession, "--to", "decision:store-columns")
+	code, doc = audit()
+	commitsList := doc["commits"].([]any)
+	if code != 0 || doc["totals"].(map[string]any)["commits_linked"] != 1.0 || len(commitsList) != 1 ||
+		commitsList[0].(map[string]any)["linked"] != true || commitsList[0].(map[string]any)["session_has_decision"] != true {
+		t.Fatalf("after linking the commit: exit %d\n%v", code, doc)
 	}
 }

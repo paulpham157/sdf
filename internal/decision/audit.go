@@ -39,11 +39,31 @@ type AuditOptions struct {
 
 // AuditReport is the result of Audit, and the --json document.
 type AuditReport struct {
-	Schema       string        `json:"schema"`
-	Window       AuditWindow   `json:"window"`
-	Totals       AuditTotals   `json:"totals"`
-	FindingCount int           `json:"finding_count"`
-	Findings     AuditFindings `json:"findings"`
+	Schema       string            `json:"schema"`
+	Window       AuditWindow       `json:"window"`
+	Totals       AuditTotals       `json:"totals"`
+	Commits      []AuditCommitLink `json:"commits"`
+	FindingCount int               `json:"finding_count"`
+	Findings     AuditFindings     `json:"findings"`
+}
+
+// AuditCommitLink is one commit with a known session, in the window, for
+// every such commit whether or not it is a finding. SessionID, Source, and
+// Timestamp are as in AuditCommit.
+//
+//   - SessionHasDecision: some stored edge, of any relation and in either
+//     direction, joins session:SessionID (or another session an event names
+//     for this commit) to a stored decision, whatever that decision's
+//     effective status and whatever the edge's time.
+//   - Linked: SessionHasDecision, and an implements edge runs from
+//     commit:SHA to a stored decision.
+type AuditCommitLink struct {
+	SHA                string `json:"sha"`
+	SessionID          string `json:"session_id"`
+	Source             string `json:"source"`
+	Timestamp          string `json:"timestamp"`
+	SessionHasDecision bool   `json:"session_has_decision"`
+	Linked             bool   `json:"linked"`
 }
 
 // AuditWindow echoes the bounds, RFC3339 in UTC, empty when unbounded.
@@ -63,15 +83,16 @@ type AuditWindow struct {
 //     KnownCommit accepts), with or without a session.
 //   - CommitsWithSession: of those, the ones at least one event names a
 //     session for.
-//   - CommitsLinked: commits one of whose sessions has an edge to or from a
-//     stored decision, or that have such an edge themselves (commit:SHA).
-//     A commit with a session that is not linked is in
-//     Findings.UnlinkedSessionCommits.
+//   - CommitsInDecisionSessions: commits with a session that has at least
+//     one edge to or from a stored decision (AuditCommitLink.SessionHasDecision).
+//   - CommitsLinked: of those, the commits with an implements edge from
+//     commit:SHA to a stored decision (AuditCommitLink.Linked).
 //   - EdgesChecked: edges, other than supersedes, with at least one end a
 //     stored decision. Findings.StaleEdges is a subset.
 type AuditTotals struct {
 	CommitsTotal                  int `json:"commits_total"`
 	CommitsWithSession            int `json:"commits_with_session"`
+	CommitsInDecisionSessions     int `json:"commits_in_decision_sessions"`
 	CommitsLinked                 int `json:"commits_linked"`
 	DecisionsActive               int `json:"decisions_active"`
 	DecisionsActiveWithImplements int `json:"decisions_active_with_implements"`
@@ -94,8 +115,8 @@ type AuditDecision struct {
 	Statement  string `json:"statement"`
 }
 
-// AuditCommit is a commit whose session is not linked to any decision, and
-// that has no edge to a decision itself. SessionID is the session the
+// AuditCommit is a commit with a session that has no edge to a decision,
+// and that has no edge (of any relation) to a decision itself. SessionID is the session the
 // commit's first event with a session names; Timestamp is that event's
 // record time (UTC); Source says where the session id came from.
 type AuditCommit struct {
@@ -145,7 +166,8 @@ func Audit(s *store.Store, opt AuditOptions) (AuditReport, error) {
 
 func audit(g Graph, events []store.CommitEvent, opt AuditOptions) AuditReport {
 	out := AuditReport{
-		Schema: AuditSchema,
+		Schema:  AuditSchema,
+		Commits: []AuditCommitLink{},
 		Findings: AuditFindings{
 			ActiveWithoutImplements: []AuditDecision{},
 			UnlinkedSessionCommits:  []AuditCommit{},
@@ -171,9 +193,11 @@ func audit(g Graph, events []store.CommitEvent, opt AuditOptions) AuditReport {
 	}
 	implemented := map[string]bool{}
 	linked := map[Endpoint]bool{}
+	implementsFrom := map[Endpoint]bool{}
 	for _, e := range g.Edges {
 		if e.Relation == RelImplements && isDecision(e.To) {
 			implemented[e.To.Ref] = true
+			implementsFrom[e.From] = true
 		}
 		if isDecision(e.To) && e.From.Kind != KindDecision {
 			linked[e.From] = true
@@ -228,20 +252,29 @@ func audit(g Graph, events []store.CommitEvent, opt AuditOptions) AuditReport {
 			continue
 		}
 		out.Totals.CommitsTotal++
-		isLinked := linked[Endpoint{Kind: KindCommit, Ref: sha}]
-		for _, id := range c.sessions {
-			if linked[Endpoint{Kind: KindSession, Ref: id}] {
-				isLinked = true
-			}
-		}
-		if isLinked {
-			out.Totals.CommitsLinked++
-		}
 		if c.session == nil {
 			continue
 		}
 		out.Totals.CommitsWithSession++
+		commitEnd := Endpoint{Kind: KindCommit, Ref: sha}
+		sessionHas := false
+		for _, id := range c.sessions {
+			if linked[Endpoint{Kind: KindSession, Ref: id}] {
+				sessionHas = true
+			}
+		}
+		isLinked := sessionHas && implementsFrom[commitEnd]
+		if sessionHas {
+			out.Totals.CommitsInDecisionSessions++
+		}
 		if isLinked {
+			out.Totals.CommitsLinked++
+		}
+		out.Commits = append(out.Commits, AuditCommitLink{
+			SHA: sha, SessionID: c.session.SessionID, Source: SessionSourceEvent, Timestamp: c.session.Time,
+			SessionHasDecision: sessionHas, Linked: isLinked,
+		})
+		if sessionHas || linked[commitEnd] {
 			continue
 		}
 		out.Findings.UnlinkedSessionCommits = append(out.Findings.UnlinkedSessionCommits, AuditCommit{
@@ -325,8 +358,8 @@ func WriteAuditText(w io.Writer, r AuditReport) error {
 		fmt.Fprintf(&b, "Window: since %s, until %s\n", orDash(r.Window.Since), orDash(r.Window.Until))
 	}
 	if r.FindingCount == 0 {
-		fmt.Fprintf(&b, "No findings: %d active decisions, %d commits (%d with a session, %d linked), %d edges checked.\n",
-			t.DecisionsActive, t.CommitsTotal, t.CommitsWithSession, t.CommitsLinked, t.EdgesChecked)
+		fmt.Fprintf(&b, "No findings: %d active decisions, %d commits (%d with a session, %d in a decision session, %d linked), %d edges checked.\n",
+			t.DecisionsActive, t.CommitsTotal, t.CommitsWithSession, t.CommitsInDecisionSessions, t.CommitsLinked, t.EdgesChecked)
 		_, err := io.WriteString(w, b.String())
 		return err
 	}

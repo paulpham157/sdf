@@ -463,9 +463,10 @@ It reports three kinds of finding:
    `git_commit_id` in `tool_parameters`). Its session is the stored
    `session_id` of that event, which the receiver takes from the event's
    `session.id`; the git hook sets `session.id` from the agent's session
-   variable. The commit is a finding when it has a session and neither any of
-   its sessions nor the commit itself has an edge, in either direction and of
-   any relation, to a stored decision. A commit with no session is counted in
+   variable. The commit is a finding when it has a session, that session has
+   no edge to a decision (`session_has_decision` is false, defined below), and
+   the commit itself has no edge of any relation, in either direction, to a
+   stored decision. A commit with no session is counted in
    `commits_total` but is never a finding. The git hook posts only when an
    agent session id is set, so such a commit comes from a tool-result log that
    carried no `session.id`; a commit made outside any session is unknown to
@@ -487,8 +488,9 @@ Stop/SessionEnd hook can tell "something to link" (1) from "could not check"
 **Window.** `--since` (inclusive) and `--until` (exclusive) take RFC3339
 times, for example `2026-11-21T00:00:00Z`, so two runs split at one instant
 count every item once. They apply to a decision's `recorded_at` (finding 1
-and the `decisions_*` totals), a commit's time (finding 2 and the `commits_*`
-totals), and an edge's `recorded_at` (finding 3 and `edges_checked`). A
+and the `decisions_*` totals), a commit's time (finding 2, `commits[]`, and
+every `commits_*` total), and an edge's `recorded_at` (finding 3 and
+`edges_checked`). A
 commit's time is the record time of the first stored event that names it
 (`received_at` when the event has none). Links are read from every edge
 whatever its time, because work is often linked after it lands: a commit in
@@ -511,7 +513,8 @@ Edges at a retracted or superseded decision: 1 of 4 checked
 ```
 
 With no findings it prints one line, `No findings: N active decisions, N
-commits (N with a session, N linked), N edges checked.`
+commits (N with a session, N in a decision session, N linked), N edges
+checked.`
 
 **JSON (`--json`), schema `sdf.decision.audit/v1`.** Field names are stable;
 a change that removes or renames one gets a new `schema` value. Every list is
@@ -524,11 +527,20 @@ a change that removes or renames one gets a new `schema` value. Every list is
   "totals": {
     "commits_total": 4,
     "commits_with_session": 3,
-    "commits_linked": 2,
+    "commits_in_decision_sessions": 2,
+    "commits_linked": 1,
     "decisions_active": 3,
     "decisions_active_with_implements": 2,
     "edges_checked": 4
   },
+  "commits": [
+    {"sha": "3f2a9c1e5b7d4a6c8e0f1a2b3c4d5e6f7a8b9c0d", "session_id": "019a8f3e-7c2b-7d41-9a55-3be1c0d2e4f6", "source": "event",
+     "timestamp": "2026-11-20T14:30:00.000000+00:00", "session_has_decision": true, "linked": false},
+    {"sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", "session_id": "grok-7f3c2a9e", "source": "event",
+     "timestamp": "2026-11-20T14:40:00.000000+00:00", "session_has_decision": false, "linked": false},
+    {"sha": "5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8", "session_id": "019a8f3e-7c2b-7d41-9a55-3be1c0d2e4f6", "source": "event",
+     "timestamp": "2026-11-20T15:00:00.000000+00:00", "session_has_decision": true, "linked": true}
+  ],
   "finding_count": 3,
   "findings": {
     "active_without_implements": [
@@ -551,21 +563,26 @@ a change that removes or renames one gets a new `schema` value. Every list is
 | `window.since`, `window.until` | The bounds given, RFC3339 in UTC; omitted when not given (`{}` with neither) |
 | `totals.commits_total` | Distinct commit SHAs in the window, with or without a session |
 | `totals.commits_with_session` | Of those, commits some event names a session for |
-| `totals.commits_linked` | Commits in the window one of whose sessions has an edge to or from a stored decision, or with such an edge on `commit:SHA` itself; includes commits with no session that are linked directly |
+| `totals.commits_in_decision_sessions` | Commits with a session whose `session_has_decision` is true |
+| `totals.commits_linked` | Of `commits_in_decision_sessions`, the commits whose `linked` is true |
 | `totals.decisions_active` | Decisions in the window whose `effective_status` is `active` |
 | `totals.decisions_active_with_implements` | Of those, the ones an `implements` edge points at |
 | `totals.edges_checked` | Edges in the window, other than `supersedes`, with at least one end a stored decision |
+| `commits[]` | Every commit in the window with a known session, in store order: `sha` (lowercase), `session_id`, `source` (`event` or `trailer`), `timestamp`, `session_has_decision`, `linked` |
+| `commits[].session_has_decision` | True when at least one stored edge joins `session:ID` and a stored decision: any relation, either direction (with today's kind rules that is `implements`, `validates`, or `contradicts` from the session, or `constrains` to it), whatever the decision's `effective_status` and whatever the edge's time. Every session an event names for the commit is checked; `session_id` is the first |
+| `commits[].linked` | `session_has_decision` is true **and** an `implements` edge runs from `commit:SHA` to a stored decision (any `effective_status`, any time). A commit with its own `implements` edge whose session has no decision edge is `linked: false`, and is not an `unlinked_session_commits` finding because it has a direct edge |
 | `finding_count` | Total number of findings, all kinds |
 | `active_without_implements[]` | `id`, `status` (as stored), `recorded_at`, `statement` |
 | `unlinked_session_commits[]` | `sha` (lowercase), `session_id`, `timestamp` (record time of the event that named the session, UTC), `source` (`event` or `trailer`), `event` (`sdf.git.commit` or `claude_code.tool_result`), and `repo` and `branch` when the hook sent them |
 | `stale_edges[]` | `relation`, `from`, `to`, `recorded_at`, and `stale[]`: each decision end that is stale, with `end` (`from` or `to`), `id`, `effective_status`, and `superseded_by` when superseded |
 
-The totals are denominators: `decisions_active - decisions_active_with_implements`
-is the number of `active_without_implements` findings, and
-`commits_with_session` minus the `unlinked_session_commits` findings is the
-number of commits with a session that are linked. Link recall over commits
-with a session is `(commits_with_session - len(unlinked_session_commits)) /
-commits_with_session`, and over all commits `commits_linked / commits_total`.
+The totals are denominators, counted over the same window as `commits[]`:
+`decisions_active - decisions_active_with_implements` is the number of
+`active_without_implements` findings; `commits_with_session` is
+`len(commits)`; `commits_in_decision_sessions` and `commits_linked` count the
+`commits[]` items with `session_has_decision` and `linked` true. Commit link
+recall in sessions that recorded a decision is
+`commits_linked / commits_in_decision_sessions`.
 
 ## Local budget
 
