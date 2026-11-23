@@ -1139,9 +1139,20 @@
       if (edge.from === focus) near[edge.to] = true;
       if (edge.to === focus) near[edge.from] = true;
     });
+    let fnode = null;
     chapter.nodes.forEach(function (node) {
       if (node.parent === focus || node.id === focus) near[node.id] = true;
+      if (node.id === focus) fnode = node;
     });
+    if (fnode && fnode.parent) {
+      // An alternative's neighbourhood is its parent and the parent's other
+      // alternatives, which stay drawn as ghosts.
+      near[fnode.parent] = true;
+      chapter.nodes.forEach(function (node) { if (node.parent === fnode.parent) near[node.id] = true; });
+    }
+    if (fnode && fnode.ending && Array.isArray(fnode.ending.via)) {
+      fnode.ending.via.forEach(function (id) { near[id] = true; });
+    }
     return near;
   }
 
@@ -1289,7 +1300,10 @@
     });
     // A focused node's collapsed alternatives open as ghosts below the chapter.
     const ghosts = [];
-    const fnode = focus && byId[focus];
+    // An alternative drawn as a ghost keeps its parent's ghosts on screen
+    // while it has focus, so the graph does not vanish under the user.
+    let fnode = focus && byId[focus];
+    if (fnode && fnode.kind === "alternative" && fnode.lane === "none" && fnode.parent && byId[fnode.parent]) fnode = byId[fnode.parent];
     if (fnode && dgNotTaken) {
       const hidden = (fnode.alternatives || []).map(function (id) { return byId[id]; }).filter(function (alt) { return alt && alt.lane === "none"; });
       const fp = dgPos(fnode);
@@ -1300,10 +1314,29 @@
         const gw = 210;
         const sx = fp.x + (lane === "left" ? -1 : 1) * (width[fnode.id] / 2 - 30);
         const ex = lane === "left" ? gx + gw / 2 + 3 : gx - gw / 2 - 3;
-        ghosts.push(s("g", { class: "dg-node dg-kind-alternative dg-role-not_taken", tabindex: "0", role: "button", "aria-label": "Not taken: " + alt.title,
-          onclick: function () { dgGo(chapter.id, alt.id); } }, [
+        const on = alt.id === focus;
+        function activate() {
+          if (on) dgClose(chapter, alt.id);
+          else dgGo(chapter.id, alt.id);
+        }
+        ghosts.push(s("g", {
+          class: "dg-node dg-kind-alternative dg-role-not_taken dg-ghost-node",
+          tabindex: "0",
+          role: "button",
+          "data-node": alt.id,
+          "aria-label": "Not taken, alternative to " + fnode.title + ": " + alt.title,
+          "aria-pressed": on ? "true" : "false",
+          onclick: activate,
+          onkeydown: function (event) {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              activate();
+            }
+          },
+        }, [
           s("title", null, ["Not taken: " + alt.title]),
           dgKbRing(gx - gw / 2, gy - 19, gw, 38),
+          on ? s("rect", { x: gx - gw / 2 - 6, y: gy - 25, width: gw + 12, height: 50, rx: 13, class: "dg-focus-ring" }) : null,
           s("path", { d: "M" + sx + "," + (fp.y + DG.nodeH / 2) + " C" + sx + "," + gy + " " + sx + "," + gy + " " + ex + "," + gy, class: "dg-edge dg-ghost", "marker-end": "url(#dg-arrow)" }),
           s("rect", { x: gx - gw / 2, y: gy - 19, width: gw, height: 38, rx: 9, class: "dg-shape" }),
           s("text", { x: gx - gw / 2 + 12, y: gy - 3, class: "dg-detail" }, ["not taken · what if"]),
@@ -1559,6 +1592,9 @@
 
   // Close the focus panel and give focus back to the node it described.
   function dgClose(chapter, id) {
+    // A ghost alternative is not drawn once its panel closes: focus its parent.
+    const node = id ? chapter.nodes.filter(function (n) { return n.id === id; })[0] : null;
+    if (node && node.kind === "alternative" && node.lane === "none" && node.parent) id = node.parent;
     if (id) dgWantFocus = "node:" + id;
     dgGo(chapter.id, null);
   }

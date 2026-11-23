@@ -324,3 +324,41 @@ func TestEndingLinksAllowOnlyGitHub(t *testing.T) {
 		}
 	}
 }
+
+// Ghost alternatives work from the keyboard: Enter or Space focuses one,
+// its parent's ghosts stay drawn while it has focus, and Esc returns focus
+// to the parent.
+func TestGhostAlternativesKeyboard(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	base := renderPage(t, srv, "#/decisions/ch-capture/status-ui", "")
+	ghosts := regexp.MustCompile(`<g [^>]*class="dg-node dg-kind-alternative[^"]*dg-ghost-node"[^>]*>`).FindAllString(base.Markup, -1)
+	if len(ghosts) != 2 {
+		t.Fatalf("ghosts %q", ghosts)
+	}
+	id := regexp.MustCompile(`data-node="([^"]+)"`).FindStringSubmatch(ghosts[0])
+	if id == nil || !strings.Contains(ghosts[0], `tabindex="0"`) || !strings.Contains(ghosts[0], `role="button"`) {
+		t.Fatalf("ghost %q", ghosts[0])
+	}
+	sel := `@[data-node="` + id[1] + `"]`
+	for _, key := range []string{"Enter", " "} {
+		res := renderPage(t, srv, "#/decisions/ch-capture/status-ui", "key="+key+sel)
+		if res.Hash != "#/decisions/ch-capture/"+strings.ReplaceAll(id[1], "#", "%23") {
+			t.Errorf("%q on a ghost: hash %q", key, res.Hash)
+		}
+		if !strings.Contains(res.Active, `data-node="`+id[1]+`"`) {
+			t.Errorf("%q on a ghost: focus %q", key, res.Active)
+		}
+		if !strings.Contains(res.Markup, "Not taken: Warnings only") || !strings.Contains(res.Markup, "Not taken: A check command") {
+			t.Errorf("%q on a ghost: the parent's ghosts vanished", key)
+		}
+		if !strings.Contains(res.Text, "Copy command") {
+			t.Errorf("%q on a ghost: no what-if panel", key)
+		}
+	}
+	back := renderPage(t, srv, "#/decisions/ch-capture/status-ui", "key=Enter"+sel+",key=Escape")
+	if back.Hash != "#/decisions/ch-capture" || !strings.Contains(back.Active, `data-node="status-ui"`) {
+		t.Errorf("Esc from a ghost: hash %q focus %q", back.Hash, back.Active)
+	}
+}
