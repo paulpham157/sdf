@@ -405,6 +405,7 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 		return sessionKey{}, false
 	}
 	st := stamps(rec)
+	st = qwenStamps(tool, rec, st)
 	if len(st) == 0 || tool == "unknown" {
 		return sessionKey{}, false
 	}

@@ -63,9 +63,16 @@
   session id by default. Span events and the log-to-span bridge (used with
   HTTP when only a traces endpoint is set) are not modelled. Tokens come from
   per-response logs, which a resumed session (`qwen --resume`) does not
-  reset; the `qwen-code.token.usage` fallback is cumulative and undercounts
-  a resumed session until
-  [#191](https://github.com/paulpham157/sdf/pull/191) merges. The mapping and
+  reset. The `qwen-code.token.usage` fallback is a per-process cumulative
+  counter: its points are placed by their own time, each process run is
+  added up (the same rule as
+  [#191](https://github.com/paulpham157/sdf/pull/191), done in the Qwen code
+  so it does not wait for #191), and when the process started more than
+  10 s before the session (an earlier session in that process, after
+  `/clear`) the run's first point in the session is subtracted. Tokens used
+  before that first export are lost, and a `/clear` within 10 s of launch
+  is missed. With `telemetry.metrics.includeSessionId` the points are the
+  session's own and nothing is subtracted. The mapping and
   the `qwen_*.json` samples come from the v0.28.4 docs and source, not a
   live session.
 - The git hook sends the commit SHA, checkout path, and branch to the local

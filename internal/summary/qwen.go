@@ -1,6 +1,7 @@
 package summary
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/paulpham157/sdf/internal/pricing"
@@ -169,16 +170,128 @@ func qwenTokens(records []record.Record, points []point) (OrderedFloats, *string
 	if found {
 		return totals, record.Str("traces " + qwenLLMRequest), record.Str("sum of gen_ai.usage.* and thoughts_token_count on qwen-code.llm_request spans; a request whose provider reported only a total has no usage fields")
 	}
-	var metric []point
-	for _, p := range points {
-		if p.name == qwenTokenMetric {
-			metric = append(metric, p)
-		}
-	}
-	if len(metric) > 0 {
-		return sumBy(metric, "type"), record.Str("metrics " + qwenTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. type=input|output|thought|cache; attributed by time window unless telemetry.metrics.includeSessionId is true")
+	if metric, ok := qwenMetricTokens(records); ok {
+		return metric, record.Str("metrics " + qwenTokenMetric), record.Str(qwenMetricMethod)
 	}
 	return OrderedFloats{}, nil, nil
+}
+
+const qwenMetricMethod = "sum of delta points; a cumulative series adds up the latest point of each process run (start time), minus the run's first point in this session when the process started more than 10 s before the session (an earlier session in the same process) and the points carry no session.id. type=input|output|thought|cache; attributed by time window unless telemetry.metrics.includeSessionId is true"
+
+// qwenMetricTokens totals qwen-code.token.usage for one session.
+//
+// The counters belong to the process, not the session: after /clear or
+// /resume (startNewSession) the same process keeps counting, and without
+// telemetry.metrics.includeSessionId the points carry no session.id, so the
+// next session's points still hold the earlier session's tokens. Each
+// cumulative series (attributes) is split into runs by StartTimeUnixNano,
+// and a run's share is its latest point (by time, then storage order)
+// minus a baseline:
+//
+//   - 0 when the points carry session.id (the series is this session's);
+//   - 0 when the run started no more than qwenStartupSlack before the
+//     session's first log or span (the process began with this session), or
+//     there is no log or span;
+//   - otherwise the run's first point in this session, because the process
+//     was already counting for an earlier session. Tokens used between the
+//     session's start and that first export are lost (an undercount of up
+//     to one export interval).
+//
+// Runs are added up, so a session resumed in a new process counts both
+// processes. Delta points are summed.
+// qwenStamps places a Qwen Code metric point by its own time, not its
+// start time. A cumulative point's start time is when the process began
+// counting, so in a process that ran several sessions (/clear, /resume)
+// every point would land in the first one.
+func qwenStamps(tool string, rec record.Record, st []int64) []int64 {
+	if tool == "qwen-code" && rec.Signal == "metrics" && rec.TimeUnixNano != nil {
+		return []int64{*rec.TimeUnixNano}
+	}
+	return st
+}
+
+// qwenStartupSlack is how long before a session's first log or span its
+// process may have started and still count as started for that session.
+// Qwen Code logs session.start while it loads its config, so this is slack
+// for slow startups; a /clear sooner than this after launch is missed.
+const qwenStartupSlack = int64(10_000_000_000)
+
+func qwenMetricTokens(records []record.Record) (OrderedFloats, bool) {
+	sessionStart := int64(0)
+	for _, rec := range records {
+		if rec.Signal == "metrics" || ToolOf(rec) != "qwen-code" {
+			continue
+		}
+		when := rec.TimeUnixNano
+		if rec.Signal == "traces" {
+			when = rec.StartUnixNano
+		}
+		if when != nil && *when > 0 && (sessionStart == 0 || *when < sessionStart) {
+			sessionStart = *when
+		}
+	}
+	type run struct {
+		label           string
+		perSession      bool
+		start           int64
+		first, last     record.Record
+		firstT, lastT   int64
+		firstID, lastID int64
+	}
+	var keys []string
+	runs := map[string]*run{}
+	totals := OrderedFloats{}
+	found := false
+	for _, rec := range records {
+		if rec.Signal != "metrics" || rec.Value == nil || deref(rec.Name) != qwenTokenMetric {
+			continue
+		}
+		found = true
+		label := "value"
+		if text := record.SummaryText(rec.Attributes["type"]); text != nil {
+			label = *text
+		}
+		if deref(rec.MetricTemporality) == "delta" {
+			totals.Add(label, *rec.Value)
+			continue
+		}
+		start := int64(0)
+		if rec.StartUnixNano != nil {
+			start = *rec.StartUnixNano
+		}
+		when := int64(0)
+		if rec.TimeUnixNano != nil {
+			when = *rec.TimeUnixNano
+		}
+		key := fmt.Sprintf("%s|%d", freeze(rec.Attributes), start)
+		r, ok := runs[key]
+		if !ok {
+			_, perSession := rec.Attributes["session.id"]
+			r = &run{label: label, perSession: perSession, start: start, first: rec, last: rec, firstT: when, lastT: when, firstID: rec.ID, lastID: rec.ID}
+			runs[key] = r
+			keys = append(keys, key)
+			totals.Add(label, 0)
+			continue
+		}
+		if when < r.firstT || (when == r.firstT && rec.ID < r.firstID) {
+			r.first, r.firstT, r.firstID = rec, when, rec.ID
+		}
+		if when > r.lastT || (when == r.lastT && rec.ID > r.lastID) {
+			r.last, r.lastT, r.lastID = rec, when, rec.ID
+		}
+	}
+	for _, key := range keys {
+		r := runs[key]
+		share := *r.last.Value
+		if !r.perSession && sessionStart > 0 && (r.start == 0 || r.start < sessionStart-qwenStartupSlack) {
+			share -= *r.first.Value
+		}
+		if share < 0 {
+			share = 0
+		}
+		totals.Add(r.label, share)
+	}
+	return totals, found
 }
 
 func qwenModels(records []record.Record, points []point) []string {

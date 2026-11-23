@@ -218,3 +218,90 @@ func TestQwenToolCallsFromLogsWithoutSpans(t *testing.T) {
 		t.Fatalf("missing %v", signals)
 	}
 }
+
+func qwenTokenPoint(session string, kind string, value float64, start, at int64, id int64, attrs map[string]any) record.Record {
+	a := map[string]any{"model": "qwen3-max", "type": kind}
+	for k, v := range attrs {
+		a[k] = v
+	}
+	return record.Record{
+		ID: id, Signal: "metrics", ServiceName: record.Str("qwen-code"), Name: record.Str("qwen-code.token.usage"),
+		MetricKind: record.Str("sum"), MetricTemporality: record.Str("cumulative"), Value: record.Float(value),
+		StartUnixNano: record.Int64(start), TimeUnixNano: record.Int64(at),
+		Attributes: a, Resource: map[string]any{"service.name": "qwen-code"},
+	}
+}
+
+func qwenSessionLog(session, name string, at int64) record.Record {
+	return record.Record{
+		Signal: "logs", ServiceName: record.Str("qwen-code"), SessionID: record.Str(session),
+		Name: record.Str(name), TimeUnixNano: record.Int64(at),
+		Attributes: map[string]any{"session.id": session, "event.name": name},
+		Resource:   map[string]any{"service.name": "qwen-code"},
+	}
+}
+
+func qwenTokensFor(t *testing.T, rows []record.Record, session string) OrderedFloats {
+	t.Helper()
+	for _, s := range Summarize(rows, false).Sessions {
+		if s.SessionID == session {
+			if deref(s.TokensSource) != "metrics qwen-code.token.usage" {
+				t.Fatalf("source %q", deref(s.TokensSource))
+			}
+			return s.Tokens
+		}
+	}
+	t.Fatalf("no session %s", session)
+	return OrderedFloats{}
+}
+
+const sec = int64(1_000_000_000)
+
+func TestQwenMetricTokensDoNotCarryIntoTheNextSessionOfOneProcess(t *testing.T) {
+	// One process (start 1 s) runs session A, then /clear starts session B.
+	// The counter keeps counting: 300 at the end of A, 700 at the end of B.
+	rows := []record.Record{
+		qwenSessionLog("A", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("A", "qwen-code.conversation_finished", 10*sec),
+		qwenSessionLog("B", "qwen-code.user_prompt", 60*sec),
+		qwenSessionLog("B", "qwen-code.conversation_finished", 90*sec),
+		qwenTokenPoint("", "input", 100, 1*sec, 5*sec, 1, nil),
+		qwenTokenPoint("", "input", 300, 1*sec, 10*sec, 2, nil),
+		qwenTokenPoint("", "input", 450, 1*sec, 65*sec, 3, nil),
+		qwenTokenPoint("", "input", 700, 1*sec, 90*sec, 4, nil),
+	}
+	if a := qwenTokensFor(t, rows, "A"); a.Vals["input"] != 300 {
+		t.Fatalf("A input %v, want 300 (the process started with A)", a.Vals["input"])
+	}
+	// B starts 59 s after the process: its share is 700 - 450. The 150
+	// tokens between 300 and B's first export (450) are not recoverable
+	// from these points and are lost.
+	if b := qwenTokensFor(t, rows, "B"); b.Vals["input"] != 250 {
+		t.Fatalf("B input %v, want 250, not 700", b.Vals["input"])
+	}
+}
+
+func TestQwenMetricTokensWithSessionIDAndResume(t *testing.T) {
+	// includeSessionId: the series is the session's own, so no baseline,
+	// even in a process that started long before.
+	rows := []record.Record{
+		qwenSessionLog("B", "qwen-code.user_prompt", 60*sec),
+		qwenSessionLog("B", "qwen-code.conversation_finished", 90*sec),
+		qwenTokenPoint("B", "input", 40, 1*sec, 65*sec, 1, map[string]any{"session.id": "B"}),
+		qwenTokenPoint("B", "input", 120, 1*sec, 90*sec, 2, map[string]any{"session.id": "B"}),
+	}
+	rows[2].SessionID, rows[3].SessionID = record.Str("B"), record.Str("B")
+	if b := qwenTokensFor(t, rows, "B"); b.Vals["input"] != 120 {
+		t.Fatalf("B input %v, want 120", b.Vals["input"])
+	}
+	// qwen --resume in a new process: two runs, each counted from 0.
+	rows = []record.Record{
+		qwenSessionLog("R", "qwen-code.user_prompt", 2*sec),
+		qwenSessionLog("R", "qwen-code.conversation_finished", 100*sec),
+		qwenTokenPoint("", "input", 1000, 1*sec, 20*sec, 1, nil),
+		qwenTokenPoint("", "input", 500, 50*sec, 90*sec, 2, nil),
+	}
+	if r := qwenTokensFor(t, rows, "R"); r.Vals["input"] != 1500 {
+		t.Fatalf("resumed input %v, want 1500", r.Vals["input"])
+	}
+}

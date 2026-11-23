@@ -388,7 +388,10 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
   `qwen-code.api_response` logs (`total_token_count` is not added), else
   `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
   spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
-  `thought`, `cache`). Input includes cached tokens. With OpenAI-compatible
+  `thought`, `cache`). That counter belongs to the process, not the session:
+  sdf places its points by their own time, adds up process runs, and
+  subtracts what an earlier session in the same process had counted (see
+  [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
   providers (the default) output includes thoughts, which Qwen estimates
   from text when the provider does not report them; with Gemini-native
   responses it does not. The totals include subagents and the background
