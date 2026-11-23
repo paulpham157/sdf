@@ -81,44 +81,82 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    records the rule, commit, path, line, and the sha256 of the match, never
    the match (a path that itself matches is recorded as a hash). This is not a replacement for a full scanner.
 5. **Criteria**, only if nothing above failed: the submitted code does not
-   run otherwise. Before they run, `.git` is moved out of the checkout, so
-   checks see a plain tree (it stays writable by the same user; the
-   integrity checks do not read it again). Each argv runs in the checkout
-   root with no shell, in its own namespaces (below), the declared
-   timeout, and a small environment: locale, CI and Go proxy settings are
-   inherited; `HOME` and `XDG_*` point at a new empty directory and
-   `TMPDIR`/`TEMP`/`TMP` at another; `GOENV=off`, `GOFLAGS=` and
-   `GOTOOLCHAIN=local`; `GOPATH`, `GOCACHE` and `GOMODCACHE` are new
-   (`--go-cache`/`--go-mod-cache` reuse caches the agent cannot write);
-   plus `SDF_VERIFY=1`. Nothing under the real home (a `go env -w
-   GOFLAGS=-exec=...`, a git or shell config, a poisoned build cache)
-   reaches a check. `PATH` is set explicitly from `--path` (default: the
-   verifier's PATH) with relative entries dropped, and argv[0] is resolved
-   in that PATH only, so a bare name never resolves to a file in the
-   checkout. The resolved command, cwd, and PATH are in the evidence.
+   run otherwise. Criteria run one at a time in **name order** (the task
+   file sorts them by name, and the hash covers that order, not the order
+   they were declared in): name them `a-…`, `b-…` when order matters.
+   Before they run, `.git` is moved out of the checkout (an isolated check
+   does not see it; the integrity checks do not read it again, and a `.git`
+   a check creates in the checkout is `CHECKOUT_MODIFIED`), and every
+   criterion's argv[0] is resolved and its file hashed (evidence
+   `command_pins`). Each criterion re-resolves and re-hashes its command
+   before it starts; a different file is `COMMAND_CHANGED` (FAIL), and the
+   criterion does not run, so a check that drops an `sh` into a `PATH`
+   directory or rewrites `go` cannot change what a later one runs.
+
+   Each argv runs in the checkout root with no shell, in its own namespaces
+   (below), the declared timeout, and a small environment: locale, CI and
+   Go proxy settings are inherited; `GOENV=off`, `GOFLAGS=` and
+   `GOTOOLCHAIN=local`; `SDF_VERIFY=1`; and `HOME`, `XDG_*`,
+   `TMPDIR`/`TEMP`/`TMP`, `GOPATH`, `GOCACHE`, `GOMODCACHE` and `GOTMPDIR`
+   point at **new directories for that criterion alone**, removed when it
+   ends. Nothing one check writes there (a patched module source, a
+   poisoned build-cache entry, a shell or git config) reaches another
+   criterion or a later verification, and nothing under the real home (a
+   `go env -w GOFLAGS=-exec=...`) reaches a check.
+
+   `--go-cache`/`--go-mod-cache` name trusted caches to start from. An
+   isolated check gets each as the read-only lower layer of an overlay
+   whose writes land in its own directory: it reads the cache and cannot
+   change it (evidence `read_only_caches`). An unisolated check uses the
+   cache directly and can write it. Without them every criterion starts
+   with empty caches, so a repository with dependencies and no `vendor/`
+   must download them: give that criterion `--allow-network NAME`, or an
+   honest commit FAILs (`go: ... dial tcp: ... network is unreachable`).
+
+   `PATH` is set explicitly from `--path` (default: the verifier's PATH)
+   with relative entries dropped, and argv[0] is resolved in that PATH
+   only, so a bare name never resolves to a file in the checkout. The
+   resolved command, its sha256, cwd, and PATH are in the evidence.
 
    **Isolation.** Each check runs as the child of a pid 1 in new user, pid,
-   mount and network namespaces (`CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNS|
-   CLONE_NEWNET`, uid and gid mapped to the same user). Inside:
+   mount, IPC, UTS and network namespaces (`CLONE_NEWUSER|CLONE_NEWPID|
+   CLONE_NEWNS|CLONE_NEWIPC|CLONE_NEWUTS|CLONE_NEWNET`, uid and gid mapped
+   to the same user). Inside:
    - a private `/proc`, so the verifier's and the host's processes are not
-     visible;
-   - empty tmpfs over `/tmp`, `/var/tmp`, `/run` (and `/var/run`),
-     `/dev/shm`, the verifier's `TMPDIR` and `XDG_RUNTIME_DIR`, and the real
-     `HOME`: where the sockets of processes outside the namespace live (a
-     tmux or screen server, docker and containerd, ssh-agent, a D-Bus or
-     systemd user session). Only the verifier's own directories are bound
-     back: this run's work directory (checkout, HOME, TMPDIR, GOPATH), the
-     Go caches, the harness socket's directory, every `PATH` entry and the
-     Go toolchain. The evidence lists `masked` (and `unmasked`, a mask a
-     kept directory equals or contains);
+     visible; the host's System V IPC objects and POSIX message queues are
+     not visible either (a new `mqueue` is mounted on `/dev/mqueue`);
+   - **every mount is read-only**: pid 1 remounts each one it inherited
+     (submounts included) with `MS_RDONLY`. The Go toolchain (GOROOT),
+     every `PATH` directory, trusted caches, the verifier's binary and any
+     other host directory (`/workspace`, `/opt`, a mounted volume) cannot be
+     written by a check (atk_goroot, atk_pathjack, atk_modcache). The hook
+     is added to GOROOT's `testing` package through `go test -overlay`,
+     which is read by the go command and compiled into the criterion's own
+     GOCACHE: GOROOT itself is never written;
+   - empty, writable tmpfs over `/tmp`, `/var/tmp`, `/run` (and
+     `/var/run`), `/dev/shm`, the verifier's `TMPDIR` and
+     `XDG_RUNTIME_DIR`, the real `HOME` and this verification's work
+     directory: where the sockets of processes outside the namespace live
+     (a tmux or screen server, docker and containerd, ssh-agent, a D-Bus or
+     systemd user session), and where the moved `.git`, other criteria's
+     output and the harness are. Bound back **writable**: only the checkout
+     and the criterion's own directory (HOME, TMPDIR, GOPATH, the Go caches;
+     evidence `writable`). Bound back **read-only**, where a mask covers
+     them: the harness socket's directory, `PATH` entries and the Go
+     toolchain. The evidence lists `masked` (and `unmasked`, a mask a bound
+     directory equals or contains);
    - only loopback: no route to the host network, its listening ports or
-     abstract unix sockets, and no downloads (fill `--go-mod-cache` first,
-     or vendor). `--allow-network NAME` (repeatable) keeps the host network
+     abstract unix sockets, and no downloads (use `--go-mod-cache` or
+     vendor). `--allow-network NAME` (repeatable) keeps the host network
      for that criterion; the evidence records `"network": "loopback"` or
      `"host"`. The task cannot ask for it;
-   - the check runs with no capabilities. A namespace where pid 1 cannot do
-     all of the above (such as one confined by Ubuntu's AppArmor
-     restriction) counts as no isolation.
+   - the check runs with no capabilities (pid 1 holds `CAP_SYS_ADMIN`,
+     `CAP_NET_ADMIN` and `CAP_DAC_OVERRIDE` in its own user namespace only,
+     for the mounts, loopback and overlayfs, and drops them first). A
+     namespace where pid 1 cannot do all of the above (such as one confined
+     by Ubuntu's AppArmor restriction, or a kernel without unprivileged
+     overlayfs when a trusted cache is given) counts as no isolation or
+     fails the criterion.
 
    When the check exits, pid 1 exits and the kernel kills every process
    left in the namespace, including ones that called `setsid` or
@@ -149,7 +187,24 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      process;
    - each designated top-level test is wrapped in place so that, when it
      ends, the hook sends `pass`, `fail` or `skip` with an HMAC under that
-     key. Package names come from the nearest `go.mod`.
+     key. Package names come from the nearest `go.mod`;
+   - right after the key exchange, still before any code of the module
+     runs, the hook makes the test process non-dumpable
+     (`PR_SET_DUMPABLE 0`), so its `/proc/self/mem` (and `fd/`, `environ`)
+     belong to root and cannot be opened, by it or by a child: code under
+     test cannot patch the `testing` package's machine code that way
+     (Review's atk_tw5). On amd64 and arm64 a seccomp filter (all threads,
+     inherited by children, with `no_new_privs`) then refuses
+     `prctl(PR_SET_DUMPABLE)` and system calls of another ABI, so this
+     cannot be undone. If any of it fails the test binary exits 3. Side
+     effects for tests: `/proc/self/fd` is not listable, and set-uid
+     programs run by a test do not gain privileges.
+
+   **This resists only naive cheating. It is not a security boundary
+   against an adversarial agent**: code in the test binary that uses
+   `unsafe`, `//go:linkname` or assembly can still read the key or write
+   memory and forge a pass (see the tripwire, and "What this does not
+   guarantee").
 
    Every designated test must report only `pass`, else
    `DESIGNATED_TEST_NOT_PASSED` (named as `TestX (package import/path)`; a
@@ -163,22 +218,32 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    gets none of this; `sdf task declare` and `sdf verify` warn.
 
    **Tripwire (known gap).** Code in the test binary can still forge a pass
-   without the key, by calling the hook's report function through its own
-   symbol table (`debug/elf` + `debug/gosym` + `unsafe`, about 40 lines).
-   The harness cannot prevent that, so for a task with a `go test`
-   criterion, a file added or changed since the base that could do it is
-   ERROR `TAMPER_CAPABLE_CODE`:
+   without the key, for example by calling the hook's report function
+   through its own symbol table (`debug/elf` + `debug/gosym` + `unsafe`,
+   about 40 lines; Review's atk_b1mem). The harness cannot prevent that, so
+   for a task with a `go test` criterion, a file added or changed since the
+   base that looks able to is ERROR `TAMPER_CAPABLE_CODE`:
    - assembly, C, C++, Objective-C, Fortran or SWIG source, or a `.syso`;
+   - a Go file go/parser cannot read (it could not be checked);
    - a Go file (tests included) importing `unsafe` (which `//go:linkname`
-     also needs), `C`, `runtime/cgo`, `plugin` or any `debug/...` package,
-     using `//go:linkname`, calling raw system calls or ptrace through
-     `syscall` or `golang.org/x/sys/unix`, or with a `"/proc/"` string.
+     also needs), `C`, `runtime/cgo`, `plugin` or any `debug/...` package;
+     dot-importing `syscall`, `golang.org/x/sys/unix`, `reflect`, `runtime`
+     or `unsafe`; using `//go:linkname`; using raw system calls, `Mmap`,
+     `Mprotect`, `ProcessVM*` or ptrace through `syscall` or
+     `golang.org/x/sys/unix` (called or taken as a value);
+     using `runtime.FuncForPC` or a reflect `Pointer`/`UnsafePointer`/
+     `UnsafeAddr` method; or with a string constant (after folding `+` of
+     literals) containing `/proc` or `proc/`, or equal to `proc`.
 
-   It is a heuristic: a path can be built at run time, and code that
-   already had one of these at the base is flagged only when it changes.
-   ERROR, not FAIL, because legitimate code uses them too:
-   `--allow-tamper-capable` (after a person has read the change) turns the
-   findings into a warning.
+   **The tripwire catches known patterns only.** A path or name can be
+   built at run time in ways it does not follow, and code that already had
+   one of these at the base is flagged only when it changes. ERROR, not
+   FAIL, because legitimate code uses them too: `--allow-tamper-capable`
+   (after a person has read the change) turns the findings into a
+   warning. atk_tw5 (FuncForPC + `/proc/self/mem`) is flagged, and fails
+   anyway with `--allow-tamper-capable` because of the non-dumpable hook;
+   atk_b1mem (unsafe) is flagged and, with `--allow-tamper-capable`, still
+   forges a pass.
 
    Output is hashed (`--artifacts DIR` keeps it as `<sha256>` files).
    Before and after each check, every tracked file on disk is re-hashed
@@ -194,7 +259,7 @@ FAIL: `TASK_SNAPSHOT_MISSING`, `TASK_HASH_MISMATCH`, `TASK_FILE_MODIFIED`,
 `REVISION_UNRESOLVABLE`, `REVISION_MISMATCH`, `BASE_MISMATCH`,
 `BASE_NOT_ANCESTOR`, `DESIGNATED_FILE_MODIFIED`, `DESIGNATED_FILE_ADDED`,
 `SECRET_IN_DIFF`, `CHECKOUT_DIRTY`, `CHECKOUT_MODIFIED`, `CHECK_FAILED`,
-`CHECK_TIMEOUT`, `TEST_REPORT_INVALID`.
+`CHECK_TIMEOUT`, `TEST_REPORT_INVALID`, `COMMAND_CHANGED`.
 
 ERROR (the verifier could not decide): `TASK_UNTRUSTED` (the task came only
 from the data dir or an unpinned ledger), `ISOLATION_UNAVAILABLE` (no
@@ -210,7 +275,10 @@ Evidence (`sdf.evidence/v1`) and the verdict (`sdf.verdict/v1`) are RFC 8785
 JSON, hashed like a task: `"sha256:" + hex(sha256(kind + "\n" + canonical))`.
 The verdict lists every evidence id and hash, the task hash and its
 sources, the submitted commit and tree, and the secret rule set's hash.
-The verdict also records `isolation`; each criterion's evidence records `network`, `masked` and `goroot`. With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
+The verdict also records `isolation`; `command_pins` lists each criterion's
+resolved argv[0] and its sha256; each criterion's evidence records
+`command_sha256`, `network`, `masked`, `unmasked`, `writable`,
+`read_only_caches` and `goroot`. With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
 appended to that ledger in one transaction ([docs/ledger.md](ledger.md#who-writes-it)):
 all of them or none. The ledger is prepared before the checkout, so one
 that cannot be written is exit 3 with nothing run. If the append itself
@@ -225,38 +293,46 @@ record.
   process of that user running at the same time can write the checkout,
   the moved `.git`, or the verdict file. "After the agent exits" is not
   enough on its own: a daemon it left behind is still that user.
-- The namespaces end the processes a check started, and hide the host's
-  sockets under the masked directories and the host network. They do not
-  stop a process that was already running outside (an agent still running
-  locally) from writing the checkout, and they do not cover every channel
-  out: a socket or FIFO in a directory that is bound back (a `PATH` entry,
-  the Go caches) or in an unmasked directory the user can write (for
-  example under `/var/lib` or a mounted volume) is still reachable, and a
-  check can write files the user owns outside the masks that another
-  process of that user later runs (a shell profile or a systemd user unit,
-  under the real home, is masked; others may not be). With
-  `--allow-unisolated` none of this applies; such a verdict says
-  `"isolation": "none"`.
+- The namespaces end the processes a check started, hide the host's
+  sockets under the masked directories and the host network, and make
+  every host directory read-only. They do not stop a process that was
+  already running outside (an agent still running locally) from writing
+  the checkout, GOROOT, a `PATH` directory or a cache: command pins catch a
+  changed argv[0] between criteria, nothing else is re-hashed. Read-only
+  is not invisible: a check can read whatever that user can read outside
+  the masks (files under `/workspace`, `/etc`, a mounted volume), and can
+  connect to a socket in a directory that is not masked (read-only does
+  not stop `connect`), for example under `/var/lib` or a bound-back `PATH`
+  entry. With `--allow-unisolated` none of this applies; such a verdict
+  says `"isolation": "none"`.
 - Checks run as the same user, mapped into the user namespace, with no
-  capabilities. Outside the masked directories they can read and write
-  what that user can (the moved `.git` next to the checkout, files
-  elsewhere on disk). A separate OS user is not built. Run verify on a
-  machine or runner without credentials worth stealing. The Action keeps
-  the token out of `.git/config` and the checks' environment and asks for
-  `contents: read` only, but the runner's own files and processes are not
-  isolated further (see [action.md](action.md)).
+  capabilities. A separate OS user is not built. Run verify on a machine or
+  runner without credentials worth stealing: a check can read what that
+  user can read outside the masks. The Action keeps the token out of
+  `.git/config` and the checks' environment and asks for `contents: read`
+  only, but the runner's own files are not hidden further (see
+  [action.md](action.md)).
+- Untracked files a check leaves in the checkout stay there for later
+  criteria (only designated and Go test input paths, and `.git`, are
+  checked): criteria share one checkout.
 - `--task-ref` is read from the repository given. If the agent can move that
   ref locally, it is not protected: use the protected branch as just
   fetched from the remote, or `--task-hash`.
-- **Known gap:** code under test runs in the same process as the hook, so
-  it can forge a pass without the key, by reading the key from memory or
-  calling the hook's report function through the symbol table (Review's
-  atk_b1mem). The tripwire turns the usual ways of doing that into
-  `TAMPER_CAPABLE_CODE`, but it is a heuristic. Closing the gap needs the
-  tests to run in a process the code under test cannot inspect; it is not
-  built. Packages from the module cache (not vendored) are not hooked, so a
-  dependency's `init` may run before the hook; dependencies cannot change
-  without a `go.mod`/`go.sum` change, which fails. Non-Go checks have no
+- **Known gap: the go test harness is not a security boundary.** Code under
+  test runs in the same process as the hook. With `unsafe`,
+  `//go:linkname` or assembly it can read the key or call the hook's
+  report function (Review's atk_b1mem), or patch code or data in memory,
+  and forge a pass. The non-dumpable test process closes `/proc/self/mem`
+  (atk_tw5), and the tripwire turns the usual ways into
+  `TAMPER_CAPABLE_CODE`, but it catches known patterns only. Closing the
+  gap needs the tests to run in a process the code under test cannot
+  inspect; it is not built. Packages from the module cache (not vendored)
+  are not hooked, so a dependency's `init` may run before the hook. Which
+  dependencies are used cannot change without a `go.mod`/`go.sum` change,
+  which fails, and their sources come from a fresh download (checked
+  against `go.sum`) or a trusted cache a check cannot write; but go does
+  not re-verify a trusted cache's extracted files, so `--go-mod-cache`
+  must point at a cache no agent can write. Non-Go checks have no
   equivalent: a script check reports only its exit code.
 - A check can still be weakened through a file that is neither designated
   nor a Go test input, for example a helper a script sources. `sdf task

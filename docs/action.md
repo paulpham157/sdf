@@ -70,8 +70,9 @@ or long-lived runner these are host-wide changes that outlive the job:
 `configure-runner: true` makes them anyway, and the default leaves the host
 alone. `false` never changes anything.
 
-`sdf verify` runs every check in its own user, pid, mount and network
-namespaces and the action never passes `--allow-unisolated` or
+`sdf verify` runs every check in its own user, pid, mount, IPC, UTS and
+network namespaces, with every host directory read-only, and the action
+never passes `--allow-unisolated` or
 `--allow-network`, so on a runner where namespaces do not work the verdict
 is ERROR `ISOLATION_UNAVAILABLE`, never an unisolated PASS. Checks have no
 network: a task whose `go test` needs module downloads must vendor them.
@@ -129,8 +130,10 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   when the check exits, so a process that detaches (`setsid`, a double
   fork) does not outlive it, and it cannot reach the runner's other
   processes through sockets under `/tmp` or `/run`, the network, or docker.
-  While a check runs it can still, as the same user, write files outside
-  the masked directories, including some of the job's files. The verify step's exit code (the verdict, see above)
+  Every host directory is read-only inside a check (the toolchain, `PATH`,
+  the job's workspace and other files), so a check cannot change what a
+  later step runs; it can still read what the runner user can outside the
+  masked directories. The verify step's exit code (the verdict, see above)
   and the verdict hash it printed to the log are the record to trust, not
   the artifact. Running the checks as a separate unprivileged OS user
   would close the rest; it is not built.
