@@ -17,6 +17,7 @@ import (
 
 	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/decision"
+	"github.com/paulpham157/sdf/internal/demo"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -24,6 +25,7 @@ import (
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
 	"github.com/paulpham157/sdf/internal/ui"
+	"github.com/paulpham157/sdf/internal/version"
 )
 
 // Main runs sdf with args, which do not include the program name.
@@ -34,7 +36,7 @@ func Main(args []string) int {
 
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
+		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
 	switch args[0] {
@@ -50,13 +52,37 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdCheck(args[1:], stdout, stderr)
 	case "decision":
 		return cmdDecision(args[1:], stdout, stderr)
+	case "demo":
+		return cmdDemo(args[1:], stdout, stderr)
+	case "audit":
+		return cmdAudit(args[1:], stdout, stderr)
+	case "version", "--version", "-v":
+		return cmdVersion(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: sdf <serve|summary|prices|init|check|decision> [flags]")
+		fmt.Fprintln(stdout, usageLine)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
 		return 2
 	}
+}
+
+const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|version> [flags]"
+
+func cmdVersion(args []string, stdout, stderr io.Writer) int {
+	for _, arg := range args {
+		switch arg {
+		case "--help", "-h":
+			fmt.Fprintln(stdout, "usage: sdf version")
+			fmt.Fprintln(stdout, "Prints the version, commit, build date, Go version, and platform. sdf --version and sdf -v are the same.")
+			return 0
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	fmt.Fprint(stdout, version.Get().String())
+	return 0
 }
 
 func cmdServe(args []string, stdout, stderr io.Writer) int {
@@ -70,12 +96,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	repoPath := ""
 	github := false
 	budgetPath := ""
+	tokenFlag := ""
+	tokenFlagSet := false
+	tokenFileFlag := ""
+	tokenFileFlagSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
+			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -175,13 +206,43 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			budgetPath = v
 		case strings.HasPrefix(arg, "--budget="):
 			budgetPath = strings.TrimPrefix(arg, "--budget=")
+		case arg == "--otlp-token":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --otlp-token requires a value")
+				return 2
+			}
+			tokenFlag = v
+			tokenFlagSet = true
+		case strings.HasPrefix(arg, "--otlp-token="):
+			tokenFlag = strings.TrimPrefix(arg, "--otlp-token=")
+			tokenFlagSet = true
+		case arg == "--otlp-token-file":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --otlp-token-file requires a path")
+				return 2
+			}
+			tokenFileFlag = v
+			tokenFileFlagSet = true
+		case strings.HasPrefix(arg, "--otlp-token-file="):
+			tokenFileFlag = strings.TrimPrefix(arg, "--otlp-token-file=")
+			tokenFileFlagSet = true
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
+	token, code := resolveServeOTLPToken(tokenFlag, tokenFlagSet, tokenFileFlag, tokenFileFlagSet, os.Getenv, stderr)
+	if code != 0 {
+		return code
+	}
 	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+		if token == "" {
+			fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+		} else {
+			fmt.Fprintln(stderr, "warning: a shared bearer token is not a substitute for a trusted network; binding beyond localhost still exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+		}
 	}
 	if _, err := summary.LoadBudget(budgetPath); err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
@@ -204,6 +265,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		HTTPPort: port,
 		GRPCPort: grpcPort,
 		Store:    db,
+		Token:    token,
 	}
 	if err := srv.Start(); err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
@@ -590,7 +652,7 @@ func parseEndpoint(v string) (decision.Endpoint, error) {
 }
 
 func cmdCheck(args []string, stdout, stderr io.Writer) int {
-	dir := check.DefaultDir()
+	dir := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -611,7 +673,15 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	cases, err := check.Load(dir)
+	var (
+		cases []check.Case
+		err   error
+	)
+	if dir == "" {
+		cases, err = check.LoadDefault()
+	} else {
+		cases, err = check.Load(dir)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf check: %v\n", err)
 		return 1
@@ -689,7 +759,7 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|gemini] [--write] [--global] [--install]"
+const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok|gemini] [--write] [--global] [--install]"
 
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	host := "127.0.0.1"
@@ -771,7 +841,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			grpcPort = n
-		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "gemini" || arg == "gemini-cli":
+		case arg == "claude-code" || arg == "codex" || arg == "opencode" || arg == "pi" || arg == "qwen" || arg == "qwen-code" || arg == "grok" || arg == "gemini" || arg == "gemini-cli":
 			if agent != "" {
 				fmt.Fprintf(stderr, "sdf init: extra agent %s\n", arg)
 				return 2
@@ -889,4 +959,72 @@ func take(i *int, args []string) (string, bool) {
 	}
 	*i++
 	return args[*i], true
+}
+
+const demoUsage = "usage: sdf demo [--db PATH] [--json]"
+
+func cmdDemo(args []string, stdout, stderr io.Writer) int {
+	dbPath := ""
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, demoUsage)
+			fmt.Fprintln(stdout, "Sends one synthetic session (sdf.fixture=demo) through a local receiver on free ports, then prints its summary.")
+			fmt.Fprintln(stdout, "No agent, API key, or network is needed. Without --db the store is a temporary file that is removed afterwards.")
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf demo: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	keep := dbPath != ""
+	if !keep {
+		dir, err := os.MkdirTemp("", "sdf-demo-")
+		if err != nil {
+			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+			return 1
+		}
+		defer os.RemoveAll(dir)
+		dbPath = filepath.Join(dir, "sdf-demo.sqlite")
+	}
+	steps := stdout
+	if asJSON {
+		steps = stderr
+	}
+	fmt.Fprintln(steps, "sdf demo: synthetic Claude Code-shaped session, labeled sdf.fixture=demo. No agent, API key, or network.")
+	res, err := demo.Run(context.Background(), demo.Options{DBPath: dbPath, Log: steps})
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+		return 1
+	}
+	if asJSON {
+		if err := summary.WriteJSON(stdout, res.Report); err != nil {
+			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, "")
+	fmt.Fprint(stdout, summary.Format(res.Report))
+	fmt.Fprintln(stdout, "")
+	if keep {
+		fmt.Fprintf(stdout, "The demo session stays in %s. Read it again with: sdf summary --db %s --session %s\n", dbPath, dbPath, res.SessionID)
+	} else {
+		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
+	}
+	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi|grok to point a real agent at it.")
+	return 0
 }

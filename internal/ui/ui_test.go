@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -391,6 +392,145 @@ func TestPageRendersOverAndUnknownBudgets(t *testing.T) {
 	if budgetShown(unknownPage, "within", "", "") || budgetShown(unknownPage, "over", "", "") {
 		t.Fatalf("unknown budget rendered a comparison:\n%s", unknownPage)
 	}
+}
+
+func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
+	db := openDB(t)
+	xssName := "<script>alert(1)</script>"
+	xssMsg := "</li><img src=x onerror=alert(1)>"
+	parent := record.Record{
+		Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-error"),
+		Name: record.Str("SessionStep.attempt"), SpanID: record.Str("step"),
+		StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(2_000_000),
+		StatusCode: "ERROR", StatusMessage: record.Str("turn failed"),
+		Attributes: map[string]any{}, Resource: map[string]any{},
+	}
+	child := record.Record{
+		Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-error"),
+		Name: record.Str("Tool.execute"), SpanID: record.Str("tool"), ParentSpanID: record.Str("step"),
+		StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
+		StatusCode: "ERROR", StatusMessage: record.Str("write failed"),
+		Attributes: map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1"},
+		Resource:   map[string]any{},
+	}
+	injected := record.Record{
+		Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-error"),
+		Name: record.Str(xssName), SpanID: record.Str("xss"), ParentSpanID: record.Str("step"),
+		StartUnixNano: record.Int64(1_000_000), EndUnixNano: record.Int64(1_500_000),
+		StatusCode: "ERROR", StatusMessage: record.Str(xssMsg),
+		Attributes: map[string]any{"gen_ai.tool.call.id": "call_xss"},
+		Resource:   map[string]any{},
+	}
+	if _, err := db.Insert([]record.Record{parent, child, injected}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+
+	var summaryDoc map[string]any
+	if err := json.Unmarshal([]byte(apiSummary(t, srv)), &summaryDoc); err != nil {
+		t.Fatal(err)
+	}
+	sumSessions, _ := summaryDoc["sessions"].([]any)
+	if len(sumSessions) != 1 {
+		t.Fatalf("summary sessions %d", len(sumSessions))
+	}
+	sumRoot, _ := sumSessions[0].(map[string]any)["spans"].([]any)
+	if len(sumRoot) != 1 {
+		t.Fatalf("summary roots %+v", sumRoot)
+	}
+	sumNode, _ := sumRoot[0].(map[string]any)
+	if sumNode["name"] != "SessionStep.attempt" || sumNode["status_code"] != "ERROR" || sumNode["status_message"] != "turn failed" {
+		t.Fatalf("summary root %+v", sumNode)
+	}
+	sumKids, _ := sumNode["children"].([]any)
+	if len(sumKids) != 2 {
+		t.Fatalf("summary children %+v", sumKids)
+	}
+
+	snap := decodeSnapshot(t, apiSnapshot(t, srv))
+	if len(snap.Sessions) != 1 {
+		t.Fatalf("snapshot sessions %d", len(snap.Sessions))
+	}
+	spans := snap.Sessions[0].Summary.Spans
+	if len(spans) != 1 || spans[0].Name != "SessionStep.attempt" || spans[0].StatusCode != "ERROR" || spanText(spans[0].StatusMessage) != "turn failed" {
+		t.Fatalf("snapshot root %+v", spans)
+	}
+	if len(spans[0].Children) != 2 {
+		t.Fatalf("snapshot children %+v", spans[0].Children)
+	}
+	byName := map[string]summary.SpanNode{}
+	for _, node := range spans[0].Children {
+		byName[node.Name] = node
+	}
+	tool := byName["Tool.execute"]
+	if tool.StatusCode != "ERROR" || spanText(tool.StatusMessage) != "write failed" || spanText(tool.ToolName) != "write" {
+		t.Fatalf("tool child %+v", tool)
+	}
+	xss := byName[xssName]
+	if xss.StatusCode != "ERROR" || spanText(xss.StatusMessage) != xssMsg {
+		t.Fatalf("xss child %+v", xss)
+	}
+
+	script := readAsset(t, "app.js")
+	if strings.Contains(script, "innerHTML") || strings.Contains(script, "document.write") {
+		t.Fatal("span rendering must stay on text nodes")
+	}
+	if !strings.Contains(script, "function spanSection") || !strings.Contains(script, "status=ERROR") || !strings.Contains(script, "Show ") || !strings.Contains(script, "SPAN_SIBLING_LIMIT") {
+		t.Fatal("app.js should render the span tree, errors, and a show-more cap")
+	}
+
+	page := renderedPageAt(t, srv, "#/sessions/ses-error")
+	for _, want := range []string{
+		"Spans",
+		"SessionStep.attempt",
+		"Tool.execute",
+		"status=ERROR (turn failed)",
+		"status=ERROR (write failed)",
+		"This session has 3 spans with status=ERROR.",
+		"turn failed",
+		"write failed",
+		xssName,
+		xssMsg,
+		"call_id=call_1",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q on session page:\n%s", want, page)
+		}
+	}
+}
+
+func TestSessionPageCapsLongSpanTrees(t *testing.T) {
+	db := openDB(t)
+	var recs []record.Record
+	for i := 0; i < 45; i++ {
+		id := "span" + strconv.Itoa(i)
+		recs = append(recs, record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-wide"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str(id),
+			StartUnixNano: record.Int64(int64(i) * 1_000_000), EndUnixNano: record.Int64(int64(i+1) * 1_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": id},
+			Resource:   map[string]any{},
+		})
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderedPageAt(t, srv, "#/sessions/ses-wide")
+	if !strings.Contains(page, "Show 5 more spans") {
+		t.Fatalf("expected a show-more cap on a 45-span tree:\n%s", page)
+	}
+	if !strings.Contains(page, "call_id=span0") || !strings.Contains(page, "call_id=span44") {
+		t.Fatalf("capped tree dropped a span:\n%s", page)
+	}
+}
+
+func spanText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func TestReadOnlyAndLoopback(t *testing.T) {

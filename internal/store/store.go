@@ -139,6 +139,7 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
+	records = record.Redact(records)
 	received := time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -3,6 +3,7 @@ package summary
 import (
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,6 +97,18 @@ var (
 		"cache_write.input_tokens": true,
 		"cache_write_input_tokens": true,
 	}
+	// usageAliases folds gen_ai.usage.* labels that name the same quantity
+	// into one key. GenAI semconv v0.1.0 renamed
+	// gen_ai.usage.cache_creation.input_tokens to
+	// gen_ai.usage.cache_write.input_tokens and removed the old name;
+	// OpenCode still sends the old one. reasoning_tokens is the pre-v0.1.0
+	// spelling of reasoning.output_tokens. When a span carries more than one
+	// of them, the largest value is kept; they are never added.
+	usageAliases = map[string]string{
+		"cache_creation.input_tokens": "cache_write.input_tokens",
+		"cache_creation_input_tokens": "cache_write.input_tokens",
+		"reasoning_tokens":            "reasoning.output_tokens",
+	}
 	usageOrder = []string{
 		"input_tokens",
 		"output_tokens",
@@ -103,6 +116,7 @@ var (
 		"cache_read_input_tokens",
 		"cache_write.input_tokens",
 		"cache_write_input_tokens",
+		"reasoning.output_tokens",
 		"reasoning_tokens",
 	}
 	sessionCodexMetrics = []string{
@@ -165,6 +179,11 @@ type point struct {
 	order       int64
 	unit        *string
 	attributes  map[string]any
+	// start is the point's StartTimeUnixNano, 0 when it was not sent.
+	// resource is the frozen resource. Both only split cumulative series
+	// into the runs of one process; see cumulativeTotal.
+	start    int64
+	resource string
 }
 
 type sessionKey struct {
@@ -210,6 +229,9 @@ func ToolOf(rec record.Record) string {
 	}
 	if service == "codex" || strings.Contains(service, "codex") || strings.HasPrefix(strings.ToLower(origin), "codex") || strings.HasPrefix(name, "codex.") || strings.HasPrefix(body, "codex.") || strings.HasPrefix(event, "codex.") {
 		return "codex"
+	}
+	if isQwenRecord(service, name, event) {
+		return "qwen-code"
 	}
 	if service == "opencode" {
 		return "opencode"
@@ -417,6 +439,7 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 		return sessionKey{}, false
 	}
 	st := stamps(rec)
+	st = qwenStamps(tool, rec, st)
 	if len(st) == 0 || tool == "unknown" {
 		return sessionKey{}, false
 	}
@@ -504,7 +527,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Source: deref(tokensSource),
 	})
 	failures := metricFailures(records)
-	return SessionSummary{
+	summary := SessionSummary{
 		SessionID:               sessionID,
 		Tool:                    tool,
 		ServiceNames:            serviceNames(records),
@@ -532,6 +555,10 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		ToolCalls:               nonNilCalls(toolCalls(records, points)),
 		Repository:              repositoryFacts(records),
 	}
+	if tool == "qwen-code" {
+		summary = qwenSummary(summary, records, points, prices)
+	}
+	return summary
 }
 
 func spanTree(records []record.Record, allSpans bool) ([]SpanNode, int) {
@@ -624,6 +651,9 @@ func shownParent(rec record.Record, byID map[string]record.Record, shownIDs map[
 func interestingSpan(rec record.Record) bool {
 	name := deref(rec.Name)
 	if claudeSpans[name] || codexSpans[name] || strings.HasPrefix(name, "claude_code.") {
+		return true
+	}
+	if strings.HasPrefix(name, qwenPrefix) && ToolOf(rec) == "qwen-code" {
 		return true
 	}
 	if opencodeSpans[name] || piSpanHeads[spanHead(name)] {
@@ -837,7 +867,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(claude) > 0 {
-		return sumBy(claude, "type"), record.Str("metrics " + claudeTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+		return sumBy(claude, "type"), record.Str("metrics " + claudeTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var codex []point
 	for _, p := range points {
@@ -846,7 +876,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(codex) > 0 {
-		return sumBy(codex, "token_type"), record.Str("metrics " + codexTokenMetric), record.Str("sum of delta histogram points; a cumulative series keeps its latest point")
+		return sumBy(codex, "token_type"), record.Str("metrics " + codexTokenMetric), record.Str("sum of delta histogram points; a cumulative series adds up the latest point of each process run")
 	}
 	var claudeLogs []record.Record
 	for _, rec := range records {
@@ -889,7 +919,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(piMetrics) > 0 {
-		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var grok []point
 	for _, p := range points {
@@ -898,7 +928,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(grok) > 0 {
-		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
+		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
 	}
 	var grokLogs []record.Record
 	for _, rec := range records {
@@ -935,11 +965,17 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				continue
 			}
 			label := strings.TrimPrefix(key, "gen_ai.usage.")
+			if canonical, ok := usageAliases[label]; ok {
+				label = canonical
+			}
 			if len(only) > 0 && !onlySet[label] {
 				continue
 			}
 			amount := record.Number(value)
 			if amount == nil {
+				continue
+			}
+			if prev, ok := amounts[label]; ok && prev >= *amount {
 				continue
 			}
 			amounts[label] = *amount
@@ -987,7 +1023,7 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				values = append(values, v)
 			}
 		}
-		if cumulativePrefix && cumulativeUsage[label] {
+		if cumulativePrefix && (cumulativeUsage[label] || modalityInput(label)) {
 			totals.Set(label, maxFloat(values))
 		} else {
 			totals.Set(label, sum(values))
@@ -1000,6 +1036,13 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 		method = "sum of per-turn input_tokens and output_tokens; they are additive and are not added to gen_ai.client.token.usage"
 	}
 	return totals, record.Str(method), true
+}
+
+// modalityInput reports whether label is a per-modality input breakdown such
+// as text.input_tokens or text.cache_read.input_tokens. Like input_tokens,
+// it repeats the conversation prefix on every request, so it takes the max.
+func modalityInput(label string) bool {
+	return pricing.IsModalityUsage(label) && strings.HasSuffix(label, "input_tokens")
 }
 
 func sumSpanMS(records []record.Record, match func(string) bool) *float64 {
@@ -1561,6 +1604,10 @@ func pointsOf(records []record.Record) []point {
 		if attrs == nil {
 			attrs = map[string]any{}
 		}
+		start := int64(0)
+		if rec.StartUnixNano != nil {
+			start = *rec.StartUnixNano
+		}
 		points = append(points, point{
 			name:        deref(rec.Name),
 			kind:        kind,
@@ -1570,6 +1617,8 @@ func pointsOf(records []record.Record) []point {
 			order:       rec.ID,
 			unit:        rec.MetricUnit,
 			attributes:  attrs,
+			start:       start,
+			resource:    freeze(rec.Resource),
 		})
 	}
 	return points
@@ -1592,9 +1641,12 @@ func reduce(points []point) []point {
 		if group[0].kind == "gauge" || group[0].temporality == "cumulative" {
 			best := group[0]
 			for _, item := range group[1:] {
-				if item.time > best.time || (item.time == best.time && item.order > best.order) {
+				if later(item, best) {
 					best = item
 				}
+			}
+			if group[0].kind != "gauge" {
+				best.value = cumulativeTotal(group)
 			}
 			reduced = append(reduced, best)
 			continue
@@ -1618,6 +1670,105 @@ func reduce(points []point) []point {
 		reduced = append(reduced, first)
 	}
 	return reduced
+}
+
+func later(a, b point) bool {
+	return a.time > b.time || (a.time == b.time && a.order > b.order)
+}
+
+// cumulativeTotal is the session total of one cumulative series (same name,
+// kind, and attributes). A cumulative counter restarts at 0 when its process
+// restarts, for example after `gemini --resume` reuses the session.id. Each
+// run is one segment, and the total is the sum of every segment's last value:
+// 1000 in the first run and 500 after a resume is 1500, not 500.
+//
+// Points with a StartTimeUnixNano are keyed by start time only. The OTel SDK
+// keeps one start time for the life of a cumulative stream, so a new start
+// time is a new run, and two processes exporting at once with different start
+// times are each counted once. Within one start time the latest point (by
+// time, then storage order) is the run's value; a lower value is not a reset,
+// because a cumulative UpDownCounter may go down (5, 3, 4 is 4). The resource
+// is not part of the key, so a resource that gains an attribute mid-run (for
+// example process.pid) does not split the run.
+//
+// A point without a start time (start 0) joins the run with the latest start
+// time at or before its own time among the runs its own resource reported, if
+// there is one. A startless point from another resource is another process (a
+// resume whose exporter sends no start time, for example), so it never joins
+// a run it did not report. Otherwise it is grouped by resource, ordered by
+// time, and a value lower than the previous one starts a
+// new segment; that is the only way to see a reset from an exporter that
+// sends no start time. Points of one group with the same time are one point:
+// the one stored last wins.
+//
+// Known limits (docs/gaps.md): two concurrent processes with the same start
+// time (or no start time and the same resource) are read as one run or as
+// resets; a restart without a start time whose first value is not lower than
+// the last one is not seen, which undercounts.
+func cumulativeTotal(group []point) float64 {
+	var starts []int64
+	byStart := map[int64]point{}
+	// startsOf lists, per resource, the start times its points carry.
+	startsOf := map[string][]int64{}
+	for _, p := range group {
+		if p.start == 0 {
+			continue
+		}
+		best, ok := byStart[p.start]
+		if !ok {
+			starts = append(starts, p.start)
+		}
+		if !ok || later(p, best) {
+			byStart[p.start] = p
+		}
+		if !slices.Contains(startsOf[p.resource], p.start) {
+			startsOf[p.resource] = append(startsOf[p.resource], p.start)
+		}
+	}
+	for _, list := range startsOf {
+		slices.Sort(list)
+	}
+	var resources []string
+	loose := map[string][]point{}
+	for _, p := range group {
+		if p.start != 0 {
+			continue
+		}
+		own := startsOf[p.resource]
+		i := sort.Search(len(own), func(i int) bool { return own[i] > p.time }) - 1
+		if i >= 0 {
+			if best := byStart[own[i]]; later(p, best) {
+				p.start = own[i]
+				byStart[own[i]] = p
+			}
+			continue
+		}
+		if _, ok := loose[p.resource]; !ok {
+			resources = append(resources, p.resource)
+		}
+		loose[p.resource] = append(loose[p.resource], p)
+	}
+	total := 0.0
+	for _, start := range starts {
+		total += byStart[start].value
+	}
+	for _, resource := range resources {
+		run := append([]point(nil), loose[resource]...)
+		sort.SliceStable(run, func(i, j int) bool { return later(run[j], run[i]) })
+		var last point
+		for i, p := range run {
+			switch {
+			case i == 0:
+			case p.time == last.time:
+				// Same time: an update of the same point, not a new value.
+			case p.value < last.value:
+				total += last.value
+			}
+			last = p
+		}
+		total += last.value
+	}
+	return total
 }
 
 func sumBy(points []point, key string) OrderedFloats {

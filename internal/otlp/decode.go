@@ -44,9 +44,10 @@ func errf(msg string) error { return &Error{msg: msg} }
 
 var jsonUnmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
 
-// First match wins. Pi spans set session.id together with pi.session.id and
-// gen_ai.conversation.id. Pi logs set only pi.session.id. OpenCode runner
-// spans set session.id, the same key Claude Code uses.
+// First match wins among these canonical keys. Pi spans set session.id
+// together with pi.session.id and gen_ai.conversation.id. Pi logs set only
+// pi.session.id. OpenCode runner spans set session.id, the same key Claude
+// Code uses.
 var sessionKeys = []string{
 	"session.id",
 	"conversation.id",
@@ -54,8 +55,30 @@ var sessionKeys = []string{
 	"gen_ai.conversation.id",
 }
 
+// HTTPMedia reports the OTLP/HTTP media type. ok is false unless the type
+// is exactly application/json or application/x-protobuf. The comparison is
+// case-insensitive. Parameters such as charset are allowed and ignored.
+func HTTPMedia(contentType string) (media string, ok bool) {
+	media = mediaType(contentType)
+	switch media {
+	case "application/json", "application/x-protobuf":
+		return media, true
+	default:
+		return media, false
+	}
+}
+
+// sessionIDAlias is the camelCase key OpenCode v2.3.2 emits on session
+// error logs (for example "Failed to drain Session") instead of session.id.
+// Other JS/Effect exporters may do the same. It is consulted only when no
+// canonical key is present. If both are present and differ, the canonical
+// value is kept and the alias is ignored.
+const sessionIDAlias = "sessionID"
+
 // Decode parses an OTLP export body. contentType application/json selects
-// JSON; every other media type, including an empty one, is protobuf.
+// JSON. application/x-protobuf selects protobuf. Any other media type,
+// including an empty one, is rejected. Parameters such as charset are
+// allowed. The type match is case-insensitive.
 func Decode(signal string, body []byte, contentType string) ([]record.Record, error) {
 	if signal != "traces" && signal != "metrics" && signal != "logs" {
 		return nil, errf("unknown signal " + signal)
@@ -64,7 +87,10 @@ func Decode(signal string, body []byte, contentType string) ([]record.Record, er
 		return nil, errf("payload too large")
 	}
 	msg := newRequest(signal)
-	media := mediaType(contentType)
+	media, ok := HTTPMedia(contentType)
+	if !ok {
+		return nil, errf("unsupported media type")
+	}
 	var err error
 	if media == "application/json" {
 		if !utf8.Valid(body) {
@@ -110,12 +136,14 @@ func traces(msg *coltracepb.ExportTraceServiceRequest) []record.Record {
 	for _, rs := range msg.GetResourceSpans() {
 		resource := attributesOf(rs.GetResource().GetAttributes())
 		for _, ss := range rs.GetScopeSpans() {
+			scope := attributesOf(ss.GetScope().GetAttributes())
 			for _, span := range ss.GetSpans() {
 				attrs := attributesOf(span.GetAttributes())
 				code, message := spanStatus(span)
 				out = append(out, makeRecord(recordParts{
 					signal:        "traces",
 					resource:      resource,
+					scope:         scope,
 					attributes:    attrs,
 					name:          emptyAsNil(span.GetName()),
 					start:         nano(span.GetStartTimeUnixNano()),
@@ -137,18 +165,19 @@ func metrics(msg *colmetricspb.ExportMetricsServiceRequest) []record.Record {
 	for _, rm := range msg.GetResourceMetrics() {
 		resource := attributesOf(rm.GetResource().GetAttributes())
 		for _, sm := range rm.GetScopeMetrics() {
+			scope := attributesOf(sm.GetScope().GetAttributes())
 			for _, metric := range sm.GetMetrics() {
 				name := emptyAsNil(metric.GetName())
 				unit := emptyAsNil(metric.GetUnit())
 				switch data := metric.GetData().(type) {
 				case *metricspb.Metric_Gauge:
 					for _, point := range data.Gauge.GetDataPoints() {
-						out = append(out, metricRecord(resource, name, unit, "gauge", "unspecified", point.GetAttributes(), point.GetStartTimeUnixNano(), point.GetTimeUnixNano(), numberPoint(point)))
+						out = append(out, metricRecord(resource, scope, name, unit, "gauge", "unspecified", point.GetAttributes(), point.GetStartTimeUnixNano(), point.GetTimeUnixNano(), numberPoint(point)))
 					}
 				case *metricspb.Metric_Sum:
 					temp := temporality(data.Sum.GetAggregationTemporality())
 					for _, point := range data.Sum.GetDataPoints() {
-						out = append(out, metricRecord(resource, name, unit, "sum", temp, point.GetAttributes(), point.GetStartTimeUnixNano(), point.GetTimeUnixNano(), numberPoint(point)))
+						out = append(out, metricRecord(resource, scope, name, unit, "sum", temp, point.GetAttributes(), point.GetStartTimeUnixNano(), point.GetTimeUnixNano(), numberPoint(point)))
 					}
 				case *metricspb.Metric_Histogram:
 					temp := temporality(data.Histogram.GetAggregationTemporality())
@@ -158,7 +187,7 @@ func metrics(msg *colmetricspb.ExportMetricsServiceRequest) []record.Record {
 							v := *point.Sum
 							value = &v
 						}
-						out = append(out, metricRecord(resource, name, unit, "histogram", temp, point.GetAttributes(), point.GetStartTimeUnixNano(), point.GetTimeUnixNano(), value))
+						out = append(out, metricRecord(resource, scope, name, unit, "histogram", temp, point.GetAttributes(), point.GetStartTimeUnixNano(), point.GetTimeUnixNano(), value))
 					}
 				}
 			}
@@ -167,10 +196,11 @@ func metrics(msg *colmetricspb.ExportMetricsServiceRequest) []record.Record {
 	return out
 }
 
-func metricRecord(resource map[string]any, name, unit *string, kind, temp string, attrs []*commonpb.KeyValue, start, when uint64, value *float64) record.Record {
+func metricRecord(resource, scope map[string]any, name, unit *string, kind, temp string, attrs []*commonpb.KeyValue, start, when uint64, value *float64) record.Record {
 	return makeRecord(recordParts{
 		signal:      "metrics",
 		resource:    resource,
+		scope:       scope,
 		attributes:  attributesOf(attrs),
 		name:        name,
 		start:       nano(start),
@@ -187,12 +217,14 @@ func logs(msg *collogspb.ExportLogsServiceRequest) []record.Record {
 	for _, rl := range msg.GetResourceLogs() {
 		resource := attributesOf(rl.GetResource().GetAttributes())
 		for _, sl := range rl.GetScopeLogs() {
+			scope := attributesOf(sl.GetScope().GetAttributes())
 			for _, rec := range sl.GetLogRecords() {
 				attrs := attributesOf(rec.GetAttributes())
 				body := bodyText(rec.GetBody())
 				out = append(out, makeRecord(recordParts{
 					signal:     "logs",
 					resource:   resource,
+					scope:      scope,
 					attributes: attrs,
 					name:       eventName(body, attrs, resource, rec.GetEventName()),
 					when:       nano(rec.GetTimeUnixNano()),
@@ -209,6 +241,7 @@ func logs(msg *collogspb.ExportLogsServiceRequest) []record.Record {
 type recordParts struct {
 	signal        string
 	resource      map[string]any
+	scope         map[string]any
 	attributes    map[string]any
 	name          *string
 	start         *int64
@@ -236,7 +269,7 @@ func makeRecord(p recordParts) record.Record {
 	return record.Record{
 		Signal:            p.signal,
 		ServiceName:       record.OTLPText(p.resource["service.name"]),
-		SessionID:         sessionID(p.attributes, p.resource),
+		SessionID:         sessionID(p.attributes, p.scope, p.resource),
 		Name:              p.name,
 		StartUnixNano:     p.start,
 		EndUnixNano:       p.end,
@@ -375,12 +408,19 @@ func prefixAgentEvent(service string, raw *string) *string {
 	return nil
 }
 
-func sessionID(attributes, resource map[string]any) *string {
-	for _, source := range []map[string]any{attributes, resource} {
+func sessionID(sources ...map[string]any) *string {
+	if id := firstSessionKey(sessionKeys, sources...); id != nil {
+		return id
+	}
+	return firstSessionKey([]string{sessionIDAlias}, sources...)
+}
+
+func firstSessionKey(keys []string, sources ...map[string]any) *string {
+	for _, source := range sources {
 		if source == nil {
 			continue
 		}
-		for _, key := range sessionKeys {
+		for _, key := range keys {
 			if text := record.OTLPText(source[key]); text != nil {
 				return text
 			}

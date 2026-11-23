@@ -25,7 +25,9 @@ for local Desktop Code-tab sessions.
 
 OTLP protocol is `grpc`, `http/protobuf`, or `http/json`. Claude Code has no
 default protocol, so set one. This receiver accepts all three. HTTP JSON and
-HTTP protobuf use port 4318. gRPC uses port 4317. `Content-Encoding: gzip`
+HTTP protobuf use port 4318 and send `Content-Type: application/json` or
+`application/x-protobuf`. Any other media type is HTTP 415. A request that
+carries an `Origin` header is HTTP 403. gRPC uses port 4317. `Content-Encoding: gzip`
 is inflated, including on a chunked body. The decompressed payload has the
 same 8,000,000 byte cap as the raw body. Any other content encoding is
 rejected with HTTP 415. gRPC `grpc-encoding: gzip` is accepted.
@@ -241,7 +243,10 @@ reads the id from the session manager instead and posts the open and the close.
 A `session_shutdown` fired because the session was replaced, on `reload`,
 `new`, `resume`, or `fork`, is not a close and is not posted.
 
-The same switches can be set in `.pi/agent/settings.json` under `otel`
+The same switches can be set under `otel` in the project file
+`.pi/settings.json` or the global file `~/.pi/agent/settings.json` (pi-otel
+reads the project file first, environment variables override both; this is
+what `sdf init pi --write` and `--write --global` update)
 (`protocol`, `signals.traces`, `signals.metrics`, `signals.logs`,
 `spanNaming`, `serviceName`). Leave content capture off; the summary does not
 need prompts or tool arguments.
@@ -265,6 +270,36 @@ and reasoning attributes stay out of that total. `execute_tool` carries
 `gen_ai.tool.name`, `gen_ai.tool.call.id`, and `pi.tool.is_error` (false means
 the call succeeded).
 
+## Optional receiver token
+
+When `sdf serve` is started with `--otlp-token` or `SDF_OTLP_TOKEN`, exporters
+must send the same value as `Authorization: Bearer <token>`.
+
+For agents that honor the standard OpenTelemetry environment variables
+(Claude Code, OpenCode v2, Pi with pi-otel, and Grok CLI):
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
+```
+
+The space after `Bearer` is written as `%20`, as the OpenTelemetry
+specification requires for `OTEL_EXPORTER_OTLP_HEADERS`.
+
+Codex does not read `OTEL_*`. Put a `headers` table on each `otlp-http`
+exporter instead. Those values are literal; `${SDF_OTLP_TOKEN}` is not
+expanded:
+
+```toml
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary", headers = { Authorization = "Bearer TOKEN" } } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary", headers = { Authorization = "Bearer TOKEN" } } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary", headers = { Authorization = "Bearer TOKEN" } } }
+```
+
+`sdf init --write` does not add the header or the Codex `headers` field.
+Session hooks and `sdf init --git-hooks` post without `Authorization`, so
+they fail if the receiver requires a token until you add the header there
+too. See [docs/receiver.md](receiver.md#optional-token-authentication).
+
 ## Point Claude Code at it
 
 Set these in the shell that launches `claude`, or in `~/.claude/settings.json`.
@@ -286,6 +321,9 @@ export OTEL_METRIC_EXPORT_INTERVAL=10000
 export OTEL_LOGS_EXPORT_INTERVAL=5000
 export OTEL_TRACES_EXPORT_INTERVAL=5000
 ```
+
+If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal
@@ -319,7 +357,9 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics"
 
 Each endpoint is the full signal URL. Codex does not append `/v1/logs` for
 you. `protocol = "json"` also works. Header values in this file are literal;
-`${ENV_VAR}` is not expanded.
+`${ENV_VAR}` is not expanded. If the receiver has a token set, add
+`headers = { Authorization = "Bearer TOKEN" }` to each `otlp-http` table,
+with the token written out (see [Optional receiver token](#optional-receiver-token)).
 
 Quit Codex so the exporter flushes. Then:
 
@@ -332,6 +372,90 @@ sqlite3 sdf-telemetry.sqlite \
 `conversation.id`, `pi.session.id`, and `gen_ai.conversation.id`, taken from
 the datapoint attributes or the resource. Codex uses `conversation.id`.
 Claude Code and OpenCode use `session.id`. Pi logs set only `pi.session.id`.
+
+## Qwen Code
+
+> Mapping below is from QwenLM/qwen-code v0.28.4 (e8424c88, released
+> 2026-11-22): [docs/developers/development/telemetry.md](https://github.com/QwenLM/qwen-code/blob/v0.28.4/docs/developers/development/telemetry.md)
+> and `packages/core/src/telemetry`. It was not checked against a live
+> session. `tests/samples/qwen_*.json` are built from those sources with
+> `logPrompts: false`.
+
+Qwen Code forked Gemini CLI's telemetry and renamed it: events, metrics,
+and spans use `qwen-code.*` and `service.name` is `qwen-code`. It is off
+until `telemetry.enabled` is true. The default protocol is gRPC on port
+4317; `otlpProtocol: "http"` sends OTLP/JSON and appends `/v1/traces`,
+`/v1/logs`, and `/v1/metrics` to `otlpEndpoint`. `telemetry.outfile` turns
+OTLP export off.
+
+```json
+{
+  "telemetry": {
+    "enabled": true,
+    "otlpEndpoint": "http://127.0.0.1:4318",
+    "otlpProtocol": "http",
+    "logPrompts": false
+  }
+}
+```
+
+`logPrompts` defaults to **true**: prompts, API request text (which includes
+files Qwen read and its memory extractor's reads of `~/.qwen/memories/`),
+and response text go into the logs. `sdf init qwen` sets it to `false`,
+also when the file already says `true`. `includeSensitiveSpanAttributes`
+(default false) copies messages and tool data into spans; `sdf init qwen`
+sets it back to false when it finds it on.
+
+No setting turns off tool arguments: every `qwen-code.tool_call` log carries
+the full JSON arguments of the call in `function_args` (the shell command,
+the whole content passed to `write_file` or `edit`), and a failed call
+carries the tool's error text in `error` and `error.message`
+(`logToolCall`, `packages/core/src/telemetry/loggers.ts`, v0.28.4). Its
+tool spans repeat the error text. sdf discards these before storing
+anything: it keeps the tool name, call id, duration, success, and error
+type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
+
+- Session: logs and spans carry `session.id` (LLM and interaction spans also
+  `gen_ai.conversation.id`). The auto-instrumented HTTP `POST` child spans
+  have no session id and are attributed through the trace id. Metrics carry
+  no `session.id` unless `telemetry.metrics.includeSessionId` is true, so
+  they reach a session only by time window.
+- Duration is the sum of `qwen-code.interaction` spans (one trace root per
+  prompt, including tool approval waits). Without spans it is the
+  min-to-max timestamp of Qwen logs (`logs qwen-code window`).
+- Tokens are the sum of `input_token_count`, `output_token_count`,
+  `cached_content_token_count`, and `thoughts_token_count` on
+  `qwen-code.api_response` logs (`total_token_count` is not added), else
+  `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
+  spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
+  `thought`, `cache`). That counter belongs to the process, not the session:
+  sdf places its points by their own time, adds up process runs, and
+  subtracts what an earlier session in the same process had counted (see
+  [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
+  providers (the default) output includes thoughts, which Qwen estimates
+  from text when the provider does not report them; with Gemini-native
+  responses it does not. The totals include subagents and the background
+  memory extractor (its spans are separate single-span traces with
+  `llm_request.context=standalone`); Qwen does not split them out.
+- Tool calls come from `qwen-code.tool` spans: wait from the
+  `qwen-code.tool.blocked_on_user` child, execution from
+  `qwen-code.tool.execution`, joined to the `qwen-code.tool_call` log by call
+  id for `success`. Without spans the logs are used, then
+  `qwen-code.tool.call.count`.
+- Cost: Qwen Code exports none. Computed cost is unknown until
+  `internal/pricing` has a rule for the Qwen token sources.
+- Differences from Gemini CLI: `qwen-code.*` instead of `gemini_cli.*`; no
+  `tool_token_count` and no `tool` token type; metrics drop `session.id` by
+  default; span names follow Claude Code's shape (`interaction`,
+  `llm_request`, `tool`, `blocked_on_user`, `execution`, `hook`) with
+  `gen_ai.operation.name`; `QWEN_TELEMETRY_*` instead of
+  `GEMINI_TELEMETRY_*`, and `OTEL_EXPORTER_OTLP_ENDPOINT` also sets the
+  endpoint.
+- A published run of an earlier Qwen Code release (spencerclark.dev,
+  2026-10-10; it predates v0.28.4 and was not repeated here) had every
+  `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
+  detail" even with no hooks configured. The summary shows them as they
+  arrive.
 
 ## OpenRouter
 
@@ -389,10 +513,22 @@ log was emitted for this model in the 2026-11-10 capture, so cost stays unset.
 ```bash
 npm install -g @opencode/cli
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-opencode run --model "openrouter/recursive/flint-v1.0:free" "..."
+opencode models                      # the ids your configured providers offer
+opencode run --model "<provider/model>" "..."
 ```
 
-`OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs.
+`OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs when
+no token is set. If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+
+Pick the model id from `opencode models`. On `@opencode/cli` 2.3.2 (checked
+2026-11-23) the OpenRouter id this page used to show,
+`openrouter/recursive/flint-v1.0:free`, is reported as `Model unavailable`
+unless OpenRouter is configured as an OpenCode provider. The free ids 2.3.2
+lists without that are OpenCode-hosted, such as `opencode/flint-40b-free`,
+and they need an OpenCode account and its free quota. The export is the same
+either way; a run that fails at the provider still sends its process traces
+and logs.
 
 ## Point Pi at it
 
@@ -406,6 +542,9 @@ export PI_OTEL_LOGS=1
 export PI_OTEL_SPAN_NAMING=genai
 pi --print --provider openrouter --model "recursive/flint-v1.0:free" "..."
 ```
+
+If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 HTTP JSON still works if you would rather not use gRPC. Point the endpoint at
 port 4318 and set the protocol:
@@ -434,6 +573,9 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 grok
 ```
+
+If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
@@ -469,6 +611,16 @@ stored unnamed records still summarize. The live model was `grok-4.7`.
 The official protocol list includes `grpc`. A cheap gRPC check is recorded
 in the 2026-11-23 notes when it was run; http/protobuf is the documented
 default and was used for the live capture.
+
+`sdf init grok` prints the variables above and the matching `[telemetry]`
+table. `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
+(default `~/.grok/config.toml`) when the file has no `[telemetry]` table, and
+installs `hooks/sdf-session.json` beside it. An existing `[telemetry]` table
+is left unchanged. A project `.grok/config.toml` cannot set `otel_*`.
+Environment variables win over the file. The hook posts session open and
+close to `POST /v1/sessions`. Grok sets `GROK_SESSION_ID` on that process;
+the event JSON field is `sessionId`. User hooks under `~/.grok/hooks/` are
+trusted. A project `.grok/hooks/` file is not, until that folder is trusted.
 
 ## Gemini CLI
 

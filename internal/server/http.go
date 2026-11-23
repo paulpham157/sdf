@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/httphost"
 	"github.com/paulpham157/sdf/internal/otlp"
 )
 
@@ -69,6 +70,16 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 	}
 	closeAfter := connectionClose(headers)
 	path = strings.SplitN(path, "?", 2)[0]
+	// Host and Origin are checked before the bearer token. A matching token
+	// does not make a browser post or a rebound Host acceptable.
+	if status, msg, refuse := s.refusal(headers); refuse {
+		return s.refuse(reader, writer, method, path, headers, status, msg, closeAfter)
+	}
+	if s.requiresAuth(method, path) && !s.authorizedBearer(headerGet(headers, "Authorization")) {
+		writeResponse(writer, 401, "text/plain", []byte("unauthorized"), true)
+		s.logRequest(method, path, 401)
+		return true, nil
+	}
 	if expect100(headers) {
 		fmt.Fprintf(writer, "HTTP/1.1 100 Continue\r\n\r\n")
 		if err := writer.Flush(); err != nil {
@@ -99,11 +110,17 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		if err != nil {
 			return s.writeBodyError(writer, method, path, err, closeAfter)
 		}
+		contentType := headerGet(headers, "Content-Type")
+		media, ok := otlp.HTTPMedia(contentType)
+		if !ok {
+			writeResponse(writer, 415, "text/plain", []byte("unsupported media type"), closeAfter)
+			s.logRequest(method, path, 415)
+			return closeAfter, nil
+		}
 		body, err = decodeContentEncoding(body, headers)
 		if err != nil {
 			return s.writeBodyError(writer, method, path, err, closeAfter)
 		}
-		contentType := headerGet(headers, "Content-Type")
 		records, err := otlp.Decode(signal, body, contentType)
 		if err != nil {
 			writeResponse(writer, 400, "text/plain", []byte("could not parse OTLP payload"), closeAfter)
@@ -115,7 +132,7 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 			s.logRequest(method, path, 500)
 			return true, nil
 		}
-		if isJSON(contentType) {
+		if media == "application/json" {
 			writeResponse(writer, 200, "application/json", []byte("{}"), closeAfter)
 		} else {
 			writeResponse(writer, 200, "application/x-protobuf", []byte{}, closeAfter)
@@ -126,6 +143,39 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		writeResponse(writer, 501, "text/plain", []byte("unsupported method"), true)
 		return true, nil
 	}
+}
+
+// refusal is a browser or rebinding request. Origin is refused on every
+// bind. Host is refused only while the listener is loopback, because a
+// wider bind is an address the exporter was given and this process does
+// not know which name that client will send.
+func (s *Server) refusal(headers []header) (int, string, bool) {
+	if httphost.Loopback(s.httpHost) && !httphost.Allowed(headerGet(headers, "Host"), s.httpPort, s.httpHost) {
+		return 403, "forbidden", true
+	}
+	if headerPresent(headers, "Origin") {
+		return 403, "forbidden", true
+	}
+	return 0, "", false
+}
+
+// refuse answers without decoding or storing. A POST body is discarded so a
+// keep-alive client can send the next request. Expect: 100-continue is closed
+// instead: the body may still be unsent, and reading it would wait.
+func (s *Server) refuse(reader *bufio.Reader, writer *bufio.Writer, method, path string, headers []header, status int, msg string, closeAfter bool) (bool, error) {
+	if method == "POST" || method == "PUT" || method == "PATCH" {
+		if expect100(headers) {
+			writeResponse(writer, status, "text/plain", []byte(msg), true)
+			s.logRequest(method, path, status)
+			return true, nil
+		}
+		if _, err := readBody(reader, headers); err != nil {
+			return s.writeBodyError(writer, method, path, err, closeAfter)
+		}
+	}
+	writeResponse(writer, status, "text/plain", []byte(msg), closeAfter)
+	s.logRequest(method, path, status)
+	return closeAfter, nil
 }
 
 func (s *Server) writeBodyError(writer *bufio.Writer, method, path string, err error, closeAfter bool) (bool, error) {
@@ -255,6 +305,15 @@ func headerGet(headers []header, name string) string {
 	return ""
 }
 
+func headerPresent(headers []header, name string) bool {
+	for _, h := range headers {
+		if strings.EqualFold(h.name, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func connectionClose(headers []header) bool {
 	return strings.EqualFold(strings.TrimSpace(headerGet(headers, "Connection")), "close")
 }
@@ -376,6 +435,9 @@ func writeResponse(w *bufio.Writer, status int, contentType string, body []byte,
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", status, reason(status))
 	fmt.Fprintf(w, "Content-Type: %s\r\n", contentType)
 	fmt.Fprintf(w, "Content-Length: %d\r\n", len(body))
+	if status == 401 {
+		fmt.Fprintf(w, "WWW-Authenticate: Bearer\r\n")
+	}
 	if closeConn {
 		fmt.Fprintf(w, "Connection: close\r\n")
 	}
@@ -387,8 +449,12 @@ func reason(status int) string {
 	switch status {
 	case 200:
 		return "OK"
+	case 401:
+		return "Unauthorized"
 	case 400:
 		return "Bad Request"
+	case 403:
+		return "Forbidden"
 	case 404:
 		return "Not Found"
 	case 413:
@@ -402,9 +468,4 @@ func reason(status int) string {
 	default:
 		return "Error"
 	}
-}
-
-func isJSON(contentType string) bool {
-	media, _, _ := strings.Cut(contentType, ";")
-	return strings.ToLower(strings.TrimSpace(media)) == "application/json"
 }

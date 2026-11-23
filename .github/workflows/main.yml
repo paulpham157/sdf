@@ -1,5 +1,6 @@
 # Post-merge CI. Runs after a push to main. It does not repeat the pull
-# request matrix. Nothing here deploys or publishes a release.
+# request matrix. Nothing here deploys or publishes a release; that is
+# release.yml, which runs only when a v* tag is pushed and creates a draft.
 name: Main CI
 
 on:
@@ -76,8 +77,9 @@ jobs:
           go-version: stable
           cache: true
       - name: Snapshot build
-        # release.disable in .goreleaser.yaml blocks publishing. --snapshot
-        # does not create a GitHub release. Archives land in dist/.
+        # --snapshot never creates a GitHub release or uploads anything.
+        # Archives land in dist/. Real (draft) releases come only from
+        # release.yml, on a pushed v* tag.
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
