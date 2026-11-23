@@ -748,6 +748,7 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 		ExecutionSource: execSource,
 		StatusCode:      statusCodeOf(rec),
 		StatusMessage:   rec.StatusMessage,
+		ErrorType:       errorTypeOf(rec),
 		Children:        children,
 	}
 }
@@ -2083,6 +2084,19 @@ func isDirectToolSpan(name string) bool {
 
 func isToolCallSpan(name string) bool {
 	return isDirectToolSpan(name) || name == "unified_exec.exec_command"
+}
+
+// errorTypeOf is the first error class attribute of a span that is a short
+// token (record.IsErrorToken), the rule the default content drop keeps it
+// by. A free-text class (a row kept with --store-content, or written by an
+// older sdf) is not surfaced as error_type.
+func errorTypeOf(rec record.Record) *string {
+	for _, k := range []string{"error.type", "error_type", "exception.type"} {
+		if s, ok := rec.Attributes[k].(string); ok && record.IsErrorToken(s) {
+			return &s
+		}
+	}
+	return nil
 }
 
 func statusCodeOf(rec record.Record) string {

@@ -57,11 +57,24 @@ sqlite3 sdf-telemetry.sqlite \
 
 ### WAL mode and backups
 
-The database is opened in SQLite WAL mode with a 5-second busy timeout, so
-`sdf summary` and other readers can run while the receiver writes. A
-read-only rollback-journal database keeps its journal mode and stays
-readable. A WAL database needs its `-shm` file or a writable directory to
-be read; in a read-only directory without one, open fails. In WAL mode
+`sdf serve` opens the database in SQLite WAL mode with a 5-second busy
+timeout, so `sdf summary` and other readers can run while the receiver
+writes. `sdf summary` only reads: it opens the file read-only
+(`mode=ro`, same busy timeout) and never creates it, applies the schema,
+adds columns, or changes its journal mode. A missing `--db` file in an
+existing directory reports an empty store and leaves no file behind; a
+missing directory is an error. A rollback-journal database keeps its
+journal mode and gets no sidecar files. Reading a WAL database needs its
+`-shm` file; when the directory is writable SQLite creates `-shm` (and an
+empty `-wal`) beside it, and a reader leaves them there. In a read-only
+directory without `-shm`, `sdf summary` falls back to SQLite's
+`immutable=1` read when there is no `-wal` file, since every committed
+write is then in the main file. `immutable=1` takes no locks and assumes
+nothing writes the file, so it is only a fallback after the normal
+read-only open fails, never the first choice. If a `-wal` file is there,
+it can hold writes the main file lacks, and `sdf summary` reports that
+instead of reading stale data: make the directory writable, or open the
+file once with `sdf serve` to checkpoint it. In WAL mode
 SQLite keeps two
 sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
 `sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
@@ -74,6 +87,82 @@ sqlite3 sdf-telemetry.sqlite ".backup sdf-telemetry.backup.sqlite"
 
 WAL needs shared memory between processes on one host, so keep the
 database on a local disk, not a network filesystem (NFS, SMB).
+
+## Content storage
+
+sdf drops content before anything is stored, for every agent, whatever the
+agent's own settings say (`logPrompts`, `includeSensitiveSpanAttributes`,
+`OTEL_LOG_*`, `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`,
+`telemetry.traces`). Those settings decide what an agent sends; this
+decides what sdf keeps. What is dropped (`record.Redact`):
+
+- Attributes whose key names content, in record attributes, in nested maps
+  and lists at any depth, and in the resource. Keys are compared
+  case-insensitively: `prompt`, `request_text`, `response_text`,
+  `tool_input`, `tool_output`, `tool_parameters`, `full_command`,
+  `function_args`, `arguments`, `result`, `response`, `completion`,
+  `messages`, `message`, `content`, `text`, `input`, `output`, `stdout`,
+  `stderr`, `command`, `query`, `user_prompt`, `gen_ai.input.messages_ref`,
+  `gen_ai.output.messages_ref`, `gen_ai.system_instructions_ref`, and any
+  key equal to or under (`.`) one of `gen_ai.prompt`, `gen_ai.completion`,
+  `gen_ai.choice`, `gen_ai.input.messages`, `gen_ai.output.messages`,
+  `gen_ai.system_instructions`, `gen_ai.tool.call.arguments`,
+  `gen_ai.tool.call.result`, `gen_ai.tool.definitions`, `llm.input_messages`,
+  `llm.output_messages`, `llm.prompts`, `input.value`, `output.value`,
+  `tool.input`, `tool.output`, and `ai` (the Vercel AI SDK spans opencode
+  sends with `experimental.openTelemetry`: `ai.prompt`, `ai.response.text`,
+  `ai.toolCall.args`, and the rest). So the indexed `gen_ai.prompt.0.content`
+  goes too. Only text is dropped: a number or bool under one of these keys
+  (a token count named `input`, `ai.usage.promptTokens`) is kept.
+- Error text on logs and spans, at any depth: `error`, `error.message`,
+  `error_message`, `errorMessage`, `error.stack`, `exception.message`,
+  `exception.stacktrace`, `exception.stack`, `stack`, `stacktrace`.
+- An error class, code, or finish reason (`error.type`, `error_type`,
+  `exception.type`, `status_code`, `http.response.status_code`,
+  `http.status_code`, `rpc.grpc.status_code`, `finish_reason`,
+  `finish_reasons`, `gen_ai.response.finish_reasons`) is kept only while it
+  is a short token (`^[A-Za-z0-9_.:/-]{1,64}$`, or a list of them); free
+  text there is dropped.
+- A log body other than an event name (`claude_code.api_request` stays;
+  Gemini's "API response from ..." sentence goes). A log with no event name
+  gets its body as its name, so that name goes with the body.
+- A span status message. On an ERROR span sdf writes its own from the kept
+  fields only: "hook error" on hook spans, "tool error" on tool spans (by
+  the words of the span name in any case, such as `execute_tool bash`,
+  `Tool.execute`, `tool_call`, `Qwen-Code.Hook`, or a tool name attribute),
+  "error" elsewhere, followed by the error class and HTTP or gRPC code when
+  they are kept: `tool error: FileNotFoundError`,
+  `error: HTTP 429 Too Many Requests` (the reason phrase is Go's, not the
+  sent text). On an OK or UNSET span the message is cleared. The status
+  code stays, and the UI and `sdf summary` show `error_type` next to it.
+
+What stays: names (span names included), ids, models, token counts, cost,
+durations, success, token-shaped error classes and status codes, and
+everything else the summary reads, so every summary, cost, and tool list
+is the same as before. The size of each dropped text value is recorded as
+`<key>_bytes` (`error_bytes`, `body_bytes`) and the dropped keys are listed
+in `sdf.redacted`. A `git_commit_id` inside Claude Code's `tool_parameters`
+is copied to `sdf.git_commit_id` first, so commit links still work. Span
+events and metric exemplars are never stored. Content under a key sdf does
+not know is stored; see [gaps](gaps.md).
+
+To keep the text, opt in when starting the receiver:
+
+```bash
+sdf serve --store-content                      # every agent
+sdf serve --store-content=claude-code,qwen     # only these agents
+SDF_STORE_CONTENT=1 sdf serve                  # same as --store-content
+SDF_STORE_CONTENT=qwen sdf serve               # a list works here too
+```
+
+Agent names are `claude-code` (`claude`), `codex`, `opencode`, `pi`,
+`gemini-cli` (`gemini`), `qwen-code` (`qwen`), `grok-cli` (`grok`), and
+`copilot-cli` (`copilot`); an unknown name is an error. The flag wins over
+the variable, and `0`, `false`, or `off` turns it off. `sdf serve` prints a
+line saying whose content it stores, and those rows carry
+`sdf.content=kept`. The text then sits in the local SQLite file.
+
+Rows written by an older sdf are not changed when the database is opened.
 
 ## Optional token authentication
 
@@ -200,7 +289,11 @@ been recorded, and recording one does not change the summary. All three are
 read-only. There is no route that writes or deletes.
 
 A known `0` is a published price of zero, such as a `:free` model whose
-token buckets are all priced. It is not a stand-in for a missing price. If
+token buckets are all priced. It is not a stand-in for a missing price,
+with one exception (issue #243). On an OpenRouter row whose id ends in
+`:free` and whose prompt and completion are both `0`, cache-read tokens are
+priced at `0` when the row has no `input_cache_read` price. The cost `note`
+says so. See [summary.md](summary.md). If
 any session in a total has an unknown computed cost, the total is unknown
 too. The summary does not split one session's tokens across several models,
 so the page does not either: several models stay unknown, with the session
@@ -300,9 +393,8 @@ the `telemetry` object of `$QWEN_HOME/settings.json` or
 `~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
 so sdf turns it off even when the file says `true`, and warns. It does the
 same for `includeSensitiveSpanAttributes`. A workspace or system file can
-still turn them back on (see below), so the receiver drops the GenAI
-message and tool content and hook error text before storing anything,
-whatever the settings ([docs/gaps.md](gaps.md)). Key order, indentation, a UTF-8
+still turn them back on (see below); the receiver drops that content before
+storing anything, whatever the settings ([content storage](#content-storage)). Key order, indentation, a UTF-8
 BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP
@@ -424,7 +516,9 @@ works from fish, which has no POSIX subshell):
 merges in place: line order and unrelated lines are kept, the endpoint and
 protocol lines are replaced (with a warning when the old value differed),
 and a capture-content line you already set is kept, with a warning when it
-puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). The write goes to a temp file in the same directory,
+puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). That setting decides
+what Copilot CLI sends; sdf still drops the content before storing it unless
+`sdf serve --store-content` is on ([content storage](#content-storage)). The write goes to a temp file in the same directory,
 is fsynced, keeps the file mode (and the owner and group when the process
 may set them), and is renamed into place. Because the file is replaced,
 other hard links keep the old contents (a note is printed) and extended

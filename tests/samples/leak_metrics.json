@@ -1,0 +1,77 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "qwen-code"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "sample"
+      }
+     }
+    ]
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "qwen-code"
+     },
+     "metrics": [
+      {
+       "name": "qwen-code.token.usage",
+       "sum": {
+        "aggregationTemporality": 2,
+        "isMonotonic": true,
+        "dataPoints": [
+         {
+          "asInt": "1",
+          "timeUnixNano": "1800002000000000000",
+          "startTimeUnixNano": "1800001999000000000",
+          "attributes": [
+           {
+            "key": "gen_ai.input.messages",
+            "value": {
+             "stringValue": "SDF-LEAK-344-metric_gen_ai_input_messages"
+            }
+           },
+           {
+            "key": "prompt",
+            "value": {
+             "stringValue": "SDF-LEAK-345-metric_prompt"
+            }
+           },
+           {
+            "key": "Gen_AI.Input.Messages",
+            "value": {
+             "stringValue": "SDF-LEAK-346-metric_Gen_AI_Input_Messages"
+            }
+           },
+           {
+            "key": "gen_ai.tool.call.arguments",
+            "value": {
+             "stringValue": "SDF-LEAK-347-metric_gen_ai_tool_call_arguments"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "input"
+            }
+           }
+          ]
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

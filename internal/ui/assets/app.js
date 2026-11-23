@@ -617,6 +617,7 @@
     if (node && node.status_code === "ERROR") {
       let status = "status=ERROR";
       if (node.status_message) status += " (" + node.status_message + ")";
+      if (node.error_type && String(node.status_message || "").indexOf(node.error_type) < 0) status += " error_type=" + node.error_type;
       kids.push(document.createTextNode(" "));
       kids.push(h("span", { class: "span-status" }, [status]));
     }

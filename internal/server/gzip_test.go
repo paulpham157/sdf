@@ -15,11 +15,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/paulpham157/sdf/internal/otlp"
+	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/summary"
 )
 
 func TestGzipJSONAndProtobuf(t *testing.T) {
 	base, db := start(t)
+	// The status message is error text, dropped unless content is kept.
+	db.KeepContent(func(record.Record) bool { return true })
 	trace := []byte(`{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"opencode"}},{"key":"sdf.fixture","value":{"stringValue":"sample"}}]},"scopeSpans":[{"spans":[{"name":"Tool.execute","traceId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","spanId":"bbbbbbbbbbbbbbbb","startTimeUnixNano":"1000000","endTimeUnixNano":"2000000","status":{"code":"STATUS_CODE_ERROR","message":"write failed"},"attributes":[{"key":"session.id","value":{"stringValue":"gzip-session"}},{"key":"gen_ai.tool.name","value":{"stringValue":"write"}},{"key":"gen_ai.tool.call.id","value":{"stringValue":"call_gz"}}]}]}]}]}`)
 	resp := postEncoded(t, base+"/v1/traces", "application/json", gzipBytes(t, trace), "gzip")
 	if resp.status != 200 || resp.body != "{}" {
@@ -118,6 +121,7 @@ func TestUnsupportedAndInvalidContentEncoding(t *testing.T) {
 
 func TestGRPCGzipAndSpanStatus(t *testing.T) {
 	_, db, addr := startBoth(t)
+	db.KeepContent(func(record.Record) bool { return true })
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
