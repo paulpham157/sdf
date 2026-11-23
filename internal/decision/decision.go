@@ -712,11 +712,7 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 			add(conflicts, seenC, e.From.Ref, e.To.Ref)
 		case countsAs(e, stored, RelRefines):
 			add(refinedBy, seenR, e.To.Ref, e.From.Ref)
-		case (e.Relation == RelValidates || e.Relation == RelContradicts) &&
-			e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To:
-			if e.From.Kind == KindDecision && !active(e.From.Ref) {
-				continue
-			}
+		case countsAsEvidence(e, stored, active):
 			challenged[e.To.Ref] = e.Relation == RelContradicts
 		}
 	}
@@ -785,6 +781,41 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 		d.RefinedBy = refinedBy[d.ID]
 		d.Challenged = isActive && challenged[d.ID]
 	}
+}
+
+// countsAsEvidence is the one rule, shared by resolveRelations and
+// LatestEvidence, for whether a stored validates or contradicts edge counts
+// toward Challenged: it points to a stored decision from another endpoint,
+// and a decision source is active. A session or commit source always counts.
+func countsAsEvidence(e Edge, stored map[string]bool, active func(string) bool) bool {
+	return (e.Relation == RelValidates || e.Relation == RelContradicts) &&
+		e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To &&
+		(e.From.Kind != KindDecision || active(e.From.Ref))
+}
+
+// LatestEvidence returns the last validates or contradicts edge to the
+// decision id, in edge order, that counts toward Challenged, and false when
+// none does. g must come from Load, so EffectiveStatus is resolved. A
+// record's Challenged is true exactly when it is active and this edge is
+// contradicts.
+func LatestEvidence(g Graph, id string) (Edge, bool) {
+	stored := make(map[string]bool, len(g.Decisions))
+	isActive := make(map[string]bool, len(g.Decisions))
+	for _, d := range g.Decisions {
+		if !stored[d.ID] {
+			stored[d.ID] = true
+			isActive[d.ID] = d.EffectiveStatus == EffectiveActive
+		}
+	}
+	active := func(ref string) bool { return isActive[ref] }
+	var last Edge
+	found := false
+	for _, e := range g.Edges {
+		if e.To.Kind == KindDecision && e.To.Ref == id && countsAsEvidence(e, stored, active) {
+			last, found = e, true
+		}
+	}
+	return last, found
 }
 
 // WriteJSON writes the graph the way the summary JSON is written.

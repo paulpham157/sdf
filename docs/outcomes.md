@@ -471,7 +471,11 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   with its glyph and label.
 - **Facts and explored.** `facts` counts endings reached and total, locked
   decisions, active conflict pairs, and challenged decisions;
-  `needs_attention` lists them. `explored` counts choice points only:
+  `needs_attention` lists them. They are the read-time `blocked`,
+  `conflicted`, and `challenged` fields above, so the same rules hold: a
+  blocker whose `supersedes` chain only reaches a cycle is open, a conflict
+  pair needs both sides `active`, and only evidence from an active decision
+  (or any session or commit) counts; a challenged item names that source. `explored` counts choice points only:
   decided ÷ (decided + not taken + hypotheses + locked), rounded half up.
   Superseded and retracted decisions count as decided; refinements and commits
   do not count.

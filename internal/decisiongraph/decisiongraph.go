@@ -889,23 +889,16 @@ func attentionRank(kind string) int {
 	return 2
 }
 
-// challenger names the latest contradicts endpoint, as Challenged uses it.
+// challenger names the source of the latest evidence that counts toward
+// Challenged, using the decision package's rule (decision.LatestEvidence),
+// so a validates or contradicts from a retracted or superseded decision is
+// skipped here too.
 func (b *builder) challenger(id string) string {
-	last := ""
-	for _, e := range b.g.Edges {
-		if e.To.Kind == decision.KindDecision && e.To.Ref == id {
-			switch e.Relation {
-			case decision.RelContradicts:
-				last = e.From.Kind + " " + short(e.From.Ref, 12)
-			case decision.RelValidates:
-				last = ""
-			}
-		}
-	}
-	if last == "" {
+	e, ok := decision.LatestEvidence(b.g, id)
+	if !ok || e.Relation != decision.RelContradicts {
 		return ""
 	}
-	return " (" + last + ")"
+	return " (" + e.From.Kind + " " + short(e.From.Ref, 12) + ")"
 }
 
 func (b *builder) links(id string) []Link {
