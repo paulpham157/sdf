@@ -31,12 +31,26 @@ func cleanGitEnv() []string {
 	return out
 }
 
-// checkEnvNames is what a check inherits. Everything else is dropped.
-// PATH is not inherited: it is set from Options.Path.
+// checkEnvNames is what a check inherits. Everything else is dropped:
+// HOME, XDG_*, GOFLAGS, GOENV, GOPATH and the Go caches are set by
+// checkEnv instead, so nothing the agent wrote under the real home (a
+// `go env -w GOFLAGS=-exec=...`, a poisoned build cache, a git or shell
+// config) reaches a check. PATH is set from Options.Path.
 var checkEnvNames = []string{
-	"CI", "GOCACHE", "GOFLAGS", "GOMODCACHE", "GONOSUMDB", "GOPATH", "GOPRIVATE",
-	"GOPROXY", "GOTOOLCHAIN", "HOME", "LANG", "LC_ALL", "LOGNAME",
-	"SYSTEMROOT", "TEMP", "TMP", "TMPDIR", "TZ", "USER",
+	"CI", "GONOPROXY", "GONOSUMDB", "GOPRIVATE", "GOPROXY", "GOSUMDB",
+	"LANG", "LC_ALL", "LOGNAME", "SYSTEMROOT", "TZ", "USER",
+}
+
+// checkDirs are the directories one criterion's check gets as its home,
+// temp and Go state: all new, under root (outside the checkout), and
+// removed when the criterion ends, so nothing a check writes there (a
+// patched module, a poisoned build cache entry, a shell or git config)
+// reaches another criterion. Trusted caches the caller passed in Options
+// are mounted at gocache/gomodcache as overlays (isolated) or used
+// directly (unisolated).
+type checkDirs struct {
+	root, home, gopath, gocache, gomodcache, tmp, gotmp string
+	overlays                                            []overlayMount
 }
 
 // absolutePath drops empty and relative entries from a PATH value.
@@ -82,7 +96,7 @@ func lookPath(name, checkout, pathValue string) (string, error) {
 // checkEnv returns the environment for a check, its sorted variable names,
 // and the sha256 of "name=value\n" for each, in name order. Values are not
 // stored in evidence; the digest shows whether two runs had the same ones.
-func checkEnv(pathValue string) ([]string, []string, string) {
+func checkEnv(pathValue string, d checkDirs) ([]string, []string, string) {
 	allowed := map[string]bool{}
 	for _, n := range checkEnvNames {
 		allowed[n] = true
@@ -95,8 +109,22 @@ func checkEnv(pathValue string) ([]string, []string, string) {
 			names = append(names, name)
 		}
 	}
-	env = append(env, "SDF_VERIFY=1", "PATH="+pathValue)
-	names = append(names, "SDF_VERIFY", "PATH")
+	set := [][2]string{
+		{"SDF_VERIFY", "1"}, {"PATH", pathValue},
+		{"HOME", d.home},
+		{"XDG_CONFIG_HOME", filepath.Join(d.home, ".config")},
+		{"XDG_CACHE_HOME", filepath.Join(d.home, ".cache")},
+		{"XDG_DATA_HOME", filepath.Join(d.home, ".local", "share")},
+		{"XDG_STATE_HOME", filepath.Join(d.home, ".local", "state")},
+		{"GOENV", "off"}, {"GOFLAGS", ""}, {"GOTOOLCHAIN", "local"},
+		{"GOPATH", d.gopath}, {"GOCACHE", d.gocache}, {"GOMODCACHE", d.gomodcache},
+		// A new temp directory: /tmp is covered in the namespace.
+		{"TMPDIR", d.tmp}, {"TEMP", d.tmp}, {"TMP", d.tmp},
+	}
+	for _, kv := range set {
+		env = append(env, kv[0]+"="+kv[1])
+		names = append(names, kv[0])
+	}
 	sort.Strings(env)
 	sort.Strings(names)
 	h := sha256.New()

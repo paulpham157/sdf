@@ -3,8 +3,11 @@ package brief_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/decision/brief"
@@ -199,6 +202,129 @@ func TestFormatTextQuotesATab(t *testing.T) {
 	}}})
 	if !strings.Contains(text, `"keep\tit"`) || strings.Contains(text, "keep\tit") {
 		t.Fatalf("%q", text)
+	}
+}
+
+func TestClassifyNewestLockedRuleSurvivesTheCaps(t *testing.T) {
+	textRender := func(r brief.Result) []byte { return []byte(brief.FormatText(r)) }
+
+	// Repro A: four long user rules, then the ban. The ban is newest, so it
+	// is kept, and each long statement is cut to the per-item budget.
+	var long decision.Graph
+	for i := 1; i <= 4; i++ {
+		long.Decisions = append(long.Decisions, rec(fmt.Sprintf("rule%d", i), decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, strings.Repeat("x", 480)))
+	}
+	long.Decisions = append(long.Decisions, rec("no-push", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Never push without explicit OK"))
+	ranked := brief.Classify(long)
+	if ranked[0].ID != "no-push" {
+		t.Fatalf("newest locked rule first, got %v", ids(ranked))
+	}
+	for _, item := range ranked[1:] {
+		if len(item.Statement) > 200 || !strings.HasSuffix(item.Statement, "…") {
+			t.Fatalf("statement not cut: %d %q", len(item.Statement), item.Statement)
+		}
+	}
+	text := brief.FormatText(brief.Trim(ranked, 15, 2048, textRender))
+	if !strings.Contains(text, "\tno-push\t") {
+		t.Fatalf("no-push missing:\n%s", text)
+	}
+
+	// Repro B: twenty user rules, then the ban. The item cap keeps the ban
+	// and drops the six oldest.
+	var many decision.Graph
+	for i := 0; i < 20; i++ {
+		many.Decisions = append(many.Decisions, rec(fmt.Sprintf("u%05d", i), decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "a rule"))
+	}
+	many.Decisions = append(many.Decisions, rec("no-push", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Never push without explicit OK"))
+	ranked = brief.Classify(many)
+	got := brief.Trim(ranked, 15, 2048, textRender)
+	text = brief.FormatText(got)
+	if got.Omitted != 6 || !strings.HasPrefix(text, "constraint\tno-push\t") || !strings.HasSuffix(text, "6 more: run sdf decision list\n") {
+		t.Fatalf("omitted %d\n%s", got.Omitted, text)
+	}
+	if strings.Contains(text, "u00000") {
+		t.Fatalf("oldest rule kept:\n%s", text)
+	}
+}
+
+func TestLimitStatementCutsOnARune(t *testing.T) {
+	// 'à' is two bytes. 101 of them is 202 bytes, past the 200-byte budget.
+	statement := strings.Repeat("à", 101)
+	g := decision.Graph{Decisions: []decision.Record{
+		rec("ban", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, statement),
+	}}
+	got := brief.Classify(g)
+	if len(got) != 1 {
+		t.Fatal(got)
+	}
+	s := got[0].Statement
+	if !utf8.ValidString(s) || len(s) > 200 || !strings.HasSuffix(s, "…") || strings.Contains(s, "\u00c3") && !strings.Contains(s, "à") {
+		t.Fatalf("cut %d %q", len(s), s)
+	}
+}
+
+func TestFormatTextKeepsVietnameseAndQuotesALeadingQuote(t *testing.T) {
+	text := brief.FormatText(brief.Result{Items: []brief.Item{{
+		ID: "khong-day", Kind: brief.KindConstraint, Statement: "Không đẩy khi chưa được đồng ý", Status: "decision", DecidedBy: "user", Locked: true,
+	}}})
+	if !strings.Contains(text, "Không đẩy khi chưa được đồng ý") || strings.Contains(text, `\u`) {
+		t.Fatalf("%q", text)
+	}
+	quoted := brief.FormatText(brief.Result{Items: []brief.Item{{
+		ID: "q", Kind: brief.KindConstraint, Statement: `"hello"`, Status: "decision", DecidedBy: "user", Locked: true,
+	}}})
+	if !strings.Contains(quoted, `"\"hello\""`) {
+		t.Fatalf("%q", quoted)
+	}
+}
+
+func TestTrimSkipsAnItemThatDoesNotFit(t *testing.T) {
+	items := []brief.Item{
+		{ID: "huge", Kind: brief.KindConstraint, Statement: strings.Repeat("H", 400), Status: "decision", DecidedBy: "agent"},
+		{ID: "small", Kind: brief.KindBlocked, Statement: "ok", Status: "decision", DecidedBy: "agent"},
+	}
+	render := func(r brief.Result) []byte { return []byte(brief.FormatText(r)) }
+	// Room for the footer and the short line, not the long one.
+	small := brief.FormatText(brief.Result{Items: items[1:2], Omitted: 1})
+	got := brief.Trim(items, 15, len(small), render)
+	text := brief.FormatText(got)
+	if got.Omitted != 1 || !strings.Contains(text, "\tsmall\t") || strings.Contains(text, "huge") {
+		t.Fatalf("%+v %q", got, text)
+	}
+}
+
+func TestTrimTenThousandDecisions(t *testing.T) {
+	items := make([]brief.Item, 10000)
+	for i := range items {
+		items[i] = brief.Item{
+			ID: fmt.Sprintf("id-%d", i), Kind: brief.KindConstraint,
+			Statement: strings.Repeat("s", 80), Status: "decision", DecidedBy: "user", Locked: true,
+		}
+	}
+	render := func(r brief.Result) []byte { return brief.JSONBytes(r) }
+	start := time.Now()
+	got := brief.Trim(items, len(items), 1<<30, render)
+	elapsed := time.Since(start)
+	if elapsed > 100*time.Millisecond {
+		t.Fatalf("trim took %s", elapsed)
+	}
+	if got.Omitted != 0 || len(got.Items) != len(items) {
+		t.Fatalf("omitted %d kept %d", got.Omitted, len(got.Items))
+	}
+	t.Logf("trim of 10000 decisions: %s", elapsed)
+}
+
+func TestJSONItemCostMatchesTheDocument(t *testing.T) {
+	items := []brief.Item{
+		{ID: "dont-push", Kind: brief.KindConstraint, Statement: "Do not push.", Status: "decision", DecidedBy: "user", Locked: true},
+		{ID: "ship-it", Kind: brief.KindBlocked, Statement: "Push now.", Status: "decision", DecidedBy: "agent"},
+	}
+	doc := brief.JSONBytes(brief.Result{Items: items, Omitted: 3})
+	// The rendered document must fit in the single-pass estimate.
+	render := func(r brief.Result) []byte { return brief.JSONBytes(r) }
+	got := brief.Trim(items, 15, len(doc), render)
+	if got.Omitted != 0 || len(got.Items) != 2 {
+		t.Fatalf("estimate too high, dropped items: %+v\n%s", got, doc)
 	}
 }
 

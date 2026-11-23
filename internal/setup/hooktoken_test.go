@@ -41,7 +41,8 @@ func hookEnv(extra ...string) []string {
 	for _, item := range os.Environ() {
 		key, _, _ := strings.Cut(item, "=")
 		switch key {
-		case "SDF_OTLP_TOKEN", "SDF_OTLP_TOKEN_FILE", "GROK_HOOK_EVENT", "GROK_SESSION_ID":
+		case "SDF_OTLP_TOKEN", "SDF_OTLP_TOKEN_FILE", "GROK_HOOK_EVENT", "GROK_SESSION_ID",
+			"CLAUDE_CODE_SESSION_ID", "QWEN_CODE_SESSION_ID":
 			continue
 		}
 		out = append(out, item)

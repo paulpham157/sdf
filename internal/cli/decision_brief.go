@@ -28,8 +28,11 @@ const (
 )
 
 // cmdDecisionBrief prints the ranked brief. It opens the store read-only.
-// A missing database, a database that cannot be read, or any other store
-// error prints nothing and exits 0. A usage error still exits 2.
+// Output is written when any decision matched, even when the caps leave no
+// item lines. A path that does not exist prints nothing and exits 0. A path
+// that exists but cannot be read (not a regular file, or the open or the
+// query fails) prints the unavailable line and exits 0. A stdout write
+// error exits 0 with nothing on stderr. A usage error still exits 2.
 func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
 	maxItems := defaultBriefItems
@@ -42,7 +45,7 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, decisionBriefUsage)
 			fmt.Fprintln(stdout, "Prints active constraints (locked user decisions first), then blocked decisions, then conflicting decisions.")
 			fmt.Fprintf(stdout, "Defaults: --max-items %d, --max-bytes %d, --format text. Retracted and superseded decisions are omitted.\n", defaultBriefItems, defaultBriefBytes)
-			fmt.Fprintln(stdout, "When items are cut, the text ends with \"N more: run sdf decision list\". An empty brief, a missing database, or a store error prints nothing and exits 0.")
+			fmt.Fprintln(stdout, "Output is printed when any decision matched. When items are cut, the text ends with \"N more: run sdf decision list\". A missing database prints nothing and exits 0. When the path exists but cannot be read, the text is \"sdf decision brief unavailable: run sdf decision list\".")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -101,46 +104,67 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 
 	// Same default as the other sdf decision commands: a path relative to the
 	// process working directory, no environment variable. Stat before open
-	// so a missing file is not created. OpenReadOnlyBusy is mode=ro either way.
+	// so a missing file is not created and a FIFO, directory, or device is
+	// never opened.
+	asJSON := format == "json"
 	info, err := os.Stat(dbPath)
-	if err != nil || info.IsDir() {
-		return 0
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0
+		}
+		return writeBrief(stdout, unavailableBrief(asJSON))
+	}
+	if !info.Mode().IsRegular() {
+		return writeBrief(stdout, unavailableBrief(asJSON))
 	}
 	db, err := store.OpenReadOnlyBusy(dbPath, int(briefBusyTimeout/time.Millisecond))
 	if err != nil {
-		return 0
+		return writeBrief(stdout, unavailableBrief(asJSON))
 	}
 	graph, err := loadBrief(db)
 	_ = db.Close()
 	if err != nil {
-		return 0
+		return writeBrief(stdout, unavailableBrief(asJSON))
 	}
 
 	ranked := brief.Classify(graph)
 	if len(ranked) == 0 {
 		return 0
 	}
-	asJSON := format == "json"
 	render := func(r brief.Result) []byte {
 		if asJSON {
 			return brief.JSONBytes(r)
 		}
 		return []byte(brief.FormatText(r))
 	}
-	out := render(brief.Trim(ranked, maxItems, maxBytes, render))
-	if len(out) == 0 {
+	return writeBrief(stdout, render(brief.Trim(ranked, maxItems, maxBytes, render)))
+}
+
+const (
+	briefUnavailableText = "sdf decision brief unavailable: run sdf decision list\n"
+	briefUnavailableJSON = "{\"unavailable\":true}\n"
+)
+
+func unavailableBrief(asJSON bool) []byte {
+	if asJSON {
+		return []byte(briefUnavailableJSON)
+	}
+	return []byte(briefUnavailableText)
+}
+
+// writeBrief prints b. A write error is silent and still exits 0. An empty
+// b prints nothing.
+func writeBrief(stdout io.Writer, b []byte) int {
+	if len(b) == 0 {
 		return 0
 	}
-	if _, err := stdout.Write(out); err != nil {
-		fmt.Fprintf(stderr, "sdf decision brief: %v\n", err)
-		return 1
-	}
+	_, _ = stdout.Write(b)
 	return 0
 }
 
 // loadBrief reads the graph under a short deadline. The deadline covers the
 // queries themselves; briefBusyTimeout covers a lock wait. Either expiring
-// is a store error, and the command then prints nothing.
+// is a read error, and the command then prints the unavailable line.
 func loadBrief(db *store.Store) (decision.Graph, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), briefLoadTimeout)
 	defer cancel()

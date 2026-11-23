@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -81,6 +82,20 @@ func TestDecisionBriefJSONAndCaps(t *testing.T) {
 	}
 }
 
+func TestDecisionBriefMaxItemsZeroStillReportsAMatch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	seedBrief(t, dbPath)
+
+	text := run(t, "decision", "brief", "--db", dbPath, "--max-items", "0")
+	if text.code != 0 || text.stderr != "" || text.stdout != "4 more: run sdf decision list\n" {
+		t.Fatalf("%d %q %q", text.code, text.stdout, text.stderr)
+	}
+	js := run(t, "decision", "brief", "--db", dbPath, "--max-items=0", "--format", "json")
+	if js.code != 0 || js.stderr != "" || js.stdout != "{\n  \"items\": [],\n  \"omitted\": 4\n}\n" {
+		t.Fatalf("%d %q %q", js.code, js.stdout, js.stderr)
+	}
+}
+
 func TestDecisionBriefMissingDBIsSilent(t *testing.T) {
 	dir := t.TempDir()
 	cases := [][]string{
@@ -98,11 +113,40 @@ func TestDecisionBriefMissingDBIsSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := run(t, "decision", "brief", "--db", bad, "--format", "json")
-	if out.code != 0 || out.stdout != "" || out.stderr != "" {
+	if out.code != 0 || out.stderr != "" || out.stdout != "{\"unavailable\":true}\n" {
 		t.Fatalf("corrupt: %d %q %q", out.code, out.stdout, out.stderr)
+	}
+	text := run(t, "decision", "brief", "--db", bad)
+	if text.code != 0 || text.stderr != "" || text.stdout != "sdf decision brief unavailable: run sdf decision list\n" {
+		t.Fatalf("corrupt text: %d %q %q", text.code, text.stdout, text.stderr)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "missing.sqlite")); !os.IsNotExist(err) {
 		t.Fatal("brief created a missing database")
+	}
+}
+
+func TestDecisionBriefNonRegularFileIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	asDir := run(t, "decision", "brief", "--db", dir)
+	if asDir.code != 0 || asDir.stderr != "" || asDir.stdout != "sdf decision brief unavailable: run sdf decision list\n" {
+		t.Fatalf("dir: %d %q %q", asDir.code, asDir.stdout, asDir.stderr)
+	}
+
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan result, 1)
+	go func() {
+		done <- run(t, "decision", "brief", "--db", fifo, "--format", "json")
+	}()
+	select {
+	case out := <-done:
+		if out.code != 0 || out.stderr != "" || out.stdout != "{\"unavailable\":true}\n" {
+			t.Fatalf("fifo: %d %q %q", out.code, out.stdout, out.stderr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fifo brief did not return")
 	}
 }
 
@@ -127,7 +171,7 @@ func TestDecisionBriefEmptyStoreJSON(t *testing.T) {
 
 func TestDecisionBriefUsage(t *testing.T) {
 	help := run(t, "decision", "brief", "--help")
-	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]") {
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]") || !strings.Contains(help.stdout, "when any decision matched") {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	bad := run(t, "decision", "brief", "--format", "yaml")
