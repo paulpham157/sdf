@@ -179,7 +179,7 @@ func claude(req Request) (Result, error) {
 	fmt.Fprintf(&b, "A repository .claude/settings.json cannot turn these exporters on.\n")
 	fmt.Fprintf(&b, "Docs: https://code.claude.com/docs/en/monitoring-usage\n\n")
 	for _, key := range claudeOrder {
-		fmt.Fprintf(&b, "export %s=%s\n", key, env[key])
+		fmt.Fprintf(&b, "export %s\n", quoteEndpointLine(key+"="+env[key]))
 	}
 	merge := func(root map[string]any) (bool, error) {
 		envChanged, err := mergeStringMap(root, "env", env)
@@ -376,7 +376,7 @@ func pi(req Request) (Result, error) {
 		fmt.Fprintf(&b, "--write updates %s. Pass --global to update %s instead.\n", path, global)
 	}
 	fmt.Fprintf(&b, "https://github.com/NikiforovAll/pi-otel\n\n")
-	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_ENDPOINT=%s\n", shQuote(req.Endpoint.base()))
 	fmt.Fprintf(&b, "export OTEL_EXPORTER_OTLP_PROTOCOL=http/json\n")
 	fmt.Fprintf(&b, "export PI_OTEL_METRICS=1\n")
 	fmt.Fprintf(&b, "export PI_OTEL_LOGS=1\n")
@@ -432,7 +432,7 @@ func grok(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Checked against grok 1.0.92 on 2026-11-23. The schema is grok_code.schema.version v1 (alpha).\n")
 	fmt.Fprintf(&b, "https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md\n\n")
 	for _, line := range grokEnv(req.Endpoint) {
-		fmt.Fprintf(&b, "export %s\n", line)
+		fmt.Fprintf(&b, "export %s\n", quoteEndpointLine(line))
 	}
 	b.WriteString("\nIf sdf serve has a token, also export this. A literal space after Bearer always works:\n")
 	b.WriteString(`export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"` + "\n")
@@ -480,6 +480,19 @@ func hookTokenNoteFor(ep Endpoint) string {
 // responses, or tool bodies on Grok's external stream. All are off by default
 // (24-monitoring-usage.md, "Environment variables").
 var grokContentGates = []string{"OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_CONTENT"}
+
+// quoteEndpointLine shQuotes the value of a KEY=VALUE line whose key names
+// an OTLP endpoint, the one value built from --host and --port. checkEndpoint
+// already keeps the host inert; quoting the printed line as well matches the
+// files sdf writes (opencode.env, copilot.env) for a line meant to be pasted
+// into a shell. Constant values (1, otlp, http/json) are printed as they are.
+func quoteEndpointLine(line string) string {
+	key, value, ok := strings.Cut(line, "=")
+	if !ok || !strings.HasSuffix(key, "_ENDPOINT") {
+		return line
+	}
+	return key + "=" + shQuote(value)
+}
 
 func grokEnv(ep Endpoint) []string {
 	return []string{
@@ -586,7 +599,7 @@ func gemini(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Docs: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md\n\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_ENABLED=true\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_TARGET=local\n")
-	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
+	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", shQuote(req.Endpoint.base()))
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_LOG_PROMPTS=false\n\n")
 	want := geminiTelemetry(req.Endpoint)

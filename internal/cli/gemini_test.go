@@ -13,7 +13,7 @@ func TestInitGeminiPrintsAndWritesSettings(t *testing.T) {
 	t.Setenv("HOME", home)
 	path := filepath.Join(home, ".gemini", "settings.json")
 	printed := run(t, "init", "gemini")
-	if printed.code != 0 || !strings.Contains(printed.stdout, "GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318") || !strings.Contains(printed.stdout, "not written") {
+	if printed.code != 0 || !strings.Contains(printed.stdout, "GEMINI_TELEMETRY_OTLP_ENDPOINT='http://127.0.0.1:4318'") || !strings.Contains(printed.stdout, "not written") {
 		t.Fatalf("%d %s %s", printed.code, printed.stdout, printed.stderr)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
