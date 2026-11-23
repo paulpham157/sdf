@@ -271,7 +271,7 @@ When `sdf serve` is started with `--otlp-token` or `SDF_OTLP_TOKEN`, exporters
 must send the same value as `Authorization: Bearer <token>`.
 
 For agents that honor the standard OpenTelemetry environment variables
-(Claude Code, OpenCode v2, Pi with pi-otel, and Grok CLI):
+(Claude Code, OpenCode v2, and Pi with pi-otel):
 
 ```bash
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
@@ -279,6 +279,16 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
 
 The space after `Bearer` is written as `%20`, as the OpenTelemetry
 specification requires for `OTEL_EXPORTER_OTLP_HEADERS`.
+
+Grok CLI reads the same variable but does not percent-decode it:
+`parse_header_list` in grok-build
+`xai-grok-telemetry/src/external/config.rs` (`2bdd1d6`) splits on `,` and
+`=` and trims, so `%20` would reach the receiver as is and get a 401. Keep a
+literal space, as Grok's own guide does:
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+```
 
 Codex does not read `OTEL_*`. Put a `headers` table on each `otlp-http`
 exporter instead. Those values are literal; `${SDF_OTLP_TOKEN}` is not
@@ -318,7 +328,27 @@ export OTEL_TRACES_EXPORT_INTERVAL=5000
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"` with a
+literal space; Grok does not percent-decode `%20` (see
+[Optional receiver token](#optional-receiver-token)). Grok has no
+config-file key for headers.
+
+`sdf init grok` prints those lines. `sdf init grok --write` puts the same
+settings in the `[telemetry]` table of `$GROK_HOME/config.toml` (default
+`~/.grok/config.toml`) as `otel_enabled`, `otel_metrics_exporter`,
+`otel_logs_exporter`, `otel_endpoint`, and `otel_protocol`, the names in the
+guide's "Config file" section and in `TelemetryConfig`
+(`xai-grok-telemetry/src/config.rs`). Grok reads the environment over the
+file. It also writes a session hook, `$GROK_HOME/hooks/sdf-session.json`,
+that posts the session's open and close; the merge rules and the reasons
+for the command's shape are in
+[docs/receiver.md](receiver.md#one-step-setup). With
+`sdf init --git-hooks`, a commit Grok makes carries an `SDF-Session`
+trailer and links to the session, because Grok puts `GROK_SESSION_ID` in
+its shell tool's environment
+([docs/receiver.md](receiver.md#git-hooks)). These three were written from
+grok-build `2bdd1d6` (read 2026-11-23) and were not run against a live
+`grok`.
 
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal

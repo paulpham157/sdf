@@ -140,6 +140,7 @@ sdf init claude-code
 sdf init claude-code --write
 sdf init codex --write
 sdf init qwen --write
+sdf init grok --write
 sdf init opencode --write
 sdf init pi --write
 sdf init pi --write --global
@@ -201,6 +202,31 @@ points at this receiver over HTTP, and warns when `logPrompts` is on.
 There is no session hook for Qwen Code, so its window is inferred from the
 records.
 
+`sdf init grok` (alias `grok-cli`) prints the Grok CLI variables as `export`
+lines and the same settings as `[telemetry]` keys. `--write` puts
+`otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
+`otel_logs_exporter = "otlp"`, `otel_endpoint` (the HTTP receiver), and
+`otel_protocol = "http/protobuf"` in `$GROK_HOME/config.toml` (default
+`~/.grok/config.toml`). With no `[telemetry]` table the block is appended.
+With one, the missing keys go right after the header and a key sdf manages
+that holds another value is rewritten on its own line, with a warning; other
+keys, comments, and tables stay. sdf has no TOML parser, so a file with a
+multi-line string, a dotted `telemetry.*` key, an inline `telemetry` table,
+a `[telemetry.*]` sub-table, or two `[telemetry]` tables is left untouched
+and the write is an error (non-zero exit); add the printed block by hand.
+`otel_log_user_prompts`, `otel_log_assistant_responses`, and
+`otel_log_tool_content` set to `true` are kept and reported, and the same
+variables set in the shell that runs `sdf init` are reported too. Grok's
+own defaults for all three are off. Grok reads the environment over the
+file, so an `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also
+redirects Grok. Grok has no config-file key for headers; a receiver token
+goes in `OTEL_EXPORTER_OTLP_HEADERS` (see
+[docs/agents.md](agents.md#grok-cli)). The keys and paths are from
+grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
+`xai-grok-telemetry/src/config.rs` (`TelemetryConfig`), and
+`xai-dirs/src/lib.rs` (`GROK_HOME`) at grok-build `2bdd1d6`, read
+2026-11-23. `sdf init` was not run against a live `grok` here.
+
 `--write` also installs a session hook for that agent. The hook posts to
 `POST /v1/sessions` when a session opens and, where the agent has such an
 event, when it closes. The collector stores each as a log named
@@ -216,6 +242,30 @@ agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode
 has no close event, so only the open is posted. Pi reads the session id from
 the session manager rather than from the file name pi-otel exports.
+
+For Grok CLI, `--write` writes `$GROK_HOME/hooks/sdf-session.json` (default
+`~/.grok/hooks/`), or merges into that file when it exists. Grok loads every
+`*.json` in that directory as a global hook file, always trusted, in the
+same `{"hooks": {"SessionStart": [...]}}` shape. Its stdin carries
+`session_id` (a snake_case alias of `sessionId`), `source` on `SessionStart`,
+and `reason` on `SessionEnd`. `SessionStart` does not fire for a subagent's
+own session, and a child's `SessionEnd` carries `subagentType`, so the hook
+posts nothing for it. Grok substitutes `$VAR` in a hook command from its own
+environment when it loads the file, and refuses a command with a `$VAR` it
+cannot resolve unless the command assigns it; the sdf command uses
+`sdf_`-prefixed local names and `${PATH:-}` for that reason. `SessionEnd`
+hooks get 1.5 seconds by default, so the post uses `curl -m 1`. Sources:
+grok-build `user-guide/10-hooks.md` ("Hook Locations", "Hook Events"),
+`docs/custom-hooks.md` ("Variable Substitution"), and
+`xai-grok-hooks/src/event.rs` (`HookEventEnvelope`, `HookPayload`) at
+`2bdd1d6`, read 2026-11-23. Not run against a live `grok` here.
+
+Grok also runs the hooks in `~/.claude/settings.json` by default (Claude
+Code compatibility). The Claude Code hook sdf writes therefore starts with
+`[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0`: Grok sets `GROK_HOOK_EVENT` on
+every hook process, Claude Code does not, and without the check a Grok
+session would also post a `claude-code` open and close. Rerunning
+`sdf init claude-code --write` updates an older sdf hook in place.
 
 The settings are the ones in [docs/agents.md](agents.md). Claude Code's variables are
 from the [monitoring doc](https://code.claude.com/docs/en/monitoring-usage)
@@ -336,6 +386,7 @@ The id has to be the one the agent's telemetry already uses:
 | --- | --- | --- |
 | Pi | `PI_SESSION_FILE` | File name with a trailing `.jsonl` removed. pi-otel 0.3.0 does `basename(file, ".jsonl")`. `PI_SESSION_ID` is only the short trailing id and is not used. An ephemeral session has no file, exports no session id, and is not linked. |
 | OpenCode | `OPENCODE_SESSION_ID` | `session.id` on runner spans. Taken from the OpenCode shell-tool change; not run live here. |
+| Grok CLI | `GROK_SESSION_ID` | `session.id`, with `service.name` `grok-cli`. Grok adds `GROK_SESSION_ID` to its session environment, which its shell tool passes to each command (grok-build `xai-grok-shell/src/session/agent_rebuild.rs` and `xai-grok-tools/src/implementations/grok_build/bash/mod.rs` at `2bdd1d6`), and hooks receive the same variable (`user-guide/10-hooks.md`). Taken from the source; not run live here, so that it equals the exported `session.id` is not yet confirmed by a capture. A Pi, OpenCode, or Codex process started from a Grok shell inherits `GROK_SESSION_ID`, so its commits have two ids and are not attributed. |
 | Codex | `CODEX_THREAD_ID` | `conversation.id`, the emitting thread. On Codex 0.167.0, `CODEX_SESSION_ID` equaled `CODEX_THREAD_ID` for a live `codex exec` (`SessionId::from(thread_id)` in `codex-rs/core/src/session/session.rs` on tag `rust-v0.167.0` sets them equal on a root thread). A subagent can set `CODEX_SESSION_ID` to the root id instead, so the hook reads `CODEX_THREAD_ID` and does not read `CODEX_SESSION_ID`. |
 
 Pi was checked against pi-otel 0.3.0's source (`sessionIdRef = basename(file, ".jsonl")`) and the session file name `<timestamp>_<id>.jsonl`. The hook behavior below does not start an agent.
@@ -356,7 +407,8 @@ is the whole session until OpenCode exports a trace with the same
 `session.id`; the trace joins it. A later commit in this shell with the
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
 session JSONL path (the stem is what pi-otel exports) rather than only
-`PI_SESSION_ID`. For Codex, set `CODEX_THREAD_ID` to the thread id from
+`PI_SESSION_ID`. For Grok CLI, set `GROK_SESSION_ID` to the `session.id`
+the events carry. For Codex, set `CODEX_THREAD_ID` to the thread id from
 `conversation.id`. On Codex 0.167.0, `CODEX_SESSION_ID` equaled
 `CODEX_THREAD_ID` for a live `codex exec`.
 
