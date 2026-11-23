@@ -97,6 +97,22 @@ func TestSessionHookForgeryIsRefusedAndStoresNothing(t *testing.T) {
 	})
 }
 
+func TestRefusalLeavesTheNextExportStored(t *testing.T) {
+	base, db := start(t)
+	resp := postForged(t, base, forgedPost{path: "/v1/logs", body: piLog(), contentType: "text/plain"})
+	if resp.status != 415 {
+		t.Fatalf("forged status %d %q", resp.status, resp.body)
+	}
+	resp = postForged(t, base, forgedPost{path: "/v1/logs", body: piLog(), contentType: "application/x-protobuf"})
+	if resp.status != 200 {
+		t.Fatalf("export status %d %q", resp.status, resp.body)
+	}
+	rows := mustLoad(t, db)
+	if len(rows) != 1 || deref(rows[0].SessionID) != "proto-chunk-session" {
+		t.Fatalf("stored %#v", rows)
+	}
+}
+
 func TestHealthWithOriginIsRefused(t *testing.T) {
 	base, db := start(t)
 	req, err := http.NewRequest(http.MethodGet, base+"/health", nil)

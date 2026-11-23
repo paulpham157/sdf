@@ -49,8 +49,12 @@ make build
 That listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
 `127.0.0.1:4317`, writes `sdf-telemetry.sqlite` in the current directory, and
 serves a read-only UI at `http://127.0.0.1:4320/`. There is no authentication
-on either receiver port; keep the bind address on localhost. `GET /health`
-returns `{"status":"ok"}`.
+on either port; keep both binds on localhost. The HTTP receiver stores a
+body only when `Content-Type` is `application/json` or `application/x-protobuf`,
+and it refuses a request that carries `Origin`. On a loopback bind it also
+refuses a `Host` other than `localhost`, `127.0.0.1`, or `[::1]`. The UI
+refuses that same foreign `Host` on every route. Details are in
+[docs/receiver.md](docs/receiver.md). `GET /health` returns `{"status":"ok"}`.
 
 ```bash
 ./sdf summary          # one block per session, then unattributed records
