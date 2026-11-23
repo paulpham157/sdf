@@ -222,6 +222,10 @@
     const edges = decisions && decisions.edges ? decisions.edges : [];
     if (!records.length && !edges.length) return null;
     const kids = [h("h2", null, ["Decisions"])];
+    const activeIDs = {};
+    records.forEach(function (record) {
+      if (record.effective_status === "active") activeIDs[record.id] = true;
+    });
     if (!records.length) {
       kids.push(h("p", null, ["no decision"]));
     } else {
@@ -241,6 +245,23 @@
         if (superseded) {
           line.push(h("span", { class: "superseded-by" }, ["superseded by " + by.join(", ")]));
         }
+        const open = Array.isArray(record.open_blockers) ? record.open_blockers : [];
+        const conflicts = Array.isArray(record.conflicts_with) ? record.conflicts_with : [];
+        // Every blocker, then the open ones, as sdf decision list prints it.
+        const blockers = Array.isArray(record.blocked_by) ? record.blocked_by : [];
+        const blockerText = blockers.length
+          ? "blocked by " + blockers.join(", ") + (open.length ? " (open: " + open.join(", ") + ")" : " (settled)")
+          : "";
+        if (record.blocked && blockers.length) {
+          line.push(h("span", { class: "relation-flag blocked" }, [blockerText]));
+        }
+        const activeConflicts = conflicts.filter(function (id) { return activeIDs[id]; });
+        if (record.conflicted && activeConflicts.length) {
+          line.push(h("span", { class: "relation-flag conflicted" }, ["conflicts with " + activeConflicts.join(", ")]));
+        }
+        if (record.challenged) {
+          line.push(h("span", { class: "relation-flag challenged" }, ["challenged"]));
+        }
         line.push(document.createTextNode(record.statement || ""));
         let cls = "decision";
         if (retraction) cls = "decision retracted-record";
@@ -249,6 +270,10 @@
         const extra = [];
         if (record.alternatives) extra.push("alternatives " + record.alternatives);
         if (record.reason) extra.push("reason " + record.reason);
+        if (blockers.length && !record.blocked) extra.push(blockerText);
+        if (conflicts.length && !record.conflicted) extra.push("conflicts with " + conflicts.join(", ") + " (resolved)");
+        const refined = Array.isArray(record.refined_by) ? record.refined_by : [];
+        if (refined.length) extra.push("refined by " + refined.join(", "));
         if (retraction) {
           const parts = ["retraction " + (retraction.retracted_at || "")];
           if (retraction.retracted_by) parts.push("by " + retraction.retracted_by);

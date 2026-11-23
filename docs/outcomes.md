@@ -97,7 +97,9 @@ name who decided (`user` or `agent`), the alternatives that were on the table,
 a reason, and a source pointer. Time is `recorded_at`. A session is not stored
 on the record; link it with an edge when the store already has that session.
 An edge connects two endpoints and uses one of
-`constrains`, `implements`, `supersedes`, `validates`, or `contradicts`. An
+`constrains`, `implements`, `supersedes`, `validates`, `contradicts`,
+`blocks`, `conflicts_with`, or `refines`. `blocked_by` and `depends_on` are
+accepted as aliases of `blocks` (see Link rules). An
 endpoint is a decision id, a session id, or a full 40-character commit SHA. A
 session or commit endpoint is stored only when the store already has telemetry
 for it; the edge is not a copy of that telemetry. A commit SHA is matched
@@ -119,13 +121,31 @@ check fails. It exits 1 with one `sdf decision link: ...` line on stderr, the
 same as for an unknown session, commit, or decision. Usage errors, such as a
 missing flag, exit 2.
 
-| Relation | Valid direction | Enforced |
-| --- | --- | --- |
-| `supersedes` | decision → decision: `from` replaces `to` | Yes. A session or commit endpoint is rejected |
-| `implements` | session or commit → decision: the work implements the decision | No, any known endpoints |
-| `validates` | session, commit, or decision → decision: evidence that it holds | No, any known endpoints |
-| `contradicts` | session, commit, or decision → decision: evidence against it | No, any known endpoints |
-| `constrains` | decision → decision, session, or commit: the decision limits it | No, any known endpoints |
+| Relation | Valid direction | Extra checks | Drives at read time |
+| --- | --- | --- | --- |
+| `supersedes` | decision → decision: `from` replaces `to` | cycle | `effective_status`, `superseded_by` |
+| `blocks` | decision → decision: `to` cannot be settled or acted on until `from` is settled | cycle; warns when the pair also has `supersedes` or `conflicts_with` | `blocked_by`, `open_blockers`, `blocked` |
+| `conflicts_with` | decision ↔ decision: the two cannot both hold. Symmetric | stored in canonical order; refused when one already supersedes the other | `conflicts_with`, `conflicted` |
+| `refines` | decision → decision: `from` elaborates, narrows, or partly amends `to`, which still holds | cycle; refused when one already supersedes the other | `refined_by` |
+| `implements` | session or commit → decision: the work implements the decision | | nothing |
+| `validates` | session, commit, or decision → decision: evidence that it holds | warns when the pair also has `contradicts` | `challenged` |
+| `contradicts` | session, commit, or decision → decision: evidence against it | warns when the pair also has `validates` | `challenged` |
+| `constrains` | decision → decision, session, or commit: the decision is a rule that limits it | | nothing |
+
+Every endpoint kind in the second column is enforced. `constrains` is a rule,
+not an ordering: use `blocks` for "this must wait for that".
+
+**Aliases.** `--relation blocked_by --from decision:b --to decision:a` and
+`--relation depends_on --from decision:b --to decision:a` both store
+`a blocks b`. An alias is never stored, and it is the same edge as the
+canonical form for the duplicate and cycle checks. Refs and endpoint kinds
+are checked as typed, before the swap, so the message names the alias and the
+flag you gave: `depends_on links a decision to a decision: to is session:sess-1`.
+
+**Canonical order.** `conflicts_with` between two decisions is stored with the
+endpoint that sorts first (`decision:ID`, byte order) as `from`. `a
+conflicts_with b` and `b conflicts_with a` are therefore one edge, and the
+second is refused as a duplicate whichever order it was given in.
 
 Every relation also has these rules:
 
@@ -137,17 +157,34 @@ Every relation also has these rules:
   the retraction stay. See Retracting a decision.
 - **Duplicate.** The same relation, `from`, and `to` cannot be stored twice.
   A commit SHA is compared in lowercase. The message is
-  `edge already recorded: decision:a implements decision:b`. The other
+  `edge already recorded: decision:a constrains decision:b`. The other
   direction, or another relation between the same two endpoints, is a
   different edge.
-- **Supersedes endpoints.** The message is
-  `supersedes links a decision to a decision: from is session:sess-1`. This is
-  checked before the store is asked whether the ref exists.
-- **Supersedes cycle.** `a supersedes b` is rejected when `b` already reaches
-  `a` through `supersedes` edges, including `b supersedes a`. The message names
-  the path, for example
-  `supersedes cycle: decision:c already reaches decision:a through supersedes (c -> b -> a), so decision:a cannot supersede decision:c`.
-  Two decisions may supersede the same one.
+- **Endpoint kinds.** An endpoint of a kind the relation does not take (see
+  the table) is rejected before the store is asked whether the ref exists. The
+  message names the rule and the end, for example
+  `supersedes links a decision to a decision: from is session:sess-1`,
+  `blocks links a decision to a decision: to is commit:SHA`,
+  `implements links a session or commit to a decision: from is decision:a`,
+  `validates points to a decision: to is session:sess-1`, or
+  `constrains starts from a decision: from is session:sess-1`.
+- **Cycles.** `supersedes`, `blocks`, and `refines` each reject an edge that
+  would close a cycle through edges of the same relation. `a supersedes b` is
+  rejected when `b` already reaches `a` through `supersedes` edges, including
+  `b supersedes a`. The message names the path, for example
+  `supersedes cycle: decision:c already reaches decision:a through supersedes (c -> b -> a), so decision:a cannot supersede decision:c`,
+  and in the same form `blocks cycle: ... so decision:c cannot block decision:a`
+  and `refines cycle: ... so decision:c cannot refine decision:a`. A blocks
+  cycle would be a deadlock. Two decisions may supersede, block, or refine the
+  same one, and edges of other relations do not count toward a cycle.
+- **Already superseded.** `conflicts_with` and `refines` are refused between
+  two decisions when one already supersedes the other, in either direction:
+  `pair already linked by supersedes: decision:a and decision:b; one already replaces the other, so refines is not recorded`.
+  The other way round is allowed: `supersedes` after `conflicts_with` is
+  stored, and resolves the conflict.
+- **Blocks over a linked pair.** A `blocks` edge between two decisions that
+  already have a `supersedes` or `conflicts_with` edge is stored, and prints
+  `sdf decision link: warning: decision:a and decision:b also have a conflicts_with edge`.
 - **Validates and contradicts.** When the same two endpoints, in either
   direction and in either order, end up with both a `validates` and a
   `contradicts` edge, the edge is still stored and the command exits 0. It
@@ -161,8 +198,96 @@ first). Two `sdf decision link` runs at the same moment therefore cannot both
 pass a check that only one of them should. The checks only read: no edge or
 record is updated or deleted. Edges that an older sdf stored without these
 checks stay readable, count as existing edges for the duplicate and cycle
-checks, and are handled at read time as described below. No HTTP route writes
+checks, and are handled at read time as described below.
+
+**Older rows that break the endpoint kinds.** Before the kinds were enforced,
+sdf stored `implements`, `validates`, `contradicts`, and `constrains` between
+any known endpoints, for example `decision:a implements decision:b`. Such a
+row is kept as stored: nothing is rewritten or deleted, `sdf decision list`,
+`GET /api/decisions`, and the UI list it with the other edges, and it still
+counts as an existing edge for the duplicate check. It drives no read-time
+field: `challenged` counts a `validates` or `contradicts` edge only when it
+points to a stored decision, and `implements` and `constrains` drive nothing.
+The same holds for any `blocks`, `conflicts_with`, or `refines` row with a
+session or commit end, a self-link, or an id never stored. Writing the same
+row again is refused by the kind check, which runs before the duplicate
+check. No HTTP route writes
 an edge, so `sdf decision link` is the only way to write one.
+
+### Blocked, conflicted, refined, and challenged at read time
+
+These fields are computed each time the records are read, like
+`effective_status`, and are never stored. Each is omitted from JSON when it is
+empty or false, so a store without these relations reads exactly as before.
+`effective_status` keeps its values (`active`, `superseded`, `retracted`);
+the new fields sit beside it. Only an edge between two different stored
+decisions counts for `blocks`, `conflicts_with`, and `refines`. Ids are listed
+once each, in the order the edges were recorded.
+
+- `blocked_by`: every decision with a `blocks` edge to this one.
+- `open_blockers`: the blockers that are still unsettled. Records never change
+  status, so a hypothesis is settled by superseding it with a decision record.
+  sdf follows `superseded_by` from the blocker to its current heads, the active
+  decisions at the end of each replacement path. A retracted decision on the
+  way contributes no head, because a withdrawn blocker blocks nothing. The
+  blocker is open when any head has status `hypothesis`. So a blocking
+  hypothesis stays open when another hypothesis replaces it, and clears once a
+  `decision` record replaces it or it is retracted. A blocker that was
+  recorded as a `decision` is settled from the start. A blocker that reaches
+  no head is open when any path of its `supersedes` chain runs into a cycle
+  (rows an older sdf stored), even if its other paths end in a retraction: no
+  decision record settled it. It is settled only when every path ends in a
+  retraction.
+- `blocked`: `true` when the record is `active` and `open_blockers` is not
+  empty. A superseded or retracted record is never blocked, though its
+  `blocked_by` and `open_blockers` are still listed.
+- `conflicts_with`: the other side of every `conflicts_with` edge, from either
+  end.
+- `conflicted`: `true` when the record is `active` and at least one of those
+  is `active`. Superseding or retracting one side resolves the conflict; the
+  pair stays listed.
+- `refined_by`: every decision with a `refines` edge to this one. The refined
+  record keeps its own `effective_status`; `refines` never supersedes.
+- `challenged`: `true` when the record is `active` and the latest `validates`
+  or `contradicts` edge to it, in edge order, is `contradicts`. A later
+  `validates` clears it. A `validates` or `contradicts` edge from a decision
+  that is not `active` (retracted or superseded) is ignored, as a withdrawn
+  blocker blocks nothing: it neither challenges nor clears a challenge. One
+  from a session or commit always counts.
+
+`sdf decision list` adds `, blocked`, `, conflicted`, and `, challenged` to
+the `EFFECTIVE` cell, in that order, and prints `blocked by: IDS (open: IDS)`
+(or `(settled)`), `conflicts with: IDS`, and `refined by: IDS` lines under the
+statement:
+
+```text
+Decisions: 6
+ID             STATUS      EFFECTIVE           DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
+which-db       hypothesis  active              agent       2026-11-23T17:18:46.360788+00:00  -       Pick the store: SQLite or Postgres.
+design-schema  decision    active, blocked     agent       2026-11-23T17:18:46.367151+00:00  -       Design the rejections schema.
+                                                                                                     blocked by: which-db (open: which-db)
+use-sqlite     decision    active, conflicted  user        2026-11-23T17:18:46.373929+00:00  -       Keep the store in SQLite.
+                                                                                                     conflicts with: use-postgres
+use-postgres   decision    active, conflicted  agent       2026-11-23T17:18:46.381759+00:00  -       Move the store to Postgres.
+                                                                                                     conflicts with: use-sqlite
+dont-push      decision    active              user        2026-11-23T17:18:46.390932+00:00  -       Do not push without an OK.
+                                                                                                     refined by: push-after-ok
+push-after-ok  decision    active              user        2026-11-23T17:18:46.397456+00:00  -       Push feature branches once the user says OK.
+
+Edges: 3
+RELATION        FROM                    TO                      RECORDED AT
+blocks          decision:which-db       decision:design-schema  2026-11-23T17:18:46.403783+00:00
+conflicts_with  decision:use-postgres   decision:use-sqlite     2026-11-23T17:18:46.410590+00:00
+refines         decision:push-after-ok  decision:dont-push      2026-11-23T17:18:46.418467+00:00
+```
+
+The edges above were written with `depends_on` (design-schema on which-db),
+`conflicts_with` from use-sqlite to use-postgres, and `refines`; the table
+shows the stored, canonical form. The UI writes blockers as the list does,
+"blocked by IDS (open: IDS)" or "blocked by IDS (settled)": next to a blocked
+record, else on its detail line. It shows "conflicts with" (only the sides
+still active) and "challenged" next to the record, and "refined by" and
+resolved conflicts on its detail line.
 
 ### Superseded at read time
 
@@ -240,7 +365,7 @@ use-wal     decision    active                 -           2026-11-23T15:00:02.0
 
 Edges: 2
 RELATION    FROM              TO                   RECORDED AT
-implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
+constrains  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
 supersedes  decision:use-wal  decision:use-sqlite  2026-11-23T15:00:04.000000+00:00
 ```
 

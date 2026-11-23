@@ -66,7 +66,7 @@ func TestLoadComputesSupersededAtReadTime(t *testing.T) {
 	legacyEdge(t, db, decision.RelSupersedes, dec("b"), dec("a"))
 	// Ignored: other relations, and (from older databases, since Link now
 	// rejects them) a self-edge and non-decision endpoints.
-	link(t, db, decision.RelImplements, dec("e"), dec("c"))
+	link(t, db, decision.RelConstrains, dec("e"), dec("c"))
 	legacyEdge(t, db, decision.RelSupersedes, dec("e"), dec("e"))
 	legacyEdge(t, db, decision.RelSupersedes, decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"}, dec("e"))
 	legacyEdge(t, db, decision.RelSupersedes, decision.Endpoint{Kind: decision.KindCommit, Ref: sha}, dec("e"))

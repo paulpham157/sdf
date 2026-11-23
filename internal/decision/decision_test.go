@@ -46,7 +46,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	edge, err := decision.Link(db, decision.EdgeInput{
-		Relation: decision.RelImplements,
+		Relation: decision.RelConstrains,
 		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: second.ID},
 		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: first.ID},
 	})

@@ -30,7 +30,7 @@ func TestDecisionRetract(t *testing.T) {
 	if unknown.code != 1 || unknown.stderr != "sdf decision retract: unknown reference: decision nope\n" {
 		t.Fatalf("%d %q", unknown.code, unknown.stderr)
 	}
-	linked := run(t, "decision", "link", "--db", dbPath, "--relation", "implements", "--from", "decision:use-wal", "--to", "decision:use-sqlite")
+	linked := run(t, "decision", "link", "--db", dbPath, "--relation", "constrains", "--from", "decision:use-wal", "--to", "decision:use-sqlite")
 	if linked.code != 1 || linked.stderr != "sdf decision link: decision retracted: decision:use-sqlite takes no new edges\n" {
 		t.Fatalf("%d %q", linked.code, linked.stderr)
 	}
