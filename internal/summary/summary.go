@@ -891,22 +891,29 @@ func requestTokens(records []record.Record, source string) []map[string]float64 
 	var match func(record.Record) bool
 	switch source {
 	case "logs " + claudeAPI:
-		keys = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		keys = claudeAPITokenFields
 		match = func(rec record.Record) bool {
 			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
 		}
 	case "logs " + grokAPI:
-		keys = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		keys = grokAPITokenFields
 		match = func(rec record.Record) bool {
 			return rec.Signal == "logs" && logEventName(rec) == grokAPI
 		}
 	default:
 		return nil
 	}
+	seen := map[string]bool{}
 	var out []map[string]float64
 	for _, rec := range records {
 		if !match(rec) {
 			continue
+		}
+		if key := apiRequestKey(rec, keys); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		item := map[string]float64{}
 		found := false
@@ -956,15 +963,16 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 			claudeLogs = append(claudeLogs, rec)
 		}
 	}
+	claudeLogs = uniqueAPIRequests(claudeLogs, claudeAPITokenFields)
 	totals := OrderedFloats{}
 	found := false
 	for _, rec := range claudeLogs {
-		if addFields(&totals, rec, []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+		if addFields(&totals, rec, claudeAPITokenFields) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes")
+		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes; " + apiRequestDedupMethod)
 	}
 	var events []record.Record
 	for _, rec := range records {
@@ -1008,15 +1016,16 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 			grokLogs = append(grokLogs, rec)
 		}
 	}
+	grokLogs = uniqueAPIRequests(grokLogs, grokAPITokenFields)
 	grokTotals := OrderedFloats{}
 	grokFound := false
 	for _, rec := range grokLogs {
-		if addFields(&grokTotals, rec, []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+		if addFields(&grokTotals, rec, grokAPITokenFields) {
 			grokFound = true
 		}
 	}
 	if grokFound {
-		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens)")
+		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens); " + apiRequestDedupMethod)
 	}
 	return OrderedFloats{}, nil, nil
 }
@@ -1202,6 +1211,69 @@ func codexSSEKey(rec record.Record) string {
 	return key
 }
 
+// Token fields of one claude_code.api_request / grok_code.api_request log.
+var (
+	claudeAPITokenFields = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+	grokAPITokenFields   = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+)
+
+// apiRequestKeyIDs are the identifiers an api_request log may carry. Claude
+// Code documents request_id (server request id), client_request_id,
+// prompt.id, event.sequence and event.timestamp on api_request; the Grok CLI
+// guide documents event.sequence and prompt.id on every event. Each one that
+// is present goes into the key, so two genuine requests do not share it.
+var apiRequestKeyIDs = []string{"session.id", "prompt.id", "request_id", "client_request_id", "event.sequence", "event.timestamp"}
+
+// apiRequestCostFields are the agent cost attributes, also part of the key.
+var apiRequestCostFields = []string{"cost_usd", "cost_usd_micros"}
+
+const apiRequestDedupMethod = "a log stored twice (same session.id, prompt.id, request_id, client_request_id, event.sequence, event.timestamp, log time, counts, and cost) counts once"
+
+// apiRequestKey identifies one claude_code.api_request or grok_code.api_request
+// log for de-duplication (issue #214), like codexSSEKey for Codex. A record
+// stored twice, for example after an OTLP export retry, has the same
+// attributes and log time. The key is empty, and the record is never merged,
+// when it has neither event.timestamp nor a log time.
+func apiRequestKey(rec record.Record, fields []string) string {
+	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
+		return ""
+	}
+	key := deref(rec.SessionID)
+	for _, id := range apiRequestKeyIDs {
+		key += "|" + strAttr(rec.Attributes, id)
+	}
+	key += "|"
+	if rec.TimeUnixNano != nil {
+		key += strconv.FormatInt(*rec.TimeUnixNano, 10)
+	}
+	for _, list := range [][]string{fields, apiRequestCostFields} {
+		for _, field := range list {
+			key += "|"
+			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				key += strconv.FormatFloat(*amount, 'g', -1, 64)
+			}
+		}
+	}
+	return key
+}
+
+// uniqueAPIRequests drops api_request logs whose apiRequestKey was already
+// seen, keeping the first copy.
+func uniqueAPIRequests(records []record.Record, fields []string) []record.Record {
+	seen := map[string]bool{}
+	out := records[:0:0]
+	for _, rec := range records {
+		if key := apiRequestKey(rec, fields); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
 func costOf(records []record.Record, points []point, tool string) (*float64, *string, *string) {
 	var note *string
 	if tool == "claude-code" {
@@ -1237,13 +1309,27 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 	total := 0.0
 	found := false
 	var source *string
+	seenRequest := map[string]bool{}
 	for _, rec := range records {
 		if rec.Signal != "logs" {
 			continue
 		}
 		var amount *float64
 		var label string
-		switch logEventName(rec) {
+		event := logEventName(rec)
+		if event == claudeAPI || event == grokAPI {
+			fields := claudeAPITokenFields
+			if event == grokAPI {
+				fields = grokAPITokenFields
+			}
+			if key := apiRequestKey(rec, fields); key != "" {
+				if seenRequest[event+"|"+key] {
+					continue
+				}
+				seenRequest[event+"|"+key] = true
+			}
+		}
+		switch event {
 		case claudeAPI:
 			amount = record.Number(rec.Attributes["cost_usd"])
 			label = "logs " + claudeAPI + " cost_usd"
