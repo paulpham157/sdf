@@ -117,6 +117,30 @@ func TestVerifyPrefixRejectsABrokenChainAfterThePin(t *testing.T) {
 	}
 }
 
+func TestVerifyPrefixRejectsANegativeSeq(t *testing.T) {
+	ctx := context.Background()
+	_, s := seeded(t)
+	hash := "sha256:" + strings.Repeat("ab", 32)
+	err := s.VerifyPrefix(ctx, -1, hash)
+	if !errors.Is(err, ledger.ErrInvalid) {
+		t.Fatalf("negative seq: %v", err)
+	}
+	if errors.Is(err, ledger.ErrPrefixMismatch) || errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("negative seq should be ErrInvalid, not a prefix mismatch: %v", err)
+	}
+}
+
+func TestParsePinQuotesControlBytesInErrors(t *testing.T) {
+	esc := "3:sha256:" + strings.Repeat("a", 64) + "\x1b[31m"
+	_, _, err := ledger.ParsePin(esc)
+	if err == nil {
+		t.Fatal("accepted a pin with an ESC sequence")
+	}
+	if strings.Contains(err.Error(), "\x1b") {
+		t.Fatalf("error contains raw ESC: %q", err.Error())
+	}
+}
+
 func TestParsePinFormats(t *testing.T) {
 	hash := "sha256:" + strings.Repeat("ab", 32)
 	jsonPin, err := json.Marshal(map[string]any{

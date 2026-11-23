@@ -232,6 +232,7 @@ after the pin are allowed.
 - A broken chain is a `*ChainError` whose `Unwrap` is `ErrChainBroken`
   and whose `Failure` is the first problem `Verify` found, even if the
   pinned entry still happens to match.
+- A negative `seq` is `ErrInvalid` (invalid input), not a prefix mismatch.
 - Other failures (I/O, `ErrCorruptFile`, a corrupt row) are returned as
   from `Verify` or `GetBySeq`.
 
@@ -339,7 +340,7 @@ sdf audit verify --require-nonempty --expect-prefix-file pinned-head.json
 ```
 
 This passes if the entry CI recorded still exists with the same
-`entry_hash` and the chain from that point on is intact. It fails if the
+`entry_hash` and the whole chain verifies. It fails if the
 ledger was truncated below that seq or rewritten at or through that point.
 Later legitimate appends are allowed; the pin does not need to be updated
 after every write.

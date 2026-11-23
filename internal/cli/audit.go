@@ -119,26 +119,35 @@ func writeJSON(w io.Writer, v any) {
 	_ = enc.Encode(v)
 }
 
-// verifyLedger returns the report, or an exit code when there is none: 1
-// for a file that is not a readable ledger database (garbage, truncated,
-// damaged), 3 for any other failure to open or read it.
-func verifyLedger(name, path string, stderr io.Writer) (ledger.Report, int) {
+// openVerified opens the ledger and runs Verify once. On success the
+// caller must Close the store. An exit code of 1 is a file that is not
+// a readable ledger database (garbage, truncated, damaged); 3 is any
+// other failure to open or read it.
+func openVerified(name, path string, stderr io.Writer) (*ledger.Store, ledger.Report, int) {
 	l, err := ledger.Open(path)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n", name, ledger.Safe(err.Error()))
-		return ledger.Report{}, exitIO
+		return nil, ledger.Report{}, exitIO
 	}
-	defer l.Close()
 	rep, err := l.Verify(context.Background())
-	if errors.Is(err, ledger.ErrCorruptFile) {
-		fmt.Fprintf(stderr, "%s: ledger broken: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
-		return ledger.Report{}, 1
-	}
 	if err != nil {
+		_ = l.Close()
+		if errors.Is(err, ledger.ErrCorruptFile) {
+			fmt.Fprintf(stderr, "%s: ledger broken: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
+			return nil, ledger.Report{}, 1
+		}
 		fmt.Fprintf(stderr, "%s: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
-		return ledger.Report{}, exitIO
+		return nil, ledger.Report{}, exitIO
 	}
-	return rep, 0
+	return l, rep, 0
+}
+
+func verifyLedger(name, path string, stderr io.Writer) (ledger.Report, int) {
+	l, rep, code := openVerified(name, path, stderr)
+	if l != nil {
+		_ = l.Close()
+	}
+	return rep, code
 }
 
 func describeFailure(f *ledger.Failure) string {
@@ -177,16 +186,6 @@ func readExpectedHead(path string) (string, error) {
 		return fields[3], nil
 	}
 	return text, nil
-}
-
-func formatPrefix(seq int64, hash string) string {
-	return fmt.Sprintf("%d:%s", seq, hash)
-}
-
-// formatPrefixSafe is the human form of a stored prefix. The hash is passed
-// through ledger.Safe so a non-printable stored value cannot inject escapes.
-func formatPrefixSafe(seq int64, hash string) string {
-	return fmt.Sprintf("%d:%s", seq, ledger.Safe(hash))
 }
 
 // readExpectedPrefix reads a pin file and parses it with ledger.ParsePin.
@@ -327,10 +326,11 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		}
 		path = p
 	}
-	rep, code := verifyLedger(name, path, stderr)
+	l, rep, code := openVerified(name, path, stderr)
 	if code != 0 {
 		return code
 	}
+	defer l.Close()
 
 	ok := rep.OK
 	emptyFail := requireNonEmpty && rep.Empty
@@ -355,11 +355,11 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 	var prefixActual string // "none" when the seq is absent
 	if prefixEnabled {
 		prefixActual = "none"
-		got, err := entryAt(path, prefixSeq)
+		_, got, err := l.GetBySeq(context.Background(), prefixSeq)
 		switch {
 		case err == nil:
 			prefixEntry = &got
-			prefixActual = formatPrefixSafe(got.Seq, got.EntryHash)
+			prefixActual = ledger.FormatPin(got.Seq, got.EntryHash)
 		case errors.Is(err, ledger.ErrNotFound), errors.Is(err, ledger.ErrCorrupt):
 			// truncated, never written, or the row itself is not trustworthy
 		default:
@@ -369,15 +369,8 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			}
 			return exitIO
 		}
-		prefixErr := checkPrefix(path, prefixSeq, prefixHash)
-		if prefixErr != nil && !errors.Is(prefixErr, ledger.ErrPrefixMismatch) && !errors.Is(prefixErr, ledger.ErrChainBroken) && !errors.Is(prefixErr, ledger.ErrNotFound) && !errors.Is(prefixErr, ledger.ErrCorrupt) {
-			fmt.Fprintf(stderr, "%s: %s: %s\n", name, ledger.Safe(path), ledger.Safe(prefixErr.Error()))
-			if errors.Is(prefixErr, ledger.ErrCorruptFile) {
-				return 1
-			}
-			return exitIO
-		}
-		m := prefixErr == nil
+		// Reuse the Verify report already in hand; same condition as VerifyPrefix.
+		m := rep.OK && prefixEntry != nil && prefixEntry.EntryHash == prefixHash
 		prefixMatch = &m
 		if !m {
 			ok = false
@@ -391,7 +384,7 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		}
 		var expectedPrefix *string
 		if prefixEnabled {
-			p := formatPrefix(prefixSeq, prefixHash)
+			p := ledger.FormatPin(prefixSeq, prefixHash)
 			expectedPrefix = &p
 		}
 		writeJSON(stdout, struct {
@@ -437,7 +430,7 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if prefixMatch != nil {
-			want := formatPrefix(prefixSeq, prefixHash)
+			want := ledger.FormatPin(prefixSeq, prefixHash)
 			switch {
 			case *prefixMatch:
 				fmt.Fprintf(stdout, "prefix matches %s\n", want)
@@ -456,25 +449,6 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
-}
-
-func entryAt(path string, seq int64) (ledger.Entry, error) {
-	l, err := ledger.Open(path)
-	if err != nil {
-		return ledger.Entry{}, err
-	}
-	defer l.Close()
-	_, e, err := l.GetBySeq(context.Background(), seq)
-	return e, err
-}
-
-func checkPrefix(path string, seq int64, hash string) error {
-	l, err := ledger.Open(path)
-	if err != nil {
-		return err
-	}
-	defer l.Close()
-	return l.VerifyPrefix(context.Background(), seq, hash)
 }
 
 func cmdAuditHead(args []string, stdout, stderr io.Writer) int {

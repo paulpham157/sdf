@@ -94,16 +94,14 @@ func parseSeqHash(s string) (int64, string, error) {
 
 func checkPin(seq int64, hash string) error {
 	if seq < 0 || !pinHash.MatchString(hash) {
-		return fmt.Errorf("ledger: pin %s is not seq:sha256: followed by 64 lowercase hex digits", formatPin(seq, hash))
+		return fmt.Errorf("ledger: pin %s is not seq:sha256: followed by 64 lowercase hex digits", FormatPin(seq, hash))
 	}
 	return nil
 }
 
-func formatPin(seq int64, hash string) string {
-	return fmt.Sprintf("%d:%s", seq, hash)
-}
-
-func formatPinSafe(seq int64, hash string) string {
+// FormatPin renders seq:hash. The hash is passed through Safe so a
+// non-printable value cannot inject escapes into the message.
+func FormatPin(seq int64, hash string) string {
 	return fmt.Sprintf("%d:%s", seq, Safe(hash))
 }
 
@@ -116,9 +114,13 @@ func formatPinSafe(seq int64, hash string) string {
 // entry_hash that does not equal entryHash is ErrPrefixMismatch, with
 // expected and actual in the message (stored strings via Safe). A broken
 // chain is a *ChainError (Unwrap is ErrChainBroken), even if the pinned
-// entry still happens to match. Other failures (I/O, ErrCorruptFile, a
-// corrupt row) are returned as from Verify or GetBySeq.
+// entry still happens to match. A negative seq is ErrInvalid. Other
+// failures (I/O, ErrCorruptFile, a corrupt row) are returned as from
+// Verify or GetBySeq.
 func (s *Store) VerifyPrefix(ctx context.Context, seq int64, entryHash string) error {
+	if seq < 0 {
+		return fmt.Errorf("%w: prefix seq %d is negative", ErrInvalid, seq)
+	}
 	rep, err := s.Verify(ctx)
 	if err != nil {
 		return err
@@ -131,13 +133,13 @@ func (s *Store) VerifyPrefix(ctx context.Context, seq int64, entryHash string) e
 	}
 	_, e, err := s.GetBySeq(ctx, seq)
 	if errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("%w: %w: expected %s, actual none", ErrPrefixMismatch, ErrNotFound, formatPinSafe(seq, entryHash))
+		return fmt.Errorf("%w: %w: expected %s, actual none", ErrPrefixMismatch, ErrNotFound, FormatPin(seq, entryHash))
 	}
 	if err != nil {
 		return err
 	}
 	if e.EntryHash != entryHash {
-		return fmt.Errorf("%w: expected %s, actual %s", ErrPrefixMismatch, formatPinSafe(seq, entryHash), formatPinSafe(e.Seq, e.EntryHash))
+		return fmt.Errorf("%w: expected %s, actual %s", ErrPrefixMismatch, FormatPin(seq, entryHash), FormatPin(e.Seq, e.EntryHash))
 	}
 	return nil
 }

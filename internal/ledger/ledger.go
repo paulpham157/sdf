@@ -131,7 +131,8 @@ var (
 	// entry hash, or holds a field the ledger would never write. Get wraps it
 	// with the kind and id; GetBySeq wraps it with the seq, kind, and id.
 	ErrCorrupt = errors.New("ledger: stored entry does not match its hash")
-	// ErrInvalid means Append was given a kind or id the ledger does not accept.
+	// ErrInvalid means Append was given a kind or id the ledger does not accept,
+	// or VerifyPrefix was given a negative seq.
 	ErrInvalid = errors.New("ledger: invalid kind or id")
 	// ErrInvalidID means an id breaks the id rules (see ValidID). It wraps
 	// ErrInvalid, so errors.Is(err, ErrInvalid) holds too.
