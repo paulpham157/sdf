@@ -541,11 +541,14 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 	tokens, tokensSource, tokensMethod := tokensOf(records, points)
 	costUSD, costSource, costNote := costOf(records, points, tool)
 	modelList := models(records, points)
+	totals := tokenMap(tokens)
+	requests, skip := sessionRequests(records, deref(tokensSource), tokens)
 	computed := pricing.Price(prices, pricing.Usage{
-		Models:   modelList,
-		Tokens:   tokenMap(tokens),
-		Source:   deref(tokensSource),
-		Requests: sessionRequests(records, deref(tokensSource), tokens),
+		Models:            modelList,
+		Tokens:            totals,
+		Source:            deref(tokensSource),
+		Requests:          requests,
+		RequestSkipReason: skip,
 	})
 	failures := metricFailures(records)
 	summary := SessionSummary{
@@ -991,19 +994,122 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 }
 
 // sessionRequests returns the per-request token maps used for pricing. It is
-// requestTokens, plus the Codex metric case: codex.turn.token_usage is one
-// histogram sample per turn summed over every Responses call of that turn,
-// with no turn.id, and an exported point may merge several turns, so the
-// metric alone never yields per-request counts (issue #222). When the
-// session also has response.completed logs whose de-duplicated counts add
-// up to exactly the metric totals, those logs are the same tokens split per
-// call, and each one is priced on its own under the metric's keys. The
-// displayed totals stay the metric's, so nothing is counted twice.
-func sessionRequests(records []record.Record, source string, tokens OrderedFloats) []map[string]float64 {
+// requestTokens, plus the cases where a preferred usage metric has matching
+// per-request logs. A Codex codex.turn.token_usage point is one histogram
+// sample per turn summed over every Responses call of that turn, with no
+// turn.id, and an exported point may merge several turns, so the metric
+// alone never yields per-request counts (issue #222). When the session also
+// has response.completed logs whose de-duplicated counts add up to exactly
+// the metric totals, those logs are the same tokens split per call, and
+// each one is priced on its own under the metric's keys. Claude Code and
+// Grok CLI follow the same rule with de-duplicated api_request logs
+// (claude_code.token.usage / grok_code.token.usage). The displayed totals
+// stay the metric's, so nothing is counted twice. If the logs are present
+// but their totals do not match, the second result explains why they were
+// not used and the metric aggregate is priced as before.
+func sessionRequests(records []record.Record, source string, tokens OrderedFloats) ([]map[string]float64, string) {
 	if source == "metrics "+codexTokenMetric {
-		return codexMetricRequests(records, tokens)
+		return codexMetricRequests(records, tokens), ""
 	}
-	return requestTokens(records, source)
+	if source == "metrics "+claudeTokenMetric {
+		return reconciledAPIRequests(records, tokens, claudeAPI, claudeTokenMetric, claudeAPITokenFields, claudeLogToMetric, func(rec record.Record) bool {
+			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
+		})
+	}
+	if source == "metrics "+grokTokenMetric {
+		return reconciledAPIRequests(records, tokens, grokAPI, grokTokenMetric, grokAPITokenFields, grokLogToMetric, func(rec record.Record) bool {
+			return rec.Signal == "logs" && logEventName(rec) == grokAPI
+		})
+	}
+	return requestTokens(records, source), ""
+}
+
+// claudeLogToMetric maps claude_code.api_request fields onto the keys used
+// by metrics claude_code.token.usage, so Price can apply that source's rule.
+var claudeLogToMetric = map[string]string{
+	"input_tokens":          "input",
+	"output_tokens":         "output",
+	"cache_read_tokens":     "cacheRead",
+	"cache_creation_tokens": "cacheCreation",
+}
+
+// grokLogToMetric maps grok_code.api_request fields onto the keys used by
+// metrics grok_code.token.usage.
+var grokLogToMetric = map[string]string{
+	"input_tokens":          "input",
+	"output_tokens":         "output",
+	"reasoning_tokens":      "reasoning",
+	"cache_read_tokens":     "cache_read",
+	"cache_creation_tokens": "cache_write",
+}
+
+// reconciledAPIRequests returns de-duplicated api_request counts renamed
+// to the metric's keys when their sums equal the metric totals for every
+// key on either side (a missing value is 0). Otherwise it returns nil and
+// a skip reason: logs missing a call, or extra logs, cannot be trusted to
+// split the metric totals.
+func reconciledAPIRequests(records []record.Record, tokens OrderedFloats, logName, metricName string, fields []string, rename map[string]string, match func(record.Record) bool) ([]map[string]float64, string) {
+	var logs []record.Record
+	for _, rec := range records {
+		if match(rec) {
+			logs = append(logs, rec)
+		}
+	}
+	logs = uniqueAPIRequests(logs, fields)
+	if len(logs) == 0 {
+		return nil, ""
+	}
+	sum := map[string]float64{}
+	out := make([]map[string]float64, 0, len(logs))
+	for _, rec := range logs {
+		item := map[string]float64{}
+		found := false
+		for _, key := range fields {
+			amount := record.Number(rec.Attributes[key])
+			if amount == nil {
+				continue
+			}
+			name, ok := rename[key]
+			if !ok {
+				continue
+			}
+			item[name] = *amount
+			sum[name] += *amount
+			found = true
+		}
+		if found {
+			out = append(out, item)
+		}
+	}
+	if len(out) == 0 {
+		return nil, ""
+	}
+	if requestTotalsMatch(out, tokenMap(tokens)) {
+		return out, ""
+	}
+	return nil, logName + " token totals do not match metrics " + metricName + " totals, so per-request override rates were not applied"
+}
+
+func requestTotalsMatch(requests []map[string]float64, totals map[string]float64) bool {
+	sum := map[string]float64{}
+	for _, req := range requests {
+		for key, value := range req {
+			sum[key] += value
+		}
+	}
+	keys := map[string]bool{}
+	for key := range sum {
+		keys[key] = true
+	}
+	for key := range totals {
+		keys[key] = true
+	}
+	for key := range keys {
+		if sum[key] != totals[key] {
+			return false
+		}
+	}
+	return true
 }
 
 // codexMetricKeys maps each response.completed count to the

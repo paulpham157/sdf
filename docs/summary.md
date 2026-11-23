@@ -336,9 +336,14 @@ exactly the metric totals for `input`, `cached_input`, `cache_write_input`,
 priced as one request under the metric's keys (issue #222). The displayed
 totals stay the metric's, so nothing is counted twice. If the logs do not
 add up (a call's log is missing, or there are logs the metric does not
-cover), the aggregate rule applies. An override entry with any other condition
+cover), the aggregate rule applies. The same match-and-price rule applies
+to a preferred `claude_code.token.usage` or `grok_code.token.usage` metric
+when de-duplicated `api_request` logs are present and their totals match
+the metric totals. If those totals do not match, the aggregate rule applies
+and the reason says so. An override entry with any other condition
 key (for example `utc_start` / `utc_end`) leaves the cost unknown, including
 when a `min_prompt_tokens` field is present but not a non-negative integer.
+
 
 How a count is turned into a bucket:
 
@@ -351,7 +356,8 @@ How a count is turned into a bucket:
 | Gemini CLI `gemini_cli.token.usage` and `api_response` | No pricing rule yet, so computed cost is `unknown` with the reason `no pricing rule for token source`. From `ApiResponseEvent` in `packages/core/src/telemetry/types.ts`: `input` / `input_token_count` is Gemini's `promptTokenCount` and includes `cache` / `cached_content_token_count`; `output` excludes `thought`; `tool` is the tool-use prompt count. `google/gemini-2.5-pro` also has `pricing.overrides` in the bundled table. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
 | GitHub Copilot CLI `chat` spans, `invoke_agent`, and `gen_ai.client.inference.usage.*` | Never priced per token, so computed cost is always `unknown`. Copilot bills premium requests (`github.copilot.cost` multiplier) and AI units (`nano_aiu`), not tokens, and a token price would mislead. `TestCopilotIsNeverPricedPerToken` fails if a pricing rule for these sources is added. For reference, per the Copilot docs `input_tokens` includes `cache_read` and `cache_write`, and `output_tokens` includes `reasoning`. |
-| Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. `x-ai/grok-4.6` and `x-ai/grok-4.7` have `min_prompt_tokens` 200000 overrides; a live `grok-4.7` api_request of 14454/177/121/10112 input/output/reasoning/cache_read prices at `$0.014802` (base rates), and the session totals 64649/384/167/51072 price at `$0.054994` because that prompt total is below the threshold. A metric-only total at or above 200000 stays unknown unless per-request `api_request` counts are the token source. |
+| Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. `x-ai/grok-4.6` and `x-ai/grok-4.7` have `min_prompt_tokens` 200000 overrides; a live `grok-4.7` api_request of 14454/177/121/10112 input/output/reasoning/cache_read prices at `$0.014802` (base rates), and the session totals 64649/384/167/51072 price at `$0.054994` because that prompt total is below the threshold. A metric-only total at or above 200000 stays unknown, including a 300000-input / 20-output aggregate that would be `$0.60012` at the base rates (that figure is not used, because the session might have been one request over the threshold). If de-duplicated `api_request` logs are also present and their totals match the metrics, each request is priced on its own (two 150000-input / 10-output grok-4.7 requests summing to that 300000-input aggregate price at `$0.60012` at the base rates). If those totals do not match, the cost stays unknown. |
+
 
 Cache-creation counts mix the five-minute and one-hour lifetimes. If the
 catalog publishes both `input_cache_write` and `input_cache_write_1h` and

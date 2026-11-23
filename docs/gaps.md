@@ -86,7 +86,8 @@
   It is not an invoice either: override conditions other than
   `min_prompt_tokens` are refused, a session total at or above a
   `min_prompt_tokens` threshold is unknown unless per-request counts exist
-  (Claude Code and Grok CLI `api_request` logs, Codex `response.completed`
+  (Claude Code and Grok CLI `api_request` logs, including when those logs'
+  totals match a preferred usage metric, and Codex `response.completed`
   logs). A Codex `codex.turn.token_usage` point is one turn or more, each
   turn summed over its Responses calls, with no `turn.id` or
   `conversation.id`, and SDF keeps only the histogram `sum`, so a
