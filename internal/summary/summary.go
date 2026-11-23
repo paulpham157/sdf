@@ -86,20 +86,14 @@ var (
 		"pi.session.start": true,
 		"pi.session.end":   true,
 	}
-	cumulativeUsage = map[string]bool{
-		"input_tokens":             true,
-		"cache_read.input_tokens":  true,
-		"cache_read_input_tokens":  true,
-		"cache_write.input_tokens": true,
-		"cache_write_input_tokens": true,
-	}
 	// usageAliases folds gen_ai.usage.* labels that name the same quantity
 	// into one key. GenAI semconv v0.1.0 renamed
 	// gen_ai.usage.cache_creation.input_tokens to
 	// gen_ai.usage.cache_write.input_tokens and removed the old name;
 	// OpenCode still sends the old one. reasoning_tokens is the pre-v0.1.0
 	// spelling of reasoning.output_tokens. When a span carries more than one
-	// of them, the largest value is kept; they are never added.
+	// of them, the largest value is kept; they are never added. Only the
+	// per-span values are then summed across requests (issue #200).
 	usageAliases = map[string]string{
 		"cache_creation.input_tokens": "cache_write.input_tokens",
 		"cache_creation_input_tokens": "cache_write.input_tokens",
@@ -885,11 +879,11 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 	if len(events) > 0 {
 		return codexSSETokens(events)
 	}
-	if opencode, method, ok := genAIUsage(records, func(name string) bool { return name == "SessionStep.attempt" }, true, nil); ok {
-		return opencode, record.Str("traces SessionStep.attempt"), method
+	if opencode, ok := genAIUsage(records, func(name string) bool { return name == "SessionStep.attempt" }, nil); ok {
+		return opencode, record.Str("traces SessionStep.attempt"), record.Str(openCodeTokensMethod)
 	}
-	if pi, method, ok := genAIUsage(records, func(name string) bool { return spanHead(name) == "chat" }, false, []string{"input_tokens", "output_tokens"}); ok {
-		return pi, record.Str("traces chat"), method
+	if pi, ok := genAIUsage(records, func(name string) bool { return spanHead(name) == "chat" }, []string{"input_tokens", "output_tokens"}); ok {
+		return pi, record.Str("traces chat"), record.Str("sum of per-turn input_tokens and output_tokens; they are additive and are not added to gen_ai.client.token.usage; a span delivered more than once (same trace and span id) counts once")
 	}
 	var piMetrics []point
 	for _, p := range points {
@@ -928,12 +922,29 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 	return OrderedFloats{}, nil, nil
 }
 
-func genAIUsage(records []record.Record, match func(string) bool, cumulativePrefix bool, only []string) (OrderedFloats, *string, bool) {
+// openCodeTokensMethod explains the OpenCode SessionStep.attempt rule. One
+// attempt span is one provider request: anomalyco/opencode
+// packages/core/src/session/runner/step.ts annotates it with the finish
+// usage of that single llm.stream call, not a session running total. Each
+// request is billed its full input (the resent prefix is usually billed at
+// the cache-read rate, but it is billed again), and cache read and cache
+// write are what that request read and wrote. So every count is summed
+// across requests (issue #200).
+const openCodeTokensMethod = "sum over SessionStep.attempt spans (one span per provider request); input and cache counts are per request, because each request is billed its full input and its own cache reads and writes; old and new names of one count on the same span are one value (the largest), never added; a span delivered more than once (same trace and span id) counts once"
+
+// genAIUsage sums gen_ai.usage.* attributes over the spans that match. Each
+// matching span is one request whose counts are per-request deltas, so the
+// totals are sums. Within one span, alias labels (usageAliases) are one
+// quantity and keep the largest value. A span stored twice (same trace and
+// span id, for example after an exporter retry) is one request; its copies
+// are merged with the same per-label max before summing.
+func genAIUsage(records []record.Record, match func(string) bool, only []string) (OrderedFloats, bool) {
 	onlySet := map[string]bool{}
 	for _, label := range only {
 		onlySet[label] = true
 	}
 	var rows []map[string]float64
+	spanRow := map[string]int{}
 	for _, rec := range records {
 		if rec.Signal != "traces" || !match(deref(rec.Name)) {
 			continue
@@ -959,12 +970,24 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 			}
 			amounts[label] = *amount
 		}
-		if len(amounts) > 0 {
-			rows = append(rows, amounts)
+		if len(amounts) == 0 {
+			continue
 		}
+		if key, ok := spanKey(rec); ok {
+			if index, seen := spanRow[key]; seen {
+				for label, amount := range amounts {
+					if prev, ok := rows[index][label]; !ok || amount > prev {
+						rows[index][label] = amount
+					}
+				}
+				continue
+			}
+			spanRow[key] = len(rows)
+		}
+		rows = append(rows, amounts)
 	}
 	if len(rows) == 0 {
-		return OrderedFloats{}, nil, false
+		return OrderedFloats{}, false
 	}
 	var labels []string
 	seen := map[string]bool{}
@@ -1002,26 +1025,18 @@ func genAIUsage(records []record.Record, match func(string) bool, cumulativePref
 				values = append(values, v)
 			}
 		}
-		if cumulativePrefix && (cumulativeUsage[label] || modalityInput(label)) {
-			totals.Set(label, maxFloat(values))
-		} else {
-			totals.Set(label, sum(values))
-		}
+		totals.Set(label, sum(values))
 	}
-	var method string
-	if cumulativePrefix {
-		method = "input and cache counts use the max because each request resends the conversation prefix; output is summed"
-	} else {
-		method = "sum of per-turn input_tokens and output_tokens; they are additive and are not added to gen_ai.client.token.usage"
-	}
-	return totals, record.Str(method), true
+	return totals, true
 }
 
-// modalityInput reports whether label is a per-modality input breakdown such
-// as text.input_tokens or text.cache_read.input_tokens. Like input_tokens,
-// it repeats the conversation prefix on every request, so it takes the max.
-func modalityInput(label string) bool {
-	return pricing.IsModalityUsage(label) && strings.HasSuffix(label, "input_tokens")
+// spanKey identifies one span by trace and span id. A row without both ids
+// has no key and is never merged with another row.
+func spanKey(rec record.Record) (string, bool) {
+	if rec.TraceID == nil || rec.SpanID == nil || *rec.TraceID == "" || *rec.SpanID == "" {
+		return "", false
+	}
+	return *rec.TraceID + "/" + *rec.SpanID, true
 }
 
 func sumSpanMS(records []record.Record, match func(string) bool) *float64 {

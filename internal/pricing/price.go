@@ -11,8 +11,9 @@ import (
 
 // Usage is the token total a summary already reduced.
 // Source is the summary's tokens_source string. The counts must already
-// follow that agent's de-dup rule (Codex and OpenCode take a max for the
-// prefix; Pi sums per-turn input and output and drops cache and reasoning).
+// follow that agent's de-dup rule (Codex response.completed takes a max for
+// the prefix; OpenCode sums per-request counts; Pi sums per-turn input and
+// output and drops cache and reasoning).
 type Usage struct {
 	Models []string
 	Tokens map[string]float64
@@ -407,8 +408,9 @@ var renamedUsage = map[string]bool{
 
 func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 	// gen_ai.usage.cache_read.input_tokens is the OpenTelemetry name for cache
-	// reads included in input tokens. The summary has already replaced repeated
-	// prefix counts with the max, and has already folded
+	// reads included in input tokens. The summary has already summed the
+	// per-request counts across SessionStep.attempt spans (issue #200), and
+	// has already folded
 	// gen_ai.usage.cache_creation.input_tokens (renamed to
 	// cache_write.input_tokens in GenAI semconv v0.1.0) and reasoning_tokens
 	// into the v0.1.0 names. The old names stay here as a defensive fallback,
@@ -478,7 +480,7 @@ func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 			return nil, "", fmt.Sprintf("per-modality key %q is present without the %s total, so the counts were not priced", key, bucket)
 		}
 	}
-	method := "OpenCode input and cache totals already use the max across requests; cache read and cache write are priced as subsets of input, and reasoning as a subset of output"
+	method := "OpenCode input and cache totals are per-request sums; cache read and cache write are priced as subsets of input, and reasoning as a subset of output"
 	if len(informational) > 0 {
 		method += "; per-modality breakdown keys (" + strings.Join(informational, ", ") + ") are already part of the totals and are not priced again"
 	}

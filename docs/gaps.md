@@ -48,9 +48,11 @@
     250).
   - A cumulative UpDownCounter without a start time that goes down reads as
     a reset.
-- Codex and OpenCode input tokens use the max, not the sum, as
-  described in [docs/summary.md](summary.md). Pi per-turn input and output are summed, and that sum is
-  not added to `gen_ai.client.token.usage`.
+- Codex `response.completed` input and cache tokens use the max, not the
+  sum, as described in [docs/summary.md](summary.md). OpenCode
+  `SessionStep.attempt` counts are per request and are summed (issue #200).
+  Pi per-turn input and output are summed, and that sum is not added to
+  `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
   Codex micro-USD or `usage.estimated_usd`, Pi `pi.cost.usd`). It is not an
   invoice. OpenCode does not emit one. `computed_cost_usd` is the bundled

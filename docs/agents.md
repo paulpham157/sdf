@@ -216,9 +216,13 @@ Session spans (`SessionRunner.drain`, `SessionRunner.runStep`,
 `SessionStep.attempt`, `Tool.execute`) carry `session.id`. Startup spans and
 the process logs do not, so the summary leaves them unattributed instead of
 attaching them because the timestamps overlap. `SessionStep.attempt` carries
-`gen_ai.request.model` and `gen_ai.usage.*`. Input and cache counts already
-include the conversation prefix, so the summary takes the max. Output is
-summed. OpenCode does not emit a cost attribute. `Tool.execute` carries
+`gen_ai.request.model` and `gen_ai.usage.*`. One attempt span is one provider
+request: OpenCode annotates it with the finish usage of that single
+`llm.stream` call (`packages/core/src/session/runner/step.ts`), not a
+session running total. Every request is billed its full input, including the
+resent conversation prefix, and its own cache reads and writes, so the
+summary sums input, cache, output, and reasoning across attempts (issue
+#200). A span stored twice (same trace and span id) counts once. OpenCode does not emit a cost attribute. `Tool.execute` carries
 `gen_ai.tool.name` and `gen_ai.tool.call.id` and no success flag, so the tool
 call is `unknown`.
 

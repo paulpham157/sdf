@@ -109,19 +109,20 @@ func TestCodexSubtractsCacheAndReasoningAndIgnoresTotal(t *testing.T) {
 	}
 }
 
-func TestOpenCodePricesTheMaxNotTheSum(t *testing.T) {
+func TestOpenCodePricesTheSummaryTotals(t *testing.T) {
 	cat := mustFixture(t, &Model{
 		ID: "recursive/flint-v1.0:free",
 		Prices: map[string]string{
 			"prompt": "0", "completion": "0", "input_cache_read": "0",
 		},
 	})
-	// Counts are the already-reduced max, not 5601+5822.
+	// Counts are the summary's per-request sums (issue #200): input
+	// 5601+5822 and cache read 256+5760. Pricing does not reduce them again.
 	got := Price(cat, Usage{
 		Models: []string{"openrouter/recursive/flint-v1.0:free"},
 		Source: "traces SessionStep.attempt",
 		Tokens: map[string]float64{
-			"input_tokens": 5822, "output_tokens": 306, "cache_read.input_tokens": 5760,
+			"input_tokens": 11423, "output_tokens": 306, "cache_read.input_tokens": 6016,
 		},
 	})
 	if got.Status != "known" || got.USD != "0" || got.MatchedBy != "openrouter_prefix" {
@@ -130,7 +131,7 @@ func TestOpenCodePricesTheMaxNotTheSum(t *testing.T) {
 	foundInput := false
 	for _, item := range got.Components {
 		if item.Name == "input" {
-			foundInput = item.Tokens == "62"
+			foundInput = item.Tokens == "5407"
 		}
 	}
 	if !foundInput {

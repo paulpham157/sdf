@@ -67,7 +67,7 @@ func TestSamplesOverHTTPAndGRPC(t *testing.T) {
 		"output=30",
 		"session ses_sampleopencode0001\n",
 		"  tool: opencode\n",
-		"input_tokens=5822",
+		"input_tokens=11423",
 		"output_tokens=306",
 		"session sample-qwen-1\n",
 		"  tool: qwen-code\n",
