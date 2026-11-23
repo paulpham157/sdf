@@ -14,6 +14,8 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 
 ### Features
 
+- Add `sdf decision check <action>`: exit 1 when an in-force decision's statement forbids `push`, `merge`, `release`, `deploy`, or an architecture change. The agent skill requires this check before those actions ([#292](https://github.com/paulpham157/sdf/pull/292)).
+- Add `sdf decision brief` (`--max-items`, `--max-bytes`, `--format text|json`) to print a ranked, size-capped list of active constraints (locked user decisions first, then sources of `constrains` edges), then blocked decisions, then conflicting decisions. Retracted and superseded records are omitted. A missing database, a store error, or an empty brief prints nothing and exits 0 ([#291](https://github.com/paulpham157/sdf/pull/291)).
 - Replace the previous product with an OTLP receiver for Codex and Claude Code; store traces, metrics, and logs in SQLite and summarize sessions ([#157](https://github.com/paulpham157/sdf/pull/157)).
 - Accept chunked OTLP and summarize OpenCode and Pi sessions ([#158](https://github.com/paulpham157/sdf/pull/158)).
 - Port the collector to a single static Go binary (`CGO_ENABLED=0`) ([#159](https://github.com/paulpham157/sdf/pull/159)).
