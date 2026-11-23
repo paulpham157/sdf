@@ -1,9 +1,7 @@
-//go:build reviewbugs
-
 package ui_test
 
-// Still tagged: the fix is in app.js (route() decodes the hash outside
-// render's try/catch), which is outside this Go-only change.
+// Fixed in app.js (safeDecode, route() inside render's try/catch), so this
+// review test now runs untagged.
 
 import (
 	"strings"
