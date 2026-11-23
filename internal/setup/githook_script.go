@@ -21,6 +21,8 @@ const hookScriptTemplate = `#!/bin/sh
 # Posts the commit SHA, checkout path, branch, and agent session id to a
 # loopback sdf serve. It does not send the diff or the commit message.
 # Failure is ignored, and the request cannot use an HTTP proxy.
+# A receiver token is read at run time from SDF_OTLP_TOKEN or
+# SDF_OTLP_TOKEN_FILE; it is never stored in this file.
 
 SDF_HOOK_URL='__SDF_HOOK_URL__'
 SDF_HOOK_KIND='__SDF_HOOK_KIND__'
@@ -113,20 +115,55 @@ sdf_post() {
     http://127.0.0.1:*/v1/logs|http://[::1]:*/v1/logs) ;;
     *) return 0 ;;
   esac
+  sdf_auth=$(sdf_auth_header)
   if command -v curl >/dev/null 2>&1; then
-    http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= all_proxy= ALL_PROXY= \
+    printf '%s\n' "$sdf_auth" | \
+      http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= all_proxy= ALL_PROXY= \
       curl -s -o /dev/null --connect-timeout 1 --max-time 1 --max-redirs 0 --noproxy '*' \
-      -X POST -H 'Content-Type: application/json' --data-binary "$payload" \
+      -X POST -H 'Content-Type: application/json' -H @- --data-binary "$payload" \
       "$SDF_HOOK_URL" || true
     return 0
   fi
   if command -v wget >/dev/null 2>&1; then
-    http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= all_proxy= ALL_PROXY= \
-      wget -q -O /dev/null -T 1 --no-proxy \
-      --header='Content-Type: application/json' --post-data="$payload" \
-      "$SDF_HOOK_URL" || true
+    if [ -z "$sdf_auth" ]; then
+      sdf_wget "$payload"
+      return 0
+    fi
+    sdf_rc=$(mktemp 2>/dev/null) || return 0
+    printf 'header = %s\n' "$sdf_auth" > "$sdf_rc"
+    sdf_wget "$payload" "$sdf_rc"
+    rm -f "$sdf_rc"
   fi
   return 0
+}
+
+# sdf_wget posts $1. A second argument is a wgetrc that holds the
+# Authorization header; without one wget reads its usual configuration.
+sdf_wget() {
+  if [ -n "${2:-}" ]; then
+    WGETRC=$2 http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= all_proxy= ALL_PROXY= \
+      wget -q -O /dev/null -T 1 --no-proxy \
+      --header='Content-Type: application/json' --post-data="$1" \
+      "$SDF_HOOK_URL" || true
+    return 0
+  fi
+  http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= all_proxy= ALL_PROXY= \
+    wget -q -O /dev/null -T 1 --no-proxy \
+    --header='Content-Type: application/json' --post-data="$1" \
+    "$SDF_HOOK_URL" || true
+}
+
+# sdf_auth_header prints an Authorization header line when a receiver token
+# is available, from the same variables sdf serve reads: SDF_OTLP_TOKEN, else
+# the file named by SDF_OTLP_TOKEN_FILE. This file never holds the token. The
+# header goes to curl on stdin and to wget through a private temporary
+# wgetrc, so it is not on a command line.
+sdf_auth_header() {
+  sdf_tok=$(printf '%s' "${SDF_OTLP_TOKEN:-}" | tr -d '[:space:]')
+  if [ -z "$sdf_tok" ] && [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then
+    sdf_tok=$(tr -d '[:space:]' < "$SDF_OTLP_TOKEN_FILE" 2>/dev/null)
+  fi
+  [ -z "$sdf_tok" ] || printf 'Authorization: Bearer %s' "$sdf_tok"
 }
 
 # Codex 0.167.0 service.name is the originator, except the app server passes

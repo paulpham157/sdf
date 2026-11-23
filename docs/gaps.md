@@ -118,6 +118,13 @@
   trailer stays in the git object. A GitHub squash merge keeps that trailer
   only when the squash commit message includes it. Husky, lefthook, and
   pre-commit are not edited; `core.hooksPath` is left as it was.
+- With a receiver token, a hook authenticates only when `SDF_OTLP_TOKEN` or
+  `SDF_OTLP_TOKEN_FILE` is in the environment of the agent or `git` that
+  runs it; an agent started from a desktop launcher or a GUI git client may
+  not have it, and then the hook's post is rejected (401) and dropped. The
+  git hook's wget fallback passes the header through a temporary wgetrc,
+  which BusyBox wget does not read. `sdf init --write` does not add the
+  exporter header to an agent's telemetry settings.
 - No live capture is committed in this tree; the tests use the hand-written
   sample payloads (`tests/samples/grok_traces.json` follows the Grok CLI
   1.0.92 span shapes but is not a capture). OpenCode and Pi behavior above is from the 2026-11-10

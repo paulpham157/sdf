@@ -205,6 +205,7 @@ func claude(req Request) (Result, error) {
 	}
 	b.WriteString("\n")
 	b.WriteString(status)
+	b.WriteString(hookTokenNoteFor(req.Endpoint))
 	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
 }
 
@@ -291,6 +292,7 @@ func codex(req Request) (Result, error) {
 		return Result{}, err
 	}
 	b.WriteString(hookStatus)
+	b.WriteString(hookTokenNoteFor(req.Endpoint))
 	return Result{Text: b.String(), Wrote: true}, nil
 }
 
@@ -349,6 +351,7 @@ func opencode(req Request) (Result, error) {
 		return Result{}, err
 	}
 	b.WriteString(hookStatus)
+	b.WriteString(hookTokenNoteFor(req.Endpoint))
 	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ") || strings.HasPrefix(hookStatus, "wrote ")}, nil
 }
 
@@ -404,6 +407,7 @@ func pi(req Request) (Result, error) {
 		return Result{}, err
 	}
 	b.WriteString(extStatus)
+	b.WriteString(hookTokenNoteFor(req.Endpoint))
 	if req.Install {
 		out, err := runPiInstall(req)
 		b.WriteString("\n")
@@ -455,7 +459,21 @@ func grok(req Request) (Result, error) {
 		return Result{}, err
 	}
 	b.WriteString(hookStatus)
+	b.WriteString(hookTokenNoteFor(req.Endpoint))
 	return Result{Text: b.String(), Wrote: configWrote || strings.HasPrefix(hookStatus, "wrote ")}, nil
+}
+
+// hookTokenNote follows a written session hook. The hook reads the token
+// when it runs; init never copies it into the file.
+const hookTokenNote = "If sdf serve requires a token, the session hook sends it when SDF_OTLP_TOKEN or SDF_OTLP_TOKEN_FILE is set where the agent starts; the token is not written to the hook.\n"
+
+// hookTokenNoteFor is hookTokenNote for a loopback endpoint. For any other
+// host the hook never sends the token (hookTokenShFor), and says so.
+func hookTokenNoteFor(ep Endpoint) string {
+	if loopbackURL(ep.base()) {
+		return hookTokenNote
+	}
+	return "The session hook does not send a receiver token: " + ep.Host + " is not loopback, and the token is only sent to localhost, 127.0.0.1, or ::1 over plain HTTP.\n"
 }
 
 // grokContentGates are the environment variables that put prompt text,

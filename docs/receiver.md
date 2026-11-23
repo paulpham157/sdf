@@ -106,9 +106,50 @@ specification requires for `OTEL_EXPORTER_OTLP_HEADERS`. The same header
 works for HTTP and gRPC exporters that honor that variable. Agent-specific
 settings are in [docs/agents.md](agents.md#optional-receiver-token).
 
-`sdf init --write` and the session and git hooks do not add this header yet.
-If the receiver has a token set, those hooks and an init-generated config
-without the header will be rejected until you add it yourself.
+### Hooks and the token
+
+The session hooks (`sdf init claude-code`, `codex`, `grok`, `opencode`, and
+`pi` with `--write`) and the git hooks (`sdf init --git-hooks`) read the
+token when they run, from the same variables `sdf serve` reads:
+`SDF_OTLP_TOKEN`, else the file named by `SDF_OTLP_TOKEN_FILE`, with
+whitespace removed. With a token they add `Authorization: Bearer <token>`;
+without one they post as before, so an open receiver needs nothing. The
+token is never written into a hook file, a settings file, or a repository's
+`.git/hooks`. curl gets the header on stdin (`-H @-`), and the git hook's
+wget fallback gets it from a temporary wgetrc that is removed after the
+post, so the token is not on a command line. The JavaScript hooks (OpenCode,
+Pi) read the same variables with `process.env` and `node:fs`.
+
+The token is only sent to a loopback receiver (`localhost`, `127.0.0.0/8`,
+or `::1`), because the hooks post plain HTTP. `sdf init AGENT --host`
+with any other host writes session hooks that never read or send the token,
+and `sdf init` says so; the git hooks post only to loopback in any case.
+`sdf serve` refuses a non-loopback `Host`, so such a hook could not be
+accepted anyway.
+
+Checked live on 2026-11-23 with a signed-in `grok` 1.0.92 and a receiver
+started with `--otlp-token-file`: with `SDF_OTLP_TOKEN_FILE` exported where
+`grok` started, the Grok session hook's open and close, the git hook's
+commit event, and Grok's logs, metrics, and internal spans (the last two with
+the token in `OTEL_EXPORTER_OTLP_HEADERS` and `GROK_INTERNAL_OTLP_HEADERS`)
+were all accepted, and the commit linked as `hook`. The same hooks without
+the variable got 401 and stored nothing. The Claude Code hook was run by
+hand the same way; under Grok (`GROK_HOOK_EVENT` set) it sent nothing.
+
+A hook only sees the environment of the agent, or of `git`, that runs it.
+One way to share the token with `sdf serve`:
+
+```bash
+umask 077; mkdir -p ~/.config/sdf
+head -c 32 /dev/urandom | base64 > ~/.config/sdf/otlp-token
+# in the shell profile, so sdf serve, the agents, and git all see it
+export SDF_OTLP_TOKEN_FILE=~/.config/sdf/otlp-token
+sdf serve
+```
+
+`sdf init --write` still does not add the exporter header to an agent's
+telemetry settings; set `OTEL_EXPORTER_OTLP_HEADERS` (or the agent's own
+setting) as described in [docs/agents.md](agents.md#optional-receiver-token).
 
 A token only detects callers that do not have it. `--otlp-token-file`
 keeps the token out of the process listing, but a world-readable file, a
@@ -370,8 +411,8 @@ Grok hook sends `cwd`; the other agents' hooks are unchanged. Grok
 substitutes `$VAR` in a hook command from its own
 environment when it loads the file, and refuses a command with a `$VAR` it
 cannot resolve unless the command assigns it; the sdf command uses
-`sdf_`-prefixed local names, `${PATH:-}`, and `${GROK_SESSION_ID:-}` for
-that reason. `SessionEnd`
+`sdf_`-prefixed local names, `${PATH:-}`, `${GROK_SESSION_ID:-}`,
+`${SDF_OTLP_TOKEN:-}`, and `${SDF_OTLP_TOKEN_FILE:-}` for that reason. `SessionEnd`
 hooks get 1.5 seconds by default, so the post uses `curl -m 1`. Sources:
 grok-build `user-guide/10-hooks.md` ("Hook Locations", "Hook Events"),
 `docs/custom-hooks.md` ("Variable Substitution"), and

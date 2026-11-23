@@ -183,8 +183,16 @@ type serveProc struct {
 
 func startServe(t *testing.T) *serveProc {
 	t.Helper()
+	return startServeArgs(t)
+}
+
+// startServeArgs starts sdf serve on free ports with extra flags, such as
+// --otlp-token-file.
+func startServeArgs(t *testing.T, extra ...string) *serveProc {
+	t.Helper()
 	db := filepath.Join(t.TempDir(), "telemetry.sqlite")
-	cmd := exec.Command(binPath(t), "serve", "--host", "127.0.0.1", "--port", "0", "--grpc-port", "0", "--db", db)
+	args := append([]string{"serve", "--host", "127.0.0.1", "--port", "0", "--grpc-port", "0", "--db", db}, extra...)
+	cmd := exec.Command(binPath(t), args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

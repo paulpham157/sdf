@@ -2,6 +2,8 @@ package setup
 
 import (
 	"fmt"
+	"net"
+	neturl "net/url"
 	"strings"
 )
 
@@ -16,16 +18,85 @@ func fieldExpr(name string) string {
 	return `sed -n 's/.*"` + name + `"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'`
 }
 
+// hookTokenSh sets sdf_auth to an Authorization header line when a receiver
+// token is available to the hook process, and to an empty string otherwise.
+// It reads the same variables sdf serve reads: SDF_OTLP_TOKEN, else the file
+// named by SDF_OTLP_TOKEN_FILE, with whitespace removed. The token is never
+// written into a hook file. The header reaches curl on stdin (-H @-), so it
+// is not in curl's argument list, where other local users could read it; an
+// empty line adds no header, so a receiver without a token works as before.
+// Every name is either sdf_-prefixed and assigned in the command, or uses the
+// ${NAME:-} form, so Grok's load-time $VAR substitution leaves it alone.
+const hookTokenSh = `sdf_tok=$(printf '%s' "${SDF_OTLP_TOKEN:-}" | tr -d '[:space:]'); ` +
+	`if [ -z "$sdf_tok" ] && [ -n "${SDF_OTLP_TOKEN_FILE:-}" ]; then ` +
+	`sdf_tok=$(tr -d '[:space:]' < "${SDF_OTLP_TOKEN_FILE:-}" 2>/dev/null); fi; ` +
+	`sdf_auth=; [ -z "$sdf_tok" ] || sdf_auth="Authorization: Bearer $sdf_tok"; `
+
+// hookTokenShFor is hookTokenSh when u is a loopback receiver, and an empty
+// sdf_auth otherwise: the token is only ever sent to localhost, 127.0.0.0/8,
+// or ::1, never over plain HTTP to another host. sdf serve refuses a
+// non-loopback Host anyway, so nothing that could work is lost.
+func hookTokenShFor(u string) string {
+	if loopbackURL(u) {
+		return hookTokenSh
+	}
+	return `sdf_auth=; `
+}
+
+// loopbackURL reports whether u is an http URL whose host is localhost or a
+// loopback IP address.
+func loopbackURL(u string) bool {
+	parsed, err := neturl.Parse(u)
+	if err != nil || parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// jsTokenHeaders is the OpenCode and Pi header builder for a loopback
+// receiver. jsPlainHeaders, for any other host, never reads the token.
+const jsTokenHeaders = `import { readFileSync } from "node:fs"
+
+// The receiver token, read when the hook posts from SDF_OTLP_TOKEN, else the
+// file named by SDF_OTLP_TOKEN_FILE, the same variables sdf serve reads. It is
+// not stored in this file. No token sends no Authorization header.
+const sdfHeaders = () => {
+  let token = (process.env.SDF_OTLP_TOKEN || "").replace(/\s/g, "")
+  if (!token && process.env.SDF_OTLP_TOKEN_FILE) {
+    try { token = readFileSync(process.env.SDF_OTLP_TOKEN_FILE, "utf8").replace(/\s/g, "") } catch (e) {}
+  }
+  const headers = { "content-type": "application/json" }
+  if (token) headers.authorization = "Bearer " + token
+  return headers
+}
+`
+
+const jsPlainHeaders = `// The receiver is not on loopback, so the receiver token is never sent.
+const sdfHeaders = () => ({ "content-type": "application/json" })
+`
+
+func jsHeaders(u string) string {
+	if loopbackURL(u) {
+		return jsTokenHeaders
+	}
+	return jsPlainHeaders
+}
+
 func sessionHookCommand(tool, edge, url string) string {
 	body := fmt.Sprintf(`{"tool":%q,"session_id":"%%s","edge":%q,"reason":"%%s"}`, tool, edge)
 	return fmt.Sprintf(`export PATH="$PATH:/usr/bin:/bin"; json=$(cat); `+
 		`sid=$(printf '%%s' "$json" | %s); [ -n "$sid" ] || exit 0; `+
 		`reason=$(printf '%%s' "$json" | %s); `+
 		`[ -n "$reason" ] || reason=$(printf '%%s' "$json" | %s); `+
-		`payload=$(printf '%s' "$sid" "$reason"); `+
-		`curl -sf -m 1 -X POST -H 'content-type: application/json' `+
+		`payload=$(printf '%s' "$sid" "$reason"); %s`+
+		`printf '%%s\n' "$sdf_auth" | curl -sf -m 1 -X POST -H 'content-type: application/json' -H @- `+
 		`--data "$payload" %s >/dev/null 2>&1 || true`,
-		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, shQuote(url))
+		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, hookTokenShFor(url), shQuote(url))
 }
 
 // claudeHooks is the command sdf adds to each event under "hooks" in
@@ -95,6 +166,7 @@ func insertGuard(command, guard string) string {
 // not drop events the way the /api/event stream does.
 func opencodePlugin(url string) string {
 	return fmt.Sprintf(`// Reports a session opening to the local sdf collector.
+%s
 export const SdfSession = async (ctx) => {
   ctx.event.subscribe({ types: ["session.created"] }).then(async (stream) => {
     for await (const ev of stream) {
@@ -102,14 +174,14 @@ export const SdfSession = async (ctx) => {
       if (!id) continue
       fetch(%q, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: sdfHeaders(),
         body: JSON.stringify({ tool: "opencode", session_id: id, edge: "open", reason: "" }),
       }).catch(() => {})
     }
   })
   return {}
 }
-`, url)
+`, jsHeaders(url), url)
 }
 
 // grokHooks is $GROK_HOME/hooks/sdf-session.json. Grok's hook JSON matches
@@ -165,11 +237,11 @@ func grokSessionHookCommand(edge, url string) string {
 		`[ -n "$sdf_reason" ] || sdf_reason=$(printf '%%s' "$sdf_json" | %s); `+
 		`sdf_cwd=$(printf '%%s' "$sdf_json" | %s); `+
 		`[ -n "$sdf_cwd" ] || sdf_cwd=$(printf '%%s' "$sdf_json" | %s); `+
-		`sdf_payload=$(printf '%s' "$sdf_sid" "$sdf_reason" "$sdf_cwd"); `+
-		`curl -sf -m 1 -X POST -H 'content-type: application/json' `+
+		`sdf_payload=$(printf '%s' "$sdf_sid" "$sdf_reason" "$sdf_cwd"); %s`+
+		`printf '%%s\n' "$sdf_auth" | curl -sf -m 1 -X POST -H 'content-type: application/json' -H @- `+
 		`--data "$sdf_payload" %s >/dev/null 2>&1 || true`,
 		fieldExpr("sessionId"), fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"),
-		jsonStringExpr("workspaceRoot"), jsonStringExpr("cwd"), body, shQuote(url))
+		jsonStringExpr("workspaceRoot"), jsonStringExpr("cwd"), body, hookTokenShFor(url), shQuote(url))
 }
 
 // jsonStringExpr prints the body of one JSON string value with its escapes
@@ -186,6 +258,7 @@ func jsonStringExpr(name string) string {
 // replaced rather than ended, and those are not a close.
 func piExtension(url string) string {
 	return fmt.Sprintf(`// Reports a session opening and closing to the local sdf collector.
+%s
 export default function sdfSession(pi) {
   const post = (edge, reason) => {
     let id = ""
@@ -193,7 +266,7 @@ export default function sdfSession(pi) {
     if (!id) return
     fetch(%q, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: sdfHeaders(),
       body: JSON.stringify({ tool: "pi", session_id: id, edge, reason: reason || "" }),
     }).catch(() => {})
   }
@@ -204,5 +277,5 @@ export default function sdfSession(pi) {
     post("close", reason)
   })
 }
-`, url)
+`, jsHeaders(url), url)
 }
