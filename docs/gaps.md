@@ -76,7 +76,9 @@
   or refreshed OpenRouter token price for the same de-duplicated counts.
   It is not an invoice either: override conditions other than
   `min_prompt_tokens` are refused, a session total at or above a
-  `min_prompt_tokens` threshold is unknown unless per-request counts exist,
+  `min_prompt_tokens` threshold is unknown unless per-request counts exist
+  (Claude Code and Grok CLI `api_request` logs, Codex `response.completed`
+  logs; a Codex `codex.turn.token_usage` total is per turn, not per request),
   a missing component price is unknown, and per-request or web-search fees
   are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its

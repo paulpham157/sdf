@@ -887,6 +887,12 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 }
 
 func requestTokens(records []record.Record, source string) []map[string]float64 {
+	if source == "logs "+codexSSE+" response.completed" {
+		// One item per billed Responses API call, de-duplicated like the
+		// displayed totals, so the totals and the per-request prices come
+		// from the same events (issue #213).
+		return codexSSERequests(codexSSEEvents(records))
+	}
 	var keys []string
 	var match func(record.Record) bool
 	switch source {
@@ -974,13 +980,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 	if found {
 		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes; " + apiRequestDedupMethod)
 	}
-	var events []record.Record
-	for _, rec := range records {
-		if rec.Signal == "logs" && deref(rec.Name) == codexSSE && strAttr(rec.Attributes, "event.kind") == "response.completed" {
-			events = append(events, rec)
-		}
-	}
-	if len(events) > 0 {
+	if events := codexSSEEvents(records); len(events) > 0 {
 		return codexSSETokens(events)
 	}
 	if gemini, source, method, ok := geminiTokens(records, points); ok {
@@ -1165,14 +1165,24 @@ func sumSpanMS(records []record.Record, match func(string) bool) *float64 {
 	return record.Float(sum(found))
 }
 
-// codexSSETokens sums Codex response.completed logs. Each event is the usage
-// of one Responses API call, and one turn makes several calls (one per tool
-// round trip), so every count is added up, like Codex's own
-// codex.turn.token_usage. A record stored twice (same conversation.id,
-// event.timestamp and counts) is counted once.
-func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
+// codexSSEEvents returns the Codex codex.sse_event response.completed logs.
+func codexSSEEvents(records []record.Record) []record.Record {
+	var events []record.Record
+	for _, rec := range records {
+		if rec.Signal == "logs" && deref(rec.Name) == codexSSE && strAttr(rec.Attributes, "event.kind") == "response.completed" {
+			events = append(events, rec)
+		}
+	}
+	return events
+}
+
+// codexSSERequests returns the token counts of each Codex response.completed
+// log, one map per Responses API call. A record stored twice (same
+// conversation.id, event.timestamp and counts) is returned once. Events
+// without any count are skipped. It returns nil when no event has a count.
+func codexSSERequests(events []record.Record) []map[string]float64 {
 	seen := map[string]bool{}
-	var totals OrderedFloats
+	var out []map[string]float64
 	for _, rec := range events {
 		key := codexSSEKey(rec)
 		if key != "" {
@@ -1181,10 +1191,32 @@ func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
 			}
 			seen[key] = true
 		}
+		item := map[string]float64{}
 		for _, field := range codexSSETokenFields {
 			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				item[field] = *amount
+			}
+		}
+		if len(item) > 0 {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// codexSSETokens sums Codex response.completed logs. Each event is the usage
+// of one Responses API call, and one turn makes several calls (one per tool
+// round trip), so every count is added up, like Codex's own
+// codex.turn.token_usage. A record stored twice (same conversation.id,
+// event.timestamp and counts) is counted once. The totals are the sum of
+// codexSSERequests, the same items pricing uses per request.
+func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
+	var totals OrderedFloats
+	for _, item := range codexSSERequests(events) {
+		for _, field := range codexSSETokenFields {
+			if amount, ok := item[field]; ok {
 				prev, _ := totals.Get(field)
-				totals.Set(field, prev+*amount)
+				totals.Set(field, prev+amount)
 			}
 		}
 	}
