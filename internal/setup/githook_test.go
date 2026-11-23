@@ -172,6 +172,45 @@ func TestGitHookSessionIDsAndSilence(t *testing.T) {
 	}
 }
 
+// GROK_SESSION_ID is what Grok CLI puts in its shell tool's environment
+// (grok-build xai-grok-shell session/agent_rebuild.rs). The id below is a
+// made-up UUID, not a capture.
+func TestGitHookGrokSessionID(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	srv, got := recordingServer(t)
+	if _, err := InstallGitHooks(dir, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	id := "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	sha := commitIn(t, dir, "grok subject", "GROK_SESSION_ID="+id)
+	commitIn(t, dir, "grok and codex", "GROK_SESSION_ID="+id, "CODEX_THREAD_ID=019d2bae-7c39-7c73-b058-7b45e6aabef7")
+	commitIn(t, dir, "bad id", "GROK_SESSION_ID=has space")
+	bodies := got.all()
+	if len(bodies) != 1 {
+		t.Fatalf("want the grok commit only, got %d", len(bodies))
+	}
+	attrs := payloadAttrs(t, bodies[0])
+	if attrs["session.id"] != id || attrs["sdf.git.agent"] != "grok-cli" || attrs["resource.service.name"] != "grok-cli" || attrs["vcs.ref.head.revision"] != sha {
+		t.Fatalf("%+v", attrs)
+	}
+	if _, ok := attrs["conversation.id"]; ok {
+		t.Fatal("grok payload set conversation.id")
+	}
+	if strings.Contains(string(bodies[0]), "subject") {
+		t.Fatalf("payload contained the subject: %s", bodies[0])
+	}
+	if msg := commitLog(t, dir, sha); !strings.Contains(msg, "SDF-Session: "+id) || strings.Count(msg, "SDF-Session:") != 1 {
+		t.Fatalf("trailer %q", msg)
+	}
+	if both := commitLog(t, dir, "HEAD~1"); strings.Contains(both, "SDF-Session:") {
+		t.Fatalf("ambiguous agents gained a trailer: %s", both)
+	}
+	if bad := commitLog(t, dir, "HEAD"); strings.Contains(bad, "SDF-Session:") {
+		t.Fatalf("an invalid id gained a trailer: %s", bad)
+	}
+}
+
 func TestCodexHookServiceNameFollowsTheParent(t *testing.T) {
 	isolateGit(t)
 	dir := testRepo(t)
@@ -501,7 +540,7 @@ func isolateGit(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_TERMINAL_PROMPT", "0")
-	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "AI_AGENT"} {
+	for _, key := range []string{"PI_SESSION_FILE", "PI_SESSION_ID", "OPENCODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "GROK_SESSION_ID", "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "AI_AGENT"} {
 		t.Setenv(key, "")
 	}
 }
@@ -509,7 +548,7 @@ func isolateGit(t *testing.T) {
 func gitEnv(extra ...string) []string {
 	drop := map[string]bool{
 		"PI_SESSION_FILE": true, "PI_SESSION_ID": true, "OPENCODE_SESSION_ID": true,
-		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE": true, "AI_AGENT": true,
+		"CODEX_THREAD_ID": true, "CODEX_SESSION_ID": true, "GROK_SESSION_ID": true, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE": true, "AI_AGENT": true,
 	}
 	var out []string
 	for _, env := range os.Environ() {

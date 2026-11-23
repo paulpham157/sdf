@@ -129,7 +129,7 @@ func TestGrokDocsSchemaSessionTokensCostToolsAndDuration(t *testing.T) {
 			metrics = item.Reason
 		}
 	}
-	if !strings.Contains(traces, "logs and metrics only") || logs != "" || metrics != "" {
+	if !strings.Contains(traces, "logs and metrics only") || !strings.Contains(traces, "GROK_INTERNAL_OTLP_TRACES_ENDPOINT") || logs != "" || metrics != "" {
 		t.Fatalf("missing %+v", got.Missing)
 	}
 }
@@ -273,6 +273,55 @@ func TestGrok47MetricsAndAPIRequestMismatchStaysUnknown(t *testing.T) {
 	}
 	if !strings.Contains(got.ComputedCost.Reason, "do not match") || !strings.Contains(got.ComputedCost.Reason, "grok_code.api_request") {
 		t.Fatalf("reason should name the mismatch: %s", got.ComputedCost.Reason)
+	}
+}
+
+func TestGrok47MetricOnly300kStaysUnknownNotBaseRate(t *testing.T) {
+	// Same 300000 input / 20 output totals as the 2x150k case, but no
+	// api_request logs. The base rates would also produce $0.60012 on this
+	// aggregate (300000*0.000002 + 20*0.000006). That figure is not used:
+	// the session might have been one request over the 200000 threshold.
+	session := "ses_grok_47_metric_only_300k"
+	model := "grok-4.7"
+	report := Summarize([]record.Record{
+		metric(grokTokenMetric, 300000, &session, "delta", "sum", map[string]any{"type": "input", "model": model}, 1, 1, "grok-cli"),
+		metric(grokTokenMetric, 20, &session, "delta", "sum", map[string]any{"type": "output", "model": model}, 1, 2, "grok-cli"),
+	}, false)
+	got := report.Sessions[0]
+	if deref(got.TokensSource) != "metrics grok_code.token.usage" {
+		t.Fatalf("source %s", deref(got.TokensSource))
+	}
+	if got.ComputedCost.Status != "unknown" || got.ComputedCost.USD != "" {
+		t.Fatalf("computed %+v", got.ComputedCost)
+	}
+	if !strings.Contains(got.ComputedCost.Reason, "overrides") || !strings.Contains(got.ComputedCost.Reason, "not one request") {
+		t.Fatalf("reason %s", got.ComputedCost.Reason)
+	}
+}
+
+func TestGrok47MatchingAPIRequestsDedupBeforePricing(t *testing.T) {
+	// A retried export of the first 150000-input request must not break the
+	// match or price the session as three requests.
+	session := "ses_grok_47_dedup"
+	model := "grok-4.7"
+	first := grokLog("grok_code.api_request", session, 2, map[string]any{
+		"model": model, "input_tokens": 150000, "output_tokens": 10,
+	})
+	report := Summarize([]record.Record{
+		metric(grokTokenMetric, 300000, &session, "delta", "sum", map[string]any{"type": "input", "model": model}, 1, 1, "grok-cli"),
+		metric(grokTokenMetric, 20, &session, "delta", "sum", map[string]any{"type": "output", "model": model}, 1, 2, "grok-cli"),
+		first,
+		first, // identical retry
+		grokLog("grok_code.api_request", session, 3, map[string]any{
+			"model": model, "input_tokens": 150000, "output_tokens": 10,
+		}),
+	}, false)
+	got := report.Sessions[0]
+	if got.ComputedCost.Status != "known" || got.ComputedCost.USD != "0.60012" {
+		t.Fatalf("computed %+v", got.ComputedCost)
+	}
+	if !strings.Contains(got.ComputedCost.Method, "sum of 2 per-request costs") {
+		t.Fatalf("method %s", got.ComputedCost.Method)
 	}
 }
 

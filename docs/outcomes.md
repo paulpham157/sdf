@@ -35,8 +35,9 @@ merge can stay attributed after the original SHA is gone, and only when the
 squash message still contains it. See [Git hooks](receiver.md#git-hooks).
 
 A link is **heuristic** when none of those fired, the session has one
-absolute working directory (`pi.cwd` from pi-otel, or a single
-`workspace.host_paths` value from Claude Code), that directory is a git
+absolute working directory (`pi.cwd` from pi-otel, a single
+`workspace.host_paths` value from Claude Code, or `sdf.session.cwd` from the
+Grok CLI session hook that `sdf init grok --write` installs), that directory is a git
 checkout on this machine, and exactly one commit has a committer time inside
 the session window widened by two seconds. Zero commits, or more than one,
 stays unlinked. The same commit in two sessions' windows unlinks both.
@@ -49,6 +50,11 @@ disagrees with a directory the agent did export, the session stays unlinked.
 Without the git hooks, Codex and OpenCode do not export a working directory
 or a commit SHA on the signals this receiver stores, so those sessions stay
 unlinked unless you pass `--repo` and the time window contains one commit.
+Grok CLI's telemetry has none either, and Grok ignores
+`OTEL_RESOURCE_ATTRIBUTES`, so one cannot be added there; the Grok session
+hook from `sdf init grok --write` supplies `sdf.session.cwd`, and `--repo`
+remains the fallback when that hook is not installed (see
+[Grok CLI](agents.md#grok-cli)).
 Pi exports `pi.cwd` and can use the heuristic, and the hook when the
 session file stem matches `pi.session.id`. A commit with no session id is
 not attached to a session by the hook. Under Codex's default
@@ -97,8 +103,15 @@ exported in uppercase still matches the lowercase ref the edge stores.
 `GET /api/decisions` returns the records and edges in insertion order. An empty
 store returns empty lists. `sdf decision add` writes one record. It needs an id,
 a statement, and a status of `hypothesis` or `decision`. `sdf decision link`
-writes one edge. It needs a relation and two `KIND:REF` endpoints. No route
-writes a record.
+writes one edge. It needs a relation and two `KIND:REF` endpoints, where
+`KIND` is `decision`, `session`, or `commit`. No route writes a record.
+
+```bash
+sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
+  --status decision [--source TEXT] [--db PATH]
+sdf decision link --relation implements --from session:SESSION_ID \
+  --to decision:use-sqlite [--db PATH]
+```
 
 ## Local budget
 

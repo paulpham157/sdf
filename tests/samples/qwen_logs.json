@@ -1,0 +1,1852 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "qwen-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.28.4"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "qwen-code"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1800000200050000000",
+              "observedTimeUnixNano": "1800000200050000000",
+              "body": {
+                "stringValue": "Session started."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "session.start"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:00.050Z"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000200100000000",
+              "observedTimeUnixNano": "1800000200100000000",
+              "body": {
+                "stringValue": "CLI configuration loaded."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.config"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:00.100Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "sandbox_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "core_tools_enabled",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "approval_mode",
+                  "value": {
+                    "stringValue": "default"
+                  }
+                },
+                {
+                  "key": "file_filtering_respect_git_ignore",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "debug_mode",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "truncate_tool_output_threshold",
+                  "value": {
+                    "intValue": "25000"
+                  }
+                },
+                {
+                  "key": "truncate_tool_output_lines",
+                  "value": {
+                    "intValue": "1000"
+                  }
+                },
+                {
+                  "key": "ide_enabled",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "interactive_shell_enabled",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "mcp_servers",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "mcp_servers_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "mcp_tools",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "mcp_tools_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "output_format",
+                  "value": {
+                    "stringValue": "text"
+                  }
+                },
+                {
+                  "key": "skills",
+                  "value": {
+                    "stringValue": ""
+                  }
+                },
+                {
+                  "key": "subagents",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000200200000000",
+              "observedTimeUnixNano": "1800000200200000000",
+              "body": {
+                "stringValue": "User prompt. Length: 48."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.user_prompt"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:00.200Z"
+                  }
+                },
+                {
+                  "key": "prompt_length",
+                  "value": {
+                    "intValue": "48"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000200500000000",
+              "observedTimeUnixNano": "1800000200500000000",
+              "body": {
+                "stringValue": "API request to qwen3-coder-plus."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:00.500Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000205000000000",
+              "observedTimeUnixNano": "1800000205000000000",
+              "body": {
+                "stringValue": "API response from qwen3-coder-plus. Status: 200. Duration: 4500ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:05.000Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "response_id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4500"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "9000"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "300"
+                  }
+                },
+                {
+                  "key": "cached_content_token_count",
+                  "value": {
+                    "intValue": "4096"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "120"
+                  }
+                },
+                {
+                  "key": "total_token_count",
+                  "value": {
+                    "intValue": "9300"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000205300000000",
+              "observedTimeUnixNano": "1800000205300000000",
+              "body": {
+                "stringValue": "Tool call: read_file. Decision: auto_accept. Success: true. Duration: 200ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.tool_call"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:05.300Z"
+                  }
+                },
+                {
+                  "key": "function_name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                },
+                {
+                  "key": "function_args",
+                  "value": {
+                    "stringValue": "{\n  \"absolute_path\": \"/home/dev/sdf/internal/summary/summary.go\"\n}"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_sample_01"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_accept"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "tool_type",
+                  "value": {
+                    "stringValue": "native"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000205310000000",
+              "observedTimeUnixNano": "1800000205310000000",
+              "body": {
+                "stringValue": "File operation: read. Lines: 88."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.file_operation"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:05.310Z"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "read_file"
+                  }
+                },
+                {
+                  "key": "operation",
+                  "value": {
+                    "stringValue": "read"
+                  }
+                },
+                {
+                  "key": "lines",
+                  "value": {
+                    "intValue": "88"
+                  }
+                },
+                {
+                  "key": "extension",
+                  "value": {
+                    "stringValue": ".go"
+                  }
+                },
+                {
+                  "key": "programming_language",
+                  "value": {
+                    "stringValue": "Go"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000205600000000",
+              "observedTimeUnixNano": "1800000205600000000",
+              "body": {
+                "stringValue": "API request to qwen3-coder-plus."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:05.600Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "subagent_name",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000206900000000",
+              "observedTimeUnixNano": "1800000206900000000",
+              "body": {
+                "stringValue": "API response from qwen3-coder-plus. Status: 200. Duration: 1300ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:06.900Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "subagent_name",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                },
+                {
+                  "key": "response_id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1300"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "6000"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "cached_content_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "total_token_count",
+                  "value": {
+                    "intValue": "6200"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000207050000000",
+              "observedTimeUnixNano": "1800000207050000000",
+              "body": {
+                "stringValue": "Tool call: glob. Decision: auto_accept. Success: true. Duration: 49ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.tool_call"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:07.050Z"
+                  }
+                },
+                {
+                  "key": "function_name",
+                  "value": {
+                    "stringValue": "glob"
+                  }
+                },
+                {
+                  "key": "function_args",
+                  "value": {
+                    "stringValue": "{\n  \"pattern\": \"internal/**/*_test.go\"\n}"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_sample_03"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "49"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_accept"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "tool_type",
+                  "value": {
+                    "stringValue": "native"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000212050000000",
+              "observedTimeUnixNano": "1800000212050000000",
+              "body": {
+                "stringValue": "Subagent execution: Explore."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.subagent_execution"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:12.050Z"
+                  }
+                },
+                {
+                  "key": "subagent_name",
+                  "value": {
+                    "stringValue": "Explore"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "completed"
+                  }
+                },
+                {
+                  "key": "terminate_reason",
+                  "value": {
+                    "stringValue": "GOAL"
+                  }
+                },
+                {
+                  "key": "execution_summary",
+                  "value": {
+                    "stringValue": ""
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000212100000000",
+              "observedTimeUnixNano": "1800000212100000000",
+              "body": {
+                "stringValue": "Tool call: agent. Decision: auto_accept. Success: true. Duration: 6699ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.tool_call"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:12.100Z"
+                  }
+                },
+                {
+                  "key": "function_name",
+                  "value": {
+                    "stringValue": "agent"
+                  }
+                },
+                {
+                  "key": "function_args",
+                  "value": {
+                    "stringValue": "{\n  \"description\": \"Find the cumulative reducer\",\n  \"prompt\": \"Find where cumulative metric points are reduced and list the callers.\",\n  \"subagent_type\": \"Explore\"\n}"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_sample_02"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "6699"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_accept"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "tool_type",
+                  "value": {
+                    "stringValue": "native"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000212300000000",
+              "observedTimeUnixNano": "1800000212300000000",
+              "body": {
+                "stringValue": "API request to qwen3-coder-plus."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:12.300Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000219800000000",
+              "observedTimeUnixNano": "1800000219800000000",
+              "body": {
+                "stringValue": "API response from qwen3-coder-plus. Status: 200. Duration: 7500ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:19.800Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########1"
+                  }
+                },
+                {
+                  "key": "response_id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "7500"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "15500"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "640"
+                  }
+                },
+                {
+                  "key": "cached_content_token_count",
+                  "value": {
+                    "intValue": "9000"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "380"
+                  }
+                },
+                {
+                  "key": "total_token_count",
+                  "value": {
+                    "intValue": "16140"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000220000000000",
+              "observedTimeUnixNano": "1800000220000000000",
+              "body": {
+                "stringValue": "Conversation finished."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.conversation_finished"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:20.000Z"
+                  }
+                },
+                {
+                  "key": "approvalMode",
+                  "value": {
+                    "stringValue": "default"
+                  }
+                },
+                {
+                  "key": "turnCount",
+                  "value": {
+                    "intValue": "2"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000240100000000",
+              "observedTimeUnixNano": "1800000240100000000",
+              "body": {
+                "stringValue": "User prompt. Length: 31."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.user_prompt"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:40.100Z"
+                  }
+                },
+                {
+                  "key": "prompt_length",
+                  "value": {
+                    "intValue": "31"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000240300000000",
+              "observedTimeUnixNano": "1800000240300000000",
+              "body": {
+                "stringValue": "API request to qwen3-coder-plus."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:40.300Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000246000000000",
+              "observedTimeUnixNano": "1800000246000000000",
+              "body": {
+                "stringValue": "API response from qwen3-coder-plus. Status: 200. Duration: 5700ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:46.000Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "response_id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5700"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "16800"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "220"
+                  }
+                },
+                {
+                  "key": "cached_content_token_count",
+                  "value": {
+                    "intValue": "15000"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "60"
+                  }
+                },
+                {
+                  "key": "total_token_count",
+                  "value": {
+                    "intValue": "17020"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000251400000000",
+              "observedTimeUnixNano": "1800000251400000000",
+              "body": {
+                "stringValue": "Tool call: write_file. Decision: accept. Success: true. Duration: 5299ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.tool_call"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:51.400Z"
+                  }
+                },
+                {
+                  "key": "function_name",
+                  "value": {
+                    "stringValue": "write_file"
+                  }
+                },
+                {
+                  "key": "function_args",
+                  "value": {
+                    "stringValue": "{\n  \"file_path\": \"/home/dev/sdf/internal/summary/reset.go\",\n  \"content\": \"package summary\\n\\n// apiKey = \\\"SDF-FIXTURE-SECRET-write-file\\\"\\nfunc reset() {}\\n\"\n}"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_sample_04"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "5299"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "accept"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "tool_type",
+                  "value": {
+                    "stringValue": "native"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000251410000000",
+              "observedTimeUnixNano": "1800000251410000000",
+              "body": {
+                "stringValue": "File operation: create. Lines: 4."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.file_operation"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:51.410Z"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "write_file"
+                  }
+                },
+                {
+                  "key": "operation",
+                  "value": {
+                    "stringValue": "create"
+                  }
+                },
+                {
+                  "key": "lines",
+                  "value": {
+                    "intValue": "4"
+                  }
+                },
+                {
+                  "key": "extension",
+                  "value": {
+                    "stringValue": ".go"
+                  }
+                },
+                {
+                  "key": "programming_language",
+                  "value": {
+                    "stringValue": "Go"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000253500000000",
+              "observedTimeUnixNano": "1800000253500000000",
+              "body": {
+                "stringValue": "Tool call: run_shell_command. Decision: auto_accept. Success: false. Duration: 1399ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.tool_call"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:53.500Z"
+                  }
+                },
+                {
+                  "key": "function_name",
+                  "value": {
+                    "stringValue": "run_shell_command"
+                  }
+                },
+                {
+                  "key": "function_args",
+                  "value": {
+                    "stringValue": "{\n  \"command\": \"OPENAI_API_KEY=SDF-FIXTURE-SECRET-shell go test ./internal/summary/...\",\n  \"description\": \"Run the summary tests\",\n  \"is_background\": false\n}"
+                  }
+                },
+                {
+                  "key": "call_id",
+                  "value": {
+                    "stringValue": "call_sample_05"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1399"
+                  }
+                },
+                {
+                  "key": "status",
+                  "value": {
+                    "stringValue": "error"
+                  }
+                },
+                {
+                  "key": "execution_status",
+                  "value": {
+                    "stringValue": "error"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "auto_accept"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "tool_type",
+                  "value": {
+                    "stringValue": "native"
+                  }
+                },
+                {
+                  "key": "error",
+                  "value": {
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+                  }
+                },
+                {
+                  "key": "error_type",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                },
+                {
+                  "key": "error.type",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000253600000000",
+              "observedTimeUnixNano": "1800000253600000000",
+              "body": {
+                "stringValue": "API request to qwen3-coder-plus."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:53.600Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000257800000000",
+              "observedTimeUnixNano": "1800000257800000000",
+              "body": {
+                "stringValue": "API response from qwen3-coder-plus. Status: 200. Duration: 4199ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:57.800Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "sample-qwen-1########2"
+                  }
+                },
+                {
+                  "key": "response_id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4199"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "17500"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "410"
+                  }
+                },
+                {
+                  "key": "cached_content_token_count",
+                  "value": {
+                    "intValue": "16500"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "150"
+                  }
+                },
+                {
+                  "key": "total_token_count",
+                  "value": {
+                    "intValue": "17910"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000258000000000",
+              "observedTimeUnixNano": "1800000258000000000",
+              "body": {
+                "stringValue": "Conversation finished."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.conversation_finished"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:58.000Z"
+                  }
+                },
+                {
+                  "key": "approvalMode",
+                  "value": {
+                    "stringValue": "default"
+                  }
+                },
+                {
+                  "key": "turnCount",
+                  "value": {
+                    "intValue": "2"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000260000000000",
+              "observedTimeUnixNano": "1800000260000000000",
+              "body": {
+                "stringValue": "API request to qwen3-coder-plus."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_request"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:60.000Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "memory_extract_sample-qwen-1"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000264000000000",
+              "observedTimeUnixNano": "1800000264000000000",
+              "body": {
+                "stringValue": "API response from qwen3-coder-plus. Status: 200. Duration: 4000ms."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:64.000Z"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "prompt_id",
+                  "value": {
+                    "stringValue": "memory_extract_sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "response_id",
+                  "value": {
+                    "stringValue": "chatcmpl-sample"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "4000"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "3000"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "150"
+                  }
+                },
+                {
+                  "key": "cached_content_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "thoughts_token_count",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "total_token_count",
+                  "value": {
+                    "intValue": "3150"
+                  }
+                },
+                {
+                  "key": "auth_type",
+                  "value": {
+                    "stringValue": "qwen-oauth"
+                  }
+                },
+                {
+                  "key": "http.status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800000264500000000",
+              "observedTimeUnixNano": "1800000264500000000",
+              "body": {
+                "stringValue": "Session ended."
+              },
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-1"
+                  }
+                },
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "session.end"
+                  }
+                },
+                {
+                  "key": "event.timestamp",
+                  "value": {
+                    "stringValue": "2027-01-15T08:03:64.500Z"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

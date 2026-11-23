@@ -7,12 +7,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/genai"
 )
 
 // Usage is the token total a summary already reduced.
 // Source is the summary's tokens_source string. The counts must already
-// follow that agent's de-dup rule (Codex and OpenCode take a max for the
-// prefix; Pi sums per-turn input and output and drops cache and reasoning).
+// follow that agent's de-dup rule (Codex response.completed takes a max for
+// the prefix; OpenCode sums per-request counts; Pi sums per-turn input and
+// output and drops cache and reasoning).
 type Usage struct {
 	Models []string
 	Tokens map[string]float64
@@ -425,10 +428,10 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 			"cache_write_token_count": "cache_write",
 			"output_token_count":      "output",
 			"reasoning_token_count":   "reasoning",
-		}, "", "Codex response.completed counts use the summary's max for input, cached, and cache_write, and the sum for output and reasoning. cached and cache_write are subtracted from input; reasoning is subtracted from output")
+		}, "", "Codex response.completed counts are per Responses API call (the summary sums them and prices each call on its own). cached and cache_write are subtracted from input; reasoning is subtracted from output")
 	case "traces SessionStep.attempt":
 		return openCodeBuckets(tokens)
-	case "traces chat", "metrics gen_ai.client.token.usage":
+	case "traces " + genai.OperationChat, "metrics " + genai.MetricClientTokenUsage:
 		return piBuckets(source, tokens)
 	case "metrics grok_code.token.usage":
 		return codexBuckets(tokens, map[string]string{
@@ -501,54 +504,122 @@ func codexBuckets(tokens map[string]float64, names map[string]string, ignore str
 	return overlapBuckets(values, method)
 }
 
+// IsModalityUsage reports whether label (a gen_ai.usage.* key without the
+// prefix) is a per-modality breakdown such as text.input_tokens. It forwards
+// to genai.IsModalityUsage, where the modality allowlist now lives.
+//
+// It stays here only so internal/summary does not change while the fix for
+// issue #200 (which rewrites that code) is in flight; call
+// genai.IsModalityUsage directly once that lands.
+func IsModalityUsage(label string) bool {
+	return genai.IsModalityUsage(label)
+}
+
+// renamedUsage marks OpenCode token keys that GenAI semconv renamed. When one
+// of them shares a bucket with other keys, every key in that bucket is the
+// same quantity under an old and a new name, so the largest count is priced.
+var renamedUsage = map[string]bool{
+	genai.UsageLabelCacheCreationInputTokens:           true,
+	genai.UsageLabelCacheCreationInputTokensUnderscore: true,
+	genai.UsageLabelReasoningOutputTokens:              true,
+}
+
 func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 	// gen_ai.usage.cache_read.input_tokens is the OpenTelemetry name for cache
-	// reads included in input tokens. The summary has already replaced repeated
-	// prefix counts with the max.
+	// reads included in input tokens. The summary has already summed the
+	// per-request counts across SessionStep.attempt spans (issue #200), and
+	// has already folded
+	// gen_ai.usage.cache_creation.input_tokens (renamed to
+	// cache_write.input_tokens in GenAI semconv v0.1.0) and reasoning_tokens
+	// into the v0.1.0 names. The old names stay here as a defensive fallback,
+	// so a caller that did not fold them still gets a price rather than
+	// unknown.
 	aliases := map[string]string{
-		"input_tokens":             "input",
-		"output_tokens":            "output",
-		"cache_read.input_tokens":  "cache_read",
-		"cache_read_input_tokens":  "cache_read",
-		"cache_write.input_tokens": "cache_write",
-		"cache_write_input_tokens": "cache_write",
-		"reasoning_tokens":         "reasoning",
+		genai.UsageLabelInputTokens:                        "input",
+		genai.UsageLabelOutputTokens:                       "output",
+		genai.UsageLabelCacheReadInputTokens:               "cache_read",
+		genai.UsageLabelCacheReadInputTokensUnderscore:     "cache_read",
+		genai.UsageLabelCacheWriteInputTokens:              "cache_write",
+		genai.UsageLabelCacheWriteInputTokensUnderscore:    "cache_write",
+		genai.UsageLabelCacheCreationInputTokens:           "cache_write",
+		genai.UsageLabelCacheCreationInputTokensUnderscore: "cache_write",
+		genai.UsageLabelReasoningOutputTokens:              "reasoning",
+		genai.UsageLabelReasoningTokens:                    "reasoning",
 	}
-	seen := map[string]string{}
-	values := map[string]*big.Rat{}
 	var keys []string
 	for key := range tokens {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	groups := map[string][]string{}
+	var informational []string
 	for _, key := range keys {
+		// A breakdown with a modality genai does not recognize is not
+		// informational; it falls through to the alias lookup and leaves
+		// the cost unknown rather than being skipped.
+		if genai.IsModalityUsage(key) {
+			informational = append(informational, key)
+			continue
+		}
 		label, ok := aliases[key]
 		if !ok {
 			return nil, "", fmt.Sprintf("token key %q is not part of the OpenCode pricing rule", key)
 		}
-		if prev, ok := seen[label]; ok {
-			return nil, "", fmt.Sprintf("token keys %q and %q would price %s twice", prev, key, label)
-		}
-		seen[label] = key
-		amount, err := parseTokens(tokens[key])
-		if err != nil {
-			return nil, "", err.Error()
-		}
-		values[label] = amount
+		groups[label] = append(groups[label], key)
 	}
-	return overlapBuckets(values, "OpenCode input and cache totals already use the max across requests; cache read and cache write are priced as subsets of input, and reasoning as a subset of output")
+	values := map[string]*big.Rat{}
+	var labels []string
+	for label := range groups {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		group := groups[label]
+		renamed := false
+		for _, key := range group {
+			renamed = renamed || renamedUsage[key]
+		}
+		if len(group) > 1 && !renamed {
+			return nil, "", fmt.Sprintf("token keys %q and %q would price %s twice", group[0], group[1], label)
+		}
+		// One key, or a semconv rename that reports the same quantity under
+		// several names: price the largest count, never the sum. The result
+		// does not depend on key order.
+		for _, key := range group {
+			amount, err := parseTokens(tokens[key])
+			if err != nil {
+				return nil, "", err.Error()
+			}
+			if values[label] == nil || amount.Cmp(values[label]) > 0 {
+				values[label] = amount
+			}
+		}
+	}
+	for _, key := range informational {
+		// A per-modality total label maps to the same bucket as the total.
+		_, total, _ := genai.SplitModalityUsage(key)
+		bucket := aliases[total]
+		if values[bucket] == nil {
+			return nil, "", fmt.Sprintf("per-modality key %q is present without the %s total, so the counts were not priced", key, bucket)
+		}
+	}
+	method := "OpenCode input and cache totals are per-request sums; cache read and cache write are priced as subsets of input, and reasoning as a subset of output"
+	if len(informational) > 0 {
+		method += "; per-modality breakdown keys (" + strings.Join(informational, ", ") + ") are already part of the totals and are not priced again"
+	}
+	return overlapBuckets(values, method)
 }
 
 func piBuckets(source string, tokens map[string]float64) ([]bucket, string, string) {
 	allowed := map[string]bucketSpec{}
 	method := "Pi summarized tokens are input and output only; cache and reasoning attributes are excluded by the token rule and are not priced"
-	if source == "metrics gen_ai.client.token.usage" {
+	if source == "metrics "+genai.MetricClientTokenUsage {
 		allowed["input"] = bucketSpec{name: "input", priceKey: "prompt"}
 		allowed["output"] = bucketSpec{name: "output", priceKey: "completion"}
 		method = "Pi gen_ai.client.token.usage records input and output only; cache and reasoning are not on this metric and are not priced"
 	} else {
-		allowed["input_tokens"] = bucketSpec{name: "input", priceKey: "prompt"}
-		allowed["output_tokens"] = bucketSpec{name: "output", priceKey: "completion"}
+		allowed[genai.UsageLabelInputTokens] = bucketSpec{name: "input", priceKey: "prompt"}
+		allowed[genai.UsageLabelOutputTokens] = bucketSpec{name: "output", priceKey: "completion"}
 	}
 	return disjoint(tokens, allowed, method)
 }
