@@ -33,7 +33,7 @@ func TestCopilotRejectsUnsafeHostAndPort(t *testing.T) {
 		req.Endpoint.Host = host
 		if host == "" {
 			// normalize fills an empty host; call the validator directly.
-			if _, err := copilotEndpoint(Endpoint{Host: "", HTTPPort: 4318}); err == nil {
+			if _, err := checkHost(""); err == nil {
 				t.Fatal("empty host accepted")
 			}
 			continue
@@ -222,7 +222,7 @@ func TestCopilotCaptureWarnings(t *testing.T) {
 
 func TestCopilotNumericHostsMustBeIPv4(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "10.0.0.255", "localhost", "1password.example", "a1.b2"} {
-		if _, err := copilotEndpoint(Endpoint{Host: host, HTTPPort: 4318}); err != nil {
+		if _, err := checkHost(host); err != nil {
 			t.Fatalf("%q refused: %v", host, err)
 		}
 	}

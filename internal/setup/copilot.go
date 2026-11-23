@@ -5,10 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -102,52 +100,8 @@ func captureWarning(where, standard, legacy string) string {
 	return ""
 }
 
-// copilotHostName is an RFC 1123 host name: dot-separated labels of letters,
-// digits, and inner hyphens.
-var copilotHostName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
-
-// copilotNumericHost is a host whose dot-separated labels are all digits.
-var copilotNumericHost = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*\.?$`)
-
-// copilotEndpoint validates --host and --port before they reach a file the
-// user sources: a host name, an IPv4 address, or an IPv6 address (bracketed
-// or bare), and a port in 1-65535. Anything else (spaces, ;, $, quotes,
-// backticks) is refused.
-func copilotEndpoint(ep Endpoint) (Endpoint, error) {
-	host := ep.Host
-	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
-		inner := host[1 : len(host)-1]
-		if ip := net.ParseIP(inner); ip == nil || ip.To4() != nil || !strings.Contains(inner, ":") {
-			return ep, fmt.Errorf("--host %q is not a valid bracketed IPv6 address", ep.Host)
-		}
-		host = inner
-	} else if strings.Contains(host, ":") {
-		if ip := net.ParseIP(host); ip == nil {
-			return ep, fmt.Errorf("--host %q is not a valid IPv6 address", ep.Host)
-		}
-	} else if copilotNumericHost.MatchString(host) && net.ParseIP(host) == nil {
-		// 999.1.1.1 or 127.1 is not a host name, and resolvers read the
-		// short forms differently: an all-numeric host must be IPv4.
-		return ep, fmt.Errorf("--host %q is all numbers but not a valid IPv4 address", ep.Host)
-	} else if net.ParseIP(host) == nil && (len(host) > 253 || !copilotHostName.MatchString(host)) {
-		return ep, fmt.Errorf("--host %q is not a host name, IPv4 address, or bracketed IPv6 address", ep.Host)
-	}
-	if ep.HTTPPort < 1 || ep.HTTPPort > 65535 {
-		return ep, fmt.Errorf("--port %d is not in 1-65535", ep.HTTPPort)
-	}
-	ep.Host = host
-	return ep, nil
-}
-
-// shellQuote single-quotes value for a POSIX shell. An embedded single
-// quote closes the quoting, is written as a backslash-escaped quote, and
-// reopens it.
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
-}
-
 func copilotExport(key, value string) string {
-	return "export " + key + "=" + shellQuote(value)
+	return "export " + key + "=" + shQuote(value)
 }
 
 // mergeCopilotEnv rewrites an existing snippet in place: line order and
@@ -245,11 +199,7 @@ func copilotEnvWarnings(ep Endpoint) []string {
 }
 
 func copilot(req Request) (Result, error) {
-	ep, err := copilotEndpoint(req.Endpoint)
-	if err != nil {
-		return Result{}, err
-	}
-	req.Endpoint = ep
+	// Run's normalize already validated the host and ports (checkEndpoint).
 	path := copilotEnvPath(req.Home)
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -270,7 +220,7 @@ func copilot(req Request) (Result, error) {
 	for _, w := range warnings {
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
-	fmt.Fprintf(&b, "\nCopilot CLI does not load %s by itself. Run copilot through sh so the OTEL_* variables do not stay in your shell (this works from bash, zsh, and fish):\n  sh -c '. \"$1\" && exec copilot' sh %s\n", path, shellQuote(path))
+	fmt.Fprintf(&b, "\nCopilot CLI does not load %s by itself. Run copilot through sh so the OTEL_* variables do not stay in your shell (this works from bash, zsh, and fish):\n  sh -c '. \"$1\" && exec copilot' sh %s\n", path, shQuote(path))
 	if bytes.Equal(existing, []byte(merged)) {
 		b.WriteString(path + " already has these values\n")
 		return Result{Text: b.String()}, nil

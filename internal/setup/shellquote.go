@@ -15,12 +15,17 @@ import (
 // quotes what is written for a shell. Git hooks already accept only a
 // loopback host (hookLogsURL).
 //
-// PR #188 has the same checks as copilotEndpoint and shellQuote in
-// internal/setup/copilot.go; they can be unified once both land.
+// Every agent, Copilot CLI included, uses these two; there is no per-agent
+// copy.
 
 // hostNamePattern is an RFC 1123 host name: dot-separated labels of letters,
 // digits, and inner hyphens.
 var hostNamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
+
+// numericHostPattern is a host whose dot-separated labels are all digits.
+// Such a host must be a valid IPv4 address: 999.1.1.1 or 127.1 is not a host
+// name, and resolvers read the short forms differently.
+var numericHostPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*\.?$`)
 
 // checkEndpoint validates ep in place. Host is a host name, an IPv4 address,
 // or an IPv6 address, bare or in brackets (the brackets are dropped, since
@@ -54,6 +59,9 @@ func checkHost(host string) (string, error) {
 	}
 	if bracketed {
 		return "", fmt.Errorf("--host %q: only an IPv6 address goes in brackets", host)
+	}
+	if numericHostPattern.MatchString(host) && net.ParseIP(host) == nil {
+		return "", fmt.Errorf("--host %q is all numbers but not a valid IPv4 address", host)
 	}
 	if net.ParseIP(host) != nil || (len(host) <= 253 && hostNamePattern.MatchString(host)) {
 		return host, nil
