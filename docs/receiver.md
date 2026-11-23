@@ -261,9 +261,15 @@ sdf init --check
 `--check` GETs `http://127.0.0.1:4318/health` and opens a TCP connection to
 `127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
 counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
-`--host` must be a host name, an IPv4 address, or an IPv6 address (bare or
-in brackets), and the ports must be 1-65535; anything else is refused
-before a file is written. Those values end up in files other programs run
+`--host` must be a host name (a fully qualified name may end in one dot,
+`example.com.`), an IPv4 address, or an IPv6 address (bare or in brackets),
+and the ports must be 1-65535 (`--port 0` is refused, not read as the
+default); anything else is refused, with exit code 2, before `--check`
+probes anything or a file is written. `--host 127.0.0.1:4318` is refused
+with a hint to pass the port with `--port`. An IPv4 address written as IPv6
+(`::ffff:127.0.0.1`, or the deprecated `::127.0.0.1`) is refused with a hint
+to pass the IPv4 address, or `::1` for IPv6 loopback. `--git-hooks` takes
+`::1` with or without brackets. Those values end up in files other programs run
 (`opencode.env` is sourced by a shell, the Claude Code and Codex session
 hooks are shell commands), and the URL is single-quoted in both.
 

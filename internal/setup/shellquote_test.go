@@ -148,3 +148,72 @@ func TestSessionHookCommandQuotesTheURL(t *testing.T) {
 		t.Fatalf("curl got %q", lines)
 	}
 }
+
+func TestCheckHostEdgeCases(t *testing.T) {
+	for host, want := range map[string]string{
+		"example.com.":   "example.com.",
+		"localhost.":     "localhost.",
+		"otel-1.corp.x.": "otel-1.corp.x.",
+		"::":             "::",
+		"[::1]":          "::1",
+	} {
+		got, err := checkHost(host)
+		if err != nil || got != want {
+			t.Fatalf("%q: %q %v", host, got, err)
+		}
+	}
+	for host, msg := range map[string]string{
+		".":                  "is not a host name",
+		"example.com..":      "is not a host name",
+		"127.0.0.1.":         "all numbers",
+		"127.0.0.1:4318":     "looks like host:port",
+		"[::1]:4318":         "looks like host:port",
+		"collector.lan:4318": "looks like host:port",
+		"::127.0.0.1":        "IPv4 address written as IPv6; pass --host 127.0.0.1",
+		"[::127.0.0.1]":      "IPv4 address written as IPv6",
+		"::ffff:127.0.0.1":   "IPv4 address written as IPv6; pass --host 127.0.0.1",
+		"::ffff:c000:0280":   "pass --host 192.0.2.128",
+		"fe80::1%eth0":       "not a valid IPv6 address",
+	} {
+		if _, err := checkHost(host); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Fatalf("%q: want %q, got %v", host, msg, err)
+		}
+	}
+}
+
+func TestValidateEndpointRefusesPortZero(t *testing.T) {
+	for _, ep := range []Endpoint{{Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 4317}, {Host: "127.0.0.1", HTTPPort: 4318, GRPCPort: 0}} {
+		if err := ValidateEndpoint(&ep); err == nil || !strings.Contains(err.Error(), "port 0 is not in 1-65535") {
+			t.Fatalf("%+v: %v", ep, err)
+		}
+	}
+	ep := Endpoint{Host: "[::1]", HTTPPort: 4318, GRPCPort: 4317}
+	if err := ValidateEndpoint(&ep); err != nil || ep.Host != "::1" {
+		t.Fatal(ep, err)
+	}
+}
+
+func TestProbeDoesNotDialAnInvalidHost(t *testing.T) {
+	got := Probe(Endpoint{Host: "a b", HTTPPort: 4318, GRPCPort: 4317})
+	if got.Reachable || !strings.HasPrefix(got.Text, "not probed: --host") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestGitHookURLAcceptsBracketedLoopback(t *testing.T) {
+	for host, want := range map[string]string{
+		"[::1]":      "http://[::1]:4318/v1/logs",
+		"::1":        "http://[::1]:4318/v1/logs",
+		"localhost.": "http://127.0.0.1:4318/v1/logs",
+	} {
+		got, err := hookLogsURL(Endpoint{Host: host, HTTPPort: 4318})
+		if err != nil || got != want {
+			t.Fatalf("%q: %q %v", host, got, err)
+		}
+	}
+	for _, host := range []string{"10.0.0.1", "::127.0.0.1", "a b"} {
+		if _, err := hookLogsURL(Endpoint{Host: host, HTTPPort: 4318}); err == nil {
+			t.Fatalf("%q accepted", host)
+		}
+	}
+}

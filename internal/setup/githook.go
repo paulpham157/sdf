@@ -102,8 +102,17 @@ func UninstallGitHooks(dir string) (Result, error) {
 
 func hookLogsURL(ep Endpoint) (string, error) {
 	host := ep.Host
+	if host != "" {
+		// Same parsing as every agent: [::1] is ::1, and an unsafe or
+		// malformed host is refused with the same message.
+		checked, err := checkHost(host)
+		if err != nil {
+			return "", err
+		}
+		host = checked
+	}
 	switch host {
-	case "", "localhost", "127.0.0.1":
+	case "", "localhost", "localhost.", "127.0.0.1":
 		host = "127.0.0.1"
 	case "::1":
 	default:

@@ -883,6 +883,13 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
+	// Validate --host and the ports once, before --check probes them or a
+	// git hook or agent file is written. --port 0 is refused here (Run
+	// would read 0 as the default).
+	if err := setup.ValidateEndpoint(&ep); err != nil {
+		fmt.Fprintf(stderr, "sdf init: %v\n", err)
+		return 2
+	}
 	code := 0
 	if check {
 		probed := setup.Probe(ep)
