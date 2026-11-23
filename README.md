@@ -29,7 +29,9 @@ sdf version
 ```
 
 That puts `sdf` in `$(go env GOPATH)/bin` (usually `~/go/bin`); keep that
-directory on your `PATH`. Until the first tagged release, `@latest` is the
+directory on your `PATH`. If `sdf version` says `command not found`, run
+`export PATH="$(go env GOPATH)/bin:$PATH"` and add that line to your shell
+profile. Until the first tagged release, `@latest` is the
 newest commit on `main`. There is no release yet; prebuilt archives for
 Linux, macOS, and Windows (amd64 and arm64) will be on
 [GitHub Releases](https://github.com/paulpham157/sdf/releases) after one is

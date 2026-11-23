@@ -12,6 +12,13 @@
 ./sdf summary --budget PATH
 ```
 
+`sdf summary` reads `sdf-telemetry.sqlite` in the current directory, or
+`--db PATH`. It never creates the file: a missing file in an existing
+directory reads as an empty store (exit 0; see
+[docs/receiver.md](receiver.md)), and stderr names the absolute path it
+looked at. A missing directory exits 1. `sdf serve` prints the absolute path of the file it writes after
+`db=` on its first line; pass that to `--db`.
+
 `--budget` reads one local ceiling and compares it with computed session cost.
 The report then has a `budget` with status `within`, `over`, or `unknown`.
 Without the flag the field is absent. A file that fails to load exits non-zero
