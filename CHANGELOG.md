@@ -6,7 +6,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ## [0.1.0] — UNRELEASED
 
-First tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` (after the tag exists) or with the prebuilt archives on GitHub Releases.
+This will be the first tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` (after the tag exists) or with the prebuilt archives on GitHub Releases once published.
 
 ### Features
 
@@ -38,6 +38,8 @@ First tagged release. Requires Go 1.26 or newer to build from source. Install wi
 - Complete Grok CLI support: init, session id, session hooks, cwd via hooks, and internal trace mapping ([#203](https://github.com/paulpham157/sdf/pull/203)).
 - Opt-in ledger for `sdf task declare` and `sdf verify` (`--ledger` / `$SDF_LEDGER`) ([#207](https://github.com/paulpham157/sdf/pull/207)).
 - Record who decided, alternatives, and a reason on `sdf decision add` (`--decided-by user|agent`, `--alternatives`, `--reason`); ship the `sdf-decisions` skill ([#234](https://github.com/paulpham157/sdf/pull/234)).
+- Add `sdf decision list` (and `--json`) to print decision records and edges ([#236](https://github.com/paulpham157/sdf/pull/236)).
+- Show each decision's effective status (`effective_status` / `superseded_by`, computed at read time and never stored) in the `EFFECTIVE` column and as "superseded by" in the UI ([#240](https://github.com/paulpham157/sdf/pull/240)).
 
 ### Fixes
 
@@ -62,6 +64,8 @@ First tagged release. Requires Go 1.26 or newer to build from source. Install wi
 - Merge Codex session hooks even when `[otel]` already exists, match only sdf's own hook, and refuse a `null` hook event ([#211](https://github.com/paulpham157/sdf/pull/211)).
 - Keep the Qwen exit token flush, report unknown instead of 0 when there is no baseline, and always redact GenAI content for every agent ([#212](https://github.com/paulpham157/sdf/pull/212)).
 - Set SQLite `busy_timeout` and WAL on open so concurrent ingest and summary do not fail with `SQLITE_BUSY` ([#238](https://github.com/paulpham157/sdf/pull/238)).
+- Validate `sdf init --host` and ports before `--check` probes them, and tighten host parsing ([#215](https://github.com/paulpham157/sdf/pull/215)).
+- Never hint the unspecified address for `sdf init --host` ([#226](https://github.com/paulpham157/sdf/pull/226)).
 
 ### Security
 
@@ -73,18 +77,18 @@ First tagged release. Requires Go 1.26 or newer to build from source. Install wi
 - Document live Codex sandbox requirements for git-hook linking ([#166](https://github.com/paulpham157/sdf/pull/166)).
 - Split the README into a short overview and `docs/` ([449212e](https://github.com/paulpham157/sdf/commit/449212edd0bb7ba18347fb23fa96bb0abdc429ca)).
 - Add 5-minute install docs for `go install` and (once published) prebuilt archives ([#187](https://github.com/paulpham157/sdf/pull/187); quickstart later aligned in [#233](https://github.com/paulpham157/sdf/pull/233)).
-- Drop the stale “planned” text for `sdf verify`; document `sdf task declare --timeout` / `--no-secret-scan` and `sdf task show --json`; mention GitHub Copilot CLI in the README opening sentence ([#237](https://github.com/paulpham157/sdf/pull/237)).
+- Drop the stale “planned” text for `sdf verify`; document `sdf task declare --timeout` / `--no-secret-scan` and `sdf task show --json`; mention GitHub Copilot CLI in the README opening sentence ([#237](https://github.com/paulpham157/sdf/pull/237)). Say what `--no-secret-scan` skips, and that `sdf task show --json` is indented ([#241](https://github.com/paulpham157/sdf/pull/241)).
 
 ### CI/Build
 
 - Split CI into pull-request, main, and scheduled workflows ([#162](https://github.com/paulpham157/sdf/pull/162)).
 - Add GoReleaser config and `sdf version` link-time metadata (`internal/version` ldflags) ([#187](https://github.com/paulpham157/sdf/pull/187)).
 - Bump `actions/setup-go` from 7.0.0 to 7.1.0 ([#180](https://github.com/paulpham157/sdf/pull/180)).
-- Centralize `gen_ai.*` semconv names in `internal/genai`, pinned to v0.1.0 ([#202](https://github.com/paulpham157/sdf/pull/202)).
 
 ### Cleanup
 
 - Remove leftover Python ignores and historical fake-key findings ([#160](https://github.com/paulpham157/sdf/pull/160)).
+- Centralize `gen_ai.*` semconv names in `internal/genai`, pinned to v0.1.0 ([#202](https://github.com/paulpham157/sdf/pull/202)).
 - Non-blocking review follow-ups: hooks token, shared setup helpers, and docs ([#208](https://github.com/paulpham157/sdf/pull/208)).
 
 ### Removed
