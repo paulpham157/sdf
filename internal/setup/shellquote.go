@@ -77,6 +77,11 @@ func checkHost(host string) (string, error) {
 			return "", fmt.Errorf("--host %q is not a valid IPv6 address", host)
 		}
 		if v4 := embeddedIPv4(ip); v4 != nil {
+			if v4.IsUnspecified() {
+				// ::ffff:0.0.0.0 would otherwise be told to pass 0.0.0.0,
+				// which is refused in turn.
+				return "", unspecifiedErr(host)
+			}
 			// ::ffff:127.0.0.1 (IPv4-mapped) and ::127.0.0.1 (the deprecated
 			// IPv4-compatible form) are not the IPv6 loopback ::1: the first is
 			// the IPv4 host, the second routes nowhere useful, and loopback
@@ -140,10 +145,16 @@ func ipv6PortHint(host string) string {
 	if ip := net.ParseIP(prefix); ip == nil || ip.To4() != nil || strings.Contains(prefix, ".") {
 		return ""
 	}
+	if isUnspecified(prefix) {
+		return fmt.Sprintf("looks like the unspecified address and a port, and an agent cannot send to %s; %s", prefix, unspecifiedPortHint(port))
+	}
 	return fmt.Sprintf("looks like an IPv6 address and a port; for the port pass --host '[%s]' --port %s, or write the address in brackets (--host '[%s]') if :%s is part of it", prefix, port, host, port)
 }
 
 func portHint(host, port string) string {
+	if isUnspecified(host) {
+		return "the host is the unspecified address, which an agent cannot send to; " + unspecifiedPortHint(port)
+	}
 	if strings.Contains(host, ":") {
 		host = "'[" + host + "]'"
 	}
@@ -151,6 +162,28 @@ func portHint(host, port string) string {
 		return fmt.Sprintf("pass the host alone (--host %s) and the port with --port %s", host, port)
 	}
 	return fmt.Sprintf("pass the host alone (--host %s) and the port as a number with --port", host)
+}
+
+// isUnspecified reports whether host (bracketed or not) is 0.0.0.0, ::, or
+// an IPv4-mapped or -compatible form of 0.0.0.0, so a hint never suggests
+// a host that checkHost refuses.
+func isUnspecified(host string) bool {
+	ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
+	if ip == nil {
+		return false
+	}
+	if ip.IsUnspecified() {
+		return true
+	}
+	v4 := embeddedIPv4(ip)
+	return v4 != nil && v4.IsUnspecified()
+}
+
+func unspecifiedPortHint(port string) string {
+	if allDigits(port) {
+		return fmt.Sprintf("pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port %s", port)
+	}
+	return "pass --host 127.0.0.1, ::1, or this machine's address, and the port as a number with --port"
 }
 
 func unspecifiedErr(host string) error {

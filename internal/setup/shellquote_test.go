@@ -179,6 +179,31 @@ func TestCheckHostEdgeCases(t *testing.T) {
 	}
 }
 
+// A hint must never suggest a host checkHost refuses: the unspecified
+// address in any spelling, alone or with a port, is told to use a real one.
+func TestCheckHostNeverHintsTheUnspecifiedAddress(t *testing.T) {
+	for host, msg := range map[string]string{
+		"::ffff:0.0.0.0":   "is the unspecified address",
+		"[::ffff:0.0.0.0]": "is the unspecified address",
+		"::ffff:0:0":       "is the unspecified address",
+		"::0.0.0.0":        "is the unspecified address",
+		"0.0.0.0:4318":     "pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port 4318",
+		"[::]:4318":        "pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port 4318",
+		"0.0.0.0:http":     "the port as a number with --port",
+		":::4318":          "pass --host 127.0.0.1, ::1, or this machine's address, and the port with --port 4318",
+	} {
+		_, err := checkHost(host)
+		if err == nil || !strings.Contains(err.Error(), msg) {
+			t.Fatalf("%q: want %q, got %v", host, msg, err)
+		}
+		for _, bad := range []string{"--host 0.0.0.0", "--host '[::]'", "--host ::ffff:0.0.0.0", "--host '[::ffff:0.0.0.0]'", "--host '[::ffff:0:0]'"} {
+			if strings.Contains(err.Error()+" ", bad+" ") || strings.Contains(err.Error()+")", bad+")") {
+				t.Fatalf("%q: hint suggests refused host %s: %v", host, bad, err)
+			}
+		}
+	}
+}
+
 func TestValidateEndpointRefusesPortZero(t *testing.T) {
 	for _, ep := range []Endpoint{{Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 4317}, {Host: "127.0.0.1", HTTPPort: 4318, GRPCPort: 0}} {
 		if err := ValidateEndpoint(&ep); err == nil || !strings.Contains(err.Error(), "port 0 is not in 1-65535") {
