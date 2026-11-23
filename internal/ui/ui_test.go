@@ -682,7 +682,13 @@ func TestSessionPageCapsLongSpanTrees(t *testing.T) {
 
 func TestSessionPageRendersDeepSpanTrees(t *testing.T) {
 	db := openDB(t)
-	const depth = 80
+	// 2000 levels: the recursive renderer before this fix overflows node's
+	// call stack from about 1100 levels. Deeper does not fit through the API:
+	// /api/summary nests two JSON levels per span level and Go's encoder
+	// stops at 10000 (about 4997 span levels), and the indented response
+	// grows with depth squared (about 136 MB here, past V8's 512 MB string
+	// limit near 3900 levels), which also makes -race slow.
+	const depth = 2000
 	var recs []record.Record
 	var parent *string
 	for i := 0; i < depth; i++ {
@@ -717,8 +723,15 @@ func TestSessionPageRendersDeepSpanTrees(t *testing.T) {
 	if !strings.Contains(page.Text, "call_id=d0") {
 		t.Fatalf("missing the root of the deep tree:\n%s", page.Text)
 	}
-	if !strings.Contains(page.Text, "deep chain failed") || !strings.Contains(page.Text, "status=ERROR") {
-		t.Fatalf("banner should still report the deep ERROR:\n%s", page.Text)
+	// The leaf's status message is redacted at insert (#224): a Tool.execute
+	// ERROR span keeps only "tool error", so the banner names the span and
+	// that text, never the sent message.
+	if !strings.Contains(page.Text, "This session has a span with status=ERROR.") ||
+		!strings.Contains(page.Markup, `<p class="span-error-message">Tool.execute: tool error</p>`) {
+		t.Fatalf("banner should still report the deep ERROR, redacted:\n%s", page.Markup)
+	}
+	if strings.Contains(page.Text, "deep chain failed") {
+		t.Fatalf("the sent status message reached the page:\n%s", page.Text)
 	}
 }
 
