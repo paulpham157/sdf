@@ -49,14 +49,32 @@ skipped, so it cannot block the existing checks.
    file that disagrees with `sdf verify`'s exit code, or a script error is
    ERROR. A last step repeats the check, for a verify step that never ran.
 
-Before the checkout, a step (`userns.sh`) allows unprivileged user
-namespaces: ubuntu-24.04 (`ubuntu-latest`) blocks them through AppArmor, and
-hosted runners have passwordless sudo, so it runs `sudo sysctl -w
-kernel.apparmor_restrict_unprivileged_userns=0`. `sdf verify` runs every
-check in its own user and pid namespace and the action never passes
-`--allow-unisolated`, so on a runner where that does not work (a
-self-hosted runner without sudo) the verdict is ERROR
-`ISOLATION_UNAVAILABLE`, never an unisolated PASS.
+**Runner setup.** Before the checkout, a step (`runner-setup.sh`, input
+`configure-runner`) prepares the runner, and says what it changed with a
+`::notice`:
+- it allows unprivileged user namespaces: ubuntu-24.04 (`ubuntu-latest`)
+  blocks them through AppArmor, so it runs `sudo sysctl -w
+  kernel.apparmor_restrict_unprivileged_userns=0`;
+- it stops docker and containerd and locks their sockets (`chmod 000`).
+  The runner user is in the `docker` group, and a container would run
+  outside the check's namespaces. Checks already cannot see `/run` or reach
+  the host network; this is a second lock. Later steps in the same job
+  cannot use docker, so run the action in its own job.
+
+With `configure-runner: auto` (the default) this happens only when
+`RUNNER_ENVIRONMENT` is `github-hosted`. That is safe enough there: a
+GitHub-hosted runner is a VM used for one job and then discarded, and it
+gives the job passwordless sudo, which the pull request's code could use
+anyway, so lifting the restriction grants it nothing new. On a self-hosted
+or long-lived runner these are host-wide changes that outlive the job:
+`configure-runner: true` makes them anyway, and the default leaves the host
+alone. `false` never changes anything.
+
+`sdf verify` runs every check in its own user, pid, mount and network
+namespaces and the action never passes `--allow-unisolated` or
+`--allow-network`, so on a runner where namespaces do not work the verdict
+is ERROR `ISOLATION_UNAVAILABLE`, never an unisolated PASS. Checks have no
+network: a task whose `go test` needs module downloads must vendor them.
 
 Outputs: `status`, `task`, `verdict-hash`.
 
@@ -88,9 +106,13 @@ asks for nothing more: `contents: read`, no secrets, no cache.
 - The task id: a label, which only people with triage access can set. A
   trailer is written by the pull request author, who could then pick an
   easier declared task, so it is off by default.
-- The credentials: not written to `.git/config`, and the checks get an
-  allowlisted environment without the runner's `ACTIONS_*`/`GITHUB_*`
-  variables.
+- The credentials: the token is not written to `.git/config`, and the
+  checks get an allowlisted environment without the runner's
+  `ACTIONS_*`/`GITHUB_*` variables. That is not the same as "no
+  credentials on the runner": a check can still read what the runner user
+  can outside the masked directories (`/tmp`, `/run`, `/dev/shm` and the
+  home directory are masked in its namespace). Do not add secrets to this
+  workflow.
 
 **What it does not protect against.**
 - *The workflow file itself.* With `pull_request`, GitHub runs the workflow
@@ -105,9 +127,10 @@ asks for nothing more: `contents: read`, no secrets, no cache.
 - *Code that attacks the job it runs in.* The checks run as the runner's
   user. Each check runs in its own pid namespace, which the kernel empties
   when the check exits, so a process that detaches (`setsid`, a double
-  fork) does not outlive it to rewrite later files. While a check runs it
-  can still, as the same user, write anything that user can, including the
-  job's other files. The verify step's exit code (the verdict, see above)
+  fork) does not outlive it, and it cannot reach the runner's other
+  processes through sockets under `/tmp` or `/run`, the network, or docker.
+  While a check runs it can still, as the same user, write files outside
+  the masked directories, including some of the job's files. The verify step's exit code (the verdict, see above)
   and the verdict hash it printed to the log are the record to trust, not
   the artifact. Running the checks as a separate unprivileged OS user
   would close the rest; it is not built.

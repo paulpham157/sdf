@@ -74,30 +74,33 @@ func writeCommit(t *testing.T, dir string, files map[string]string, msg string) 
 type env struct {
 	action, runnerTemp, sdf, subject string
 	good, tampered, trailered        string
+	isolated                         bool
+}
+
+// passed checks a case that passes where checks can be isolated; elsewhere
+// the action must refuse to run them unisolated: ERROR, exit 3,
+// ISOLATION_UNAVAILABLE.
+func (e *env) passed(o outcome) bool {
+	if e.isolated {
+		return o.outputs["status"] == "PASS"
+	}
+	return o.outputs["status"] == "ERROR" && strings.Contains(o.summary, "ISOLATION_UNAVAILABLE")
+}
+
+// isolated reports whether sdf verify can isolate checks here: user, pid,
+// mount and network namespaces in which a tmpfs can be mounted. The tests
+// never change the host to get there (GitHub's ubuntu-24.04 runners need
+// runner-setup.sh, which the action runs, not these tests).
+func isolated() bool {
+	return exec.Command("unshare", "-Urnpfm", "--mount-proc", "sh", "-c", "mount -t tmpfs none /tmp").Run() == nil
 }
 
 // setup builds sdf with build.sh and makes a remote whose main has a
 // declared task "feat", and three pull request heads.
-// userns does what the action's userns.sh step does. On a GitHub-hosted
-// runner it runs that script and isolation must then work (the PASS cases
-// below need it); elsewhere, without user namespaces, the test is skipped.
-func userns(t *testing.T, action string) {
-	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("RUNNER_ENVIRONMENT") == "github-hosted" {
-		b, err := exec.Command("bash", filepath.Join(action, "userns.sh")).CombinedOutput()
-		t.Logf("userns.sh: %v %s", err, b)
-		return
-	}
-	if err := exec.Command("unshare", "-Urpf", "true").Run(); err != nil {
-		t.Skipf("no unprivileged user/pid namespaces here (%v); sdf verify would refuse to run", err)
-	}
-}
-
 func setup(t *testing.T) *env {
 	t.Helper()
 	need(t, "bash", "jq", "git", "go")
-	e := &env{action: actionDir(t), runnerTemp: t.TempDir()}
-	userns(t, e.action)
+	e := &env{action: actionDir(t), runnerTemp: t.TempDir(), isolated: isolated()}
 
 	out := filepath.Join(e.runnerTemp, "build-output")
 	cmd := exec.Command("bash", filepath.Join(e.action, "build.sh"))
@@ -191,10 +194,11 @@ func TestActionScripts(t *testing.T) {
 
 	t.Run("pass from a label", func(t *testing.T) {
 		o := e.verify(t, map[string]string{"SDF_LABELS": `["bug","sdf-task:feat"]`})
-		if o.outputs["status"] != "PASS" || o.outputs["task"] != "feat" || !strings.HasPrefix(o.outputs["verdict-hash"], "sha256:") {
+		if !e.passed(o) || o.outputs["task"] != "feat" || !strings.HasPrefix(o.outputs["verdict-hash"], "sha256:") {
 			t.Fatalf("%v\n%s", o.outputs, o.log)
 		}
-		if !strings.Contains(o.summary, "## sdf verify: PASS") || !strings.Contains(o.log, "verdict PASS "+o.outputs["verdict-hash"]) {
+		st := o.outputs["status"]
+		if !strings.Contains(o.summary, "## sdf verify: "+st) || !strings.Contains(o.log, "verdict "+st+" "+o.outputs["verdict-hash"]) {
 			t.Fatalf("summary %q log %q", o.summary, o.log)
 		}
 		if _, err := os.Stat(filepath.Join(o.outputs["out-dir"], "verdict.json")); err != nil {
@@ -212,7 +216,7 @@ func TestActionScripts(t *testing.T) {
 			t.Fatalf("label source read a trailer: %v", o.outputs)
 		}
 		o := e.verify(t, map[string]string{"SDF_SHA": e.trailered, "SDF_TASK_SOURCE": "label-or-trailer"})
-		if o.outputs["status"] != "PASS" || o.outputs["task"] != "feat" {
+		if !e.passed(o) || o.outputs["task"] != "feat" {
 			t.Fatalf("%v\n%s", o.outputs, o.log)
 		}
 	})
@@ -243,5 +247,55 @@ func TestActionScripts(t *testing.T) {
 	}
 	if _, err := os.Stat(canary); err == nil {
 		t.Fatal("a label name ran as shell")
+	}
+}
+
+// runner-setup.sh changes nothing off GitHub-hosted runners unless asked,
+// and says what it changed.
+func TestRunnerSetup(t *testing.T) {
+	need(t, "bash")
+	action := actionDir(t)
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	// Fake sudo and systemctl: record calls; docker.socket is "active".
+	for name, body := range map[string]string{
+		"sudo":      "echo \"sudo $*\" >>" + calls + "\nexit 0\n",
+		"systemctl": "echo \"systemctl $*\" >>" + calls + "\ncase \"$*\" in *docker.socket*) exit 0;; esac\nexit 3\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(vars ...string) (string, string, int) {
+		os.Remove(calls)
+		cmd := exec.Command("bash", filepath.Join(action, "runner-setup.sh"))
+		cmd.Env = append([]string{"PATH=" + bin + ":/usr/bin:/bin"}, vars...)
+		out, err := cmd.CombinedOutput()
+		code := 0
+		if x, ok := err.(*exec.ExitError); ok {
+			code = x.ExitCode()
+		}
+		b, _ := os.ReadFile(calls)
+		return string(out), string(b), code
+	}
+	for _, vars := range [][]string{{}, {"RUNNER_ENVIRONMENT=self-hosted"}, {"RUNNER_ENVIRONMENT=github-hosted", "SDF_CONFIGURE_RUNNER=false"}} {
+		out, c, code := run(vars...)
+		if code != 0 || strings.Contains(c, "sudo") || !strings.Contains(out, "::notice") {
+			t.Fatalf("%v: exit %d calls %q out %q", vars, code, c, out)
+		}
+	}
+	if _, _, code := run("SDF_CONFIGURE_RUNNER=yes"); code != 1 {
+		t.Fatalf("bad input exit %d", code)
+	}
+	out, c, code := run("RUNNER_ENVIRONMENT=github-hosted")
+	if code != 0 || !strings.Contains(c, "sudo -n systemctl stop docker.socket") || !strings.Contains(out, "stopped or locked: docker.socket") {
+		t.Fatalf("exit %d calls %q out %q", code, c, out)
+	}
+	if b, _ := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"); strings.TrimSpace(string(b)) == "1" &&
+		(!strings.Contains(c, "sudo -n sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0") || !strings.Contains(out, "set kernel.apparmor_restrict_unprivileged_userns=0")) {
+		t.Fatalf("sysctl: calls %q out %q", c, out)
+	}
+	if _, c, _ := run("SDF_CONFIGURE_RUNNER=true"); !strings.Contains(c, "systemctl stop docker.socket") {
+		t.Fatalf("true on any runner: %q", c)
 	}
 }
