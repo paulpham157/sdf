@@ -25,7 +25,9 @@ for local Desktop Code-tab sessions.
 
 OTLP protocol is `grpc`, `http/protobuf`, or `http/json`. Claude Code has no
 default protocol, so set one. This receiver accepts all three. HTTP JSON and
-HTTP protobuf use port 4318. gRPC uses port 4317. `Content-Encoding: gzip`
+HTTP protobuf use port 4318 and send `Content-Type: application/json` or
+`application/x-protobuf`. Any other media type is HTTP 415. A request that
+carries an `Origin` header is HTTP 403. gRPC uses port 4317. `Content-Encoding: gzip`
 is inflated, including on a chunked body. The decompressed payload has the
 same 8,000,000 byte cap as the raw body. Any other content encoding is
 rejected with HTTP 415. gRPC `grpc-encoding: gzip` is accepted.
@@ -214,9 +216,13 @@ Session spans (`SessionRunner.drain`, `SessionRunner.runStep`,
 `SessionStep.attempt`, `Tool.execute`) carry `session.id`. Startup spans and
 the process logs do not, so the summary leaves them unattributed instead of
 attaching them because the timestamps overlap. `SessionStep.attempt` carries
-`gen_ai.request.model` and `gen_ai.usage.*`. Input and cache counts already
-include the conversation prefix, so the summary takes the max. Output is
-summed. OpenCode does not emit a cost attribute. `Tool.execute` carries
+`gen_ai.request.model` and `gen_ai.usage.*`. One attempt span is one provider
+request: OpenCode annotates it with the finish usage of that single
+`llm.stream` call (`packages/core/src/session/runner/step.ts`), not a
+session running total. Every request is billed its full input, including the
+resent conversation prefix, and its own cache reads and writes, so the
+summary sums input, cache, output, and reasoning across attempts (issue
+#200). A span stored twice (same trace and span id) counts once. OpenCode does not emit a cost attribute. `Tool.execute` carries
 `gen_ai.tool.name` and `gen_ai.tool.call.id` and no success flag, so the tool
 call is `unknown`.
 
@@ -241,7 +247,10 @@ reads the id from the session manager instead and posts the open and the close.
 A `session_shutdown` fired because the session was replaced, on `reload`,
 `new`, `resume`, or `fork`, is not a close and is not posted.
 
-The same switches can be set in `.pi/agent/settings.json` under `otel`
+The same switches can be set under `otel` in the project file
+`.pi/settings.json` or the global file `~/.pi/agent/settings.json` (pi-otel
+reads the project file first, environment variables override both; this is
+what `sdf init pi --write` and `--write --global` update)
 (`protocol`, `signals.traces`, `signals.metrics`, `signals.logs`,
 `spanNaming`, `serviceName`). Leave content capture off; the summary does not
 need prompts or tool arguments.
@@ -280,15 +289,18 @@ export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
 The space after `Bearer` is written as `%20`, as the OpenTelemetry
 specification requires for `OTEL_EXPORTER_OTLP_HEADERS`.
 
-Grok CLI reads the same variable but does not percent-decode it:
-`parse_header_list` in grok-build
-`xai-grok-telemetry/src/external/config.rs` (`2bdd1d6`) splits on `,` and
-`=` and trims, so `%20` would reach the receiver as is and get a 401. Keep a
-literal space, as Grok's own guide does:
+For Grok CLI a literal space always works, as Grok's own guide writes it:
 
 ```bash
 export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
 ```
+
+Grok 1.0.92 was also seen to accept `%20` in a live run on 2026-11-23: with
+a receiver token set, its logs and metrics POSTs returned 200. Earlier these
+docs said `%20` gets a 401, from the source alone: `parse_header_list` in
+grok-build `xai-grok-telemetry/src/external/config.rs` (`2bdd1d6`) splits on
+`,` and `=` and trims without percent-decoding. Which build decodes it is
+not pinned down, so `sdf init grok` prints the literal space.
 
 Codex does not read `OTEL_*`. Put a `headers` table on each `otlp-http`
 exporter instead. Those values are literal; `${SDF_OTLP_TOKEN}` is not
@@ -329,20 +341,24 @@ export OTEL_TRACES_EXPORT_INTERVAL=5000
 
 If the receiver has a token set, also export
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"` with a
-literal space; Grok does not percent-decode `%20` (see
+literal space, which always works; 1.0.92 also accepted `%20` live (see
 [Optional receiver token](#optional-receiver-token)). Grok has no
 config-file key for headers.
 
-`sdf init grok` prints those lines. `sdf init grok --write` puts the same
-settings in the `[telemetry]` table of `$GROK_HOME/config.toml` (default
-`~/.grok/config.toml`) as `otel_enabled`, `otel_metrics_exporter`,
-`otel_logs_exporter`, `otel_endpoint`, and `otel_protocol`, the names in the
-guide's "Config file" section and in `TelemetryConfig`
-(`xai-grok-telemetry/src/config.rs`). Grok reads the environment over the
-file. It also writes a session hook, `$GROK_HOME/hooks/sdf-session.json`,
-that posts the session's open and close; the merge rules and the reasons
-for the command's shape are in
-[docs/receiver.md](receiver.md#one-step-setup). With
+`sdf init grok` prints those lines and the matching `[telemetry]` table
+(`otel_enabled`, `otel_metrics_exporter`, `otel_logs_exporter`,
+`otel_protocol`, `otel_endpoint`, the names in the guide's "Config file"
+section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`).
+`sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
+(default `~/.grok/config.toml`) when the file has no `[telemetry]` table;
+an existing `[telemetry]` table is left unchanged. A project
+`.grok/config.toml` cannot set `otel_*`. Environment variables win over the
+file. It also installs `hooks/sdf-session.json` beside it, a session hook
+that posts the session's open and close to `POST /v1/sessions`. Grok sets
+`GROK_SESSION_ID` on that process; the event JSON field is `sessionId`.
+User hooks under `~/.grok/hooks/` are trusted. A project `.grok/hooks/`
+file is not, until that folder is trusted. The reasons for the hook
+command's shape are in [docs/receiver.md](receiver.md#one-step-setup). With
 `sdf init --git-hooks`, a commit Grok makes carries an `SDF-Session`
 trailer and links to the session, because Grok puts `GROK_SESSION_ID` in
 its shell tool's environment
@@ -538,12 +554,22 @@ log was emitted for this model in the 2026-11-10 capture, so cost stays unset.
 ```bash
 npm install -g @opencode/cli
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
-opencode run --model "openrouter/recursive/flint-v1.0:free" "..."
+opencode models                      # the ids your configured providers offer
+opencode run --model "<provider/model>" "..."
 ```
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs when
 no token is set. If the receiver has a token set, also export
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+
+Pick the model id from `opencode models`. On `@opencode/cli` 2.3.2 (checked
+2026-11-23) the OpenRouter id this page used to show,
+`openrouter/recursive/flint-v1.0:free`, is reported as `Model unavailable`
+unless OpenRouter is configured as an OpenCode provider. The free ids 2.3.2
+lists without that are OpenCode-hosted, such as `opencode/flint-40b-free`,
+and they need an OpenCode account and its free quota. The export is the same
+either way; a run that fails at the provider still sends its process traces
+and logs.
 
 ## Point Pi at it
 
@@ -570,6 +596,96 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
 
 
+## GitHub Copilot CLI
+
+> Mapping below is from the
+> [Copilot CLI OpenTelemetry reference](https://docs.github.com/en/copilot/reference/enterprise-administrators/opentelemetry-reference),
+> `copilot help monitoring` in `@github/copilot` 1.0.114, and the
+> [copilot-cli changelog](https://github.com/github/copilot-cli/blob/main/changelog.md),
+> checked 2026-11-23. It was not checked against a live session: a live run
+> needs a Copilot subscription. `tests/samples/copilot_*.json` are built
+> from those documents.
+
+Copilot CLI exports **traces and metrics, no logs**. Export turns on when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set (or `COPILOT_OTEL_ENABLED=true`, or a
+file exporter path). It speaks OTLP/HTTP only: `OTEL_EXPORTER_OTLP_PROTOCOL`
+is `http/json` (default) or `http/protobuf` (1.0.61 and later). `grpc` is not
+supported and falls back with a warning, so use port 4318.
+
+```bash
+npm install -g @github/copilot
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT
+copilot
+```
+
+These `export` lines stay in that shell after `copilot` exits, so other
+OTel programs started there will send to sdf too. To scope them to one run,
+run copilot through `sh`, which works from bash, zsh, and fish:
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`.
+
+`sdf init copilot --write` merges these lines into
+`~/.config/sdf/copilot.env` for you to source (details and precedence in
+[docs/receiver.md](receiver.md#one-step-setup)). Copilot CLI has no
+settings-file key for the endpoint; the process environment wins, and
+per-signal `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` /
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` override the generic endpoint.
+Organization or device managed settings can also configure export.
+A plain `http://` endpoint such as this receiver exports normally. The
+warning in the docs that an `http://` endpoint disables export sits in the
+Transport security section and applies when one of the certificate or
+client-key variables (`OTEL_EXPORTER_OTLP_*CERTIFICATE`, `*CLIENT_KEY`) is
+set; changelog 1.0.107 says the same for `copilot help monitoring`.
+`sdf init copilot` warns when one is set. Content capture
+(`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`) defaults to `NO_CONTENT`; only
+`SPAN_ONLY` and `SPAN_AND_EVENT` put prompts and responses on spans
+(`EVENT_ONLY` puts them on span events, which sdf does not store). The legacy
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` counts only when the
+standard variable is empty or unset, though it alone still adds tool schemas
+(`gen_ai.tool.definitions`). The user id is the pseudonymous
+`enduser.pseudo.id`.
+
+`service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
+summary also recognizes `gen_ai.agent.id` = `github.copilot.*`). Each user
+message is one `invoke_agent` span carrying `gen_ai.conversation.id`, with a
+`chat {model}` CLIENT span per model request and an `execute_tool {tool}`
+span per tool call. Subagents (`explore`, `task`) are nested `invoke_agent`
+spans in the same trace. Tool and subagent spans are attributed through the
+trace id.
+
+- Top-level `invoke_agent` spans are the ones with `server.address` (the
+  docs say subagents have none), else `gen_ai.agent.id` =
+  `github.copilot.default`, else those with no `invoke_agent` above them.
+  In fleet mode (`invoke_workflow`), the subagents directly under a workflow
+  that no top-level `invoke_agent` contains are counted like top-level ones.
+- Duration is the union of the time covered by top-level `invoke_agent`
+  and `invoke_workflow` spans, so parallel runs count once (0-10 s and
+  5-15 s is 15 s). Nested subagent spans are inside them.
+- Tokens are the sum of `gen_ai.usage.input_tokens`, `output_tokens`,
+  `cache_read.input_tokens`, `cache_write.input_tokens`, and
+  `reasoning.output_tokens` on `chat` spans (compaction requests included).
+  Input includes cache read and write; output includes reasoning. Without
+  chat usage the top-level `invoke_agent` totals are used, then the
+  `gen_ai.client.inference.usage.*` counters. 1.0.64 named the cache write
+  count `cache_creation.input_tokens`, and earlier builds used underscore
+  names (`cache_read_input_tokens`, `cache_creation_input_tokens`,
+  `reasoning_output_tokens`); they are read too, and only the first name
+  present on a span counts.
+- Tool calls come from `execute_tool` spans. There is no success flag:
+  `error.type` or an ERROR status is a failure, anything else a success.
+- Cost: Copilot reports no USD. `github.copilot.cost` is a billing
+  multiplier, not money. `github.copilot.nano_aiu` (AI units / 1e9) is read
+  from top-level `invoke_agent` spans only and shown on the `agent cost`
+  missing line. Computed cost is always unknown: Copilot is billed in
+  premium requests and AI units, not per token, so sdf never prices its
+  token counts (a test in `internal/summary` keeps it that way).
+- `github.copilot.session.shutdown` (`total_premium_requests`, lines
+  added/removed), `gen_ai.client.operation.exception`, hook and compaction
+  events are span events. sdf does not store span events yet.
+- Metrics carry no session id. A point is attached to a session only when it
+  falls inside exactly one Copilot session window.
+
 ## Grok CLI
 
 > Mapping below was first sketched from the public xAI guide
@@ -590,7 +706,9 @@ grok
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`. The
+literal space always works; 1.0.92 also accepted `%20` (see
+[Optional receiver token](#optional-receiver-token)).
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
@@ -673,7 +791,7 @@ with `grok` 1.0.92 headless (`grok -p`) on 2026-11-23:
 ```bash
 export GROK_INTERNAL_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
 # Replaces the xAI bearer token on these exports. Use the sdf token if the
-# receiver has one, or any value if it does not. Literal space, no %20.
+# receiver has one, or any value if it does not. A literal space always works.
 export GROK_INTERNAL_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
 ```
 
@@ -746,4 +864,101 @@ trace (a `grok-4.6` request, a failed request) show as extra
 Also seen in that run: the external stream accepted
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"` (logs
 and metrics POSTs returned 200 with a receiver token set), so 1.0.92 decodes
-`%20` there. A literal space also works.
+`%20` there. A literal space always works (see
+[Optional receiver token](#optional-receiver-token)).
+
+## Gemini CLI
+
+> Mapping below is from Gemini CLI's published
+> [telemetry doc](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md)
+> and its telemetry source (`packages/core/src/telemetry`) at
+> google-gemini/gemini-cli `eecccfcd5aff25de5e78135ca20f7abe3f566955`
+> (0.71.0-nightly, 2026-11-20 UTC). It has not been checked against a live,
+> signed-in session.
+
+Gemini CLI exports traces, logs, and metrics once `telemetry.enabled` is
+true. Settings live in the `telemetry` object of `~/.gemini/settings.json`. A
+workspace `.gemini/settings.json` overrides it, but only when Gemini CLI
+trusts the folder; in an untrusted folder the workspace file is not loaded.
+The system settings file (`/etc/gemini-cli/settings.json` on Linux,
+`/Library/Application Support/GeminiCli/settings.json` on macOS,
+`C:\ProgramData\gemini-cli\settings.json` on Windows, or
+`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) is applied after both and wins over them.
+`GEMINI_TELEMETRY_*` variables override every file, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` overrides `telemetry.otlpEndpoint` when
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset
+([configuration layers](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md)).
+The default exporter is gRPC at
+`http://localhost:4317`, which reaches `sdf serve` as is. With
+`otlpProtocol: "http"` it posts OTLP/HTTP JSON to `<otlpEndpoint>/v1/traces`,
+`/v1/logs`, and `/v1/metrics`. `telemetry.outfile` replaces the endpoint, so
+nothing reaches the receiver while it is set. `target: "gcp"` without
+`useCollector` sends to Google Cloud instead.
+
+`service.name` is `gemini-cli` (`service.version` is the Node.js version).
+Every log and metric data point carries `session.id`, `installation.id`,
+`interactive`, and, when known, `auth_type` and `user.email` (when you are
+signed in with Google). Logs name themselves in the `event.name` attribute
+(`gemini_cli.config`, `gemini_cli.user_prompt`, `gemini_cli.api_request`,
+`gemini_cli.api_response`, `gemini_cli.api_error`, `gemini_cli.tool_call`,
+`gemini_cli.file_operation`, `gemini_cli.conversation_finished`, and more).
+The body is a sentence such as `Tool call: read_file. Decision: auto_accept.
+Success: true. Duration: 14ms.` Each `api_request`, `api_response`, and
+`api_error` is followed by a `gen_ai.client.inference.operation.details` log
+with the same counts under `gen_ai.usage.*`.
+
+Spans are named for the operation (`llm_call`, `tool_call`, `agent_call`,
+...). They carry `gen_ai.conversation.id` (the session id),
+`gen_ai.operation.name`, and `gen_ai.agent.name=gemini-cli`, and `llm_call`
+adds `gen_ai.request.model`. Prompts, outputs, and tool definitions are on
+spans only with `telemetry.traces=true`.
+
+Metrics are cumulative and exported every 10 seconds:
+`gemini_cli.session.count`, `gemini_cli.token.usage` (`model`, `type` =
+`input` | `output` | `thought` | `cache` | `tool`), `gemini_cli.api.request.count`,
+`gemini_cli.tool.call.count` (`function_name`, `success`, `decision`,
+`tool_type`), latency histograms, and the GenAI
+`gen_ai.client.token.usage` and `gen_ai.client.operation.duration`.
+
+What the summary takes from it:
+
+| Summary field | Gemini CLI source |
+| --- | --- |
+| session id | `session.id` on logs and metrics; `gen_ai.conversation.id` on spans |
+| tool | `gemini-cli` (from `service.name`, or a `gemini_cli.*` name) |
+| model | `model` on `config`, `api_request`, `api_response`, `api_error`, and metric points; `gen_ai.request.model` on spans |
+| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields |
+| duration | min-to-max of the session's logs and spans (no session or turn duration is exported) |
+| tool calls | `gemini_cli.tool_call` logs: `function_name`, `success`, `duration_ms` (no call id) |
+| errors | `gemini_cli.api_error` in the log events; failed tools as `success=false`; `ERROR` status on spans |
+| agent-reported cost | not exported |
+| computed cost | unknown: there is no pricing rule for the Gemini token sources yet |
+
+`input` (`input_token_count`) is Gemini's `promptTokenCount`, which includes
+the `cache` count. `output` excludes `thought`. `tool` is the tool-use prompt
+count. Prompts are in the logs by default: `telemetry.logPrompts` defaults to
+`true`, and it adds `prompt`, `request_text`, `response_text`, and
+`function_args`. Set it to `false` unless you want that text in the local
+SQLite file. `sdf init gemini --write` does that when the file has no
+`logPrompts` yet.
+
+## Point Gemini CLI at it
+
+```bash
+sdf init gemini --write
+gemini
+```
+
+Or without touching the settings file:
+
+```bash
+export GEMINI_TELEMETRY_ENABLED=true
+export GEMINI_TELEMETRY_TARGET=local
+export GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4318
+export GEMINI_TELEMETRY_OTLP_PROTOCOL=http
+export GEMINI_TELEMETRY_LOG_PROMPTS=false
+gemini
+```
+
+gRPC works too: leave the protocol at its default and set
+`GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4317`.

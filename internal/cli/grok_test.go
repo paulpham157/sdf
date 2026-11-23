@@ -16,7 +16,7 @@ func TestInitGrokPrintsAndWrites(t *testing.T) {
 	config := filepath.Join(home, ".grok", "config.toml")
 	hook := filepath.Join(home, ".grok", "hooks", "sdf-session.json")
 	printed := run(t, "init", "grok")
-	if printed.code != 0 || !strings.Contains(printed.stdout, "export GROK_EXTERNAL_OTEL='1'") || !strings.Contains(printed.stdout, "not written") {
+	if printed.code != 0 || !strings.Contains(printed.stdout, "export GROK_EXTERNAL_OTEL=1") || !strings.Contains(printed.stdout, "not written") {
 		t.Fatalf("%d %s %s", printed.code, printed.stdout, printed.stderr)
 	}
 	if _, err := os.Stat(config); !os.IsNotExist(err) {
@@ -33,14 +33,17 @@ func TestInitGrokPrintsAndWrites(t *testing.T) {
 		t.Fatal(body)
 	}
 	check := run(t, "init", "--check", "grok", "--port", "5318", "--grpc-port", "1")
-	if !strings.Contains(check.stdout, "[telemetry] points at http://127.0.0.1:5318: true") {
+	if !strings.Contains(check.stdout, "has [telemetry] pointing at http://127.0.0.1:5318: true") {
 		t.Fatalf("%d %s %s", check.code, check.stdout, check.stderr)
 	}
-	if err := os.WriteFile(config, []byte("telemetry.otel_enabled = false\n"), 0o600); err != nil {
+	if err := os.WriteFile(config, []byte("[telemetry]\notel_enabled = false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	refused := run(t, "init", "grok", "--write")
-	if refused.code == 0 || !strings.Contains(refused.stderr, "it was not changed") {
-		t.Fatalf("%d %s %s", refused.code, refused.stdout, refused.stderr)
+	kept := run(t, "init", "grok", "--write")
+	if kept.code != 0 || !strings.Contains(kept.stdout, "already has a [telemetry] table") {
+		t.Fatalf("%d %s %s", kept.code, kept.stdout, kept.stderr)
+	}
+	if body := mustRead(t, config); body != "[telemetry]\notel_enabled = false\n" {
+		t.Fatalf("existing table changed: %q", body)
 	}
 }

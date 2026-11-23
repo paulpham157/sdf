@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/paulpham157/sdf/internal/genai"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -52,7 +53,20 @@ var sessionKeys = []string{
 	"session.id",
 	"conversation.id",
 	"pi.session.id",
-	"gen_ai.conversation.id",
+	genai.AttrConversationID,
+}
+
+// HTTPMedia reports the OTLP/HTTP media type. ok is false unless the type
+// is exactly application/json or application/x-protobuf. The comparison is
+// case-insensitive. Parameters such as charset are allowed and ignored.
+func HTTPMedia(contentType string) (media string, ok bool) {
+	media = mediaType(contentType)
+	switch media {
+	case "application/json", "application/x-protobuf":
+		return media, true
+	default:
+		return media, false
+	}
 }
 
 // sessionIDAlias is the camelCase key OpenCode v2.3.2 emits on session
@@ -66,7 +80,9 @@ const sessionIDAlias = "sessionID"
 const grokSpanSessionKey = "session_id"
 
 // Decode parses an OTLP export body. contentType application/json selects
-// JSON; every other media type, including an empty one, is protobuf.
+// JSON. application/x-protobuf selects protobuf. Any other media type,
+// including an empty one, is rejected. Parameters such as charset are
+// allowed. The type match is case-insensitive.
 func Decode(signal string, body []byte, contentType string) ([]record.Record, error) {
 	if signal != "traces" && signal != "metrics" && signal != "logs" {
 		return nil, errf("unknown signal " + signal)
@@ -75,7 +91,10 @@ func Decode(signal string, body []byte, contentType string) ([]record.Record, er
 		return nil, errf("payload too large")
 	}
 	msg := newRequest(signal)
-	media := mediaType(contentType)
+	media, ok := HTTPMedia(contentType)
+	if !ok {
+		return nil, errf("unsupported media type")
+	}
 	var err error
 	if media == "application/json" {
 		if !utf8.Valid(body) {

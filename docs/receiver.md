@@ -8,15 +8,36 @@ the bind address on localhost. Override with `--host`, `--port` (HTTP),
 `--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
 `SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
+The HTTP receiver stores a body only for `Content-Type: application/json`
+or `application/x-protobuf`. The type match is case-insensitive, and
+parameters such as `charset` are allowed. Any other type, including a
+missing `Content-Type`, `text/plain`, `multipart/form-data`, and
+`application/x-www-form-urlencoded`, is HTTP 415 and is not written.
+`POST /v1/sessions` accepts only `application/json` under that rule.
+A request that includes an `Origin` header is HTTP 403 and is not written,
+on every bind. Agent exporters, curl, and the git and session hooks do not
+send `Origin`. A browser does, including a `no-cors` post of a
+CORS-safelisted type, which is why the header is refused instead of
+answered with CORS.
+
+When the HTTP listener is bound to a loopback address, `Host` must be
+`localhost`, `127.0.0.1`, or `[::1]`. The port may be omitted; a port that
+is present has to be the bound port. Any other host is HTTP 403 and is not
+written. That stops a page that rebinds its own name onto 127.0.0.1.
+`--host` set to a non-loopback address does not apply this list. A remote
+exporter sends whatever address it was given, and that bind is already an
+exposure; `Origin` and the media-type check still apply. gRPC on 4317 is
+unchanged. Browsers do not speak that protocol.
+
 The same process serves a read-only UI at `http://127.0.0.1:4320/` unless
 you pass `--no-ui`. `--ui-addr` moves the UI. `--host` does not: the page
 stays on localhost when the receivers are bound wider. `--prices`, `--repo`,
 `--github`, and `--budget` match `sdf summary` and apply to the page. `--budget`
 names one local ceiling file; without it the page has no budget.
 
-`GET /health` returns `{"status":"ok"}`. HTTP exports are `POST /v1/traces`,
-`POST /v1/metrics`, and `POST /v1/logs`, `Content-Type: application/json` or
-`application/x-protobuf`. The body may use `Content-Length` or
+`GET /health` on the OTLP/HTTP port (`http://127.0.0.1:4318/health`)
+returns `{"status":"ok"}`. The UI port does not serve it. HTTP exports are
+`POST /v1/traces`, `POST /v1/metrics`, and `POST /v1/logs`. The body may use `Content-Length` or
 `Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
 are chunked and omit `Content-Length`. When both headers are present, chunked
 encoding wins. `Content-Encoding: gzip` is inflated after the body is
@@ -32,6 +53,21 @@ open, and a missing code is `UNSET`. Inspect them with SQLite:
 ```bash
 sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
+```
+
+## Try it without an agent
+
+`sdf demo` runs the same receiver on free localhost ports, sends one
+synthetic Claude Code-shaped session to it, and prints that session's summary.
+Traces and logs go over OTLP/HTTP JSON and metrics over OTLP/gRPC, so both
+listeners are exercised. Every resource carries `sdf.fixture=demo`. It needs
+no agent, API key, or network, and it does not touch `sdf-telemetry.sqlite`:
+the store is a temporary file unless `--db PATH` names one to keep. `--json`
+prints the report as `sdf summary --json` would.
+
+```bash
+sdf demo
+sdf demo --db demo.sqlite && sdf summary --db demo.sqlite
 ```
 
 ## Optional token authentication
@@ -55,7 +91,9 @@ When a token is set, these requests must send `Authorization: Bearer <token>`:
 
 A missing or wrong token is HTTP 401 or gRPC `Unauthenticated`. The comparison
 is constant-time. The token is not written to the request log. `GET /health`
-does not require the token, so `sdf init --check` still works.
+does not require the token, so `sdf init --check` still works. A valid token
+does not bypass the media-type, `Origin`, or loopback `Host` checks above.
+Those still return 415 or 403 and write nothing.
 
 Point an OpenTelemetry exporter at the receiver with:
 
@@ -81,6 +119,15 @@ on localhost unless you trust the network.
 
 The process prints `UI listening on http://127.0.0.1:4320/` (the default).
 Open that URL on the same machine.
+
+The UI checks `Host` before every route, including the HTML, CSS, and
+script. `localhost`, `127.0.0.1`, and `[::1]` are allowed. A non-loopback
+`--ui-addr` also allows that configured host. The port may be omitted; if
+it is present it has to be the bound port. Anything else is HTTP 403 and
+the handler does not run, so a rebound name cannot read `/api/summary` or
+trigger the `--github` lookups. The listener limits header reads to 5s,
+request reads to 30s, writes (including a GitHub lookup) to 3 minutes, and
+idle connections to 90s.
 
 The page has three views. Overview is the total across sessions and the cost
 per accepted outcome, including that figure per agent. Sessions lists every
@@ -122,9 +169,15 @@ scripts, or anything else from the network.
 `sdf serve --host 0.0.0.0` exposes the OTLP receivers on every interface.
 Those payloads can include prompts and filesystem paths when the agent is
 opted in. A bearer token is a shared secret, not a substitute for a trusted
-network. The UI still binds to `127.0.0.1` in that case. `--ui-addr
-0.0.0.0:4320` exposes the same telemetry in a browser and prints a warning.
-Do not do that on a network you do not trust.
+network. On that bind the HTTP receiver still rejects an `Origin` and a
+non-OTLP media type. It does not filter `Host`, because a remote exporter's
+`Host` is the address it was given. The UI still binds to `127.0.0.1` in
+that case. `--ui-addr 0.0.0.0:4320` listens on every interface and prints a
+warning. Requests are still limited to `Host` `0.0.0.0`, `localhost`,
+`127.0.0.1`, or `[::1]`, so a browser that opens the machine's LAN address
+is refused until `--ui-addr` names that address. The Host check is not
+authentication: anyone who can open the socket can send an allowed name.
+Do not bind the UI on a network you do not trust.
 
 An empty database shows an empty state that points at `sdf init`.
 
@@ -132,7 +185,11 @@ An empty database shows an empty state that points at `sdf init`.
 
 `sdf init` prints the exporter settings for one agent. It does not change a
 file unless you pass `--write`. An existing file is copied to a sibling
-ending in `.sdf-bak` before it is changed. A file that is not valid JSON is
+ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
+the new copy gets a timestamped name). The new bytes are written to a temp
+file and renamed into place, keeping the file mode. A read-only file is
+refused and left alone. Without `--write`, the JSON agents print only the
+keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
 ```bash
@@ -140,11 +197,14 @@ sdf init claude-code
 sdf init claude-code --write
 sdf init codex --write
 sdf init qwen --write
-sdf init grok --write
 sdf init opencode --write
+sdf init copilot --write
 sdf init pi --write
 sdf init pi --write --global
 sdf init pi --install
+sdf init grok
+sdf init grok --write
+sdf init gemini --write
 sdf init --git-template --set-template-dir
 sdf init --check
 ```
@@ -203,29 +263,26 @@ There is no session hook for Qwen Code, so its window is inferred from the
 records.
 
 `sdf init grok` (alias `grok-cli`) prints the Grok CLI variables as `export`
-lines and the same settings as `[telemetry]` keys. `--write` puts
-`otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
-`otel_logs_exporter = "otlp"`, `otel_endpoint` (the HTTP receiver), and
-`otel_protocol = "http/protobuf"` in `$GROK_HOME/config.toml` (default
-`~/.grok/config.toml`). With no `[telemetry]` table the block is appended.
-With one, the missing keys go right after the header and a key sdf manages
-that holds another value is rewritten on its own line, with a warning; other
-keys, comments, and tables stay. sdf has no TOML parser, so a file with a
-multi-line string, a dotted `telemetry.*` key, an inline `telemetry` table,
-a `[telemetry.*]` sub-table, or two `[telemetry]` tables is left untouched
-and the write is an error (non-zero exit); add the printed block by hand.
-`otel_log_user_prompts`, `otel_log_assistant_responses`, and
-`otel_log_tool_content` set to `true` are kept and reported, and the same
-variables set in the shell that runs `sdf init` are reported too. Grok's
-own defaults for all three are off. Grok reads the environment over the
-file, so an `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also
-redirects Grok. Grok has no config-file key for headers; a receiver token
-goes in `OTEL_EXPORTER_OTLP_HEADERS` (see
-[docs/agents.md](agents.md#grok-cli)). The keys and paths are from
-grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
+lines, the receiver-token header, and the same settings as a `[telemetry]`
+table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
+`otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
+`otel_endpoint` (the HTTP receiver). `--write` appends that table to
+`$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
+no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
+directory. An existing `[telemetry]` table is left unchanged; add the
+printed keys to it by hand. A project `.grok/config.toml` cannot set
+`otel_*`. Grok reads the environment over the file, so an
+`OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also redirects Grok.
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, and
+`OTEL_LOG_TOOL_CONTENT` set in the shell that runs `sdf init` are reported,
+because they put content on the stream; Grok's own defaults for all three
+are off. Grok has no config-file key for headers; a receiver token goes in
+`OTEL_EXPORTER_OTLP_HEADERS` (see
+[docs/agents.md](agents.md#optional-receiver-token)). The keys and paths are
+from grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
 `xai-grok-telemetry/src/config.rs` (`TelemetryConfig`), and
 `xai-dirs/src/lib.rs` (`GROK_HOME`) at grok-build `2bdd1d6`, read
-2026-11-23. `sdf init` was not run against a live `grok` here.
+2026-11-23.
 
 `--write` also installs a session hook for that agent. The hook posts to
 `POST /v1/sessions` when a session opens and, where the agent has such an
@@ -241,14 +298,62 @@ without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode
 has no close event, so only the open is posted. Pi reads the session id from
-the session manager rather than from the file name pi-otel exports.
+the session manager rather than from the file name pi-otel exports. Grok
+posts both edges and reads `GROK_SESSION_ID`, then `sessionId`.
+
+GitHub Copilot CLI is configured by environment only (see
+[docs/agents.md](agents.md#github-copilot-cli)); it reads no settings-file
+key for the endpoint. `sdf init copilot` (alias `copilot-cli`) prints the
+lines of `~/.config/sdf/copilot.env` that sdf manages (never your other
+lines, which can hold tokens; it says how many it keeps):
+`OTEL_EXPORTER_OTLP_ENDPOINT` (the HTTP receiver),
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, and
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT`, each value in
+single quotes. `--host` must be a host name, an IPv4 address, or an IPv6
+address (bracketed or bare) and `--port` must be 1-65535, so nothing in the
+file can run when it is sourced. Copilot does not load the file; run
+copilot through `sh` so the variables do not stay in your shell (this also
+works from fish, which has no POSIX subshell):
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`. `--write`
+merges in place: line order and unrelated lines are kept, the endpoint and
+protocol lines are replaced (with a warning when the old value differed),
+and a capture-content line you already set is kept, with a warning when it
+puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). The write goes to a temp file in the same directory,
+is fsynced, keeps the file mode (and the owner and group when the process
+may set them), and is renamed into place. Because the file is replaced,
+other hard links keep the old contents (a note is printed) and extended
+attributes and ACLs are not copied. A file that exists but that sdf may not
+write, or that has no write bit (`0400`, even for root), is refused before
+anything else. A symlinked file is written through to its target; a link
+to a file that does not exist yet (stow-style, relative links read from the
+link's directory) creates that file, and creates its missing parent
+directories with mode 0700. The old file is copied to
+`.sdf-bak`; a different existing `.sdf-bak` is never overwritten
+(`.sdf-bak.1`, `.sdf-bak.2`, ... are used), and a backup made by a failed
+write is removed.
+
+What wins: the environment of the `copilot` process. Per-signal variables
+(`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`,
+and the `_PROTOCOL` pair) override the generic ones, and
+`COPILOT_OTEL_EXPORTER_TYPE=file` or `COPILOT_OTEL_FILE_EXPORTER_PATH` sends
+export to a file instead. Any OTLP certificate or client key variable makes
+Copilot drop an `http://` endpoint. Organization or device managed settings
+can also configure export; sdf cannot read them. `sdf init copilot` and
+`sdf init --check copilot` warn about each of these that is set in the
+current environment or the snippet, and `--check` reports whether the
+process environment and the snippet point at this receiver. There is no
+session hook for Copilot CLI, so its window is inferred from the records.
 
 For Grok CLI, `--write` writes `$GROK_HOME/hooks/sdf-session.json` (default
-`~/.grok/hooks/`), or merges into that file when it exists. Grok loads every
-`*.json` in that directory as a global hook file, always trusted, in the
-same `{"hooks": {"SessionStart": [...]}}` shape. Its stdin carries
-`session_id` (a snake_case alias of `sessionId`), `source` on `SessionStart`,
-and `reason` on `SessionEnd`. `SessionStart` does not fire for a subagent's
+`~/.grok/hooks/`). sdf owns that file: a different one is replaced and the
+old one copied to `.sdf-bak`. Grok loads every `*.json` in that directory
+as a user hook file, which is trusted (a project `.grok/hooks/` file is not,
+until that folder is trusted), in the same
+`{"hooks": {"SessionStart": [...]}}` shape. The hook reads the session id
+from `GROK_SESSION_ID`, which Grok sets on every hook process
+(`xai-grok-hooks/src/runner/command.rs`), then from `sessionId` or its
+snake_case alias `session_id` on stdin. Stdin also carries `source` on
+`SessionStart` and `reason` on `SessionEnd`. `SessionStart` does not fire for a subagent's
 own session, and a child's `SessionEnd` carries `subagentType`, so the hook
 posts nothing for it. The hook also sends the working directory as `cwd`:
 the envelope's `workspaceRoot`, which Grok sets to the git toplevel of the
@@ -265,12 +370,13 @@ Grok hook sends `cwd`; the other agents' hooks are unchanged. Grok
 substitutes `$VAR` in a hook command from its own
 environment when it loads the file, and refuses a command with a `$VAR` it
 cannot resolve unless the command assigns it; the sdf command uses
-`sdf_`-prefixed local names and `${PATH:-}` for that reason. `SessionEnd`
+`sdf_`-prefixed local names, `${PATH:-}`, and `${GROK_SESSION_ID:-}` for
+that reason. `SessionEnd`
 hooks get 1.5 seconds by default, so the post uses `curl -m 1`. Sources:
 grok-build `user-guide/10-hooks.md` ("Hook Locations", "Hook Events"),
 `docs/custom-hooks.md` ("Variable Substitution"), and
 `xai-grok-hooks/src/event.rs` (`HookEventEnvelope`, `HookPayload`) at
-`2bdd1d6`, read 2026-11-23. Not run against a live `grok` here.
+`2bdd1d6`, read 2026-11-23. The hook was not run against a live `grok` here.
 
 Grok also runs the hooks in `~/.claude/settings.json` by default (Claude
 Code compatibility). The Claude Code hook sdf writes therefore starts with
@@ -298,9 +404,79 @@ protocol in that file is `http/json`. pi-otel's own default is gRPC on port
 the process environment, the project file, and the global file point at this
 receiver.
 
+Gemini CLI's settings are from its
+[telemetry doc](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md).
+`sdf init gemini --write` (alias `gemini-cli`) merges `enabled: true`,
+`target: "local"`, `otlpEndpoint` (the HTTP receiver), and
+`otlpProtocol: "http"` into the `telemetry` object of
+`~/.gemini/settings.json`. Other keys keep their values and their order, and
+the keys it adds go after them. Numbers keep every digit and `&`, `<`, `>`
+are not escaped. The file is re-indented (with the indentation of its first
+indented line) and an unneeded `\u` escape becomes the plain character. It
+sets `logPrompts: false` only when the file does not already set
+`logPrompts`; Gemini CLI's own default is `true`, and an existing
+`logPrompts: true` is kept with a warning. Replacing an existing `target`,
+`otlpEndpoint`, or `otlpProtocol` prints the old and new value. Without
+`--write` it prints the `telemetry` keys sdf manages as they would be
+written, and the same warnings. It never prints the rest of the file
+(`mcpServers` env, `otlpHeaders`, and the like can hold secrets); it only says
+how many other top-level keys are kept.
+
+An existing file is copied to a `.sdf-bak` sibling first. A backup that is
+already there is never overwritten: the copy goes to
+`.sdf-bak.<UTC timestamp>` instead (with `-2`, `-3` if that is taken too).
+The new bytes go to a temp file in the same directory, which is synced and
+then renamed over the old file, so a crash leaves either the old or the new
+file. The file mode is kept, and so are its owner and group when the process
+may set them (as root, or for a group you belong to); otherwise the new file
+belongs to you. Because the file is replaced, not rewritten in place, other
+hard links to it keep the old contents (sdf prints a note when the file had
+more than one link), and extended attributes and ACLs are not copied. When
+`settings.json` is a symlink, sdf writes through it: the link stays and its
+target is replaced, and the backup sits next to the link. A link to a file
+that does not exist yet (a stow-style dotfile) creates that file, with a
+relative link read from the link's directory. A file that exists but that
+sdf may not write, or that has no write bit at all (`0400`, `0444`, even for
+root), is refused before any backup or write. sdf also checks that it can
+create files in the directories the write uses (it creates and removes a
+probe file there): the target's directory, the link's directory for the
+backup, and, for a file that does not exist yet, the nearest existing parent
+directory. A `0555` directory is refused with its mode in the message. A
+symlink that resolves outside its own directory and `$HOME` is written
+through with a warning; as root it is refused. If the write fails, the temp
+file and the backup it just made are removed. The same checks, backup, and
+atomic write apply to every file `sdf init --write` changes, the Codex
+`config.toml` included. When one agent needs two files (Codex `config.toml`
+and `hooks.json`, Pi settings and its extension, OpenCode's env file and
+plugin), both are checked before either is written. The check runs before
+the write, not under a lock: if another process changes a mode, directory,
+or link in between, that write fails without changing its file, but a file
+already written by the same init stays written.
+
+A file that is not plain JSON (Gemini CLI also accepts comments) is left
+untouched, and the printed `GEMINI_TELEMETRY_*` variables can be used
+instead. A `telemetry.outfile` already in the file wins over the endpoint in
+Gemini CLI, so it is reported, not removed.
+
+Gemini CLI layers its settings files: the user file, then a workspace
+`.gemini/settings.json` (only when the folder is trusted), then the system
+file `/etc/gemini-cli/settings.json` (or `GEMINI_CLI_SYSTEM_SETTINGS_PATH`),
+which wins over both. `GEMINI_TELEMETRY_*` overrides every file, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` overrides `telemetry.otlpEndpoint` when
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset. There is no session hook for
+Gemini CLI yet, so its window is inferred from the records.
+`sdf init --check gemini` reports whether `GEMINI_TELEMETRY_OTLP_ENDPOINT` or
+the user settings file point at this receiver. It warns when
+`OTEL_EXPORTER_OTLP_ENDPOINT` points elsewhere (and
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset), when the system file sets
+telemetry that would keep records from sdf (`enabled: false`, another
+`target`, `otlpEndpoint`, or `otlpProtocol`, or an `outfile`), and when the
+current directory's `.gemini/settings.json` does, noting it applies only in a
+trusted folder.
+
 ## Git hooks
 
-Pi, OpenCode, and Codex do not export a commit SHA. `sdf init --git-hooks`
+Pi, OpenCode, Codex, and Grok CLI do not export a commit SHA. `sdf init --git-hooks`
 installs `post-commit`, `post-rewrite`, and `prepare-commit-msg` into the
 hooks directory Git actually runs (`git rev-parse --git-path hooks`). On
 Git 2.43 that directory is shared by linked worktrees, so one install covers

@@ -40,7 +40,7 @@ func TestCheckHost(t *testing.T) {
 			t.Fatalf("%q: %q %v", host, got, err)
 		}
 	}
-	for _, host := range append(injections, "") {
+	for _, host := range append(injections, "", "999.1.1.1", "127.1", "1.2.3.4.5", "256.0.0.1") {
 		if _, err := checkHost(host); err == nil {
 			t.Fatalf("%q accepted", host)
 		}
