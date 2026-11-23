@@ -174,14 +174,18 @@ func TestHookSourceBuildsOnOtherPlatforms(t *testing.T) {
 // toolchain, a PATH directory, a trusted cache or any other host directory;
 // writes to a trusted cache land in a per-criterion layer; the hidden .git
 // is not visible; IPC and UTS namespaces are the check's own.
+//
+// The probes are of directories that the namespace really makes read-only:
+// a PATH entry and GOROOT (bound back read-only), and, where one exists, a
+// host-writable directory outside every tmpfs mask (covered by the
+// read-only remount). The working directory is not one of them: when the
+// module lives under /tmp or $HOME it is under a writable tmpfs mask, so a
+// write there lands in that tmpfs and never reaches the host. Whether
+// anything reached the host is checked from the host after the run.
 func TestIsolatedCheckCannotWriteHostDirectories(t *testing.T) {
 	requireIsolation(t)
 	wd, _ := os.Getwd()
-	pathDir, err := os.MkdirTemp(wd, "pathdir-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(pathDir)
+	pathDir := t.TempDir()
 	out, err := exec.Command("go", "env", "GOROOT").Output()
 	if err != nil {
 		t.Skip("no go")
@@ -191,15 +195,27 @@ func TestIsolatedCheckCannotWriteHostDirectories(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cache, "f"), []byte("orig\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	ro := []string{pathDir, goroot}
+	if d := hostWritableOutsideMasks(append(ancestors(wd), goroot, filepath.Dir(goroot))); d != "" {
+		ro = append(ro, d)
+	} else {
+		t.Log("no host-writable directory outside the tmpfs masks here; probing the read-only binds only")
+	}
 	ipc, _ := os.Readlink("/proc/self/ns/ipc")
 	uts, _ := os.Readlink("/proc/self/ns/uts")
 	probe := "sdf-ro-probe"
+	onHost := append(append([]string{}, ro...), wd)
 	defer func() {
-		for _, d := range []string{pathDir, goroot, wd} {
+		for _, d := range onHost {
 			os.Remove(filepath.Join(d, probe))
 		}
 	}()
-	a := `for d in "` + pathDir + `" "` + goroot + `" "` + wd + `"; do if ( : > "$d/` + probe + `" ) 2>/dev/null; then echo "wrote $d" >&2; exit 1; fi; done
+	a := `for d in`
+	for _, d := range ro {
+		a += ` "` + d + `"`
+	}
+	a += `; do if ( : > "$d/` + probe + `" ) 2>/dev/null; then echo "wrote $d" >&2; exit 1; fi; done
+( : > "` + wd + `/` + probe + `" ) 2>/dev/null
 if ( echo changed > "$GOMODCACHE/f" ) 2>/dev/null; then echo "trusted module cache writable without network" >&2; exit 2; fi
 test ! -e ../git || { echo "../git is visible" >&2; exit 4; }
 test "$(readlink /proc/self/ns/ipc)" != "` + ipc + `" || exit 5
@@ -229,9 +245,72 @@ test "$(readlink /proc/self/ns/uts)" != "` + uts + `" || exit 6
 		}
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
+	for _, d := range onHost {
+		if _, err := os.Lstat(filepath.Join(d, probe)); err == nil {
+			t.Errorf("an isolated check wrote the host directory %s", d)
+		}
+	}
 	if b, _ := os.ReadFile(filepath.Join(cache, "f")); string(b) != "orig\n" {
 		t.Fatalf("trusted cache changed: %q", b)
 	}
+}
+
+// ancestors returns p and each of its parent directories, nearest first.
+func ancestors(p string) []string {
+	var out []string
+	for p != "" {
+		out = append(out, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	return out
+}
+
+// hostWritableOutsideMasks returns the first of dirs that this user can
+// write on the host and that is not under a directory the sandbox covers
+// with a writable tmpfs (/tmp, /var/tmp, /run, /dev/shm, TMPDIR,
+// XDG_RUNTIME_DIR, HOME), or "" if there is none. Inside the namespace such
+// a directory is read-only only because of the remount.
+func hostWritableOutsideMasks(dirs []string) string {
+	var masks []string
+	for _, m := range []string{"/tmp", "/var/tmp", "/run", "/var/run", "/dev/shm", os.TempDir(), os.Getenv("XDG_RUNTIME_DIR"), os.Getenv("HOME")} {
+		if m == "" {
+			continue
+		}
+		if r, err := filepath.EvalSymlinks(m); err == nil {
+			m = r
+		}
+		if m != "/" {
+			masks = append(masks, m)
+		}
+	}
+	for _, d := range dirs {
+		r, err := filepath.EvalSymlinks(d)
+		if err != nil {
+			continue
+		}
+		masked := false
+		for _, m := range masks {
+			if r == m || strings.HasPrefix(r, m+"/") {
+				masked = true
+				break
+			}
+		}
+		if masked {
+			continue
+		}
+		f, err := os.CreateTemp(r, ".sdf-w-")
+		if err != nil {
+			continue
+		}
+		f.Close()
+		os.Remove(f.Name())
+		return r
+	}
+	return ""
 }
 
 // atk_pathjack: a check drops a fake sh into a PATH directory so later
