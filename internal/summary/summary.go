@@ -156,10 +156,9 @@ var (
 		"codex.sampling":                   true,
 		"exec_command":                     true,
 	}
-	cumulativeTokenFields = []string{"input_token_count", "cached_token_count", "cache_write_token_count"}
-	additiveTokenFields   = []string{"output_token_count", "reasoning_token_count"}
-	metricFail            = regexp.MustCompile(`metrics (?:histogram|counter|gauge) \[([^\]]+)\] failed: tag value contains invalid characters: (\S+)`)
-	metricDetailKeys      = []string{
+	codexSSETokenFields = []string{"input_token_count", "cached_token_count", "cache_write_token_count", "output_token_count", "reasoning_token_count"}
+	metricFail          = regexp.MustCompile(`metrics (?:histogram|counter|gauge) \[([^\]]+)\] failed: tag value contains invalid characters: (\S+)`)
+	metricDetailKeys    = []string{
 		"type", "token_type", genai.AttrTokenType, "model", genai.AttrRequestModel,
 		"tool", genai.AttrToolName, genai.AttrOperationName, "decision", "success",
 	}
@@ -963,6 +962,8 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 // across requests (issue #200).
 const openCodeTokensMethod = "sum over SessionStep.attempt spans (one span per provider request); input and cache counts are per request, because each request is billed its full input and its own cache reads and writes; old and new names of one count on the same span are one value (the largest), never added; a span delivered more than once (same trace and span id) counts once"
 
+const codexSSETokensMethod = "sum over response.completed events (one event per Responses API call; a turn makes one call per tool round trip); input, cached, cache_write, output, and reasoning are all summed, because each call is billed its full input and its own cache reads; an event stored twice (same conversation.id, event.timestamp, and counts) counts once"
+
 // genAIUsage sums gen_ai.usage.* attributes over the spans that match. Each
 // matching span is one request whose counts are per-request deltas, so the
 // totals are sums. Within one span, alias labels (usageAliases) are one
@@ -1086,63 +1087,50 @@ func sumSpanMS(records []record.Record, match func(string) bool) *float64 {
 	return record.Float(sum(found))
 }
 
+// codexSSETokens sums Codex response.completed logs. Each event is the usage
+// of one Responses API call, and one turn makes several calls (one per tool
+// round trip), so every count is added up, like Codex's own
+// codex.turn.token_usage. A record stored twice (same conversation.id,
+// event.timestamp and counts) is counted once.
 func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
-	grouped := map[string][]record.Record{}
-	var order []string
-	for index, rec := range events {
-		turn := "request-" + itoa(index)
-		if text := record.SummaryText(rec.Attributes["turn.id"]); text != nil {
-			turn = *text
-		}
-		if _, ok := grouped[turn]; !ok {
-			order = append(order, turn)
-		}
-		grouped[turn] = append(grouped[turn], rec)
-	}
-	var chosen []record.Record
-	for _, turn := range order {
-		group := grouped[turn]
-		best := group[0]
-		for _, rec := range group[1:] {
-			bt, rt := int64(0), int64(0)
-			if best.TimeUnixNano != nil {
-				bt = *best.TimeUnixNano
-			}
-			if rec.TimeUnixNano != nil {
-				rt = *rec.TimeUnixNano
-			}
-			if rt > bt || (rt == bt && rec.ID > best.ID) {
-				best = rec
-			}
-		}
-		chosen = append(chosen, best)
-	}
+	seen := map[string]bool{}
 	var totals OrderedFloats
-	for _, key := range cumulativeTokenFields {
-		var values []float64
-		for _, rec := range chosen {
-			if amount := record.Number(rec.Attributes[key]); amount != nil {
-				values = append(values, *amount)
+	for _, rec := range events {
+		key := codexSSEKey(rec)
+		if key != "" {
+			if seen[key] {
+				continue
 			}
+			seen[key] = true
 		}
-		if len(values) > 0 {
-			totals.Set(key, maxFloat(values))
-		}
-	}
-	for _, key := range additiveTokenFields {
-		var values []float64
-		for _, rec := range chosen {
-			if amount := record.Number(rec.Attributes[key]); amount != nil {
-				values = append(values, *amount)
+		for _, field := range codexSSETokenFields {
+			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				prev, _ := totals.Get(field)
+				totals.Set(field, prev+*amount)
 			}
-		}
-		if len(values) > 0 {
-			totals.Set(key, sum(values))
 		}
 	}
 	return totals,
 		record.Str("logs " + codexSSE + " response.completed"),
-		record.Str("input, cached, and cache_write are the max (the prefix is resent); output and reasoning are summed; last event per turn.id")
+		record.Str(codexSSETokensMethod)
+}
+
+// codexSSEKey identifies one response.completed event for de-duplication.
+// Codex logs no response id, so the key is conversation.id, event.timestamp
+// and the counts. It is empty when event.timestamp is missing.
+func codexSSEKey(rec record.Record) string {
+	stamp := record.SummaryText(rec.Attributes["event.timestamp"])
+	if stamp == nil {
+		return ""
+	}
+	key := strAttr(rec.Attributes, "conversation.id") + "|" + *stamp
+	for _, field := range codexSSETokenFields {
+		key += "|"
+		if amount := record.Number(rec.Attributes[field]); amount != nil {
+			key += strconv.FormatFloat(*amount, 'g', -1, 64)
+		}
+	}
+	return key
 }
 
 func costOf(records []record.Record, points []point, tool string) (*float64, *string, *string) {
@@ -1991,16 +1979,6 @@ func sum(values []float64) float64 {
 		total += v
 	}
 	return total
-}
-
-func maxFloat(values []float64) float64 {
-	best := values[0]
-	for _, v := range values[1:] {
-		if v > best {
-			best = v
-		}
-	}
-	return best
 }
 
 func freeze(attributes map[string]any) string {
