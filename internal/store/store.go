@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -22,6 +23,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/paulpham157/sdf/internal/dbfile"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -98,6 +100,10 @@ const busyTimeoutMS = 5000
 
 // Open creates the file if needed and applies the schema and column migration.
 //
+// A new file is created 0600, and a missing parent directory 0700; an
+// existing file that group or others can access is tightened to owner-only
+// (see dbfile).
+//
 // busy_timeout is set in the DSN, so it applies to every connection the pool
 // opens, before any statement runs. The file is then switched to WAL, as the
 // ledger does: in WAL a reader never blocks the writer and the writer never
@@ -113,7 +119,7 @@ func Open(path string) (*Store, error) {
 		if private(path) {
 			return nil, err
 		}
-		if strings.Contains(err.Error(), "unable to open database file") {
+		if strings.Contains(err.Error(), "unable to open database file") || errors.Is(err, fs.ErrPermission) {
 			return nil, fmt.Errorf("database %s: %w; check that its directory exists and is writable", AbsPath(path), err)
 		}
 		return nil, fmt.Errorf("database %s: %w", AbsPath(path), err)
@@ -133,6 +139,13 @@ func open(path string) (*Store, error) {
 	name, err := dsn(path, fmt.Sprintf("_pragma=busy_timeout(%d)", busyTimeoutMS))
 	if err != nil {
 		return nil, err
+	}
+	if !private(path) {
+		// The file is created 0600 (and its directory 0700) before SQLite
+		// opens it, so its -wal and -shm are 0600 too; see dbfile.
+		if err := dbfile.Create(AbsPath(path)); err != nil {
+			return nil, err
+		}
 	}
 	db, err := sql.Open("sqlite", name)
 	if err != nil {
