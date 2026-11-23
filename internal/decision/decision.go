@@ -668,10 +668,12 @@ func resolve(g *Graph) {
 //     blocker blocks nothing. So a blocking hypothesis clears once a
 //     decision record supersedes it (records never change status, so
 //     superseding is how a hypothesis gets settled), or once it is
-//     retracted. A blocker that reaches no head because its supersedes chain
-//     only runs into a cycle (an older sdf could store one) is open: no
-//     decision record settled it. Blocked: the record is active and
-//     OpenBlockers is not empty.
+//     retracted. A blocker that reaches no head is open when any path from
+//     it runs into a supersedes cycle (an older sdf could store one), even
+//     if its other paths end in a retraction: no decision record settled
+//     it. It is settled when every path ends in a retraction. See
+//     headResolver. Blocked: the record is active and OpenBlockers is not
+//     empty.
 //   - ConflictsWith: the other side of every conflicts_with edge.
 //     Conflicted: the record is active and at least one of those is active.
 //   - RefinedBy: every decision with a refines edge to this one. The record
@@ -716,41 +718,17 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 			challenged[e.To.Ref] = e.Relation == RelContradicts
 		}
 	}
-	// heads collects the current heads of id into out. It reports cyclic
-	// when a path from id comes back to a decision already on it. onPath
-	// holds the decisions on the current path only, so two paths that meet
-	// again (b and c both superseded by d) are not taken for a cycle.
-	var heads func(id string, onPath map[string]bool, out *[]string) (cyclic bool)
-	heads = func(id string, onPath map[string]bool, out *[]string) bool {
-		if onPath[id] {
-			return true
-		}
+	alive := func(id string) bool {
 		i, ok := index[id]
-		if !ok || g.Decisions[i].Retraction != nil {
-			return false
-		}
-		next := supersededBy[id]
-		if len(next) == 0 {
-			*out = append(*out, id)
-			return false
-		}
-		onPath[id] = true
-		cyclic := false
-		for _, n := range next {
-			if heads(n, onPath, out) {
-				cyclic = true
-			}
-		}
-		delete(onPath, id)
-		return cyclic
+		return ok && g.Decisions[i].Retraction == nil
 	}
+	resolver := newHeadResolver(func(id string) []string { return supersededBy[id] }, alive)
 	unsettled := func(blocker string) bool {
-		var hs []string
-		cyclic := heads(blocker, map[string]bool{}, &hs)
-		if len(hs) == 0 {
-			return cyclic
+		info := resolver.resolve(blocker)
+		if len(info.heads) == 0 {
+			return info.cyclic
 		}
-		for _, h := range hs {
+		for _, h := range info.heads {
 			if g.Decisions[index[h]].Status == StatusHypothesis {
 				return true
 			}
@@ -816,6 +794,125 @@ func LatestEvidence(g Graph, id string) (Edge, bool) {
 		}
 	}
 	return last, found
+}
+
+// headInfo is what following supersedes from one decision resolves to.
+// heads are the current heads reached, once each, in the order first
+// reached. cyclic is true when some path from the decision runs into a
+// supersedes cycle. Both depend only on the decision, not on the path
+// that reached it, so they can be shared.
+type headInfo struct {
+	heads  []string
+	cyclic bool
+}
+
+// headResolver resolves headInfo for decisions, memoized per id, in time
+// linear in the decisions and supersedes edges reached. A walk that tried
+// every path would double with each diamond (b and c both supersede a, d
+// supersedes both) in a chain of them.
+//
+// next(id) lists the decisions that supersede id; alive(id) is false for
+// a retracted or unknown decision, which ends a path with no head. A
+// live decision nothing supersedes is a head.
+//
+// A cyclic flag found on one path cannot be cached for a node as is: in
+// a depth-first walk, whether a node "sees" a cycle depends on what is on
+// the current path. So the resolver groups decisions into strongly
+// connected components (Tarjan) first. A decision is cyclic when its
+// component has more than one decision (countsAs leaves no supersedes
+// self-edge) or when any component it reaches is cyclic. Components
+// complete in reverse topological order, so a component's successors
+// are always resolved before it, and every member of a cycle gets the
+// same answer whichever member the walk entered by.
+type headResolver struct {
+	next  func(id string) []string
+	alive func(id string) bool
+	memo  map[string]*headInfo
+
+	order   map[string]int // Tarjan discovery index
+	low     map[string]int
+	onStack map[string]bool
+	stack   []string
+	counter int
+}
+
+func newHeadResolver(next func(string) []string, alive func(string) bool) *headResolver {
+	return &headResolver{
+		next: next, alive: alive,
+		memo:  map[string]*headInfo{},
+		order: map[string]int{}, low: map[string]int{}, onStack: map[string]bool{},
+	}
+}
+
+func (r *headResolver) resolve(id string) *headInfo {
+	if _, seen := r.order[id]; !seen {
+		r.visit(id)
+	}
+	return r.memo[id]
+}
+
+func (r *headResolver) visit(v string) {
+	r.order[v], r.low[v] = r.counter, r.counter
+	r.counter++
+	r.stack = append(r.stack, v)
+	r.onStack[v] = true
+	if r.alive(v) {
+		for _, w := range r.next(v) {
+			if _, seen := r.order[w]; !seen {
+				r.visit(w)
+				r.low[v] = min(r.low[v], r.low[w])
+			} else if r.onStack[w] {
+				r.low[v] = min(r.low[v], r.order[w])
+			}
+		}
+	}
+	if r.low[v] != r.order[v] {
+		return
+	}
+	var members []string
+	for {
+		n := len(r.stack) - 1
+		w := r.stack[n]
+		r.stack = r.stack[:n]
+		r.onStack[w] = false
+		members = append(members, w)
+		if w == v {
+			break
+		}
+	}
+	info := &headInfo{cyclic: len(members) > 1}
+	seen := map[string]bool{}
+	addHead := func(h string) {
+		if !seen[h] {
+			seen[h] = true
+			info.heads = append(info.heads, h)
+		}
+	}
+	// Members are popped in reverse; walk them in discovery order so heads
+	// come out in the order a walk first reaches them.
+	for i := len(members) - 1; i >= 0; i-- {
+		m := members[i]
+		if !r.alive(m) {
+			continue
+		}
+		next := r.next(m)
+		if len(next) == 0 {
+			addHead(m)
+		}
+		for _, w := range next {
+			sub := r.memo[w] // nil for a member of this component
+			if sub == nil {
+				continue
+			}
+			info.cyclic = info.cyclic || sub.cyclic
+			for _, h := range sub.heads {
+				addHead(h)
+			}
+		}
+	}
+	for _, m := range members {
+		r.memo[m] = info
+	}
 }
 
 // WriteJSON writes the graph the way the summary JSON is written.
