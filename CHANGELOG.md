@@ -96,6 +96,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Validate `sdf init --host` / `--port` and quote shell snippets ([#195](https://github.com/paulpham157/sdf/pull/195)).
 - Reject forged OTLP posts and rebound UI hosts ([#199](https://github.com/paulpham157/sdf/pull/199)).
 - Harden `sdf verify` and the `sdf-verify` Action against a forged PASS: `go test` results come from a peer-checked harness, not stdout; designated file and vendor changes fail; each check runs in a pid namespace (or the verdict is ERROR `ISOLATION_UNAVAILABLE`); a data-dir-only or unpinned-ledger task is ERROR `TASK_UNTRUSTED` unless `--task-ref`, `--task-hash`, or `--expect-prefix` pins it; `--allow-unisolated` records `"isolation": "none"` and is never passed by the Action; and the Action step exits 0/1/3 to match the verdict. The go test harness channel is sealed, and `runtime/debug.WriteHeapDump` is flagged ([#209](https://github.com/paulpham157/sdf/pull/209), [7a84270](https://github.com/paulpham157/sdf/commit/7a8427004d0b71b8173bdd33073ff74e92ace700)).
+- Create the telemetry database 0600 (so its `-wal` and `-shm` are 0600 too) and a missing parent directory 0700; tighten an existing telemetry or ledger database, and its `-wal`/`-shm`/`-journal`, that group or others can read, warning when it cannot ([#304](https://github.com/paulpham157/sdf/issues/304)).
 
 ### Docs
 
