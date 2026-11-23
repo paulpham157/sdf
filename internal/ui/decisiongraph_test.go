@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -169,5 +170,129 @@ func TestDecisionsTabAbsentWithoutDecisions(t *testing.T) {
 	// Opening the route directly still explains the empty state.
 	if page := renderedPageAt(t, srv, "#/decisions"); !strings.Contains(page, "sdf decision add") {
 		t.Fatalf("empty Decisions tab:\n%s", page)
+	}
+}
+
+// The replay scrubber: an ARIA slider over the chapter's events, and the
+// graph and panel as of ?at=N with blocked, conflicted, and needs-attention
+// recomputed from the events recorded so far.
+func TestPageRendersDecisionReplay(t *testing.T) {
+	// The label is New York time whatever the machine's zone is.
+	t.Setenv("TZ", "Asia/Ho_Chi_Minh")
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	zone := regexp.MustCompile(` (EST|EDT)\b`)
+
+	// seedGraph records 4 decisions, then 4 edges: implements, constrains,
+	// blocks, conflicts_with.
+	now := renderPage(t, srv, "#/decisions", "")
+	for _, want := range []string{`role="slider"`, `aria-valuemin="1"`, `aria-valuemax="8"`, `aria-valuenow="8"`, `aria-label="Replay position"`, "8 of 8", "▶ Replay"} {
+		if !strings.Contains(now.Markup, want) {
+			t.Errorf("replay at now is missing %q:\n%s", want, now.Markup)
+		}
+	}
+	if !zone.MatchString(now.Text) {
+		t.Errorf("replay label has no New York zone:\n%s", now.Text)
+	}
+	if strings.Contains(now.Text, "As of ") {
+		t.Errorf("replay at now should show the live chapter:\n%s", now.Text)
+	}
+
+	// After the four decisions, before any edge: nothing is locked or in
+	// conflict yet, and no ending exists.
+	early := renderPage(t, srv, "#/decisions/ch-capture?at=4", "")
+	for _, want := range []string{`aria-valuenow="4"`, "4 of 8", "As of ", "0 of 0 endings reached", "status-ui"} {
+		if !strings.Contains(early.Markup, want) && !strings.Contains(early.Text, want) {
+			t.Errorf("replay at 4 is missing %q:\n%s", want, early.Text)
+		}
+	}
+	for _, unwanted := range []string{"waits on", "Conflict:", "Locked ending", "needs merge-first"} {
+		if strings.Contains(early.Text, unwanted) {
+			t.Errorf("replay at 4 shows %q before its edge is recorded:\n%s", unwanted, early.Text)
+		}
+	}
+	if !zone.MatchString(early.Text) {
+		t.Errorf("replay at 4 has no New York zone:\n%s", early.Text)
+	}
+
+	// After blocks (event 7), before conflicts_with: locked, not conflicted.
+	locked := renderPage(t, srv, "#/decisions/ch-capture?at=7", "")
+	for _, want := range []string{"7 of 8", "status-ui waits on merge-first", "Locked ending", "1 of 2 endings reached"} {
+		if !strings.Contains(locked.Text, want) {
+			t.Errorf("replay at 7 is missing %q:\n%s", want, locked.Text)
+		}
+	}
+	if strings.Contains(locked.Text, "Conflict:") {
+		t.Errorf("replay at 7 shows a conflict recorded at 8:\n%s", locked.Text)
+	}
+
+	// At 2, merge-first and silent are not recorded yet: outlines only,
+	// hidden from assistive tech, with no text.
+	two := renderPage(t, srv, "#/decisions/ch-capture?at=2", "")
+	tag := regexp.MustCompile(`<g [^>]*data-node="silent"[^>]*>`).FindString(two.Markup)
+	if !strings.Contains(tag, "dg-future") || !strings.Contains(tag, `aria-hidden="true"`) || strings.Contains(tag, "tabindex") {
+		t.Errorf("future node at 2: %q", tag)
+	}
+	if strings.Contains(two.Text, "Hooks fail silently.") {
+		t.Errorf("future node text drawn at 2:\n%s", two.Text)
+	}
+
+	// Out of range clamps: past the end is now, 0 is the first event.
+	if p := renderPage(t, srv, "#/decisions/ch-capture?at=99", ""); strings.Contains(p.Text, "As of ") || !strings.Contains(p.Markup, `aria-valuenow="8"`) {
+		t.Errorf("at=99 should be now:\n%s", p.Text)
+	}
+	if p := renderPage(t, srv, "#/decisions/ch-capture?at=0", ""); !strings.Contains(p.Markup, `aria-valuenow="1"`) {
+		t.Errorf("at=0 should clamp to 1:\n%s", p.Markup)
+	}
+}
+
+// The replay code keeps its contract in the asset: explicit New York time,
+// reduced motion, the step keys, and opacity-only animation.
+func TestReplayAssetContract(t *testing.T) {
+	script := readAsset(t, "app.js")
+	for _, want := range []string{`timeZone: "America/New_York"`, `prefers-reduced-motion: reduce`, `case "[":`, `case "]":`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `role: "slider"`, `"aria-valuetext"`} {
+		if !strings.Contains(script, want) {
+			t.Errorf("app.js is missing %q", want)
+		}
+	}
+	css := readAsset(t, "app.css")
+	for _, want := range []string{".dg-slider:focus-visible", "@keyframes dg-fade-in", ".dg-enter { animation: none; }"} {
+		if !strings.Contains(css, want) {
+			t.Errorf("app.css is missing %q", want)
+		}
+	}
+	if regexp.MustCompile(`@keyframes dg-fade-in \{[^}]*(transform|left|top)`).MatchString(css) {
+		t.Error("replay animation must change opacity only")
+	}
+}
+
+// The replay shares the tab's keys and focus rules: [ and ] step from a
+// node and focus stays on it, / still reaches Jump from the slider, the
+// keys are text inside Jump, and the List view omits nodes not recorded
+// yet. Its status goes to the one live region outside the drawn tree.
+func TestReplayKeepsFocusAndSharesKeys(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	stepped := renderPage(t, srv, "#/decisions/ch-capture/capture", `key=[@[data-node="capture"]`)
+	if !strings.Contains(stepped.Markup, `aria-valuenow="7"`) {
+		t.Errorf("[ did not step back:\n%s", stepped.Markup)
+	}
+	if !strings.Contains(stepped.Active, `data-node="capture"`) || !strings.Contains(stepped.Active, `tabindex="0"`) {
+		t.Errorf("[ from a node lost focus: %q", stepped.Active)
+	}
+	if n := strings.Count(stepped.Outside, "aria-live"); n != 1 || strings.Contains(stepped.Markup, "aria-live") {
+		t.Errorf("live regions: %d outside; inside: %v", n, strings.Contains(stepped.Markup, "aria-live"))
+	}
+	if res := renderPage(t, srv, "#/decisions", "key=/@.dg-slider"); !strings.Contains(res.Active, `class="dg-jump"`) {
+		t.Errorf("/ from the slider: focus %q", res.Active)
+	}
+	if res := renderPage(t, srv, "#/decisions", "focus=.dg-jump,key=[,key=["); !strings.Contains(res.Markup, `aria-valuenow="8"`) {
+		t.Error("[ typed into Jump stepped the replay")
+	}
+	list := renderPage(t, srv, "#/decisions/ch-capture?at=2", "click=~List")
+	if strings.Contains(list.Text, "Hooks fail silently.") || strings.Contains(list.Text, "Merge main first.") || !strings.Contains(list.Text, "Capture live spans.") {
+		t.Errorf("List view at 2 lists nodes not recorded yet:\n%s", list.Text)
 	}
 }

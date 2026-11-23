@@ -47,11 +47,16 @@
       return { name: "detail", id: safeDecode(raw, raw) };
     }
     if (hash === "#/sessions") return { name: "sessions" };
-    if (hash === "#/decisions" || hash.indexOf("#/decisions/") === 0) {
+    if (/^#\/decisions(\/|\?|$)/.test(hash)) {
+      // #/decisions[/<chapter>[/<node>]][?at=N]: at is the replay position,
+      // 1-based over the chapter's timeline; without it the page shows now.
       // An undecodable chapter or node falls back to the newest chapter or
       // the chapter view.
-      const parts = hash.slice("#/decisions".length).split("/").filter(Boolean).map(function (part) { return safeDecode(part, ""); });
-      return { name: "decisions", chapter: parts[0] || "", node: parts[1] || "" };
+      const q = hash.indexOf("?");
+      const path = q >= 0 ? hash.slice(0, q) : hash;
+      const at = /(?:^|&)at=(\d+)/.exec(q >= 0 ? hash.slice(q + 1) : "");
+      const parts = path.slice("#/decisions".length).split("/").filter(Boolean).map(function (part) { return safeDecode(part, ""); });
+      return { name: "decisions", chapter: parts[0] || "", node: parts[1] || "", at: at ? parseInt(at[1], 10) : null };
     }
     return { name: "overview" };
   }
@@ -1014,14 +1019,16 @@
     return { name: name, style: "generic", label: name };
   }
 
-  function dgHash(chapter, node) {
+  function dgHash(chapter, node, at) {
     let out = "#/decisions/" + encodeURIComponent(chapter);
     if (node) out += "/" + encodeURIComponent(node);
+    if (at != null) out += "?at=" + at;
     return out;
   }
 
+  // Focusing a node keeps the replay position; a chapter link does not.
   function dgGo(chapter, node) {
-    location.hash = dgHash(chapter, node);
+    location.hash = dgHash(chapter, node, dgView.chapter && dgView.chapter.id === chapter ? dgAt : null);
   }
 
   function dgWhen(text) {
@@ -1249,6 +1256,7 @@
     } else {
       kids.push(s("rect", { x: l, y: t, width: w, height: hgt, rx: node.kind === "start" ? hgt / 2 : 9, class: "dg-shape" }));
     }
+    if (node.future) return kids; // replay: an outline holds the place, with no text
     let tx = l + 12;
     let anchor = "start";
     if (node.decided_by) {
@@ -1341,7 +1349,8 @@
           parts.push(dgGlyph(type, spot[0], spot[1], type.label));
         }
       }
-      const group = s("g", { class: focus && !touches ? "dg-dim" : null }, parts);
+      const gcls = [focus && !touches ? "dg-dim" : "", edge.enter ? "dg-enter" : ""].join(" ").trim();
+      const group = s("g", { class: gcls || null }, parts);
       (edge.on_path ? path : off).push(group);
     });
     const nodes = [];
@@ -1353,9 +1362,11 @@
       if (near && !near[node.id]) classes.push("dg-dim");
       const muted = dgMuted(node);
       if (muted) classes.push("dg-muted");
-      const kids = [s("title", null, [node.title + ": " + (node.detail || "")])].concat(dgNodeShape(node, width[node.id], focused));
+      if (node.future) classes.push("dg-future");
+      if (node.enter) classes.push("dg-enter");
+      const kids = (node.future ? [] : [s("title", null, [node.title + ": " + (node.detail || "")])]).concat(dgNodeShape(node, width[node.id], focused));
       const hidden = (node.alternatives || []).filter(function (id) { return byId[id] && byId[id].lane === "none"; });
-      if (hidden.length && dgNotTaken) {
+      if (hidden.length && dgNotTaken && !node.future) {
         const p = dgPos(node);
         // Bottom-left, straddling the border: the spine edge leaves from the
         // centre and badges sit top-right, so this corner is free.
@@ -1365,6 +1376,13 @@
           s("rect", { x: px, y: py, width: 86, height: 17, rx: 8.5 }),
           s("text", { x: px + 43, y: py + 12.5, "text-anchor": "middle" }, ["+" + hidden.length + " not taken"]),
         ]));
+      }
+      // A node the replay has not reached yet is an outline only: it keeps
+      // its place, so the layout never moves, but it is out of the tab order
+      // and the accessibility tree.
+      if (node.future) {
+        nodes.push(s("g", { class: classes.join(" "), "data-node": node.id, "aria-hidden": "true" }, kids));
+        return;
       }
       nodes.push(s("g", {
         class: classes.join(" "),
@@ -1391,7 +1409,7 @@
     // while it has focus, so the graph does not vanish under the user.
     let fnode = focus && byId[focus];
     if (fnode && fnode.kind === "alternative" && fnode.lane === "none" && fnode.parent && byId[fnode.parent]) fnode = byId[fnode.parent];
-    if (fnode && dgNotTaken) {
+    if (fnode && dgNotTaken && !fnode.future) {
       const hidden = (fnode.alternatives || []).map(function (id) { return byId[id]; }).filter(function (alt) { return alt && alt.lane === "none"; });
       const fp = dgPos(fnode);
       hidden.forEach(function (alt, i) {
@@ -1569,6 +1587,7 @@
     if (f.conflicts) facts.push(" · ", h("span", { class: "dg-red" }, [f.conflicts + " conflict" + (f.conflicts === 1 ? "" : "s")]));
     if (f.challenged) facts.push(" · ", h("span", { class: "dg-red" }, [f.challenged + " challenged"]));
     const kids = [
+      dgReplayNote(chapter),
       h("p", { class: "kicker" }, ["Chapter · connected decisions"]),
       h("h2", null, [chapter.title]),
       h("p", { class: "detail" }, [meta.join(" · ")]),
@@ -1585,7 +1604,7 @@
         }, [icon, h("strong", null, [item.kind[0].toUpperCase() + item.kind.slice(1) + ": "]), item.text, h("span", { class: "dg-focus-link" }, [" Focus"])]));
       });
     }
-    const endings = chapter.nodes.filter(function (node) { return node.kind === "ending"; });
+    const endings = chapter.nodes.filter(function (node) { return node.kind === "ending" && !node.future; });
     kids.push(h("p", { class: "label" }, ["Endings"]));
     if (!endings.length) kids.push(h("p", { class: "detail" }, ["No ending yet. An ending is a pull request or commit a linked session produced."]));
     else kids.push(h("ul", { class: "dg-endings" }, endings.map(function (node) {
@@ -1678,6 +1697,9 @@
     if (!live) return;
     // The same message twice in a row still changes the text, so it is read.
     live.textContent = text && live.textContent === text ? text + "\u00a0" : dgStatus;
+    // Replay steps redraw only part of the tab; keep the visible copy current.
+    const shown = app.querySelector ? app.querySelector(".dg-live") : null;
+    if (shown) shown.textContent = dgStatus;
   }
 
   function dgFocusKey(el) {
@@ -1798,7 +1820,8 @@
   function dgListView(chapter, focus) {
     const byId = {};
     chapter.nodes.forEach(function (n) { byId[n.id] = n; });
-    const shown = dgOrderedNodes(chapter).filter(function (n) { return n.kind !== "alternative" || n.lane !== "none"; });
+    // A node the replay has not reached yet is not listed.
+    const shown = dgOrderedNodes(chapter).filter(function (n) { return !n.future && (n.kind !== "alternative" || n.lane !== "none"); });
     const onPath = shown.filter(function (n) { return n.on_path && n.kind !== "ending"; });
     const endings = shown.filter(function (n) { return n.kind === "ending"; });
     const rest = shown.filter(function (n) { return !n.on_path && n.kind !== "alternative" && n.kind !== "ending"; });
@@ -1817,13 +1840,22 @@
     return h("div", { class: "dg-listview" }, kids);
   }
 
+  // While replaying, the panel says which point it describes.
+  function dgReplayNote(chapter, node) {
+    if (!chapter.replay) return null;
+    const text = node && node.future ?
+      "Not recorded yet at this replay point (" + chapter.replay.at + " of " + chapter.replay.total + "). Its details below are as of now." :
+      "As of " + dgNYTime(chapter.replay.event.at, dgTimeline(dgView.chapter || chapter).seconds) + " · " + chapter.replay.at + " of " + chapter.replay.total + ". Flags and counts are recomputed for this point.";
+    return h("p", { class: "dg-replay-note" }, [text]);
+  }
+
   function dgFocusPanel(chapter, node) {
     const byId = {};
     chapter.nodes.forEach(function (n) { byId[n.id] = n; });
     const kids = [h("div", { class: "dg-panel-top" }, [
       h("button", { type: "button", onclick: function () { dgClose(chapter, node.id); } }, ["← Chapter"]),
       h("button", { type: "button", "aria-label": "Close", onclick: function () { dgClose(chapter, node.id); } }, ["×"]),
-    ])];
+    ]), dgReplayNote(chapter, node)];
     if (node.kind === "alternative") {
       kids.push(h("p", { class: "kicker" }, ["Not taken · what if"]));
       kids.push(h("h2", null, [node.title]));
@@ -1873,14 +1905,623 @@
   }
 
   function dgOrderedNodes(chapter) {
-    return chapter.nodes.filter(dgVisible).slice().sort(function (a, b) {
+    return chapter.nodes.filter(function (node) { return dgVisible(node) && !node.future; }).slice().sort(function (a, b) {
       if (a.row !== b.row) return a.row - b.row;
       const order = { left: 0, spine: 1, right: 2 };
       return (order[a.lane] || 0) - (order[b.lane] || 0);
     });
   }
 
-  function decisionsTab(chapterId, focus) {
+  // ---- Replay ----------------------------------------------------------------
+  // The scrubber under the canvas replays a chapter in recorded_at order. Its
+  // timeline has one event per decision, per stored edge that touches one of
+  // the chapter's decisions, and per retraction, all read from
+  // GET /api/decisions/graph (decision.recorded_at, links[].recorded_at, and
+  // retraction.retracted_at); no other endpoint is needed.
+  //
+  // Derived flags are RECOMPUTED as of the playhead, not approximated: dgProject
+  // re-runs the decision package's read-time rules (internal/decision,
+  // resolveRelations) over only the decisions and edges recorded so far, so a
+  // decision shows "locked" only once its blocks edge exists, stops being
+  // locked once a decision supersedes its hypothesis blocker, and so on:
+  //   - effective status: retracted once its retraction is recorded, else
+  //     superseded once a supersedes edge from a recorded decision is, else
+  //     active;
+  //   - blocked: active with a blocks edge from a blocker whose current heads
+  //     (following supersedes, skipping retracted) include a hypothesis, or
+  //     whose chain only reaches a cycle;
+  //   - conflicted: active with a conflicts_with edge to an active decision;
+  //   - challenged: active and the latest counting validates/contradicts edge
+  //     (from a session, a commit, or an active decision) is contradicts.
+  // Roles, facts, needs-attention, and explored are rebuilt from those flags
+  // the way package decisiongraph builds them. Layout is not: every node keeps
+  // its final lane and row (concept §5, "the final layout is computed once"),
+  // and nodes the playhead has not reached are drawn as faint outlines.
+  // Two things are approximated because the API has no time for them: an
+  // ending appears once every decision it came from is recorded and linked to
+  // a session or commit, and a pull request's merged state is today's.
+  // At the last event the page shows the server's chapter itself.
+  let dgAt = null; // replay position, 1..M; null is now (the last event)
+  let dgPrevAt = null;
+  let dgTimer = null;
+  let dgView = { chapter: null, focus: null };
+  let dgDragging = false;
+  const dgTimelines = typeof WeakMap === "function" ? new WeakMap() : null;
+  const DG_EVENT_RANK = { decision: 0, edge: 1, retraction: 2 };
+
+  function dgMillis(text) {
+    const t = Date.parse(text || "");
+    return isNaN(t) ? 0 : t;
+  }
+
+  let dgNYFormat = null;
+  function dgNYParts(text) {
+    const date = new Date(text);
+    if (!text || isNaN(date.getTime())) return null;
+    try {
+      if (!dgNYFormat) {
+        dgNYFormat = new Intl.DateTimeFormat("en-US", {
+          timeZone: "America/New_York", month: "short", day: "numeric",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short",
+        });
+      }
+      const out = {};
+      dgNYFormat.formatToParts(date).forEach(function (part) { out[part.type] = part.value; });
+      return out;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // "Nov 22 · 09:14 EST", always in America/New_York with its zone label.
+  // Seconds are added when two events of the timeline share a minute.
+  function dgNYTime(text, seconds) {
+    const p = dgNYParts(text);
+    if (!p) return text || "";
+    return p.month + " " + p.day + " · " + p.hour + ":" + p.minute + (seconds ? ":" + p.second : "") + " " + p.timeZoneName;
+  }
+
+  function dgNYDay(text) {
+    const p = dgNYParts(text);
+    return p ? p.month + " " + p.day : "";
+  }
+
+  function dgEndpointLabel(end) {
+    if (end.kind === "decision") return end.ref;
+    if (end.kind === "session") return "session " + (end.ref.length > 16 ? end.ref.slice(0, 12) + "…" : end.ref);
+    if (end.kind === "commit") return "commit " + end.ref.slice(0, 7);
+    return end.kind + " " + end.ref;
+  }
+
+  function dgEdgeKey(relation, from, to) {
+    return relation + "\u0000" + from.kind + ":" + from.ref + "\u0000" + to.kind + ":" + to.ref;
+  }
+
+  function dgTimeline(chapter) {
+    const cached = dgTimelines && dgTimelines.get(chapter);
+    if (cached) return cached;
+    const events = [];
+    const decisionNodes = {};
+    chapter.nodes.forEach(function (node) {
+      if (node.kind === "decision" && node.decision) decisionNodes[node.id] = node;
+    });
+    const seen = {};
+    chapter.nodes.forEach(function (node) {
+      if (!decisionNodes[node.id]) return;
+      const rec = node.decision;
+      events.push({ type: "decision", id: node.id, at: rec.recorded_at, by: node.decided_by || rec.decided_by || "", label: node.id + " recorded" });
+      if (rec.retraction) events.push({ type: "retraction", id: node.id, at: rec.retraction.retracted_at, label: node.id + " retracted" });
+      // Each stored edge once: a decision-to-decision edge from its source's
+      // out link, and an edge from a session or commit from the in link.
+      (node.links || []).forEach(function (link) {
+        let from;
+        let to;
+        if (link.direction === "out") {
+          from = { kind: "decision", ref: node.id };
+          to = { kind: link.kind, ref: link.ref };
+        } else if (link.kind !== "decision") {
+          from = { kind: link.kind, ref: link.ref };
+          to = { kind: "decision", ref: node.id };
+        } else {
+          return;
+        }
+        const key = dgEdgeKey(link.relation, from, to);
+        const once = key + "\u0000" + link.recorded_at;
+        if (seen[once]) return;
+        seen[once] = true;
+        events.push({ type: "edge", relation: link.relation, from: from, to: to, key: key, at: link.recorded_at,
+          label: dgEndpointLabel(from) + " " + dgRelation(link.relation).label + " " + dgEndpointLabel(to) });
+      });
+    });
+    events.forEach(function (ev, i) { ev.seq = i; ev.ms = dgMillis(ev.at); });
+    events.sort(function (a, b) {
+      if (a.ms !== b.ms) return a.ms - b.ms;
+      if (a.type !== b.type) return DG_EVENT_RANK[a.type] - DG_EVENT_RANK[b.type];
+      return a.seq - b.seq;
+    });
+    let seconds = false;
+    for (let i = 1; i < events.length; i++) {
+      if (Math.floor(events[i].ms / 60000) === Math.floor(events[i - 1].ms / 60000)) seconds = true;
+    }
+    const out = { events: events, seconds: seconds };
+    if (dgTimelines) dgTimelines.set(chapter, out);
+    return out;
+  }
+
+  function dgClampAt(chapter, at) {
+    const m = dgTimeline(chapter).events.length;
+    if (at == null || at >= m) return null;
+    return Math.max(1, at);
+  }
+
+  // dgProject returns the chapter as it stood after the first n events: the
+  // same nodes in the same places, with decision records, roles, facts, and
+  // attention recomputed, and future nodes marked future. See the comment at
+  // the top of this section for the rules.
+  function dgProject(chapter, n, prev) {
+    const tl = dgTimeline(chapter);
+    if (n == null || n >= tl.events.length) return chapter;
+    const applied = tl.events.slice(0, n);
+    const present = {};
+    const retracted = {};
+    const edges = [];
+    const appliedKeys = {};
+    applied.forEach(function (ev) {
+      if (ev.type === "decision") present[ev.id] = true;
+      else if (ev.type === "retraction") retracted[ev.id] = true;
+      else {
+        edges.push(ev);
+        appliedKeys[ev.key] = true;
+      }
+    });
+    const last = applied[applied.length - 1];
+    const stepped = prev != null && prev === n - 1;
+    const recs = {};
+    chapter.nodes.forEach(function (node) { if (node.kind === "decision" && node.decision) recs[node.id] = node.decision; });
+    const stored = function (end) { return end.kind === "decision" && !!present[end.ref]; };
+    const counts = function (e, rel) { return e.relation === rel && stored(e.from) && stored(e.to) && e.from.ref !== e.to.ref; };
+    function push(map, key, val) {
+      if (!map[key]) map[key] = [];
+      if (map[key].indexOf(val) < 0) map[key].push(val);
+    }
+    const supersededBy = {};
+    edges.forEach(function (e) { if (counts(e, "supersedes")) push(supersededBy, e.to.ref, e.from.ref); });
+    const eff = {};
+    Object.keys(present).forEach(function (id) {
+      eff[id] = retracted[id] ? "retracted" : (supersededBy[id] ? "superseded" : "active");
+    });
+    const active = function (id) { return eff[id] === "active"; };
+    const blockedBy = {};
+    const conflicts = {};
+    const refinedBy = {};
+    const evidence = {};
+    edges.forEach(function (e) {
+      if (counts(e, "blocks")) push(blockedBy, e.to.ref, e.from.ref);
+      else if (counts(e, "conflicts_with")) { push(conflicts, e.to.ref, e.from.ref); push(conflicts, e.from.ref, e.to.ref); }
+      else if (counts(e, "refines")) push(refinedBy, e.to.ref, e.from.ref);
+      else if ((e.relation === "validates" || e.relation === "contradicts") && stored(e.to) &&
+        !(e.from.kind === e.to.kind && e.from.ref === e.to.ref) && (e.from.kind !== "decision" || active(e.from.ref))) {
+        evidence[e.to.ref] = e;
+      }
+    });
+    function heads(id, onPath, out) {
+      if (onPath[id]) return true;
+      if (!present[id] || retracted[id]) return false;
+      const next = supersededBy[id] || [];
+      if (!next.length) { out.push(id); return false; }
+      onPath[id] = true;
+      let cyclic = false;
+      next.forEach(function (nx) { if (heads(nx, onPath, out)) cyclic = true; });
+      delete onPath[id];
+      return cyclic;
+    }
+    function unsettled(blocker) {
+      const hs = [];
+      const cyclic = heads(blocker, {}, hs);
+      if (!hs.length) return cyclic;
+      return hs.some(function (hd) { return recs[hd] && recs[hd].status === "hypothesis"; });
+    }
+    const asOf = {};
+    Object.keys(present).forEach(function (id) {
+      const rec = recs[id];
+      const isActive = active(id);
+      const open = (blockedBy[id] || []).filter(unsettled);
+      const ev = evidence[id];
+      const r = Object.assign({}, rec, {
+        effective_status: eff[id],
+        superseded_by: supersededBy[id],
+        retraction: retracted[id] ? rec.retraction : undefined,
+        blocked_by: blockedBy[id],
+        open_blockers: open.length ? open : undefined,
+        blocked: isActive && open.length > 0,
+        conflicts_with: conflicts[id],
+        conflicted: isActive && (conflicts[id] || []).some(active),
+        refined_by: refinedBy[id],
+        challenged: isActive && !!ev && ev.relation === "contradicts",
+      });
+      r.challenger = r.challenged ? " (" + ev.from.kind + " " + ev.from.ref.slice(0, 12) + ")" : "";
+      asOf[id] = r;
+    });
+    function roleOf(id, final) {
+      const r = asOf[id];
+      if (r.effective_status === "retracted") return "retracted";
+      if (r.effective_status === "superseded") return "superseded";
+      if (edges.some(function (e) { return counts(e, "refines") && e.from.ref === id; })) return "refinement";
+      if (r.status === "hypothesis") return "hypothesis";
+      if (r.blocked) return "locked";
+      return "path";
+    }
+    // An ending exists once its decisions are recorded and linked to the
+    // session or commit it stands for (approximated: any such link).
+    function linked(id) {
+      return edges.some(function (e) {
+        return (e.from.kind === "decision" && e.from.ref === id && e.to.kind !== "decision") ||
+          (e.to.kind === "decision" && e.to.ref === id && e.from.kind !== "decision");
+      });
+    }
+    const nodes = chapter.nodes.map(function (node) {
+      const copy = Object.assign({}, node);
+      if (node.kind === "decision") {
+        if (!present[node.id]) { copy.future = true; return copy; }
+        copy.decision = asOf[node.id];
+        copy.role = roleOf(node.id, node.role);
+        copy.links = (node.links || []).filter(function (link) {
+          const self = { kind: "decision", ref: node.id };
+          const other = { kind: link.kind, ref: link.ref };
+          return appliedKeys[link.direction === "out" ? dgEdgeKey(link.relation, self, other) : dgEdgeKey(link.relation, other, self)];
+        });
+        if (stepped && last.type === "decision" && last.id === node.id) copy.enter = true;
+      } else if (node.kind === "alternative") {
+        if (!present[node.parent]) copy.future = true;
+        else if (stepped && last.type === "decision" && last.id === node.parent) copy.enter = true;
+      } else if (node.kind === "ending") {
+        const end = node.ending || {};
+        const via = end.via || [];
+        if (end.type === "pending") {
+          const r = asOf[via[0]];
+          copy.future = !(r && r.blocked);
+          if (!copy.future) copy.detail = "needs " + r.open_blockers.join(", ");
+        } else {
+          copy.future = !via.every(function (id) { return present[id] && linked(id); });
+        }
+      }
+      return copy;
+    });
+    const byId = {};
+    nodes.forEach(function (node) { byId[node.id] = node; });
+    const keep = function (id) { return byId[id] && !byId[id].future; };
+    const outEdges = [];
+    chapter.edges.forEach(function (edge) {
+      if (!keep(edge.from) || !keep(edge.to)) return;
+      if (!edge.derived && !appliedKeys[dgEdgeKey(edge.relation, { kind: "decision", ref: edge.from }, { kind: "decision", ref: edge.to })]) return;
+      const copy = Object.assign({}, edge);
+      if (stepped && ((last.type === "edge" && !edge.derived && last.key === dgEdgeKey(edge.relation, { kind: "decision", ref: edge.from }, { kind: "decision", ref: edge.to })) ||
+        (last.type === "decision" && (edge.to === last.id || byId[edge.to].parent === last.id)))) copy.enter = true;
+      outEdges.push(copy);
+    });
+    // Facts, needs attention, and explored, as decisiongraph builds them.
+    const facts = { endings_reached: 0, endings_total: 0, locked: 0, conflicts: 0, challenged: 0 };
+    const attention = [];
+    const explored = { decided: 0, not_taken: 0, hypotheses: 0, locked: 0, total: 0, percent: null };
+    nodes.forEach(function (node) {
+      if (node.kind === "ending" && !node.future) {
+        facts.endings_total++;
+        if (node.ending && node.ending.reached) facts.endings_reached++;
+      }
+    });
+    const pairs = {};
+    nodes.forEach(function (node) {
+      if (node.kind !== "decision" || node.future) return;
+      const d = node.decision;
+      if (d.blocked) {
+        facts.locked++;
+        attention.push({ kind: "locked", nodes: [node.id].concat(d.open_blockers), text: node.id + " waits on " + d.open_blockers.join(", ") });
+      }
+      if (d.conflicted) {
+        (d.conflicts_with || []).forEach(function (other) {
+          if (!active(other)) return;
+          const pair = other < node.id ? [other, node.id] : [node.id, other];
+          if (pairs[pair.join("\u0000")]) return;
+          pairs[pair.join("\u0000")] = true;
+          facts.conflicts++;
+          attention.push({ kind: "conflict", nodes: pair, text: pair[0] + " ⟷ " + pair[1] + ", both active" });
+        });
+      }
+      if (d.challenged) {
+        facts.challenged++;
+        attention.push({ kind: "challenged", nodes: [node.id], text: node.id + ": the latest evidence contradicts it" + d.challenger });
+      }
+      if (node.role === "refinement") return;
+      const alts = (node.alternatives || []).length;
+      if (d.status === "decision" && d.blocked) explored.locked++;
+      else if (d.status === "decision") explored.decided++;
+      else if (d.effective_status === "active") explored.hypotheses++;
+      else return;
+      explored.not_taken += alts;
+    });
+    const rank = { conflict: 0, locked: 1, challenged: 2 };
+    attention.sort(function (a, b) { return rank[a.kind] - rank[b.kind]; });
+    explored.total = explored.decided + explored.not_taken + explored.hypotheses + explored.locked;
+    if (explored.total > 0) explored.percent = Math.floor((explored.decided * 200 + explored.total) / (explored.total * 2));
+    return Object.assign({}, chapter, {
+      nodes: nodes, edges: outEdges, facts: facts, needs_attention: attention, explored: explored,
+      replay: { at: n, total: tl.events.length, event: last },
+    });
+  }
+
+  function dgReduced() {
+    try {
+      return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function dgReadout(chapter, at) {
+    const tl = dgTimeline(chapter);
+    const m = tl.events.length;
+    const n = at == null ? m : at;
+    const ev = tl.events[n - 1];
+    if (!ev) return { text: "", valuetext: "" };
+    const when = dgNYTime(ev.at, tl.seconds);
+    const what = ev.type === "decision" ? ev.id : ev.label;
+    return {
+      text: when + " · " + what + " · " + n + " of " + m + (at == null ? " · now" : ""),
+      valuetext: n + " of " + m + ", " + when + ", " + ev.label + (at == null ? ", now" : ""),
+    };
+  }
+
+  // Ticks are spaced by event order, not by time, so a burst of events
+  // recorded in one second still gets one tick each.
+  function dgTickX(i, m) {
+    return m <= 1 ? 50 : 2 + (96 * i) / (m - 1);
+  }
+
+  function dgTrack(chapter, at) {
+    const tl = dgTimeline(chapter);
+    const m = tl.events.length;
+    const n = at == null ? m : at;
+    const pos = dgTickX(n - 1, m);
+    const kids = [
+      s("line", { x1: "2%", x2: "98%", y1: 16, y2: 16, class: "dg-track-base" }),
+      s("line", { x1: "2%", x2: pos + "%", y1: 16, y2: 16, class: "dg-track-done" }),
+    ];
+    tl.events.forEach(function (ev, i) {
+      const x = dgTickX(i, m) + "%";
+      const cls = "dg-tick dg-tick-" + ev.type + (ev.type === "decision" ? " dg-tick-" + (ev.by === "agent" ? "agent" : "user") : "") + (i >= n ? " dg-tick-future" : "");
+      const title = s("title", null, [dgNYTime(ev.at, true) + " · " + ev.label]);
+      if (ev.type === "decision") kids.push(s("circle", { cx: x, cy: 16, r: 5.5, class: cls }, [title]));
+      else if (ev.type === "retraction") kids.push(s("rect", { x: x, y: 12, width: 8, height: 8, transform: "translate(-4 0)", class: cls }, [title]));
+      else kids.push(s("circle", { cx: x, cy: 16, r: 3, class: cls }, [title]));
+    });
+    kids.push(s("line", { x1: pos + "%", x2: pos + "%", y1: 3, y2: 29, class: "dg-playhead" }));
+    kids.push(s("circle", { cx: pos + "%", cy: 16, r: 8, class: "dg-thumb" }));
+    // Date axis: a label where the New York day changes; within one day the
+    // first and last times instead. Labels closer than 14% are dropped.
+    const labels = [];
+    let day = "";
+    tl.events.forEach(function (ev, i) {
+      const d = dgNYDay(ev.at);
+      if (d !== day) { labels.push({ i: i, text: d }); day = d; }
+    });
+    if (labels.length < 2 && m > 1) {
+      labels.length = 0;
+      labels.push({ i: 0, text: dgNYTime(tl.events[0].at, tl.seconds) });
+      labels.push({ i: m - 1, text: dgNYTime(tl.events[m - 1].at, tl.seconds).replace(/^\S+ \S+ · /, "") });
+    }
+    let lastX = -100;
+    labels.forEach(function (label, k) {
+      const x = dgTickX(label.i, m);
+      if (x - lastX < 14 && k !== labels.length - 1) return;
+      lastX = x;
+      const anchor = x < 12 ? "start" : (x > 88 ? "end" : "middle");
+      kids.push(s("text", { x: (anchor === "start" ? Math.max(0, x - 1) : (anchor === "end" ? Math.min(100, x + 1) : x)) + "%", y: 46, "text-anchor": anchor, class: "dg-axis" }, [label.text]));
+    });
+    return s("svg", { class: "dg-track", width: "100%", height: 52, "aria-hidden": "true", focusable: "false" }, kids);
+  }
+
+  function dgPlayLabel() {
+    return dgTimer ? "❚❚ Pause" : "▶ Replay";
+  }
+
+  function dgSlider(chapter) {
+    const tl = dgTimeline(chapter);
+    const m = tl.events.length;
+    const readout = dgReadout(chapter, dgAt);
+    function fromPointer(event) {
+      const el = event.currentTarget;
+      if (!el || !el.getBoundingClientRect) return;
+      const box = el.getBoundingClientRect();
+      if (!box.width) return;
+      const pct = ((event.clientX - box.left) / box.width) * 100;
+      const i = m <= 1 ? 0 : Math.round(((pct - 2) / 96) * (m - 1));
+      dgSeek(Math.max(1, Math.min(m, i + 1)), true);
+    }
+    return h("div", {
+      class: "dg-slider",
+      role: "slider",
+      tabindex: "0",
+      "aria-label": "Replay position",
+      "aria-valuemin": "1",
+      "aria-valuemax": String(m),
+      "aria-valuenow": String(dgAt == null ? m : dgAt),
+      "aria-valuetext": readout.valuetext,
+      "aria-keyshortcuts": "ArrowLeft ArrowRight Home End PageUp PageDown [ ] Space",
+      onkeydown: function (event) { dgSliderKey(event); },
+      onpointerdown: function (event) {
+        if (event.button != null && event.button !== 0) return;
+        dgDragging = true;
+        if (event.currentTarget.setPointerCapture) event.currentTarget.setPointerCapture(event.pointerId);
+        if (event.currentTarget.focus) event.currentTarget.focus();
+        event.preventDefault();
+        fromPointer(event);
+      },
+      onpointermove: function (event) { if (dgDragging) fromPointer(event); },
+      onpointerup: function () { dgDragging = false; },
+      onpointercancel: function () { dgDragging = false; },
+    }, [dgTrack(chapter, dgAt)]);
+  }
+
+  function dgReplayBar(chapter) {
+    const readout = dgReadout(chapter, dgAt);
+    return h("div", { class: "dg-replay", role: "group", "aria-label": "Replay" }, [
+      h("div", { class: "dg-replay-top" }, [
+        h("button", { type: "button", class: "dg-play", "aria-pressed": dgTimer ? "true" : "false", "aria-label": dgTimer ? "Pause replay" : "Play replay",
+          onclick: function () { dgPlayToggle(); } }, [dgPlayLabel()]),
+        h("p", { class: "dg-readout", "aria-hidden": "true" }, [readout.text]),
+        h("button", { type: "button", class: "dg-now", hidden: dgAt == null ? "" : null, onclick: function () { dgSeek(null, true); } }, ["Now"]),
+      ]),
+      dgSlider(chapter),
+      h("p", { class: "dg-replay-hint" }, ["[ ] step · ← → Home End · Space plays · " + (dgReduced() ? "reduced motion: steps without animation" : "drag to scrub")]),
+    ]);
+  }
+
+  function dgSliderKey(event) {
+    const chapter = dgView.chapter;
+    if (!chapter || event.ctrlKey || event.metaKey || event.altKey) return;
+    const m = dgTimeline(chapter).events.length;
+    const n = dgAt == null ? m : dgAt;
+    const big = Math.max(1, Math.round(m / 10));
+    let next = null;
+    switch (event.key) {
+      case "ArrowLeft": case "ArrowDown": case "[": next = n - 1; break;
+      case "ArrowRight": case "ArrowUp": case "]": next = n + 1; break;
+      case "PageDown": next = n - big; break;
+      case "PageUp": next = n + big; break;
+      case "Home": next = 1; break;
+      case "End": next = m; break;
+      case " ": case "Spacebar":
+        event.preventDefault();
+        if (event.stopPropagation) event.stopPropagation();
+        dgPlayToggle();
+        return;
+      default: return;
+    }
+    event.preventDefault();
+    if (event.stopPropagation) event.stopPropagation();
+    dgSeek(Math.max(1, Math.min(m, next)), true);
+  }
+
+  // dgSeek moves the playhead. It redraws only the canvas, the panel, and the
+  // scrubber's insides, so the slider element (its focus and pointer
+  // capture) survives a drag. The hash keeps ?at=N with replaceState, which
+  // fires no hashchange.
+  function dgSeek(at, byUser) {
+    const chapter = dgView.chapter;
+    if (!chapter) return;
+    if (byUser && dgTimer) dgStop();
+    const next = dgClampAt(chapter, at);
+    if (next === dgAt) return;
+    dgPrevAt = dgAt == null ? dgTimeline(chapter).events.length : dgAt;
+    dgAt = next;
+    const hash = dgHash(chapter.id, dgView.focus, dgAt);
+    if (typeof history !== "undefined" && history.replaceState) {
+      try { history.replaceState(null, "", hash); } catch (err) { /* keep going without the URL */ }
+    }
+    dgRefresh();
+  }
+
+  function dgRefresh() {
+    const chapter = dgView.chapter;
+    const root = app.querySelector ? app.querySelector(".dg") : null;
+    if (!chapter || !root) { render(); return; }
+    const proj = dgProject(chapter, dgAt, dgReduced() ? null : dgPrevAt);
+    const focus = dgView.focus;
+    const node = focus ? proj.nodes.filter(function (n) { return n.id === focus; })[0] : null;
+    // The graph (or the List view) is replaced, so focus on a node inside
+    // it would fall to <body>: put it back on the same node or control.
+    const active = typeof document !== "undefined" ? document.activeElement : null;
+    const kept = active && root.contains && root.contains(active) ? dgFocusKey(active) : "";
+    const svg = root.querySelector(".dg-canvas > svg");
+    if (svg) svg.replaceWith(dgCanvas(proj, focus));
+    const list = root.querySelector(".dg-listview");
+    if (list) list.replaceWith(dgListView(proj, focus));
+    dgRevealLatest(root, proj);
+    const panel = root.querySelector(".dg-panel");
+    if (panel) panel.replaceChildren.apply(panel, node ? dgFocusPanel(proj, node) : dgSummaryPanel(proj));
+    const slider = root.querySelector(".dg-slider");
+    const readout = dgReadout(chapter, dgAt);
+    if (slider) {
+      slider.setAttribute("aria-valuenow", String(dgAt == null ? dgTimeline(chapter).events.length : dgAt));
+      slider.setAttribute("aria-valuetext", readout.valuetext);
+      slider.replaceChildren(dgTrack(chapter, dgAt));
+    }
+    const text = root.querySelector(".dg-readout");
+    if (text) text.textContent = readout.text;
+    const now = root.querySelector(".dg-now");
+    if (now) now.hidden = dgAt == null;
+    const play = root.querySelector(".dg-play");
+    if (play) {
+      play.textContent = dgPlayLabel();
+      play.setAttribute("aria-pressed", dgTimer ? "true" : "false");
+      play.setAttribute("aria-label", dgTimer ? "Pause replay" : "Play replay");
+    }
+    const back = kept && document.activeElement !== active ? dgFindFocus(kept) : null;
+    if (back && back.focus) back.focus();
+  }
+
+  // Scroll the canvas, never the page, so the decision the playhead just
+  // recorded is in view.
+  function dgRevealLatest(root, proj) {
+    const ev = proj.replay && proj.replay.event;
+    const canvas = root.querySelector(".dg-canvas");
+    if (!ev || ev.type !== "decision" || !canvas || !canvas.getBoundingClientRect) return;
+    const el = canvas.querySelector('[data-node="' + String(ev.id).replace(/["\\]/g, "\\$&") + '"]');
+    if (!el || !el.getBoundingClientRect) return;
+    const box = canvas.getBoundingClientRect();
+    const at = el.getBoundingClientRect();
+    if (at.bottom > box.bottom - 8) canvas.scrollTop += at.bottom - box.bottom + 24;
+    else if (at.top < box.top + 8) canvas.scrollTop -= box.top - at.top + 24;
+  }
+
+  function dgStop(message) {
+    if (dgTimer) clearInterval(dgTimer);
+    dgTimer = null;
+    if (message) dgAnnounce(message);
+  }
+
+  function dgPlayToggle() {
+    const chapter = dgView.chapter;
+    if (!chapter) return;
+    if (dgTimer) {
+      dgStop("Replay paused at " + dgReadout(chapter, dgAt).valuetext + ".");
+      dgRefresh();
+      return;
+    }
+    const m = dgTimeline(chapter).events.length;
+    if (dgAt == null) dgSeek(1, false);
+    const reduced = dgReduced();
+    // Reduced motion: no fades, and a slower discrete pace.
+    dgTimer = setInterval(function () {
+      const current = route();
+      if (current.name !== "decisions" || !dgView.chapter || dgView.chapter.id !== chapter.id) { dgStop(); return; }
+      const n = (dgAt == null ? m : dgAt) + 1;
+      if (n >= m) {
+        dgStop("Replay finished: " + dgReadout(chapter, null).valuetext + ".");
+        dgSeek(null, false);
+        return;
+      }
+      dgSeek(n, false);
+      dgAnnounce(dgReadout(chapter, dgAt).valuetext);
+    }, reduced ? 1600 : 900);
+    dgAnnounce("Replaying from " + dgReadout(chapter, dgAt).valuetext + ".");
+    dgRefresh();
+  }
+
+  // [ and ] step the replay from anywhere on the Decisions tab except a text
+  // field; on the slider itself its own handler runs first.
+  window.addEventListener("keydown", function (event) {
+    if (event.key !== "[" && event.key !== "]") return;
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (dgTyping(event.target)) return;
+    if (route().name !== "decisions" || !dgView.chapter) return;
+    event.preventDefault();
+    const m = dgTimeline(dgView.chapter).events.length;
+    const n = dgAt == null ? m : dgAt;
+    dgSeek(Math.max(1, Math.min(m, n + (event.key === "]" ? 1 : -1))), true);
+  });
+
+  function decisionsTab(chapterId, focus, at) {
     const chapters = dgChapters();
     if (decisionGraphError) {
       return h("div", { class: "error" }, [h("p", null, [decisionGraphError])]);
@@ -1892,9 +2533,16 @@
         h("pre", null, ["sdf decision add --id dont-push --status decision --decided-by user --statement 'No push or PR without my OK'"]),
       ]);
     }
-    let chapter = chapters.filter(function (c) { return c.id === chapterId; })[0] || chapters[0];
+    const live = chapters.filter(function (c) { return c.id === chapterId; })[0] || chapters[0];
+    if (dgView.chapter && dgView.chapter.id !== live.id) dgStop();
+    if (!dgView.chapter || dgView.chapter.id !== live.id) dgPrevAt = null;
+    dgAt = dgClampAt(live, at);
+    // The graph as of the replay position; the live chapter at the end.
+    const chapter = dgProject(live, dgAt, dgReduced() ? null : dgPrevAt);
+    dgPrevAt = null;
     const node = focus ? chapter.nodes.filter(function (n) { return n.id === focus; })[0] : null;
     if (!node) focus = null;
+    dgView = { chapter: live, focus: focus };
     const rail = h("nav", { class: "dg-rail", "aria-label": "Chapters" }, [
       h("p", { class: "label" }, ["Chapters"]),
       h("ul", null, chapters.map(function (c) {
@@ -1927,6 +2575,7 @@
           }
         },
       }, dgList ? [dgListView(chapter, focus)] : [dgKey(chapter), dgCanvas(chapter, focus)]),
+      dgReplayBar(live),
       // The visible copy of the last status; screen readers hear it from the
       // one persistent live region outside the drawn tree (dgAnnounce).
       h("p", { class: "dg-live", "aria-hidden": "true" }, [dgStatus]),
@@ -1980,7 +2629,7 @@
       let body;
       if (current.name === "detail") body = detail(current.id);
       else if (current.name === "sessions") body = sessions();
-      else if (current.name === "decisions") body = decisionsTab(current.chapter, current.node);
+      else if (current.name === "decisions") body = decisionsTab(current.chapter, current.node, current.at);
       else body = overview();
       shell(current.name, body);
       dgRestoreFocus(current, kept);

@@ -432,7 +432,7 @@ func TestDecisionListView(t *testing.T) {
 	if !strings.Contains(res.Markup, `aria-pressed="true" data-focus-key="tb:List"`) || !strings.Contains(res.Active, `data-focus-key="tb:List"`) {
 		t.Fatalf("List toggle not on or lost focus: %q", res.Active)
 	}
-	if strings.Contains(res.Markup, "<svg") {
+	if strings.Contains(res.Markup, `class="dg-svg`) {
 		t.Error("List view still draws the graph")
 	}
 	ol := regexp.MustCompile(`<ol [^>]*class="dg-list"[^>]*>.*?</ol>`).FindString(res.Markup)

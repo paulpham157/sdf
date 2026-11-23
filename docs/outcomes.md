@@ -498,6 +498,34 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   runs it. The new id is `PARENT-alt-N`; a parent longer than 110 characters
   is cut to 100 and followed by `-` and 8 hex digits of its SHA-256, so the
   id stays within 128 characters and two long parents do not collide.
+- **Replay.** A scrubber under the canvas replays the chapter. Its timeline
+  has one event per decision (`recorded_at`), per stored edge that touches
+  one of the chapter's decisions (`links[].recorded_at`), and per retraction
+  (`retraction.retracted_at`), ordered by time, then decision, edge,
+  retraction. It needs no other endpoint. Ticks are spaced by event order;
+  filled is a user decision, hollow an agent one, a small dot an edge. The
+  label at the playhead reads, for example, `Nov 22 · 09:14 EST ·
+  agent-status · 10 of 13`, always in America/New_York with its zone. The
+  slider is `role="slider"` with `aria-valuemin`, `aria-valuemax`,
+  `aria-valuenow`, and `aria-valuetext`: ←/→ or `[`/`]` step one event
+  (`[`/`]` work anywhere on the tab outside a text field), PageUp/PageDown
+  step a tenth, Home/End jump, Space plays or pauses, and dragging scrubs.
+  `#/decisions/<chapter>[/<node>]?at=N` opens the chapter at event N.
+
+  As of the playhead, the derived fields are **recomputed, not
+  approximated**: the page re-runs the read-time rules above (superseded,
+  retracted, blocked with open blockers, conflicted, challenged) over only
+  the decisions and edges recorded so far, then rebuilds roles, facts,
+  needs attention, and explored the way the graph does. At the last event
+  the page shows the server's chapter unchanged. Layout is not recomputed:
+  every node keeps its final lane and row, and a node not recorded yet is a
+  faint outline with no text, out of the tab order. Two things are
+  approximated because nothing stores their time: an ending appears once
+  every decision it came from is recorded and linked to a session or commit,
+  and a pull request's merged state is today's. With
+  `prefers-reduced-motion`, replay steps without the fade and at a slower
+  pace (1.6 s instead of 0.9 s); each played step is announced in the live
+  region either way.
 
 ### Auditing the graph
 
