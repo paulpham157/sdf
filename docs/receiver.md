@@ -306,19 +306,35 @@ records.
 lines, the receiver-token header, and the same settings as a `[telemetry]`
 table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
-`otel_endpoint` (the HTTP receiver). `--write` appends that table to
+`otel_endpoint` (the HTTP receiver), plus the four content gates pinned
+off: `otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` all `= false` (an
+`OTEL_LOG_*` environment variable still wins). Pinning
+`otel_log_tool_details` off is stricter than the guide's "Recommended fleet
+gates", which turns that metadata gate on for SIEM joins; sdf does not need
+it for Grok. `--write` appends that table to
 `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
 no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
 directory. Both files are checked before either is written, as for the
 other agents, so a read-only `config.toml` or an unwritable `hooks/`
 directory leaves both unchanged, with no `.sdf-bak`. An existing
-`[telemetry]` table is left unchanged; add the printed keys to it by hand. A project `.grok/config.toml` cannot set
+`[telemetry]` table is left unchanged; add the printed keys to it by hand.
+The file is parsed as TOML, so a `[ telemetry ]` header with spaces, an
+inline `telemetry = {...}`, dotted `telemetry.x = ...` keys, and a quoted
+`"telemetry"` key all count as an existing table (appending a second one
+would make Grok fail to parse the file). A `config.toml` that is not valid
+TOML is refused and left unchanged. A project `.grok/config.toml` cannot set
 `otel_*`. Grok reads the environment over the file, so an
 `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also redirects Grok.
-`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, and
-`OTEL_LOG_TOOL_CONTENT` set in the shell that runs `sdf init` are reported,
-because they put content on the stream; Grok's own defaults for all three
-are off. Grok has no config-file key for headers; a receiver token goes in
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`,
+`OTEL_LOG_TOOL_DETAILS`, and `OTEL_LOG_TOOL_CONTENT` set in the shell that
+runs `sdf init` are reported when Grok would read them as on (`1`, `true`,
+`yes`, or `on`, any case, as Grok's `env_bool` parses them; `0`, `false`,
+`no`, `off`, and unknown values leave the file's `false` in effect), because
+each one overrides the pinned key. Three put content on the stream;
+`OTEL_LOG_TOOL_DETAILS` is a metadata gate (a 4 KB `tool_parameters`
+preview, full file paths, verbatim MCP/skill/plugin names, no bodies).
+Grok's own defaults for all four are off. Grok has no config-file key for headers; a receiver token goes in
 `OTEL_EXPORTER_OTLP_HEADERS` (see
 [docs/agents.md](agents.md#optional-receiver-token)). The keys and paths are
 from grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
