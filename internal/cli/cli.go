@@ -903,18 +903,16 @@ func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, decisionCheckUsage)
 		return 2
 	}
-	// Same default path as the other decision commands, and the same read
-	// path as sdf decision brief: OpenReadOnlyBusy plus LoadContext. A
-	// negative busy timeout is the store's usual read timeout. brief uses a
-	// shorter one because a session hook has a tight budget; this command
-	// does not. A missing file in an existing directory is an empty store
-	// and is not created.
-	db, err := store.OpenReadOnlyBusy(dbPath, -1)
+	// Same default path as sdf decision brief, and the same read: a 200ms
+	// busy timeout, then LoadContext. A missing file in an existing
+	// directory is an empty store and is not created.
+	db, err := store.OpenReadOnlyBusy(dbPath, int(briefBusyTimeout/time.Millisecond))
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
 		return 3
 	}
-	graph, err := decision.LoadContext(context.Background(), db)
+	ctx := context.Background()
+	graph, err := decision.LoadContext(ctx, db)
 	_ = db.Close()
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
