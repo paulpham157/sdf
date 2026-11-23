@@ -109,7 +109,10 @@ func (f *fixture) agentCommit(t *testing.T, files map[string]string) string {
 }
 
 func (f *fixture) opts(sha string) Options {
-	return Options{RepoDir: f.repo, SHA: sha, TaskID: "feat", TaskRef: "main", DataDir: f.data, Ledger: f.ledger}
+	ok, _ := isolationAvailable()
+	// Where namespaces are not available (some CI runners), the tests run
+	// the checks unisolated; isolation itself is tested in isolate_test.go.
+	return Options{RepoDir: f.repo, SHA: sha, TaskID: "feat", TaskRef: "main", DataDir: f.data, Ledger: f.ledger, AllowUnisolated: !ok}
 }
 
 func hasCode(res Result, code string) bool {

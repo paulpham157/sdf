@@ -80,6 +80,18 @@ func scanText(commit, path string, text []byte, old map[string]bool) []SecretFin
 	return out
 }
 
+// safePath is p, or "path-sha256:<hex>" when p itself matches a rule, so a
+// secret used as a file name is not copied into the evidence.
+func safePath(p string) string {
+	for _, r := range secretRules {
+		if r.Re.MatchString(p) {
+			sum := sha256.Sum256([]byte(p))
+			return "path-sha256:" + hex.EncodeToString(sum[:])
+		}
+	}
+	return p
+}
+
 func lineSet(text []byte) map[string]bool {
 	set := map[string]bool{}
 	for _, l := range bytes.Split(text, []byte("\n")) {

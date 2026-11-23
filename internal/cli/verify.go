@@ -17,15 +17,24 @@ const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--task-ha
                   [--repo DIR] [--data-dir DIR | --no-data-dir] [--ledger PATH]
                   [--out PATH]
                   [--artifacts DIR] [--work-dir DIR] [--path PATH]
-                  [--go-cache DIR] [--go-mod-cache DIR] [--keep]
+                  [--go-cache DIR] [--go-mod-cache DIR] [--expect-prefix SEQ:HASH]
+                  [--allow-unisolated] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
 outside the repository. The task is read from --task-ref (the protected
 branch as just fetched, for example origin/main) and the sdf data dir;
 every copy found has to agree, and --task-hash pins the hash they must
-have. PASS needs --task-ref, a ledger entry, or --task-hash: a task found
-only in the data dir, which the agent can write, gives at best ERROR
-(TASK_UNTRUSTED). The
+have. PASS needs --task-ref, --task-hash, or a ledger pinned with
+--expect-prefix SEQ:sha256:<entry hash>: a task found only in the data dir
+or an unpinned ledger, which the agent can write, gives at best ERROR
+(TASK_UNTRUSTED). A local branch as --task-ref draws a warning: pass a
+freshly fetched remote ref or a commit id.
+
+Each check runs as pid 1's child in new Linux user, pid and mount
+namespaces, and everything it started is killed when it exits. Where that
+is not possible the verdict is ERROR (ISOLATION_UNAVAILABLE) unless
+--allow-unisolated, which runs the checks anyway and records isolation
+"none". The
 working tree's .sdf/tasks file is never read. Checks run in the checkout
 root with --path (default: this PATH, relative entries dropped) as their
 only PATH, a new HOME, and new Go caches unless --go-cache/--go-mod-cache
@@ -56,6 +65,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		case "--no-data-dir":
 			noDataDir = true
 			continue
+		case "--allow-unisolated":
+			opt.AllowUnisolated = true
+			continue
 		}
 		if v, ok, err := flagValue("--ledger", &i, args); ok {
 			if err == nil && v == "" {
@@ -77,6 +89,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 			{"--data-dir", &dataDir}, {"--out", &out}, {"--artifacts", &opt.ArtifactsDir},
 			{"--work-dir", &opt.WorkDir}, {"--path", &opt.Path}, {"--task-hash", &opt.TaskHash},
 			{"--go-cache", &opt.GoCache}, {"--go-mod-cache", &opt.GoModCache},
+			{"--expect-prefix", &opt.ExpectPrefix},
 		} {
 			v, ok, err := flagValue(f.name, &i, args)
 			if !ok {
@@ -139,6 +152,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "%s: %v\n", prefix, werr)
 			return 3
 		}
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(stderr, "warning: %s\n", w)
 	}
 	fmt.Fprintf(stderr, "verdict %s %s\n", res.Status, res.Verdict.Hash)
 	for _, r := range res.Reasons {

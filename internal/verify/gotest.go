@@ -1,9 +1,9 @@
 package verify
 
 import (
-	"bufio"
-	"encoding/json"
+	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -17,31 +17,51 @@ import (
 	"github.com/paulpham157/sdf/internal/task"
 )
 
-// goTestArgv adds -json and -count=1 to a `go test` argv, right after
-// "test", unless the task already sets them. -json lets the verifier see
-// which tests passed; -count=1 keeps a cached result from standing in for
-// a run.
-func goTestArgv(argv []string) []string {
+// goTestArgv adds -count=1 (unless the task sets -count) and the harness
+// overlay to a `go test` argv, right after "test". -count=1 keeps a cached
+// result from standing in for a run. It refuses -overlay and -exec, which
+// would replace the harness or put another process between go and the test
+// binary.
+func goTestArgv(argv []string, overlay string) ([]string, error) {
 	if !task.IsGoTest(argv) {
-		return argv
+		return argv, nil
 	}
-	hasJSON, hasCount := false, false
+	hasCount := false
 	for _, a := range argv[2:] {
+		flag := strings.TrimLeft(a, "-")
+		name, _, _ := strings.Cut(flag, "=")
 		switch {
-		case a == "-json" || a == "--json" || a == "-json=true":
-			hasJSON = true
-		case a == "-count" || a == "--count" || strings.HasPrefix(a, "-count=") || strings.HasPrefix(a, "--count="):
+		case !strings.HasPrefix(a, "-"):
+		case name == "count":
 			hasCount = true
+		case name == "overlay" || name == "exec" || name == "toolexec":
+			return nil, fmt.Errorf("go test %s is not supported: it would bypass the verifier's test harness", a)
 		}
 	}
 	out := append([]string(nil), argv[:2]...)
-	if !hasJSON {
-		out = append(out, "-json")
-	}
 	if !hasCount {
 		out = append(out, "-count=1")
 	}
-	return append(out, argv[2:]...)
+	if overlay != "" {
+		out = append(out, "-overlay="+overlay)
+	}
+	return append(out, argv[2:]...), nil
+}
+
+// isGoTool reports whether argv runs `go test` or `go vet`.
+func isGoTool(argv []string) bool {
+	return len(argv) >= 2 && path.Base(argv[0]) == "go" && (argv[1] == "test" || argv[1] == "vet")
+}
+
+// goInput reports whether p is an input of a go test/vet criterion that has
+// to match the base: its test files and testdata (task.GoTestPaths),
+// go.mod, go.sum, go.work, go.work.sum, and anything under vendor/, which
+// replaces the module cache (and go.sum's checks) when present.
+func goInput(argv []string, p string) bool {
+	if !isGoTool(argv) {
+		return false
+	}
+	return strings.HasPrefix(p, "vendor/") || len(task.GoTestPaths(argv, []string{p})) > 0
 }
 
 // designatedTests returns the top-level Test functions declared in the
@@ -57,9 +77,15 @@ func designatedTests(checkout string, spec task.Spec, c task.Criterion) ([]strin
 	}
 	module := ""
 	var out []string
+	ctx := build.Default
+	ctx.CgoEnabled = false
 	for _, p := range task.GoTestPaths(c.Argv, paths) {
+		full := filepath.Join(checkout, filepath.FromSlash(p))
 		if !strings.HasSuffix(p, "_test.go") {
 			continue
+		}
+		if ok, _ := ctx.MatchFile(filepath.Dir(full), filepath.Base(full)); !ok {
+			continue // not built here, so neither wrapped nor required
 		}
 		if module == "" {
 			m, err := modulePath(filepath.Join(checkout, "go.mod"))
@@ -116,31 +142,4 @@ func modulePath(gomod string) (string, error) {
 		}
 	}
 	return "", os.ErrNotExist
-}
-
-// passedTests reads `go test -json` output and returns the top-level tests
-// that reported pass, as "<import path> <name>".
-func passedTests(stdoutPath string) (map[string]bool, error) {
-	f, err := os.Open(stdoutPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	passed := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
-	for sc.Scan() {
-		var ev struct{ Action, Package, Test string }
-		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Test == "" || strings.Contains(ev.Test, "/") {
-			continue
-		}
-		key := ev.Package + " " + ev.Test
-		switch ev.Action {
-		case "pass":
-			passed[key] = true
-		case "fail", "skip":
-			delete(passed, key)
-		}
-	}
-	return passed, sc.Err()
 }

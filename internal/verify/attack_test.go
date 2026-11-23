@@ -66,7 +66,7 @@ func TestGoHonestPass(t *testing.T) {
 	if got := crit["designated_tests"].([]string); len(got) != 1 || got[0] != "example.com/m/a TestAdd" {
 		t.Fatalf("%v", got)
 	}
-	if !strings.Contains(strings.Join(crit["run_argv"].([]string), " "), "go test -json -count=1 ./a/") {
+	if a := strings.Join(crit["run_argv"].([]string), " "); !strings.HasPrefix(a, "go test -count=1 -overlay=") || !strings.HasSuffix(a, " ./a/") {
 		t.Fatalf("%v", crit["run_argv"])
 	}
 }
@@ -214,11 +214,6 @@ func TestB4DataDirAloneIsUntrusted(t *testing.T) {
 	o.TaskHash = "sha256:" + strings.Repeat("0", 64)
 	if res := mustRun(t, o); res.Status != StatusFail || !hasCode(res, CodeTaskHashMismatch) {
 		t.Fatalf("wrong pin: %s %+v", res.Status, res.Reasons)
-	}
-	// A ledger entry is a trusted source too.
-	o.TaskHash, o.DataDir, o.Ledger = "", "", f.ledger
-	if res := mustRun(t, o); res.Status != StatusPass {
-		t.Fatalf("ledger: %s %+v", res.Status, res.Reasons)
 	}
 	o.TaskHash = "nope"
 	if _, err := Run(context.Background(), o); err == nil {

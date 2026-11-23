@@ -31,9 +31,11 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/ledger"
 	"github.com/paulpham157/sdf/internal/task"
 )
 
@@ -58,6 +60,7 @@ const (
 	CodeDesignatedFileAdded    = "DESIGNATED_FILE_ADDED"
 	CodeDesignatedTestMissing  = "DESIGNATED_TEST_NOT_PASSED"
 	CodeSymlinkOutside         = "SYMLINK_OUTSIDE_CHECKOUT"
+	CodeTestReportInvalid      = "TEST_REPORT_INVALID"
 	CodeSecretInDiff           = "SECRET_IN_DIFF"
 	CodeCheckoutDirty          = "CHECKOUT_DIRTY"
 	CodeCheckoutModified       = "CHECKOUT_MODIFIED"
@@ -65,6 +68,7 @@ const (
 	CodeCheckTimeout           = "CHECK_TIMEOUT"
 	CodeCheckError             = "CHECK_ERROR"
 	CodeTaskUntrusted          = "TASK_UNTRUSTED"
+	CodeIsolationUnavailable   = "ISOLATION_UNAVAILABLE"
 	CodeInfraError             = "INFRA_ERROR"
 )
 
@@ -74,7 +78,7 @@ var failCodes = map[string]bool{
 	CodeBaseNotAncestor: true, CodeDesignatedFileModified: true, CodeDesignatedFileAdded: true,
 	CodeSecretInDiff: true, CodeCheckoutDirty: true, CodeCheckoutModified: true,
 	CodeCheckFailed: true, CodeCheckTimeout: true, CodeDesignatedTestMissing: true,
-	CodeSymlinkOutside: true,
+	CodeSymlinkOutside: true, CodeTestReportInvalid: true,
 }
 
 // Record schemas, also the ledger kinds.
@@ -102,6 +106,18 @@ type Options struct {
 	DataDir  string      // the sdf data dir copy (untrusted on its own)
 	Ledger   task.Ledger // also receives the evidence and verdict
 	TaskHash string      // "sha256:..." pinned by the caller; every copy has to have it
+
+	// ExpectPrefix pins the ledger: "SEQ:sha256:<entry hash>". A task read
+	// from the ledger is trusted only when the ledger's chain verifies, its
+	// entry SEQ has that entry hash, and the task entry is at or before SEQ.
+	// Without it, a ledger is no more trusted than the data dir: anyone can
+	// make one and point --ledger or $SDF_LEDGER at it.
+	ExpectPrefix string
+
+	// AllowUnisolated lets criteria run without Linux namespaces. The
+	// verdict then records isolation "none"; without this, no isolation is
+	// ERROR (ISOLATION_UNAVAILABLE) and no criterion runs.
+	AllowUnisolated bool
 
 	// GoCache and GoModCache, when set, are the GOCACHE and GOMODCACHE
 	// checks use. They have to be directories the agent cannot write.
@@ -141,7 +157,8 @@ type Result struct {
 	Reasons  []Reason
 	Evidence []Record
 	Verdict  Record
-	Checkout string // set when Options.Keep
+	Checkout string   // set when Options.Keep
+	Warnings []string // for the person running verify; not in the records
 }
 
 var (
@@ -168,8 +185,10 @@ type run struct {
 	// any check runs; checkDisk compares the checkout with it.
 	treeAtSHA map[string]treeEntry
 	dirs      checkDirs
+	isolation string
 	// reasonLater holds reasons found before their evidence record exists.
 	reasonLater []Reason
+	warnings    []string
 }
 
 // Run verifies opt.SHA against task opt.TaskID. A returned error means no
@@ -182,6 +201,9 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	}
 	if !task.ValidID(opt.TaskID) {
 		return Result{}, fmt.Errorf("%w: task id %q", ErrUsage, opt.TaskID)
+	}
+	if opt.ExpectPrefix != "" && !prefixRe.MatchString(opt.ExpectPrefix) {
+		return Result{}, fmt.Errorf("%w: --expect-prefix %q is not SEQ:sha256:<64 hex>", ErrUsage, opt.ExpectPrefix)
 	}
 	if opt.TaskHash != "" && !taskHashRe.MatchString(opt.TaskHash) {
 		return Result{}, fmt.Errorf("%w: task hash %q is not sha256:<64 hex>", ErrUsage, opt.TaskHash)
@@ -261,6 +283,16 @@ func (r *run) prepareChecks() bool {
 	if r.dirs.gomodcache == "" {
 		r.dirs.gomodcache = filepath.Join(tmp, "gomodcache")
 	}
+	if ok, why := isolationAvailable(); ok {
+		r.isolation = IsolationNamespace
+	} else {
+		r.isolation = IsolationNone
+		if !r.opt.AllowUnisolated {
+			id := r.addEvidence("isolation", "", map[string]any{"status": "error", "isolation": IsolationNone, "error": why})
+			r.reason(CodeIsolationUnavailable, id, "criteria were not run: %s (--allow-unisolated runs them anyway, and the verdict says isolation none)", why)
+			return false
+		}
+	}
 	err := r.hideGitDir()
 	for _, d := range []string{r.dirs.home, r.dirs.gopath, r.dirs.gocache, r.dirs.gomodcache} {
 		if err == nil {
@@ -326,9 +358,15 @@ func makeRecord(kind task.Kind, id string, v map[string]any) (Record, error) {
 func (r *run) loadTask() bool {
 	type source struct{ where, hash string }
 	var found []source
+	var ledgerEntry *task.Entry
 	var specs []task.Spec
 	var problems []string
+	refKind := ""
 	if r.opt.TaskRef != "" {
+		refKind = taskRefKind(r.ctx, r.opt.RepoDir, r.opt.TaskRef)
+		if refKind != "commit" && refKind != "remote" {
+			r.warnings = append(r.warnings, fmt.Sprintf("--task-ref %s is a %s ref, which anyone with this repository on disk (the agent too) can move; use a freshly fetched remote ref (refs/remotes/origin/<branch>) or a commit id", r.opt.TaskRef, refKind))
+		}
 		where, s, h, err := readTaskAtRef(r.ctx, r.opt.RepoDir, r.opt.TaskRef, r.opt.TaskID)
 		if err != nil {
 			problems = append(problems, err.Error())
@@ -347,13 +385,30 @@ func (r *run) loadTask() bool {
 		for _, c := range copies {
 			found = append(found, source{c.Where, c.Hash})
 			specs = append(specs, c.Spec)
+			if c.Where == "ledger" {
+				ledgerEntry = c.Entry
+			}
 		}
 	}
 	trusted := false
 	for i, f := range found {
 		r.sources = append(r.sources, map[string]any{"where": f.where, "hash": f.hash})
-		if f.where == "ledger" || (r.opt.TaskRef != "" && i == 0 && strings.HasPrefix(f.where, "git:")) {
+		if r.opt.TaskRef != "" && i == 0 && strings.HasPrefix(f.where, "git:") {
 			trusted = true
+		}
+	}
+	// A ledger is trusted only against a pinned prefix.
+	ledgerTrust := ""
+	if ledgerEntry != nil {
+		ok, detail, broken := r.ledgerPinned(*ledgerEntry)
+		switch {
+		case broken:
+			problems = append(problems, "ledger: "+detail)
+		case ok:
+			trusted = true
+			ledgerTrust = "pinned"
+		default:
+			ledgerTrust = detail
 		}
 	}
 	if r.opt.TaskHash != "" && len(found) > 0 {
@@ -363,7 +418,8 @@ func (r *run) loadTask() bool {
 			trusted = true
 		}
 	}
-	ev := map[string]any{"sources": r.sources, "problems": problems, "trusted": trusted, "pinned_hash": r.opt.TaskHash}
+	ev := map[string]any{"sources": r.sources, "problems": problems, "trusted": trusted, "pinned_hash": r.opt.TaskHash,
+		"ledger_prefix": r.opt.ExpectPrefix, "ledger_trust": ledgerTrust, "task_ref_kind": refKind}
 	if len(found) == 0 {
 		id := r.addEvidence("task_snapshot", "", withStatus(ev, "fail"))
 		detail := "no trusted copy of the task was found"
@@ -389,16 +445,85 @@ func (r *run) loadTask() bool {
 	if !trusted {
 		// Run everything, but the verdict cannot be PASS.
 		id := r.addEvidence("task_snapshot", "", withStatus(ev, "untrusted"))
-		r.reason(CodeTaskUntrusted, id, "the task came only from %s, which the agent can write; pass --task-ref (a freshly fetched protected ref) or --task-hash", found[0].where)
+		detail := fmt.Sprintf("the task came only from %s, which the agent can write; pass --task-ref (a freshly fetched protected ref), --task-hash, or --expect-prefix for the ledger", found[0].where)
+		if ledgerTrust != "" {
+			detail += " (ledger: " + ledgerTrust + ")"
+		}
+		r.reason(CodeTaskUntrusted, id, "%s", detail)
 		return true
 	}
 	r.addEvidence("task_snapshot", "", withStatus(ev, "pass"))
 	return true
 }
 
+// verifiableLedger is the part of ledger.Store a prefix pin needs.
+type verifiableLedger interface {
+	Verify(ctx context.Context) (ledger.Report, error)
+}
+
+var prefixRe = regexp.MustCompile(`^(0|[1-9][0-9]{0,18}):(sha256:[0-9a-f]{64})$`)
+
+// ledgerPinned checks the ledger against Options.ExpectPrefix. ok means the
+// task entry is inside the pinned, verified prefix. broken means the
+// ledger contradicts the pin (FAIL); otherwise detail says why the ledger
+// is not trusted.
+func (r *run) ledgerPinned(taskEntry task.Entry) (ok bool, detail string, broken bool) {
+	if r.opt.ExpectPrefix == "" {
+		return false, "no --expect-prefix; an unpinned ledger is not trusted", false
+	}
+	m := prefixRe.FindStringSubmatch(r.opt.ExpectPrefix)
+	seq, _ := strconv.ParseInt(m[1], 10, 64)
+	vl, can := r.opt.Ledger.(verifiableLedger)
+	if !can {
+		return false, "this ledger cannot be verified", false
+	}
+	rep, err := vl.Verify(r.ctx)
+	switch {
+	case err != nil:
+		return false, "verify: " + err.Error(), true
+	case !rep.OK:
+		return false, "the chain does not verify", true
+	case rep.Head == nil || rep.Head.Seq < seq:
+		return false, fmt.Sprintf("the ledger ends before the pinned seq %d", seq), true
+	case rep.Head.Seq == seq && rep.Head.EntryHash != m[2]:
+		return false, fmt.Sprintf("entry %d is %s, the pin says %s", seq, rep.Head.EntryHash, m[2]), true
+	case rep.Head.Seq > seq:
+		// TODO(ledger): check entry seq by lookup once internal/ledger has
+		// one; until then only an exact head pin can be checked.
+		return false, fmt.Sprintf("the ledger has grown past the pinned seq %d (head %d); only the current head can be checked", seq, rep.Head.Seq), false
+	case taskEntry.Seq > seq:
+		return false, fmt.Sprintf("the task entry (seq %d) is after the pinned seq %d", taskEntry.Seq, seq), false
+	}
+	return true, "", false
+}
+
 func withStatus(v map[string]any, status string) map[string]any {
 	v["status"] = status
 	return v
+}
+
+// taskRefKind classifies a --task-ref: "commit" (a full id), "remote"
+// (refs/remotes/...), or "local" / "tag" / "other" (movable on this disk).
+func taskRefKind(ctx context.Context, repo, ref string) string {
+	if fullSHA.MatchString(ref) {
+		return "commit"
+	}
+	if strings.HasPrefix(ref, "-") {
+		return "other"
+	}
+	// No --end-of-options: rev-parse echoes it back instead of parsing it.
+	full, err := gitLine(ctx, repo, "rev-parse", "--symbolic-full-name", ref)
+	switch {
+	case err != nil || full == "":
+		return "other"
+	case strings.HasPrefix(full, "refs/remotes/"):
+		return "remote"
+	case strings.HasPrefix(full, "refs/heads/"):
+		return "local branch"
+	case strings.HasPrefix(full, "refs/tags/"):
+		return "tag"
+	}
+	return "other"
 }
 
 func readTaskAtRef(ctx context.Context, repo, ref, id string) (string, task.Spec, string, error) {
@@ -643,7 +768,7 @@ func (r *run) checkIntegrity() {
 			// A Go test input (a _test.go file, testdata, go.mod, go.work)
 			// of a package the criterion tests that is new or changed is as
 			// good as a new test: a TestMain there decides the result.
-			if !hit && len(task.GoTestPaths(c.Argv, []string{p})) > 0 {
+			if !hit && goInput(c.Argv, p) {
 				b, ok := atBase[p]
 				hit = !ok || b != at[p]
 			}
@@ -652,6 +777,23 @@ func (r *run) checkIntegrity() {
 				break
 			}
 		}
+	}
+	// A vendored file deleted since the base changes what gets built too.
+	for _, c := range r.spec.Criteria {
+		if !isGoTool(c.Argv) {
+			continue
+		}
+		var gone []string
+		for p := range atBase {
+			if _, ok := at[p]; !ok && strings.HasPrefix(p, "vendor/") {
+				gone = append(gone, p)
+			}
+		}
+		sort.Strings(gone)
+		for _, p := range gone {
+			added = append(added, map[string]any{"path": p, "criterion": c.Name, "git_blob": "", "deleted": true})
+		}
+		break
 	}
 	// A symlink that is new or changed since the base and points outside
 	// the checkout would let a check read or run something the task never
@@ -768,7 +910,7 @@ func (r *run) scanSecrets() {
 		fs = append(fs, map[string]any{"rule": f.Rule, "commit": f.Commit, "path": f.Path, "line": f.Line, "match_sha256": f.MatchSHA256})
 		loc := f.Path
 		if loc == "" {
-			loc = "message"
+			loc = "commit header or message"
 		}
 		where = append(where, fmt.Sprintf("%s %q:%d (%s)", f.Commit[:12], loc, f.Line, f.Rule))
 	}
@@ -797,9 +939,9 @@ func (r *run) secretFindings() ([]SecretFinding, int, []string, error) {
 		if err != nil {
 			return nil, 0, nil, err
 		}
-		if _, msg, ok := bytes.Cut(obj, []byte("\n\n")); ok {
-			findings = append(findings, scanText(c, "", msg, nil)...)
-		}
+		// The whole commit object: author, committer, any extra header,
+		// and the message.
+		findings = append(findings, scanText(c, "", obj, nil)...)
 		raw, err := git(r.ctx, r.checkout, "diff-tree", "-r", "-z", "--no-renames", "--no-abbrev", c+"^", c)
 		if err != nil {
 			return nil, 0, nil, err
@@ -809,6 +951,12 @@ func (r *run) secretFindings() ([]SecretFinding, int, []string, error) {
 				continue
 			}
 			scanned[ch.newOID+"\x00"+ch.oldOID] = true
+			// The path name itself.
+			for _, f := range scanText(c, "", []byte(ch.path), nil) {
+				f.Path = safePath(ch.path)
+				f.Line = 0
+				findings = append(findings, f)
+			}
 			blob, err := git(r.ctx, r.checkout, "cat-file", "blob", ch.newOID)
 			if err != nil {
 				return nil, 0, nil, err
@@ -822,9 +970,9 @@ func (r *run) secretFindings() ([]SecretFinding, int, []string, error) {
 				old = lineSet(ob)
 			}
 			if bytes.IndexByte(blob, 0) >= 0 {
-				binary = append(binary, ch.path)
+				binary = append(binary, safePath(ch.path))
 			}
-			findings = append(findings, scanText(c, ch.path, blob, old)...)
+			findings = append(findings, scanText(c, safePath(ch.path), blob, old)...)
 		}
 	}
 	sort.Strings(binary)
@@ -840,70 +988,131 @@ func nonNilStrings(v []string) []string {
 
 func (r *run) runCriterion(c task.Criterion) {
 	env, envNames, envHash := checkEnv(r.opt.Path, r.dirs)
-	argv := goTestArgv(c.Argv)
 	ev := map[string]any{
 		"cwd":         ".",
 		"path":        r.opt.Path,
 		"argv":        c.Argv,
-		"run_argv":    argv,
 		"timeout_s":   c.TimeoutS,
 		"expect_exit": c.ExpectExit,
-		"env_names":   envNames,
-		"env_sha256":  envHash,
+		"isolation":   r.isolation,
 		"tools":       toolVersions(r.ctx),
+	}
+	fail := func(code, format string, args ...any) {
+		ev["error"] = fmt.Sprintf(format, args...)
+		st := "error"
+		if failCodes[code] {
+			st = "fail"
+		}
+		id := r.addEvidence("criterion", c.Name, withStatus(ev, st))
+		r.reason(code, id, "%s: %s", c.Name, ev["error"])
 	}
 	// The checkout must still be the submitted tree before the check runs:
 	// an earlier check may have changed a file this one uses.
 	if problems := r.checkDisk(); len(problems) > 0 {
 		ev["checkout_before"] = problems
-		id := r.addEvidence("criterion", c.Name, withStatus(ev, "fail"))
-		r.reason(CodeCheckoutModified, id, "%s not run: the checkout differs from %s: %s", c.Name, r.opt.SHA, strings.Join(problems, "; "))
+		fail(CodeCheckoutModified, "not run: the checkout differs from %s: %s", r.opt.SHA, strings.Join(problems, "; "))
 		return
 	}
+	goTest := task.IsGoTest(c.Argv)
+	var h *harness
 	var wantTests []string
-	if task.IsGoTest(c.Argv) {
+	argv := c.Argv
+	if goTest {
 		var err error
 		if wantTests, err = designatedTests(r.checkout, r.spec, c); err != nil {
-			ev["error"] = err.Error()
-			id := r.addEvidence("criterion", c.Name, withStatus(ev, "error"))
-			r.reason(CodeInfraError, id, "%s: reading designated tests: %v", c.Name, err)
+			fail(CodeInfraError, "reading designated tests: %v", err)
 			return
 		}
 		ev["designated_tests"] = nonNilStrings(wantTests)
+		if c.ExpectExit == 0 && len(wantTests) == 0 {
+			fail(CodeDesignatedTestMissing, "no designated test to require: designate the package's _test.go files")
+			return
+		}
+		if _, err := goTestArgv(argv, ""); err != nil {
+			fail(CodeCheckError, "%v", err)
+			return
+		}
+		if h, err = r.newHarness(c, wantTests); err != nil {
+			fail(CodeInfraError, "go test harness: %v", err)
+			return
+		}
+		argv, _ = goTestArgv(argv, h.overlay)
+		gotmp := filepath.Join(filepath.Dir(r.checkout), "gotmp")
+		if err := os.MkdirAll(gotmp, 0o700); err != nil {
+			fail(CodeInfraError, "%v", err)
+			return
+		}
+		// No cgo: a C constructor would run before the hook's init.
+		env = append(env, "CGO_ENABLED=0", "GOTMPDIR="+gotmp, hookEnv+"="+h.socket)
+		envNames = append(envNames, "CGO_ENABLED", "GOTMPDIR", hookEnv)
+		sort.Strings(envNames)
 	}
+	ev["run_argv"] = argv
+	ev["env_names"], ev["env_sha256"] = envNames, envHash
 	outDir := filepath.Dir(r.checkout)
 	stdout, errOut := filepath.Join(outDir, c.Name+".stdout"), filepath.Join(outDir, c.Name+".stderr")
 	ctx, cancel := context.WithTimeout(r.ctx, time.Duration(c.TimeoutS)*time.Second)
 	defer cancel()
 	command, err := lookPath(argv[0], r.checkout, r.opt.Path)
 	if err != nil {
-		ev["error"] = err.Error()
-		id := r.addEvidence("criterion", c.Name, withStatus(ev, "error"))
-		r.reason(CodeCheckError, id, "%s: %v", c.Name, err)
+		if h != nil {
+			h.finish()
+		}
+		fail(CodeCheckError, "%v", err)
 		return
 	}
 	ev["command"] = command
-	cmd := exec.CommandContext(ctx, command, argv[1:]...)
-	cmd.Args[0] = argv[0]
+	var cmd *exec.Cmd
+	if r.isolation == IsolationNamespace {
+		if cmd, err = isolatedCommand(ctx, command, argv); err != nil {
+			if h != nil {
+				h.finish()
+			}
+			fail(CodeInfraError, "%v", err)
+			return
+		}
+	} else {
+		cmd = exec.CommandContext(ctx, command, argv[1:]...)
+		cmd.Args[0] = argv[0]
+		isolateProcess(cmd)
+	}
 	cmd.Dir = r.checkout
 	cmd.Env = env
 	cmd.WaitDelay = 5 * time.Second
-	isolateProcess(cmd)
 	so, err1 := os.Create(stdout)
 	se, err2 := os.Create(errOut)
 	if err := errors.Join(err1, err2); err != nil {
-		ev["error"] = err.Error()
-		id := r.addEvidence("criterion", c.Name, withStatus(ev, "error"))
-		r.reason(CodeInfraError, id, "%v", err)
+		if h != nil {
+			h.finish()
+		}
+		fail(CodeInfraError, "%v", err)
 		return
 	}
 	cmd.Stdout, cmd.Stderr = so, se
 	started := r.opt.Now()
-	runErr := cmd.Run()
-	reapGroup(cmd)
+	runErr := cmd.Start()
+	if runErr == nil {
+		if h != nil {
+			h.rootPid, h.isolated = cmd.Process.Pid, r.isolation == IsolationNamespace
+			close(h.started)
+		}
+		runErr = cmd.Wait()
+	}
+	// Isolated: pid 1 has exited, so the kernel has killed everything else
+	// in the namespace. Not isolated: kill the process group (a setsid
+	// child escapes; the verdict records isolation "none").
+	if r.isolation != IsolationNamespace {
+		reapGroup(cmd)
+	}
 	ended := r.opt.Now()
 	so.Close()
 	se.Close()
+	var notPassed, violations []string
+	if h != nil {
+		notPassed, violations = h.finish()
+		ev["designated_tests_not_passed"] = nonNilStrings(notPassed)
+		ev["test_report_violations"] = nonNilStrings(violations)
+	}
 	ev["started_at"] = started.UTC().Format(task.TimeLayout)
 	ev["ended_at"] = ended.UTC().Format(task.TimeLayout)
 	ev["duration_ms"] = ended.Sub(started).Milliseconds()
@@ -925,36 +1134,25 @@ func (r *run) runCriterion(c task.Criterion) {
 
 	// The checkout must be the submitted tree, unmodified, afterwards,
 	// read from disk (not from git's index, which a check could change).
+	// Nothing the check started is running any more (isolated), so this
+	// read cannot race a writer.
 	after := r.checkDisk()
 	unchanged := len(after) == 0
 	ev["checkout_unchanged"] = unchanged
 	ev["checkout_after"] = nonNilStrings(after)
 
-	// For go test, each designated test has to report pass: a TestMain or
-	// init that exits 0 before the tests run passes no test.
-	var notPassed []string
-	if task.IsGoTest(c.Argv) {
-		passed, err := passedTests(stdout)
-		for _, w := range wantTests {
-			if err != nil || !passed[w] {
-				notPassed = append(notPassed, w)
-			}
-		}
-		ev["designated_tests_not_passed"] = nonNilStrings(notPassed)
-	}
-
 	var code, detail string
 	switch {
+	case len(violations) > 0:
+		code, detail = CodeTestReportInvalid, strings.Join(violations, "; ")
 	case timedOut:
 		code, detail = CodeCheckTimeout, fmt.Sprintf("timed out after %ds", c.TimeoutS)
 	case exitCode == nil && runErr != nil:
 		code, detail = CodeCheckError, runErr.Error()
 	case exitCode != c.ExpectExit:
 		code, detail = CodeCheckFailed, fmt.Sprintf("exit %v, expected %d", exitCode, c.ExpectExit)
-	case task.IsGoTest(c.Argv) && c.ExpectExit == 0 && len(wantTests) == 0:
-		code, detail = CodeDesignatedTestMissing, "no designated test to require: designate the package's _test.go files"
-	case c.ExpectExit == 0 && len(notPassed) > 0:
-		code, detail = CodeDesignatedTestMissing, fmt.Sprintf("%d of %d designated tests did not report pass: %s", len(notPassed), len(wantTests), strings.Join(notPassed, ", "))
+	case goTest && c.ExpectExit == 0 && len(notPassed) > 0:
+		code, detail = CodeDesignatedTestMissing, fmt.Sprintf("%d of %d designated tests did not pass: %s", len(notPassed), len(wantTests), testList(notPassed))
 	}
 	st := "pass"
 	if code == CodeCheckError {
@@ -969,6 +1167,16 @@ func (r *run) runCriterion(c task.Criterion) {
 	if !unchanged {
 		r.reason(CodeCheckoutModified, id, "%s changed the checkout: %s", c.Name, strings.Join(after, "; "))
 	}
+}
+
+// testList prints "<import path> <Test>" names as "TestX (pkg)".
+func testList(names []string) string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		pkg, test, _ := strings.Cut(n, " ")
+		out[i] = test + " (package " + pkg + ")"
+	}
+	return strings.Join(out, ", ")
 }
 
 // keepOutput hashes a captured stream, and copies it to ArtifactsDir as
@@ -1063,12 +1271,16 @@ func (r *run) finish() (Result, error) {
 		"started_at":     r.started.Format(task.TimeLayout),
 		"ended_at":       r.now(),
 		"secret_ruleset": SecretRulesetHash(),
+		"isolation":      r.isolation,
 	}
 	verdict, err := makeRecord(task.KindVerdict, r.id, v)
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Status: status, Reasons: r.reasons, Evidence: r.evidence, Verdict: verdict}
+	res := Result{Status: status, Reasons: r.reasons, Evidence: r.evidence, Verdict: verdict, Warnings: r.warnings}
+	if r.isolation == IsolationNone && len(r.spec.Criteria) > 0 && r.opt.AllowUnisolated {
+		res.Warnings = append(res.Warnings, "checks ran without isolation (--allow-unisolated): a process a check left behind could have changed files the verifier read; this verdict says isolation \"none\"")
+	}
 	if l := r.opt.Ledger; l != nil {
 		recs := append(append([]Record(nil), r.evidence...), verdict)
 		if b, ok := l.(task.BatchLedger); ok {

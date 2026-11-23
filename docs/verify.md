@@ -21,13 +21,21 @@ and every one found must have the same hash; `--task-hash sha256:...` pins
 the hash they must have. The `.sdf/tasks` file in the working tree, or in
 the submitted commit, is never a source.
 
-**PASS needs a trusted source**: `--task-ref`, a ledger entry, or
-`--task-hash`. The data dir is written by whoever runs sdf on the machine,
-the agent included, so a task found only there runs but gives at best ERROR
-(`TASK_UNTRUSTED`). A local branch the agent can move is no better: pass
-the protected branch as just fetched from the remote (for example
-`git fetch origin main` and `--task-ref refs/remotes/origin/main`, or the
-fetched commit id). The Action does this.
+**PASS needs a trusted source**: `--task-ref`, `--task-hash`, or a ledger
+pinned with `--expect-prefix SEQ:sha256:<entry hash>`. The data dir and an
+unpinned ledger are written by whoever runs sdf on the machine, the agent
+included (any `--ledger` path or `$SDF_LEDGER` can be a ledger the agent
+made), so a task found only there runs but gives at best ERROR
+(`TASK_UNTRUSTED`). With `--expect-prefix`, the ledger must verify and its
+head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL); a ledger
+that has grown past the pin is not trusted either, because the ledger API
+has no lookup of an entry by sequence yet. A local branch the agent can
+move is no better: pass the protected branch as just fetched from the
+remote (for example `git fetch origin main` and `--task-ref
+refs/remotes/origin/main`, or the fetched commit id). The Action does this.
+`--task-ref` with a local branch, a tag, or anything but a remote-tracking
+ref or a full commit id prints a warning and records the kind as
+`task_ref_kind` in the evidence.
 
 ## What runs, in order
 
@@ -47,24 +55,27 @@ fetched commit id). The Action does this.
    matches a designated glob fails (`DESIGNATED_FILE_ADDED`). For a `go test`
    or `go vet` criterion, so does any new or changed `_test.go` file or
    `testdata` file in a package it tests, and a new or changed `go.mod`,
-   `go.sum`, `go.work` or `go.work.sum`, whether or not the task designated
-   it: a new `TestMain` decides the result. A symlink that is new or changed
+   `go.sum`, `go.work` or `go.work.sum`, and any new, changed or deleted file
+   under `vendor/`, whether or not the task designated it: a new `TestMain`
+   or a replaced dependency decides the result. A symlink that is new or changed
    since the base and points outside the checkout fails
    (`SYMLINK_OUTSIDE_CHECKOUT`). So does a copy of this task's
    `.sdf/tasks/<id>.json` in the commit that differs from the trusted one.
 4. **Secret scan** (when the task has `secret_scan`). Every commit in
-   `base..SHA`, not only the net diff: each commit message, and the new lines
-   of every added or changed blob, read from the objects (so a `-diff` or
+   `base..SHA`, not only the net diff: each whole commit object (message,
+   author, committer and any extra header), every added or changed path
+   name, and the new lines of every added or changed blob, read from the objects (so a `-diff` or
    textconv attribute cannot hide a file, and a secret added then removed
    is still found). Binary blobs are scanned too and listed. The rule set is
    small and fixed (`sdf.secrets/v1`: private keys, AWS, GitHub, GitLab,
    Slack, Anthropic, OpenAI, xAI, Google, and Stripe live keys). A finding
    records the rule, commit, path, line, and the sha256 of the match, never
-   the match. This is not a replacement for a full scanner.
+   the match (a path that itself matches is recorded as a hash). This is not a replacement for a full scanner.
 5. **Criteria**, only if nothing above failed: the submitted code does not
-   run otherwise. Before they run, `.git` is moved out of the checkout and
-   made read-only, so checks see a plain tree. Each argv runs in the
-   checkout root with no shell, its own process group, the declared
+   run otherwise. Before they run, `.git` is moved out of the checkout, so
+   checks see a plain tree (it stays writable by the same user; the
+   integrity checks do not read it again). Each argv runs in the checkout
+   root with no shell, in its own namespaces (below), the declared
    timeout, and a small environment: locale, temp, CI and Go proxy
    settings are inherited; `HOME` and `XDG_*` point at a new empty
    directory; `GOENV=off`, `GOFLAGS=` and `GOTOOLCHAIN=local`; `GOPATH`,
@@ -76,12 +87,37 @@ fetched commit id). The Action does this.
    and argv[0] is resolved in that PATH only, so a bare name never resolves
    to a file in the checkout. The resolved command, cwd, and PATH are in
    the evidence.
-   `go test` runs with `-json -count=1` added, and every top-level test in
-   the designated `_test.go` files it covers must report pass, else
-   `DESIGNATED_TEST_NOT_PASSED` (a `go test` criterion with no designated
-   test fails the same way). A `TestMain` or `init` that exits 0 before the
-   tests run passes nothing. A `-run` filter or a skipped designated test
-   fails too.
+   **Isolation.** Each check runs as pid 1's child in a new user, pid and
+   mount namespace (`CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNS`, uid and gid
+   mapped to the same user, a private `/proc`). When the check exits, the
+   namespace's init exits and the kernel kills every process left in it,
+   including ones that called `setsid` or double-forked, before the
+   checkout is re-hashed and before the next check starts. Without
+   unprivileged user namespaces (for example Ubuntu 23.10+ with
+   `kernel.apparmor_restrict_unprivileged_userns=1`) the verdict is ERROR
+   `ISOLATION_UNAVAILABLE` and nothing runs. `--allow-unisolated` runs the
+   checks anyway with only process-group cleanup; the verdict then records
+   `"isolation": "none"` and a warning is printed. A run with isolation
+   records `"isolation": "namespace"`. The Action never allows unisolated
+   runs.
+   **Go test results.** `go test` stdout is not trusted: code under test can
+   print a fake `--- PASS`. Instead `go test` runs with `-count=1` and an
+   `-overlay` the verifier writes (the task's argv may not set `-overlay`,
+   `-exec` or `-toolexec`). The overlay adds a package with a random name,
+   imported from every package of the module, so its `init` runs before
+   any of the module's own; it connects to a unix socket the verifier owns
+   (`$SDF_VERIFY_HOOK`) and receives a fresh random key. The verifier only
+   answers a peer (checked with `SO_PEERCRED`) whose executable is a `.test`
+   binary started by the `go` command it launched, once per process. Each
+   designated top-level test is wrapped in place so that, when it ends, the
+   hook sends `pass`, `fail` or `skip` with an HMAC under that key. Every
+   designated test must report only `pass`, else `DESIGNATED_TEST_NOT_PASSED`
+   (named as `TestX (package import/path)`; a `go test` criterion with no
+   designated test fails the same way). Any other connection, a second one
+   from a process, or a frame with a bad HMAC is `TEST_REPORT_INVALID`
+   (FAIL). A `TestMain` or `init` that exits 0, a `-run` filter or a skipped
+   designated test reports no pass and fails. `CGO_ENABLED=0` is set for
+   these runs, so no C constructor runs before the hook.
    Output is hashed (`--artifacts DIR` keeps it as `<sha256>` files).
    Before and after each check, every tracked file on disk is re-hashed
    (without git, its index, or following symlinks) against the submitted
@@ -96,11 +132,12 @@ FAIL: `TASK_SNAPSHOT_MISSING`, `TASK_HASH_MISMATCH`, `TASK_FILE_MODIFIED`,
 `REVISION_UNRESOLVABLE`, `REVISION_MISMATCH`, `BASE_MISMATCH`,
 `BASE_NOT_ANCESTOR`, `DESIGNATED_FILE_MODIFIED`, `DESIGNATED_FILE_ADDED`,
 `SECRET_IN_DIFF`, `CHECKOUT_DIRTY`, `CHECKOUT_MODIFIED`, `CHECK_FAILED`,
-`CHECK_TIMEOUT`.
+`CHECK_TIMEOUT`, `TEST_REPORT_INVALID`.
 
 ERROR (the verifier could not decide): `TASK_UNTRUSTED` (the task came only
-from the data dir), `CHECK_ERROR` (the command could not start),
-`INFRA_ERROR`.
+from the data dir or an unpinned ledger), `ISOLATION_UNAVAILABLE` (no
+namespaces and no `--allow-unisolated`), `CHECK_ERROR` (the command could
+not start), `INFRA_ERROR`.
 
 Any FAIL code makes the verdict FAIL; otherwise any ERROR code makes it
 ERROR; otherwise it is PASS. The order checks ran in does not change that.
@@ -111,7 +148,7 @@ Evidence (`sdf.evidence/v1`) and the verdict (`sdf.verdict/v1`) are RFC 8785
 JSON, hashed like a task: `"sha256:" + hex(sha256(kind + "\n" + canonical))`.
 The verdict lists every evidence id and hash, the task hash and its
 sources, the submitted commit and tree, and the secret rule set's hash.
-With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
+The verdict also records `isolation`. With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
 appended to that ledger in one transaction ([docs/ledger.md](ledger.md#who-writes-it)):
 all of them or none. The ledger is prepared before the checkout, so one
 that cannot be written is exit 3 with nothing run. If the append itself
@@ -126,23 +163,30 @@ record.
   process of that user running at the same time can write the checkout,
   the moved `.git`, or the verdict file. "After the agent exits" is not
   enough on its own: a daemon it left behind is still that user.
-- When a check exits, everything left in its process group is killed. A
-  process that leaves the group (`setsid`, a double fork into a new
-  session) survives, and as the same user it can change files the verifier
-  or the CI job writes later. Running the checks as a separate OS user is
-  the fix; it is not built yet.
-- Checks are not sandboxed: they can read anything the user can (for
-  example `~/.ssh`, or the moved `.git` next to the checkout) and use the
-  network. Run verify on a machine or runner without credentials worth
+- The namespaces end every process a check started, but only those. A
+  process of the same user that was already running (an agent still
+  running locally) is outside them and can still write the checkout. With
+  `--allow-unisolated`, a process that leaves the check's process group
+  (`setsid`, a double fork) survives the check and can change files later
+  checks read; such a verdict says `"isolation": "none"`.
+- Checks are not otherwise sandboxed: the user namespace maps to the same
+  user, so they can read and write anything that user can (for example
+  `~/.ssh`, or the moved `.git` next to the checkout) and use the network.
+  A separate OS user is not built. Run verify on a machine or runner without credentials worth
   stealing; in the Action there are none.
 - `--task-ref` is read from the repository given. If the agent can move that
   ref locally, it is not protected: use the protected branch as just
   fetched from the remote, or `--task-hash`.
-- Code under test runs inside the test binary. `go test -json` closes the
-  `TestMain`/`init` exit-0 skip, but code that deliberately forges test2json
-  output (it can print the same framing bytes) is not detectable from
-  outside the process. Non-Go checks have no equivalent: a script check
-  reports only its exit code.
+- Code under test runs inside the test binary, in the same process as the
+  hook. The key arrives before any of the module's own `init` runs, so it
+  cannot be read from the socket first, and printing to stdout no longer
+  matters. But code that runs later in that process can still read the key
+  from memory (`unsafe`, reflection on the hook's variables), call the
+  hook's report function directly, or patch the `testing` package, and so
+  forge a pass. Closing that needs the tests to run in a process the code
+  under test cannot inspect; it is not built. Packages in nested modules or
+  `replace` directories outside the module are not hooked. Non-Go checks
+  have no equivalent: a script check reports only its exit code.
 - A check can still be weakened through a file that is neither designated
   nor a Go test input, for example a helper a script sources. `sdf task
   declare` warns for interpreter, `-c` and `make` criteria with no glob;

@@ -68,7 +68,7 @@ func (r *run) watched(p string) bool {
 				return true
 			}
 		}
-		if len(task.GoTestPaths(c.Argv, []string{p})) > 0 {
+		if goInput(c.Argv, p) {
 			return true
 		}
 	}
@@ -137,9 +137,11 @@ func (r *run) checkDisk() []string {
 }
 
 // hideGitDir moves the checkout's .git next to it, outside the directory
-// checks run in, and makes it read-only. Checks see a plain tree with no
-// repository: nothing they run can change the index or HEAD the verifier
-// reads, and the verifier no longer reads them (see checkDisk).
+// checks run in, and clears its write bits. That is not a boundary (a
+// check runs as the same user and can find it and chmod it back); it only
+// means checks see a plain tree. What matters is that the verifier no
+// longer reads the index or HEAD after this point: checkDisk compares the
+// disk with the tree it read before any check ran.
 func (r *run) hideGitDir() error {
 	dst := filepath.Join(filepath.Dir(r.checkout), "git")
 	if err := os.Rename(filepath.Join(r.checkout, ".git"), dst); err != nil {
@@ -168,7 +170,7 @@ func (r *run) hideGitDir() error {
 }
 
 // removeTree removes dir after making every directory in it writable (the
-// hidden .git and a module cache are read-only).
+// hidden .git and a module cache have read-only mode bits, which the same user can undo).
 func removeTree(dir string) error {
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
