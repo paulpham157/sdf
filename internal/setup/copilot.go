@@ -106,6 +106,9 @@ func captureWarning(where, standard, legacy string) string {
 // digits, and inner hyphens.
 var copilotHostName = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$`)
 
+// copilotNumericHost is a host whose dot-separated labels are all digits.
+var copilotNumericHost = regexp.MustCompile(`^[0-9]+(\.[0-9]+)*\.?$`)
+
 // copilotEndpoint validates --host and --port before they reach a file the
 // user sources: a host name, an IPv4 address, or an IPv6 address (bracketed
 // or bare), and a port in 1-65535. Anything else (spaces, ;, $, quotes,
@@ -122,6 +125,10 @@ func copilotEndpoint(ep Endpoint) (Endpoint, error) {
 		if ip := net.ParseIP(host); ip == nil {
 			return ep, fmt.Errorf("--host %q is not a valid IPv6 address", ep.Host)
 		}
+	} else if copilotNumericHost.MatchString(host) && net.ParseIP(host) == nil {
+		// 999.1.1.1 or 127.1 is not a host name, and resolvers read the
+		// short forms differently: an all-numeric host must be IPv4.
+		return ep, fmt.Errorf("--host %q is all numbers but not a valid IPv4 address", ep.Host)
 	} else if net.ParseIP(host) == nil && (len(host) > 253 || !copilotHostName.MatchString(host)) {
 		return ep, fmt.Errorf("--host %q is not a host name, IPv4 address, or bracketed IPv6 address", ep.Host)
 	}
@@ -263,7 +270,7 @@ func copilot(req Request) (Result, error) {
 	for _, w := range warnings {
 		fmt.Fprintf(&b, "warning: %s\n", w)
 	}
-	fmt.Fprintf(&b, "\nCopilot CLI does not load %s by itself. Source it in a subshell so the OTEL_* variables do not stay in your shell:\n  (. %s && copilot)\n", path, shellQuote(path))
+	fmt.Fprintf(&b, "\nCopilot CLI does not load %s by itself. Run copilot through sh so the OTEL_* variables do not stay in your shell (this works from bash, zsh, and fish):\n  sh -c '. \"$1\" && exec copilot' sh %s\n", path, shellQuote(path))
 	if bytes.Equal(existing, []byte(merged)) {
 		b.WriteString(path + " already has these values\n")
 		return Result{Text: b.String()}, nil
@@ -410,6 +417,8 @@ func writeFileAtomic(path string, body []byte) (string, error) {
 		return "", err
 	}
 	links := copilotHardLinks(target)
+	// For a new file, including the target of a dangling (stow-style)
+	// symlink, missing parent directories are created with mode 0700.
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", err
 	}

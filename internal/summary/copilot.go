@@ -65,14 +65,20 @@ func copilotSpans(records []record.Record, head string) []record.Record {
 	return out
 }
 
+// copilotSpanIndex maps trace id + span id to the span. Span ids are only
+// unique within a trace, so the trace id is part of the key.
 func copilotSpanIndex(records []record.Record) map[string]record.Record {
 	byID := map[string]record.Record{}
 	for _, rec := range records {
 		if rec.Signal == "traces" && rec.SpanID != nil {
-			byID[*rec.SpanID] = rec
+			byID[copilotSpanKey(rec.TraceID, *rec.SpanID)] = rec
 		}
 	}
 	return byID
+}
+
+func copilotSpanKey(trace *string, span string) string {
+	return deref(trace) + "/" + span
 }
 
 // copilotAncestor returns the nearest ancestor of rec whose span head is one
@@ -82,7 +88,7 @@ func copilotAncestor(rec record.Record, byID map[string]record.Record, heads ...
 	parent := rec.ParentSpanID
 	for parent != nil && *parent != "" && !seen[*parent] {
 		seen[*parent] = true
-		up, ok := byID[*parent]
+		up, ok := byID[copilotSpanKey(rec.TraceID, *parent)]
 		if !ok {
 			break
 		}
@@ -103,8 +109,11 @@ func copilotAncestor(rec record.Record, byID map[string]record.Record, heads ...
 // Per the Copilot docs, a top-level invoke_agent carries server.address and
 // server.port and a subagent does not, and the top-level default agent id is
 // github.copilot.default. The first of those markers present on any span in
-// the session decides; without either (older builds) a span is top-level
-// when no invoke_agent is above it. In fleet mode an invoke_workflow span
+// the session decides, and a span without the marker is still top-level when
+// it has no parent span at all: a session resumed across Copilot builds can
+// mix spans with and without server.address, and a parentless invoke_agent
+// cannot be a subagent. Without either marker (older builds) a span is
+// top-level when no invoke_agent is above it. In fleet mode an invoke_workflow span
 // runs subagents in parallel. When that workflow is not inside a top-level
 // invoke_agent, its direct invoke_agent children carry the usage and are
 // counted. When it is inside one, the parent's totals are assumed to include
@@ -122,11 +131,12 @@ func copilotTopLevel(records []record.Record) []record.Record {
 		}
 	}
 	isTop := func(rec record.Record) bool {
+		parentless := rec.ParentSpanID == nil || *rec.ParentSpanID == ""
 		switch {
 		case hasAddr:
-			return strAttr(rec.Attributes, copilotServerAddr) != ""
+			return strAttr(rec.Attributes, copilotServerAddr) != "" || parentless
 		case hasDefault:
-			return strAttr(rec.Attributes, "gen_ai.agent.id") == copilotDefaultAgent
+			return strAttr(rec.Attributes, "gen_ai.agent.id") == copilotDefaultAgent || parentless
 		default:
 			_, nested := copilotAncestor(rec, byID, "invoke_agent")
 			return !nested
@@ -286,7 +296,7 @@ func copilotMissing(records []record.Record, points []point) []Missing {
 	if countSignal(records, "metrics") == 0 {
 		out = append(out, Missing{Signal: "metrics", Reason: "no metrics attributed to this session. Copilot CLI metrics carry no session id, so a point is attached only when its timestamp falls inside exactly one Copilot session."})
 	}
-	reason := "Copilot CLI reports no USD cost. Usage is billed in premium requests and AI units: github.copilot.cost is a per-request multiplier, not money, and github.copilot.nano_aiu counts AI units."
+	reason := "Copilot CLI reports no USD cost. Usage is billed in premium requests and AI units: github.copilot.cost is a per-request premium-request multiplier, not money, github.copilot.nano_aiu counts AI units, and the session's total_premium_requests is a span event sdf does not store. sdf does not price premium requests."
 	var nano []float64
 	for _, rec := range copilotTopLevel(records) {
 		if amount := record.Number(rec.Attributes[copilotNanoAIU]); amount != nil {

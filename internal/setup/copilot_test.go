@@ -32,7 +32,7 @@ func TestCopilotPrintDoesNotWrite(t *testing.T) {
 		"export OTEL_EXPORTER_OTLP_ENDPOINT='http://127.0.0.1:4318'",
 		"export OTEL_EXPORTER_OTLP_PROTOCOL='http/json'",
 		"export OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT='NO_CONTENT'",
-		"(. '" + filepath.Join(home, ".config", "sdf", "copilot.env") + "' && copilot)",
+		"sh -c '. \"$1\" && exec copilot' sh '" + filepath.Join(home, ".config", "sdf", "copilot.env") + "'",
 		"not written",
 		filepath.Join(home, ".config", "sdf", "copilot.env"),
 	} {

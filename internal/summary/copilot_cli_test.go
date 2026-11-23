@@ -238,3 +238,46 @@ func TestCopilotToolSuccessFromErrorType(t *testing.T) {
 		t.Fatal("non-Copilot execute_tool without a flag must not be a success")
 	}
 }
+
+func TestCopilotTopLevelAcrossBuildsOnResume(t *testing.T) {
+	const s1 = int64(1_000_000_000)
+	// The first run's build sets server.address on the top-level span; the
+	// resumed run's build does not. Both are parentless, so both count:
+	// 4 s + 10 s and 50 + 300 tokens. The subagent under the new run is
+	// still not added.
+	newer := copilotSpan("t1", "a1", "", "invoke_agent", s1, 5*s1, map[string]any{
+		"server.address": "api.githubcopilot.com", "server.port": 443, "gen_ai.usage.input_tokens": 50,
+	})
+	older := copilotSpan("t2", "b1", "", "invoke_agent", 20*s1, 30*s1, map[string]any{"gen_ai.usage.input_tokens": 300})
+	tool := copilotSpan("t2", "b2", "b1", "execute_tool task", 21*s1, 25*s1, nil)
+	sub := copilotSpan("t2", "b3", "b2", "invoke_agent explore", 21*s1, 24*s1, map[string]any{"gen_ai.usage.input_tokens": 999})
+	s := copilotSessionOf(t, Summarize([]record.Record{newer, older, tool, sub}, false))
+	if s.DurationMS == nil || *s.DurationMS != 14000 {
+		t.Fatalf("duration %v, want 14000", s.DurationMS)
+	}
+	if s.Tokens.Vals["input_tokens"] != 350 {
+		t.Fatalf("tokens %v, want 350", s.Tokens)
+	}
+	// Same with the default agent id as the marker.
+	newer.Attributes = map[string]any{"gen_ai.conversation.id": copilotSession, "gen_ai.agent.id": "github.copilot.default", "gen_ai.usage.input_tokens": 50}
+	s = copilotSessionOf(t, Summarize([]record.Record{newer, older, tool, sub}, false))
+	if s.Tokens.Vals["input_tokens"] != 350 || s.DurationMS == nil || *s.DurationMS != 14000 {
+		t.Fatalf("default-agent marker: %v %v", s.Tokens, s.DurationMS)
+	}
+}
+
+func TestCopilotSpanIndexKeysByTrace(t *testing.T) {
+	const s1 = int64(1_000_000_000)
+	// Two traces reuse span id "x". The subagent in t2 must find its own
+	// parent chain, not t1's span with the same id.
+	root2 := copilotSpan("t2", "r", "", "invoke_agent", 3*s1, 6*s1, map[string]any{"gen_ai.usage.input_tokens": 20})
+	tool2 := copilotSpan("t2", "x", "r", "execute_tool task", 4*s1, 5*s1, nil)
+	sub2 := copilotSpan("t2", "s", "x", "invoke_agent explore", 4*s1, 5*s1, map[string]any{"gen_ai.usage.input_tokens": 500})
+	// Stored later, so an index by span id alone would resolve "x" here.
+	root1 := copilotSpan("t1", "q", "", "invoke_agent", s1, 2*s1, map[string]any{"gen_ai.usage.input_tokens": 10})
+	other1 := copilotSpan("t1", "x", "", "permission", s1, 2*s1, nil)
+	s := copilotSessionOf(t, Summarize([]record.Record{root2, tool2, sub2, root1, other1}, false))
+	if s.Tokens.Vals["input_tokens"] != 30 {
+		t.Fatalf("tokens %v, want 30 (the t2 subagent is nested)", s.Tokens)
+	}
+}

@@ -442,7 +442,8 @@ copilot
 
 These `export` lines stay in that shell after `copilot` exits, so other
 OTel programs started there will send to sdf too. To scope them to one run,
-use a subshell: `(. ~/.config/sdf/copilot.env && copilot)`.
+run copilot through `sh`, which works from bash, zsh, and fish:
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`.
 
 `sdf init copilot --write` merges these lines into
 `~/.config/sdf/copilot.env` for you to source (details and precedence in

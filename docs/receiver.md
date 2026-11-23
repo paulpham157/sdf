@@ -130,9 +130,10 @@ lines, which can hold tokens; it says how many it keeps):
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=NO_CONTENT`, each value in
 single quotes. `--host` must be a host name, an IPv4 address, or an IPv6
 address (bracketed or bare) and `--port` must be 1-65535, so nothing in the
-file can run when it is sourced. Copilot does not load the file; source it
-in a subshell so the variables do not stay in your shell:
-`(. ~/.config/sdf/copilot.env && copilot)`. `--write`
+file can run when it is sourced. Copilot does not load the file; run
+copilot through `sh` so the variables do not stay in your shell (this also
+works from fish, which has no POSIX subshell):
+`sh -c '. "$1" && exec copilot' sh ~/.config/sdf/copilot.env`. `--write`
 merges in place: line order and unrelated lines are kept, the endpoint and
 protocol lines are replaced (with a warning when the old value differed),
 and a capture-content line you already set is kept, with a warning when it
@@ -144,7 +145,8 @@ attributes and ACLs are not copied. A file that exists but that sdf may not
 write, or that has no write bit (`0400`, even for root), is refused before
 anything else. A symlinked file is written through to its target; a link
 to a file that does not exist yet (stow-style, relative links read from the
-link's directory) creates that file. The old file is copied to
+link's directory) creates that file, and creates its missing parent
+directories with mode 0700. The old file is copied to
 `.sdf-bak`; a different existing `.sdf-bak` is never overwritten
 (`.sdf-bak.1`, `.sdf-bak.2`, ... are used), and a backup made by a failed
 write is removed.

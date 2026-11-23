@@ -22,6 +22,10 @@ func TestCopilotRejectsUnsafeHostAndPort(t *testing.T) {
 		"[127.0.0.1]",
 		"[::1",
 		"exa_mple.com",
+		"999.1.1.1",
+		"127.1",
+		"1.2.3.4.5",
+		"256.0.0.1",
 		"",
 	} {
 		home := t.TempDir()
@@ -213,5 +217,57 @@ func TestCopilotCaptureWarnings(t *testing.T) {
 	t.Setenv(copilotCaptureKey, "EVENT_ONLY")
 	if w := strings.Join(copilotEnvWarnings(Endpoint{Host: "127.0.0.1", HTTPPort: 4318}), "\n"); strings.Contains(w, "content capture") {
 		t.Fatal(w)
+	}
+}
+
+func TestCopilotNumericHostsMustBeIPv4(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "10.0.0.255", "localhost", "1password.example", "a1.b2"} {
+		if _, err := copilotEndpoint(Endpoint{Host: host, HTTPPort: 4318}); err != nil {
+			t.Fatalf("%q refused: %v", host, err)
+		}
+	}
+}
+
+// The printed run line must work when pasted into any shell, so it runs sh
+// explicitly instead of a POSIX subshell, which fish does not have.
+func TestCopilotRunHintScopesTheEnvironment(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	clearCopilotEnv(t)
+	home := t.TempDir()
+	res, err := Run(copilotRequest(home, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(res.Text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "sh -c ") {
+			line = strings.TrimSpace(l)
+		}
+	}
+	if line == "" {
+		t.Fatalf("no run line\n%s", res.Text)
+	}
+	bin := t.TempDir()
+	fake := "#!/bin/sh\nprintf '%s' \"$OTEL_EXPORTER_OTLP_ENDPOINT\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "copilot"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Run the line as a user's interactive shell would: here sh stands in
+	// for bash, zsh, or fish, which all pass the quoted words to sh as is.
+	cmd := exec.Command(sh, "-c", line)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	out, err := cmd.Output()
+	if err != nil || string(out) != "http://127.0.0.1:4318" {
+		t.Fatalf("%s: %q %v", line, out, err)
+	}
+	if fish, err := exec.LookPath("fish"); err == nil {
+		cmd := exec.Command(fish, "-c", line)
+		cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+		if out, err := cmd.Output(); err != nil || string(out) != "http://127.0.0.1:4318" {
+			t.Fatalf("fish: %q %v", out, err)
+		}
 	}
 }
