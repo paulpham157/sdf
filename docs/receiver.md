@@ -342,7 +342,11 @@ stays open. An agent with no hook keeps the inferred window. For Claude Code
 (`~/.claude/settings.json`) and Codex (`hooks.json`), sdf adds its hook to the
 `SessionStart` and `SessionEnd` arrays and keeps every other entry, matcher,
 and event; an sdf hook already there, including one an older sdf wrote with
-another host or port, is updated in place, so a rerun changes nothing. The hook exits
+another host or port, is updated in place, so a rerun changes nothing. Only
+the exact command text an sdf build has written counts as sdf's hook; a user's
+own hook that also posts to `/v1/sessions` is never rewritten. An event whose
+value is not an array, `null` included, is refused and the file is left as it
+was. The hook exits
 without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode
