@@ -449,7 +449,7 @@ func grok(req Request) (Result, error) {
 		fmt.Fprintf(&b, "not written (pass --write to install %s)\n", hookPath)
 		return Result{Text: b.String()}, nil
 	}
-	configStatus, configWrote, err := writeGrokConfig(path, block)
+	configStatus, configWrote, err := writeGrokConfig(path, hookPath, block)
 	if err != nil {
 		return Result{}, err
 	}
@@ -518,19 +518,24 @@ otel_endpoint = "%s"
 `, ep.base())) + "\n"
 }
 
-func writeGrokConfig(path, block string) (string, bool, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", false, err
-	}
+// writeGrokConfig appends block to config.toml unless it already has a
+// [telemetry] table. Like the other agents, every file this init writes
+// (config.toml and hookPath, the session hook written right after) is
+// checked first with checkAllWritable, so a read-only config, a refused
+// symlink as root, or an unwritable hooks/ directory fails before anything
+// changes; config.toml is then replaced atomically with replaceFile.
+func writeGrokConfig(path, hookPath, block string) (string, bool, error) {
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		return "", false, err
+		return "", false, readErr(path, err)
 	}
 	if hasTelemetryTable(string(existing)) {
+		if err := checkAllWritable(hookPath); err != nil {
+			return "", false, err
+		}
 		return "not written: " + path + " already has a [telemetry] table; it was not changed\n", false, nil
 	}
-	backup, err := copyAside(path)
-	if err != nil {
+	if err := checkAllWritable(path, hookPath); err != nil {
 		return "", false, err
 	}
 	var body []byte
@@ -544,10 +549,11 @@ func writeGrokConfig(path, block string) (string, bool, error) {
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
 	}
-	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
+	status, err := replaceFile(path, body, 0o600)
+	if err != nil {
 		return "", false, err
 	}
-	return wrote(path, backup), true, nil
+	return status, true, nil
 }
 
 func hasTelemetryTable(text string) bool {

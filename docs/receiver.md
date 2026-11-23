@@ -219,7 +219,11 @@ file unless you pass `--write`. An existing file is copied to a sibling
 ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
 the new copy gets a timestamped name). The new bytes are written to a temp
 file and renamed into place, keeping the file mode. A read-only file is
-refused and left alone. Without `--write`, the JSON agents print only the
+refused and left alone. A symlink is written through; a link to a file
+that does not exist yet creates it, but sdf creates missing directories for
+it only inside the agent's config directory or `$HOME` (a link to
+`/elsewhere/missing/config.toml` is refused). A symlink loop is refused
+with a message saying so. Without `--write`, the JSON agents print only the
 keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
@@ -259,16 +263,21 @@ BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP
 server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
-or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+or that is not a JSON object is left untouched, and so is an existing empty
+file (Qwen Code cannot load one either; put `{}` in it), and the `QWEN_TELEMETRY_*`
 variables are printed instead; with `--write` that is an error (non-zero
 exit). `telemetry.outfile`
 and per-signal `otlp*Endpoint` keys are kept and reported, because they
-override the endpoint. The write refuses a file the user cannot write. It
+override the endpoint. The write runs the same precheck as the other
+agents: it refuses a file with no write bit (0400, 0444, 0000, even as
+root), a file the user cannot write, an unwritable directory, and, as root,
+a symlink that resolves outside the settings directory and `$HOME` (for
+anyone else that link is written through with a warning). It
 goes through a temp file in the same directory (fsync, rename), keeps the
 mode and, where the process may, the owner. The rename gives the file a new
 inode, so a hard link keeps the old content and extended attributes or ACLs
 are not copied. A symlink is followed with `readlink`. It must end at a
-`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+`.json` file, compared exactly (a link to `~/.bashrc` or `Settings.JSON` is refused). A link to a file that does
 not exist yet (stow-style) creates it: inside the settings directory,
 missing parent directories are created with mode 0700; outside it, only
 when the target's directory already exists, so sdf never creates
@@ -300,8 +309,10 @@ table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_endpoint` (the HTTP receiver). `--write` appends that table to
 `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
 no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
-directory. An existing `[telemetry]` table is left unchanged; add the
-printed keys to it by hand. A project `.grok/config.toml` cannot set
+directory. Both files are checked before either is written, as for the
+other agents, so a read-only `config.toml` or an unwritable `hooks/`
+directory leaves both unchanged, with no `.sdf-bak`. An existing
+`[telemetry]` table is left unchanged; add the printed keys to it by hand. A project `.grok/config.toml` cannot set
 `otel_*`. Grok reads the environment over the file, so an
 `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also redirects Grok.
 `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, and
