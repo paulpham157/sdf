@@ -104,9 +104,18 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // qwenMerge sets the telemetry keys sdf needs and returns the new file,
 // the merged telemetry object, warnings, and whether anything changed.
-func qwenMerge(existing []byte, ep Endpoint) ([]byte, *qwenObject, []string, bool, error) {
+//
+// exists says the file is there. An existing file that is empty (or only
+// whitespace or a BOM) is refused, as every other JSON agent refuses a file
+// that is not JSON (planMerge): Qwen Code itself fails to load it
+// (JSON.parse("") throws), and an empty file may be a truncated one, which
+// sdf should not quietly replace. A missing file is created from {}.
+func qwenMerge(existing []byte, exists bool, ep Endpoint) ([]byte, *qwenObject, []string, bool, error) {
 	bom := bytes.HasPrefix(existing, utf8BOM)
 	body := bytes.TrimPrefix(existing, utf8BOM)
+	if exists && len(bytes.TrimSpace(body)) == 0 {
+		return nil, nil, nil, false, errors.New("it is empty, which Qwen Code rejects as invalid JSON; put {} in it (or delete it) and rerun")
+	}
 	root := newQwenObject()
 	indent := "  "
 	if len(bytes.TrimSpace(body)) > 0 {
@@ -246,8 +255,9 @@ func qwen(req Request) (Result, error) {
 		return Result{}, err
 	}
 	existing, err := os.ReadFile(target)
+	exists := err == nil
 	if err != nil && !os.IsNotExist(err) {
-		return Result{}, err
+		return Result{}, readErr(path, err)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Qwen Code exports traces, logs, and metrics when telemetry.enabled is true and an OTLP endpoint is set.\n")
@@ -255,7 +265,7 @@ func qwen(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Checked against qwen-code v0.28.4. Docs: https://github.com/QwenLM/qwen-code/blob/v0.28.4/docs/developers/development/telemetry.md\n")
 	fmt.Fprintf(&b, "Qwen Code always sends tool arguments (shell commands, write_file and edit content) and tool error text on qwen-code.tool_call, whatever logPrompts says; sdf discards them before storing.\n")
 	fmt.Fprintf(&b, "Overrides, highest first: CLI flags, QWEN_TELEMETRY_* and OTEL_EXPORTER_OTLP_ENDPOINT, system settings %s, a trusted workspace .qwen/settings.json, then this file.\n\n", qwenSystemSettingsPath())
-	merged, tel, warnings, changed, mergeErr := qwenMerge(existing, req.Endpoint)
+	merged, tel, warnings, changed, mergeErr := qwenMerge(existing, exists, req.Endpoint)
 	fmt.Fprintf(&b, "export %s=%s\nexport %s=%s\nexport %s=%s\nexport %s=%s\n\n",
 		qwenEnabledEnv, shQuote("true"), qwenEndpointEnv, shQuote(req.Endpoint.base()),
 		qwenProtocolEnv, shQuote("http"), qwenPromptsEnv, shQuote("false"))
@@ -286,11 +296,14 @@ func qwen(req Request) (Result, error) {
 		b.WriteString("not written (pass --write)\n")
 		return Result{Text: b.String()}, nil
 	}
-	backup, err := qwenWriteAtomic(target, merged, mkdir)
+	backup, err := qwenWriteAtomic(path, target, merged, mkdir)
 	if err != nil {
 		return Result{}, err
 	}
 	b.WriteString("wrote " + target + "\n")
+	if msg := linkEscape(path, target); msg != "" {
+		b.WriteString("warning: " + msg + "; sdf wrote through it\n")
+	}
 	if backup != "" {
 		b.WriteString("backup " + backup + "\n")
 	}
@@ -333,7 +346,9 @@ func qwenCheckLinkTarget(path, target string) (bool, error) {
 	if target == path {
 		return true, nil
 	}
-	if !strings.EqualFold(filepath.Ext(target), ".json") {
+	// The extension is compared exactly: Qwen Code reads settings.json, and
+	// sdf does not treat Settings.JSON or a .Json file as the same format.
+	if filepath.Ext(target) != ".json" {
 		return false, fmt.Errorf("%s is a symlink to %s, which is not a .json file; refusing to write settings there", path, target)
 	}
 	if _, err := os.Lstat(target); err == nil {
@@ -411,17 +426,17 @@ var qwenRename = os.Rename
 // read-only file. An existing file is copied to .sdf-bak first; a
 // different existing backup is kept and .sdf-bak.N is used. A backup made
 // by a failed write is removed.
-func qwenWriteAtomic(target string, body []byte, mkdir bool) (string, error) {
+func qwenWriteAtomic(path, target string, body []byte, mkdir bool) (string, error) {
+	// checkWritable is the precheck every other agent's write runs
+	// (replaceFile): it refuses a file with no write bit (0400, 0444, 0000;
+	// root could open those), one this user cannot open for writing, a
+	// non-regular file, an unwritable directory, and, as root, a symlink
+	// that leaves the settings directory and $HOME.
+	if err := checkWritable(path); err != nil {
+		return "", err
+	}
 	var old os.FileInfo
 	if info, err := os.Stat(target); err == nil {
-		if !info.Mode().IsRegular() {
-			return "", fmt.Errorf("%s is not a regular file", target)
-		}
-		f, err := os.OpenFile(target, os.O_WRONLY, 0)
-		if err != nil {
-			return "", fmt.Errorf("%s is not writable, refusing to replace it: %w", target, err)
-		}
-		_ = f.Close()
 		old = info
 	} else if !os.IsNotExist(err) {
 		return "", err

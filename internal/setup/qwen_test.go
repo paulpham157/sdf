@@ -201,7 +201,13 @@ func TestQwenRefusesReadOnlyTarget(t *testing.T) {
 	}
 	clearQwenEnv(t)
 	home := t.TempDir()
-	path := writeQwen(t, home, "{}\n", 0o400)
+	// Group and other may write, the owner may not: the mode-bit check
+	// passes and the write-only open refuses it. A file with no write bit
+	// (0400) is covered by TestQwenReadOnlyTargetIsRefusedForRootToo.
+	path := writeQwen(t, home, "{}\n", 0o466)
+	if err := os.Chmod(path, 0o466); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Run(qwenRequest(home, true)); err == nil || !strings.Contains(err.Error(), "not writable") {
 		t.Fatal(err)
 	}
