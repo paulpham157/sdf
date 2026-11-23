@@ -135,9 +135,39 @@ func claudeHooks(url string) map[string]string {
 
 const claudeGuard = `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; `
 
+// decisionBriefTimeout is the SessionStart hook timeout in seconds. Claude
+// Code defaults command hooks to 600s, which would stall a session if sdf
+// hung. The agent kills the hook at this budget; the command also fail-opens.
+const decisionBriefTimeout = 2
+
+// decisionBriefCommand is the SessionStart command that prints
+// `sdf decision brief` on stdout for the agent to inject. It takes no flags:
+// text is the default, and Builder's contract is that an empty brief, a
+// missing store, or any error prints nothing and exits 0. `command -v`,
+// `|| exit 0`, and the hook timeout are belt-and-braces if that contract is
+// not met yet (the subcommand is not on main).
+const decisionBriefCommand = `command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`
+
+func decisionBriefCommandFor(tool string) string {
+	if tool == "claude-code" {
+		return claudeGuard + decisionBriefCommand
+	}
+	return decisionBriefCommand
+}
+
 func hookGroup(command string) map[string]any {
 	return map[string]any{
 		"hooks": []any{map[string]any{"type": "command", "command": command}},
+	}
+}
+
+func decisionBriefGroup(command string) map[string]any {
+	return map[string]any{
+		"hooks": []any{map[string]any{
+			"type":    "command",
+			"command": command,
+			"timeout": decisionBriefTimeout,
+		}},
 	}
 }
 
@@ -150,14 +180,15 @@ func codexHooks(url string) string {
 	return fmt.Sprintf(`{
   "hooks": {
     "SessionStart": [
-      {"hooks": [{"type": "command", "command": %q}]}
+      {"hooks": [{"type": "command", "command": %q}]},
+      {"hooks": [{"type": "command", "command": %q, "timeout": %d}]}
     ],
     "SessionEnd": [
       {"hooks": [{"type": "command", "command": %q}]}
     ]
   }
 }
-`, commands["SessionStart"], commands["SessionEnd"])
+`, commands["SessionStart"], decisionBriefCommand, decisionBriefTimeout, commands["SessionEnd"])
 }
 
 // codexHookCommands is the command for each event in hooks.json, used to

@@ -92,6 +92,97 @@ func mergeEventHooks(groups []any, tool, command string) ([]any, bool) {
 	return out, changed
 }
 
+// mergeInitHooks is the Claude and Codex init merge: session-edge hooks, then
+// the SessionStart decision-brief hook. The two are recognized separately so
+// a brief command is never treated as an edge hook, and vice versa.
+func mergeInitHooks(root map[string]any, tool string, commands map[string]string) (bool, error) {
+	edge, err := mergeSessionHooks(root, tool, commands)
+	if err != nil {
+		return false, err
+	}
+	brief, err := mergeDecisionBriefHooks(root, decisionBriefCommandFor(tool))
+	if err != nil {
+		return false, err
+	}
+	return edge || brief, nil
+}
+
+// mergeDecisionBriefHooks adds sdf's decision-brief command to hooks.SessionStart
+// without touching the user's own entries or the session-edge hook. An existing
+// sdf brief hook, including an earlier command form or a missing timeout, is
+// updated in place. Further sdf copies are removed, and a group left empty by
+// that removal is dropped. When SessionStart has no brief hook, one matcher-less
+// group is appended. A second run with the same command and timeout changes
+// nothing.
+func mergeDecisionBriefHooks(root map[string]any, command string) (bool, error) {
+	raw, present := root["hooks"]
+	hooks, ok := raw.(map[string]any)
+	if present && !ok {
+		return false, fmt.Errorf("hooks is not an object (%s); it was not changed", jsonKind(raw))
+	}
+	if hooks == nil {
+		hooks = map[string]any{}
+		root["hooks"] = hooks
+	}
+	raw, present = hooks["SessionStart"]
+	groups, ok := raw.([]any)
+	if present && !ok {
+		return false, fmt.Errorf("hooks.SessionStart is not an array (%s); it was not changed", jsonKind(raw))
+	}
+	merged, changed := mergeBriefEventHooks(groups, command)
+	if changed {
+		hooks["SessionStart"] = merged
+	}
+	return changed, nil
+}
+
+func mergeBriefEventHooks(groups []any, command string) ([]any, bool) {
+	found, changed := false, false
+	out := make([]any, 0, len(groups)+1)
+	for _, g := range groups {
+		group, ok := g.(map[string]any)
+		list, listOK := group["hooks"].([]any)
+		if !ok || !listOK {
+			out = append(out, g)
+			continue
+		}
+		kept := make([]any, 0, len(list))
+		for _, h := range list {
+			hook, ok := h.(map[string]any)
+			if !ok || !isSdfDecisionBriefHook(hook) {
+				kept = append(kept, h)
+				continue
+			}
+			if found {
+				changed = true
+				continue
+			}
+			found = true
+			if hook["command"] != command {
+				hook["command"] = command
+				changed = true
+			}
+			if !jsonEqual(hook["timeout"], decisionBriefTimeout) {
+				hook["timeout"] = decisionBriefTimeout
+				changed = true
+			}
+			kept = append(kept, hook)
+		}
+		if len(kept) == 0 && len(list) > 0 {
+			continue
+		}
+		if len(kept) != len(list) {
+			group["hooks"] = kept
+		}
+		out = append(out, group)
+	}
+	if !found {
+		out = append(out, decisionBriefGroup(command))
+		changed = true
+	}
+	return out, changed
+}
+
 // jsonKind names a decoded JSON value's type for an error message.
 func jsonKind(v any) string {
 	switch v.(type) {
@@ -141,6 +232,33 @@ func isSdfSessionHook(hook map[string]any, tool string) bool {
 		}
 	}
 	return false
+}
+
+// isSdfDecisionBriefHook recognizes a command hook sdf wrote to run
+// `sdf decision brief` at SessionStart. Only the exact command text an sdf
+// build has generated matches, with or without the Claude Grok guard.
+// testdata/sdf_decision_brief_hooks.tsv holds every form; a test checks each
+// one still matches. A user's hook that merely runs `sdf decision brief`, or
+// wraps sdf's command in more shell, is never matched.
+func isSdfDecisionBriefHook(hook map[string]any) bool {
+	if t, _ := hook["type"].(string); t != "command" {
+		return false
+	}
+	command, _ := hook["command"].(string)
+	command = strings.TrimPrefix(command, claudeGuard)
+	for _, form := range sdfDecisionBriefCommands {
+		if command == form {
+			return true
+		}
+	}
+	return false
+}
+
+// sdfDecisionBriefCommands is every command text sdf has written for the
+// decision-brief SessionStart hook, without the Claude Grok guard. The guard
+// is stripped before comparison. Newest first.
+var sdfDecisionBriefCommands = []string{
+	decisionBriefCommand, // current
 }
 
 // sdfHookHead is the start of sdf's hook command for tool and edge, through
@@ -205,7 +323,7 @@ func codexHookCheck(path, url string) error {
 		return nil
 	}
 	_, _, err := planJSON(path, func(root map[string]any) (bool, error) {
-		return mergeSessionHooks(root, "codex", codexHookCommands(url))
+		return mergeInitHooks(root, "codex", codexHookCommands(url))
 	})
 	return err
 }
@@ -217,7 +335,7 @@ func codexHookFile(path, url string) (string, error) {
 		return writeBytes(path, []byte(codexHooks(url)), true)
 	}
 	return mergeJSON(path, true, func(root map[string]any) (bool, error) {
-		return mergeSessionHooks(root, "codex", codexHookCommands(url))
+		return mergeInitHooks(root, "codex", codexHookCommands(url))
 	})
 }
 
@@ -226,15 +344,15 @@ func codexHookFile(path, url string) (string, error) {
 // there): what it would change, or why it would refuse.
 func codexHookPreview(path, url string) string {
 	_, changed, err := planJSON(path, func(root map[string]any) (bool, error) {
-		return mergeSessionHooks(root, "codex", codexHookCommands(url))
+		return mergeInitHooks(root, "codex", codexHookCommands(url))
 	})
 	switch {
 	case err != nil:
 		return fmt.Sprintf("hooks: --write will not change %s: %v\n", path, err)
 	case !changed:
-		return "hooks: " + path + " already has sdf's SessionStart and SessionEnd hooks\n"
+		return "hooks: " + path + " already has sdf's SessionStart and SessionEnd hooks and the decision brief hook\n"
 	default:
 		return "hooks: --write also merges sdf's SessionStart and SessionEnd hooks into " + path +
-			" (your own hooks there are kept; an existing file is copied to a .sdf-bak sibling first)\n"
+			" (including the decision brief SessionStart hook; your own hooks there are kept; an existing file is copied to a .sdf-bak sibling first)\n"
 	}
 }

@@ -188,7 +188,7 @@ func claude(req Request) (Result, error) {
 		if err != nil {
 			return false, err
 		}
-		hooksChanged, err := mergeSessionHooks(root, "claude-code", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
+		hooksChanged, err := mergeInitHooks(root, "claude-code", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
 		if err != nil {
 			return false, err
 		}
