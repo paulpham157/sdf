@@ -274,12 +274,56 @@ func TestAuditVerifyExpectHeadUsage(t *testing.T) {
 		{"--expect-head", "sha256:XYZ"},
 		{"--expect-head", strings.TrimPrefix(head.EntryHash, "sha256:")},
 		{"--expect-head"},
-		{"--expect-head-file", filepath.Join(t.TempDir(), "absent")},
 		{"--expect-head-file", bad},
 	} {
 		full := append([]string{"audit", "verify", "--ledger", path}, args...)
 		if out := run(t, full...); out.code != 2 {
 			t.Fatalf("%v: exit %d %q %q", args, out.code, out.stdout, out.stderr)
 		}
+	}
+}
+
+func TestAuditExitsThreeWhenItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	garbage := filepath.Join(dir, "garbage.db")
+	if err := os.WriteFile(garbage, []byte(strings.Repeat("not a sqlite file ", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"audit", "verify", "--ledger", garbage},
+		{"audit", "verify", "--ledger", garbage, "--json"},
+		{"audit", "head", "--ledger", garbage},
+		{"audit", "verify", "--ledger", dir},
+	} {
+		out := run(t, args...)
+		if out.code != 3 || out.stdout != "" || out.stderr == "" {
+			t.Fatalf("%v: %d %q %q", args, out.code, out.stdout, out.stderr)
+		}
+	}
+	path, _ := seedLedger(t)
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-head-file", filepath.Join(dir, "absent"))
+	if out.code != 3 || !strings.Contains(out.stderr, "--expect-head-file") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+// When the chain is broken, the stored head proves nothing, even if it
+// equals the pinned one. The message says so instead of "expected X, actual X".
+func TestAuditVerifyExpectHeadOnABrokenChain(t *testing.T) {
+	path, head := seedLedger(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE ledger_entries SET payload = 'x' WHERE seq = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-head", head.EntryHash)
+	if out.code != 1 || !strings.Contains(out.stdout, "head not accepted: expected "+head.EntryHash+", but the chain is broken") {
+		t.Fatalf("%d %q", out.code, out.stdout)
+	}
+	if strings.Contains(out.stdout, "head mismatch") {
+		t.Fatalf("%q", out.stdout)
 	}
 }

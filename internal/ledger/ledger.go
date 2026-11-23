@@ -21,8 +21,15 @@
 // "2026-11-23T05:40:00.000000000Z". Seq 0 is a genesis entry whose
 // prev_hash is "sha256:" followed by 64 zeros. Seq is contiguous.
 //
-// Opening a ledger and reading it never writes. The file, the schema, and
-// the genesis entry are created by the first Append.
+// A kind is non-empty UTF-8 with no control characters, and the prefix
+// "sdf.ledger." is reserved for genesis. An id is any non-empty UTF-8
+// string. Append rejects anything else (ErrInvalid); Verify and Get treat a
+// stored row that breaks these rules as modified or corrupt, because the
+// JSON encoding above cannot represent invalid UTF-8 without loss.
+//
+// The file is in WAL mode. Opening a ledger and reading it never writes the
+// ledger file (SQLite may create its -wal and -shm sidecars). The file, the
+// schema, and the genesis entry are created by the first Append.
 //
 // The chain makes tampering detectable, not impossible. Anyone who can write
 // the file can rebuild the whole chain or cut its tail. Only a head hash
@@ -44,6 +51,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
@@ -98,10 +106,17 @@ var (
 	ErrConflict = errors.New("ledger: id already stored with a different hash")
 	// ErrNotFound means no entry has that (kind, id), or the ledger is empty.
 	ErrNotFound = errors.New("ledger: not found")
-	// ErrCorrupt means a stored payload no longer hashes to its chained hash.
-	// Get wraps it with the kind and id.
-	ErrCorrupt = errors.New("ledger: stored payload does not match its hash")
+	// ErrCorrupt means a stored row no longer matches its payload hash or its
+	// entry hash, or holds a field the ledger would never write. Get wraps it
+	// with the kind and id.
+	ErrCorrupt = errors.New("ledger: stored entry does not match its hash")
+	// ErrInvalid means Append was given a kind or id the ledger does not accept.
+	ErrInvalid = errors.New("ledger: invalid kind or id")
 )
+
+// ReservedKindPrefix is reserved for the ledger's own entries. Only
+// GenesisKind uses it; Append rejects any other kind that starts with it.
+const ReservedKindPrefix = "sdf.ledger."
 
 const schema = `
 CREATE TABLE IF NOT EXISTS ledger_entries (
@@ -246,15 +261,42 @@ func formatTime(t time.Time) string { return t.UTC().Format(TimeLayout) }
 // now is replaced in tests.
 var now = time.Now
 
+// kindProblem says why kind is not a valid kind, or "" when it is. A kind is
+// non-empty valid UTF-8 with no control characters (so no "\n", which would
+// let two kind/payload splits share a payload hash).
+func kindProblem(kind Kind) string {
+	switch {
+	case kind == "":
+		return "empty kind"
+	case !utf8.ValidString(string(kind)):
+		return "kind is not valid UTF-8"
+	case strings.IndexFunc(string(kind), unicode.IsControl) >= 0:
+		return "kind contains a control character"
+	}
+	return ""
+}
+
+// idProblem says why id is not a valid id, or "". An id is any non-empty
+// valid UTF-8 string.
+func idProblem(id string) string {
+	switch {
+	case id == "":
+		return "empty id"
+	case !utf8.ValidString(id):
+		return "id is not valid UTF-8"
+	}
+	return ""
+}
+
 func checkKey(kind Kind, id string) error {
-	if kind == "" {
-		return errors.New("ledger: empty kind")
+	if p := kindProblem(kind); p != "" {
+		return fmt.Errorf("%w: %s", ErrInvalid, p)
 	}
-	if id == "" {
-		return errors.New("ledger: empty id")
+	if strings.HasPrefix(string(kind), ReservedKindPrefix) {
+		return fmt.Errorf("%w: kind prefix %q is reserved", ErrInvalid, ReservedKindPrefix)
 	}
-	if !utf8.ValidString(string(kind)) || !utf8.ValidString(id) {
-		return errors.New("ledger: kind and id must be valid UTF-8")
+	if p := idProblem(id); p != "" {
+		return fmt.Errorf("%w: %s", ErrInvalid, p)
 	}
 	return nil
 }
@@ -267,9 +309,28 @@ func dsn(path, query string) string {
 	return (&url.URL{Scheme: "file", Path: p, RawQuery: query}).String()
 }
 
+// SQLite extended result codes readDB handles.
+const (
+	sqliteReadonlyRollback = 776  // SQLITE_READONLY_ROLLBACK: hot journal
+	sqliteReadonlyCantInit = 1544 // SQLITE_READONLY_CANTINIT: no -shm, cannot create one
+)
+
+func sqliteCode(err error) int {
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		return coded.Code()
+	}
+	return 0
+}
+
 // readDB returns a handle for reading, or nil when there is no file yet.
-// It opens the file read-only. Caller holds s.mu.
-func (s *Store) readDB() (*sql.DB, error) {
+//
+// It opens the file read-only (mode=ro), so a read never changes the ledger
+// file. A WAL ledger may get its -wal and -shm sidecar files created by
+// SQLite. When those cannot be created (a read-only directory) and there is
+// no -wal file, every committed entry is in the main file, and it is read
+// with immutable=1 instead. Caller holds s.mu.
+func (s *Store) readDB(ctx context.Context) (*sql.DB, error) {
 	if s.db != nil {
 		return s.db, nil
 	}
@@ -279,12 +340,37 @@ func (s *Store) readDB() (*sql.DB, error) {
 		}
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dsn(s.path, "mode=ro&_pragma=busy_timeout(5000)"))
+	db, err := openProbe(ctx, dsn(s.path, "mode=ro&_pragma=busy_timeout(5000)"))
+	if sqliteCode(err) == sqliteReadonlyCantInit {
+		if _, werr := os.Stat(s.path + "-wal"); errors.Is(werr, os.ErrNotExist) {
+			db, err = openProbe(ctx, dsn(s.path, "mode=ro&immutable=1"))
+		}
+	}
+	if err != nil {
+		if sqliteCode(err) == sqliteReadonlyRollback {
+			return nil, fmt.Errorf("ledger: %s has a hot journal from an interrupted write in the old rollback-journal mode; "+
+				"reading it would mean rolling that write back, and reads do not write. The next append rolls it back "+
+				"and switches the file to WAL: %w", s.path, err)
+		}
+		return nil, err
+	}
+	s.db = db
+	return db, nil
+}
+
+// openProbe opens dsn with one connection and reads the schema, so that an
+// unreadable file fails here and not halfway through a query.
+func openProbe(ctx context.Context, dsn string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s.db = db
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master`).Scan(&n); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
@@ -309,7 +395,11 @@ func (s *Store) writeDB() (*sql.DB, error) {
 			_ = f.Close()
 		}
 	}
-	db, err := sql.Open("sqlite", dsn(s.path, "mode=rw&_pragma=busy_timeout(5000)"))
+	// WAL: a reader never needs to roll back a hot journal, so reads stay
+	// read-only even after a writer crashed. Opening an older rollback-journal
+	// ledger here rolls back any hot journal and switches it to WAL.
+	// synchronous(FULL) keeps a committed append durable across power loss.
+	db, err := sql.Open("sqlite", dsn(s.path, "mode=rw&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"))
 	if err != nil {
 		return nil, err
 	}
@@ -333,14 +423,17 @@ type storedRow struct {
 	entry     Entry
 	payload   []byte
 	chainedAt string
+	textOK    bool // every text column holds a TEXT value
 }
 
-const selectCols = `seq, kind, id, payload, hash, prev_hash, entry_hash, chained_at`
+const selectCols = `seq, kind, id, payload, hash, prev_hash, entry_hash, chained_at,
+	(typeof(kind) = 'text' AND typeof(id) = 'text' AND typeof(hash) = 'text' AND
+	 typeof(prev_hash) = 'text' AND typeof(entry_hash) = 'text' AND typeof(chained_at) = 'text')`
 
 func scanRow(r rowScanner) (storedRow, error) {
 	var row storedRow
 	var kind string
-	if err := r.Scan(&row.entry.Seq, &kind, &row.entry.ID, &row.payload, &row.entry.Hash, &row.entry.PrevHash, &row.entry.EntryHash, &row.chainedAt); err != nil {
+	if err := r.Scan(&row.entry.Seq, &kind, &row.entry.ID, &row.payload, &row.entry.Hash, &row.entry.PrevHash, &row.entry.EntryHash, &row.chainedAt, &row.textOK); err != nil {
 		return storedRow{}, err
 	}
 	row.entry.Kind = Kind(kind)
@@ -352,6 +445,36 @@ func scanRow(r rowScanner) (storedRow, error) {
 		row.payload = []byte{}
 	}
 	return row, nil
+}
+
+// fieldProblem says why a stored row holds something Append would never
+// write, or "". The entry hash encodes strings as JSON, which cannot carry
+// invalid UTF-8, so a row whose fields are not valid UTF-8 (or a chained_at
+// that is not in TimeLayout) is rejected here rather than hashed lossily.
+func fieldProblem(row storedRow) string {
+	e := row.entry
+	switch {
+	case !row.textOK:
+		return "a text column holds a value that is not TEXT"
+	case kindProblem(e.Kind) != "":
+		return kindProblem(e.Kind)
+	case idProblem(e.ID) != "":
+		return idProblem(e.ID)
+	case e.Seq != 0 && strings.HasPrefix(string(e.Kind), ReservedKindPrefix):
+		return fmt.Sprintf("kind uses the reserved prefix %q", ReservedKindPrefix)
+	case formatTime(e.ChainedAt) != row.chainedAt:
+		return fmt.Sprintf("chained_at %q is not in the form %s", row.chainedAt, TimeLayout)
+	}
+	return ""
+}
+
+func payloadOK(row storedRow) bool {
+	return PayloadHash(row.entry.Kind, row.payload) == row.entry.Hash
+}
+
+func entryOK(row storedRow) bool {
+	e := row.entry
+	return entryHash(e.Seq, e.Kind, e.ID, e.Hash, e.PrevHash, row.chainedAt) == e.EntryHash
 }
 
 // Append implements Ledger.
@@ -412,12 +535,6 @@ func appendLocked(ctx context.Context, conn *sql.Conn, kind Kind, id string, can
 		if err != nil {
 			return Entry{}, err
 		}
-		if kind == GenesisKind && id == GenesisID {
-			if hash != head.entry.Hash {
-				return Entry{}, ErrConflict
-			}
-			return head.entry, nil
-		}
 	} else if err != nil {
 		return Entry{}, err
 	}
@@ -439,13 +556,13 @@ func insert(ctx context.Context, conn *sql.Conn, seq int64, kind Kind, id string
 	return e, nil
 }
 
-// Get implements Ledger. It recomputes the payload hash of the row it reads
-// and returns ErrCorrupt (wrapped with kind and id) on a mismatch. It does
-// not walk the chain; Verify does.
+// Get implements Ledger. It checks the row it reads: its fields, its payload
+// hash, and its entry hash. A row that fails is ErrCorrupt, wrapped with the
+// kind and id. Get does not walk the chain; Verify does.
 func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	db, err := s.readDB()
+	db, err := s.readDB(ctx)
 	if err != nil || db == nil {
 		return nil, Entry{}, errOrNotFound(err)
 	}
@@ -459,8 +576,16 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, e
 	if err != nil {
 		return nil, Entry{}, err
 	}
-	if PayloadHash(row.entry.Kind, row.payload) != row.entry.Hash {
-		return nil, Entry{}, fmt.Errorf("%w: %s %q", ErrCorrupt, kind, id)
+	problem := fieldProblem(row)
+	switch {
+	case problem != "":
+	case !payloadOK(row):
+		problem = "payload does not hash to the chained hash"
+	case !entryOK(row):
+		problem = "entry fields do not hash to entry_hash"
+	}
+	if problem != "" {
+		return nil, Entry{}, fmt.Errorf("%w: %s %q: %s", ErrCorrupt, kind, id, problem)
 	}
 	return row.payload, row.entry, nil
 }
@@ -470,7 +595,7 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, e
 func (s *Store) Head(ctx context.Context) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	db, err := s.readDB()
+	db, err := s.readDB(ctx)
 	if err != nil || db == nil {
 		return Entry{}, errOrNotFound(err)
 	}
@@ -506,6 +631,9 @@ const (
 	// ProblemReordered: an entry's prev_hash does not link to the entry
 	// before it (a row moved, was inserted, or an earlier entry was rewritten).
 	ProblemReordered Problem = "gap-reordered"
+	// ProblemDuplicate: a (kind, id) is stored twice (the unique index was
+	// dropped and a row inserted by hand).
+	ProblemDuplicate Problem = "duplicate"
 )
 
 // Failure is the first broken link Verify found.
@@ -529,13 +657,16 @@ type Report struct {
 }
 
 // Verify recomputes every payload hash and entry hash and walks the links
-// from genesis. It stops at the first failure. An absent or empty ledger is
-// OK and Empty. Verify never writes.
+// from genesis. It also checks each row's fields (valid UTF-8, no control
+// characters in kind, the reserved kind prefix, chained_at form), genesis
+// exactly, and that no (kind, id) appears twice. It stops at the first
+// failure. An absent or empty ledger is OK and Empty. Verify never writes
+// the ledger file (see readDB).
 func (s *Store) Verify(ctx context.Context) (Report, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rep := Report{Path: s.path, OK: true}
-	db, err := s.readDB()
+	db, err := s.readDB(ctx)
 	if err != nil {
 		return Report{}, err
 	}
@@ -557,6 +688,8 @@ func (s *Store) Verify(ctx context.Context) (Report, error) {
 	}
 	defer rows.Close()
 	var prev *storedRow
+	seen := map[[2]string]int64{}
+	genesisHash := PayloadHash(GenesisKind, []byte(GenesisPayload))
 	fail := func(row storedRow, p Problem, format string, args ...any) {
 		if rep.Failure != nil {
 			return
@@ -588,14 +721,24 @@ func (s *Store) Verify(ctx context.Context) (Report, error) {
 				rep.Failure.Seq = want
 				rep.Failure.Kind, rep.Failure.ID = "", ""
 			}
-		case want == 0 && (row.entry.Kind != GenesisKind || row.entry.ID != GenesisID || row.entry.PrevHash != ZeroHash):
-			fail(row, ProblemModified, "seq 0 is not the genesis entry")
-		case PayloadHash(row.entry.Kind, row.payload) != row.entry.Hash:
+		case want == 0 && (row.entry.Kind != GenesisKind || row.entry.ID != GenesisID ||
+			string(row.payload) != GenesisPayload || row.entry.Hash != genesisHash || row.entry.PrevHash != ZeroHash):
+			fail(row, ProblemModified, "seq 0 is not the genesis entry (kind %s, id %q, payload %s, prev_hash %s)", GenesisKind, GenesisID, GenesisPayload, ZeroHash)
+		case fieldProblem(row) != "":
+			fail(row, ProblemModified, "%s", fieldProblem(row))
+		case !payloadOK(row):
 			fail(row, ProblemModified, "payload does not hash to the chained hash %s", row.entry.Hash)
 		case prev != nil && row.entry.PrevHash != prev.entry.EntryHash:
 			fail(row, ProblemReordered, "prev_hash does not match the entry_hash of seq %d (a row was moved or inserted, or an earlier entry was rewritten)", prev.entry.Seq)
-		case entryHash(row.entry.Seq, row.entry.Kind, row.entry.ID, row.entry.Hash, row.entry.PrevHash, row.chainedAt) != row.entry.EntryHash:
+		case !entryOK(row):
 			fail(row, ProblemModified, "entry fields do not hash to entry_hash %s", row.entry.EntryHash)
+		default:
+			key := [2]string{string(row.entry.Kind), row.entry.ID}
+			if first, dup := seen[key]; dup {
+				fail(row, ProblemDuplicate, "(kind, id) is already stored at seq %d", first)
+			} else {
+				seen[key] = row.entry.Seq
+			}
 		}
 		r := row
 		prev = &r

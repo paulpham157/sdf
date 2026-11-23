@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,16 @@ import (
 
 	"github.com/paulpham157/sdf/internal/ledger"
 )
+
+// Exit codes of sdf audit: 0 intact, 1 broken or a failed check, 2 usage,
+// 3 the ledger or an --expect-head-file could not be opened or read.
+const exitIO = 3
+
+// ioError marks an error reading an input file (exit 3, not 2).
+type ioError struct{ err error }
+
+func (e *ioError) Error() string { return e.err.Error() }
+func (e *ioError) Unwrap() error { return e.err }
 
 const auditUsage = "usage: sdf audit <verify|head> [--ledger PATH] [--json]; see sdf audit verify --help"
 
@@ -67,7 +78,7 @@ func parseAuditFlags(name, usage string, args []string, stdout, stderr io.Writer
 		p, err := ledger.DefaultPath()
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", name, err)
-			return "", false, 1, true
+			return "", false, exitIO, true
 		}
 		path = p
 	}
@@ -139,7 +150,7 @@ var entryHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 func readExpectedHead(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", &ioError{err}
 	}
 	text := strings.TrimSpace(string(data))
 	var doc struct {
@@ -217,6 +228,10 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		v, err := readExpectedHead(expectFile)
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: --expect-head-file: %v\n", name, err)
+			var ioErr *ioError
+			if errors.As(err, &ioErr) {
+				return exitIO
+			}
 			return 2
 		}
 		expect = v
@@ -229,13 +244,13 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		p, err := ledger.DefaultPath()
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", name, err)
-			return 1
+			return exitIO
 		}
 		path = p
 	}
 	rep, ok := verifyLedger(name, path, stderr)
 	if !ok {
-		return 1
+		return exitIO
 	}
 
 	ok = rep.OK
@@ -290,14 +305,15 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		if headMatch != nil {
-			shown := actual
-			if shown == "" {
-				shown = "none"
-			}
-			if *headMatch {
+			switch {
+			case *headMatch:
 				fmt.Fprintf(stdout, "head matches expected %s\n", expect)
-			} else {
-				fmt.Fprintf(stdout, "head mismatch: expected %s, actual %s (entries were removed, rewritten, or appended since the head was pinned)\n", expect, shown)
+			case !rep.OK:
+				fmt.Fprintf(stdout, "head not accepted: expected %s, but the chain is broken, so the stored head %s proves nothing\n", expect, actual)
+			case actual == "":
+				fmt.Fprintf(stdout, "head mismatch: expected %s, actual none (the ledger is empty)\n", expect)
+			default:
+				fmt.Fprintf(stdout, "head mismatch: expected %s, actual %s (entries were removed, rewritten, or appended since the head was pinned)\n", expect, actual)
 			}
 		}
 	}
@@ -315,7 +331,7 @@ func cmdAuditHead(args []string, stdout, stderr io.Writer) int {
 	}
 	rep, ok := verifyLedger(name, path, stderr)
 	if !ok {
-		return 1
+		return exitIO
 	}
 	if !rep.OK {
 		fmt.Fprintf(stderr, "%s: ledger broken, no head printed: %s (run sdf audit verify)\n", name, describeFailure(rep.Failure))
