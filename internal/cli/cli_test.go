@@ -141,7 +141,7 @@ func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
 
 func TestServeHelpMentionsTheLocalUI(t *testing.T) {
 	out := run(t, "serve", "--help")
-	if out.code != 0 || !strings.Contains(out.stdout, "--no-ui") || !strings.Contains(out.stdout, "127.0.0.1:4320") || !strings.Contains(out.stdout, "--host does not change it") {
+	if out.code != 0 || !strings.Contains(out.stdout, "--no-ui") || !strings.Contains(out.stdout, "127.0.0.1:4320") || !strings.Contains(out.stdout, "--host does not change it") || !strings.Contains(out.stdout, "--otlp-token") || !strings.Contains(out.stdout, "--otlp-token-file") || !strings.Contains(out.stdout, "SDF_OTLP_TOKEN") || !strings.Contains(out.stdout, "SDF_OTLP_TOKEN_FILE") {
 		t.Fatalf("%d %s", out.code, out.stdout)
 	}
 	bad := run(t, "serve", "--ui-addr")
@@ -152,6 +152,171 @@ func TestServeHelpMentionsTheLocalUI(t *testing.T) {
 	if worse.code != 2 {
 		t.Fatalf("%d %s", worse.code, worse.stderr)
 	}
+	missing := run(t, "serve", "--otlp-token")
+	if missing.code != 2 || !strings.Contains(missing.stderr, "--otlp-token") {
+		t.Fatalf("%d %s", missing.code, missing.stderr)
+	}
+	missingFile := run(t, "serve", "--otlp-token-file")
+	if missingFile.code != 2 || !strings.Contains(missingFile.stderr, "--otlp-token-file") {
+		t.Fatalf("%d %s", missingFile.code, missingFile.stderr)
+	}
+	both := run(t, "serve", "--otlp-token", "test-otlp-token", "--otlp-token-file", "token.txt")
+	if both.code != 2 || !strings.Contains(both.stderr, "mutually exclusive") || strings.Contains(both.stderr, "test-otlp-token") {
+		t.Fatalf("%d %s", both.code, both.stderr)
+	}
+	emptyPath := filepath.Join(t.TempDir(), "empty-otlp-token")
+	if err := os.WriteFile(emptyPath, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := run(t, "serve", "--no-ui", "--otlp-token-file", emptyPath, "--db", filepath.Join(t.TempDir(), "telemetry.sqlite"), "--port", "0", "--grpc-port", "0")
+	if empty.code != 1 || !strings.Contains(empty.stderr, "empty") || !strings.Contains(empty.stderr, emptyPath) {
+		t.Fatalf("%d %s", empty.code, empty.stderr)
+	}
+	missingPath := filepath.Join(t.TempDir(), "missing-otlp-token")
+	absent := run(t, "serve", "--no-ui", "--otlp-token-file", missingPath, "--db", filepath.Join(t.TempDir(), "telemetry.sqlite"), "--port", "0", "--grpc-port", "0")
+	if absent.code != 1 || !strings.Contains(absent.stderr, "could not read") || !strings.Contains(absent.stderr, missingPath) {
+		t.Fatalf("%d %s", absent.code, absent.stderr)
+	}
+}
+
+func TestServeOTLPTokenFromFlagAndEnv(t *testing.T) {
+	token := "test-otlp-token"
+	payload := []byte(`{"resourceSpans":[]}`)
+
+	t.Run("flag", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", "")
+		t.Setenv("SDF_OTLP_TOKEN_FILE", "")
+		base, done := startServeOTLP(t, token, "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+	})
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", token)
+		t.Setenv("SDF_OTLP_TOKEN_FILE", "")
+		base, done := startServeOTLP(t, "", "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+	})
+	t.Run("flag overrides env", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", "env-otlp-token")
+		t.Setenv("SDF_OTLP_TOKEN_FILE", "")
+		base, done := startServeOTLP(t, token, "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+		// The env value must not be accepted once the flag is set.
+		resp := postOTLP(t, base+"/v1/traces", "Bearer env-otlp-token", payload)
+		if resp.statusCode != 401 {
+			t.Fatalf("env token after flag: %d %s", resp.statusCode, resp.body)
+		}
+	})
+	t.Run("file flag", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", "")
+		t.Setenv("SDF_OTLP_TOKEN_FILE", "")
+		path := filepath.Join(t.TempDir(), "otlp-token")
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		base, done := startServeOTLP(t, "", path)
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+	})
+	t.Run("env file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "otlp-token")
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SDF_OTLP_TOKEN", "")
+		t.Setenv("SDF_OTLP_TOKEN_FILE", path)
+		base, done := startServeOTLP(t, "", "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+	})
+	t.Run("file flag beats env token", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "otlp-token")
+		if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("SDF_OTLP_TOKEN", "env-otlp-token")
+		t.Setenv("SDF_OTLP_TOKEN_FILE", "")
+		base, done := startServeOTLP(t, "", path)
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+		resp := postOTLP(t, base+"/v1/traces", "Bearer env-otlp-token", payload)
+		if resp.statusCode != 401 {
+			t.Fatalf("env token after file flag: %d %s", resp.statusCode, resp.body)
+		}
+	})
+}
+
+type otlpResp struct {
+	statusCode int
+	body       string
+}
+
+func startServeOTLP(t *testing.T, flagToken, tokenFile string) (string, <-chan int) {
+	t.Helper()
+	httpAddr := freeLoopback(t)
+	grpcAddr := freeLoopback(t)
+	_, httpPort, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, grpcPort, err := net.SplitHostPort(grpcAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	args := []string{"serve", "--no-ui", "--db", dbPath, "--port", httpPort, "--grpc-port", grpcPort}
+	if flagToken != "" {
+		args = append(args, "--otlp-token", flagToken)
+	}
+	if tokenFile != "" {
+		args = append(args, "--otlp-token-file", tokenFile)
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Main(args)
+	}()
+	select {
+	case code := <-done:
+		t.Fatalf("serve exited %d before /health", code)
+	case <-time.After(200 * time.Millisecond):
+	}
+	base := "http://" + httpAddr
+	waitForListener(t, base+"/health")
+	return base, done
+}
+
+func assertOTLPAuth(t *testing.T, base, token string) {
+	t.Helper()
+	payload := []byte(`{"resourceSpans":[]}`)
+	missing := postOTLP(t, base+"/v1/traces", "", payload)
+	if missing.statusCode != 401 || missing.body != "unauthorized" {
+		t.Fatalf("missing %+v", missing)
+	}
+	ok := postOTLP(t, base+"/v1/traces", "Bearer "+token, payload)
+	if ok.statusCode != 200 {
+		t.Fatalf("correct %+v", ok)
+	}
+}
+
+func postOTLP(t *testing.T, url, authorization string, body []byte) otlpResp {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	return otlpResp{resp.StatusCode, string(got)}
 }
 
 func TestUISummaryMatchesTheSummaryCommandOnSamples(t *testing.T) {
@@ -579,6 +744,61 @@ func copyCase(t *testing.T, from, to, name string) {
 	}
 	if err := os.WriteFile(filepath.Join(to, name), body, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestVersionMatchesTheSnapshotForm(t *testing.T) {
+	want := "sdf " + cli.Version() + "\n"
+	out := run(t, "version")
+	flag := run(t, "--version")
+	short := run(t, "-v")
+	if out.code != 0 || !strings.HasPrefix(out.stdout, want) || flag.stdout != out.stdout || short.stdout != out.stdout {
+		t.Fatalf("want %q\nversion %d %q\nflag %d %q\nshort %d %q", want, out.code, out.stdout, flag.code, flag.stdout, short.code, short.stdout)
+	}
+	line := strings.TrimSuffix(strings.TrimPrefix(want, "sdf "), "\n")
+	if line == "" {
+		t.Fatal(want)
+	}
+	for _, field := range []string{"\ncommit: ", "\nbuilt: ", "\ngo: go1.", "\nplatform: "} {
+		if !strings.Contains(out.stdout, field) {
+			t.Fatalf("missing %q in %q", field, out.stdout)
+		}
+	}
+	help := run(t, "version", "--help")
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf version") || !strings.Contains(help.stdout, "sdf --version") {
+		t.Fatalf("%d %s", help.code, help.stdout)
+	}
+	top := run(t, "--help")
+	if top.code != 0 || !strings.Contains(top.stdout, "version") || !strings.Contains(top.stdout, "decision") {
+		t.Fatalf("%d %s", top.code, top.stdout)
+	}
+	bad := run(t, "version", "--db")
+	if bad.code != 2 || !strings.Contains(bad.stderr, "unrecognized") {
+		t.Fatalf("%d %s", bad.code, bad.stderr)
+	}
+}
+
+func TestCheckWithNoArgumentsUsesTheCommittedCases(t *testing.T) {
+	out := run(t, "check")
+	if out.code != 0 || !strings.Contains(out.stdout, "priced-session pass") || strings.Contains(out.stdout, " fail ") {
+		t.Fatalf("%d\n%s%s", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestInitGrokPrintsTheExternalOTELSwitch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", filepath.Join(home, "grok-home"))
+	out := run(t, "init", "grok")
+	if out.code != 0 || !strings.Contains(out.stdout, "GROK_EXTERNAL_OTEL=1") || !strings.Contains(out.stdout, "otel_endpoint") || !strings.Contains(out.stdout, "not written") {
+		t.Fatalf("%d %s %s", out.code, out.stdout, out.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, "grok-home")); !os.IsNotExist(err) {
+		t.Fatal("grok config was written")
+	}
+	help := run(t, "init", "--help")
+	if help.code != 0 || !strings.Contains(help.stdout, "grok") {
+		t.Fatalf("%d %s", help.code, help.stdout)
 	}
 }
 

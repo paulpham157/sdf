@@ -362,7 +362,7 @@ func TestChunkedBodies(t *testing.T) {
 	}
 	in, _ := oc.Tokens.Get("input_tokens")
 	out, _ := oc.Tokens.Get("output_tokens")
-	if in != 5822 || out != 306 || oc.Logs != 0 {
+	if in != 5601+5822 || out != 306 || oc.Logs != 0 {
 		t.Fatalf("opencode tokens %v logs %d", oc.Tokens, oc.Logs)
 	}
 	pi := sessions["2026-01-01T00-00-00-000Z_sample-pi-session"]

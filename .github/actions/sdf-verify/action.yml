@@ -1,0 +1,110 @@
+# sdf verify as a composite action. See docs/action.md for the threat model.
+#
+# Use it from a workflow triggered by plain `pull_request`, with
+# `permissions: contents: read` and no secrets. Reference it pinned to a full
+# commit of paulpham157/sdf (or, in sdf's own repository, from a checkout of
+# the pull request's base). The verifier is built from this action's own
+# source, never from the pull request.
+name: sdf verify
+description: Run a declared sdf task's checks against the pull request head, and fail unless the verdict is PASS.
+
+inputs:
+  task:
+    description: Task id. Empty means read it from a `sdf-task:<id>` label (see task-source).
+    required: false
+    default: ""
+  task-source:
+    description: Where an empty `task` comes from. `label` (default), `trailer` (an `SDF-Task:` trailer on the head commit, which the pull request author controls), or `label-or-trailer`.
+    required: false
+    default: label
+  labels:
+    description: JSON array of the pull request's label names.
+    required: false
+    default: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+  sha:
+    description: Commit to verify. Defaults to the pull request head, not the merge commit.
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  base-ref:
+    description: Protected branch the task file is read from, as `.sdf/tasks/<id>.json`.
+    required: false
+    default: ${{ github.base_ref }}
+  repository:
+    description: Repository holding the commit.
+    required: false
+    default: ${{ github.repository }}
+  path:
+    description: Where to check the commit out, under the workspace.
+    required: false
+    default: sdf-subject
+  artifact-name:
+    description: Name of the uploaded verdict artifact. Empty skips the upload.
+    required: false
+    default: sdf-verdict
+
+outputs:
+  status:
+    description: PASS, FAIL, or ERROR.
+    value: ${{ steps.verify.outputs.status }}
+  task:
+    description: The task id that was verified.
+    value: ${{ steps.verify.outputs.task }}
+  verdict-hash:
+    description: Hash of the sdf.verdict/v1 record.
+    value: ${{ steps.verify.outputs.verdict-hash }}
+
+runs:
+  using: composite
+  steps:
+    # Go for building the verifier, from the verifier's own go.mod. No cache:
+    # nothing the pull request runs later can seed what this build reads.
+    - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+      with:
+        go-version-file: ${{ github.action_path }}/../../../go.mod
+        cache: false
+
+    # Build before any pull request code is on disk.
+    - id: build
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/build.sh"'
+
+    # Full history, so the base branch is there as origin/<base-ref>.
+    # persist-credentials: false keeps the token out of .git/config, where
+    # the checks (pull request code) could read it.
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.sha }}
+        path: ${{ inputs.path }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - id: verify
+      shell: bash
+      env:
+        SDF_BIN: ${{ steps.build.outputs.sdf }}
+        SDF_TASK: ${{ inputs.task }}
+        SDF_TASK_SOURCE: ${{ inputs.task-source }}
+        SDF_LABELS: ${{ inputs.labels }}
+        SDF_SHA: ${{ inputs.sha }}
+        SDF_BASE_REF: ${{ inputs.base-ref }}
+        SDF_REPO: ${{ github.workspace }}/${{ inputs.path }}
+      run: '"$GITHUB_ACTION_PATH/verify.sh"'
+
+    - if: always() && inputs.artifact-name != '' && steps.verify.outputs.out-dir != ''
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.verify.outputs.out-dir }}
+        if-no-files-found: warn
+
+    # Fail closed: anything but PASS, including no verdict at all, fails.
+    - if: always()
+      shell: bash
+      env:
+        STATUS: ${{ steps.verify.outputs.status }}
+      run: |
+        if [ "$STATUS" != "PASS" ]; then
+          echo "::error title=sdf verify::verdict ${STATUS:-missing}"
+          exit 1
+        fi

@@ -88,6 +88,35 @@ func TestNilCatalogLeavesAPricedCaseUnchecked(t *testing.T) {
 	}
 }
 
+func TestTrimmedModulePathLoadsEmbeddedCases(t *testing.T) {
+	trimmed := "github.com/paulpham157/sdf/internal/check/check.go"
+	if _, err := os.Stat(filepath.Join(filepath.Dir(trimmed), "testdata", "cases")); err == nil {
+		t.Fatal("trimmed module path exists on disk; this would not catch the -trimpath failure")
+	}
+	cases, err := loadDefaultAt(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disk, err := Load(filepath.Join("testdata", "cases"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != len(disk) || len(cases) < 4 {
+		t.Fatalf("embedded %d disk %d", len(cases), len(disk))
+	}
+	report := Run(cases)
+	if report.Failed != 0 {
+		t.Fatal(Format(report))
+	}
+	got := map[string]string{}
+	for _, result := range report.Results {
+		got[result.ID] = result.Status
+	}
+	if got["priced-session"] != Pass || got["unknown-price"] != NotChecked {
+		t.Fatalf("%v", got)
+	}
+}
+
 func TestLoadRejectsACaseWithTwoInputs(t *testing.T) {
 	dir := t.TempDir()
 	body := `{
@@ -131,4 +160,23 @@ func mustLoad(t *testing.T, name string) Case {
 	}
 	t.Fatalf("missing %s", name)
 	return Case{}
+}
+
+func TestEmbeddedCasesMatchTheCommittedFiles(t *testing.T) {
+	fromDisk, err := Load(filepath.Join("testdata", "cases"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedded, err := LoadEmbedded()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embedded) != len(fromDisk) {
+		t.Fatalf("embedded %d, on disk %d", len(embedded), len(fromDisk))
+	}
+	for i := range fromDisk {
+		if embedded[i].ID != fromDisk[i].ID || embedded[i].Field != fromDisk[i].Field {
+			t.Fatalf("case %d: embedded %s, on disk %s", i, embedded[i].ID, fromDisk[i].ID)
+		}
+	}
 }

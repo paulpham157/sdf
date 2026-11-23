@@ -1,0 +1,378 @@
+package verify
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/paulpham157/sdf/internal/ledger/ledgertest"
+	"github.com/paulpham157/sdf/internal/task"
+)
+
+func mustRun(t *testing.T, opt Options) Result {
+	t.Helper()
+	res, err := Run(context.Background(), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestPassRecordsEvidenceAndVerdictInTheLedger(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	work := t.TempDir()
+	opt := f.opts(sha)
+	opt.WorkDir = work
+	res := mustRun(t, opt)
+	if res.Status != StatusPass || len(res.Reasons) != 0 {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	if got := kinds(res); got != "task_snapshot checkout revision_identity designated_integrity secret_scan criterion:unit" {
+		t.Fatalf("evidence %q", got)
+	}
+	v := res.Verdict.Value
+	if v["task_hash"] != f.hash || v["submitted_sha"] != sha || v["base_sha"] != f.base || v["tree"] != g(t, f.repo, "rev-parse", sha+"^{tree}") {
+		t.Fatalf("verdict %v", v)
+	}
+	if len(v["task_sources"].([]any)) != 3 {
+		t.Fatalf("sources %v", v["task_sources"])
+	}
+	crit := res.Evidence[len(res.Evidence)-1].Value
+	if crit["exit_code"] != int64(0) || crit["timed_out"] != false || !strings.HasPrefix(crit["stdout_sha256"].(string), "sha256:") {
+		t.Fatalf("criterion %v", crit)
+	}
+	// Ledger: task, then genesis-chained evidence, then the verdict.
+	b, e, err := f.ledger.Get(context.Background(), task.KindVerdict, res.Verdict.ID)
+	if err != nil || string(b) != string(res.Verdict.Canonical) || e.Hash != res.Verdict.Hash {
+		t.Fatalf("ledger verdict %v", err)
+	}
+	if n := ledgertest.Entries(t, f.ledger); n != 1+1+len(res.Evidence)+1 {
+		t.Fatalf("%d ledger entries", n)
+	}
+	// The temporary checkout is gone and was not in the repository.
+	if left, _ := os.ReadDir(work); len(left) != 0 {
+		t.Fatalf("left behind: %v", left)
+	}
+}
+
+func TestUnreferencedCommitIsFetchedAndVerified(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	g(t, f.repo, "reset", "-q", "--hard", f.base) // sha is now on no branch
+	if res := mustRun(t, f.opts(sha)); res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestFailClosedCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, f *fixture) Options
+		code  string
+		ran   bool // whether the criterion ran
+	}{
+		{"check fails", func(t *testing.T, f *fixture) Options {
+			return f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "still todo\n"}))
+		}, CodeCheckFailed, true},
+		{"designated test edited", func(t *testing.T, f *fixture) Options {
+			return f.opts(f.agentCommit(t, map[string]string{"tests/run.sh": "#!/bin/sh\nexit 0\n"}))
+		}, CodeDesignatedFileModified, false},
+		{"designated test deleted", func(t *testing.T, f *fixture) Options {
+			return f.opts(f.agentCommit(t, map[string]string{"tests/run.sh": "\x00delete", "src/feature.txt": "done\n"}))
+		}, CodeDesignatedFileModified, false},
+		{"designated glob gains a file", func(t *testing.T, f *fixture) Options {
+			return f.opts(f.agentCommit(t, map[string]string{"tests/zz.sh": "exit 0\n", "src/feature.txt": "done\n"}))
+		}, CodeDesignatedFileAdded, false},
+		{"secret in diff", func(t *testing.T, f *fixture) Options {
+			key := "AKIA" + strings.Repeat("Q7", 8)
+			return f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "src/conf.txt": "id=" + key + "\n"}))
+		}, CodeSecretInDiff, false},
+		{"task file rewritten in the submission", func(t *testing.T, f *fixture) Options {
+			other, err := task.Build(context.Background(), f.repo, task.Input{ID: "feat", Title: "Feature", Base: f.base,
+				Criteria: []task.CriterionInput{{Name: "unit", Argv: []string{"true"}, Designated: []string{"tests/*.sh"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, _, _ := other.Hash()
+			return f.opts(f.agentCommit(t, map[string]string{".sdf/tasks/feat.json": string(c) + "\n", "src/feature.txt": "done\n"}))
+		}, CodeTaskFileModified, false},
+		{"no trusted task", func(t *testing.T, f *fixture) Options {
+			o := f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"}))
+			o.TaskRef, o.DataDir, o.Ledger = f.base, "", nil
+			return o
+		}, CodeTaskSnapshotMissing, false},
+		{"trusted copies disagree", func(t *testing.T, f *fixture) Options {
+			o := f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"}))
+			other, err := task.Build(context.Background(), f.repo, task.Input{ID: "feat", Title: "Other", Base: f.base,
+				Criteria: []task.CriterionInput{{Name: "unit", Argv: []string{"true"}, Designated: []string{"tests/*.sh"}}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			o.DataDir, o.Ledger = t.TempDir(), nil
+			if _, err := task.Declare(context.Background(), other, task.Store{DataDir: o.DataDir}); err != nil {
+				t.Fatal(err)
+			}
+			return o
+		}, CodeTaskHashMismatch, false},
+		{"working-tree task file is not trusted", func(t *testing.T, f *fixture) Options {
+			o := f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"}))
+			o.TaskRef, o.DataDir, o.Ledger = "", "", nil
+			write(t, f.repo, map[string]string{".sdf/tasks/feat.json": "anything"})
+			return o
+		}, CodeTaskSnapshotMissing, false},
+		{"base not an ancestor", func(t *testing.T, f *fixture) Options {
+			g(t, f.repo, "checkout", "-q", "-b", "elsewhere", f.root)
+			return f.opts(f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "tests/run.sh": featureTest}))
+		}, CodeBaseNotAncestor, false},
+		{"unknown revision", func(t *testing.T, f *fixture) Options {
+			return f.opts(strings.Repeat("ab", 20))
+		}, CodeRevisionUnresolvable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			res := mustRun(t, tc.setup(t, f))
+			if res.Status != StatusFail || !hasCode(res, tc.code) {
+				t.Fatalf("%s %+v", res.Status, res.Reasons)
+			}
+			ran := strings.Contains(kinds(res), "criterion:")
+			if ran != tc.ran {
+				t.Fatalf("criterion ran=%t, evidence %s", ran, kinds(res))
+			}
+			if res.Verdict.Value["status"] != StatusFail {
+				t.Fatal("verdict record status")
+			}
+		})
+	}
+}
+
+func TestSecretIsNotCopiedIntoEvidence(t *testing.T) {
+	f := newFixture(t)
+	key := "ghp_" + strings.Repeat("a1B2", 9)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "src/x.go": "package x\n\nvar k = \"" + key + "\"\n"})
+	res := mustRun(t, f.opts(sha))
+	if !hasCode(res, CodeSecretInDiff) {
+		t.Fatalf("%+v", res.Reasons)
+	}
+	for _, r := range append(res.Evidence, res.Verdict) {
+		if strings.Contains(string(r.Canonical), key) {
+			t.Fatalf("%s holds the secret", r.ID)
+		}
+	}
+	for _, r := range res.Reasons {
+		if r.Code == CodeSecretInDiff && r.Detail != "src/x.go:3 (github-token)" {
+			t.Fatalf("detail %q", r.Detail)
+		}
+	}
+}
+
+func TestCriterionTimeoutAndCheckoutChanges(t *testing.T) {
+	f := newFixture(t,
+		task.CriterionInput{Name: "slow", Argv: []string{"sh", "-c", "sleep 30; true"}, TimeoutS: 1, Designated: []string{"tests/*.sh"}},
+		task.CriterionInput{Name: "writer", Argv: []string{"sh", "-c", "echo x >> README"}, Designated: []string{"tests/*.sh"}},
+	)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusFail || !hasCode(res, CodeCheckTimeout) || !hasCode(res, CodeCheckoutModified) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	for _, e := range res.Evidence {
+		if e.Value["name"] == "slow" {
+			if d := e.Value["duration_ms"].(int64); d > 15000 {
+				t.Fatalf("timeout took %dms", d)
+			}
+		}
+	}
+}
+
+func TestMissingCommandIsError(t *testing.T) {
+	f := newFixture(t, task.CriterionInput{Name: "unit", Argv: []string{"sdf-no-such-command-xyz"}, Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusError || !hasCode(res, CodeCheckError) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestUsageAndLedgerConflict(t *testing.T) {
+	f := newFixture(t)
+	if _, err := Run(context.Background(), Options{RepoDir: f.repo, SHA: "abc123", TaskID: "feat"}); !errors.Is(err, ErrUsage) {
+		t.Fatalf("short sha: %v", err)
+	}
+	if _, err := Run(context.Background(), Options{RepoDir: f.repo, SHA: f.base, TaskID: "../x"}); !errors.Is(err, ErrUsage) {
+		t.Fatalf("bad id: %v", err)
+	}
+	// The work dir has to be outside the repository.
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	o := f.opts(sha)
+	o.WorkDir = filepath.Join(f.repo, "tmp")
+	if err := os.MkdirAll(o.WorkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res := mustRun(t, o)
+	if res.Status != StatusError || !hasCode(res, CodeInfraError) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestRevisionMismatchForATagObject(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	g(t, f.repo, "tag", "-a", "-m", "release", "v1", sha)
+	tagObj := g(t, f.repo, "rev-parse", "v1")
+	if tagObj == sha {
+		t.Fatal("tag is not an object of its own")
+	}
+	// A tag id is a full object id, and it peels to the commit, but it is
+	// not the commit: the verdict must not be bound to a different id.
+	res := mustRun(t, f.opts(tagObj))
+	if res.Status != StatusFail || !hasCode(res, CodeRevisionMismatch) || strings.Contains(kinds(res), "criterion:") {
+		t.Fatalf("%s %+v %s", res.Status, res.Reasons, kinds(res))
+	}
+}
+
+func TestBaseMismatchWhenTheTaskTreeIsWrong(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	forged := f.spec
+	forged.BaseTree = strings.Repeat("0", 40)
+	data := t.TempDir()
+	if _, err := task.Declare(context.Background(), forged, task.Store{DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	o := f.opts(sha)
+	o.TaskRef, o.DataDir, o.Ledger = "", data, nil
+	res := mustRun(t, o)
+	if res.Status != StatusFail || !hasCode(res, CodeBaseMismatch) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestCheckoutDirtyWhenSomethingWritesTheCheckout(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	afterCheckout = func(dir string) {
+		_ = os.WriteFile(filepath.Join(dir, "planted.txt"), []byte("x"), 0o644)
+	}
+	defer func() { afterCheckout = nil }()
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusFail || !hasCode(res, CodeCheckoutDirty) || strings.Contains(kinds(res), "criterion:") {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestPathIsExplicitAndNeverTheCheckout(t *testing.T) {
+	f := newFixture(t, task.CriterionInput{Name: "unit", Argv: []string{"mytool"}, Designated: []string{"tests/*.sh"}})
+	f.agentCommit(t, map[string]string{"src/feature.txt": "done\n", "mytool": "#!/bin/sh\nexit 0\n"})
+	g(t, f.repo, "update-index", "--chmod=+x", "mytool")
+	sha := commit(t, f.repo, nil, "exec")
+
+	// "." in PATH would find ./mytool in the checkout; it is dropped.
+	o := f.opts(sha)
+	o.Path = "."
+	res := mustRun(t, o)
+	if res.Status != StatusError || !hasCode(res, CodeCheckError) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "mytool"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o.Path = bin + string(os.PathListSeparator) + "relative/dir"
+	res = mustRun(t, o)
+	if res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	crit := res.Evidence[len(res.Evidence)-1].Value
+	if crit["command"] != filepath.Join(bin, "mytool") || crit["path"] != bin || crit["cwd"] != "." {
+		t.Fatalf("%v %v %v", crit["command"], crit["path"], crit["cwd"])
+	}
+}
+
+func TestBaseRecheckOfDesignatedFiles(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	forged := f.spec
+	forged.DesignatedFiles = append([]task.DesignatedFile(nil), f.spec.DesignatedFiles...)
+	forged.DesignatedFiles[0].GitBlob = strings.Repeat("1", 40)
+	data := t.TempDir()
+	if _, err := task.Declare(context.Background(), forged, task.Store{DataDir: data}); err != nil {
+		t.Fatal(err)
+	}
+	o := f.opts(sha)
+	o.TaskRef, o.DataDir, o.Ledger = "", data, nil
+	res := mustRun(t, o)
+	if res.Status != StatusFail || !hasCode(res, CodeBaseMismatch) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestDesignatedFileIsNotFollowedThroughASymlink(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	outside := filepath.Join(t.TempDir(), "run.sh")
+	if err := os.WriteFile(outside, []byte(featureTest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Same bytes as the pinned file, but reached through a link: refused.
+	afterCheckout = func(dir string) {
+		p := filepath.Join(dir, "tests", "run.sh")
+		_ = os.Remove(p)
+		_ = os.Symlink(outside, p)
+	}
+	defer func() { afterCheckout = nil }()
+	res := mustRun(t, f.opts(sha))
+	if res.Status != StatusFail || !hasCode(res, CodeDesignatedFileModified) {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestRepoMayBeASubdirectory(t *testing.T) {
+	f := newFixture(t)
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	o := f.opts(sha)
+	o.RepoDir = filepath.Join(f.repo, "src")
+	if res := mustRun(t, o); res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestBackgroundProcessesDieWithTheCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups")
+	}
+	marker := filepath.Join(t.TempDir(), "late")
+	f := newFixture(t, task.CriterionInput{Name: "bg", Argv: []string{"sh", "-c", "(sleep 1; touch " + marker + ") & exit 0"}, Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	if res := mustRun(t, f.opts(sha)); res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a background process outlived its check")
+	}
+}
+
+func TestRecordIDsFitTheLedgerRule(t *testing.T) {
+	long := strings.Repeat("c", 128)
+	f := newFixture(t, task.CriterionInput{Name: long, Argv: []string{"sh", "tests/run.sh"}, Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	res := mustRun(t, f.opts(sha)) // the ledger refuses an invalid id
+	if res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	for _, r := range append(res.Evidence, res.Verdict) {
+		if !task.ValidID(r.ID) {
+			t.Fatalf("id %q", r.ID)
+		}
+	}
+	if res.Evidence[len(res.Evidence)-1].Value["name"] != long {
+		t.Fatal("criterion name not in the record")
+	}
+}

@@ -73,7 +73,8 @@ func TestOpenCodeComputedCostUsesTheReducedTokenTotals(t *testing.T) {
 			input = item.Tokens
 		}
 	}
-	if input != "62" {
+	// Per-request sums (issue #200): 11423 input - 6016 cache read.
+	if input != "5407" {
 		t.Fatalf("input tokens %s components %+v", input, session.ComputedCost.Components)
 	}
 }

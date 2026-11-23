@@ -10,6 +10,8 @@
   --green-soft: #e4f2eb;
   --amber: #8a4b08;
   --amber-soft: #f8ecd8;
+  --error: #8f2d1f;
+  --error-soft: #f8e4de;
   --shadow: 0 1px 0 rgba(29, 26, 21, 0.04);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -365,10 +367,15 @@ footer p { margin: 0; }
   padding: 14px 16px;
 }
 
-.span-errors { margin-top: 16px; }
+
+.span-errors {
+  background: var(--error-soft);
+  border-color: #e4b6ad;
+  margin-top: 16px;
+}
 .span-errors p { margin: 0 0 6px; }
 .span-errors p:last-child { margin-bottom: 0; }
-.span-error-message, .span-status { color: var(--amber); font-weight: 600; }
+.span-error-message, .span-status { color: var(--error); font-weight: 600; }
 
 .span-tree {
   list-style: none;
@@ -388,8 +395,8 @@ footer p { margin: 0; }
   overflow-wrap: anywhere;
 }
 .span-node.span-error {
-  background: var(--amber-soft);
-  border: 1px solid var(--line);
+  background: var(--error-soft);
+  border: 1px solid #e4b6ad;
   padding: 6px 8px;
   margin: 4px 0;
 }

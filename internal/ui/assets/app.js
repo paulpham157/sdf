@@ -579,7 +579,7 @@
         "And " + (errors.length - shown.length) + " more in the span tree below.",
       ]));
     }
-    return h("div", { class: "callout span-errors" }, kids);
+    return h("div", { class: "callout span-errors", role: "status" }, kids);
   }
 
   function spanLine(node) {
