@@ -68,14 +68,10 @@ type Result struct {
 // Classify ranks the active constraints, blocked decisions, and conflicting
 // decisions in g. The result is never nil.
 func Classify(g decision.Graph) []Item {
-	active := map[string]bool{}
-	order := make([]decision.Record, 0, len(g.Decisions))
-	for _, d := range g.Decisions {
-		if d.EffectiveStatus != decision.EffectiveActive {
-			continue
-		}
+	order := decision.Active(g)
+	active := make(map[string]bool, len(order))
+	for _, d := range order {
 		active[d.ID] = true
-		order = append(order, d)
 	}
 	constrainsFrom := map[string]bool{}
 	for _, e := range g.Edges {
