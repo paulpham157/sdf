@@ -15,8 +15,8 @@ func TestResolveServeOTLPTokenFile(t *testing.T) {
 		return func(key string) string { return m[key] }
 	}
 
-	t.Run("file flag reads trailing newline", func(t *testing.T) {
-		path := writeTokenFile(t, token+"\n", 0o600)
+	t.Run("file trims surrounding whitespace", func(t *testing.T) {
+		path := writeTokenFile(t, " \t"+token+"\n", 0o600)
 		var stderr bytes.Buffer
 		got, code := resolveServeOTLPToken("", false, path, true, env(nil), &stderr)
 		if code != 0 || got != token {

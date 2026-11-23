@@ -43,7 +43,7 @@ environment. The token is read once at startup.
 
 `--otlp-token` or `SDF_OTLP_TOKEN` with a blank value is the same as unset:
 the receiver stays open, which is the default. A token file is trimmed of
-trailing whitespace and newlines. An empty or unreadable file is a startup
+leading and trailing whitespace. An empty or unreadable file is a startup
 error; it does not disable authentication. On Unix, a group- or
 world-readable token file prints a warning.
 
@@ -60,12 +60,13 @@ does not require the token, so `sdf init --check` still works.
 Point an OpenTelemetry exporter at the receiver with:
 
 ```bash
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
 ```
 
-The same header works for HTTP and gRPC exporters that honor
-`OTEL_EXPORTER_OTLP_HEADERS`. Agent-specific settings are in
-[docs/agents.md](agents.md#optional-receiver-token).
+The space after `Bearer` is written as `%20`, as the OpenTelemetry
+specification requires for `OTEL_EXPORTER_OTLP_HEADERS`. The same header
+works for HTTP and gRPC exporters that honor that variable. Agent-specific
+settings are in [docs/agents.md](agents.md#optional-receiver-token).
 
 `sdf init --write` and the session and git hooks do not add this header yet.
 If the receiver has a token set, those hooks and an init-generated config

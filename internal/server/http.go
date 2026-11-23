@@ -381,6 +381,9 @@ func writeResponse(w *bufio.Writer, status int, contentType string, body []byte,
 	fmt.Fprintf(w, "HTTP/1.1 %d %s\r\n", status, reason(status))
 	fmt.Fprintf(w, "Content-Type: %s\r\n", contentType)
 	fmt.Fprintf(w, "Content-Length: %d\r\n", len(body))
+	if status == 401 {
+		fmt.Fprintf(w, "WWW-Authenticate: Bearer\r\n")
+	}
 	if closeConn {
 		fmt.Fprintf(w, "Connection: close\r\n")
 	}

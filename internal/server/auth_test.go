@@ -55,10 +55,16 @@ func TestTokenAcceptsCorrectBearerAndRejectsMissingOrWrong(t *testing.T) {
 	if missing.status != 401 || missing.body != "unauthorized" {
 		t.Fatalf("missing HTTP %+v", missing)
 	}
+	if got := wwwAuthenticate(t, base+"/v1/traces", "", emptyTracesJSON); got != "Bearer" {
+		t.Fatalf("missing WWW-Authenticate %q", got)
+	}
 
 	wrong := postAuth(t, base+"/v1/traces", "Bearer wrong-token", emptyTracesJSON)
 	if wrong.status != 401 || wrong.body != "unauthorized" {
 		t.Fatalf("wrong HTTP %+v", wrong)
+	}
+	if got := wwwAuthenticate(t, base+"/v1/traces", "Bearer wrong-token", emptyTracesJSON); got != "Bearer" {
+		t.Fatalf("wrong WWW-Authenticate %q", got)
 	}
 
 	prefix := postAuth(t, base+"/v1/traces", "Bearer "+testOTLPToken+"-extra", emptyTracesJSON)
@@ -69,6 +75,9 @@ func TestTokenAcceptsCorrectBearerAndRejectsMissingOrWrong(t *testing.T) {
 	ok := postAuth(t, base+"/v1/traces", "Bearer "+testOTLPToken, emptyTracesJSON)
 	if ok.status != 200 {
 		t.Fatalf("correct HTTP %+v", ok)
+	}
+	if got := wwwAuthenticate(t, base+"/v1/traces", "Bearer "+testOTLPToken, emptyTracesJSON); got != "" {
+		t.Fatalf("200 WWW-Authenticate %q", got)
 	}
 
 	lower := postAuth(t, base+"/v1/metrics", "bearer "+testOTLPToken, []byte(`{"resourceMetrics":[]}`))
@@ -95,6 +104,10 @@ func TestTokenAcceptsCorrectBearerAndRejectsMissingOrWrong(t *testing.T) {
 	err = exportGRPCAuth(t, grpcAddr, "Bearer wrong-token")
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("wrong gRPC %v", err)
+	}
+	err = exportGRPCAuthValues(t, grpcAddr, "Bearer "+testOTLPToken, "Bearer "+testOTLPToken)
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("multiple gRPC authorization values %v", err)
 	}
 
 	if rows := mustLoad(t, db); len(rows) != 2 {
@@ -197,6 +210,55 @@ func exportGRPCAuth(t *testing.T, addr, authorization string) error {
 	if authorization != "" {
 		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", authorization)
 	}
+	_, err = client.Export(ctx, &coltracepb.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{{
+			Resource: resource("pi", ""),
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Spans: []*tracepb.Span{{
+					TraceId:           bytes.Repeat([]byte{0x11}, 16),
+					SpanId:            bytes.Repeat([]byte{0x22}, 8),
+					Name:              "invoke_agent pi",
+					StartTimeUnixNano: 1_000_000_000,
+					EndTimeUnixNano:   2_000_000_000,
+					Attributes: []*commonpb.KeyValue{
+						kv("pi.session.id", "grpc-auth-session"),
+						kv("sdf.fixture", "sample"),
+					},
+				}},
+			}},
+		}},
+	})
+	return err
+}
+
+func wwwAuthenticate(t *testing.T, url, authorization string, body []byte) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.Header.Get("WWW-Authenticate")
+}
+
+func exportGRPCAuthValues(t *testing.T, addr string, values ...string) error {
+	t.Helper()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client := coltracepb.NewTraceServiceClient(conn)
+	ctx := metadata.NewOutgoingContext(t.Context(), metadata.MD{"authorization": values})
 	_, err = client.Export(ctx, &coltracepb.ExportTraceServiceRequest{
 		ResourceSpans: []*tracepb.ResourceSpans{{
 			Resource: resource("pi", ""),

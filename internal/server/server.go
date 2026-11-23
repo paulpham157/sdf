@@ -78,10 +78,13 @@ func (s *Server) Start() error {
 	}
 	s.httpLn = httpLn
 	s.grpcLn = grpcLn
+	// OTLP Export RPCs are unary. The stream interceptor is defense in depth
+	// if a streaming method is added later.
 	s.grpcSrv = grpc.NewServer(
 		grpc.MaxRecvMsgSize(otlp.MaxBodyBytes),
 		grpc.MaxSendMsgSize(otlp.MaxBodyBytes),
 		grpc.UnaryInterceptor(s.authInterceptor),
+		grpc.StreamInterceptor(s.streamAuthInterceptor),
 	)
 	coltracepb.RegisterTraceServiceServer(s.grpcSrv, traceService{srv: s})
 	colmetricspb.RegisterMetricsServiceServer(s.grpcSrv, metricsService{srv: s})

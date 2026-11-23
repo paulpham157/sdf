@@ -71,6 +71,13 @@ func (s *Server) authInterceptor(ctx context.Context, req any, _ *grpc.UnaryServ
 	return handler(ctx, req)
 }
 
+func (s *Server) streamAuthInterceptor(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := s.checkGRPCAuth(ss.Context()); err != nil {
+		return err
+	}
+	return handler(srv, ss)
+}
+
 func (s *Server) checkGRPCAuth(ctx context.Context) error {
 	if s.Token == "" {
 		return nil
@@ -80,7 +87,9 @@ func (s *Server) checkGRPCAuth(ctx context.Context) error {
 		return status.Error(codes.Unauthenticated, "unauthenticated")
 	}
 	values := md.Get("authorization")
-	if len(values) == 0 || !s.authorizedBearer(values[0]) {
+	// More than one authorization value is ambiguous; reject rather than
+	// picking the first.
+	if len(values) != 1 || !s.authorizedBearer(values[0]) {
 		return status.Error(codes.Unauthenticated, "unauthenticated")
 	}
 	return nil

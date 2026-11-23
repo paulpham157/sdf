@@ -274,8 +274,11 @@ For agents that honor the standard OpenTelemetry environment variables
 (Claude Code, OpenCode v2, Pi with pi-otel, and Grok CLI):
 
 ```bash
-export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
 ```
+
+The space after `Bearer` is written as `%20`, as the OpenTelemetry
+specification requires for `OTEL_EXPORTER_OTLP_HEADERS`.
 
 Codex does not read `OTEL_*`. Put a `headers` table on each `otlp-http`
 exporter instead. Those values are literal; `${SDF_OTLP_TOKEN}` is not
@@ -315,7 +318,7 @@ export OTEL_TRACES_EXPORT_INTERVAL=5000
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal
@@ -426,7 +429,7 @@ opencode run --model "openrouter/recursive/flint-v1.0:free" "..."
 
 `OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs when
 no token is set. If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 ## Point Pi at it
 
@@ -442,7 +445,7 @@ pi --print --provider openrouter --model "recursive/flint-v1.0:free" "..."
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 HTTP JSON still works if you would rather not use gRPC. Point the endpoint at
 port 4318 and set the protocol:
@@ -473,7 +476,7 @@ grok
 ```
 
 If the receiver has a token set, also export
-`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"`.
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics

@@ -42,7 +42,7 @@ func readOTLPTokenFile(path string, stderr io.Writer) (string, int) {
 		fmt.Fprintf(stderr, "sdf serve: could not read OTLP token file %s: %v\n", path, err)
 		return "", 1
 	}
-	token := strings.TrimRight(string(data), " \t\r\n")
+	token := strings.TrimSpace(string(data))
 	if token == "" {
 		fmt.Fprintf(stderr, "sdf serve: OTLP token file %s is empty\n", path)
 		return "", 1
