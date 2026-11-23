@@ -34,9 +34,12 @@ skipped, so it cannot block the existing checks.
    `sdf-task:<id>` (`task-source: label`, the default). `trailer` or
    `label-or-trailer` also accept an `SDF-Task: <id>` trailer on the head
    commit. Zero or several candidates, or an invalid id, is ERROR.
-4. Runs `sdf verify <head sha> --task <id> --task-ref origin/<base branch>
-   --no-data-dir`, so the task comes only from `.sdf/tasks/<id>.json` on the
-   base branch as GitHub served it. An id that is not declared there is
+4. Resolves `refs/remotes/origin/<base branch>`, which the checkout step
+   just fetched from the base repository (no local branch is created or
+   read), to a commit, and runs `sdf verify <head sha> --task <id>
+   --task-ref <that commit> --no-data-dir`, so the task comes only from
+   `.sdf/tasks/<id>.json` on the base branch as GitHub served it. The
+   summary records that commit. An id that is not declared there is
    `TASK_SNAPSHOT_MISSING`, a FAIL.
 5. Writes the status, task, commit, verdict hash, and every reason code to
    the job summary, and uploads `verdict.json` plus check output (named by

@@ -55,17 +55,20 @@ echo "task=$task" >>"$GITHUB_OUTPUT"
 if [ -z "${SDF_BASE_REF:-}" ] || ! git check-ref-format --branch "$SDF_BASE_REF" >/dev/null 2>&1; then
   finish ERROR "base-ref is not a branch name"
 fi
+# The remote-tracking ref the checkout step just fetched from the base
+# repository (not a local branch, which nothing here creates), resolved once
+# to a commit: the task is read from that exact commit, and the summary
+# records it. No pull request code has run yet.
 task_ref="refs/remotes/origin/$SDF_BASE_REF"
-if ! git -C "$SDF_REPO" rev-parse --verify --quiet "$task_ref^{commit}" >/dev/null; then
+task_sha="$(git -C "$SDF_REPO" rev-parse --verify --quiet "$task_ref^{commit}")" ||
   finish ERROR "origin/$SDF_BASE_REF is not in the checkout"
-fi
 
 mkdir -p "$out" "$RUNNER_TEMP/sdf-verify-work"
 echo "out-dir=$out" >>"$GITHUB_OUTPUT"
 
 # stderr goes straight to the log: the verdict hash printed there is the
 # copy the pull request's checks could not rewrite afterwards.
-"$SDF_BIN" verify "$SDF_SHA" --task "$task" --task-ref "$task_ref" --repo "$SDF_REPO" \
+"$SDF_BIN" verify "$SDF_SHA" --task "$task" --task-ref "$task_sha" --repo "$SDF_REPO" \
   --no-data-dir --out "$out/verdict.json" --artifacts "$out/artifacts" \
   --work-dir "$RUNNER_TEMP/sdf-verify-work" >/dev/null
 code=$?
@@ -88,8 +91,8 @@ echo "verdict-hash=$hash" >>"$GITHUB_OUTPUT"
   printf '## sdf verify: %s\n\n' "$status"
   printf '| | |\n|---|---|\n'
   # shellcheck disable=SC2016 # the backticks are markdown, not expansions
-  printf '| task | `%s` |\n| commit | `%s` |\n| task ref | `origin/%s` |\n| verdict | `%s` |\n\n' \
-    "$task" "$SDF_SHA" "$SDF_BASE_REF" "${hash:-none}"
+  printf '| task | `%s` |\n| commit | `%s` |\n| task ref | `origin/%s` at `%s` |\n| verdict | `%s` |\n\n' \
+    "$task" "$SDF_SHA" "$SDF_BASE_REF" "$task_sha" "${hash:-none}"
   if [ -n "$note" ]; then printf '%s\n\n' "$note"; fi
   jq -r '
     def cell: tostring | gsub("[|`\r\n]"; " ");
