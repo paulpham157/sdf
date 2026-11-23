@@ -35,7 +35,7 @@ e2e: build
 	SDF_BIN=$(abspath $(BINARY)) go test -tags e2e -count=1 -timeout 5m ./tests/e2e
 
 vuln:
-	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+	go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
 
 clean:
 	rm -f $(BINARY)
