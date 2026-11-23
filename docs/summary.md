@@ -283,8 +283,10 @@ sdf summary --prices /path/to/openrouter-models.json
 ```
 
 `sdf prices refresh` is the only command that calls the network for prices.
-It GETs the models URL with no API key and writes
-`$XDG_CACHE_HOME/sdf/openrouter-models.json` (or the path in `--out`).
+It GETs the models URL with no API key and writes `openrouter-models.json`
+under the user cache directory (Linux: `$XDG_CACHE_HOME/sdf` or `~/.cache/sdf`;
+macOS: `~/Library/Caches/sdf`; Windows: `%LocalAppData%\sdf`), or the path
+in `--out`. It does not rewrite the bundled `internal/pricing/openrouter.json`.
 `--url` fetches a different models URL with the same shape.
 `SDF_PRICE_CACHE` changes the cache directory. A model id that is not in the
 table, or a token bucket whose price field is absent, is `computed_cost_usd`

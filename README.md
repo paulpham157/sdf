@@ -82,7 +82,7 @@ needs no API key or network connection.
 | `sdf verify` | Run a declared task's checks against a commit |
 | `sdf redact` | Drop stored prompt, response, tool, and error text from a database |
 | `sdf check` | Run the embedded local cases against the summary |
-| `sdf prices refresh` | Update the bundled OpenRouter price table (the only command that uses the network for prices) |
+| `sdf prices refresh` | Download a fresh OpenRouter price table to the local cache (the only command that uses the network for prices) |
 | `sdf version` | Print version, commit, build date, Go version, and platform (`sdf --version` and `sdf -v` are the same) |
 
 Every command prints its flags with `--help`. Authentication is off by
