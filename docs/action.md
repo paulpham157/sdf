@@ -140,6 +140,14 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   and the verdict hash it printed to the log are the record to trust, not
   the artifact. Running the checks as a separate unprivileged OS user
   would close the rest; it is not built.
+- *In-process forgery in a `go test` criterion.* The harness that reports
+  designated test results resists only naive cheating; it is **not a
+  security boundary against an adversarial agent**. Code in the test binary
+  that uses `unsafe`, `//go:linkname` or assembly can still read the
+  harness key or patch memory and forge a pass. The tripwire
+  (`TAMPER_CAPABLE_CODE`) flags known patterns only. See "What this does
+  not guarantee" in [verify.md](verify.md). Treat a PASS as evidence for a
+  reviewer, not as a substitute for review.
 - *A dishonest base branch.* Whoever can push to the base branch decides
   the task. Protect it.
 - No signature: the verdict is hashed, not signed. A ledger head check
