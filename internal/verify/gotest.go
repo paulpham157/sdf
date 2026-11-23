@@ -64,14 +64,23 @@ func isGoTool(argv []string) bool {
 }
 
 // goInput reports whether p is an input of a go test/vet criterion that has
-// to match the base: its test files and testdata (task.GoTestPaths),
-// go.mod, go.sum, go.work, go.work.sum, and anything under vendor/, which
-// replaces the module cache (and go.sum's checks) when present.
+// to match the base: its test files and testdata (task.GoTestPaths); a
+// go.mod, go.sum, go.work or go.work.sum anywhere in the checkout (a nested
+// one makes a directory its own module, or a workspace, with its own
+// requirements and replace directives); and anything under vendor/ at the
+// root or in the -C directory, which replaces the module cache (and
+// go.sum's checks) when present.
 func goInput(argv []string, p string) bool {
 	if !isGoTool(argv) {
 		return false
 	}
-	return strings.HasPrefix(p, "vendor/") || len(task.GoTestPaths(argv, []string{p})) > 0
+	if isGoModFile(p) || strings.HasPrefix(p, "vendor/") {
+		return true
+	}
+	if dir, _, ok := task.GoChdir(argv); ok && dir != "." && strings.HasPrefix(p, dir+"/vendor/") {
+		return true
+	}
+	return len(task.GoTestPaths(argv, []string{p})) > 0
 }
 
 // designatedTests returns the top-level Test functions declared in the

@@ -14,9 +14,10 @@ import (
 
 // The tripwire. The go test harness (harness.go) resists naive cheating
 // only; it is not a security boundary against code in the test binary,
-// which can read its own memory or call the hook's report function
-// through the symbol table (atk_b1mem: debug/elf + debug/gosym + unsafe,
-// about 40 lines). That is a known gap. The hook makes the test process
+// which can read its own memory or call the hook's report function or
+// write stub through the symbol table (atk_b1mem: debug/elf + debug/gosym +
+// unsafe, about 40 lines). That is a known gap. (Reading the key alone is
+// not enough on amd64 and arm64: the channel is sealed, see seal.go.) The hook makes the test process
 // non-dumpable (so /proc/self/mem cannot be opened: atk_tw5), but code with
 // unsafe or assembly can still write memory directly. What such code
 // usually needs is recognisable, so a task with a `go test` criterion gives
@@ -33,6 +34,9 @@ import (
 //     ProcessVM*, Ptrace*), called or not;
 //   - uses runtime.FuncForPC, or a reflect Pointer/UnsafePointer/UnsafeAddr
 //     method (code addresses);
+//   - uses runtime/debug.WriteHeapDump (a copy of the process's memory:
+//     Review's round-2 attack read the harness key from it), or dot-imports
+//     runtime/debug;
 //   - has a string constant, after folding concatenations of literals, that
 //     contains "/proc" or "proc/" or is "proc".
 //
@@ -55,7 +59,7 @@ var rawSyscalls = map[string]bool{
 	"RawSyscallNoError": true, "Mmap": true, "Mprotect": true, "ProcessVMReadv": true, "ProcessVMWritev": true,
 }
 
-var dotRisky = map[string]bool{"syscall": true, "golang.org/x/sys/unix": true, "reflect": true, "runtime": true, "unsafe": true}
+var dotRisky = map[string]bool{"syscall": true, "golang.org/x/sys/unix": true, "reflect": true, "runtime": true, "runtime/debug": true, "unsafe": true}
 
 var reflectPointers = map[string]bool{"Pointer": true, "UnsafePointer": true, "UnsafeAddr": true}
 
@@ -108,7 +112,7 @@ func tamperFindings(p string, src []byte) []string {
 		}
 	}
 	sysNames := map[string]bool{}
-	runtimeName, reflectImported := "", false
+	runtimeName, debugName, reflectImported := "", "", false
 	for _, im := range f.Imports {
 		ip, _ := strconv.Unquote(im.Path.Value)
 		if tamperImports[ip] || strings.HasPrefix(ip, "debug/") {
@@ -126,6 +130,8 @@ func tamperFindings(p string, src []byte) []string {
 			sysNames[local] = true
 		case "runtime":
 			runtimeName = local
+		case "runtime/debug":
+			debugName = local
 		case "reflect":
 			reflectImported = true
 		}
@@ -146,6 +152,8 @@ func tamperFindings(p string, src []byte) []string {
 				note("uses " + id.Name + "." + x.Sel.Name)
 			case ok && runtimeName != "" && id.Name == runtimeName && x.Sel.Name == "FuncForPC":
 				note("uses runtime.FuncForPC")
+			case ok && debugName != "" && id.Name == debugName && x.Sel.Name == "WriteHeapDump":
+				note("uses runtime/debug.WriteHeapDump")
 			case reflectImported && reflectPointers[x.Sel.Name]:
 				note("uses a reflect ." + x.Sel.Name + " method")
 			}

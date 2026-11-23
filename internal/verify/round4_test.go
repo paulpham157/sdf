@@ -151,13 +151,21 @@ func TestHookSourceBuildsOnOtherPlatforms(t *testing.T) {
 		t.Fatal(err)
 	}
 	testingDir := filepath.Join(strings.TrimSpace(string(out)), "src", "testing")
-	for _, p := range [][2]string{{"linux", "arm64"}, {"linux", "386"}, {"darwin", "arm64"}} {
+	for _, p := range [][2]string{{"linux", "arm64"}, {"linux", "amd64"}, {"linux", "386"}, {"linux", "riscv64"}, {"darwin", "arm64"}} {
 		dir := t.TempDir()
-		src := filepath.Join(dir, "hook.go")
-		if err := os.WriteFile(src, []byte(hookSourceFor("0123456789abcdef", p[0], p[1])), 0o644); err != nil {
+		files, err := hookFilesFor("0123456789abcdef", p[0], p[1])
+		if err != nil {
 			t.Fatal(err)
 		}
-		ov, _ := json.Marshal(map[string]any{"Replace": map[string]string{filepath.Join(testingDir, "zz_sdfverify_0123456789abcdef.go"): src}})
+		replace := map[string]string{}
+		for name, content := range files {
+			src := filepath.Join(dir, name)
+			if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			replace[filepath.Join(testingDir, name)] = src
+		}
+		ov, _ := json.Marshal(map[string]any{"Replace": replace})
 		ovFile := filepath.Join(dir, "overlay.json")
 		if err := os.WriteFile(ovFile, ov, 0o644); err != nil {
 			t.Fatal(err)

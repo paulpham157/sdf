@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -50,8 +51,11 @@ import (
 //     binary runs in its own nested user, pid and mount namespaces where
 //     every mount, including go's work directory and build cache, is
 //     read-only, except a fresh TMPDIR and HOME.
-//   - The hook reads a 32-byte key from fd 3 and keeps the connection; it
-//     never dials anything. Any connection to the verifier's socket that is
+//   - The hook reads a 32-byte key from fd 3, moves the channel to a high
+//     descriptor (close-on-exec) and keeps it; it never dials anything. On
+//     amd64 and arm64 the channel is sealed (seal.go): only the hook's own
+//     write stub can use it, so code under test that reads the key (a
+//     heap dump shows it) still cannot send a frame. Any connection to the verifier's socket that is
 //     not a launcher, a second launcher for a package, or a report naming
 //     another package is a violation.
 //   - Each designated test function is renamed in the overlay and wrapped:
@@ -67,10 +71,11 @@ import (
 // pid namespace), and it cannot replace another package's test binary or
 // poison the build cache (read-only to it, when isolated).
 //
-// KNOWN GAP: the key and the report function are in the test binary's
-// memory, so code under test that reads its own process's memory or calls
-// the report function through its symbol table (atk_b1mem: debug/elf +
-// debug/gosym + unsafe) can still forge a pass. The tripwire (tripwire.go)
+// KNOWN GAP: the report function and the write stub are in the test
+// binary, so code under test that calls them through its symbol table
+// (atk_b1mem: debug/elf + debug/gosym + unsafe) or writes its own memory
+// can still forge a pass; and without the seal (other architectures),
+// reading the key is enough. The tripwire (tripwire.go)
 // makes such code an ERROR when it is new; see docs/verify.md.
 
 type harness struct {
@@ -126,15 +131,21 @@ func (r *run) newHarness(c task.Criterion, expected []string, goroot string, d c
 	}
 	replace := map[string]string{}
 	add := func(target, content string) error {
-		src := filepath.Join(dir, "f"+strconv.Itoa(len(replace))+".go")
+		src := filepath.Join(dir, "f"+strconv.Itoa(len(replace))+filepath.Ext(target))
 		if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
 			return err
 		}
 		replace[target] = src
 		return nil
 	}
-	if err := add(filepath.Join(testingDir, "zz_sdfverify_"+h.tag+".go"), hookSource(h.tag)); err != nil {
+	hook, err := hookFiles(h.tag)
+	if err != nil {
 		return nil, err
+	}
+	for name, content := range hook {
+		if err := add(filepath.Join(testingDir, name), content); err != nil {
+			return nil, err
+		}
 	}
 	ctx := build.Default
 	ctx.CgoEnabled = false
@@ -304,64 +315,50 @@ func wrapTests(file, pkg, tag string) (string, error) {
 	return out.String(), nil
 }
 
-// hookSource is the file the overlay adds to package testing. Every name
-// it declares, including its imports, carries the run's random tag, so it
-// cannot collide with testing's own and code under test cannot name it
-// without knowing the tag. Its channel to the verifier is fd 3, which only
-// the verifier's launcher gives it.
-func hookSource(tag string) string {
-	return hookSourceFor(tag, runtime.GOOS, runtime.GOARCH)
+// hookFiles are the files the overlay adds to package testing, by base
+// name: the hook, and on amd64 and arm64 its write stub (seal.go). Every
+// name they declare, including imports, carries the run's random tag, so
+// it cannot collide with testing's own and code under test cannot name it
+// without knowing the tag. The hook's channel to the verifier is fd 3,
+// which only the verifier's launcher gives it.
+func hookFiles(tag string) (map[string]string, error) {
+	return hookFilesFor(tag, runtime.GOOS, runtime.GOARCH)
 }
 
-func hookSourceFor(tag, goos, goarch string) string {
-	src := `package testing
-
-import (
-	T_hmac "crypto/hmac"
-	T_sha256 "crypto/sha256"
-	T_hex "encoding/hex"
-	T_io "io"
-	T_net "net"
-	T_os "os"
-	T_strconv "strconv"
-	T_sync "sync"IMPORTS
-)
-
-var T_st struct {
-	mu   T_sync.Mutex
-	conn T_net.Conn
-	key  []byte
-	seq  int
-}
-
-func init() {
-	// This file exists only in the verifier's overlay, so failing to reach
-	// the verifier is fatal (and visible: go test shows a failing
-	// package's output).
-	die := func(msg string) {
-		T_os.Stderr.WriteString("sdf verify hook: " + msg + "\n")
-		T_os.Exit(3)
-	}
-	// fd 3 is the socketpair end the verifier's launcher passed to this
-	// process alone. FileConn dups it close-on-exec; the original is closed,
-	// so no child process inherits the channel.
-	f := T_os.NewFile(3, "sdf-verify")
-	if f == nil {
-		die("no harness channel on fd 3 (not started by sdf verify's launcher)")
-	}
-	c, err := T_net.FileConn(f)
-	f.Close()
+func hookFilesFor(tag, goos, goarch string) (map[string]string, error) {
+	src, err := hookSourceFor(tag, goos, goarch)
 	if err != nil {
-		die("harness channel on fd 3: " + err.Error())
+		return nil, err
 	}
-	key := make([]byte, 32)
-	if _, err := T_io.ReadFull(c, key); err != nil {
-		die("no key: " + err.Error())
+	files := map[string]string{"zz_sdfverify_" + tag + ".go": src}
+	if goos == "linux" {
+		if stub := sealStub(goarch); stub != "" {
+			files["zz_sdfverify_"+tag+".s"] = tagNames(stub, tag)
+		}
 	}
-	T_st.conn, T_st.key = c, key
-	if msg := T_harden(); msg != "" {
-		die("hardening: " + msg)
-	}
+	return files, nil
+}
+
+func tagNames(src, tag string) string {
+	src = strings.ReplaceAll(src, "SdfVerifyTRun", "SdfVerify"+tag+"Run")
+	return hookName.ReplaceAllString(src, "sdf"+tag+"_")
+}
+
+// hookName is the T_ prefix of the hook's names (not RLIMIT_NOFILE's).
+var hookName = regexp.MustCompile(`\bT_`)
+
+// hookCommon reports designated tests; T_write is per platform.
+const hookCommon = `
+var T_st struct {
+	mu  T_sync.Mutex
+	fd  int
+	key []byte
+	seq int
+}
+
+func T_die(msg string) {
+	T_os.Stderr.WriteString("sdf verify hook: " + msg + "\n")
+	T_os.Exit(3)
 }
 
 // SdfVerifyTRun runs a designated test and reports its result.
@@ -384,105 +381,130 @@ func SdfVerifyTRun(t *T, name string, f func(*T)) {
 func T_send(msg string) {
 	T_st.mu.Lock()
 	defer T_st.mu.Unlock()
-	if T_st.conn == nil {
+	if T_st.key == nil {
 		return
 	}
 	T_st.seq++
 	body := T_strconv.Itoa(T_st.seq) + " " + msg
 	m := T_hmac.New(T_sha256.New, T_st.key)
 	m.Write([]byte(body))
-	T_io.WriteString(T_st.conn, T_hex.EncodeToString(m.Sum(nil))+" "+body+"\n")
+	b := []byte(T_hex.EncodeToString(m.Sum(nil)) + " " + body + "\n")
+	for len(b) > 0 {
+		n, ok := T_write1(T_st.fd, b)
+		if !ok {
+			return
+		}
+		b = b[n:]
+	}
 }
 `
-	imports := ""
-	if goos == "linux" {
-		imports = "\n\tT_syscall \"syscall\"\n\tT_unsafe \"unsafe\""
-	}
-	src = strings.Replace(src, "IMPORTS", imports, 1)
-	src += hardenSource(goos, goarch)
-	src = strings.ReplaceAll(src, "SdfVerifyTRun", "SdfVerify"+tag+"Run")
-	return strings.ReplaceAll(src, "T_", "sdf"+tag+"_")
+
+// hookSourceFor is the hook for a test binary of goos/goarch (the host's:
+// a check's environment does not pass GOOS or GOARCH through).
+//
+// On Linux, in init, before any code of the module runs: the hook checks
+// that fd 3 is a socket, moves it to a high odd descriptor, close-on-exec
+// (so no child inherits it), reads the run's key, makes the process
+// non-dumpable and, on amd64 and arm64, installs the seccomp filter
+// (sealFilter): see seal.go for the seal, and below for the rest. If any
+// of it fails the test binary exits 3.
+//
+// A non-dumpable process's /proc/<pid>/mem (and fd/, environ, ...) belong
+// to root, so code under test cannot open /proc/self/mem to patch the
+// testing package's code (atk_tw5), and a child cannot ptrace or open it
+// either. The filter, applied to every thread with no_new_privs and
+// inherited by children, also refuses (EPERM) prctl(PR_SET_DUMPABLE), so
+// that cannot be undone; ptrace, process_vm_readv/writev (atk_pvm) and
+// pidfd_getfd; clone with CLONE_PARENT and clone3 (ENOSYS, so callers fall
+// back to clone), so nothing the test binary starts becomes a child of go
+// (atk_cloneparent); and system calls of another ABI. Tests that run
+// debuggers or strace fail, and so do sendmsg and io_uring (seal.go). None
+// of this stops code that uses unsafe or assembly from reading or writing
+// memory directly, or from calling the stub: the tripwire flags those.
+func hookSourceFor(tag, goos, goarch string) (string, error) {
+	if goos != "linux" {
+		// The verifier cannot identify a peer without Linux
+		// (peer_other.go); fail visibly instead.
+		return tagNames(`package testing
+
+import T_os "os"
+
+func init() {
+	T_os.Stderr.WriteString("sdf verify hook: the go test harness needs Linux\n")
+	T_os.Exit(3)
 }
 
-// hardenSource is T_harden for the test binary's platform (the host's: a
-// check's environment does not pass GOOS or GOARCH through).
-//
-// On Linux the test process makes itself non-dumpable, right after the key
-// exchange and
-// before any code of the module runs. A non-dumpable process's
-// /proc/<pid>/mem (and fd/, environ, ...) belong to root, so code under test
-// cannot open /proc/self/mem to patch the testing package's code
-// (atk_tw5 writes a RET over (*common).Fail), and a child process cannot
-// ptrace or open it either. On amd64 and arm64 a seccomp filter, applied to
-// every thread and inherited by children, then refuses (EPERM)
-// prctl(PR_SET_DUMPABLE), so the process cannot turn that back on; ptrace,
-// process_vm_readv and process_vm_writev (another way to read the key or
-// write the process's memory, atk_pvm) and pidfd_getfd (taking the harness
-// connection from another process); and any system call of another
-// architecture's ABI; and clone with CLONE_PARENT (EPERM) and
-// clone3 (ENOSYS, so callers fall back to clone), so nothing the test
-// binary starts becomes a child of go (atk_cloneparent). Tests that run
-// debuggers or strace fail. It does not stop code that uses unsafe or assembly from reading or writing memory
-// directly: the tripwire flags those.
-func hardenSource(goos, goarch string) string {
-	if goos != "linux" {
-		return "\nfunc T_harden() string { return \"\" }\n"
+// SdfVerifyTRun runs a designated test.
+func SdfVerifyTRun(t *T, name string, f func(*T)) { f(t) }
+`, tag), nil
 	}
-	// System call numbers: prctl, seccomp, ptrace, process_vm_readv,
-	// process_vm_writev, pidfd_getfd, clone, clone3.
-	arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 := "", "", "", "", "", "", "", "", ""
-	switch goarch {
-	case "amd64":
-		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 = "0xC000003E", "157", "317", "101", "310", "311", "438", "56", "435"
-	case "arm64":
-		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 = "0xC00000B7", "167", "277", "117", "270", "271", "438", "220", "435"
+	prog, err := sealFilter(goarch)
+	if err != nil {
+		return "", err
 	}
-	src := `
-func T_harden() string {
-	const prSetDumpable, prGetDumpable, prSetNoNewPrivs = 4, 3, 38
-	if _, _, e := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prSetDumpable, 0, 0); e != 0 {
-		return "PR_SET_DUMPABLE: " + e.Error()
+	src := `package testing
+
+import (
+	T_hmac "crypto/hmac"
+	T_sha256 "crypto/sha256"
+	T_hex "encoding/hex"
+	T_os "os"
+	T_strconv "strconv"
+	T_sync "sync"
+	T_syscall "syscall"
+	T_unsafe "unsafe"
+)
+` + hookCommon + `
+func init() {
+	var st T_syscall.Stat_t
+	if e := T_syscall.Fstat(3, &st); e != nil || st.Mode&T_syscall.S_IFMT != T_syscall.S_IFSOCK {
+		T_die("no harness channel on fd 3 (not started by sdf verify's launcher)")
 	}
-	if ARCH != 0 {
-		filter := []T_sockFilter{
-			{0x20, 0, 0, 4},              // 0: A = arch
-			{0x15, 0, 14, ARCH},          // 1: not this ABI: deny
-			{0x20, 0, 0, 0},              // 2: A = nr
-			{0x45, 12, 0, 0x40000000},    // 3: x32 ABI: deny
-			{0x15, 11, 0, NR_PTRACE},     // 4: ptrace: deny
-			{0x15, 10, 0, NR_PVMR},       // 5: process_vm_readv: deny
-			{0x15, 9, 0, NR_PVMW},        // 6: process_vm_writev: deny
-			{0x15, 8, 0, NR_PIDFD_GETFD}, // 7: pidfd_getfd: deny
-			{0x15, 8, 0, NR_CLONE3},      // 8: clone3: ENOSYS (callers fall back to clone)
-			{0x15, 3, 0, NR_CLONE},       // 9: clone: check the flags
-			{0x15, 0, 4, NR_PRCTL},       // 10: not prctl: allow
-			{0x20, 0, 0, 16},             // 11: A = args[0]
-			{0x15, 3, 2, prSetDumpable},  // 12: PR_SET_DUMPABLE: deny, else allow
-			{0x20, 0, 0, 16},             // 13: A = clone flags
-			{0x45, 1, 0, 0x8000},         // 14: CLONE_PARENT: deny
-			{0x06, 0, 0, 0x7fff0000},     // 15: allow
-			{0x06, 0, 0, 0x00050000 | 1}, // 16: EPERM
-			{0x06, 0, 0, 0x00050000 | 38}, // 17: ENOSYS
+	fd := T_moveFD()
+	if e := T_syscall.SetNonblock(fd, false); e != nil {
+		T_die("harness channel: " + e.Error())
+	}
+	key := make([]byte, 32)
+	for n := 0; n < len(key); {
+		m, e := T_syscall.Read(fd, key[n:])
+		if e == T_syscall.EINTR {
+			continue
 		}
-		prog := struct {
-			n uint16
-			f *T_sockFilter
-		}{uint16(len(filter)), &filter[0]}
-		if _, _, e := T_syscall.RawSyscall6(T_syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0, 0, 0, 0); e != 0 {
-			return "PR_SET_NO_NEW_PRIVS: " + e.Error()
+		if e != nil || m <= 0 {
+			T_die("no key")
 		}
-		// SECCOMP_SET_MODE_FILTER with SECCOMP_FILTER_FLAG_TSYNC: every thread.
-		if r, _, e := T_syscall.RawSyscall(SYS_SECCOMP, 1, 1, uintptr(T_unsafe.Pointer(&prog))); e != 0 || r != 0 {
-			return "seccomp: " + e.Error()
-		}
-		if _, _, e := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prSetDumpable, 1, 0); e != T_syscall.EPERM {
-			return "the seccomp filter does not hold"
-		}
+		n += m
 	}
-	if r, _, _ := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prGetDumpable, 0, 0); r != 0 {
-		return "still dumpable"
+	T_st.fd, T_st.key = fd, key
+	if msg := T_harden(fd); msg != "" {
+		T_die("hardening: " + msg)
 	}
-	return ""
+}
+
+// T_moveFD moves the channel from fd 3 to a free high odd descriptor,
+// close-on-exec.
+func T_moveFD() int {
+	top := 65535
+	var lim T_syscall.Rlimit
+	if T_syscall.Getrlimit(T_syscall.RLIMIT_NOFILE, &lim) == nil && lim.Cur <= uint64(top) {
+		top = int(lim.Cur) - 1
+	}
+	if top%2 == 0 {
+		top--
+	}
+	for fd := top; fd > 3; fd -= 2 {
+		var st T_syscall.Stat_t
+		if T_syscall.Fstat(fd, &st) != T_syscall.EBADF {
+			continue
+		}
+		if e := T_syscall.Dup3(3, fd, T_syscall.O_CLOEXEC); e != nil {
+			T_die("moving the harness channel: " + e.Error())
+		}
+		T_syscall.Close(3)
+		return fd
+	}
+	T_die("no free descriptor for the harness channel")
+	return -1
 }
 
 type T_sockFilter struct {
@@ -491,20 +513,87 @@ type T_sockFilter struct {
 	jf   uint8
 	k    uint32
 }
-`
-	if arch == "" {
-		arch, prctl, seccomp, ptrace, pvmr, pvmw, pidfdGetfd, clone, clone3 = "0", "0", "0", "0", "0", "0", "0", "0", "0"
+
+func T_harden(fd int) string {
+	const prSetDumpable, prGetDumpable, prSetNoNewPrivs = 4, 3, 38
+	if _, _, e := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prSetDumpable, 0, 0); e != 0 {
+		return "PR_SET_DUMPABLE: " + e.Error()
 	}
-	src = strings.ReplaceAll(src, "ARCH", arch)
-	src = strings.ReplaceAll(src, "NR_PRCTL", prctl)
-	src = strings.ReplaceAll(src, "NR_PTRACE", ptrace)
-	src = strings.ReplaceAll(src, "NR_PVMR", pvmr)
-	src = strings.ReplaceAll(src, "NR_PVMW", pvmw)
-	src = strings.ReplaceAll(src, "NR_PIDFD_GETFD", pidfdGetfd)
-	src = strings.ReplaceAll(src, "NR_CLONE3", clone3)
-	src = strings.ReplaceAll(src, "NR_CLONE", clone)
-	src = strings.ReplaceAll(src, "SYS_SECCOMP", seccomp)
-	return src
+	if msg := T_seal(fd); msg != "" {
+		return msg
+	}
+	if r, _, _ := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prGetDumpable, 0, 0); r != 0 {
+		return "still dumpable"
+	}
+	return ""
+}
+`
+	if prog == nil {
+		src += `
+func T_seal(int) string { return "" }
+
+func T_write1(fd int, b []byte) (int, bool) {
+	n, e := T_syscall.Write(fd, b)
+	if e == T_syscall.EINTR {
+		return 0, true
+	}
+	return n, e == nil && n > 0
+}
+
+var _ = T_unsafe.Pointer(nil)
+`
+	} else {
+		src += `
+func T_rawwrite(fd uintptr, p *byte, n uintptr) uintptr
+
+func T_rawwritePC() uintptr
+
+func T_write1(fd int, b []byte) (int, bool) {
+	r := int(T_rawwrite(uintptr(fd), &b[0], uintptr(len(b))))
+	if r == -int(T_syscall.EINTR) {
+		return 0, true
+	}
+	return r, r > 0
+}
+
+func T_seal(fd int) string {
+	const prSetDumpable, prSetNoNewPrivs = 4, 38
+	pc := uint64(T_rawwritePC())
+	T_ipHi, T_ipLo, T_ipEnd := uint32(pc>>32), uint32(pc), uint32(pc+32)
+	if uint32((pc+32)>>32) != T_ipHi {
+		return "the write stub straddles a 4 GiB boundary"
+	}
+	T_fd := uint32(fd)
+	filter := []T_sockFilter{
+FILTER	}
+	prog := struct {
+		n uint16
+		f *T_sockFilter
+	}{uint16(len(filter)), &filter[0]}
+	if _, _, e := T_syscall.RawSyscall6(T_syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0, 0, 0, 0); e != 0 {
+		return "PR_SET_NO_NEW_PRIVS: " + e.Error()
+	}
+	// SECCOMP_SET_MODE_FILTER with SECCOMP_FILTER_FLAG_TSYNC: every thread.
+	if r, _, e := T_syscall.RawSyscall(SYS_SECCOMP, 1, 1, uintptr(T_unsafe.Pointer(&prog))); e != 0 || r != 0 {
+		return "seccomp: " + e.Error()
+	}
+	if _, _, e := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prSetDumpable, 1, 0); e != T_syscall.EPERM {
+		return "the seccomp filter does not hold"
+	}
+	if _, e := T_syscall.Write(fd, nil); e != T_syscall.EPERM {
+		return "the channel is not sealed"
+	}
+	var z byte
+	if r := T_rawwrite(uintptr(fd), &z, 0); r != 0 {
+		return "the write stub cannot write the channel"
+	}
+	return ""
+}
+`
+		src = strings.Replace(src, "FILTER", renderBPF(prog), 1)
+		src = strings.Replace(src, "SYS_SECCOMP", fmt.Sprint(sysnumsByArch[goarch].seccomp), 1)
+	}
+	return tagNames(src, tag), nil
 }
 
 func (h *harness) violate(format string, args ...any) {

@@ -54,6 +54,14 @@ echo "task=$task" >>"$GITHUB_OUTPUT"
 if [ -z "${SDF_BASE_REF:-}" ] || ! git check-ref-format --branch "$SDF_BASE_REF" >/dev/null 2>&1; then
   finish ERROR "base-ref is not a branch name"
 fi
+# base-ref defaults to the pull request's base branch, which the pull
+# request's author chooses: a branch they pushed, with an easier task file,
+# would do. Only the protected branches listed are trusted.
+protected=0
+for b in ${SDF_PROTECTED_BRANCHES:-}; do
+  [ "$b" = "$SDF_BASE_REF" ] && protected=1
+done
+[ "$protected" = 1 ] || finish ERROR "base-ref $SDF_BASE_REF is not one of the protected-branches (${SDF_PROTECTED_BRANCHES:-none})"
 # The remote-tracking ref the checkout step just fetched from the base
 # repository (not a local branch, which nothing here creates), resolved once
 # to a commit: the task is read from that exact commit, and the summary

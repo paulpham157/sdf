@@ -26,6 +26,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -891,14 +892,16 @@ func (r *run) checkIntegrity() {
 			}
 		}
 	}
-	// A vendored file deleted since the base changes what gets built too.
+	// A vendored file, go.mod, go.sum, go.work or go.work.sum deleted since
+	// the base changes what gets built too (a deleted nested go.mod merges
+	// its directory into the enclosing module).
 	for _, c := range r.spec.Criteria {
 		if !isGoTool(c.Argv) {
 			continue
 		}
 		var gone []string
 		for p := range atBase {
-			if _, ok := at[p]; !ok && strings.HasPrefix(p, "vendor/") {
+			if _, ok := at[p]; !ok && goInput(c.Argv, p) && (strings.HasPrefix(p, "vendor/") || isGoModFile(p)) {
 				gone = append(gone, p)
 			}
 		}
@@ -1522,6 +1525,15 @@ func contains(list []string, s string) bool {
 		if x == s {
 			return true
 		}
+	}
+	return false
+}
+
+// isGoModFile reports whether p is a go.mod, go.sum, go.work or go.work.sum.
+func isGoModFile(p string) bool {
+	switch path.Base(p) {
+	case "go.mod", "go.sum", "go.work", "go.work.sum":
+		return true
 	}
 	return false
 }

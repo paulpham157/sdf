@@ -155,7 +155,7 @@ func (e *env) verify(t *testing.T, vars map[string]string) outcome {
 	}
 	base := map[string]string{
 		"SDF_BIN": e.sdf, "SDF_TASK": "", "SDF_TASK_SOURCE": "label", "SDF_LABELS": "[]",
-		"SDF_SHA": e.good, "SDF_BASE_REF": "main", "SDF_REPO": e.subject,
+		"SDF_SHA": e.good, "SDF_BASE_REF": "main", "SDF_PROTECTED_BRANCHES": "main", "SDF_REPO": e.subject,
 	}
 	for k, v := range vars {
 		base[k] = v
@@ -234,7 +234,9 @@ func TestActionScripts(t *testing.T) {
 		"newline in label":  {"SDF_LABELS": `["sdf-task:feat\nx"]`},
 		"short sha":         {"SDF_TASK": "feat", "SDF_SHA": "abc123"},
 		"bad base ref":      {"SDF_TASK": "feat", "SDF_BASE_REF": "main..x"},
-		"missing base ref":  {"SDF_TASK": "feat", "SDF_BASE_REF": "release"},
+		"missing base ref":  {"SDF_TASK": "feat", "SDF_BASE_REF": "release", "SDF_PROTECTED_BRANCHES": "main release"},
+		"unprotected base":  {"SDF_TASK": "feat", "SDF_BASE_REF": "release"},
+		"no protected list": {"SDF_TASK": "feat", "SDF_PROTECTED_BRANCHES": ""},
 		"bad task source":   {"SDF_TASK_SOURCE": "anything"},
 		"verdict not there": {"SDF_TASK": "feat", "SDF_BIN": "/bin/false"},
 	} {

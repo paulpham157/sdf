@@ -29,6 +29,13 @@ inputs:
     description: Protected branch the task file is read from, as `.sdf/tasks/<id>.json`.
     required: false
     default: ${{ github.base_ref }}
+  protected-branches:
+    description: >-
+      Space-separated branches a task may be read from. base-ref defaults to the
+      pull request's base, which its author picks; a base not listed here is ERROR.
+      Defaults to the repository's default branch. List only protected branches.
+    required: false
+    default: ${{ github.event.repository.default_branch }}
   repository:
     description: Repository holding the commit.
     required: false
@@ -98,6 +105,7 @@ runs:
         SDF_LABELS: ${{ inputs.labels }}
         SDF_SHA: ${{ inputs.sha }}
         SDF_BASE_REF: ${{ inputs.base-ref }}
+        SDF_PROTECTED_BRANCHES: ${{ inputs.protected-branches }}
         SDF_REPO: ${{ github.workspace }}/${{ inputs.path }}
       run: '"$GITHUB_ACTION_PATH/verify.sh"'
 

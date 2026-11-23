@@ -34,7 +34,11 @@ skipped, so it cannot block the existing checks.
    `sdf-task:<id>` (`task-source: label`, the default). `trailer` or
    `label-or-trailer` also accept an `SDF-Task: <id>` trailer on the head
    commit. Zero or several candidates, or an invalid id, is ERROR.
-4. Resolves `refs/remotes/origin/<base branch>`, which the checkout step
+4. Checks that the base branch (input `base-ref`, by default the pull
+   request's base) is one of `protected-branches` (by default the
+   repository's default branch), else ERROR: the pull request's author
+   picks its base, and a branch they pushed with an easier task file would
+   otherwise do. Then resolves `refs/remotes/origin/<base branch>`, which the checkout step
    just fetched from the base repository (no local branch is created or
    read), to a commit, and runs `sdf verify <head sha> --task <id>
    --task-ref <that commit> --no-data-dir`, so the task comes only from
@@ -102,7 +106,9 @@ asks for nothing more: `contents: read`, no secrets, no cache.
 - The verifier: built from a pinned commit of this repository (or the base
   commit, in this repository), never from the pull request.
 - The task: read from the base branch through `--task-ref`, never from the
-  working tree or the head commit. A head commit that changes
+  working tree or the head commit, and only from a branch listed in
+  `protected-branches`: list only branches that are protected (push and
+  force-push restricted), since whoever can push there decides the task. A head commit that changes
   `.sdf/tasks/<id>.json` fails with `TASK_FILE_MODIFIED`.
 - The task id: a label, which only people with triage access can set. A
   trailer is written by the pull request author, who could then pick an
@@ -144,8 +150,13 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   test results resists only naive cheating; it is **not a security
   boundary against an adversarial agent**, and not only in process. Code
   in the test binary that uses `unsafe`, `//go:linkname` or assembly can
-  still read the harness key or patch memory and forge a pass; the
-  tripwire (`TAMPER_CAPABLE_CODE`) flags known patterns only. Out of
+  still call the harness's report code or patch memory and forge a pass;
+  the tripwire (`TAMPER_CAPABLE_CODE`) flags known patterns only. The
+  harness key is not secret from code under test (Review's round-2 attack
+  read it from a heap dump): on amd64 and arm64 (GitHub's hosted runners)
+  the channel is sealed by seccomp so that only the harness's own write
+  instruction can use it; elsewhere a heap dump is enough to forge, and
+  only the tripwire flags it. Out of
   process, earlier versions accepted a helper the code under test started
   (Review's atk_cloneparent and atk_orphan); the channel now goes only to
   test binaries the verifier's launcher starts as children of the

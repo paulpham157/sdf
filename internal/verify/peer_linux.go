@@ -89,7 +89,15 @@ func checkLauncher(pid int, self string, root, goNsPid int, isolated bool) (stri
 		return "", err
 	}
 	if isolated {
-		ns, err := nsPid(parent)
+		// go's pid in the check's namespace: the level at which root is
+		// pid 1. The parent must be in that very namespace (as deep as
+		// root), not in one nested below it, where the same number can
+		// name another process.
+		rootNs, err := nsPids(root)
+		if err != nil {
+			return "", err
+		}
+		ns, err := nsPids(parent)
 		if err != nil {
 			return "", err
 		}
@@ -97,8 +105,9 @@ func checkLauncher(pid int, self string, root, goNsPid int, isolated bool) (stri
 		if err != nil {
 			return "", err
 		}
-		if goNsPid <= 1 || ns != goNsPid || gp != root {
-			return "", fmt.Errorf("its parent (pid %d in the namespace) is not the go command pid 1 started (pid %d)", ns, goNsPid)
+		level := len(rootNs) - 1
+		if level < 1 || rootNs[level] != 1 || len(ns) != len(rootNs) || goNsPid <= 1 || ns[level] != goNsPid || gp != root {
+			return "", fmt.Errorf("its parent (pids %v) is not the go command pid 1 started (pid %d in the namespace of pid 1, %v)", ns, goNsPid, rootNs)
 		}
 	} else if parent != root {
 		return "", fmt.Errorf("its parent %d is not the go command the verifier started", parent)
@@ -113,22 +122,30 @@ func checkLauncher(pid int, self string, root, goNsPid int, isolated bool) (stri
 	return os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
 }
 
-// nsPid is pid's process id in its own (innermost) pid namespace.
-func nsPid(pid int) (int, error) {
+// nsPids is pid's process id in each pid namespace it is in, from the
+// namespace of the /proc this process reads (its own) to its innermost.
+func nsPids(pid int) ([]int, error) {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		if rest, ok := strings.CutPrefix(line, "NSpid:"); ok {
-			f := strings.Fields(rest)
-			if len(f) < 2 {
-				return 0, fmt.Errorf("process %d is not in a nested pid namespace", pid)
+			var out []int
+			for _, f := range strings.Fields(rest) {
+				n, err := strconv.Atoi(f)
+				if err != nil {
+					return nil, fmt.Errorf("process %d: NSpid %q", pid, rest)
+				}
+				out = append(out, n)
 			}
-			return strconv.Atoi(f[len(f)-1])
+			if len(out) == 0 {
+				break
+			}
+			return out, nil
 		}
 	}
-	return 0, fmt.Errorf("no NSpid for process %d", pid)
+	return nil, fmt.Errorf("no NSpid for process %d", pid)
 }
 
 // socketPair is a connected pair of unix stream sockets.

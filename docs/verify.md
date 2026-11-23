@@ -63,9 +63,11 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    following symlinks (the on-disk type must match the git mode). A new file that
    matches a designated glob fails (`DESIGNATED_FILE_ADDED`). For a `go test`
    or `go vet` criterion, so does any new or changed `_test.go` file or
-   `testdata` file in a package it tests, and a new or changed `go.mod`,
-   `go.sum`, `go.work` or `go.work.sum`, and any new, changed or deleted file
-   under `vendor/`, whether or not the task designated it: a new `TestMain`
+   `testdata` file in a package it tests, a new, changed or deleted
+   `go.mod`, `go.sum`, `go.work` or `go.work.sum` anywhere in the checkout
+   (a nested one makes its directory another module or a workspace), and
+   any new, changed or deleted file under `vendor/` (at the root, or in the
+   `-C` directory), whether or not the task designated it: a new `TestMain`
    or a replaced dependency decides the result. A symlink that is new or changed
    since the base and points outside the checkout fails
    (`SYMLINK_OUTSIDE_CHECKOUT`). So does a copy of this task's
@@ -212,9 +214,10 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      (`-cover` profiles in go's work directory, `go build` into the cache,
      fuzz corpora) fail there;
    - the hook takes a fresh random key from fd 3 and never dials anything.
-     A process the code under test starts cannot get a channel: fd 3 is
-     close-on-exec after the hook takes it, and a launcher that is not a
-     child of that `go` is refused. Review's round-7 forgeries (atk_cloneparent:
+     It moves the channel to a high odd descriptor (65535, or just below
+     `RLIMIT_NOFILE`), close-on-exec, so no process the code under test
+     starts gets it, and a launcher that is not a child of that `go` is
+     refused. Review's round-7 forgeries (atk_cloneparent:
      a helper started with `CLONE_PARENT` as a sibling of the test binary,
      so a child of `go`; atk_orphan: a fake `go`, reparented to pid 1, that
      starts the helper) are refused that way;
@@ -222,6 +225,24 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      ends, the hook sends `pass`, `fail` or `skip` with an HMAC under that
      key. Package names come from the nearest `go.mod`. A report for a test
      of another package than the channel's is `TEST_REPORT_INVALID`;
+   - the key is in the test process's memory, so it is not what stops code
+     under test from reporting: Review's round-2 attack read it from
+     `runtime/debug.WriteHeapDump` and wrote a frame to the channel it
+     found among its descriptors. On amd64 and arm64 the channel is
+     **sealed** instead: the hook writes reports only through a small
+     assembly function it adds to package `testing`, and the seccomp
+     filter below refuses (`EPERM`) every system call whose first argument
+     is the channel's descriptor unless it is `write` issued from that
+     function's instructions (seccomp sees the caller's instruction
+     pointer). Code under test cannot write, read, `dup`, `fcntl`, `fstat`
+     or close the channel. The other ways to a second descriptor for it, or
+     to write into it indirectly, are refused too: `sendmsg` and
+     `sendmmsg` (`SCM_RIGHTS` could hand it back under another number),
+     `io_uring_*`, `bpf`, and `splice`/`copy_file_range` into it.
+     `pidfd_getfd` and `ptrace` are refused below, and `/proc/self/fd/N`
+     cannot open a socket. System calls whose first argument is a pid or
+     an address are not checked, so a pid with the same number is not
+     refused by accident;
    - right after the key exchange, still before any code of the module
      runs, the hook makes the test process non-dumpable
      (`PR_SET_DUMPABLE 0`), so its `/proc/self/mem` (and `fd/`, `environ`)
@@ -239,15 +260,22 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      `go`. If any of it fails the test binary
      exits 3. Side effects for tests: `/proc/self/fd` is not listable,
      set-uid programs run by a test do not gain privileges, and a test that
-     runs a debugger or `strace` fails.
+     runs a debugger or `strace` fails; so does any `sendmsg`
+     (`UnixConn.WriteMsgUnix`, `UDPConn.WriteMsgUDP`, passing descriptors)
+     or `io_uring` use, in the test process and in programs it runs (they
+     inherit the filter), and a program it runs cannot use its own
+     descriptor with the channel's number.
 
    **This resists only naive cheating. It is not a security boundary
    against an adversarial agent**: code in the test binary that uses
-   `unsafe`, `//go:linkname` or assembly can still read the key or write
-   memory and forge a pass. Out of process, code under test has so far
-   found two ways around earlier versions (round 7, closed as above), and
-   with `--allow-unisolated` more remain open (see "What this does not
-   guarantee").
+   `unsafe`, `//go:linkname` or assembly can still call the hook's report
+   function or its write stub, or write memory, and forge a pass. Without
+   those, code under test has so far found three ways around earlier
+   versions (round 7 out of process, round 2 of this review with a heap
+   dump; closed as above). On architectures other than amd64 and arm64
+   there is no seccomp filter and so no seal: code that finds the key (a
+   heap dump does) can forge a pass. With `--allow-unisolated` more remain
+   open (see "What this does not guarantee").
 
    Every designated test must report only `pass`, else
    `DESIGNATED_TEST_NOT_PASSED` (named as `TestX (package import/path)`; a
@@ -276,7 +304,9 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
      `Mprotect`, `ProcessVM*` or ptrace through `syscall` or
      `golang.org/x/sys/unix` (called or taken as a value);
      using `runtime.FuncForPC` or a reflect `Pointer`/`UnsafePointer`/
-     `UnsafeAddr` method; or with a string constant (after folding `+` of
+     `UnsafeAddr` method; using `runtime/debug.WriteHeapDump` (a copy of
+     the process's memory) or dot-importing `runtime/debug`; or with a
+     string constant (after folding `+` of
      literals) containing `/proc` or `proc/`, or equal to `proc`.
 
    **The tripwire catches known patterns only.** A path or name can be
@@ -287,7 +317,8 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    warning. atk_tw5 (FuncForPC + `/proc/self/mem`) is flagged, and fails
    anyway with `--allow-tamper-capable` because of the non-dumpable hook;
    atk_b1mem (unsafe) is flagged and, with `--allow-tamper-capable`, still
-   forges a pass.
+   forges a pass. Review's heap-dump attack is flagged, and fails anyway
+   with `--allow-tamper-capable` on amd64 and arm64 (the seal).
 
    Output is hashed (`--artifacts DIR` keeps it as `<sha256>` files).
    Before and after each check, every tracked file on disk is re-hashed
@@ -378,13 +409,21 @@ record.
 - **Known gap: the go test harness is not a security boundary.** It is
   not only an in-process gap.
   - In process: code under test runs in the same process as the hook.
-    With `unsafe`, `//go:linkname` or assembly it can read the key or call
-    the hook's report function (Review's atk_b1mem), or patch code or data
-    in memory, and forge a pass. The non-dumpable test process closes
-    `/proc/self/mem` (atk_tw5), and the tripwire turns the usual ways into
-    `TAMPER_CAPABLE_CODE`, but it catches known patterns only. Closing it
-    needs the tests to run in a process the code under test cannot
-    inspect; it is not built.
+    With `unsafe`, `//go:linkname` or assembly it can call the hook's
+    report function or its write stub (Review's atk_b1mem), or patch code
+    or data in memory, and forge a pass. The non-dumpable test process
+    closes `/proc/self/mem` (atk_tw5), and the tripwire turns the usual
+    ways into `TAMPER_CAPABLE_CODE`, but it catches known patterns only.
+    Closing it needs the tests to run in a process the code under test
+    cannot inspect; it is not built.
+  - The key is not secret from code under test: it is in Go-managed
+    memory, and a heap dump shows it. On amd64 and arm64 the sealed channel makes the key
+    useless to such code; the seal rests on the seccomp filter and on code
+    under test not reaching the hook's write stub, and refuses `sendmsg`
+    and `io_uring` for the whole test process tree (see above). On other
+    architectures there is no seal: reading the key and writing to the
+    channel forges a pass, and only the tripwire (`WriteHeapDump`) stands
+    in the way.
   - Out of process: earlier versions trusted any process that looked like
     a test binary started by `go`, and code under test produced one
     (round 7: atk_cloneparent, atk_orphan). The channel now goes only to
@@ -399,8 +438,9 @@ record.
     binary can write go's work directory and build cache, so it can
     replace another package's test binary before `go` starts it, or
     poison an object a later link uses, and forge that package's results.
-    Only isolated verdicts should count. Packages from the module cache (not vendored)
-  are not hooked, so a dependency's `init` may run before the hook. Which
+    Only isolated verdicts should count.
+  - Packages from the module cache (not vendored)
+    are not hooked, so a dependency's `init` may run before the hook. Which
   dependencies are used cannot change without a `go.mod`/`go.sum` change,
   which fails, and their sources come from a fresh download (checked
   against `go.sum`) or a trusted cache a check cannot write; but go does
