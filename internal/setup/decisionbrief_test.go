@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -382,5 +383,66 @@ func TestOpenCodeAndPiPluginsAreUnchangedByTheBriefHook(t *testing.T) {
 	}
 	if strings.Contains(string(ext), "decision brief") {
 		t.Fatal("pi extension mentions decision brief")
+	}
+}
+
+func TestDecisionBriefHookCommandWithRealBinaryEmptyDir(t *testing.T) {
+	requireSh(t)
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not on PATH")
+	}
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "sdf")
+	build := exec.Command(goBin, "build", "-o", bin, "./cmd/sdf")
+	build.Dir = moduleRoot(t)
+	build.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	work := t.TempDir()
+	direct := exec.Command(bin, "decision", "brief")
+	direct.Dir = work
+	var directOut, directErr bytes.Buffer
+	direct.Stdout, direct.Stderr = &directOut, &directErr
+	if err := direct.Run(); err != nil {
+		t.Fatalf("sdf decision brief: %v\nstdout=%q stderr=%q", err, directOut.String(), directErr.String())
+	}
+	if directOut.Len() != 0 || directErr.Len() != 0 {
+		t.Fatalf("brief in an empty dir printed stdout=%q stderr=%q", directOut.String(), directErr.String())
+	}
+
+	cmd := exec.Command("sh", "-c", decisionBriefCommand)
+	cmd.Dir = work
+	cmd.Env = append(envWithout("PATH"), "PATH="+binDir)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("hook exited: %v\nstdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("hook printed stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(work, "sdf-telemetry.sqlite")); !os.IsNotExist(err) {
+		t.Fatal("brief created a store in the empty directory")
+	}
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
 	}
 }
