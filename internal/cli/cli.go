@@ -846,7 +846,6 @@ func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
 		return 1
 	}
-	report := summary.SummarizeWith(records, false, prices)
 	gitOpt := outcome.Options{Repo: repoPath}
 	if github {
 		lookup, err := outcome.NewGitHub()
@@ -857,7 +856,8 @@ func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
 			gitOpt.Lookup = lookup
 		}
 	}
-	outcome.Attach(&report, gitOpt)
+	// The same report GET /api/decisions/graph reads: no budget.
+	report := outcome.Summarize(records, prices, gitOpt)
 	view, err := decisiongraph.FromStore(db, report)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision graph: %v\n", err)
