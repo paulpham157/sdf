@@ -360,10 +360,10 @@ func TestParseInputRefusesDuplicateAndCaseVariantKeys(t *testing.T) {
 	}
 }
 
-func TestIDsAreLowercaseOnly(t *testing.T) {
-	for _, id := range []string{"T1", "Add-Widget", "aB"} {
-		if ValidID(id) {
-			t.Errorf("%q accepted", id)
+func TestIDsKeepTheirCase(t *testing.T) {
+	for _, id := range []string{"T1", "Add-Widget", "01JD5Z8K3QW9V4X7Y2M6N0P1RS"} {
+		if !ValidID(id) {
+			t.Errorf("%q refused", id)
 		}
 	}
 }

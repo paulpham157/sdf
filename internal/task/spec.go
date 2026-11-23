@@ -34,7 +34,7 @@ const (
 )
 
 var (
-	idPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	idPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	shaPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 )
 
@@ -75,11 +75,13 @@ type Spec struct {
 
 // ValidID reports whether id can name a task (or a criterion): valid UTF-8,
 // no newline or other control character, and the id pattern, which is
-// stricter: lowercase ASCII letters, digits, ".", "_", "-", at most 128
-// bytes. Lowercase only, so two ids never differ by case alone (t1 and T1
-// would be one file on a case-insensitive filesystem). The first two rules
-// are checked on their own too, so a looser pattern later cannot let them
-// through.
+// stricter: ASCII letters, digits, ".", "_", "-", at most 128 bytes, the
+// same pattern as the ledger's ValidID. Case is preserved (a ULID stays
+// valid); Declare refuses an id that differs from an existing one by case
+// only. The first two rules are checked on their own too, so a looser
+// pattern later cannot let them through.
+//
+// TODO(#189): use ledger.ValidID once the ledger package is merged.
 func ValidID(id string) bool {
 	if !utf8.ValidString(id) {
 		return false

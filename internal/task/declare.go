@@ -7,12 +7,18 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // RepoTaskDir is where a declared task is written inside the repository,
 // relative to its root. Committed on a protected branch, that file is the
 // copy CI trusts.
 const RepoTaskDir = ".sdf/tasks"
+
+// ErrIDCaseCollision is returned when a task id differs only by case from
+// a task already stored in the same place. On a case-insensitive filesystem
+// the two would be one file, and to a reader they look like one task.
+var ErrIDCaseCollision = errors.New("task id differs only by case from an existing task")
 
 // ErrDeclaredDifferently is returned when a task id is already declared
 // with a different hash. A task is never redeclared in place: declare a new
@@ -86,6 +92,21 @@ func Declare(ctx context.Context, spec Spec, st Store) (Declared, error) {
 
 	conflict := func(where, have string) error {
 		return fmt.Errorf("%w: %s %s holds %s, this declaration is %s", ErrDeclaredDifferently, spec.ID, where, have, hash)
+	}
+
+	for _, dir := range []string{st.RepoDir, st.DataDir} {
+		if dir == "" {
+			continue
+		}
+		tasksDir := filepath.Dir(RepoPath(dir, spec.ID))
+		if dir == st.DataDir {
+			tasksDir = filepath.Dir(DataPath(dir, spec.ID))
+		}
+		if other, err := caseVariant(tasksDir, spec.ID); err != nil {
+			return Declared{}, err
+		} else if other != "" {
+			return Declared{}, fmt.Errorf("%w: %s is already declared in %s; use that id or a different one", ErrIDCaseCollision, other, tasksDir)
+		}
 	}
 
 	ledgerHas := false
@@ -268,4 +289,23 @@ func Load(ctx context.Context, id string, st Store) ([]Found, error) {
 		}
 	}
 	return found, nil
+}
+
+// caseVariant returns the id of a task file in dir whose id equals id
+// under case folding but is not id, or "" when there is none.
+func caseVariant(dir, id string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".json")
+		if ok && name != id && strings.EqualFold(name, id) {
+			return name, nil
+		}
+	}
+	return "", nil
 }
