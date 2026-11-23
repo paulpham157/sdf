@@ -454,7 +454,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -466,6 +466,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionAdd(args[1:], stdout, stderr)
 	case "link":
 		return cmdDecisionLink(args[1:], stdout, stderr)
+	case "list":
+		return cmdDecisionList(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
 		return 0
@@ -672,6 +674,59 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		To:       toEnd,
 	}); err != nil {
 		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const decisionListUsage = "usage: sdf decision list [--db PATH] [--json]"
+
+// cmdDecisionList prints every decision and edge. It reads through
+// decision.Load, the same path GET /api/decisions uses, and --json is that
+// response byte for byte. Like sdf summary, it opens the store with
+// store.Open, so a missing file is created empty and lists nothing.
+func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionListUsage)
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision list: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	graph, err := decision.Load(db)
+	_ = db.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	write := decision.WriteText
+	if asJSON {
+		write = decision.WriteJSON
+	}
+	if err := write(stdout, graph); err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
 		return 1
 	}
 	return 0

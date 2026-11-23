@@ -377,3 +377,58 @@ func openDB(t *testing.T) *store.Store {
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
+
+func TestWriteTextLaysOutBothTables(t *testing.T) {
+	g := decision.Graph{
+		Decisions: []decision.Record{
+			{ID: "use-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision, RecordedAt: "2026-11-23T15:00:00.000000+00:00", Source: "issue 168"},
+			{ID: "pure-go", Statement: "The driver\tstays pure Go.\x1b[31m", Status: decision.StatusHypothesis, RecordedAt: "2026-11-23T15:00:01.000000+00:00"},
+		},
+		Edges: []decision.Edge{
+			{Relation: decision.RelImplements, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "pure-go"}, To: decision.Endpoint{Kind: decision.KindDecision, Ref: "use-sqlite"}, RecordedAt: "2026-11-23T15:00:02.000000+00:00"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := decision.WriteText(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	want := "Decisions: 2\n" +
+		"ID          STATUS      RECORDED AT                       SOURCE     STATEMENT\n" +
+		"use-sqlite  decision    2026-11-23T15:00:00.000000+00:00  issue 168  Keep the collector store in SQLite.\n" +
+		"pure-go     hypothesis  2026-11-23T15:00:01.000000+00:00  -          \"The driver\\tstays pure Go.\\x1b[31m\"\n" +
+		"\n" +
+		"Edges: 1\n" +
+		"RELATION    FROM              TO                   RECORDED AT\n" +
+		"implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:02.000000+00:00\n"
+	if buf.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+func TestWriteTextEmptyGraph(t *testing.T) {
+	for _, g := range []decision.Graph{{}, {Decisions: []decision.Record{}, Edges: []decision.Edge{}}} {
+		var buf bytes.Buffer
+		if err := decision.WriteText(&buf, g); err != nil {
+			t.Fatal(err)
+		}
+		if buf.String() != "No decisions in the store.\n" {
+			t.Fatalf("%q", buf.String())
+		}
+	}
+}
+
+func TestWriteTextEdgesWithoutDecisions(t *testing.T) {
+	g := decision.Graph{Edges: []decision.Edge{{
+		Relation:   decision.RelValidates,
+		From:       decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"},
+		To:         decision.Endpoint{Kind: decision.KindCommit, Ref: sha},
+		RecordedAt: "2026-11-23T15:00:02.000000+00:00",
+	}}}
+	var buf bytes.Buffer
+	if err := decision.WriteText(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(buf.String(), "Decisions: 0\n\nEdges: 1\n") {
+		t.Fatalf("%q", buf.String())
+	}
+}

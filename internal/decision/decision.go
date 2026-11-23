@@ -12,8 +12,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/paulpham157/sdf/internal/store"
 )
@@ -203,6 +207,66 @@ func WriteJSON(w io.Writer, g Graph) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(g)
+}
+
+// WriteText writes the graph as two tables, decisions then edges, in the
+// order Load returns them. It reads the same Graph that WriteJSON and
+// GET /api/decisions write, so the two views cannot disagree. A cell that
+// holds a control character or invalid UTF-8 is printed Go-quoted so it
+// cannot break the columns or the terminal. An empty source prints as "-".
+func WriteText(w io.Writer, g Graph) error {
+	if len(g.Decisions) == 0 && len(g.Edges) == 0 {
+		_, err := io.WriteString(w, "No decisions in the store.\n")
+		return err
+	}
+	decisions := [][]string{{"ID", "STATUS", "RECORDED AT", "SOURCE", "STATEMENT"}}
+	for _, d := range g.Decisions {
+		source := d.Source
+		if source == "" {
+			source = "-"
+		}
+		decisions = append(decisions, []string{d.ID, d.Status, d.RecordedAt, source, d.Statement})
+	}
+	edges := [][]string{{"RELATION", "FROM", "TO", "RECORDED AT"}}
+	for _, e := range g.Edges {
+		edges = append(edges, []string{e.Relation, e.From.Kind + ":" + e.From.Ref, e.To.Kind + ":" + e.To.Ref, e.RecordedAt})
+	}
+	if err := writeTable(w, fmt.Sprintf("Decisions: %d", len(g.Decisions)), decisions); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		return err
+	}
+	return writeTable(w, fmt.Sprintf("Edges: %d", len(g.Edges)), edges)
+}
+
+// writeTable prints a title line, then the header and rows aligned by
+// column. A table with no rows prints the title only.
+func writeTable(w io.Writer, title string, rows [][]string) error {
+	if _, err := io.WriteString(w, title+"\n"); err != nil {
+		return err
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, c := range row {
+			cells[i] = cell(c)
+		}
+		if _, err := io.WriteString(tw, strings.Join(cells, "\t")+"\n"); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func cell(s string) string {
+	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
+		return s
+	}
+	return strconv.QuoteToASCII(s)
 }
 
 func newRecord(in RecordInput, recordedAt string) (Record, error) {
