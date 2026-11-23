@@ -78,6 +78,8 @@ func Run(req Request) (Result, error) {
 		return codex(req)
 	case "opencode":
 		return opencode(req)
+	case "qwen", "qwen-code":
+		return qwen(req)
 	case "pi":
 		return pi(req)
 	default:
@@ -467,6 +469,8 @@ func Configured(req Request) (string, error) {
 		return codexConfigured(req), nil
 	case "opencode":
 		return opencodeConfigured(req), nil
+	case "qwen", "qwen-code":
+		return qwenConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
 	default:

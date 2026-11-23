@@ -78,6 +78,12 @@ So the same numbers are not added twice:
   the text and in `--json` is the same number.
 - Cost SDF computed: those same token totals, after the de-dup rule above,
   times the OpenRouter per-token price. See below.
+- Qwen Code sessions use their own rules, applied after the ones above:
+  duration is the sum of `qwen-code.interaction` spans (else `logs qwen-code
+  window`), tokens are the sum of `qwen-code.api_response` token counts
+  (else `qwen-code.llm_request` usage, else `qwen-code.token.usage` by
+  `type`), and tool calls come from `qwen-code.tool` spans joined to
+  `qwen-code.tool_call` logs. See [docs/agents.md](agents.md#qwen-code).
 
 Codex `response.completed` token fields are not all additive. `input_token_count`,
 `cached_token_count`, and `cache_write_token_count` already include the
@@ -135,6 +141,7 @@ How a count is turned into a bucket:
 | Token source | Rule |
 | --- | --- |
 | Claude Code `claude_code.token.usage` and `api_request` | `input` excludes cache read and cache creation. Each is priced on its own. [Monitoring](https://code.claude.com/docs/en/monitoring-usage) documents that split. |
+| Qwen Code `qwen-code.api_response`, `llm_request`, and `token.usage` | No pricing rule yet, so computed cost is `unknown` (or unknown earlier when the model is not in the catalog). From `ApiResponseEvent` and the OpenAI converter at v0.28.4: input includes `cached_content_token_count`; with OpenAI-compatible providers output includes `thoughts_token_count` (possibly estimated), with Gemini-native responses it does not. A rule would have to know the provider. |
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
 | OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |

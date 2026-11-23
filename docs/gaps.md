@@ -47,6 +47,17 @@
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
   SQLite file.
+- Qwen Code reports no cost, and `internal/pricing` has no rule for its
+  token sources, so both cost fields are unknown. Its token totals include
+  subagents and the background memory extractor. Its metrics carry no
+  session id by default. Span events and the log-to-span bridge (used with
+  HTTP when only a traces endpoint is set) are not modelled. Tokens come from
+  per-response logs, which a resumed session (`qwen --resume`) does not
+  reset; the `qwen-code.token.usage` fallback is cumulative and undercounts
+  a resumed session until
+  [#191](https://github.com/paulpham157/sdf/pull/191) merges. The mapping and
+  the `qwen_*.json` samples come from the v0.28.4 docs and source, not a
+  live session.
 - The git hook sends the commit SHA, checkout path, and branch to the local
   receiver. It does not send the diff or the message. The `SDF-Session`
   trailer stays in the git object. A GitHub squash merge keeps that trailer

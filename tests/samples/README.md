@@ -4,6 +4,11 @@ These JSON files are hand-written sample OpenTelemetry data. They are not
 recordings of a real Codex or Claude Code session, and they contain no
 prompts.
 
+`qwen_*.json` follow Qwen Code v0.28.4's telemetry docs and source
+(`QwenLM/qwen-code`, `packages/core/src/telemetry`) with `logPrompts: false`.
+They were not captured from a live session: ids are fake and there is no
+prompt, request, response, or file text.
+
 Every resource carries `sdf.fixture=sample`. The shapes follow the attribute
 names documented for each tool (see the repository README) so ingest and
 summary tests can run without either CLI.

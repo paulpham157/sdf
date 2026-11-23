@@ -1,0 +1,367 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "qwen-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.28.4"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "qwen-code"
+          },
+          "metrics": [
+            {
+              "name": "qwen-code.session.count",
+              "description": "Count of CLI sessions started.",
+              "unit": "",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1",
+                    "attributes": []
+                  }
+                ]
+              }
+            },
+            {
+              "name": "qwen-code.token.usage",
+              "description": "Counts the total number of tokens used.",
+              "unit": "",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "67800",
+                    "attributes": [
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "qwen3-coder-plus"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "input"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1920",
+                    "attributes": [
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "qwen3-coder-plus"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "output"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "44596",
+                    "attributes": [
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "qwen3-coder-plus"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "cache"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "710",
+                    "attributes": [
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "qwen3-coder-plus"
+                        }
+                      },
+                      {
+                        "key": "type",
+                        "value": {
+                          "stringValue": "thought"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "qwen-code.api.request.count",
+              "description": "Counts API requests.",
+              "unit": "",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "6",
+                    "attributes": [
+                      {
+                        "key": "model",
+                        "value": {
+                          "stringValue": "qwen3-coder-plus"
+                        }
+                      },
+                      {
+                        "key": "status_code",
+                        "value": {
+                          "intValue": "200"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "name": "qwen-code.tool.call.count",
+              "description": "Counts tool calls.",
+              "unit": "",
+              "sum": {
+                "aggregationTemporality": 2,
+                "isMonotonic": true,
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "read_file"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "success"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "agent"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "success"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "glob"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "success"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "edit"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "success"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": true
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "startTimeUnixNano": "1800000199000000000",
+                    "timeUnixNano": "1800000265000000000",
+                    "asInt": "1",
+                    "attributes": [
+                      {
+                        "key": "function_name",
+                        "value": {
+                          "stringValue": "run_shell_command"
+                        }
+                      },
+                      {
+                        "key": "status",
+                        "value": {
+                          "stringValue": "error"
+                        }
+                      },
+                      {
+                        "key": "success",
+                        "value": {
+                          "boolValue": false
+                        }
+                      },
+                      {
+                        "key": "decision",
+                        "value": {
+                          "stringValue": "auto_accept"
+                        }
+                      },
+                      {
+                        "key": "tool_type",
+                        "value": {
+                          "stringValue": "native"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
