@@ -81,6 +81,20 @@ func TestDecisionBriefJSONAndCaps(t *testing.T) {
 	}
 }
 
+func TestDecisionBriefMaxItemsZeroStillReportsAMatch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	seedBrief(t, dbPath)
+
+	text := run(t, "decision", "brief", "--db", dbPath, "--max-items", "0")
+	if text.code != 0 || text.stderr != "" || text.stdout != "4 more: run sdf decision list\n" {
+		t.Fatalf("%d %q %q", text.code, text.stdout, text.stderr)
+	}
+	js := run(t, "decision", "brief", "--db", dbPath, "--max-items=0", "--format", "json")
+	if js.code != 0 || js.stderr != "" || js.stdout != "{\n  \"items\": [],\n  \"omitted\": 4\n}\n" {
+		t.Fatalf("%d %q %q", js.code, js.stdout, js.stderr)
+	}
+}
+
 func TestDecisionBriefMissingDBIsSilent(t *testing.T) {
 	dir := t.TempDir()
 	cases := [][]string{
@@ -127,7 +141,7 @@ func TestDecisionBriefEmptyStoreJSON(t *testing.T) {
 
 func TestDecisionBriefUsage(t *testing.T) {
 	help := run(t, "decision", "brief", "--help")
-	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]") {
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]") || !strings.Contains(help.stdout, "when any decision matched") {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	bad := run(t, "decision", "brief", "--format", "yaml")

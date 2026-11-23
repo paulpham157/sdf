@@ -28,8 +28,10 @@ const (
 )
 
 // cmdDecisionBrief prints the ranked brief. It opens the store read-only.
-// A missing database, a database that cannot be read, or any other store
-// error prints nothing and exits 0. A usage error still exits 2.
+// Output is written when any decision matched, even when the caps leave no
+// item lines. A missing database, a database that cannot be read, a stdout
+// write error, or any other store error prints nothing and exits 0. A usage
+// error still exits 2.
 func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
 	maxItems := defaultBriefItems
@@ -42,7 +44,7 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, decisionBriefUsage)
 			fmt.Fprintln(stdout, "Prints active constraints (locked user decisions first), then blocked decisions, then conflicting decisions.")
 			fmt.Fprintf(stdout, "Defaults: --max-items %d, --max-bytes %d, --format text. Retracted and superseded decisions are omitted.\n", defaultBriefItems, defaultBriefBytes)
-			fmt.Fprintln(stdout, "When items are cut, the text ends with \"N more: run sdf decision list\". An empty brief, a missing database, or a store error prints nothing and exits 0.")
+			fmt.Fprintln(stdout, "Output is printed when any decision matched. When items are cut, the text ends with \"N more: run sdf decision list\". An empty brief, a missing database, or a store or write error prints nothing and exits 0.")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -132,8 +134,7 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if _, err := stdout.Write(out); err != nil {
-		fmt.Fprintf(stderr, "sdf decision brief: %v\n", err)
-		return 1
+		return 0
 	}
 	return 0
 }

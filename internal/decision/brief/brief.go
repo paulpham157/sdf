@@ -39,10 +39,11 @@ const (
 	// KindConstraint is an active settled decision the user made, or the
 	// source of a constrains edge.
 	KindConstraint = "constraint"
-	// KindBlocked is an active decision that an active constraint constrains.
+	// KindBlocked is a decision Load marked Blocked: active, with a blocks
+	// edge whose blocker is still unsettled (open_blockers is not empty).
 	KindBlocked = "blocked"
-	// KindConflicting is an active decision with conflicting evidence or a
-	// contradicts edge to another active decision.
+	// KindConflicting is a decision Load marked Conflicted: active, and
+	// conflicts_with another active decision.
 	KindConflicting = "conflicting"
 )
 
