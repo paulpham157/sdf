@@ -177,12 +177,13 @@ func TestDecisionsTabAbsentWithoutDecisions(t *testing.T) {
 // graph and panel as of ?at=N with blocked, conflicted, and needs-attention
 // recomputed from the events recorded so far.
 func TestPageRendersDecisionReplay(t *testing.T) {
-	// The label is New York time whatever the machine's zone is.
+	// The label is in the browser's zone (the page runner's TZ), with the
+	// zone's label, as the panel's times are; never a fixed zone.
 	t.Setenv("TZ", "Asia/Ho_Chi_Minh")
 	db := openDB(t)
 	seedGraph(t, db)
 	srv := startUI(t, db)
-	zone := regexp.MustCompile(` (EST|EDT)\b`)
+	zone := regexp.MustCompile(` GMT\+7\b`)
 
 	// seedGraph records 4 decisions, then 4 edges: implements, constrains,
 	// blocks, conflicts_with.
@@ -193,7 +194,10 @@ func TestPageRendersDecisionReplay(t *testing.T) {
 		}
 	}
 	if !zone.MatchString(now.Text) {
-		t.Errorf("replay label has no New York zone:\n%s", now.Text)
+		t.Errorf("replay label has no browser zone (GMT+7):\n%s", now.Text)
+	}
+	if regexp.MustCompile(` (EST|EDT)\b`).MatchString(now.Text) {
+		t.Errorf("replay label is in New York time, not the browser's zone:\n%s", now.Text)
 	}
 	if strings.Contains(now.Text, "As of ") {
 		t.Errorf("replay at now should show the live chapter:\n%s", now.Text)
@@ -213,7 +217,7 @@ func TestPageRendersDecisionReplay(t *testing.T) {
 		}
 	}
 	if !zone.MatchString(early.Text) {
-		t.Errorf("replay at 4 has no New York zone:\n%s", early.Text)
+		t.Errorf("replay at 4 has no browser zone (GMT+7):\n%s", early.Text)
 	}
 
 	// After blocks (event 7), before conflicts_with: locked, not conflicted.
@@ -247,11 +251,15 @@ func TestPageRendersDecisionReplay(t *testing.T) {
 	}
 }
 
-// The replay code keeps its contract in the asset: explicit New York time,
-// reduced motion, the step keys, and opacity-only animation.
+// The replay code keeps its contract in the asset: the browser's zone (no
+// fixed timeZone), reduced motion, the step keys, and opacity-only
+// animation.
 func TestReplayAssetContract(t *testing.T) {
 	script := readAsset(t, "app.js")
-	for _, want := range []string{`timeZone: "America/New_York"`, `prefers-reduced-motion: reduce`, `case "[":`, `case "]":`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `role: "slider"`, `"aria-valuetext"`} {
+	if strings.Contains(script, "America/New_York") || strings.Contains(script, "timeZone:") {
+		t.Error("app.js pins a time zone; the replay uses the browser's")
+	}
+	for _, want := range []string{`prefers-reduced-motion: reduce`, `case "[":`, `case "]":`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"`, `role: "slider"`, `"aria-valuetext"`} {
 		if !strings.Contains(script, want) {
 			t.Errorf("app.js is missing %q", want)
 		}

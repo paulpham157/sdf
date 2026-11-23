@@ -10,6 +10,30 @@
   let sortKey = "started";
   let sortDir = -1;
 
+  // childNodes turns a kids list into DOM nodes: nested lists are
+  // flattened, null, undefined, true and false are dropped, and anything
+  // else that is not a node becomes a text node. A real append() or
+  // replaceChildren() would draw null as the text "null", so every caller
+  // that fills an element passes its kids through here (h, s, fill).
+  function childNodes(kids) {
+    const out = [];
+    (function add(list) {
+      for (let i = 0; i < list.length; i++) {
+        const kid = list[i];
+        if (kid == null || kid === false || kid === true) continue;
+        if (Array.isArray(kid)) add(kid);
+        else out.push(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+      }
+    })(Array.isArray(kids) ? kids : (kids == null ? [] : [kids]));
+    return out;
+  }
+
+  // fill replaces el's children with kids, filtered as childNodes does.
+  function fill(el, kids) {
+    el.replaceChildren.apply(el, childNodes(kids));
+    return el;
+  }
+
   function h(tag, props, kids) {
     const node = document.createElement(tag);
     if (props) {
@@ -21,10 +45,7 @@
         else node.setAttribute(key, value);
       });
     }
-    (kids || []).forEach(function (kid) {
-      if (kid == null || kid === false) return;
-      node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
-    });
+    childNodes(kids).forEach(function (kid) { node.append(kid); });
     return node;
   }
 
@@ -1002,10 +1023,7 @@
         else node.setAttribute(key, value);
       });
     }
-    (kids || []).forEach(function (kid) {
-      if (kid == null || kid === false) return;
-      node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
-    });
+    childNodes(kids).forEach(function (kid) { node.append(kid); });
     return node;
   }
 
@@ -1570,6 +1588,7 @@
     return h("div", { class: "dg-help", role: "note" }, [
       h("p", null, [h("strong", null, ["Shortcuts"])]),
       h("p", null, ["Tab moves between nodes · Enter or Space focuses one · Esc closes it · ↑ ↓ walk the rows · ← → choose Everyone, You or Agents · t toggles tensions · / jumps to an id · ? shows this · List shows the chapter as a list"]),
+      h("p", null, ["Replay: [ and ] step back and forward from anywhere on the tab · on the slider ← → step, PageUp PageDown jump a tenth, Home End go to the first or last event, Space plays or pauses"]),
     ]);
   }
 
@@ -1714,7 +1733,11 @@
     if (!key || !app.querySelector) return null;
     const esc = function (v) { return String(v).replace(/["\\]/g, "\\$&"); };
     if (key.indexOf("node:") === 0) return app.querySelector('[data-node="' + esc(key.slice(5)) + '"]');
-    return app.querySelector('[data-focus-key="' + esc(key) + '"]');
+    const el = app.querySelector('[data-focus-key="' + esc(key) + '"]');
+    // A hidden control cannot take focus: the replay's Now button hides at
+    // now, and its focus goes to the slider.
+    if (el && (el.hidden || (el.hasAttribute && el.hasAttribute("hidden")))) return key === "replay:now" ? app.querySelector('[data-focus-key="replay:slider"]') : null;
+    return el;
   }
 
   // Close the focus panel and give focus back to the node it described.
@@ -1845,7 +1868,7 @@
     if (!chapter.replay) return null;
     const text = node && node.future ?
       "Not recorded yet at this replay point (" + chapter.replay.at + " of " + chapter.replay.total + "). Its details below are as of now." :
-      "As of " + dgNYTime(chapter.replay.event.at, dgTimeline(dgView.chapter || chapter).seconds) + " · " + chapter.replay.at + " of " + chapter.replay.total + ". Flags and counts are recomputed for this point.";
+      "As of " + dgEventTime(chapter.replay.event, dgTimeline(dgView.chapter || chapter).seconds) + " · " + chapter.replay.at + " of " + chapter.replay.total + ". Flags and counts are recomputed for this point.";
     return h("p", { class: "dg-replay-note" }, [text]);
   }
 
@@ -1878,11 +1901,16 @@
     const rec = node.decision || {};
     kids.push(h("p", { class: "kicker" }, ["Decision" + (node.decided_by ? " · by " + (node.decided_by === "user" ? "you" : "the agent") : "")]));
     kids.push(h("h2", null, [node.id]));
-    const chips = [h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
-    if (rec.blocked) chips.push(h("span", { class: "dg-pchip dg-amber" }, ["🔒 blocked"]));
-    if (rec.conflicted) chips.push(h("span", { class: "dg-pchip dg-red" }, ["⚡ conflicted"]));
-    if (rec.challenged) chips.push(h("span", { class: "dg-pchip dg-red" }, ["challenged"]));
-    kids.push(h("p", { class: "dg-pchips" }, chips));
+    // A decision not recorded yet at the replay point has no state then:
+    // its chips (status, effective status, blocked, conflicted, challenged)
+    // would be today's, so they are left out.
+    if (!node.future) {
+      const chips = [h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
+      if (rec.blocked) chips.push(h("span", { class: "dg-pchip dg-amber" }, ["🔒 blocked"]));
+      if (rec.conflicted) chips.push(h("span", { class: "dg-pchip dg-red" }, ["⚡ conflicted"]));
+      if (rec.challenged) chips.push(h("span", { class: "dg-pchip dg-red" }, ["challenged"]));
+      kids.push(h("p", { class: "dg-pchips" }, chips));
+    }
     const meta = [dgWhen(rec.recorded_at)];
     if (rec.source) meta.push("source " + rec.source);
     kids.push(h("p", { class: "detail" }, [meta.join(" · ")]));
@@ -1949,41 +1977,60 @@
   const dgTimelines = typeof WeakMap === "function" ? new WeakMap() : null;
   const DG_EVENT_RANK = { decision: 0, edge: 1, retraction: 2 };
 
-  function dgMillis(text) {
-    const t = Date.parse(text || "");
-    return isNaN(t) ? 0 : t;
+  // dgParseTime reads a stored time: RFC3339 with a zone, as the store
+  // writes it, to full precision. ms is the epoch millisecond and sub the
+  // rest of the fraction in nanoseconds (0..999999), so events in one
+  // millisecond still order by time. A time with no zone is read as UTC, the
+  // zone the store writes, never as the browser's. Anything else is null.
+  function dgParseTime(text) {
+    if (typeof text !== "string") return null;
+    const m = /^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}:\d{2})(:\d{2})?(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:?\d{2})?$/.exec(text.trim());
+    if (!m) return null;
+    const frac = m[4] || "";
+    let zone = m[5] || "Z";
+    if (zone === "z") zone = "Z";
+    if (zone.length === 5) zone = zone.slice(0, 3) + ":" + zone.slice(3);
+    const ms = Date.parse(m[1] + "T" + m[2] + (m[3] || ":00") + (frac ? "." + (frac + "00").slice(0, 3) : "") + zone);
+    if (isNaN(ms)) return null;
+    return { ms: ms, sub: parseInt((frac.slice(3) + "000000").slice(0, 6), 10) };
   }
 
-  let dgNYFormat = null;
-  function dgNYParts(text) {
-    const date = new Date(text);
-    if (!text || isNaN(date.getTime())) return null;
+  // The replay's times are in the browser's zone, as dgWhen's are, with the
+  // zone's label, so the scrubber and the panel never disagree.
+  let dgTimeFormat = null;
+  function dgTimeParts(ms) {
+    if (ms == null) return null;
     try {
-      if (!dgNYFormat) {
-        dgNYFormat = new Intl.DateTimeFormat("en-US", {
-          timeZone: "America/New_York", month: "short", day: "numeric",
+      if (!dgTimeFormat) {
+        dgTimeFormat = new Intl.DateTimeFormat("en-US", {
+          month: "short", day: "numeric",
           hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23", timeZoneName: "short",
         });
       }
       const out = {};
-      dgNYFormat.formatToParts(date).forEach(function (part) { out[part.type] = part.value; });
-      return out;
+      dgTimeFormat.formatToParts(new Date(ms)).forEach(function (part) { out[part.type] = part.value; });
+      return out.month ? out : null;
     } catch (err) {
       return null;
     }
   }
 
-  // "Nov 22 · 09:14 EST", always in America/New_York with its zone label.
-  // Seconds are added when two events of the timeline share a minute.
-  function dgNYTime(text, seconds) {
-    const p = dgNYParts(text);
-    if (!p) return text || "";
-    return p.month + " " + p.day + " · " + p.hour + ":" + p.minute + (seconds ? ":" + p.second : "") + " " + p.timeZoneName;
+  // "Nov 22 · 09:14 GMT+7": the event's time in the browser's zone with its
+  // label; seconds are added when two events of the timeline share a
+  // minute. An event with no readable time says so.
+  function dgEventTime(ev, seconds) {
+    const key = seconds ? "whenS" : "when";
+    if (ev[key] != null) return ev[key];
+    const p = dgTimeParts(ev.ms);
+    ev[key] = p ? p.month + " " + p.day + " · " + p.hour + ":" + p.minute + (seconds ? ":" + p.second : "") + " " + p.timeZoneName : "time unknown";
+    return ev[key];
   }
 
-  function dgNYDay(text) {
-    const p = dgNYParts(text);
-    return p ? p.month + " " + p.day : "";
+  function dgEventDay(ev) {
+    if (ev.day != null) return ev.day;
+    const p = dgTimeParts(ev.ms);
+    ev.day = p ? p.month + " " + p.day : "";
+    return ev.day;
   }
 
   function dgEndpointLabel(end) {
@@ -2033,15 +2080,26 @@
           label: dgEndpointLabel(from) + " " + dgRelation(link.relation).label + " " + dgEndpointLabel(to) });
       });
     });
-    events.forEach(function (ev, i) { ev.seq = i; ev.ms = dgMillis(ev.at); });
+    events.forEach(function (ev, i) {
+      const t = dgParseTime(ev.at);
+      ev.seq = i;
+      ev.ms = t ? t.ms : null;
+      ev.sub = t ? t.sub : 0;
+    });
+    // By full stored time (to the nanosecond), then decision, edge,
+    // retraction, then the order the API listed them. An event whose time
+    // cannot be read goes last, in API order.
     events.sort(function (a, b) {
+      if ((a.ms == null) !== (b.ms == null)) return a.ms == null ? 1 : -1;
       if (a.ms !== b.ms) return a.ms - b.ms;
+      if (a.sub !== b.sub) return a.sub - b.sub;
       if (a.type !== b.type) return DG_EVENT_RANK[a.type] - DG_EVENT_RANK[b.type];
       return a.seq - b.seq;
     });
     let seconds = false;
     for (let i = 1; i < events.length; i++) {
-      if (Math.floor(events[i].ms / 60000) === Math.floor(events[i - 1].ms / 60000)) seconds = true;
+      if (events[i].ms != null && events[i - 1].ms != null &&
+        Math.floor(events[i].ms / 60000) === Math.floor(events[i - 1].ms / 60000)) seconds = true;
     }
     const out = { events: events, seconds: seconds };
     if (dgTimelines) dgTimelines.set(chapter, out);
@@ -2052,6 +2110,88 @@
     const m = dgTimeline(chapter).events.length;
     if (at == null || at >= m) return null;
     return Math.max(1, at);
+  }
+
+  // dgHeadResolver is decision.headResolver (internal/decision) in
+  // JavaScript: it returns resolve(id) -> { heads, cyclic }, memoized per id,
+  // in time linear in the decisions and supersedes edges reached, where a
+  // walk of every path doubles with each diamond in a chain. next(id) lists
+  // the decisions that supersede id; alive(id) is false for a retracted or
+  // unrecorded decision, which ends a path with no head. A live decision
+  // nothing supersedes is a head. Decisions are grouped into strongly
+  // connected components (Tarjan) first: a decision is cyclic when its
+  // component has more than one decision or when any component it reaches
+  // is cyclic, so every member of a cycle gets the same answer. The walk
+  // keeps its own stack instead of recursing, so a long supersedes chain
+  // cannot overflow the call stack.
+  function dgHeadResolver(next, alive) {
+    const memo = new Map();
+    const order = new Map();
+    const low = new Map();
+    const onStack = new Set();
+    const stack = [];
+    let counter = 0;
+    function finish(v) {
+      if (low.get(v) !== order.get(v)) return;
+      const members = [];
+      for (;;) {
+        const w = stack.pop();
+        onStack.delete(w);
+        members.push(w);
+        if (w === v) break;
+      }
+      const info = { heads: [], cyclic: members.length > 1 };
+      const seen = new Set();
+      const addHead = function (hd) {
+        if (!seen.has(hd)) { seen.add(hd); info.heads.push(hd); }
+      };
+      // Members pop in reverse; walk them in discovery order so heads come
+      // out in the order a walk first reaches them.
+      for (let i = members.length - 1; i >= 0; i--) {
+        const m = members[i];
+        if (!alive(m)) continue;
+        const nx = next(m);
+        if (!nx.length) addHead(m);
+        for (let j = 0; j < nx.length; j++) {
+          const sub = memo.get(nx[j]); // undefined for a member of this component
+          if (!sub) continue;
+          if (sub.cyclic) info.cyclic = true;
+          sub.heads.forEach(addHead);
+        }
+      }
+      members.forEach(function (m) { memo.set(m, info); });
+    }
+    function visit(root) {
+      const frames = [];
+      function enter(v) {
+        order.set(v, counter);
+        low.set(v, counter);
+        counter++;
+        stack.push(v);
+        onStack.add(v);
+        frames.push({ v: v, kids: alive(v) ? next(v) : [], i: 0 });
+      }
+      enter(root);
+      while (frames.length) {
+        const f = frames[frames.length - 1];
+        if (f.i < f.kids.length) {
+          const w = f.kids[f.i++];
+          if (!order.has(w)) enter(w);
+          else if (onStack.has(w)) low.set(f.v, Math.min(low.get(f.v), order.get(w)));
+          continue;
+        }
+        frames.pop();
+        finish(f.v);
+        if (frames.length) {
+          const parent = frames[frames.length - 1].v;
+          low.set(parent, Math.min(low.get(parent), low.get(f.v)));
+        }
+      }
+    }
+    return function resolve(id) {
+      if (!order.has(id)) visit(id);
+      return memo.get(id);
+    };
   }
 
   // dgProject returns the chapter as it stood after the first n events: the
@@ -2095,31 +2235,28 @@
     const conflicts = {};
     const refinedBy = {};
     const evidence = {};
+    // Per-id indexes, so a role or an ending costs one lookup, not a pass
+    // over every edge: ids that refine another stored decision, and ids
+    // with an edge to or from a session or commit.
+    const refines = {};
+    const linkedIds = {};
     edges.forEach(function (e) {
+      if (e.from.kind === "decision" && e.to.kind !== "decision") linkedIds[e.from.ref] = true;
+      if (e.to.kind === "decision" && e.from.kind !== "decision") linkedIds[e.to.ref] = true;
       if (counts(e, "blocks")) push(blockedBy, e.to.ref, e.from.ref);
       else if (counts(e, "conflicts_with")) { push(conflicts, e.to.ref, e.from.ref); push(conflicts, e.from.ref, e.to.ref); }
-      else if (counts(e, "refines")) push(refinedBy, e.to.ref, e.from.ref);
+      else if (counts(e, "refines")) { push(refinedBy, e.to.ref, e.from.ref); refines[e.from.ref] = true; }
       else if ((e.relation === "validates" || e.relation === "contradicts") && stored(e.to) &&
         !(e.from.kind === e.to.kind && e.from.ref === e.to.ref) && (e.from.kind !== "decision" || active(e.from.ref))) {
         evidence[e.to.ref] = e;
       }
     });
-    function heads(id, onPath, out) {
-      if (onPath[id]) return true;
-      if (!present[id] || retracted[id]) return false;
-      const next = supersededBy[id] || [];
-      if (!next.length) { out.push(id); return false; }
-      onPath[id] = true;
-      let cyclic = false;
-      next.forEach(function (nx) { if (heads(nx, onPath, out)) cyclic = true; });
-      delete onPath[id];
-      return cyclic;
-    }
+    const resolver = dgHeadResolver(function (id) { return supersededBy[id] || []; },
+      function (id) { return !!present[id] && !retracted[id]; });
     function unsettled(blocker) {
-      const hs = [];
-      const cyclic = heads(blocker, {}, hs);
-      if (!hs.length) return cyclic;
-      return hs.some(function (hd) { return recs[hd] && recs[hd].status === "hypothesis"; });
+      const info = resolver(blocker);
+      if (!info.heads.length) return info.cyclic;
+      return info.heads.some(function (hd) { return recs[hd] && recs[hd].status === "hypothesis"; });
     }
     const asOf = {};
     Object.keys(present).forEach(function (id) {
@@ -2146,7 +2283,7 @@
       const r = asOf[id];
       if (r.effective_status === "retracted") return "retracted";
       if (r.effective_status === "superseded") return "superseded";
-      if (edges.some(function (e) { return counts(e, "refines") && e.from.ref === id; })) return "refinement";
+      if (refines[id]) return "refinement";
       if (r.status === "hypothesis") return "hypothesis";
       if (r.blocked) return "locked";
       return "path";
@@ -2154,10 +2291,7 @@
     // An ending exists once its decisions are recorded and linked to the
     // session or commit it stands for (approximated: any such link).
     function linked(id) {
-      return edges.some(function (e) {
-        return (e.from.kind === "decision" && e.from.ref === id && e.to.kind !== "decision") ||
-          (e.to.kind === "decision" && e.to.ref === id && e.from.kind !== "decision");
-      });
+      return !!linkedIds[id];
     }
     const nodes = chapter.nodes.map(function (node) {
       const copy = Object.assign({}, node);
@@ -2263,7 +2397,7 @@
     const n = at == null ? m : at;
     const ev = tl.events[n - 1];
     if (!ev) return { text: "", valuetext: "" };
-    const when = dgNYTime(ev.at, tl.seconds);
+    const when = dgEventTime(ev, tl.seconds);
     const what = ev.type === "decision" ? ev.id : ev.label;
     return {
       text: when + " · " + what + " · " + n + " of " + m + (at == null ? " · now" : ""),
@@ -2277,37 +2411,51 @@
     return m <= 1 ? 50 : 2 + (96 * i) / (m - 1);
   }
 
+  function dgTickClass(ev, future) {
+    return "dg-tick dg-tick-" + ev.type + (ev.type === "decision" ? " dg-tick-" + (ev.by === "agent" ? "agent" : "user") : "") + (future ? " dg-tick-future" : "");
+  }
+
+  // dgTrack draws the scrubber track once per chapter. A step moves the
+  // playhead with dgTrackMove instead, which touches only the ticks between
+  // the old and the new position, so a long timeline is not redrawn per step.
   function dgTrack(chapter, at) {
     const tl = dgTimeline(chapter);
     const m = tl.events.length;
     const n = at == null ? m : at;
     const pos = dgTickX(n - 1, m);
+    const done = s("line", { x1: "2%", x2: pos + "%", y1: 16, y2: 16, class: "dg-track-done" });
     const kids = [
       s("line", { x1: "2%", x2: "98%", y1: 16, y2: 16, class: "dg-track-base" }),
-      s("line", { x1: "2%", x2: pos + "%", y1: 16, y2: 16, class: "dg-track-done" }),
+      done,
     ];
+    const ticks = [];
     tl.events.forEach(function (ev, i) {
       const x = dgTickX(i, m) + "%";
-      const cls = "dg-tick dg-tick-" + ev.type + (ev.type === "decision" ? " dg-tick-" + (ev.by === "agent" ? "agent" : "user") : "") + (i >= n ? " dg-tick-future" : "");
-      const title = s("title", null, [dgNYTime(ev.at, true) + " · " + ev.label]);
-      if (ev.type === "decision") kids.push(s("circle", { cx: x, cy: 16, r: 5.5, class: cls }, [title]));
-      else if (ev.type === "retraction") kids.push(s("rect", { x: x, y: 12, width: 8, height: 8, transform: "translate(-4 0)", class: cls }, [title]));
-      else kids.push(s("circle", { cx: x, cy: 16, r: 3, class: cls }, [title]));
+      const cls = dgTickClass(ev, i >= n);
+      const title = s("title", null, [dgEventTime(ev, true) + " · " + ev.label]);
+      let tick;
+      if (ev.type === "decision") tick = s("circle", { cx: x, cy: 16, r: 5.5, class: cls }, [title]);
+      else if (ev.type === "retraction") tick = s("rect", { x: x, y: 12, width: 8, height: 8, transform: "translate(-4 0)", class: cls }, [title]);
+      else tick = s("circle", { cx: x, cy: 16, r: 3, class: cls }, [title]);
+      ticks.push(tick);
+      kids.push(tick);
     });
-    kids.push(s("line", { x1: pos + "%", x2: pos + "%", y1: 3, y2: 29, class: "dg-playhead" }));
-    kids.push(s("circle", { cx: pos + "%", cy: 16, r: 8, class: "dg-thumb" }));
-    // Date axis: a label where the New York day changes; within one day the
-    // first and last times instead. Labels closer than 14% are dropped.
+    const head = s("line", { x1: pos + "%", x2: pos + "%", y1: 3, y2: 29, class: "dg-playhead" });
+    const thumb = s("circle", { cx: pos + "%", cy: 16, r: 8, class: "dg-thumb" });
+    kids.push(head, thumb);
+    // Date axis: a label where the day changes in the browser's zone; within
+    // one day the first and last times instead. Labels closer than 14% are
+    // dropped.
     const labels = [];
     let day = "";
     tl.events.forEach(function (ev, i) {
-      const d = dgNYDay(ev.at);
-      if (d !== day) { labels.push({ i: i, text: d }); day = d; }
+      const d = dgEventDay(ev);
+      if (d && d !== day) { labels.push({ i: i, text: d }); day = d; }
     });
     if (labels.length < 2 && m > 1) {
       labels.length = 0;
-      labels.push({ i: 0, text: dgNYTime(tl.events[0].at, tl.seconds) });
-      labels.push({ i: m - 1, text: dgNYTime(tl.events[m - 1].at, tl.seconds).replace(/^\S+ \S+ · /, "") });
+      labels.push({ i: 0, text: dgEventTime(tl.events[0], tl.seconds) });
+      labels.push({ i: m - 1, text: dgEventTime(tl.events[m - 1], tl.seconds).replace(/^\S+ \S+ · /, "") });
     }
     let lastX = -100;
     labels.forEach(function (label, k) {
@@ -2317,30 +2465,79 @@
       const anchor = x < 12 ? "start" : (x > 88 ? "end" : "middle");
       kids.push(s("text", { x: (anchor === "start" ? Math.max(0, x - 1) : (anchor === "end" ? Math.min(100, x + 1) : x)) + "%", y: 46, "text-anchor": anchor, class: "dg-axis" }, [label.text]));
     });
-    return s("svg", { class: "dg-track", width: "100%", height: 52, "aria-hidden": "true", focusable: "false" }, kids);
+    const svg = s("svg", { class: "dg-track", width: "100%", height: 52, "aria-hidden": "true", focusable: "false" }, kids);
+    svg.sdfTrack = { chapter: chapter, n: n, ticks: ticks, done: done, head: head, thumb: thumb };
+    return svg;
+  }
+
+  // dgTrackMove moves the drawn track's playhead to at, or redraws the track
+  // when it belongs to another chapter.
+  function dgTrackMove(slider, chapter, at) {
+    const svg = slider.querySelector ? slider.querySelector(".dg-track") : null;
+    const t = svg && svg.sdfTrack;
+    if (!t || t.chapter !== chapter) { fill(slider, dgTrack(chapter, at)); return; }
+    const events = dgTimeline(chapter).events;
+    const m = events.length;
+    const n = at == null ? m : at;
+    if (n === t.n) return;
+    for (let i = Math.min(n, t.n); i < Math.max(n, t.n); i++) t.ticks[i].setAttribute("class", dgTickClass(events[i], i >= n));
+    const pos = dgTickX(n - 1, m) + "%";
+    t.done.setAttribute("x2", pos);
+    t.head.setAttribute("x1", pos);
+    t.head.setAttribute("x2", pos);
+    t.thumb.setAttribute("cx", pos);
+    t.n = n;
   }
 
   function dgPlayLabel() {
     return dgTimer ? "❚❚ Pause" : "▶ Replay";
   }
 
+  // Pointer moves while dragging are coalesced to one seek per animation
+  // frame; the last position always lands (on the next frame or on release).
+  let dgPointer = null;
+  let dgPointerFrame = 0;
+  function dgPointerSeek(el, clientX) {
+    const chapter = dgView.chapter;
+    if (!chapter || !el || !el.getBoundingClientRect) return;
+    const m = dgTimeline(chapter).events.length;
+    const box = el.getBoundingClientRect();
+    if (!box.width) return;
+    const pct = ((clientX - box.left) / box.width) * 100;
+    const i = m <= 1 ? 0 : Math.round(((pct - 2) / 96) * (m - 1));
+    dgSeek(Math.max(1, Math.min(m, i + 1)), true);
+  }
+  function dgPointerFlush() {
+    if (dgPointerFrame && typeof cancelAnimationFrame === "function") cancelAnimationFrame(dgPointerFrame);
+    dgPointerFrame = 0;
+    const p = dgPointer;
+    dgPointer = null;
+    if (p) dgPointerSeek(p.el, p.x);
+  }
+  function dgPointerQueue(el, clientX) {
+    dgPointer = { el: el, x: clientX };
+    if (dgPointerFrame) return;
+    if (typeof requestAnimationFrame !== "function") { dgPointerFlush(); return; }
+    dgPointerFrame = requestAnimationFrame(function () {
+      dgPointerFrame = 0;
+      dgPointerFlush();
+    });
+  }
+  function dgDragEnd() {
+    if (!dgDragging) return;
+    dgDragging = false;
+    dgPointerFlush();
+  }
+
   function dgSlider(chapter) {
     const tl = dgTimeline(chapter);
     const m = tl.events.length;
     const readout = dgReadout(chapter, dgAt);
-    function fromPointer(event) {
-      const el = event.currentTarget;
-      if (!el || !el.getBoundingClientRect) return;
-      const box = el.getBoundingClientRect();
-      if (!box.width) return;
-      const pct = ((event.clientX - box.left) / box.width) * 100;
-      const i = m <= 1 ? 0 : Math.round(((pct - 2) / 96) * (m - 1));
-      dgSeek(Math.max(1, Math.min(m, i + 1)), true);
-    }
     return h("div", {
       class: "dg-slider",
       role: "slider",
       tabindex: "0",
+      "data-focus-key": "replay:slider",
       "aria-label": "Replay position",
       "aria-valuemin": "1",
       "aria-valuemax": String(m),
@@ -2351,14 +2548,24 @@
       onpointerdown: function (event) {
         if (event.button != null && event.button !== 0) return;
         dgDragging = true;
-        if (event.currentTarget.setPointerCapture) event.currentTarget.setPointerCapture(event.pointerId);
-        if (event.currentTarget.focus) event.currentTarget.focus();
+        const el = event.currentTarget;
+        try {
+          if (el.setPointerCapture && event.pointerId != null) el.setPointerCapture(event.pointerId);
+        } catch (err) { /* a synthetic pointer has nothing to capture */ }
+        if (el.focus) el.focus();
         event.preventDefault();
-        fromPointer(event);
+        dgPointer = null;
+        dgPointerSeek(el, event.clientX);
       },
-      onpointermove: function (event) { if (dgDragging) fromPointer(event); },
-      onpointerup: function () { dgDragging = false; },
-      onpointercancel: function () { dgDragging = false; },
+      onpointermove: function (event) {
+        if (!dgDragging) return;
+        // A release this element never saw (the tab redrew mid-drag) leaves
+        // no button down: stop instead of scrubbing on hover.
+        if (event.buttons === 0) { dgDragging = false; dgPointer = null; return; }
+        dgPointerQueue(event.currentTarget, event.clientX);
+      },
+      onpointerup: dgDragEnd,
+      onpointercancel: dgDragEnd,
     }, [dgTrack(chapter, dgAt)]);
   }
 
@@ -2366,10 +2573,10 @@
     const readout = dgReadout(chapter, dgAt);
     return h("div", { class: "dg-replay", role: "group", "aria-label": "Replay" }, [
       h("div", { class: "dg-replay-top" }, [
-        h("button", { type: "button", class: "dg-play", "aria-pressed": dgTimer ? "true" : "false", "aria-label": dgTimer ? "Pause replay" : "Play replay",
+        h("button", { type: "button", class: "dg-play", "data-focus-key": "replay:play", "aria-pressed": dgTimer ? "true" : "false", "aria-label": dgTimer ? "Pause replay" : "Play replay",
           onclick: function () { dgPlayToggle(); } }, [dgPlayLabel()]),
         h("p", { class: "dg-readout", "aria-hidden": "true" }, [readout.text]),
-        h("button", { type: "button", class: "dg-now", hidden: dgAt == null ? "" : null, onclick: function () { dgSeek(null, true); } }, ["Now"]),
+        h("button", { type: "button", class: "dg-now", "data-focus-key": "replay:now", hidden: dgAt == null ? "" : null, onclick: function () { dgSeek(null, true); } }, ["Now"]),
       ]),
       dgSlider(chapter),
       h("p", { class: "dg-replay-hint" }, ["[ ] step · ← → Home End · Space plays · " + (dgReduced() ? "reduced motion: steps without animation" : "drag to scrub")]),
@@ -2402,32 +2609,58 @@
     dgSeek(Math.max(1, Math.min(m, next)), true);
   }
 
+  // dgGuard runs a replay step. Should it throw, the replay stops and the
+  // whole tab is drawn again by render(), which shows its own error rather
+  // than a half-updated page.
+  function dgGuard(fn) {
+    try {
+      fn();
+    } catch (err) {
+      dgStop();
+      dgDragging = false;
+      dgPointer = null;
+      render();
+    }
+  }
+
   // dgSeek moves the playhead. It redraws only the canvas, the panel, and the
   // scrubber's insides, so the slider element (its focus and pointer
   // capture) survives a drag. The hash keeps ?at=N with replaceState, which
   // fires no hashchange.
   function dgSeek(at, byUser) {
-    const chapter = dgView.chapter;
-    if (!chapter) return;
-    if (byUser && dgTimer) dgStop();
-    const next = dgClampAt(chapter, at);
-    if (next === dgAt) return;
-    dgPrevAt = dgAt == null ? dgTimeline(chapter).events.length : dgAt;
-    dgAt = next;
-    const hash = dgHash(chapter.id, dgView.focus, dgAt);
-    if (typeof history !== "undefined" && history.replaceState) {
-      try { history.replaceState(null, "", hash); } catch (err) { /* keep going without the URL */ }
-    }
-    dgRefresh();
+    dgGuard(function () {
+      const chapter = dgView.chapter;
+      if (!chapter) return;
+      const paused = !!(byUser && dgTimer);
+      if (paused) dgStop("Replay paused at " + dgReadout(chapter, dgAt).valuetext + ".");
+      const next = dgClampAt(chapter, at);
+      if (next === dgAt) { if (paused) dgRefresh(); return; }
+      dgPrevAt = dgAt == null ? dgTimeline(chapter).events.length : dgAt;
+      dgAt = next;
+      const hash = dgHash(chapter.id, dgView.focus, dgAt);
+      if (typeof history !== "undefined" && history.replaceState) {
+        try { history.replaceState(null, "", hash); } catch (err) { /* keep going without the URL */ }
+      }
+      dgRefresh();
+    });
   }
 
   function dgRefresh() {
+    dgGuard(dgRefreshNow);
+  }
+
+  function dgRefreshNow() {
     const chapter = dgView.chapter;
     const root = app.querySelector ? app.querySelector(".dg") : null;
     if (!chapter || !root) { render(); return; }
     const proj = dgProject(chapter, dgAt, dgReduced() ? null : dgPrevAt);
     const focus = dgView.focus;
     const node = focus ? proj.nodes.filter(function (n) { return n.id === focus; })[0] : null;
+    const slider = root.querySelector(".dg-slider");
+    const now = root.querySelector(".dg-now");
+    // Back at now the Now button hides; a hidden button cannot keep focus,
+    // so focus moves to the slider first.
+    if (now && dgAt == null && slider && slider.focus && typeof document !== "undefined" && document.activeElement === now) slider.focus();
     // The graph (or the List view) is replaced, so focus on a node inside
     // it would fall to <body>: put it back on the same node or control.
     const active = typeof document !== "undefined" ? document.activeElement : null;
@@ -2438,18 +2671,20 @@
     if (list) list.replaceWith(dgListView(proj, focus));
     dgRevealLatest(root, proj);
     const panel = root.querySelector(".dg-panel");
-    if (panel) panel.replaceChildren.apply(panel, node ? dgFocusPanel(proj, node) : dgSummaryPanel(proj));
-    const slider = root.querySelector(".dg-slider");
+    if (panel) fill(panel, node ? dgFocusPanel(proj, node) : dgSummaryPanel(proj));
     const readout = dgReadout(chapter, dgAt);
     if (slider) {
       slider.setAttribute("aria-valuenow", String(dgAt == null ? dgTimeline(chapter).events.length : dgAt));
       slider.setAttribute("aria-valuetext", readout.valuetext);
-      slider.replaceChildren(dgTrack(chapter, dgAt));
+      dgTrackMove(slider, chapter, dgAt);
     }
     const text = root.querySelector(".dg-readout");
     if (text) text.textContent = readout.text;
-    const now = root.querySelector(".dg-now");
-    if (now) now.hidden = dgAt == null;
+    if (now) {
+      now.hidden = dgAt == null;
+      if (dgAt == null) now.setAttribute("hidden", "");
+      else if (now.removeAttribute) now.removeAttribute("hidden");
+    }
     const play = root.querySelector(".dg-play");
     if (play) {
       play.textContent = dgPlayLabel();
@@ -2480,32 +2715,39 @@
     if (message) dgAnnounce(message);
   }
 
+  // The live region hears the replay start, pause, and finish only. Each
+  // step is in the slider's aria-valuetext, which a screen reader reads
+  // when the slider has focus; announcing every step as well would talk
+  // over itself at the playback pace.
   function dgPlayToggle() {
-    const chapter = dgView.chapter;
-    if (!chapter) return;
-    if (dgTimer) {
-      dgStop("Replay paused at " + dgReadout(chapter, dgAt).valuetext + ".");
-      dgRefresh();
-      return;
-    }
-    const m = dgTimeline(chapter).events.length;
-    if (dgAt == null) dgSeek(1, false);
-    const reduced = dgReduced();
-    // Reduced motion: no fades, and a slower discrete pace.
-    dgTimer = setInterval(function () {
-      const current = route();
-      if (current.name !== "decisions" || !dgView.chapter || dgView.chapter.id !== chapter.id) { dgStop(); return; }
-      const n = (dgAt == null ? m : dgAt) + 1;
-      if (n >= m) {
-        dgStop("Replay finished: " + dgReadout(chapter, null).valuetext + ".");
-        dgSeek(null, false);
+    dgGuard(function () {
+      const chapter = dgView.chapter;
+      if (!chapter) return;
+      if (dgTimer) {
+        dgStop("Replay paused at " + dgReadout(chapter, dgAt).valuetext + ".");
+        dgRefresh();
         return;
       }
-      dgSeek(n, false);
-      dgAnnounce(dgReadout(chapter, dgAt).valuetext);
-    }, reduced ? 1600 : 900);
-    dgAnnounce("Replaying from " + dgReadout(chapter, dgAt).valuetext + ".");
-    dgRefresh();
+      const m = dgTimeline(chapter).events.length;
+      if (dgAt == null) dgSeek(1, false);
+      const reduced = dgReduced();
+      // Reduced motion: no fades, and a slower discrete pace.
+      dgTimer = setInterval(function () {
+        dgGuard(function () {
+          const current = route();
+          if (current.name !== "decisions" || !dgView.chapter || dgView.chapter.id !== chapter.id) { dgStop(); return; }
+          const n = (dgAt == null ? m : dgAt) + 1;
+          if (n >= m) {
+            dgStop("Replay finished: " + dgReadout(chapter, null).valuetext + ".");
+            dgSeek(null, false);
+            return;
+          }
+          dgSeek(n, false);
+        });
+      }, reduced ? 1600 : 900);
+      dgAnnounce("Replaying from " + dgReadout(chapter, dgAt).valuetext + ".");
+      dgRefresh();
+    });
   }
 
   // [ and ] step the replay from anywhere on the Decisions tab except a text
@@ -2514,12 +2756,18 @@
     if (event.key !== "[" && event.key !== "]") return;
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (dgTyping(event.target)) return;
-    if (route().name !== "decisions" || !dgView.chapter) return;
-    event.preventDefault();
-    const m = dgTimeline(dgView.chapter).events.length;
-    const n = dgAt == null ? m : dgAt;
-    dgSeek(Math.max(1, Math.min(m, n + (event.key === "]" ? 1 : -1))), true);
+    dgGuard(function () {
+      if (route().name !== "decisions" || !dgView.chapter) return;
+      event.preventDefault();
+      const m = dgTimeline(dgView.chapter).events.length;
+      const n = dgAt == null ? m : dgAt;
+      dgSeek(Math.max(1, Math.min(m, n + (event.key === "]" ? 1 : -1))), true);
+    });
   });
+
+  // A drag released outside the slider still ends.
+  window.addEventListener("pointerup", dgDragEnd);
+  window.addEventListener("pointercancel", dgDragEnd);
 
   function decisionsTab(chapterId, focus, at) {
     const chapters = dgChapters();
@@ -2533,7 +2781,12 @@
         h("pre", null, ["sdf decision add --id dont-push --status decision --decided-by user --statement 'No push or PR without my OK'"]),
       ]);
     }
-    const live = chapters.filter(function (c) { return c.id === chapterId; })[0] || chapters[0];
+    const named = chapters.filter(function (c) { return c.id === chapterId; })[0];
+    const live = named || chapters[0];
+    // ?at=N counts events of the chapter the link named; on the fallback
+    // to the newest chapter it would land somewhere arbitrary, so it is
+    // ignored there.
+    if (!named) at = null;
     if (dgView.chapter && dgView.chapter.id !== live.id) dgStop();
     if (!dgView.chapter || dgView.chapter.id !== live.id) dgPrevAt = null;
     dgAt = dgClampAt(live, at);
@@ -2603,7 +2856,7 @@
   }
 
   function shell(active, body) {
-    app.replaceChildren(h("div", { class: "wrap" }, [
+    fill(app, h("div", { class: "wrap" }, [
       header(active),
       loadError ? h("div", { class: "error" }, [h("p", null, [loadError])]) : body,
       footer(),
