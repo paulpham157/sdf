@@ -1871,7 +1871,7 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 		case "codex":
 			reason = "no log events exported. otel.exporter defaults to none."
 		case "opencode":
-			reason = "OpenCode v2 does not export per-session logs. Its OTLP logs are process events without session.id, so none are attributed to this session."
+			reason = "no log events attributed to this session. None carried session.id or sessionID. OpenCode process, CLI, and watcher logs typically have neither."
 		case "pi":
 			reason = "pi-otel logs only session start and end (pi.session.start, pi.session.end) and only when PI_OTEL_LOGS=1. None are attributed to this session."
 		case "grok-cli":
