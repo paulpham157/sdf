@@ -68,6 +68,10 @@
   re-sent log whose attributes or log time differ from the first copy is
   still counted twice, and a log with no `event.timestamp` and no log time
   is never de-duplicated.
+  Copilot CLI spans stored twice (same trace and span id) and Gemini CLI
+  `gemini_cli.api_response` logs stored twice (same session, log time,
+  body, and every attribute) count once (issue #248). A re-sent Gemini log
+  that differs from the first copy in any attribute is still counted twice.
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,

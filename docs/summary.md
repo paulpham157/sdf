@@ -70,7 +70,9 @@ So the same numbers are not added twice:
   subagent spans count once), and tokens are the
   sum of `gen_ai.usage.*` on `chat` spans (`traces chat github-copilot`),
   else the top-level `invoke_agent` totals, else the
-  `gen_ai.client.inference.usage.*` counters. Copilot reports no USD cost.
+  `gen_ai.client.inference.usage.*` counters. A span stored twice (same
+  trace id and span id, for example after an OTLP export retry) counts once
+  (issue #248). Copilot reports no USD cost.
 - Duration: sum of `claude_code.interaction` spans, else `codex.turn.e2e_duration_ms`,
   else sum of `run_turn` spans, else sum of Pi `invoke_agent` spans, else sum
   of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
@@ -89,7 +91,12 @@ So the same numbers are not added twice:
   run), else the sum of
   Gemini CLI `gemini_cli.api_response` `input_token_count`,
   `output_token_count`, `cached_content_token_count`, `thoughts_token_count`,
-  and `tool_token_count` (`total_token_count` is not added). Gemini CLI's
+  and `tool_token_count` (`total_token_count` is not added). A log stored
+  twice counts once (issue #248). The event has no response id, and
+  `prompt_id` is shared by every response of one prompt, so only an exact
+  copy is merged: same session, log time, body, and every attribute
+  (`event.timestamp`, `prompt_id`, `duration_ms`, counts, and the rest). A
+  log with neither `event.timestamp` nor a log time is never merged. Gemini CLI's
   `gen_ai.client.token.usage` and `gen_ai.client.inference.operation.details`
   repeat the same input and output and are not added. Else OpenCode
   `SessionStep.attempt` `gen_ai.usage.*` (one span per provider request; input,
