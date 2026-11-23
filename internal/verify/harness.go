@@ -278,20 +278,24 @@ var st struct {
 }
 
 func init() {
+	// This package exists only in the verifier's overlay, so failing to
+	// reach the verifier is fatal (and visible: go test shows a failing
+	// package's output).
+	die := func(msg string) {
+		os.Stderr.WriteString("sdf verify hook: " + msg + "\n")
+		os.Exit(3)
+	}
 	p := os.Getenv("` + hookEnv + `")
 	if p == "" {
-		return
+		die("` + hookEnv + ` is not set")
 	}
 	c, err := net.Dial("unix", p)
 	if err != nil {
-		os.Stderr.WriteString("sdf verify hook: " + err.Error() + "\n")
-		return
+		die(err.Error())
 	}
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(c, key); err != nil {
-		os.Stderr.WriteString("sdf verify hook: no key: " + err.Error() + "\n")
-		c.Close()
-		return
+		die("no key: " + err.Error())
 	}
 	st.conn, st.key = c, key
 }

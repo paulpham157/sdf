@@ -72,6 +72,21 @@ func TestB3SetsidDaemonDiesWithItsCheck(t *testing.T) {
 	}
 }
 
+// An isolated check has no capabilities and its own /proc, where pid 1 is
+// the namespace init, not the verifier's processes.
+func TestIsolatedCheckHasNoCapabilitiesAndItsOwnProc(t *testing.T) {
+	requireIsolation(t)
+	f := newFixture(t, task.CriterionInput{Name: "caps", Argv: []string{"sh", "-c",
+		`grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status && grep -Eq '^CapAmb:[[:space:]]+0+$' /proc/self/status && tr '\0' ' ' </proc/1/cmdline | grep -q ` + nsInitArg},
+		Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	o := f.opts(sha)
+	o.AllowUnisolated = false
+	if res := mustRun(t, o); res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
 // Without isolation, nothing runs unless the caller allows it, and then the
 // verdict says so.
 func TestNoIsolationIsErrorUnlessAllowed(t *testing.T) {

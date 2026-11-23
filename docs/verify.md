@@ -89,7 +89,10 @@ ref or a full commit id prints a warning and records the kind as
    the evidence.
    **Isolation.** Each check runs as pid 1's child in a new user, pid and
    mount namespace (`CLONE_NEWUSER|CLONE_NEWPID|CLONE_NEWNS`, uid and gid
-   mapped to the same user, a private `/proc`). When the check exits, the
+   mapped to the same user, a private `/proc`; the check itself runs with
+   no capabilities, and a namespace where the init cannot make those mounts,
+   such as one confined by Ubuntu's AppArmor restriction, counts as no
+   isolation). When the check exits, the
    namespace's init exits and the kernel kills every process left in it,
    including ones that called `setsid` or double-forked, before the
    checkout is re-hashed and before the next check starts. Without

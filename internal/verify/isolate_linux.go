@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"time"
 )
@@ -36,8 +37,18 @@ func nsAttr() *syscall.SysProcAttr {
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: uid, HostID: uid, Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: gid, HostID: gid, Size: 1}},
 		GidMappingsEnableSetgroups: false,
+		// pid 1 keeps the same uid inside, so execve would drop every
+		// capability; it needs CAP_SYS_ADMIN (in its own namespace only)
+		// for the mounts, and clears it before starting the check.
+		AmbientCaps: []uintptr{capSysAdmin},
 	}
 }
+
+const (
+	capSysAdmin          = 21
+	prCapAmbient         = 47
+	prCapAmbientClearAll = 4
+)
 
 // probeIsolation starts pid 1 in the namespaces with nothing to run.
 func probeIsolation() (bool, string) {
@@ -57,12 +68,27 @@ func probeIsolation() (bool, string) {
 }
 
 // nsInitMain is pid 1 of a criterion's namespace: it gives the namespace
-// its own /proc (so checks cannot see or open the verifier's processes;
-// best effort), runs the command, and exits with its status, which takes
+// its own /proc (so checks cannot see or open the verifier's processes),
+// runs the command, and exits with its status, which takes
 // everything else in the namespace with it.
 func nsInitMain(args []string) int {
 	if os.Getpid() != 1 {
 		fmt.Fprintln(os.Stderr, "sdf verify: namespace init is not pid 1")
+		return 125
+	}
+	// Ambient capabilities are per thread: clear them on the thread that
+	// will fork the check, and stay on it.
+	runtime.LockOSThread()
+	// Both mounts are required, and the probe does them too: a user
+	// namespace without capabilities (Ubuntu's AppArmor restriction on
+	// unprivileged user namespaces still lets one be created, confined)
+	// cannot make them, and is reported as no isolation.
+	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "sdf verify: make / private in the namespace: %v\n", err)
+		return 125
+	}
+	if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "sdf verify: mount /proc in the namespace: %v\n", err)
 		return 125
 	}
 	if len(args) == 1 && args[0] == "--probe" {
@@ -72,8 +98,11 @@ func nsInitMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "sdf verify: namespace init needs a command")
 		return 125
 	}
-	if syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, "") == nil {
-		_ = syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "")
+	// The check runs with no capabilities: no ambient set, and a uid that
+	// is not 0, so execve leaves its permitted set empty.
+	if _, _, e := syscall.RawSyscall(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0); e != 0 {
+		fmt.Fprintf(os.Stderr, "sdf verify: clear ambient capabilities: %v\n", e)
+		return 125
 	}
 	cmd := exec.Command(args[0], args[2:]...)
 	cmd.Args[0] = args[1]
