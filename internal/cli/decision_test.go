@@ -124,7 +124,7 @@ func TestDecisionLinkAppendsOneEdgeAndPrintsNothing(t *testing.T) {
 		relation string
 		from, to string
 	}{
-		{"implements", "decision:pure-go", "decision:use-sqlite"},
+		{"constrains", "decision:pure-go", "decision:use-sqlite"},
 		{"validates", "session:sess-1", "decision:use-sqlite"},
 		{"validates", "commit:" + strings.ToUpper(decisionSHA), "decision:use-sqlite"},
 	}
@@ -142,7 +142,7 @@ func TestDecisionLinkAppendsOneEdgeAndPrintsNothing(t *testing.T) {
 		t.Fatalf("%d decisions, %d edges", len(doc.Decisions), len(doc.Edges))
 	}
 	want := []struct{ relation, fromKind, fromRef, toRef string }{
-		{"implements", "decision", "pure-go", "use-sqlite"},
+		{"constrains", "decision", "pure-go", "use-sqlite"},
 		{"validates", "session", "sess-1", "use-sqlite"},
 		{"validates", "commit", decisionSHA, "use-sqlite"},
 	}

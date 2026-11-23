@@ -60,7 +60,7 @@ func TestLinkRejectsASelfLink(t *testing.T) {
 	db := openDB(t)
 	seedSession(t, db)
 	addAll(t, db, "a")
-	for _, rel := range []string{decision.RelConstrains, decision.RelImplements, decision.RelSupersedes, decision.RelValidates, decision.RelContradicts} {
+	for _, rel := range []string{decision.RelConstrains, decision.RelImplements, decision.RelSupersedes, decision.RelValidates, decision.RelContradicts, decision.RelBlocks, decision.RelConflictsWith, decision.RelRefines, decision.AliasBlockedBy, decision.AliasDependsOn} {
 		rejects(t, db, rel, dec("a"), dec("a"), decision.ErrSelfLink,
 			"an edge cannot link an endpoint to itself: decision:a")
 	}
@@ -101,7 +101,7 @@ func TestLinkRejectsASupersedesCycle(t *testing.T) {
 	// the chain, are not cycles.
 	link(t, db, decision.RelSupersedes, dec("d"), dec("a"))
 	link(t, db, decision.RelSupersedes, dec("c"), dec("a"))
-	link(t, db, decision.RelImplements, dec("a"), dec("c"))
+	link(t, db, decision.RelConstrains, dec("a"), dec("c"))
 	link(t, db, decision.RelConstrains, dec("a"), dec("b"))
 }
 
@@ -109,15 +109,15 @@ func TestLinkRejectsAnExactDuplicate(t *testing.T) {
 	db := openDB(t)
 	seedSession(t, db)
 	addAll(t, db, "a", "b")
-	link(t, db, decision.RelImplements, dec("a"), dec("b"))
-	rejects(t, db, decision.RelImplements, dec("a"), dec("b"), decision.ErrDuplicateEdge,
-		"edge already recorded: decision:a implements decision:b")
+	link(t, db, decision.RelConstrains, dec("a"), dec("b"))
+	rejects(t, db, decision.RelConstrains, dec("a"), dec("b"), decision.ErrDuplicateEdge,
+		"edge already recorded: decision:a constrains decision:b")
 	link(t, db, decision.RelValidates, commit(sha), dec("a"))
 	rejects(t, db, decision.RelValidates, commit(strings.ToUpper(sha)), dec("a"), decision.ErrDuplicateEdge,
 		"edge already recorded: commit:"+sha+" validates decision:a")
 	// Another relation, or the other direction, is a different edge.
-	link(t, db, decision.RelConstrains, dec("a"), dec("b"))
-	link(t, db, decision.RelImplements, dec("b"), dec("a"))
+	link(t, db, decision.RelRefines, dec("a"), dec("b"))
+	link(t, db, decision.RelConstrains, dec("b"), dec("a"))
 }
 
 func TestLinkWarnsWhenAPairBothValidatesAndContradicts(t *testing.T) {
@@ -134,7 +134,7 @@ func TestLinkWarnsWhenAPairBothValidatesAndContradicts(t *testing.T) {
 		// Contradicts first, then validates, in the other direction.
 		{decision.RelContradicts, dec("a"), dec("b"), ""},
 		{decision.RelValidates, dec("b"), dec("a"), "decision:b and decision:a have both validates and contradicts edges"},
-		{decision.RelImplements, dec("a"), dec("b"), ""},
+		{decision.RelConstrains, dec("a"), dec("b"), ""},
 	}
 	for _, c := range cases {
 		_, warnings, err := decision.LinkWithWarnings(db, decision.EdgeInput{Relation: c.rel, From: c.from, To: c.to})
@@ -227,9 +227,14 @@ func TestOlderInvalidEdgesStayReadable(t *testing.T) {
 			t.Fatalf("%s is %s: invalid supersedes edges must change no status", d.ID, d.EffectiveStatus)
 		}
 	}
-	// New links are checked against what is already there, old rows included.
-	rejects(t, db, decision.RelImplements, dec("a"), dec("b"), decision.ErrDuplicateEdge,
-		"edge already recorded: decision:a implements decision:b")
+	// New links are checked against what is already there, old rows
+	// included. A row that breaks today's endpoint kinds is not written again:
+	// the kind check runs first.
+	rejects(t, db, decision.RelImplements, dec("a"), dec("b"), decision.ErrEndpointKind,
+		"implements links a session or commit to a decision: from is decision:a")
+	legacyEdge(t, db, decision.RelConstrains, dec("a"), dec("b"))
+	rejects(t, db, decision.RelConstrains, dec("a"), dec("b"), decision.ErrDuplicateEdge,
+		"edge already recorded: decision:a constrains decision:b")
 	link(t, db, decision.RelSupersedes, dec("b"), dec("a"))
 }
 

@@ -148,7 +148,7 @@ func TestARetractedDecisionCannotBeLinked(t *testing.T) {
 	db := openDB(t)
 	seedSession(t, db)
 	addAll(t, db, "gone", "b")
-	link(t, db, decision.RelImplements, dec("b"), dec("gone"))
+	link(t, db, decision.RelConstrains, dec("b"), dec("gone"))
 	retract(t, db, "gone", "", "")
 	rejects(t, db, decision.RelSupersedes, dec("b"), dec("gone"), decision.ErrRetracted,
 		"decision retracted: decision:gone takes no new edges")
