@@ -32,7 +32,7 @@ counts, tool names, models, and a Claude Code commit SHA inside
 by default and that `--store-content` keeps them.
 
 Every resource carries `sdf.fixture=sample`. The shapes follow the attribute
-names documented for each tool (see the repository README) so ingest and
+names documented for each tool (see [docs/agents.md](../../docs/agents.md)) so ingest and
 summary tests can run without either CLI.
 
 `copilot_traces.json` and `copilot_metrics.json` follow the GitHub Copilot

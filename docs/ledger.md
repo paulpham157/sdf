@@ -322,10 +322,12 @@ copy the head somewhere else.
 For a file that is not a ledger database, and for exit 3, the message goes
 to stderr and nothing goes to stdout, `--json` included.
 
-### Pinning the head in CI (planned)
+### Pinning the head in CI
 
-The verifier's GitHub Action is not part of this repository yet. This is how
-it is meant to use these commands.
+The [`sdf verify` GitHub Action](action.md) lives in this repository
+(`.github/actions/sdf-verify`). It does not write or audit a ledger today.
+This is how a CI job can pin a checkpoint after `sdf verify --ledger`
+appends:
 
 Keep a checkpoint somewhere the agent cannot write. After the CI job appends,
 it runs `sdf audit head --json` and stores the output as a CI artifact or on
@@ -361,8 +363,10 @@ limits:
   **somewhere the agent cannot write** (`--expect-prefix` or
   `--expect-head`). Without such a copy, a rewritten ledger cannot be told
   apart from the real one.
-- The intended trust anchor is CI (planned): the verifier's GitHub Action
-  runs outside the agent's machine and records a checkpoint there. Until
-  that exists, the local file is a working copy, not proof.
+- The intended trust anchor is CI: a job that runs outside the agent's
+  machine, such as the [`sdf verify` GitHub Action](action.md), and records
+  a checkpoint the agent cannot write. The action does not pin a ledger
+  head today, so until a job does that, the local file is a working copy,
+  not proof.
 - There is no signature and no HMAC. Signing entries or exported heads with a
   key outside the agent's reach is future work.
