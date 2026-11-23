@@ -4,8 +4,9 @@ SDF collects traces of coding-agent work from OpenTelemetry the agents export,
 and summarizes a session from that telemetry.
 
 It does not launch, route, or sandbox agents. Codex CLI, Claude Code,
-OpenCode v2, Qwen Code, Grok CLI, and Gemini CLI export their own telemetry.
-Pi does not; its section uses the community `pi-otel` extension. SDF listens.
+OpenCode v2, Qwen Code, Grok CLI, Gemini CLI, and GitHub Copilot CLI
+export their own telemetry. Pi does not; its section uses the community
+`pi-otel` extension. SDF listens.
 
 The tools do not emit the same signals. A field the summary cannot find is
 reported as not present. SDF does not estimate tokens or duration. It does
@@ -164,6 +165,8 @@ sdf summary --json
 sdf summary --session ID --all-spans
 sdf decision add --id ID --statement TEXT --status hypothesis
 sdf decision link --relation implements --from decision:ID --to session:ID
+sdf decision link --relation supersedes --from decision:NEW --to decision:OLD  # rejects self-links, duplicates, cycles
+sdf decision list      # decisions, superseded or active, and edges; --json is GET /api/decisions
 sdf audit verify       # hash-chained ledger; see docs/ledger.md
 sdf task declare --ledger PATH ...  # opt-in: also chain the task (or set SDF_LEDGER)
 sdf verify SHA --task ID --ledger PATH  # opt-in: chain the evidence and verdict
@@ -200,6 +203,7 @@ that writes or deletes. The page loads nothing from the network.
 | [docs/receiver.md](docs/receiver.md) | The receiver, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
+| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record user and agent choices with `sdf decision` |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
 | [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |

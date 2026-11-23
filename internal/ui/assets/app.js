@@ -226,10 +226,25 @@
       kids.push(h("p", null, ["no decision"]));
     } else {
       records.forEach(function (record) {
-        kids.push(h("p", { class: "decision" }, [
+        const by = Array.isArray(record.superseded_by) ? record.superseded_by : [];
+        const superseded = record.effective_status === "superseded" && by.length > 0;
+        const line = [
           h("span", { class: "status" }, [record.status || "unknown"]),
-          document.createTextNode(record.statement || ""),
-        ]));
+        ];
+        if (record.decided_by) {
+          line.push(h("span", { class: "status" }, [record.decided_by]));
+        }
+        if (superseded) {
+          line.push(h("span", { class: "superseded-by" }, ["superseded by " + by.join(", ")]));
+        }
+        line.push(document.createTextNode(record.statement || ""));
+        kids.push(h("p", { class: superseded ? "decision superseded" : "decision" }, line));
+        const extra = [];
+        if (record.alternatives) extra.push("alternatives " + record.alternatives);
+        if (record.reason) extra.push("reason " + record.reason);
+        if (extra.length) {
+          kids.push(h("p", { class: "detail" }, [extra.join(" · ")]));
+        }
       });
     }
     edges.forEach(function (edge) {

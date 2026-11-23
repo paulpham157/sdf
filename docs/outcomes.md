@@ -92,25 +92,146 @@ from telemetry, and recording one changes nothing about collection or
 summarization.
 
 Each record has an id, one statement, and a status of `hypothesis` or
-`decision`. A hypothesis is an assumption, not a settled fact. An edge connects
-two endpoints and uses one of `constrains`, `implements`, `supersedes`,
-`validates`, or `contradicts`. An endpoint is a decision id, a session id, or a
-full 40-character commit SHA. A session or commit endpoint is stored only when
-the store already has telemetry for it; the edge is not a copy of that
-telemetry. A commit SHA is matched without regard to case, so a SHA the agent
-exported in uppercase still matches the lowercase ref the edge stores.
+`decision`. A hypothesis is an assumption, not a settled fact. Optional fields
+name who decided (`user` or `agent`), the alternatives that were on the table,
+a reason, and a source pointer. Time is `recorded_at`. A session is not stored
+on the record; link it with an edge when the store already has that session.
+An edge connects two endpoints and uses one of
+`constrains`, `implements`, `supersedes`, `validates`, or `contradicts`. An
+endpoint is a decision id, a session id, or a full 40-character commit SHA. A
+session or commit endpoint is stored only when the store already has telemetry
+for it; the edge is not a copy of that telemetry. A commit SHA is matched
+without regard to case, so a SHA the agent exported in uppercase still matches
+the lowercase ref the edge stores.
 
 `GET /api/decisions` returns the records and edges in insertion order. An empty
 store returns empty lists. `sdf decision add` writes one record. It needs an id,
-a statement, and a status of `hypothesis` or `decision`. `sdf decision link`
+a statement, and a status of `hypothesis` or `decision`. `--decided-by`,
+`--alternatives`, `--reason`, and `--source` are optional. `sdf decision link`
 writes one edge. It needs a relation and two `KIND:REF` endpoints, where
-`KIND` is `decision`, `session`, or `commit`. No route writes a record.
+`KIND` is `decision`, `session`, or `commit`. No route writes a record. An
+agent skill that uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
+
+### Link rules
+
+`sdf decision link` checks an edge before storing it, and stores nothing when a
+check fails. It exits 1 with one `sdf decision link: ...` line on stderr, the
+same as for an unknown session, commit, or decision. Usage errors, such as a
+missing flag, exit 2.
+
+| Relation | Valid direction | Enforced |
+| --- | --- | --- |
+| `supersedes` | decision → decision: `from` replaces `to` | Yes. A session or commit endpoint is rejected |
+| `implements` | session or commit → decision: the work implements the decision | No, any known endpoints |
+| `validates` | session, commit, or decision → decision: evidence that it holds | No, any known endpoints |
+| `contradicts` | session, commit, or decision → decision: evidence against it | No, any known endpoints |
+| `constrains` | decision → decision, session, or commit: the decision limits it | No, any known endpoints |
+
+Every relation also has these rules:
+
+- **Self-link.** `from` and `to` cannot be the same endpoint. The message is
+  `an edge cannot link an endpoint to itself: decision:a`.
+- **Duplicate.** The same relation, `from`, and `to` cannot be stored twice.
+  A commit SHA is compared in lowercase. The message is
+  `edge already recorded: decision:a implements decision:b`. The other
+  direction, or another relation between the same two endpoints, is a
+  different edge.
+- **Supersedes endpoints.** The message is
+  `supersedes links a decision to a decision: from is session:sess-1`. This is
+  checked before the store is asked whether the ref exists.
+- **Supersedes cycle.** `a supersedes b` is rejected when `b` already reaches
+  `a` through `supersedes` edges, including `b supersedes a`. The message names
+  the path, for example
+  `supersedes cycle: decision:c already reaches decision:a through supersedes (c -> b -> a), so decision:a cannot supersede decision:c`.
+  Two decisions may supersede the same one.
+- **Validates and contradicts.** When the same two endpoints, in either
+  direction and in either order, end up with both a `validates` and a
+  `contradicts` edge, the edge is still stored and the command exits 0. It
+  prints
+  `sdf decision link: warning: session:sess-1 and decision:a have both validates and contradicts edges`
+  on stderr.
+
+The duplicate, cycle, and warning checks read the stored edges inside the same
+SQLite transaction as the insert (`BEGIN IMMEDIATE`, which takes the write lock
+first). Two `sdf decision link` runs at the same moment therefore cannot both
+pass a check that only one of them should. The checks only read: no edge or
+record is updated or deleted. Edges that an older sdf stored without these
+checks stay readable, count as existing edges for the duplicate and cycle
+checks, and are handled at read time as described below. No HTTP route writes
+an edge, so `sdf decision link` is the only way to write one.
+
+### Superseded at read time
+
+A `supersedes` edge reads as "`from` supersedes `to`": the `from` decision
+replaces the `to` decision. Only an edge between two different decisions,
+both of them stored records, counts. `sdf decision link` no longer stores a
+`supersedes` edge with a session or commit endpoint, a self-link, or a cycle
+(see Link rules). A database written by an older sdf may still hold such
+edges, or an edge naming a decision id that was never stored. Those edges stay
+as stored and are listed with the other edges, but they change no status. The
+cycle check uses the same rule, so it does not follow them either.
+
+The stored record never changes. Each time the records are read, every record
+gets two fields that are not stored:
+
+- `effective_status`: `superseded` when at least one decision supersedes it,
+  otherwise `active`. `status` stays what was recorded (`hypothesis` or
+  `decision`).
+- `superseded_by`: the ids of the decisions that supersede it, once each, in the
+  order the edges were recorded. It is omitted when the record is active.
+
+Replacement is direct, not transitive. If `b` supersedes `a` and `c` supersedes
+`b`, then `a` is superseded by `b`, `b` is superseded by `c`, and `c` is
+active. To find the latest replacement, follow `superseded_by`. A cycle, such as
+`a` and `b` superseding each other, marks both superseded. `sdf decision list`,
+`GET /api/decisions`, and the UI show the same values, because all three read
+them from the same code. The UI shows "superseded by ID" next to the record.
+
+`sdf decision list` prints the records and then the edges, each as a table in
+insertion order. An empty source or `DECIDED BY` prints as `-`. When a record
+has alternatives or a reason, each follows its row on its own line in the
+`STATEMENT` column, as `alternatives: TEXT` and `reason: TEXT`. They are free
+text up to 500 bytes, so they are kept out of the columns. `--json` carries
+the same fields as `decided_by`, `alternatives`, and `reason`. A cell that holds a
+non-printing character, such as a tab, DEL, or a right-to-left override like
+U+202E, or that is not valid UTF-8, is printed Go-quoted so it cannot break the
+columns or reorder the terminal line. Every column follows this rule, including
+`EFFECTIVE`, `DECIDED BY`, and the alternatives and reason values (the label
+stays outside the quotes), and any column added later must too. `--json` does not quote: it
+leaves DEL and RTL characters raw in the JSON strings, exactly as
+`GET /api/decisions` does, so a reader that prints JSON values to a terminal
+has to escape them itself.
+`sdf decision list --json` prints exactly what `GET /api/decisions` returns,
+because both read the store through the same code. Like `sdf summary`, it opens
+`sdf-telemetry.sqlite` unless `--db` names another file, and opening a file
+that does not exist creates an empty store. With no records and no edges it
+prints `No decisions in the store.`, and `--json` prints empty lists. A path
+that cannot be opened, such as one in a missing directory, exits 1.
 
 ```bash
 sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
-  --status decision [--source TEXT] [--db PATH]
+  --status decision [--decided-by user|agent] [--alternatives TEXT] \
+  [--reason TEXT] [--source TEXT] [--db PATH]
 sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
+sdf decision link --relation supersedes --from decision:use-wal \
+  --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
+sdf decision list [--db PATH] [--json]
+```
+
+```text
+Decisions: 3
+ID          STATUS      EFFECTIVE              DECIDED BY  RECORDED AT                       SOURCE     STATEMENT
+use-sqlite  decision    superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
+                                                                                                        alternatives: Postgres, DuckDB
+                                                                                                        reason: One file, no server
+pure-go     hypothesis  active                 agent       2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+use-wal     decision    active                 -           2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
+
+Edges: 2
+RELATION    FROM              TO                   RECORDED AT
+implements  decision:pure-go  decision:use-sqlite  2026-11-23T15:00:03.000000+00:00
+supersedes  decision:use-wal  decision:use-sqlite  2026-11-23T15:00:04.000000+00:00
 ```
 
 ## Local budget

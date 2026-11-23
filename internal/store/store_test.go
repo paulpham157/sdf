@@ -205,6 +205,63 @@ func TestPythonWrittenDatabaseRemainsReadable(t *testing.T) {
 	}
 }
 
+func TestMigrationAddsDecisionColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old-decisions.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE decisions (
+			id TEXT PRIMARY KEY,
+			statement TEXT NOT NULL,
+			status TEXT NOT NULL,
+			recorded_at TEXT NOT NULL,
+			source TEXT
+		);
+		INSERT INTO decisions (id, statement, status, recorded_at, source)
+		VALUES ('use-sqlite', 'Keep the collector store in SQLite.', 'decision', '2026-11-23T00:00:00.000000+00:00', 'issue 168');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	opened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	rows, err := opened.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "use-sqlite" || rows[0].Source != "issue 168" {
+		t.Fatalf("%+v", rows)
+	}
+	if rows[0].DecidedBy != "" || rows[0].Alternatives != "" || rows[0].Reason != "" {
+		t.Fatalf("old row had new fields set: %+v", rows[0])
+	}
+	if err := opened.InsertDecision(store.Decision{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       "decision",
+		RecordedAt:   "2026-11-23T01:00:00.000000+00:00",
+		DecidedBy:    "user",
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = opened.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[1].ID != "dont-push" || rows[1].DecidedBy != "user" || rows[1].Alternatives != "push the branch now" || rows[1].Reason != "The user said don't push." {
+		t.Fatalf("%+v", rows)
+	}
+}
+
 func deref(s *string) string {
 	if s == nil {
 		return ""

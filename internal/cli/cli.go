@@ -128,14 +128,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
 		case strings.HasPrefix(arg, "--port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
@@ -143,14 +143,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
 		case strings.HasPrefix(arg, "--grpc-port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--grpc-port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
@@ -493,7 +493,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -505,6 +505,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionAdd(args[1:], stdout, stderr)
 	case "link":
 		return cmdDecisionLink(args[1:], stdout, stderr)
+	case "list":
+		return cmdDecisionList(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
 		return 0
@@ -520,12 +522,15 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	statement := ""
 	status := ""
 	source := ""
+	decidedBy := ""
+	alternatives := ""
+	reason := ""
 	idSet, statementSet, statusSet := false, false, false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -572,13 +577,40 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 			source = v
 		case strings.HasPrefix(arg, "--source="):
 			source = strings.TrimPrefix(arg, "--source=")
+		case arg == "--decided-by":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --decided-by requires a value")
+				return 2
+			}
+			decidedBy = v
+		case strings.HasPrefix(arg, "--decided-by="):
+			decidedBy = strings.TrimPrefix(arg, "--decided-by=")
+		case arg == "--alternatives":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --alternatives requires a value")
+				return 2
+			}
+			alternatives = v
+		case strings.HasPrefix(arg, "--alternatives="):
+			alternatives = strings.TrimPrefix(arg, "--alternatives=")
+		case arg == "--reason":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --reason requires a value")
+				return 2
+			}
+			reason = v
+		case strings.HasPrefix(arg, "--reason="):
+			reason = strings.TrimPrefix(arg, "--reason=")
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
 	if !idSet || !statementSet || !statusSet {
-		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
 		return 2
 	}
 	db, err := store.Open(dbPath)
@@ -588,10 +620,13 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 	if _, err := decision.Add(db, decision.RecordInput{
-		ID:        id,
-		Statement: statement,
-		Status:    status,
-		Source:    source,
+		ID:           id,
+		Statement:    statement,
+		Status:       status,
+		Source:       source,
+		DecidedBy:    decidedBy,
+		Alternatives: alternatives,
+		Reason:       reason,
 	}); err != nil {
 		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
 		return 1
@@ -672,12 +707,69 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	if _, err := decision.Link(db, decision.EdgeInput{
+	_, warnings, err := decision.LinkWithWarnings(db, decision.EdgeInput{
 		Relation: relation,
 		From:     fromEnd,
 		To:       toEnd,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "sdf decision link: warning: %s\n", w)
+	}
+	return 0
+}
+
+const decisionListUsage = "usage: sdf decision list [--db PATH] [--json]"
+
+// cmdDecisionList prints every decision and edge. It reads through
+// decision.Load, the same path GET /api/decisions uses, and --json is that
+// response byte for byte. Like sdf summary, it opens the store with
+// store.Open, so a missing file is created empty and lists nothing.
+func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionListUsage)
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision list: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	graph, err := decision.Load(db)
+	_ = db.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	write := decision.WriteText
+	if asJSON {
+		write = decision.WriteJSON
+	}
+	if err := write(stdout, graph); err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
 		return 1
 	}
 	return 0
@@ -855,14 +947,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
 		case strings.HasPrefix(arg, "--port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
@@ -870,14 +962,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
 		case strings.HasPrefix(arg, "--grpc-port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--grpc-port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
@@ -917,6 +1009,13 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
+	// Validate --host and the ports once, before --check probes them or a
+	// git hook or agent file is written. --port 0 is refused here (Run
+	// would read 0 as the default).
+	if err := setup.ValidateEndpoint(&ep); err != nil {
+		fmt.Fprintf(stderr, "sdf init: %v\n", err)
+		return 2
+	}
 	code := 0
 	if check {
 		probed := setup.Probe(ep)
@@ -986,8 +1085,19 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
+// parsePort reads a port written as plain decimal: no sign, no leading
+// zero, no spaces (08, +4318, and " 4318" are refused; strconv.Atoi takes
+// the first two). "0" parses, so the range check can say why it is refused.
 func parsePort(v string, ok bool) (int, error) {
-	if !ok {
+	if !ok || v == "" || len(v) > 5 {
+		return 0, strconv.ErrSyntax
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return 0, strconv.ErrSyntax
+		}
+	}
+	if len(v) > 1 && v[0] == '0' {
 		return 0, strconv.ErrSyntax
 	}
 	return strconv.Atoi(v)

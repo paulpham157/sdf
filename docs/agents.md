@@ -108,7 +108,8 @@ Codex does not use the standard `OTEL_EXPORTER_OTLP_*` environment variables
 for its own export. Put an `[otel]` table in the user config
 (`$CODEX_HOME/config.toml`, `~/.codex/config.toml` by default). A project-local
 `.codex/config.toml` cannot set `otel`; Codex ignores it there. `sdf init codex
---write` also writes `hooks.json` with a `SessionStart` and `SessionEnd` hook.
+--write` also merges a `SessionStart` and `SessionEnd` hook into `hooks.json`,
+even when `config.toml` already has an `[otel]` table (which it leaves as is).
 The hook posts only when the session id equals the thread id, so a descendant
 thread reports nothing.
 
@@ -721,7 +722,8 @@ trace id.
   count `cache_creation.input_tokens`, and earlier builds used underscore
   names (`cache_read_input_tokens`, `cache_creation_input_tokens`,
   `reasoning_output_tokens`); they are read too, and only the first name
-  present on a span counts.
+  present on a span counts. A span stored twice (same trace id and span
+  id, for example after an OTLP export retry) counts once.
 - Tool calls come from `execute_tool` spans. There is no success flag:
   `error.type` or an ERROR status is a failure, anything else a success.
 - Cost: Copilot reports no USD. `github.copilot.cost` is a billing
@@ -981,7 +983,7 @@ What the summary takes from it:
 | session id | `session.id` on logs and metrics; `gen_ai.conversation.id` on spans |
 | tool | `gemini-cli` (from `service.name`, or a `gemini_cli.*` name) |
 | model | `model` on `config`, `api_request`, `api_response`, `api_error`, and metric points; `gen_ai.request.model` on spans |
-| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields |
+| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields (an exact copy of a log, same time, body, and attributes, counts once) |
 | duration | min-to-max of the session's logs and spans (no session or turn duration is exported) |
 | tool calls | `gemini_cli.tool_call` logs: `function_name`, `success`, `duration_ms` (no call id) |
 | errors | `gemini_cli.api_error` in the log events; failed tools as `success=false`; `ERROR` status on spans |
