@@ -40,7 +40,9 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
-          # The Go version in go.mod, so a release build is reproducible.
+          # setup-go v7 uses the toolchain line in go.mod when present,
+          # otherwise the go line. Keeps release builds reproducible on a
+          # patched 1.26.x.
           go-version-file: go.mod
           # No shared module or build cache in a job that can write releases.
           cache: false
@@ -50,7 +52,7 @@ jobs:
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
-          version: v2.20.0
+          version: v2.20.3
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

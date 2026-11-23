@@ -49,12 +49,26 @@ come from `Tool.execute` (`gen_ai.tool.name`, `gen_ai.tool.call.id`). Grok CLI t
 `success`) joined to `grok_code.tool_result` on `tool_use_id`; without spans
 they come from the log alone. Pi tool
 calls come from `execute_tool` (`gen_ai.tool.name`, `gen_ai.tool.call.id`,
-`pi.tool.is_error`). Success comes from the log when the span has none. An
+`pi.tool.is_error`). Success comes from the log when the span has none.
+A tool span stored twice (same trace id and span id, for example after an
+OTLP export retry) is one call, and a span without both ids is never merged.
+A tool log (`claude_code.tool_result`, `codex.tool_result`,
+`grok_code.tool_result`, `gemini_cli.tool_call`) stored twice is one call
+only when it is an exact copy (same session, log time, body, and every
+attribute); `gemini_cli.tool_call` has no call id, so two calls of the same
+tool with the same result are both listed (issue #258). Qwen Code tool
+calls follow the same rule: `qwen-code.tool` spans by trace and span id,
+`qwen-code.tool_call` logs only as exact copies (issue #261). An
 OpenCode tool span has no success flag, so the call is `unknown`, unless the
 span status is `ERROR`. An `ERROR` span is marked in the text tree
-(`status=ERROR`, plus the status message when one was exported). `--json`
-includes `status_code` and `status_message` on every span; a span with no
-status is `UNSET`. A tool-call span whose status is `ERROR` and that has no
+(`status=ERROR`, plus the status message when one was exported, and
+`error_type=` when the span's `error.type`, `error_type`, or
+`exception.type` is not already in that message). By default the stored
+message is sdf's own, built from the kept error class and code, such as
+`tool error: FileNotFoundError` (see
+[content storage](receiver.md#content-storage)). `--json` includes
+`status_code`, `status_message`, and `error_type` on every span; a span
+with no status is `UNSET`. A tool-call span whose status is `ERROR` and that has no
 `success` attribute, no `pi.tool.is_error`, and no joined tool-result log is
 `success=false`. An explicit flag still wins. Duration prefers the execution
 child span, then the tool span, then the log.
@@ -70,7 +84,9 @@ So the same numbers are not added twice:
   subagent spans count once), and tokens are the
   sum of `gen_ai.usage.*` on `chat` spans (`traces chat github-copilot`),
   else the top-level `invoke_agent` totals, else the
-  `gen_ai.client.inference.usage.*` counters. Copilot reports no USD cost.
+  `gen_ai.client.inference.usage.*` counters. A span stored twice (same
+  trace id and span id, for example after an OTLP export retry) counts once
+  (issue #248). Copilot reports no USD cost.
 - Duration: sum of `claude_code.interaction` spans, else `codex.turn.e2e_duration_ms`,
   else sum of `run_turn` spans, else sum of Pi `invoke_agent` spans, else sum
   of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
@@ -89,7 +105,12 @@ So the same numbers are not added twice:
   run), else the sum of
   Gemini CLI `gemini_cli.api_response` `input_token_count`,
   `output_token_count`, `cached_content_token_count`, `thoughts_token_count`,
-  and `tool_token_count` (`total_token_count` is not added). Gemini CLI's
+  and `tool_token_count` (`total_token_count` is not added). A log stored
+  twice counts once (issue #248). The event has no response id, and
+  `prompt_id` is shared by every response of one prompt, so only an exact
+  copy is merged: same session, log time, body, and every attribute
+  (`event.timestamp`, `prompt_id`, `duration_ms`, counts, and the rest). A
+  log with neither `event.timestamp` nor a log time is never merged. Gemini CLI's
   `gen_ai.client.token.usage` and `gen_ai.client.inference.operation.details`
   repeat the same input and output and are not added. Else OpenCode
   `SessionStep.attempt` `gen_ai.usage.*` (one span per provider request; input,
@@ -115,7 +136,10 @@ So the same numbers are not added twice:
   window`), tokens are the sum of `qwen-code.api_response` token counts
   (else `qwen-code.llm_request` usage, else `qwen-code.token.usage` by
   `type`), and tool calls come from `qwen-code.tool` spans joined to
-  `qwen-code.tool_call` logs. See [docs/agents.md](agents.md#qwen-code).
+  `qwen-code.tool_call` logs. A log stored twice counts once only when it
+  is an exact copy (same session, log time, body, and every attribute),
+  and a span stored twice (same trace and span id), interaction spans
+  included, counts once (issue #261). See [docs/agents.md](agents.md#qwen-code).
 
 Codex `response.completed` logs are the fallback when `codex.turn.token_usage`
 is missing (for example an OpenRouter `:free` model id, whose `:` makes Codex
@@ -297,9 +321,53 @@ Reasoning uses `internal_reasoning` when the row has it, and the completion
 price when it does not, because those reasoning tokens are already inside
 the output count.
 
-On the 2026-11-10 snapshot, `recursive/flint-v1.0:free` has prompt and
-completion `"0"` and no cache-read price. A Pi session, whose totals are
-input and output only, computes `$0`. A Claude Code session that also reports
-cache-read tokens stays `unknown` rather than treating the missing cache
-price as zero. The agent's `$0.065` on that model is still shown as
-`agent_reported_cost_usd`.
+A missing component price is not treated as zero, with one exception
+(issue #243). On the 2026-11-10 snapshot, and in the live API on
+2026-11-23, all 13 OpenRouter `:free` rows, such as
+`recursive/flint-v1.0:free`, have prompt and completion `"0"` and no
+`input_cache_read` price. The
+[Models API reference](https://openrouter.ai/docs/api_reference/models)
+("Sentinel prices") says models ending in `:free` set prompt and completion
+to `0`. The
+[Free Variant guide](https://openrouter.ai/docs/guides/routing/model-variants/free)
+says they are served without cost. So for a row whose id ends in `:free`
+and whose prompt and completion are both 0, cache-read tokens are priced at
+0. The cost `note` says so. On that model a Claude Code session with
+10752 cache-read tokens, a Codex session, and an OpenCode session all
+compute `$0`, and so does a Pi session, whose totals are input and output
+only. The agent's `$0.065` on that model is still shown as
+`agent_reported_cost_usd`. The rule covers cache read only. A cache-write
+count on a `:free` row with no `input_cache_write` price is still `unknown`.
+Prompt and completion must both parse as zero. A `:free` row whose prompt or
+completion is `-1` (OpenRouter's dynamic-router sentinel), empty, not a
+decimal, or non-zero does not get the rule.
+
+The rule needs the `:free` suffix, so zero-priced rows without it are not
+covered. On the 2026-11-10 snapshot, `openrouter/free` (the Free Models
+Router), `google/lyria-3-clip-preview`, and `google/lyria-3-pro-preview`
+each have only prompt `"0"` and completion `"0"`. A session on one of them
+with input and output only computes `$0`. A session that also reports
+cache-read tokens stays `unknown` with
+`catalog has no input_cache_read price for model <id>`. The router's actual
+model and the preview rows' cache billing are not in the catalog. Router rows
+with prompt and completion `-1` are never priced: the OpenRouter routers
+`openrouter/auto`, `openrouter/auto-beta`, `openrouter/auto-code`,
+`openrouter/bodybuilder`, `openrouter/fusion`, and `openrouter/pareto-code`,
+and the non-OpenRouter routers `nvidia/switchyard` and `typesafe/jev-router`.
+
+A paid row with no `input_cache_read` stays `unknown` when the session has
+cache-read tokens. `mistralai/mistral-nemo` is one example. Its row lists
+prompt `0.000000029` and completion `0.00000003`, which are DeepInfra's
+rates, and DeepInfra does not cache. In
+[its endpoint list](https://openrouter.ai/api/v1/models/mistralai/mistral-nemo/endpoints)
+on 2026-11-23, each endpoint that caches has its own prompt and cache-read
+rates. Io Net has prompt `0.00000001656` and cache read `0.0000000108`.
+Mistral has prompt `0.00000015` and cache read `0.000000015`. OpenRouter
+routes cached requests to such an endpoint
+([prompt caching, sticky routing](https://openrouter.ai/docs/guides/best-practices/prompt-caching)).
+The catalog holds only model-level rates, so it cannot say what those
+cached tokens cost, and OpenRouter does not document billing cache reads at
+the prompt rate. The real Codex capture in issue #204 (37400 input, 18560
+cached, 109 output) therefore stays `unknown` with
+`catalog has no input_cache_read price for model mistralai/mistral-nemo`. A
+mistral-nemo session with no cached tokens is priced at the row's rates.

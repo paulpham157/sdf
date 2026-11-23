@@ -64,7 +64,10 @@ current builds is the dotted name):
 `tool_result` carries `tool_name`, `tool_use_id`, `success`, and `duration_ms`.
 Prompt text, tool arguments, and tool output stay redacted unless you set
 `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, or `OTEL_LOG_TOOL_CONTENT`.
-The setup below does not set those.
+The setup below does not set those, and if you do, sdf still drops that
+text (`prompt`, `tool_parameters`, `tool_input`, ...) before storing it
+unless `sdf serve --store-content` is on; see [content storage](receiver.md#content-storage). A
+commit SHA inside `tool_parameters` is kept as `sdf.git_commit_id`.
 
 Beta trace spans, when tracing is on:
 
@@ -105,7 +108,8 @@ Codex does not use the standard `OTEL_EXPORTER_OTLP_*` environment variables
 for its own export. Put an `[otel]` table in the user config
 (`$CODEX_HOME/config.toml`, `~/.codex/config.toml` by default). A project-local
 `.codex/config.toml` cannot set `otel`; Codex ignores it there. `sdf init codex
---write` also writes `hooks.json` with a `SessionStart` and `SessionEnd` hook.
+--write` also merges a `SessionStart` and `SessionEnd` hook into `hooks.json`,
+even when `config.toml` already has an `[otel]` table (which it leaves as is).
 The hook posts only when the session id equals the thread id, so a descendant
 thread reports nothing.
 
@@ -349,10 +353,22 @@ config-file key for headers.
 `sdf init grok` prints those lines and the matching `[telemetry]` table
 (`otel_enabled`, `otel_metrics_exporter`, `otel_logs_exporter`,
 `otel_protocol`, `otel_endpoint`, the names in the guide's "Config file"
-section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`).
+section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`), with
+`otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` pinned to `false`.
+Unset, `otel_log_assistant_responses` follows `otel_log_user_prompts`, so
+all four are written; an `OTEL_LOG_*` variable in the environment still
+wins over the file, and `sdf init grok` warns about each one Grok would read
+as on (`1`/`true`/`yes`/`on`). `otel_log_tool_details` is a metadata gate,
+not a body gate (a 4 KB `tool_parameters` preview, full file paths, verbatim
+MCP/skill/plugin names); pinning it off is stricter than the guide's
+"Recommended fleet gates", which turns it on for SIEM joins. sdf does not
+need it for Grok: the session hook supplies the working directory.
 `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
 (default `~/.grok/config.toml`) when the file has no `[telemetry]` table;
-an existing `[telemetry]` table is left unchanged. A project
+an existing `[telemetry]` table, in any TOML form (`[ telemetry ]`,
+inline `telemetry = {...}`, dotted `telemetry.x` keys), is left unchanged,
+and a `config.toml` that is not valid TOML is refused. A project
 `.grok/config.toml` cannot set `otel_*`. Environment variables win over the
 file. It also installs `hooks/sdf-session.json` beside it, a session hook
 that posts the session's open and close to `POST /v1/sessions`. Grok sets
@@ -461,16 +477,28 @@ files Qwen read and its memory extractor's reads of `~/.qwen/memories/`),
 and response text go into the logs. `sdf init qwen` sets it to `false`,
 also when the file already says `true`. `includeSensitiveSpanAttributes`
 (default false) copies messages and tool data into spans; `sdf init qwen`
-sets it back to false when it finds it on.
+sets it back to false when it finds it on. Those settings decide what Qwen
+Code sends; they do not decide what sdf stores. A workspace or system
+settings file can turn either back on over what `sdf init qwen` wrote, so
+sdf drops the content itself before storing anything, whatever the
+settings: in logs, `prompt`, `request_text` (which can hold file contents
+and `~/.qwen/memories/`), `response_text`, and `function_args`; on spans,
+`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`
+(`qwen-code.tool`) and `gen_ai.input.messages`, `gen_ai.output.messages`,
+and `gen_ai.system_instructions` (`qwen-code.llm_request`); error text; and
+span status messages (an ERROR `qwen-code.hook` becomes "hook error", a tool
+span "tool error: tool_error", with the kept `error.type`). Only `sdf serve --store-content` keeps them; see
+[content storage](receiver.md#content-storage).
 
 No setting turns off tool arguments: every `qwen-code.tool_call` log carries
 the full JSON arguments of the call in `function_args` (the shell command,
 the whole content passed to `write_file` or `edit`), and a failed call
 carries the tool's error text in `error` and `error.message`
 (`logToolCall`, `packages/core/src/telemetry/loggers.ts`, v0.28.4). Its
-tool spans repeat the error text. sdf discards these before storing
-anything: it keeps the tool name, call id, duration, success, and error
-type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
+tool spans repeat the error text. sdf drops these too (unless
+`--store-content`): it keeps the tool name, call id, duration, success, and
+error type, and records `function_args_bytes`, `error_bytes`, and
+`sdf.redacted`.
 
 - Session: logs and spans carry `session.id` (LLM and interaction spans also
   `gen_ai.conversation.id`). The auto-instrumented HTTP `POST` child spans
@@ -478,27 +506,36 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
   no `session.id` unless `telemetry.metrics.includeSessionId` is true, so
   they reach a session only by time window.
 - Duration is the sum of `qwen-code.interaction` spans (one trace root per
-  prompt, including tool approval waits). Without spans it is the
-  min-to-max timestamp of Qwen logs (`logs qwen-code window`).
+  prompt, including tool approval waits); a span stored twice (same trace
+  and span id) counts once. Without spans it is the min-to-max timestamp
+  of Qwen logs (`logs qwen-code window`).
 - Tokens are the sum of `input_token_count`, `output_token_count`,
   `cached_content_token_count`, and `thoughts_token_count` on
-  `qwen-code.api_response` logs (`total_token_count` is not added), else
-  `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
-  spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
-  `thought`, `cache`). That counter belongs to the process, not the session:
-  sdf places its points by their own time, adds up process runs, and
-  subtracts what an earlier session in the same process had counted (see
-  [docs/gaps.md](gaps.md)). Input includes cached tokens. With OpenAI-compatible
-  providers (the default) output includes thoughts, which Qwen estimates
-  from text when the provider does not report them; with Gemini-native
-  responses it does not. The totals include subagents and the background
-  memory extractor (its spans are separate single-span traces with
-  `llm_request.context=standalone`); Qwen does not split them out.
+  `qwen-code.api_response` logs (`total_token_count` is not added; an exact
+  copy of a log, same session, time, body, and attributes, counts once),
+  else `gen_ai.usage.*` and `thoughts_token_count` on
+  `qwen-code.llm_request` spans (a span stored twice, same trace and span
+  id, counts once), else `qwen-code.token.usage` by `type` (`input`,
+  `output`, `thought`, `cache`). That counter belongs to the process, not
+  the session: sdf places its points by their own time (a flush after the
+  last log goes to the latest session of that process run), adds up process
+  runs, and subtracts the run's last point before the session, which is what
+  an earlier session in the same process had counted; when that cannot be
+  told apart the tokens are unknown (see [docs/gaps.md](gaps.md)). Input
+  includes cached tokens. With OpenAI-compatible providers (the default)
+  output includes thoughts, which Qwen estimates from text when the provider
+  does not report them; with Gemini-native responses it does not. The totals
+  include subagents and the background memory extractor (its spans are
+  separate single-span traces with `llm_request.context=standalone`); Qwen
+  does not split them out.
 - Tool calls come from `qwen-code.tool` spans: wait from the
   `qwen-code.tool.blocked_on_user` child, execution from
   `qwen-code.tool.execution`, joined to the `qwen-code.tool_call` log by call
   id for `success`. Without spans the logs are used, then
-  `qwen-code.tool.call.count`.
+  `qwen-code.tool.call.count`. A tool span stored twice (same trace and
+  span id) is one call, and a span without both ids is never merged. A
+  `qwen-code.tool_call` log stored twice is one call only when it is an
+  exact copy (same session, log time, body, and every attribute).
 - Cost: Qwen Code exports none. Computed cost is unknown until
   `internal/pricing` has a rule for the Qwen token sources.
 - Differences from Gemini CLI: `qwen-code.*` instead of `gemini_cli.*`; no
@@ -511,8 +548,9 @@ type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
 - A published run of an earlier Qwen Code release (spencerclark.dev,
   2026-10-10; it predates v0.28.4 and was not repeated here) had every
   `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
-  detail" even with no hooks configured. The summary shows them as they
-  arrive.
+  detail" even with no hooks configured. The summary shows them marked
+  ERROR; sdf stores the status message as "hook error", because a hook's
+  error text can carry the hook command's output.
 
 ## OpenRouter
 
@@ -659,7 +697,11 @@ set; changelog 1.0.107 says the same for `copilot help monitoring`.
 (`EVENT_ONLY` puts them on span events, which sdf does not store). The legacy
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` counts only when the
 standard variable is empty or unset, though it alone still adds tool schemas
-(`gen_ai.tool.definitions`). The user id is the pseudonymous
+(`gen_ai.tool.definitions`). Whatever these say, sdf drops the span content
+(`gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.system_instructions`, `gen_ai.tool.call.arguments`,
+`gen_ai.tool.call.result`, `gen_ai.tool.definitions`) before storing it
+unless `sdf serve --store-content` is on; see [content storage](receiver.md#content-storage). The user id is the pseudonymous
 `enduser.pseudo.id`.
 
 `service.name` is `github-copilot` (override with `OTEL_SERVICE_NAME`; the
@@ -687,7 +729,8 @@ trace id.
   count `cache_creation.input_tokens`, and earlier builds used underscore
   names (`cache_read_input_tokens`, `cache_creation_input_tokens`,
   `reasoning_output_tokens`); they are read too, and only the first name
-  present on a span counts.
+  present on a span counts. A span stored twice (same trace id and span
+  id, for example after an OTLP export retry) counts once.
 - Tool calls come from `execute_tool` spans. There is no success flag:
   `error.type` or an ERROR status is a failure, anything else a success.
 - Cost: Copilot reports no USD. `github.copilot.cost` is a billing
@@ -930,7 +973,8 @@ Spans are named for the operation (`llm_call`, `tool_call`, `agent_call`,
 ...). They carry `gen_ai.conversation.id` (the session id),
 `gen_ai.operation.name`, and `gen_ai.agent.name=gemini-cli`, and `llm_call`
 adds `gen_ai.request.model`. Prompts, outputs, and tool definitions are on
-spans only with `telemetry.traces=true`.
+spans only with `telemetry.traces=true`; sdf drops them before storing
+unless `sdf serve --store-content` is on.
 
 Metrics are cumulative and exported every 10 seconds:
 `gemini_cli.session.count`, `gemini_cli.token.usage` (`model`, `type` =
@@ -946,7 +990,7 @@ What the summary takes from it:
 | session id | `session.id` on logs and metrics; `gen_ai.conversation.id` on spans |
 | tool | `gemini-cli` (from `service.name`, or a `gemini_cli.*` name) |
 | model | `model` on `config`, `api_request`, `api_response`, `api_error`, and metric points; `gen_ai.request.model` on spans |
-| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields |
+| tokens | `gemini_cli.token.usage` by `type`, else the sum of `api_response` `*_token_count` fields (an exact copy of a log, same time, body, and attributes, counts once) |
 | duration | min-to-max of the session's logs and spans (no session or turn duration is exported) |
 | tool calls | `gemini_cli.tool_call` logs: `function_name`, `success`, `duration_ms` (no call id) |
 | errors | `gemini_cli.api_error` in the log events; failed tools as `success=false`; `ERROR` status on spans |
@@ -957,9 +1001,10 @@ What the summary takes from it:
 the `cache` count. `output` excludes `thought`. `tool` is the tool-use prompt
 count. Prompts are in the logs by default: `telemetry.logPrompts` defaults to
 `true`, and it adds `prompt`, `request_text`, `response_text`, and
-`function_args`. Set it to `false` unless you want that text in the local
-SQLite file. `sdf init gemini --write` does that when the file has no
-`logPrompts` yet.
+`function_args`. sdf drops those keys before storing them unless
+`sdf serve --store-content` is on (see [content storage](receiver.md#content-storage)), but setting
+`logPrompts` to `false` keeps the text off the wire too. `sdf init gemini
+--write` does that when the file has no `logPrompts` yet.
 
 ## Point Gemini CLI at it
 

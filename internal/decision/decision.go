@@ -12,8 +12,12 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/paulpham157/sdf/internal/store"
 )
@@ -23,6 +27,12 @@ const StatusHypothesis = "hypothesis"
 
 // StatusDecision is a settled choice.
 const StatusDecision = "decision"
+
+// DecidedByUser is a choice the user made.
+const DecidedByUser = "user"
+
+// DecidedByAgent is a choice the agent made.
+const DecidedByAgent = "agent"
 
 const (
 	KindDecision = "decision"
@@ -47,15 +57,60 @@ var (
 	shaPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
-// Record is one decision. Status is StatusHypothesis or StatusDecision.
-// Source is empty when the record named none. RecordedAt is UTC RFC3339
-// with a numeric zone, the same form the store uses for received_at.
+// EffectiveActive, EffectiveSuperseded, and EffectiveRetracted are the values of
+// Record.EffectiveStatus. They are computed when the graph is read and are
+// never stored.
+const (
+	EffectiveActive     = "active"
+	EffectiveSuperseded = "superseded"
+	EffectiveRetracted  = "retracted"
+)
+
+// Record is one decision. Status is StatusHypothesis or StatusDecision, as
+// stored. Source, DecidedBy, Alternatives, and Reason are empty when the
+// record named none. DecidedBy is DecidedByUser or DecidedByAgent when set.
+// RecordedAt is UTC RFC3339 with a numeric zone, the same form the store
+// uses for received_at.
+//
+// EffectiveStatus and SupersededBy are not stored. Load computes them from
+// the edges: a record is EffectiveSuperseded when at least one supersedes
+// edge runs from another decision to it, and SupersededBy lists those
+// decisions' ids once each, in edge order. Otherwise it is EffectiveActive
+// and SupersededBy is empty.
+//
+// Retraction is set when the decision was retracted, and then
+// EffectiveStatus is EffectiveRetracted whatever the edges say: retracted
+// takes precedence over superseded. SupersededBy is still filled, so a
+// reader sees both facts.
 type Record struct {
-	ID         string `json:"id"`
-	Statement  string `json:"statement"`
-	Status     string `json:"status"`
-	RecordedAt string `json:"recorded_at"`
-	Source     string `json:"source,omitempty"`
+	ID              string      `json:"id"`
+	Statement       string      `json:"statement"`
+	Status          string      `json:"status"`
+	RecordedAt      string      `json:"recorded_at"`
+	Source          string      `json:"source,omitempty"`
+	DecidedBy       string      `json:"decided_by,omitempty"`
+	Alternatives    string      `json:"alternatives,omitempty"`
+	Reason          string      `json:"reason,omitempty"`
+	EffectiveStatus string      `json:"effective_status"`
+	SupersededBy    []string    `json:"superseded_by,omitempty"`
+	Retraction      *Retraction `json:"retraction,omitempty"`
+}
+
+// Retraction is the append-only record that a decision was withdrawn. It is
+// stored in its own table, never on the decision row. Reason and RetractedBy
+// are empty when the caller named none; RetractedBy is DecidedByUser or
+// DecidedByAgent when set.
+type Retraction struct {
+	RetractedAt string `json:"retracted_at"`
+	Reason      string `json:"reason,omitempty"`
+	RetractedBy string `json:"retracted_by,omitempty"`
+}
+
+// RetractInput is what a caller supplies to Retract.
+type RetractInput struct {
+	ID          string
+	Reason      string
+	RetractedBy string
 }
 
 // Endpoint is one end of an edge. Kind is KindDecision, KindSession, or
@@ -82,10 +137,13 @@ type Graph struct {
 
 // RecordInput is what a caller supplies. RecordedAt is filled here.
 type RecordInput struct {
-	ID        string
-	Statement string
-	Status    string
-	Source    string
+	ID           string
+	Statement    string
+	Status       string
+	Source       string
+	DecidedBy    string
+	Alternatives string
+	Reason       string
 }
 
 // EdgeInput is what a caller supplies for one edge.
@@ -102,43 +160,212 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		return Record{}, err
 	}
 	if err := s.InsertDecision(store.Decision{
-		ID:         rec.ID,
-		Statement:  rec.Statement,
-		Status:     rec.Status,
-		RecordedAt: rec.RecordedAt,
-		Source:     rec.Source,
+		ID:           rec.ID,
+		Statement:    rec.Statement,
+		Status:       rec.Status,
+		RecordedAt:   rec.RecordedAt,
+		Source:       rec.Source,
+		DecidedBy:    rec.DecidedBy,
+		Alternatives: rec.Alternatives,
+		Reason:       rec.Reason,
 	}); err != nil {
 		return Record{}, err
 	}
 	return rec, nil
 }
 
-// Link stores one edge. A session or commit endpoint is rejected with
-// ErrUnknownRef unless the store already has telemetry for it. A decision
-// endpoint must name a decision already stored.
+// ErrSelfLink, ErrSupersedesKind, ErrSupersedesCycle, and ErrDuplicateEdge
+// are the link rules. Link wraps them with the endpoints involved, so
+// errors.Is matches and the message names the edge.
+var (
+	ErrSelfLink        = errors.New("an edge cannot link an endpoint to itself")
+	ErrSupersedesKind  = errors.New("supersedes links a decision to a decision")
+	ErrSupersedesCycle = errors.New("supersedes cycle")
+	ErrDuplicateEdge   = errors.New("edge already recorded")
+	// ErrRetracted rejects a new edge with a retracted decision at either end.
+	ErrRetracted = errors.New("decision retracted")
+	// ErrAlreadyRetracted rejects retracting a decision a second time, as
+	// ErrDuplicateEdge rejects the same edge twice.
+	ErrAlreadyRetracted = errors.New("decision already retracted")
+)
+
+// Link stores one edge, after LinkWithWarnings' checks. It drops the
+// warnings; a caller that reports them uses LinkWithWarnings.
 func Link(s *store.Store, in EdgeInput) (Edge, error) {
+	edge, _, err := LinkWithWarnings(s, in)
+	return edge, err
+}
+
+// LinkWithWarnings stores one edge and returns any warnings about it. In
+// order, it rejects:
+//
+//   - a bad relation, kind, or ref;
+//   - ErrSelfLink: from and to are the same endpoint, for any relation;
+//   - ErrSupersedesKind: supersedes with a session or commit endpoint.
+//     "from supersedes to" means the from decision replaces the to
+//     decision, so both ends are decisions;
+//   - ErrUnknownRef: a session or commit the store has no telemetry for,
+//     or a decision id not stored;
+//   - ErrRetracted: either end is a retracted decision;
+//   - ErrDuplicateEdge: the same relation, from, and to already stored;
+//   - ErrSupersedesCycle: from supersedes to when to already reaches from
+//     through decision-to-decision supersedes edges, including to
+//     superseding from directly.
+//
+// It warns, and still stores the edge, when the same two endpoints, in
+// either direction, now have both a validates and a contradicts edge.
+//
+// The retracted, duplicate, cycle, and warning checks read the stored
+// decision ids, edges, and retractions in the same transaction as the insert
+// (store.AppendDecisionEdge), so concurrent writers cannot slip a change
+// between the check and the insert: two links cannot both pass, and a
+// decision added meanwhile (for example one that turns a dangling edge into
+// a real supersedes step) is seen by the cycle check. Nothing is updated or deleted. Edges an older
+// sdf stored without these checks stay as they are; they are read back
+// unchanged and count as existing edges here.
+// beforeAppendEdge, when set by a test, runs after LinkWithWarnings' checks
+// that need no transaction and before store.AppendDecisionEdge. It is nil
+// in production.
+var beforeAppendEdge func()
+
+func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	edge, err := newEdge(in, now())
 	if err != nil {
-		return Edge{}, err
+		return Edge{}, nil, err
+	}
+	if edge.From == edge.To {
+		return Edge{}, nil, fmt.Errorf("%w: %s", ErrSelfLink, endpointText(edge.From))
+	}
+	if edge.Relation == RelSupersedes {
+		if edge.From.Kind != KindDecision {
+			return Edge{}, nil, fmt.Errorf("%w: from is %s", ErrSupersedesKind, endpointText(edge.From))
+		}
+		if edge.To.Kind != KindDecision {
+			return Edge{}, nil, fmt.Errorf("%w: to is %s", ErrSupersedesKind, endpointText(edge.To))
+		}
 	}
 	if err := known(s, edge.From); err != nil {
-		return Edge{}, err
+		return Edge{}, nil, err
 	}
 	if err := known(s, edge.To); err != nil {
-		return Edge{}, err
+		return Edge{}, nil, err
 	}
-	if err := s.InsertDecisionEdge(store.DecisionEdge{
+	if beforeAppendEdge != nil {
+		beforeAppendEdge()
+	}
+	var warnings []string
+	err = s.AppendDecisionEdge(store.DecisionEdge{
 		Relation:   edge.Relation,
 		FromKind:   edge.From.Kind,
 		FromRef:    edge.From.Ref,
 		ToKind:     edge.To.Kind,
 		ToRef:      edge.To.Ref,
 		RecordedAt: edge.RecordedAt,
-	}); err != nil {
-		return Edge{}, err
+	}, func(g store.DecisionGraph) error {
+		for _, r := range g.Retractions {
+			for _, end := range []Endpoint{edge.From, edge.To} {
+				if end.Kind == KindDecision && end.Ref == r.DecisionID {
+					return fmt.Errorf("%w: %s takes no new edges", ErrRetracted, endpointText(end))
+				}
+			}
+		}
+		existing := make([]Edge, 0, len(g.Edges))
+		for _, r := range g.Edges {
+			existing = append(existing, Edge{
+				Relation: r.Relation,
+				From:     Endpoint{Kind: r.FromKind, Ref: r.FromRef},
+				To:       Endpoint{Kind: r.ToKind, Ref: r.ToRef},
+			})
+		}
+		var err error
+		warnings, err = checkAgainst(edge, existing, g.DecisionIDs)
+		return err
+	})
+	if err != nil {
+		return Edge{}, nil, err
 	}
-	return edge, nil
+	return edge, warnings, nil
 }
+
+// checkAgainst applies the rules that depend on the stored edges.
+func checkAgainst(edge Edge, existing []Edge, stored map[string]bool) ([]string, error) {
+	for _, e := range existing {
+		if e.Relation == edge.Relation && e.From == edge.From && e.To == edge.To {
+			return nil, fmt.Errorf("%w: %s %s %s", ErrDuplicateEdge, endpointText(edge.From), edge.Relation, endpointText(edge.To))
+		}
+	}
+	if edge.Relation == RelSupersedes {
+		if path := supersedesPath(existing, stored, edge.To.Ref, edge.From.Ref); path != nil {
+			return nil, fmt.Errorf("%w: %s already reaches %s through supersedes (%s), so %s cannot supersede %s",
+				ErrSupersedesCycle, endpointText(edge.To), endpointText(edge.From), strings.Join(path, " -> "),
+				endpointText(edge.From), endpointText(edge.To))
+		}
+	}
+	var warnings []string
+	if edge.Relation == RelValidates || edge.Relation == RelContradicts {
+		other := RelContradicts
+		if edge.Relation == RelContradicts {
+			other = RelValidates
+		}
+		for _, e := range existing {
+			if e.Relation == other && (e.From == edge.From && e.To == edge.To || e.From == edge.To && e.To == edge.From) {
+				warnings = append(warnings, fmt.Sprintf("%s and %s have both validates and contradicts edges", endpointText(edge.From), endpointText(edge.To)))
+				break
+			}
+		}
+	}
+	return warnings, nil
+}
+
+// countsAsSupersedes is the one rule, shared by read time (resolve) and the
+// cycle check, for whether a stored edge replaces a decision: relation
+// supersedes, two different decision endpoints, and both ids among the
+// stored decisions. An older database may hold an edge that fails it (a
+// self-edge, a session or commit end, or an id never stored); such an edge
+// is still listed but replaces nothing.
+func countsAsSupersedes(e Edge, stored map[string]bool) bool {
+	return e.Relation == RelSupersedes &&
+		e.From.Kind == KindDecision && e.To.Kind == KindDecision &&
+		e.From.Ref != e.To.Ref &&
+		stored[e.From.Ref] && stored[e.To.Ref]
+}
+
+// supersedesPath returns the decision ids from start to goal along edges
+// that countsAsSupersedes (from -> to), or nil when goal is not reachable.
+// The search is breadth-first, so the path is a shortest one.
+func supersedesPath(edges []Edge, stored map[string]bool, start, goal string) []string {
+	next := map[string][]string{}
+	for _, e := range edges {
+		if countsAsSupersedes(e, stored) {
+			next[e.From.Ref] = append(next[e.From.Ref], e.To.Ref)
+		}
+	}
+	prev := map[string]string{start: ""}
+	queue := []string{start}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == goal {
+			var path []string
+			for n := goal; n != ""; n = prev[n] {
+				path = append([]string{n}, path...)
+				if n == start {
+					break
+				}
+			}
+			return path
+		}
+		for _, n := range next[cur] {
+			if _, seen := prev[n]; !seen {
+				prev[n] = cur
+				queue = append(queue, n)
+			}
+		}
+	}
+	return nil
+}
+
+func endpointText(e Endpoint) string { return e.Kind + ":" + e.Ref }
 
 // Load reads the graph back. An empty store returns empty lists, not nil.
 func Load(s *store.Store) (Graph, error) {
@@ -150,14 +377,21 @@ func Load(s *store.Store) (Graph, error) {
 	if err != nil {
 		return Graph{}, err
 	}
+	retractions, err := s.LoadDecisionRetractions()
+	if err != nil {
+		return Graph{}, err
+	}
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
 		out.Decisions = append(out.Decisions, Record{
-			ID:         d.ID,
-			Statement:  d.Statement,
-			Status:     d.Status,
-			RecordedAt: d.RecordedAt,
-			Source:     d.Source,
+			ID:           d.ID,
+			Statement:    d.Statement,
+			Status:       d.Status,
+			RecordedAt:   d.RecordedAt,
+			Source:       d.Source,
+			DecidedBy:    d.DecidedBy,
+			Alternatives: d.Alternatives,
+			Reason:       d.Reason,
 		})
 	}
 	for _, e := range edges {
@@ -168,7 +402,104 @@ func Load(s *store.Store) (Graph, error) {
 			RecordedAt: e.RecordedAt,
 		})
 	}
+	byID := make(map[string]*Retraction, len(retractions))
+	for _, r := range retractions {
+		if _, dup := byID[r.DecisionID]; !dup {
+			byID[r.DecisionID] = &Retraction{RetractedAt: r.RecordedAt, Reason: r.Reason, RetractedBy: r.RetractedBy}
+		}
+	}
+	for i := range out.Decisions {
+		out.Decisions[i].Retraction = byID[out.Decisions[i].ID]
+	}
+	resolve(&out)
 	return out, nil
+}
+
+// Retract records that a decision is withdrawn. The decision must be
+// stored (ErrUnknownRef otherwise) and not already retracted
+// (ErrAlreadyRetracted). The reason is one line of up to 500 bytes;
+// RetractedBy is empty, DecidedByUser, or DecidedByAgent. It appends one
+// row to decision_retractions in a BEGIN IMMEDIATE transaction that first
+// reads the existing retractions, so concurrent retractions of one id store
+// one row. The decision row and its edges are not changed.
+func Retract(s *store.Store, in RetractInput) (Retraction, error) {
+	id := strings.TrimSpace(in.ID)
+	if !idPattern.MatchString(id) {
+		return Retraction{}, fmt.Errorf("decision id must be 1-128 letters, digits, dot, underscore, or dash")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if strings.ContainsAny(reason, "\r\n") || len(reason) > 500 {
+		return Retraction{}, fmt.Errorf("reason must be one line")
+	}
+	by := strings.TrimSpace(in.RetractedBy)
+	switch by {
+	case "", DecidedByUser, DecidedByAgent:
+	default:
+		return Retraction{}, fmt.Errorf("retracted-by must be %q or %q", DecidedByUser, DecidedByAgent)
+	}
+	if err := known(s, Endpoint{Kind: KindDecision, Ref: id}); err != nil {
+		return Retraction{}, err
+	}
+	out := Retraction{RetractedAt: now(), Reason: reason, RetractedBy: by}
+	err := s.AppendDecisionRetraction(store.DecisionRetraction{
+		DecisionID:  id,
+		Reason:      reason,
+		RetractedBy: by,
+		RecordedAt:  out.RetractedAt,
+	}, func(existing []store.DecisionRetraction) error {
+		for _, r := range existing {
+			if r.DecisionID == id {
+				return fmt.Errorf("%w: %s at %s", ErrAlreadyRetracted, id, r.RecordedAt)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Retraction{}, err
+	}
+	return out, nil
+}
+
+// resolve fills EffectiveStatus and SupersededBy from the edges. An edge
+// "from supersedes to" means from replaces to. Only an edge whose two
+// endpoints are both stored decisions, and are different decisions, counts; any
+// other supersedes edge is still listed in Edges but changes no status.
+// Replacement is direct, not transitive: when b supersedes a and c
+// supersedes b, a is superseded by b and b by c. A reader follows the chain
+// through SupersededBy. A retracted record is EffectiveRetracted even when
+// it is also superseded, and its SupersededBy is still filled. Retracting a
+// decision does not change the status of the decisions it supersedes.
+// Nothing here writes to the store.
+func resolve(g *Graph) {
+	stored := make(map[string]bool, len(g.Decisions))
+	for _, d := range g.Decisions {
+		stored[d.ID] = true
+	}
+	by := map[string][]string{}
+	seen := map[[2]string]bool{}
+	for _, e := range g.Edges {
+		if !countsAsSupersedes(e, stored) {
+			continue
+		}
+		pair := [2]string{e.To.Ref, e.From.Ref}
+		if seen[pair] {
+			continue
+		}
+		seen[pair] = true
+		by[e.To.Ref] = append(by[e.To.Ref], e.From.Ref)
+	}
+	for i := range g.Decisions {
+		d := &g.Decisions[i]
+		d.SupersededBy = by[d.ID]
+		switch {
+		case d.Retraction != nil:
+			d.EffectiveStatus = EffectiveRetracted
+		case len(d.SupersededBy) > 0:
+			d.EffectiveStatus = EffectiveSuperseded
+		default:
+			d.EffectiveStatus = EffectiveActive
+		}
+	}
 }
 
 // WriteJSON writes the graph the way the summary JSON is written.
@@ -183,6 +514,114 @@ func WriteJSON(w io.Writer, g Graph) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	return enc.Encode(g)
+}
+
+// WriteText writes the graph as two tables, decisions then edges, in the
+// order Load returns them. It reads the same Graph that WriteJSON and
+// GET /api/decisions write, so the two views cannot disagree. A cell that
+// holds a control character or invalid UTF-8 is printed Go-quoted so it
+// cannot break the columns or the terminal. An empty source or decided-by
+// prints as "-". EFFECTIVE is the read-time status Load computed, see
+// Record. Alternatives and reason, when set, follow the row on indented
+// "alternatives: " and "reason: " lines in the STATEMENT column, and a
+// retraction on a "retracted: TIME [by WHO][; reason: TEXT]" line.
+func WriteText(w io.Writer, g Graph) error {
+	if len(g.Decisions) == 0 && len(g.Edges) == 0 {
+		_, err := io.WriteString(w, "No decisions in the store.\n")
+		return err
+	}
+	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"}}
+	for _, d := range g.Decisions {
+		row := []string{d.ID, d.Status, effectiveText(d), orDash(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
+		decisions = append(decisions, row)
+		// Alternatives and reason are free text, up to 500 bytes each, so
+		// they go on their own lines under STATEMENT instead of widening
+		// every row. The leading cells are empty so the columns still line
+		// up. The value is quoted by the same rule as any cell; the label
+		// stays outside the quotes.
+		for _, extra := range [][2]string{{"alternatives", d.Alternatives}, {"reason", d.Reason}} {
+			if extra[1] == "" {
+				continue
+			}
+			line := make([]string, len(row))
+			line[len(row)-1] = extra[0] + ": " + cell(extra[1])
+			decisions = append(decisions, line)
+		}
+		if r := d.Retraction; r != nil {
+			text := "retracted: " + cell(r.RetractedAt)
+			if r.RetractedBy != "" {
+				text += " by " + cell(r.RetractedBy)
+			}
+			if r.Reason != "" {
+				text += "; reason: " + cell(r.Reason)
+			}
+			line := make([]string, len(row))
+			line[len(row)-1] = text
+			decisions = append(decisions, line)
+		}
+	}
+	edges := [][]string{{"RELATION", "FROM", "TO", "RECORDED AT"}}
+	for _, e := range g.Edges {
+		edges = append(edges, []string{e.Relation, endpointText(e.From), endpointText(e.To), e.RecordedAt})
+	}
+	if err := writeTable(w, fmt.Sprintf("Decisions: %d", len(g.Decisions)), decisions); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		return err
+	}
+	return writeTable(w, fmt.Sprintf("Edges: %d", len(g.Edges)), edges)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// effectiveText is the EFFECTIVE cell: "active", or "superseded by" and the
+// replacing ids. A record built by hand with no effective status prints "-".
+func effectiveText(d Record) string {
+	switch {
+	case d.EffectiveStatus == EffectiveRetracted && len(d.SupersededBy) > 0:
+		return "retracted, superseded by " + strings.Join(d.SupersededBy, ", ")
+	case d.EffectiveStatus == EffectiveSuperseded && len(d.SupersededBy) > 0:
+		return "superseded by " + strings.Join(d.SupersededBy, ", ")
+	case d.EffectiveStatus == "":
+		return "-"
+	default:
+		return d.EffectiveStatus
+	}
+}
+
+// writeTable prints a title line, then the header and rows aligned by
+// column. A table with no rows prints the title only.
+func writeTable(w io.Writer, title string, rows [][]string) error {
+	if _, err := io.WriteString(w, title+"\n"); err != nil {
+		return err
+	}
+	if len(rows) < 2 {
+		return nil
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, row := range rows {
+		cells := make([]string, len(row))
+		for i, c := range row {
+			cells[i] = cell(c)
+		}
+		if _, err := io.WriteString(tw, strings.Join(cells, "\t")+"\n"); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
+}
+
+func cell(s string) string {
+	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
+		return s
+	}
+	return strconv.QuoteToASCII(s)
 }
 
 func newRecord(in RecordInput, recordedAt string) (Record, error) {
@@ -203,12 +642,31 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	if strings.ContainsAny(source, "\r\n") || len(source) > 500 {
 		return Record{}, fmt.Errorf("source must be one line")
 	}
+	decidedBy := strings.TrimSpace(in.DecidedBy)
+	switch decidedBy {
+	case "", DecidedByUser, DecidedByAgent:
+	default:
+		return Record{}, fmt.Errorf("decided-by must be %q or %q", DecidedByUser, DecidedByAgent)
+	}
+	alternatives := strings.TrimSpace(in.Alternatives)
+	if strings.ContainsAny(alternatives, "\r\n") || len(alternatives) > 500 {
+		return Record{}, fmt.Errorf("alternatives must be one line")
+	}
+	reason := strings.TrimSpace(in.Reason)
+	if strings.ContainsAny(reason, "\r\n") || len(reason) > 500 {
+		return Record{}, fmt.Errorf("reason must be one line")
+	}
+	// A new id has no edges yet, so the record starts active.
 	return Record{
-		ID:         id,
-		Statement:  statement,
-		Status:     in.Status,
-		RecordedAt: recordedAt,
-		Source:     source,
+		ID:              id,
+		Statement:       statement,
+		Status:          in.Status,
+		RecordedAt:      recordedAt,
+		Source:          source,
+		DecidedBy:       decidedBy,
+		Alternatives:    alternatives,
+		Reason:          reason,
+		EffectiveStatus: EffectiveActive,
 	}, nil
 }
 
