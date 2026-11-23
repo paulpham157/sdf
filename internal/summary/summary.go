@@ -483,11 +483,14 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 	tokens, tokensSource, tokensMethod := tokensOf(records, points)
 	costUSD, costSource, costNote := costOf(records, points, tool)
 	modelList := models(records, points)
+	totals := tokenMap(tokens)
+	requests, skip := requestTokens(records, deref(tokensSource), totals)
 	computed := pricing.Price(prices, pricing.Usage{
-		Models:   modelList,
-		Tokens:   tokenMap(tokens),
-		Source:   deref(tokensSource),
-		Requests: requestTokens(records, deref(tokensSource)),
+		Models:            modelList,
+		Tokens:            totals,
+		Source:            deref(tokensSource),
+		Requests:          requests,
+		RequestSkipReason: skip,
 	})
 	failures := metricFailures(records)
 	return SessionSummary{
@@ -812,23 +815,55 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 	return out
 }
 
-func requestTokens(records []record.Record, source string) []map[string]float64 {
-	var keys []string
-	var match func(record.Record) bool
+func requestTokens(records []record.Record, source string, totals map[string]float64) ([]map[string]float64, string) {
 	switch source {
 	case "logs " + claudeAPI:
-		keys = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
-		match = func(rec record.Record) bool {
+		return collectRequestTokens(records, claudeRequestFields, nil, func(rec record.Record) bool {
 			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
-		}
+		}), ""
 	case "logs " + grokAPI:
-		keys = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
-		match = func(rec record.Record) bool {
+		return collectRequestTokens(records, grokRequestFields, nil, func(rec record.Record) bool {
 			return rec.Signal == "logs" && logEventName(rec) == grokAPI
-		}
+		}), ""
+	case "metrics " + claudeTokenMetric:
+		reqs := collectRequestTokens(records, claudeRequestFields, claudeLogToMetric, func(rec record.Record) bool {
+			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
+		})
+		return reconciledRequests(reqs, totals, claudeAPI, claudeTokenMetric)
+	case "metrics " + grokTokenMetric:
+		reqs := collectRequestTokens(records, grokRequestFields, grokLogToMetric, func(rec record.Record) bool {
+			return rec.Signal == "logs" && logEventName(rec) == grokAPI
+		})
+		return reconciledRequests(reqs, totals, grokAPI, grokTokenMetric)
 	default:
-		return nil
+		return nil, ""
 	}
+}
+
+var claudeRequestFields = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+
+var grokRequestFields = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+
+// claudeLogToMetric maps claude_code.api_request fields onto the keys used
+// by metrics claude_code.token.usage, so Price can apply that source's rule.
+var claudeLogToMetric = map[string]string{
+	"input_tokens":          "input",
+	"output_tokens":         "output",
+	"cache_read_tokens":     "cacheRead",
+	"cache_creation_tokens": "cacheCreation",
+}
+
+// grokLogToMetric maps grok_code.api_request fields onto the keys used by
+// metrics grok_code.token.usage.
+var grokLogToMetric = map[string]string{
+	"input_tokens":          "input",
+	"output_tokens":         "output",
+	"reasoning_tokens":      "reasoning",
+	"cache_read_tokens":     "cache_read",
+	"cache_creation_tokens": "cache_write",
+}
+
+func collectRequestTokens(records []record.Record, keys []string, rename map[string]string, match func(record.Record) bool) []map[string]float64 {
 	var out []map[string]float64
 	for _, rec := range records {
 		if !match(rec) {
@@ -841,7 +876,15 @@ func requestTokens(records []record.Record, source string) []map[string]float64 
 			if amount == nil {
 				continue
 			}
-			item[key] = *amount
+			name := key
+			if rename != nil {
+				mapped, ok := rename[key]
+				if !ok {
+					continue
+				}
+				name = mapped
+			}
+			item[name] = *amount
 			found = true
 		}
 		if found {
@@ -852,6 +895,38 @@ func requestTokens(records []record.Record, source string) []map[string]float64 
 		return nil
 	}
 	return out
+}
+
+func reconciledRequests(requests []map[string]float64, totals map[string]float64, logName, metricName string) ([]map[string]float64, string) {
+	if len(requests) == 0 {
+		return nil, ""
+	}
+	if requestTotalsMatch(requests, totals) {
+		return requests, ""
+	}
+	return nil, logName + " token totals do not match metrics " + metricName + " totals, so per-request override rates were not applied"
+}
+
+func requestTotalsMatch(requests []map[string]float64, totals map[string]float64) bool {
+	sum := map[string]float64{}
+	for _, req := range requests {
+		for key, value := range req {
+			sum[key] += value
+		}
+	}
+	keys := map[string]bool{}
+	for key := range sum {
+		keys[key] = true
+	}
+	for key := range totals {
+		keys[key] = true
+	}
+	for key := range keys {
+		if sum[key] != totals[key] {
+			return false
+		}
+	}
+	return true
 }
 
 func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, *string) {

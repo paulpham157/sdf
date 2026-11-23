@@ -43,7 +43,8 @@
   or refreshed OpenRouter token price for the same de-duplicated counts.
   It is not an invoice either: override conditions other than
   `min_prompt_tokens` are refused, a session total at or above a
-  `min_prompt_tokens` threshold is unknown unless per-request counts exist,
+  `min_prompt_tokens` threshold is unknown unless per-request counts exist
+  (including `api_request` logs whose totals match a preferred usage metric),
   a missing component price is unknown, and per-request or web-search fees
   are not added.
 - Prompt and tool content are not requested by the setup in
