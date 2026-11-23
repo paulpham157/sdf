@@ -406,7 +406,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
 	}
-	db, err := store.Open(dbPath)
+	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
