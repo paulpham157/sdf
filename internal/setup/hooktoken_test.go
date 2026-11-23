@@ -215,3 +215,52 @@ func TestGitHookSendsTheReceiverTokenWithWget(t *testing.T) {
 		t.Fatalf("temporary wgetrc left behind: %v", left)
 	}
 }
+
+func TestHooksNeverSendTheTokenToANonLoopbackHost(t *testing.T) {
+	for u, want := range map[string]bool{
+		"http://127.0.0.1:4318/v1/sessions":         true,
+		"http://127.8.9.10:4318/v1/sessions":        true,
+		"http://localhost:4318/v1/sessions":         true,
+		"http://LOCALHOST:4318/v1/sessions":         true,
+		"http://[::1]:4318/v1/sessions":             true,
+		"http://10.0.0.5:4318/v1/sessions":          false,
+		"http://collector.example:4318/v1/sessions": false,
+		"http://localhost.example:4318/v1/sessions": false,
+		"http://[::2]:4318/v1/sessions":             false,
+		"https://127.0.0.1:4318/v1/sessions":        false,
+		"not a url":                                 false,
+	} {
+		if got := loopbackURL(u); got != want {
+			t.Errorf("loopbackURL(%q) = %v, want %v", u, got, want)
+		}
+	}
+	remote := "http://collector.example:4318/v1/sessions"
+	for name, text := range map[string]string{
+		"claude-code": claudeHooks(remote)["SessionStart"],
+		"codex":       codexHookCommands(remote)["SessionStart"],
+		"grok":        grokHooks(remote),
+		"opencode":    opencodePlugin(remote),
+		"pi":          piExtension(remote),
+	} {
+		if strings.Contains(text, "SDF_OTLP_TOKEN") || strings.Contains(text, "Bearer") {
+			t.Errorf("%s hook for a non-loopback host reads or sends the token:\n%s", name, text)
+		}
+	}
+	local := "http://127.0.0.1:4318/v1/sessions"
+	for name, text := range map[string]string{
+		"claude-code": claudeHooks(local)["SessionStart"],
+		"grok":        grokHooks(local),
+		"opencode":    opencodePlugin(local),
+		"pi":          piExtension(local),
+	} {
+		if !strings.Contains(text, "SDF_OTLP_TOKEN_FILE") {
+			t.Errorf("%s hook for loopback does not read the token", name)
+		}
+	}
+	if note := hookTokenNoteFor(Endpoint{Host: "collector.example", HTTPPort: 4318}); !strings.Contains(note, "does not send") {
+		t.Errorf("note %q", note)
+	}
+	if note := hookTokenNoteFor(Endpoint{Host: "127.0.0.1", HTTPPort: 4318}); note != hookTokenNote {
+		t.Errorf("note %q", note)
+	}
+}

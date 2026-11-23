@@ -120,6 +120,13 @@ wget fallback gets it from a temporary wgetrc that is removed after the
 post, so the token is not on a command line. The JavaScript hooks (OpenCode,
 Pi) read the same variables with `process.env` and `node:fs`.
 
+The token is only sent to a loopback receiver (`localhost`, `127.0.0.0/8`,
+or `::1`), because the hooks post plain HTTP. `sdf init AGENT --host`
+with any other host writes session hooks that never read or send the token,
+and `sdf init` says so; the git hooks post only to loopback in any case.
+`sdf serve` refuses a non-loopback `Host`, so such a hook could not be
+accepted anyway.
+
 Checked live on 2026-11-23 with a signed-in `grok` 1.0.92 and a receiver
 started with `--otlp-token-file`: with `SDF_OTLP_TOKEN_FILE` exported where
 `grok` started, the Grok session hook's open and close, the git hook's
