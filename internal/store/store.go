@@ -91,6 +91,12 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{path: path, db: db}
+	// Wait out a short lock (another process on the file) instead of
+	// failing the export with SQLITE_BUSY.
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -240,6 +246,11 @@ func (s *Store) Load() ([]record.Record, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanRecords(rows)
+}
+
+// scanRecords reads rows selected in Load's column order.
+func scanRecords(rows *sql.Rows) ([]record.Record, error) {
 	var out []record.Record
 	for rows.Next() {
 		var rec record.Record

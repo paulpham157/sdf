@@ -47,12 +47,20 @@ func TestSdfRedactScrubsALegacyDatabase(t *testing.T) {
 		}
 		return string(out), code
 	}
-	out, code := run("redact", "--db", db, "--dry-run")
+	// Review S8: redact refuses while a serve runs on the file (it would
+	// fail exports with 500 and could write content after the stamp).
+	srv = startServeArgs(t, "--db", db)
+	out, code := run("redact", "--db", db)
+	srv.stop(t)
+	if code != 1 || !strings.Contains(out, "sdf serve (or another sdf redact) is using "+db) {
+		t.Fatalf("redact under serve %d: %s", code, out)
+	}
+	out, code = run("redact", "--db", db, "--dry-run")
 	if code != 0 || !strings.Contains(out, "rows would change; nothing written") || !dbHas(t, db, "SDF-LEAK-01-") {
 		t.Fatalf("dry run %d: %s", code, out)
 	}
 	out, code = run("redact", "--db", db)
-	if code != 0 || !strings.Contains(out, "rows scrubbed; WAL checkpointed and file vacuumed") {
+	if code != 0 || !strings.Contains(out, "rows scrubbed; file vacuumed") {
 		t.Fatalf("redact %d: %s", code, out)
 	}
 	if dbHas(t, db, "SDF-LEAK-") {
@@ -68,6 +76,19 @@ func TestSdfRedactScrubsALegacyDatabase(t *testing.T) {
 	}
 	if out, code := run("redact", "--db", filepath.Join(t.TempDir(), "missing.sqlite")); code != 1 || !strings.Contains(out, "does not exist") {
 		t.Fatalf("missing db %d: %s", code, out)
+	}
+	other := filepath.Join(t.TempDir(), "other.sqlite")
+	if raw, err := sql.Open("sqlite", other); err != nil {
+		t.Fatal(err)
+	} else if _, err := raw.Exec(`CREATE TABLE notes (x TEXT)`); err != nil {
+		t.Fatal(err)
+	} else {
+		_ = raw.Close()
+	}
+	for _, args := range [][]string{{"redact", "--db", other, "--dry-run"}, {"redact", "--db", other}} {
+		if out, code := run(args...); code != 1 || !strings.Contains(out, "not an sdf database") {
+			t.Fatalf("%v %d: %s", args, code, out)
+		}
 	}
 	if out, code := run("redact"); code != 2 || !strings.Contains(out, "--db PATH is required") {
 		t.Fatalf("no --db %d: %s", code, out)

@@ -282,6 +282,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	// Held shared until serve exits, so sdf redact refuses to rewrite the
+	// file under it, and serve refuses to start while redact runs.
+	lock, err := store.LockForServe(dbPath)
+	if errors.Is(err, store.ErrLocked) {
+		fmt.Fprintf(stderr, "sdf serve: sdf redact%s is rewriting %s; start sdf serve again when it finishes\n", store.LockHolder(dbPath), dbPath)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: cannot take the lock file %s (%v); sdf redact will not see this serve\n", store.LockPath(dbPath), err)
+	}
+	defer lock.Release()
 	db, err := store.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)

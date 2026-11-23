@@ -142,11 +142,28 @@ sdf redact --db sdf-telemetry.sqlite
 ```
 
 `sdf redact` applies the same rules to every stored row, including rows kept
-with `--store-content` (their `sdf.content` mark goes too), rewrites the rows
-that changed with `secure_delete` on, checkpoints and truncates the WAL, runs
-`VACUUM` so the old text does not stay in free pages, and stamps the file.
-Running it again changes nothing. Copies of the file elsewhere (backups,
-Time Machine, `.sdf-bak`) are not touched.
+with `--store-content` (their `sdf.content` mark goes too), including a log
+name that is a copy of its body. It reads the rows in batches inside one
+transaction (a crash leaves the file as it was), rewrites the rows that
+changed with `secure_delete` on, runs `VACUUM` so the old text does not stay
+in free pages, and stamps the file. sdf's files use SQLite's default
+rollback journal; a file switched to WAL mode is also checkpointed and its
+WAL truncated. It needs free disk of about twice the file's size while it
+runs (the journal and `VACUUM`'s copy). Running it again changes nothing.
+
+- `--dry-run` opens the file read-only and writes nothing: no schema,
+  migration, stamp, or lock file.
+- The file must exist and have sdf's `records` table; any other file is
+  refused.
+- `sdf serve` holds `PATH.lock` (shared) while it runs, and `sdf redact`
+  takes it exclusively, so redact refuses while a serve uses the file and
+  a serve will not start while redact runs. An sdf older than this does
+  not take the lock, so stop it by hand.
+- The stamp only means the rows were written by an sdf with these rules
+  (or scrubbed). An older sdf opened on a stamped file writes content into
+  it with no warning; run `sdf redact` again after one has.
+- Copies of the file elsewhere (backups, Time Machine, `.sdf-bak`) are not
+  touched.
 
 ## Try it without an agent
 
