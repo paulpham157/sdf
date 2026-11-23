@@ -62,6 +62,12 @@
 - Codex `response.completed` and OpenCode `SessionStep.attempt` counts are
   per request and are summed (issues #204 and #200), as described in
   [docs/summary.md](summary.md).
+  Claude Code and Grok CLI `api_request` logs stored twice count once
+  (issue #214). The key is every id and timestamp the log carries plus its
+  counts and cost; no real duplicated capture has been checked. A
+  re-sent log whose attributes or log time differ from the first copy is
+  still counted twice, and a log with no `event.timestamp` and no log time
+  is never de-duplicated.
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
