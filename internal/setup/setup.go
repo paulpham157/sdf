@@ -208,6 +208,7 @@ func claude(req Request) (Result, error) {
 	b.WriteString("\n")
 	b.WriteString(status)
 	b.WriteString(hookTokenNoteFor(req.Endpoint))
+	b.WriteString(decisionBriefStoreNote())
 	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
 }
 
@@ -258,6 +259,7 @@ func codex(req Request) (Result, error) {
 	if !req.Write {
 		b.WriteString("\nnot written (pass --write to append this block; an existing [otel] table is left unchanged)\n")
 		b.WriteString(codexHookPreview(hooks, hookURL))
+		b.WriteString(decisionBriefStoreNote())
 		return Result{Text: b.String()}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -280,6 +282,7 @@ func codex(req Request) (Result, error) {
 		}
 		b.WriteString(hookStatus)
 		b.WriteString(hookTokenNoteFor(req.Endpoint))
+		b.WriteString(decisionBriefStoreNote())
 		return Result{Text: b.String(), Wrote: strings.HasPrefix(hookStatus, "wrote ")}, nil
 	}
 	if err := checkAllWritable(path, hooks); err != nil {
@@ -320,6 +323,7 @@ func codex(req Request) (Result, error) {
 	}
 	b.WriteString(hookStatus)
 	b.WriteString(hookTokenNoteFor(req.Endpoint))
+	b.WriteString(decisionBriefStoreNote())
 	return Result{Text: b.String(), Wrote: true}, nil
 }
 

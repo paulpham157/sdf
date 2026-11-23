@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"encoding/json"
 	"fmt"
 	neturl "net/url"
 	"os"
@@ -110,10 +111,12 @@ func mergeInitHooks(root map[string]any, tool string, commands map[string]string
 // mergeDecisionBriefHooks adds sdf's decision-brief command to hooks.SessionStart
 // without touching the user's own entries or the session-edge hook. An existing
 // sdf brief hook, including an earlier command form or a missing timeout, is
-// updated in place. Further sdf copies are removed, and a group left empty by
-// that removal is dropped. When SessionStart has no brief hook, one matcher-less
-// group is appended. A second run with the same command and timeout changes
-// nothing.
+// updated in place. A user-tuned positive timeout is kept; the default
+// timeout is added only when it is missing or not a positive number.
+// Further sdf copies are removed, and a group left empty by that removal is
+// dropped. When SessionStart has no brief hook, one matcher-less group is
+// appended. A second run with the same command and a positive timeout
+// changes nothing.
 func mergeDecisionBriefHooks(root map[string]any, command string) (bool, error) {
 	raw, present := root["hooks"]
 	hooks, ok := raw.(map[string]any)
@@ -162,7 +165,7 @@ func mergeBriefEventHooks(groups []any, command string) ([]any, bool) {
 				hook["command"] = command
 				changed = true
 			}
-			if !jsonEqual(hook["timeout"], decisionBriefTimeout) {
+			if !positiveHookTimeout(hook["timeout"]) {
 				hook["timeout"] = decisionBriefTimeout
 				changed = true
 			}
@@ -258,7 +261,27 @@ func isSdfDecisionBriefHook(hook map[string]any) bool {
 // decision-brief SessionStart hook, without the Claude Grok guard. The guard
 // is stripped before comparison. Newest first.
 var sdfDecisionBriefCommands = []string{
-	decisionBriefCommand, // current
+	decisionBriefCommand,   // current, exec
+	decisionBriefCommandV1, // unreleased, no exec
+}
+
+// positiveHookTimeout reports whether v is a positive integer timeout, as
+// written by sdf or tuned by the user. decodeSettings uses UseNumber, so a
+// value read back from a file is a json.Number.
+func positiveHookTimeout(v any) bool {
+	switch n := v.(type) {
+	case int:
+		return n > 0
+	case int64:
+		return n > 0
+	case float64:
+		return n > 0 && n == float64(int64(n))
+	case json.Number:
+		i, err := n.Int64()
+		return err == nil && i > 0
+	default:
+		return false
+	}
 }
 
 // sdfHookHead is the start of sdf's hook command for tool and edge, through
@@ -331,12 +354,24 @@ func codexHookCheck(path, url string) error {
 // codexHookFile writes a new hooks.json, or merges sdf's hooks into an
 // existing one so the user's own hooks and other keys stay.
 func codexHookFile(path, url string) (string, error) {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return writeBytes(path, []byte(codexHooks(url)), true)
+	var (
+		status string
+		err    error
+	)
+	if _, err = os.Stat(path); os.IsNotExist(err) {
+		status, err = writeBytes(path, []byte(codexHooks(url)), true)
+	} else {
+		status, err = mergeJSON(path, true, func(root map[string]any) (bool, error) {
+			return mergeInitHooks(root, "codex", codexHookCommands(url))
+		})
 	}
-	return mergeJSON(path, true, func(root map[string]any) (bool, error) {
-		return mergeInitHooks(root, "codex", codexHookCommands(url))
-	})
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(status, "wrote ") {
+		status += codexHooksTrustNote
+	}
+	return status, nil
 }
 
 // codexHookPreview is the dry-run line for the hooks.json merge --write
@@ -353,6 +388,23 @@ func codexHookPreview(path, url string) string {
 		return "hooks: " + path + " already has sdf's SessionStart and SessionEnd hooks and the decision brief hook\n"
 	default:
 		return "hooks: --write also merges sdf's SessionStart and SessionEnd hooks into " + path +
-			" (including the decision brief SessionStart hook; your own hooks there are kept; an existing file is copied to a .sdf-bak sibling first)\n"
+			" (including the decision brief SessionStart hook; your own hooks there are kept; an existing file is copied to a .sdf-bak sibling first)\n" +
+			codexHooksTrustNote
 	}
+}
+
+// codexHooksTrustNote tells the user to trust new or changed hooks in Codex's
+// /hooks UI. Codex skips them until they are trusted; trust is tied to the
+// hook hash, so an upgrade that changes the command needs a fresh trust.
+const codexHooksTrustNote = "Review and trust the new or changed sdf hooks in Codex's /hooks after this init, and again after any later upgrade that changes a hook. Codex skips new or changed hooks until they are trusted; trust is tied to the hook hash.\n"
+
+// decisionBriefStoreNote is appended to Claude and Codex init output. There
+// is no canonical store path for the hook to pin: sdf serve, sdf summary, and
+// every sdf decision command default to sdf-telemetry.sqlite in the process
+// working directory, with no environment variable, and sdf init does not
+// record a path. The installed hooks are user-global, so baking in --db at
+// init time would point every session at whatever directory init happened to
+// run in.
+func decisionBriefStoreNote() string {
+	return "The decision brief hook reads sdf-telemetry.sqlite in the session working directory, the same default as sdf serve and the other sdf decision commands (override only with --db; there is no env var). Start the session from the directory that holds the store, or the hook injects nothing.\n"
 }

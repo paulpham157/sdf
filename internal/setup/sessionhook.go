@@ -140,6 +140,11 @@ const claudeGuard = `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; `
 // hung. The agent kills the hook at this budget; the command also fail-opens.
 const decisionBriefTimeout = 2
 
+// decisionBriefCommandV1 is the unreleased command this branch first wrote
+// (no exec, with `|| exit 0`). The recognizer still matches it so re-init
+// upgrades it in place.
+const decisionBriefCommandV1 = `command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`
+
 // decisionBriefCommand is the SessionStart command that prints
 // `sdf decision brief` on stdout for the agent to inject. It takes no flags:
 // text is the default (a bad flag such as `--json` would exit 2). A missing
@@ -147,8 +152,11 @@ const decisionBriefTimeout = 2
 // cannot be read or queried, brief prints one stdout line,
 // `sdf decision brief unavailable: run sdf decision list`, and still exits 0
 // with empty stderr; the hook passes that line through for the agent to
-// inject. `command -v`, `|| exit 0`, and the hook timeout are belt-and-braces.
-const decisionBriefCommand = `command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`
+// inject. `exec` replaces the hook shell so a 2s timeout kills sdf itself.
+// `command -v` and the hook timeout are belt-and-braces. The hook passes no
+// flags, and brief exits 0 on every other path, so there is no `|| exit 0`
+// after exec.
+const decisionBriefCommand = `command -v sdf >/dev/null 2>&1 || exit 0; exec sdf decision brief 2>/dev/null`
 
 func decisionBriefCommandFor(tool string) string {
 	if tool == "claude-code" {

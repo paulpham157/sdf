@@ -151,9 +151,9 @@ func TestDecisionBriefInitRerunIsANoOp(t *testing.T) {
 func TestDecisionBriefUpdatesOldHookInPlaceAndDedupes(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".claude", "settings.json")
-	// An earlier form: current command without timeout, plus a duplicate,
+	// An earlier unreleased form without exec or timeout, plus a duplicate,
 	// sitting inside the user's matcher group.
-	old := claudeGuard + decisionBriefCommand
+	old := claudeGuard + decisionBriefCommandV1
 	settings := map[string]any{"hooks": map[string]any{
 		"SessionStart": []any{
 			map[string]any{"matcher": "startup", "hooks": []any{
@@ -209,8 +209,8 @@ func TestDecisionBriefDoesNotTakeOverAUserBriefHook(t *testing.T) {
 
 func TestDecisionBriefRecognizerMatchesWrittenFormsOnly(t *testing.T) {
 	forms := sdfDecisionBriefForms(t)
-	if len(forms) != 2 {
-		t.Fatalf("testdata has %d forms, want 2", len(forms))
+	if len(forms) != 4 {
+		t.Fatalf("testdata has %d forms, want 4 (current pair, then the unreleased pair)", len(forms))
 	}
 	for _, form := range forms {
 		hook := briefHook(form[1])
@@ -309,8 +309,8 @@ func TestDecisionBriefCommandFailOpen(t *testing.T) {
 
 	writeFakeSdf("#!/bin/sh\nexit 1\n")
 	out, err = run(decisionBriefCommand, nil)
-	if err != nil || out != "" {
-		t.Fatalf("nonzero: err=%v out=%q", err, out)
+	if err == nil || out != "" {
+		t.Fatalf("nonzero after exec (no || exit 0): err=%v out=%q", err, out)
 	}
 
 	writeFakeSdf("#!/bin/sh\nexit 0\n")
@@ -390,6 +390,76 @@ func TestOpenCodeAndPiPluginsAreUnchangedByTheBriefHook(t *testing.T) {
 	}
 	if strings.Contains(string(ext), "decision brief") {
 		t.Fatal("pi extension mentions decision brief")
+	}
+}
+
+func TestDecisionBriefKeepsAUserTunedTimeout(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".claude", "settings.json")
+	settings := map[string]any{"hooks": map[string]any{
+		"SessionStart": []any{
+			map[string]any{"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": claudeGuard + decisionBriefCommandV1,
+				"timeout": 5,
+			}}},
+		},
+	}}
+	body, _ := json.MarshalIndent(settings, "", "  ")
+	writeSettings(t, path, string(body))
+	if res := claudeInit(t, home, 4318); !res.Wrote {
+		t.Fatal(res.Text)
+	}
+	if !hasSessionStartCommand(t, path, decisionBriefCommandFor("claude-code")) {
+		t.Fatal("old brief command was not upgraded in place")
+	}
+	if got := sessionStartBriefTimeouts(t, path); len(got) != 1 || got[0] != 5 {
+		t.Fatalf("brief timeouts %v, want [5]", got)
+	}
+	if res := claudeInit(t, home, 4318); res.Wrote {
+		t.Fatal("rerun reset a user-tuned timeout")
+	}
+	if got := sessionStartBriefTimeouts(t, path); len(got) != 1 || got[0] != 5 {
+		t.Fatalf("rerun brief timeouts %v, want [5]", got)
+	}
+}
+
+func TestCodexInitAsksToTrustHooks(t *testing.T) {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, "codex")
+	req := Request{Agent: "codex", Home: home, CodexHome: codexHome, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}}
+	preview, err := Run(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview.Text, "Review and trust the new or changed sdf hooks in Codex's /hooks") {
+		t.Fatalf("dry-run missing trust note:\n%s", preview.Text)
+	}
+	if !strings.Contains(preview.Text, "trust is tied to the hook hash") {
+		t.Fatalf("dry-run missing hash wording:\n%s", preview.Text)
+	}
+	if !strings.Contains(preview.Text, "sdf-telemetry.sqlite in the session working directory") {
+		t.Fatalf("dry-run missing store-path note:\n%s", preview.Text)
+	}
+
+	req.Write = true
+	res, err := Run(req)
+	if err != nil || !res.Wrote {
+		t.Fatal(err, res.Text)
+	}
+	if !strings.Contains(res.Text, "Review and trust the new or changed sdf hooks in Codex's /hooks") {
+		t.Fatalf("write missing trust note:\n%s", res.Text)
+	}
+
+	again, err := Run(req)
+	if err != nil || again.Wrote {
+		t.Fatal(err, again.Text)
+	}
+	if strings.Contains(again.Text, "Review and trust the new or changed sdf hooks in Codex's /hooks") {
+		t.Fatalf("no-op rerun still asked to re-trust unchanged hooks:\n%s", again.Text)
+	}
+	if !strings.Contains(again.Text, "sdf-telemetry.sqlite in the session working directory") {
+		t.Fatalf("no-op rerun dropped the store-path note:\n%s", again.Text)
 	}
 }
 
