@@ -120,6 +120,28 @@ func TestGitHookSendsTheReceiverTokenFromTheEnvironment(t *testing.T) {
 			t.Fatalf("%s: Authorization %q, want %q", tc.env, got, tc.want)
 		}
 	}
+	// Both set: no token, and the commit prints why (git passes the hook's
+	// stderr through).
+	crlf := filepath.Join(t.TempDir(), "crlf")
+	if err := os.WriteFile(crlf, []byte("\r\n "+token+" \r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commitIn(t, dir, "c", "GROK_SESSION_ID="+id, "SDF_OTLP_TOKEN_FILE="+crlf)
+	if got := seen(); len(got) != 1 || got[0] != "Bearer "+token {
+		t.Fatalf("CRLF token file: Authorization %q", got)
+	}
+	cmd := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "both")
+	cmd.Env = gitEnv("GROK_SESSION_ID="+id, "SDF_OTLP_TOKEN="+token, "SDF_OTLP_TOKEN_FILE="+file)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("commit: %v %s", err, out)
+	}
+	if got := seen(); len(got) != 1 || got[0] != "" {
+		t.Fatalf("both set: Authorization %q, want none", got)
+	}
+	if !strings.Contains(string(out), "are both set") {
+		t.Fatalf("both set: no warning in %q", out)
+	}
 	hooks := hooksPath(t, dir)
 	for _, name := range []string{"post-commit", "post-rewrite", "prepare-commit-msg"} {
 		body, err := os.ReadFile(filepath.Join(hooks, name))
