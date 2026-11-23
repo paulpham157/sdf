@@ -112,12 +112,17 @@ The session hooks (`sdf init claude-code`, `codex`, `grok`, `opencode`, and
 `pi` with `--write`) and the git hooks (`sdf init --git-hooks`) read the
 token when they run, from the same variables `sdf serve` reads:
 `SDF_OTLP_TOKEN`, else the file named by `SDF_OTLP_TOKEN_FILE`, with
-whitespace removed. With a token they add `Authorization: Bearer <token>`;
+whitespace trimmed from the ends only, as `sdf serve` trims it (a space
+inside the token is kept; CRLF line ends are fine). With both variables set
+`sdf serve` refuses to start, so the hooks send no token and print
+`sdf: SDF_OTLP_TOKEN and SDF_OTLP_TOKEN_FILE are both set` to stderr; a
+blank `SDF_OTLP_TOKEN` counts as unset, as it does for `sdf serve`. With a token they add `Authorization: Bearer <token>`;
 without one they post as before, so an open receiver needs nothing. The
 token is never written into a hook file, a settings file, or a repository's
 `.git/hooks`. curl gets the header on stdin (`-H @-`), and the git hook's
 wget fallback gets it from a temporary wgetrc that is removed after the
-post, so the token is not on a command line. The JavaScript hooks (OpenCode,
+post, and by a trap if the hook is interrupted or killed with SIGTERM (only
+SIGKILL can leave it behind, in `$TMPDIR` with mode 0600), so the token is not on a command line. The JavaScript hooks (OpenCode,
 Pi) read the same variables with `process.env` and `node:fs`.
 
 The token is only sent to a loopback receiver (`localhost`, `127.0.0.0/8`,
