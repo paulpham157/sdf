@@ -1250,6 +1250,12 @@ func renderedPageAt(t *testing.T, srv *ui.Server, hash string) string {
 type pageResult struct {
 	Text   string
 	Markup string
+	// Active is the opening tag of document.activeElement after the run
+	// ("" when it is the body), Outside the markup of the body outside the
+	// app root, and Hash the final location.hash.
+	Active  string
+	Outside string
+	Hash    string
 }
 
 func renderPage(t *testing.T, srv *ui.Server, hash, flags string) pageResult {
@@ -1285,6 +1291,18 @@ func runPage(t *testing.T, base, html, script, hash, flags string) pageResult {
 	res := pageResult{Text: parts[0]}
 	if len(parts) == 2 {
 		res.Markup = parts[1]
+		if markup, extra, ok := strings.Cut(res.Markup, "\n/*SDF_PAGE_EXTRA*/\n"); ok {
+			res.Markup = markup
+			var more struct {
+				Active  string `json:"active"`
+				Outside string `json:"outside"`
+				Hash    string `json:"hash"`
+			}
+			if err := json.Unmarshal([]byte(extra), &more); err != nil {
+				t.Fatalf("page extra: %v\n%s", err, extra)
+			}
+			res.Active, res.Outside, res.Hash = more.Active, more.Outside, more.Hash
+		}
 	}
 	return res
 }
@@ -1353,8 +1371,22 @@ func writeBudget(t *testing.T, ceiling string) string {
 // pageRunner executes the page script the browser would, then prints the text
 // of the drawn page. It implements only the DOM surface app.js uses:
 // createElement, createElementNS, setAttribute, className, addEventListener,
-// removeEventListener, append, replaceChildren, textContent, and the details
-// open property. fetch is pointed at the server under test.
+// removeEventListener, append, replaceChildren, textContent, the details
+// open property, focus and document.activeElement, and querySelector for
+// simple selectors (tag, .class, [attr], [attr="v"], descendant and child
+// combinators). fetch is pointed at the server under test.
+//
+// flags is a comma-separated list. "open-more" opens every "Show …"
+// details. The other entries are actions run in order after the first
+// draw; a selector starting with "~" matches the element whose own text
+// is the rest:
+//
+//	click=<sel>       click the element (bubbles; hashchange fires after)
+//	focus=<sel>       focus the element
+//	key=<key>[@<sel>] keydown on the element, or on the focused element;
+//	                  <key> may carry ctrl+, meta+, alt+ or shift+ prefixes
+//	hash=<hash>       set location.hash and fire hashchange
+//	input=<text>      set the focused element's value and fire input
 const pageRunner = `"use strict";
 const { createInterface } = require("node:readline");
 
@@ -1364,24 +1396,104 @@ function textOf(node) {
 }
 
 class Node {
-  constructor() { this.children = []; }
+  constructor() { this.children = []; this.parentNode = null; }
   append() {
-    for (const kid of arguments) this.children.push(kid);
+    for (const kid of arguments) {
+      if (kid && kid.parentNode) kid.parentNode.removeChild(kid);
+      if (kid) kid.parentNode = this;
+      this.children.push(kid);
+    }
+  }
+  appendChild(kid) { this.append(kid); return kid; }
+  removeChild(kid) {
+    this.children = this.children.filter(function (c) { return c !== kid; });
+    kid.parentNode = null;
+    return kid;
+  }
+  replaceWith(next) {
+    const parent = this.parentNode;
+    if (!parent) return;
+    const at = parent.children.indexOf(this);
+    if (next.parentNode) next.parentNode.removeChild(next);
+    next.parentNode = parent;
+    parent.children[at] = next;
+    this.parentNode = null;
   }
 }
-function markup(node) {
-  if (!node) return "";
-  if (node.nodeType === 3) {
-    return String(node.text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
+function openTag(node) {
   const attrs = Object.assign({}, node.attrs);
   if (node.className) attrs.class = node.className;
   let bits = "";
   Object.keys(attrs).forEach(function (key) {
     bits += " " + key + '="' + String(attrs[key]).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"';
   });
+  return "<" + node.tag + bits + ">";
+}
+function markup(node) {
+  if (!node) return "";
+  if (node.nodeType === 3) {
+    return String(node.text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
   const inner = (node.children || []).map(markup).join("");
-  return "<" + node.tag + bits + ">" + inner + "</" + node.tag + ">";
+  return openTag(node) + inner + "</" + node.tag + ">";
+}
+
+// Selectors: compound parts joined by " " or ">".
+function parseSelector(sel) {
+  const steps = [];
+  let comb = " ";
+  const re = /\s*(>)\s*|\s+|([^\s>]+)/g;
+  let m;
+  while ((m = re.exec(sel.trim()))) {
+    if (m[1]) { comb = ">"; continue; }
+    if (!m[2]) { if (comb !== ">") comb = " "; continue; }
+    steps.push({ comb: comb, part: parseCompound(m[2]) });
+    comb = " ";
+  }
+  return steps;
+}
+function parseCompound(text) {
+  const out = { tag: null, classes: [], attrs: [] };
+  const re = /^([a-zA-Z][\w-]*)|\.([\w-]+)|\[([\w-]+)(?:="((?:[^"\\]|\\.)*)")?\]/g;
+  let m;
+  let used = 0;
+  while ((m = re.exec(text)) && m[0]) {
+    used += m[0].length;
+    if (m[1]) out.tag = m[1].toLowerCase();
+    else if (m[2]) out.classes.push(m[2]);
+    else out.attrs.push([m[3], m[4] == null ? null : m[4].replace(/\\(.)/g, "$1")]);
+  }
+  if (used !== text.length) throw new Error("runner: unsupported selector " + text);
+  return out;
+}
+function matchCompound(el, part) {
+  if (!el || el.nodeType !== 1) return false;
+  if (part.tag && el.tag.toLowerCase() !== part.tag) return false;
+  const cls = el.classList();
+  for (const c of part.classes) if (cls.indexOf(c) < 0) return false;
+  for (const a of part.attrs) {
+    const v = el.getAttribute(a[0]);
+    if (v == null) return false;
+    if (a[1] != null && v !== a[1]) return false;
+  }
+  return true;
+}
+function matchSteps(el, steps, i, root) {
+  if (!matchCompound(el, steps[i].part)) return false;
+  if (i === 0) return true;
+  const comb = steps[i].comb;
+  let up = el.parentNode;
+  while (up && up !== root.parentNode) {
+    if (matchSteps(up, steps, i - 1, root)) return true;
+    if (comb === ">") return false;
+    up = up.parentNode;
+  }
+  return false;
+}
+function walk(node, fn) {
+  (node.children || []).forEach(function (kid) {
+    if (kid && kid.nodeType === 1) { fn(kid); walk(kid, fn); }
+  });
 }
 
 class Element extends Node {
@@ -1393,7 +1505,17 @@ class Element extends Node {
     this.attrs = {};
     this.listeners = {};
   }
+  get tagName() { return String(this.tag).toUpperCase(); }
+  classList() { return String(this.className || this.attrs.class || "").split(/\s+/).filter(Boolean); }
   setAttribute(key, value) { this.attrs[key] = String(value); }
+  getAttribute(key) {
+    if (key === "class") return this.className || (this.attrs.class != null ? this.attrs.class : null);
+    return Object.prototype.hasOwnProperty.call(this.attrs, key) ? this.attrs[key] : null;
+  }
+  hasAttribute(key) { return this.getAttribute(key) != null; }
+  removeAttribute(key) { delete this.attrs[key]; }
+  get value() { return this._value != null ? this._value : (this.attrs.value || ""); }
+  set value(v) { this._value = String(v); }
   addEventListener(type, fn) {
     if (!this.listeners[type]) this.listeners[type] = [];
     this.listeners[type].push(fn);
@@ -1403,9 +1525,28 @@ class Element extends Node {
     if (!list) return;
     this.listeners[type] = list.filter(function (item) { return item !== fn; });
   }
-  fire(type) {
+  fire(type, event) {
     const list = (this.listeners[type] || []).slice();
-    for (let i = 0; i < list.length; i++) list[i].call(this);
+    for (let i = 0; i < list.length; i++) list[i].call(this, event || { type: type, target: this, preventDefault() {} });
+  }
+  focus() { focusState.active = this; }
+  blur() { if (focusState.active === this) focusState.active = null; }
+  contains(other) {
+    for (let n = other; n; n = n.parentNode) if (n === this) return true;
+    return false;
+  }
+  querySelectorAll(sel) {
+    const steps = parseSelector(sel);
+    const root = this;
+    const out = [];
+    walk(this, function (el) { if (matchSteps(el, steps, steps.length - 1, root)) out.push(el); });
+    return out;
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  closest(sel) {
+    const steps = parseSelector(sel);
+    for (let n = this; n && n.nodeType === 1; n = n.parentNode) if (matchSteps(n, steps, steps.length - 1, { parentNode: null })) return n;
+    return null;
   }
   get open() { return Object.prototype.hasOwnProperty.call(this.attrs, "open"); }
   set open(value) {
@@ -1416,10 +1557,12 @@ class Element extends Node {
     if (next !== was) this.fire("toggle");
   }
   replaceChildren() {
+    this.children.forEach(function (kid) { if (kid) kid.parentNode = null; });
     this.children = [];
     this.append.apply(this, arguments);
   }
   get textContent() { return textOf(this); }
+  set textContent(value) { this.replaceChildren(new Text(value)); }
 }
 class Text extends Node {
   constructor(value) {
@@ -1428,6 +1571,7 @@ class Text extends Node {
     this.text = String(value);
   }
 }
+const focusState = { active: null };
 
 const lines = createInterface({ input: process.stdin });
 const chunks = [];
@@ -1446,18 +1590,31 @@ lines.on("close", async () => {
   const marker = "\n/*SDF_PAGE_SPLIT*/\n";
   const cut = page.indexOf(marker);
   const script = page.slice(cut + marker.length);
+  const body = new Element("body");
   const app = new Element("div");
+  app.setAttribute("id", "app");
+  body.append(app);
   const location = { hash: hash };
+  const winListeners = {};
+  const docListeners = {};
   const document = {
+    body: body,
+    get activeElement() {
+      const el = focusState.active;
+      return el && body.contains(el) ? el : body;
+    },
     getElementById: function () { return app; },
     createElement: function (tag) { return new Element(tag); },
     createElementNS: function (ns, tag) { return new Element(tag); },
     createTextNode: function (value) { return new Text(value); },
+    addEventListener: function (type, fn) { (docListeners[type] = docListeners[type] || []).push(fn); },
+    removeEventListener: function () {},
   };
   const window = {
     document: document,
     location: location,
-    addEventListener: function () {},
+    addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); },
+    removeEventListener: function () {},
     fetch: async function (url) {
       const response = await fetch(new URL(url, base));
       const body = await response.text();
@@ -1469,6 +1626,35 @@ lines.on("close", async () => {
       };
     },
   };
+  function dispatch(target, type, init) {
+    const event = Object.assign({
+      type: type, target: target, defaultPrevented: false, propagationStopped: false,
+      ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+    }, init || {});
+    event.preventDefault = function () { event.defaultPrevented = true; };
+    event.stopPropagation = function () { event.propagationStopped = true; };
+    for (let n = target; n && !event.propagationStopped; n = n.parentNode) {
+      event.currentTarget = n;
+      if (n.fire) n.fire(type, event);
+    }
+    if (!event.propagationStopped) (docListeners[type] || []).slice().forEach(function (fn) { fn(event); });
+    if (!event.propagationStopped) (winListeners[type] || []).slice().forEach(function (fn) { fn(event); });
+    return event;
+  }
+  function find(sel) {
+    if (sel.charAt(0) === "~") {
+      const want = sel.slice(1);
+      let hit = null;
+      walk(body, function (el) {
+        if (!hit && (el.tag === "button" || el.getAttribute("role")) && textOf(el) === want) hit = el;
+      });
+      if (!hit) throw new Error("runner: no element with text " + want);
+      return hit;
+    }
+    const el = body.querySelector(sel);
+    if (!el) throw new Error("runner: no element matches " + sel);
+    return el;
+  }
   // The page fetches /api/snapshot, /api/decisions, and /api/summary before it
   // draws. Those responses are not back within a fixed number of turns, so
   // count each fetch the page starts and read the page only once a whole turn
@@ -1486,26 +1672,30 @@ lines.on("close", async () => {
       idle();
     });
   }
-  const run = new Function("window", "document", "location", "fetch", "Node", script);
-  run(window, document, location, fetching, Node);
-  await new Promise((resolve) => {
-    let quiet = false;
-    function drain() {
-      if (pending.size !== 0) {
-        quiet = false;
-        idle = drain;
-        return;
+  function settle() {
+    return new Promise((resolve) => {
+      let quiet = false;
+      function drain() {
+        if (pending.size !== 0) {
+          quiet = false;
+          idle = drain;
+          return;
+        }
+        if (!quiet) {
+          quiet = true;
+          setImmediate(drain);
+          return;
+        }
+        resolve();
       }
-      if (!quiet) {
-        quiet = true;
-        setImmediate(drain);
-        return;
-      }
-      resolve();
-    }
-    setImmediate(drain);
-  });
-  if (flags.split(",").indexOf("open-more") >= 0) {
+      setImmediate(drain);
+    });
+  }
+  const run = new Function("window", "document", "location", "fetch", "Node", "addEventListener", script);
+  run(window, document, location, fetching, Node, window.addEventListener);
+  await settle();
+  const list = flags.split(",").filter(Boolean);
+  if (list.indexOf("open-more") >= 0) {
     function openMore(node) {
       if (!node || node.nodeType === 3) return;
       if (node.tag === "details") {
@@ -1516,7 +1706,36 @@ lines.on("close", async () => {
     }
     openMore(app);
   }
-  process.stdout.write(app.textContent + "\n/*SDF_PAGE_RESULT*/\n" + markup(app));
+  for (const item of list) {
+    const eq = item.indexOf("=");
+    if (eq < 0) continue;
+    const verb = item.slice(0, eq);
+    const arg = item.slice(eq + 1);
+    const before = location.hash;
+    if (verb === "click") dispatch(find(arg), "click");
+    else if (verb === "focus") find(arg).focus();
+    else if (verb === "hash") location.hash = arg;
+    else if (verb === "input") {
+      const el = document.activeElement;
+      el.value = arg;
+      dispatch(el, "input");
+    } else if (verb === "key") {
+      const at = arg.lastIndexOf("@");
+      let key = at > 0 ? arg.slice(0, at) : arg;
+      const target = at > 0 ? find(arg.slice(at + 1)) : document.activeElement;
+      const init = {};
+      let mod;
+      while ((mod = /^(ctrl|meta|alt|shift)\+(.+)$/.exec(key))) { init[mod[1] + "Key"] = true; key = mod[2]; }
+      init.key = key === "comma" ? "," : key;
+      dispatch(target, "keydown", init);
+    } else throw new Error("runner: unknown action " + item);
+    if (location.hash !== before || verb === "hash") (winListeners.hashchange || []).slice().forEach(function (fn) { fn({ type: "hashchange" }); });
+    await settle();
+  }
+  const active = document.activeElement === body ? "" : openTag(document.activeElement);
+  const outside = body.children.filter(function (kid) { return kid !== app; }).map(markup).join("");
+  process.stdout.write(app.textContent + "\n/*SDF_PAGE_RESULT*/\n" + markup(app) +
+    "\n/*SDF_PAGE_EXTRA*/\n" + JSON.stringify({ active: active, outside: outside, hash: location.hash }));
 });
 `
 
