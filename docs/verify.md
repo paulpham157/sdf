@@ -75,7 +75,8 @@ JSON, hashed like a task: `"sha256:" + hex(sha256(kind + "\n" + canonical))`.
 The verdict lists every evidence id and hash, the task hash and its
 sources, the submitted commit and tree, and the secret rule set's hash.
 When a ledger is configured, evidence and then the verdict are appended to
-it. This build has no ledger yet, so the printed JSON is the record.
+it ([docs/ledger.md](ledger.md)). `sdf verify` does not open a ledger file
+by default yet, so the printed JSON is the record.
 
 ## What this does not guarantee
 

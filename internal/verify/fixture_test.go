@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/paulpham157/sdf/internal/ledger"
+	"github.com/paulpham157/sdf/internal/ledger/ledgertest"
 	"github.com/paulpham157/sdf/internal/task"
 )
 
@@ -59,14 +61,14 @@ type fixture struct {
 	root, base string
 	spec       task.Spec
 	hash       string
-	ledger     *task.MemLedger
+	ledger     *ledger.Store
 }
 
 const featureTest = "#!/bin/sh\ngrep -q done src/feature.txt\n"
 
 func newFixture(t *testing.T, criteria ...task.CriterionInput) *fixture {
 	t.Helper()
-	f := &fixture{repo: t.TempDir(), data: t.TempDir(), ledger: task.NewMemLedger(nil)}
+	f := &fixture{repo: t.TempDir(), data: t.TempDir(), ledger: ledgertest.New(t)}
 	g(t, f.repo, "init", "-q", "-b", "main")
 	f.root = commit(t, f.repo, map[string]string{"README": "r\n"}, "root")
 	f.base = commit(t, f.repo, map[string]string{
