@@ -344,6 +344,84 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	}
 }
 
+func TestPageShowsSupersededDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "sqlite-wal"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelSupersedes,
+		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "sqlite-wal"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "superseded"`) || !strings.Contains(api, `"superseded_by": [`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "superseded by sqlite-wal") {
+			t.Fatalf("%q did not render the superseded state:\n%s", hash, page)
+		}
+		if strings.Count(page, "superseded by") != 1 {
+			t.Fatalf("%q: only keep-sqlite is superseded:\n%s", hash, page)
+		}
+	}
+}
+
+func TestPageShowsRetractedDecisions(t *testing.T) {
+	db := openDB(t)
+	for _, id := range []string{"keep-sqlite", "pure-go"} {
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: "Statement " + id + ".", Status: decision.StatusDecision}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := decision.Retract(db, decision.RetractInput{ID: "keep-sqlite", Reason: "Benchmark was wrong."}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if !strings.Contains(api, `"effective_status": "retracted"`) || !strings.Contains(api, `"retraction": {`) {
+		t.Fatalf("api:\n%s", api)
+	}
+	for _, hash := range []string{"", "#/sessions"} {
+		page := renderedPageAt(t, srv, hash)
+		if !strings.Contains(page, "retracted") || !strings.Contains(page, "Benchmark was wrong.") {
+			t.Fatalf("%q did not render the retraction:\n%s", hash, page)
+		}
+		if strings.Count(page, "retracted") != 1 {
+			t.Fatalf("%q: only keep-sqlite is retracted:\n%s", hash, page)
+		}
+	}
+}
+
+func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID:           "dont-push",
+		Statement:    "Do not push until the user says so.",
+		Status:       decision.StatusDecision,
+		DecidedBy:    decision.DecidedByUser,
+		Alternatives: "push the branch now",
+		Reason:       "The user said don't push.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderedPage(t, srv)
+	if !strings.Contains(page, "Do not push until the user says so.") {
+		t.Fatalf("statement not rendered:\n%s", page)
+	}
+	if !strings.Contains(page, "user") || !strings.Contains(page, "push the branch now") || !strings.Contains(page, "The user said don't push.") {
+		t.Fatalf("optional decision fields not rendered:\n%s", page)
+	}
+}
+
 func TestSessionsAndDetailShowDecisionsAndBudgetWhenEmpty(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{
@@ -396,6 +474,9 @@ func TestPageRendersOverAndUnknownBudgets(t *testing.T) {
 
 func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	db := openDB(t)
+	// Status messages are error text, dropped by default; keep them so the
+	// page's escaping of a hostile message is still exercised.
+	db.KeepContent(func(record.Record) bool { return true })
 	xssName := "<script>alert(1)</script>"
 	xssMsg := "</li><img src=x onerror=alert(1)>"
 	parent := record.Record{
@@ -410,7 +491,7 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 		Name: record.Str("Tool.execute"), SpanID: record.Str("tool"), ParentSpanID: record.Str("step"),
 		StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
 		StatusCode: "ERROR", StatusMessage: record.Str("write failed"),
-		Attributes: map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1"},
+		Attributes: map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1", "error.type": "EACCES"},
 		Resource:   map[string]any{},
 	}
 	injected := record.Record{
@@ -472,8 +553,10 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	}
 
 	script := readAsset(t, "app.js")
-	if strings.Contains(script, "innerHTML") || strings.Contains(script, "document.write") {
-		t.Fatal("span rendering must stay on text nodes")
+	for _, banned := range []string{"innerHTML", "document.write", "insertAdjacentHTML", "outerHTML"} {
+		if strings.Contains(script, banned) {
+			t.Fatalf("span rendering must stay on text nodes: %s", banned)
+		}
 	}
 	if !strings.Contains(script, "function spanSection") || !strings.Contains(script, "status=ERROR") || !strings.Contains(script, "Show ") || !strings.Contains(script, "SPAN_SIBLING_LIMIT") {
 		t.Fatal("app.js should render the span tree, errors, and a show-more cap")
@@ -485,7 +568,7 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 		"SessionStep.attempt",
 		"Tool.execute",
 		"status=ERROR (turn failed)",
-		"status=ERROR (write failed)",
+		"status=ERROR (write failed) error_type=EACCES",
 		"This session has 3 spans with status=ERROR.",
 		"turn failed",
 		"write failed",
@@ -495,6 +578,70 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("missing %q on session page:\n%s", want, page)
+		}
+	}
+}
+
+// The default path: error text is dropped at ingest, and the page shows the
+// message sdf builds from the kept error class and HTTP code, the
+// error_type field, and the error banner, with none of the sent text.
+func TestSessionPageShowsErrorsWithoutContent(t *testing.T) {
+	db := openDB(t)
+	span := func(name, id, code, msg string, attrs map[string]any) record.Record {
+		return record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-default"),
+			Name: record.Str(name), SpanID: record.Str(id), ParentSpanID: record.Str("step"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
+			StatusCode: code, StatusMessage: record.Str(msg), Attributes: attrs, Resource: map[string]any{},
+		}
+	}
+	root := span("SessionStep.attempt", "step", "ERROR", "turn failed SDF-UI-SECRET-1", map[string]any{})
+	root.ParentSpanID = nil
+	recs := []record.Record{
+		root,
+		span("Tool.execute", "tool", "ERROR", "ENOENT: /home/me/SDF-UI-SECRET-2", map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_1", "error.type": "FileNotFoundError", "error.message": "SDF-UI-SECRET-3"}),
+		span("chat m-1", "chat", "ERROR", "429 slow down SDF-UI-SECRET-4", map[string]any{"http.response.status_code": int64(429)}),
+		span("Tool.execute", "ok", "OK", "fine SDF-UI-SECRET-5", map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": "call_2"}),
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	snap := decodeSnapshot(t, apiSnapshot(t, srv))
+	if len(snap.Sessions) != 1 || len(snap.Sessions[0].Summary.Spans) != 1 {
+		t.Fatalf("snapshot %+v", snap.Sessions)
+	}
+	rootNode := snap.Sessions[0].Summary.Spans[0]
+	if rootNode.StatusCode != "ERROR" || spanText(rootNode.StatusMessage) != "error" || rootNode.ErrorType != nil {
+		t.Fatalf("root %+v", rootNode)
+	}
+	got := map[string]summary.SpanNode{}
+	for _, node := range rootNode.Children {
+		got[spanText(node.CallID)+node.Name] = node
+	}
+	if n := got["call_1Tool.execute"]; n.StatusCode != "ERROR" || spanText(n.StatusMessage) != "tool error: FileNotFoundError" || spanText(n.ErrorType) != "FileNotFoundError" {
+		t.Fatalf("tool %+v", n)
+	}
+	if n := got["chat m-1"]; n.StatusCode != "ERROR" || spanText(n.StatusMessage) != "error: HTTP 429 Too Many Requests" {
+		t.Fatalf("chat %+v", n)
+	}
+	if n := got["call_2Tool.execute"]; n.StatusCode != "OK" || n.StatusMessage != nil {
+		t.Fatalf("an OK span must not get an error message: %+v", n)
+	}
+	page := renderedPageAt(t, srv, "#/sessions/ses-default")
+	for _, want := range []string{
+		"status=ERROR (error)",
+		"status=ERROR (tool error: FileNotFoundError)",
+		"status=ERROR (error: HTTP 429 Too Many Requests)",
+		"This session has 3 spans with status=ERROR.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q on session page:\n%s", want, page)
+		}
+	}
+	for _, body := range []string{page, apiSummary(t, srv), apiSnapshot(t, srv)} {
+		if strings.Contains(body, "SDF-UI-SECRET") || strings.Contains(body, "error_type=FileNotFoundError") {
+			t.Fatalf("sent error text, or a repeated type, on the page:\n%s", body)
 		}
 	}
 }
@@ -517,12 +664,140 @@ func TestSessionPageCapsLongSpanTrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := startUI(t, db)
-	page := renderedPageAt(t, srv, "#/sessions/ses-wide")
-	if !strings.Contains(page, "Show 5 more spans") {
-		t.Fatalf("expected a show-more cap on a 45-span tree:\n%s", page)
+	page := renderPage(t, srv, "#/sessions/ses-wide", "")
+	if !strings.Contains(page.Text, "Show 5 more spans") {
+		t.Fatalf("expected a show-more cap on a 45-span tree:\n%s", page.Text)
 	}
-	if !strings.Contains(page, "call_id=span0") || !strings.Contains(page, "call_id=span44") {
-		t.Fatalf("capped tree dropped a span:\n%s", page)
+	if !strings.Contains(page.Text, "call_id=span0") {
+		t.Fatalf("visible spans missing span0:\n%s", page.Text)
+	}
+	if strings.Contains(page.Text, "call_id=span44") {
+		t.Fatalf("hidden spans should be built lazily, but span44 was already in the page:\n%s", page.Text)
+	}
+	opened := renderPage(t, srv, "#/sessions/ses-wide", "open-more")
+	if !strings.Contains(opened.Text, "call_id=span44") {
+		t.Fatalf("opening show-more should build the remaining spans:\n%s", opened.Text)
+	}
+}
+
+func TestSessionPageRendersDeepSpanTrees(t *testing.T) {
+	db := openDB(t)
+	// 2000 levels: the recursive renderer before this fix overflows node's
+	// call stack from about 1100 levels. The server now flattens the tree
+	// below depth 32 (#267), so the API response stays linear in span
+	// count; TestSessionPageDrawsAChainPastTheEncoderLimit covers 5500.
+	const depth = 2000
+	var recs []record.Record
+	var parent *string
+	for i := 0; i < depth; i++ {
+		id := "d" + strconv.Itoa(i)
+		rec := record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-deep"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str(id), ParentSpanID: parent,
+			StartUnixNano: record.Int64(int64(i) * 1_000_000), EndUnixNano: record.Int64(int64(i+1) * 1_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": id},
+			Resource:   map[string]any{},
+		}
+		if i == depth-1 {
+			rec.StatusCode = "ERROR"
+			rec.StatusMessage = record.Str("deep chain failed")
+		}
+		recs = append(recs, rec)
+		idCopy := id
+		parent = &idCopy
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderPage(t, srv, "#/sessions/ses-deep", "")
+	if strings.Contains(page.Text, "Maximum call stack size exceeded") || strings.Contains(page.Text, "The page could not be drawn") {
+		t.Fatalf("deep tree crashed the page:\n%s", page.Text)
+	}
+	if !strings.Contains(page.Text, "Deeper spans not shown (depth limit 32).") {
+		t.Fatalf("expected a truncated-depth note:\n%s", page.Text)
+	}
+	if !strings.Contains(page.Text, "call_id=d0") {
+		t.Fatalf("missing the root of the deep tree:\n%s", page.Text)
+	}
+	// The leaf's status message is redacted at insert (#224): a Tool.execute
+	// ERROR span keeps only "tool error", so the banner names the span and
+	// that text, never the sent message.
+	if !strings.Contains(page.Text, "This session has a span with status=ERROR.") ||
+		!strings.Contains(page.Markup, `<p class="span-error-message">Tool.execute: tool error</p>`) {
+		t.Fatalf("banner should still report the deep ERROR, redacted:\n%s", page.Markup)
+	}
+	if strings.Contains(page.Text, "deep chain failed") {
+		t.Fatalf("the sent status message reached the page:\n%s", page.Text)
+	}
+}
+
+func TestSessionPageOpensErrorAncestors(t *testing.T) {
+	db := openDB(t)
+	recs := []record.Record{
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("SessionRunner.runStep"), SpanID: record.Str("root"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(8_000_000),
+			StatusCode: "OK", Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("SessionStep.attempt"), SpanID: record.Str("mid"), ParentSpanID: record.Str("root"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(7_000_000),
+			StatusCode: "OK", Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("FileWrite.write"), SpanID: record.Str("err-parent"), ParentSpanID: record.Str("mid"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(3_000_000),
+			StatusCode: "OK", Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("POST"), SpanID: record.Str("err-leaf"), ParentSpanID: record.Str("err-parent"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(2_000_000),
+			StatusCode: "ERROR", StatusMessage: record.Str("boom"),
+			Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str("ok-parent"), ParentSpanID: record.Str("mid"),
+			StartUnixNano: record.Int64(4_000_000), EndUnixNano: record.Int64(6_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": "ok-parent"},
+			Resource:   map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str("ok-leaf"), ParentSpanID: record.Str("ok-parent"),
+			StartUnixNano: record.Int64(4_000_000), EndUnixNano: record.Int64(5_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": "ok-leaf"},
+			Resource:   map[string]any{},
+		},
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderPage(t, srv, "#/sessions/ses-open", "")
+	for _, name := range []string{"SessionRunner.runStep", "SessionStep.attempt", "FileWrite.write"} {
+		open, found := detailsState(page.Markup, name)
+		if !found {
+			t.Fatalf("missing details for %s:\n%s", name, page.Markup)
+		}
+		if !open {
+			t.Fatalf("ancestor %s should have the open attribute:\n%s", name, page.Markup)
+		}
+	}
+	open, found := detailsState(page.Markup, "call_id=ok-parent")
+	if !found {
+		t.Fatalf("missing details for the non-error branch:\n%s", page.Markup)
+	}
+	if open {
+		t.Fatalf("non-error node at depth 2 should stay collapsed:\n%s", page.Markup)
 	}
 }
 
@@ -822,15 +1097,25 @@ func renderedPage(t *testing.T, srv *ui.Server) string {
 
 func renderedPageAt(t *testing.T, srv *ui.Server, hash string) string {
 	t.Helper()
+	return renderPage(t, srv, hash, "").Text
+}
+
+type pageResult struct {
+	Text   string
+	Markup string
+}
+
+func renderPage(t *testing.T, srv *ui.Server, hash, flags string) pageResult {
+	t.Helper()
 	status, _, html := get(t, srv.URL())
 	if status != 200 {
 		t.Fatalf("page %d", status)
 	}
 	_, _, script := get(t, srv.URL()+"app.js")
-	return runPage(t, srv.URL(), html, script, hash)
+	return runPage(t, srv.URL(), html, script, hash, flags)
 }
 
-func runPage(t *testing.T, base, html, script, hash string) string {
+func runPage(t *testing.T, base, html, script, hash, flags string) pageResult {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -844,12 +1129,36 @@ func runPage(t *testing.T, base, html, script, hash string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, page)
-	cmd.Stdin = strings.NewReader(base + "\n" + hash + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
+	cmd.Stdin = strings.NewReader(base + "\n" + hash + "\n" + flags + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("render: %v\n%s", err, out)
 	}
-	return string(out)
+	parts := strings.SplitN(string(out), "\n/*SDF_PAGE_RESULT*/\n", 2)
+	res := pageResult{Text: parts[0]}
+	if len(parts) == 2 {
+		res.Markup = parts[1]
+	}
+	return res
+}
+
+func detailsState(markup, needle string) (open bool, found bool) {
+	pieces := strings.Split(markup, "<details")
+	for i, part := range pieces {
+		if i == 0 {
+			continue
+		}
+		gt := strings.Index(part, ">")
+		sumEnd := strings.Index(part, "</summary>")
+		if gt < 0 || sumEnd < 0 {
+			continue
+		}
+		if !strings.Contains(part[:sumEnd], needle) {
+			continue
+		}
+		return strings.Contains(part[:gt], "open"), true
+	}
+	return false, false
 }
 
 func pricedDB(t *testing.T) *store.Store {
@@ -896,8 +1205,8 @@ func writeBudget(t *testing.T, ceiling string) string {
 
 // pageRunner executes the page script the browser would, then prints the text
 // of the drawn page. It implements only the DOM surface app.js uses:
-// createElement, setAttribute, className, addEventListener, append,
-// replaceChildren, and textContent. fetch is pointed at the server under test.
+// createElement, setAttribute, className, addEventListener, removeEventListener, append,
+// replaceChildren, textContent, and the details open property. fetch is pointed at the server under test.
 const pageRunner = `"use strict";
 const { createInterface } = require("node:readline");
 
@@ -912,6 +1221,21 @@ class Node {
     for (const kid of arguments) this.children.push(kid);
   }
 }
+function markup(node) {
+  if (!node) return "";
+  if (node.nodeType === 3) {
+    return String(node.text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  const attrs = Object.assign({}, node.attrs);
+  if (node.className) attrs.class = node.className;
+  let bits = "";
+  Object.keys(attrs).forEach(function (key) {
+    bits += " " + key + '="' + String(attrs[key]).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"';
+  });
+  const inner = (node.children || []).map(markup).join("");
+  return "<" + node.tag + bits + ">" + inner + "</" + node.tag + ">";
+}
+
 class Element extends Node {
   constructor(tag) {
     super();
@@ -922,7 +1246,27 @@ class Element extends Node {
     this.listeners = {};
   }
   setAttribute(key, value) { this.attrs[key] = String(value); }
-  addEventListener(type, fn) { this.listeners[type] = fn; }
+  addEventListener(type, fn) {
+    if (!this.listeners[type]) this.listeners[type] = [];
+    this.listeners[type].push(fn);
+  }
+  removeEventListener(type, fn) {
+    const list = this.listeners[type];
+    if (!list) return;
+    this.listeners[type] = list.filter(function (item) { return item !== fn; });
+  }
+  fire(type) {
+    const list = (this.listeners[type] || []).slice();
+    for (let i = 0; i < list.length; i++) list[i].call(this);
+  }
+  get open() { return Object.prototype.hasOwnProperty.call(this.attrs, "open"); }
+  set open(value) {
+    const next = !!value;
+    const was = this.open;
+    if (next) this.attrs.open = "true";
+    else delete this.attrs.open;
+    if (next !== was) this.fire("toggle");
+  }
   replaceChildren() {
     this.children = [];
     this.append.apply(this, arguments);
@@ -947,7 +1291,10 @@ lines.on("close", async () => {
   const rest = raw.slice(splitAt + 1);
   const hashAt = rest.indexOf("\n");
   const hash = rest.slice(0, hashAt);
-  const page = rest.slice(hashAt + 1);
+  const afterHash = rest.slice(hashAt + 1);
+  const flagAt = afterHash.indexOf("\n");
+  const flags = afterHash.slice(0, flagAt);
+  const page = afterHash.slice(flagAt + 1);
   const marker = "\n/*SDF_PAGE_SPLIT*/\n";
   const cut = page.indexOf(marker);
   const script = page.slice(cut + marker.length);
@@ -1009,7 +1356,18 @@ lines.on("close", async () => {
     }
     setImmediate(drain);
   });
-  process.stdout.write(app.textContent);
+  if (flags.split(",").indexOf("open-more") >= 0) {
+    function openMore(node) {
+      if (!node || node.nodeType === 3) return;
+      if (node.tag === "details") {
+        const sum = (node.children || []).find(function (child) { return child.tag === "summary"; });
+        if (sum && textOf(sum).indexOf("Show ") === 0) node.open = true;
+      }
+      (node.children || []).forEach(openMore);
+    }
+    openMore(app);
+  }
+  process.stdout.write(app.textContent + "\n/*SDF_PAGE_RESULT*/\n" + markup(app));
 });
 `
 

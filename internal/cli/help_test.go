@@ -5,7 +5,22 @@ import (
 	"testing"
 )
 
-var topCommands = []string{"serve", "summary", "demo", "check", "init", "prices", "decision", "audit", "task", "verify", "version"}
+var topCommands = []string{"serve", "summary", "check", "init", "prices", "decision", "audit", "task", "verify", "redact", "version"}
+
+// Every command in the usage line has a help line, so a new command (as
+// redact was) cannot be added to the dispatch without one.
+func TestUsageLineCommandsAreAllListed(t *testing.T) {
+	out := run(t, "--help")
+	first := strings.SplitN(out.stdout, "\n", 2)[0]
+	open, end := strings.Index(first, "<"), strings.Index(first, ">")
+	if open < 0 || end < open {
+		t.Fatalf("usage line %q", first)
+	}
+	names := strings.Split(first[open+1:end], "|")
+	if strings.Join(names, " ") != strings.Join(topCommands, " ") {
+		t.Fatalf("usage line has %v, help test lists %v", names, topCommands)
+	}
+}
 
 func TestTopHelpListsEveryCommandWithADescription(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}} {
@@ -13,7 +28,7 @@ func TestTopHelpListsEveryCommandWithADescription(t *testing.T) {
 		if out.code != 0 || out.stderr != "" {
 			t.Fatalf("%v: %d %q", args, out.code, out.stderr)
 		}
-		if !strings.Contains(out.stdout, "sdf demo") {
+		if strings.Contains(out.stdout, "demo") || !strings.Contains(out.stdout, "Start here: run sdf serve") {
 			t.Fatalf("%v: no starting point\n%s", args, out.stdout)
 		}
 		for _, name := range topCommands {

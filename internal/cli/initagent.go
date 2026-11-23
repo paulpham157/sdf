@@ -16,8 +16,11 @@ func unknownAgentMessage(arg string) string {
 }
 
 // suggestAgent returns the agent name closest to arg, or "" when none is
-// close. A name that one agent starts with (claude, gem) wins; otherwise the
-// smallest edit distance, if it is at most a third of the name (at least 2).
+// close. An agent name that arg starts (at least three letters: claude,
+// gem) wins, as does arg being an agent name plus a "-" or "_" suffix
+// (opencode-v2). Otherwise the agent at the smallest edit distance is
+// suggested if that distance is at most a third of the agent's name, so a
+// two-letter name such as pi is never suggested for unrelated input.
 func suggestAgent(arg string) string {
 	in := strings.ToLower(strings.TrimSpace(arg))
 	if in == "" {
@@ -25,7 +28,9 @@ func suggestAgent(arg string) string {
 	}
 	var prefixed []string
 	for _, a := range initAgents {
-		if strings.HasPrefix(a, in) || strings.HasPrefix(in, a) {
+		agentPrefix := len(in) >= 3 && strings.HasPrefix(a, in)
+		withSuffix := len(in) > len(a) && strings.HasPrefix(in, a) && (in[len(a)] == '-' || in[len(a)] == '_')
+		if agentPrefix || withSuffix {
 			prefixed = append(prefixed, a)
 		}
 	}
@@ -39,11 +44,7 @@ func suggestAgent(arg string) string {
 			best, bestDist = a, d
 		}
 	}
-	limit := len(best) / 3
-	if limit < 2 {
-		limit = 2
-	}
-	if bestDist <= limit {
+	if bestDist <= len(best)/3 {
 		return best
 	}
 	return ""

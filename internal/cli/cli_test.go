@@ -123,7 +123,14 @@ func mustRead(t *testing.T, path string) string {
 }
 
 func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
+	// Answers as sdf serve does: /health is ok, and the empty token-check
+	// POST to /v1/logs (no Content-Type) gets 415. init --check fails on
+	// any other answer to that POST.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/logs" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer server.Close()

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/decision"
-	"github.com/paulpham157/sdf/internal/demo"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -39,7 +37,7 @@ func Main(args []string) int {
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usageLine)
-		fmt.Fprintln(stderr, "Run sdf --help for what each command does. New here? Start with sdf demo.")
+		fmt.Fprintln(stderr, "Run sdf --help for what each command does. New here? Start with sdf serve, then sdf init <agent> --write.")
 		return 2
 	}
 	switch args[0] {
@@ -59,10 +57,10 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdTask(args[1:], stdout, stderr)
 	case "verify":
 		return cmdVerify(args[1:], stdout, stderr)
-	case "demo":
-		return cmdDemo(args[1:], stdout, stderr)
 	case "audit":
 		return cmdAudit(args[1:], stdout, stderr)
+	case "redact":
+		return cmdRedact(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
 	case "-h", "--help":
@@ -76,7 +74,7 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|task|verify|version> [flags]"
+const usageLine = "usage: sdf <serve|summary|check|init|prices|decision|audit|task|verify|redact|version> [flags]"
 
 func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	for _, arg := range args {
@@ -109,12 +107,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	tokenFlagSet := false
 	tokenFileFlag := ""
 	tokenFileFlagSet := false
+	contentFlag := ""
+	contentFlagSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH] [--store-content[=AGENTS]]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
+			fmt.Fprintln(stdout, "Prompt, response, tool, and error text is dropped before storing, for every agent. --store-content (or SDF_STORE_CONTENT=1) keeps it; --store-content=qwen,claude-code (or SDF_STORE_CONTENT=qwen,claude-code) keeps it for those agents only.")
 			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
 			fmt.Fprintln(stdout, "")
 			fmt.Fprintln(stdout, serveHelp)
@@ -132,14 +133,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
 		case strings.HasPrefix(arg, "--port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
@@ -147,14 +148,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
 		case strings.HasPrefix(arg, "--grpc-port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--grpc-port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf serve: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
@@ -239,6 +240,14 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--otlp-token-file="):
 			tokenFileFlag = strings.TrimPrefix(arg, "--otlp-token-file=")
 			tokenFileFlagSet = true
+		case arg == "--store-content":
+			contentFlag, contentFlagSet = "all", true
+		case strings.HasPrefix(arg, "--store-content="):
+			contentFlag, contentFlagSet = strings.TrimPrefix(arg, "--store-content="), true
+			if strings.TrimSpace(contentFlag) == "" {
+				fmt.Fprintln(stderr, "sdf serve: --store-content= needs all or a list of agents")
+				return 2
+			}
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
@@ -255,6 +264,15 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "warning: a shared bearer token is not a substitute for a trusted network; binding beyond localhost still exposes telemetry that can include prompts and paths. The UI does not follow --host.")
 		}
 	}
+	contentSource := "--store-content"
+	if !contentFlagSet {
+		contentFlag, contentSource = os.Getenv("SDF_STORE_CONTENT"), "SDF_STORE_CONTENT"
+	}
+	content, err := parseStoreContent(contentFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf serve: %s: %v\n", contentSource, err)
+		return 2
+	}
 	if _, err := summary.LoadBudget(budgetPath); err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
 		return 1
@@ -265,12 +283,28 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 	}
+	// Held shared until serve exits, so sdf redact refuses to rewrite the
+	// file under it, and serve refuses to start while redact runs.
+	lock, err := store.LockForServe(dbPath)
+	if errors.Is(err, store.ErrLocked) {
+		fmt.Fprintf(stderr, "sdf serve: sdf redact%s is rewriting %s; start sdf serve again when it finishes\n", store.LockHolder(dbPath), dbPath)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: cannot take the lock file %s (%v); sdf redact will not see this serve\n", store.LockPath(dbPath), err)
+	}
+	defer lock.Release()
 	db, err := store.Open(dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
 		return 1
 	}
 	defer db.Close()
+	warnUnscrubbed(db, dbPath, stderr)
+	if content.on() {
+		db.KeepContent(content.keep())
+		fmt.Fprintf(stderr, "sdf serve: storing prompt, response, tool, and error text for %s (%s); rows are marked sdf.content=kept\n", content.describe(), contentSource)
+	}
 	srv := &server.Server{
 		Host:     host,
 		HTTPPort: port,
@@ -419,14 +453,12 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
 	}
-	if code := summaryStoreExists(dbPath, dbPathSet, stderr); code != 0 {
-		return code
-	}
-	db, err := store.Open(dbPath)
+	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
 		return 1
 	}
+	summaryMissingHint(dbPath, dbPathSet, stderr)
 	records, err := db.Load()
 	_ = db.Close()
 	if err != nil {
@@ -470,7 +502,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list|retract> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -482,6 +514,10 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionAdd(args[1:], stdout, stderr)
 	case "link":
 		return cmdDecisionLink(args[1:], stdout, stderr)
+	case "list":
+		return cmdDecisionList(args[1:], stdout, stderr)
+	case "retract":
+		return cmdDecisionRetract(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
 		fmt.Fprintln(stdout, "")
@@ -499,12 +535,15 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	statement := ""
 	status := ""
 	source := ""
+	decidedBy := ""
+	alternatives := ""
+	reason := ""
 	idSet, statementSet, statusSet := false, false, false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -551,13 +590,40 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 			source = v
 		case strings.HasPrefix(arg, "--source="):
 			source = strings.TrimPrefix(arg, "--source=")
+		case arg == "--decided-by":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --decided-by requires a value")
+				return 2
+			}
+			decidedBy = v
+		case strings.HasPrefix(arg, "--decided-by="):
+			decidedBy = strings.TrimPrefix(arg, "--decided-by=")
+		case arg == "--alternatives":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --alternatives requires a value")
+				return 2
+			}
+			alternatives = v
+		case strings.HasPrefix(arg, "--alternatives="):
+			alternatives = strings.TrimPrefix(arg, "--alternatives=")
+		case arg == "--reason":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --reason requires a value")
+				return 2
+			}
+			reason = v
+		case strings.HasPrefix(arg, "--reason="):
+			reason = strings.TrimPrefix(arg, "--reason=")
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
 	if !idSet || !statementSet || !statusSet {
-		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--source TEXT] [--db PATH]")
+		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
 		return 2
 	}
 	db, err := store.Open(dbPath)
@@ -567,10 +633,13 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer db.Close()
 	if _, err := decision.Add(db, decision.RecordInput{
-		ID:        id,
-		Statement: statement,
-		Status:    status,
-		Source:    source,
+		ID:           id,
+		Statement:    statement,
+		Status:       status,
+		Source:       source,
+		DecidedBy:    decidedBy,
+		Alternatives: alternatives,
+		Reason:       reason,
 	}); err != nil {
 		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
 		return 1
@@ -651,12 +720,145 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	if _, err := decision.Link(db, decision.EdgeInput{
+	_, warnings, err := decision.LinkWithWarnings(db, decision.EdgeInput{
 		Relation: relation,
 		From:     fromEnd,
 		To:       toEnd,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "sdf decision link: warning: %s\n", w)
+	}
+	return 0
+}
+
+const decisionListUsage = "usage: sdf decision list [--db PATH] [--json]"
+
+// cmdDecisionList prints every decision and edge. It reads through
+// decision.Load, the same path GET /api/decisions uses, and --json is that
+// response byte for byte. Like sdf summary, it opens the store with
+// store.OpenReadOnly and never writes: a missing file in an existing
+// directory lists nothing and is not created, a missing directory exits 1,
+// and an older file is read without being migrated (a file without
+// decision_retractions reads as having no retractions).
+func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionListUsage)
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision list: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	db, err := store.OpenReadOnly(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	graph, err := decision.Load(db)
+	_ = db.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	write := decision.WriteText
+	if asJSON {
+		write = decision.WriteJSON
+	}
+	if err := write(stdout, graph); err != nil {
+		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+const decisionRetractUsage = "usage: sdf decision retract --id ID [--reason TEXT] [--retracted-by user|agent] [--db PATH]"
+
+// cmdDecisionRetract appends one retraction. Like add and link it prints
+// nothing on success, exits 1 when the store refuses (unknown or already
+// retracted id), and 2 on a usage error.
+func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	id, reason, by := "", "", ""
+	idSet := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionRetractUsage)
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision retract: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--id":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision retract: --id requires a value")
+				return 2
+			}
+			id, idSet = v, true
+		case strings.HasPrefix(arg, "--id="):
+			id, idSet = strings.TrimPrefix(arg, "--id="), true
+		case arg == "--reason":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision retract: --reason requires a value")
+				return 2
+			}
+			reason = v
+		case strings.HasPrefix(arg, "--reason="):
+			reason = strings.TrimPrefix(arg, "--reason=")
+		case arg == "--retracted-by":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision retract: --retracted-by requires a value")
+				return 2
+			}
+			by = v
+		case strings.HasPrefix(arg, "--retracted-by="):
+			by = strings.TrimPrefix(arg, "--retracted-by=")
+		default:
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			return 2
+		}
+	}
+	if !idSet {
+		fmt.Fprintln(stderr, decisionRetractUsage)
+		return 2
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
+		return 1
+	}
+	defer db.Close()
+	if _, err := decision.Retract(db, decision.RetractInput{ID: id, Reason: reason, RetractedBy: by}); err != nil {
+		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
 		return 1
 	}
 	return 0
@@ -840,14 +1042,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
 		case strings.HasPrefix(arg, "--port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			port = n
@@ -855,14 +1057,14 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			v, ok := take(&i, args)
 			n, err := parsePort(v, ok)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
 		case strings.HasPrefix(arg, "--grpc-port="):
-			n, err := strconv.Atoi(strings.TrimPrefix(arg, "--grpc-port="))
+			n, err := parsePort(strings.TrimPrefix(arg, "--grpc-port="), true)
 			if err != nil {
-				fmt.Fprintln(stderr, "sdf init: --grpc-port requires an integer")
+				fmt.Fprintln(stderr, "sdf init: --grpc-port requires a port number (plain decimal, like 4318)")
 				return 2
 			}
 			grpcPort = n
@@ -905,6 +1107,13 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ep := setup.Endpoint{Host: host, HTTPPort: port, GRPCPort: grpcPort}
+	// Validate --host and the ports once, before --check probes them or a
+	// git hook or agent file is written. --port 0 is refused here (Run
+	// would read 0 as the default).
+	if err := setup.ValidateEndpoint(&ep); err != nil {
+		fmt.Fprintf(stderr, "sdf init: %v\n", err)
+		return 2
+	}
 	code := 0
 	if check {
 		probed := setup.Probe(ep)
@@ -926,7 +1135,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 		if auth := setup.ProbeAuth(ep, token, source); auth.Text != "" {
 			fmt.Fprint(stdout, auth.Text)
-			if auth.Refused {
+			if auth.Failed {
 				code = 1
 			}
 		}
@@ -984,8 +1193,19 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	return code
 }
 
+// parsePort reads a port written as plain decimal: no sign, no leading
+// zero, no spaces (08, +4318, and " 4318" are refused; strconv.Atoi takes
+// the first two). "0" parses, so the range check can say why it is refused.
 func parsePort(v string, ok bool) (int, error) {
-	if !ok {
+	if !ok || v == "" || len(v) > 5 {
+		return 0, strconv.ErrSyntax
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return 0, strconv.ErrSyntax
+		}
+	}
+	if len(v) > 1 && v[0] == '0' {
 		return 0, strconv.ErrSyntax
 	}
 	return strconv.Atoi(v)
@@ -997,113 +1217,4 @@ func take(i *int, args []string) (string, bool) {
 	}
 	*i++
 	return args[*i], true
-}
-
-const demoUsage = "usage: sdf demo [--db PATH] [--json]"
-
-// demoStoreIsSafe refuses a --db that already holds real telemetry or
-// decisions, so the synthetic session (sdf.fixture=demo) never mixes into a
-// real store and its summaries. A missing or empty file, or a store with
-// only earlier demo sessions, is fine. It returns an exit code, 0 to go on.
-func demoStoreIsSafe(path string, stderr io.Writer) int {
-	info, err := os.Stat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-		return 1
-	}
-	if info.Mode().IsRegular() && info.Size() == 0 {
-		return 0
-	}
-	st, err := store.Open(path)
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-		return 1
-	}
-	other, err := st.HoldsOtherThanFixture("demo")
-	_ = st.Close()
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %s: %v\n", path, err)
-		return 1
-	}
-	if other {
-		fmt.Fprintf(stderr, "sdf demo: %s already holds telemetry or decisions that are not from sdf demo; refusing to mix a synthetic session into it. Pass a new path, or leave out --db.\n", path)
-		return 1
-	}
-	return 0
-}
-
-func cmdDemo(args []string, stdout, stderr io.Writer) int {
-	dbPath := ""
-	asJSON := false
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, demoUsage)
-			fmt.Fprintln(stdout, "Sends one synthetic session (sdf.fixture=demo) through a local receiver on free ports, then prints its summary.")
-			fmt.Fprintln(stdout, "No agent, API key, or network is needed. Without --db the store is a temporary file that is removed afterwards.")
-			fmt.Fprintln(stdout, "--db must name a new or empty file, or a store that holds only earlier demo sessions; a store with real telemetry is refused.")
-			return 0
-		case arg == "--db":
-			v, ok := take(&i, args)
-			if !ok {
-				fmt.Fprintln(stderr, "sdf demo: --db requires a value")
-				return 2
-			}
-			dbPath = v
-		case strings.HasPrefix(arg, "--db="):
-			dbPath = strings.TrimPrefix(arg, "--db=")
-		case arg == "--json":
-			asJSON = true
-		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
-			return 2
-		}
-	}
-	keep := dbPath != ""
-	if keep {
-		if code := demoStoreIsSafe(dbPath, stderr); code != 0 {
-			return code
-		}
-	}
-	if !keep {
-		dir, err := os.MkdirTemp("", "sdf-demo-")
-		if err != nil {
-			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-			return 1
-		}
-		defer os.RemoveAll(dir)
-		dbPath = filepath.Join(dir, "sdf-demo.sqlite")
-	}
-	steps := stdout
-	if asJSON {
-		steps = stderr
-	}
-	fmt.Fprintln(steps, "sdf demo: synthetic Claude Code-shaped session, labeled sdf.fixture=demo. No agent, API key, or network.")
-	res, err := demo.Run(context.Background(), demo.Options{DBPath: dbPath, Log: steps})
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-		return 1
-	}
-	if asJSON {
-		if err := summary.WriteJSON(stdout, res.Report); err != nil {
-			fmt.Fprintf(stderr, "sdf demo: %v\n", err)
-			return 1
-		}
-		return 0
-	}
-	fmt.Fprintln(stdout, "")
-	fmt.Fprint(stdout, summary.Format(res.Report))
-	fmt.Fprintln(stdout, "")
-	if keep {
-		fmt.Fprintf(stdout, "The demo session stays in %s. Read it again with: sdf summary --db %s --session %s\n", dbPath, dbPath, res.SessionID)
-	} else {
-		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
-	}
-	fmt.Fprintln(stdout, "Next: run sdf serve in its own terminal, then sdf init <agent> --write and restart the agent.")
-	fmt.Fprintln(stdout, "Agents: "+strings.Join(initAgents, ", ")+". Results: http://127.0.0.1:4320/ or sdf summary.")
-	return 0
 }

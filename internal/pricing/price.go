@@ -354,6 +354,9 @@ func rateFor(model *Model, item bucket, prices map[string]string) (rate *big.Rat
 			note = item.name + " tokens are priced at " + item.fallbackKey + " because the catalog has no " + item.priceKey + " price"
 		}
 	}
+	if (!ok || text == "") && item.priceKey == "input_cache_read" && freeAtZero(model.ID, prices) {
+		return new(big.Rat), "0", item.name + " tokens are priced at 0 because " + model.ID + " is an OpenRouter :free variant with prompt and completion 0 and no input_cache_read price", ""
+	}
 	if !ok || text == "" {
 		return nil, "", "", "catalog has no " + item.priceKey + " price for model " + model.ID
 	}
@@ -365,6 +368,29 @@ func rateFor(model *Model, item bucket, prices map[string]string) (rate *big.Rat
 		return nil, "", "", "catalog price " + key + " for model " + model.ID + " is negative"
 	}
 	return parsed, text, note, ""
+}
+
+// freeAtZero reports whether id is an OpenRouter :free variant whose prompt
+// and completion prices are both zero. OpenRouter sets prompt and completion
+// to 0 on :free models and serves them without cost (Models API reference,
+// "Sentinel prices"; Free Variant guide), so a cached input token there is
+// input on a $0 model. It is not used for paid rows, where a cache-read rate
+// depends on the provider that served the request (issue #243).
+func freeAtZero(id string, prices map[string]string) bool {
+	if !strings.HasSuffix(id, ":free") {
+		return false
+	}
+	for _, key := range []string{"prompt", "completion"} {
+		text, ok := prices[key]
+		if !ok || text == "" {
+			return false
+		}
+		rate, err := parseDecimal(text)
+		if err != nil || rate.Sign() != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func feeNote(model *Model) string {
@@ -417,7 +443,7 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 			"cache_write_token_count": "cache_write",
 			"output_token_count":      "output",
 			"reasoning_token_count":   "reasoning",
-		}, "", "Codex response.completed counts use the summary's max for input, cached, and cache_write, and the sum for output and reasoning. cached and cache_write are subtracted from input; reasoning is subtracted from output")
+		}, "", "Codex response.completed counts are per Responses API call (the summary sums them and prices each call on its own). cached and cache_write are subtracted from input; reasoning is subtracted from output")
 	case "traces SessionStep.attempt":
 		return openCodeBuckets(tokens)
 	case "traces " + genai.OperationChat, "metrics " + genai.MetricClientTokenUsage:

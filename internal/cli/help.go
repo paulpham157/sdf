@@ -14,14 +14,14 @@ type command struct {
 var commands = []command{
 	{"serve", "Run the OTLP receiver and the read-only UI at http://127.0.0.1:4320/"},
 	{"summary", "Print one block per stored session (tokens, cost, tools, outcome)"},
-	{"demo", "Send one synthetic session through a temporary receiver; no agent or API key"},
 	{"check", "Run the case set embedded in the binary against the summary"},
 	{"init", "Print or write an agent's telemetry settings; --check probes the receiver"},
 	{"prices", "Refresh the cached OpenRouter price table (the only network call for prices)"},
-	{"decision", "Record a decision and link it to sessions, commits, or pull requests"},
+	{"decision", "Record, link, list, or retract decisions (add, link, list, retract)"},
 	{"audit", "Verify the hash-chained ledger, or print its head"},
 	{"task", "Declare a task's acceptance checks, or show a declared task"},
 	{"verify", "Run a declared task's checks against a commit and print the verdict"},
+	{"redact", "Drop stored prompt, response, tool, and error text from a database"},
 	{"version", "Print the version, commit, build date, Go version, and platform"},
 }
 
@@ -39,9 +39,9 @@ func knownCommand(name string) bool {
 
 func writeTopHelp(w io.Writer) {
 	var b strings.Builder
-	b.WriteString("usage: sdf <command> [flags]\n\n")
-	b.WriteString("Start here: sdf demo (no agent or API key needed). Then run sdf serve in its\n")
-	b.WriteString("own terminal, and sdf init <agent> --write to point an agent at it.\n\n")
+	b.WriteString(usageLine + "\n\n")
+	b.WriteString("Start here: run sdf serve in its own terminal, then sdf init <agent> --write,\n")
+	b.WriteString("restart the agent, and open http://127.0.0.1:4320/ or run sdf summary.\n\n")
 	b.WriteString("Commands:\n")
 	for _, c := range commands {
 		fmt.Fprintf(&b, "  %-9s %s\n", c.name, c.summary)
@@ -125,12 +125,14 @@ the only command that calls the network for prices.
   --url URL              catalog URL (default OpenRouter)
   --out PATH             where to write it (default the sdf cache directory)`
 
-const decisionHelp = `Records decision statements and links between decisions, sessions, commits,
-and pull requests in the same SQLite file as sdf serve.
+const decisionHelp = `Records decisions and the links between decisions, sessions, commits, and
+pull requests in the same SQLite file as sdf serve.
 
-  add    sdf decision add --id ID --statement TEXT --status hypothesis|decision
-  link   sdf decision link --relation REL --from KIND:REF --to KIND:REF
-Run sdf decision add --help or sdf decision link --help for the flags.`
+  add      sdf decision add --id ID --statement TEXT --status hypothesis|decision
+  link     sdf decision link --relation REL --from KIND:REF --to KIND:REF
+  list     sdf decision list [--json]
+  retract  sdf decision retract --id ID [--reason TEXT]
+Run sdf decision <add|link|list|retract> --help for the flags.`
 
 const auditHelp = `Checks the hash-chained ledger that sdf task declare --ledger and sdf verify
 --ledger append to.

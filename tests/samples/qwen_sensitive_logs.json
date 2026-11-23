@@ -1,0 +1,154 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "qwen-code"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.28.4"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "qwen-code"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1800001002000000000",
+              "observedTimeUnixNano": "1800001002000000000",
+              "body": {
+                "stringValue": "qwen-code.api_response"
+              },
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "qwen-code.api_response"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-sensitive"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "input_token_count",
+                  "value": {
+                    "intValue": "1200"
+                  }
+                },
+                {
+                  "key": "output_token_count",
+                  "value": {
+                    "intValue": "80"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1900"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1800001002001000000",
+              "observedTimeUnixNano": "1800001002001000000",
+              "body": {
+                "stringValue": "gen_ai.client.inference.operation.details"
+              },
+              "attributes": [
+                {
+                  "key": "event.name",
+                  "value": {
+                    "stringValue": "gen_ai.client.inference.operation.details"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "sample-qwen-sensitive"
+                  }
+                },
+                {
+                  "key": "gen_ai.operation.name",
+                  "value": {
+                    "stringValue": "chat"
+                  }
+                },
+                {
+                  "key": "gen_ai.request.model",
+                  "value": {
+                    "stringValue": "qwen3-coder-plus"
+                  }
+                },
+                {
+                  "key": "gen_ai.input.messages",
+                  "value": {
+                    "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"SDF-FIXTURE-SECRET prompt: deploy with key sk-fixture\"}]}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.system_instructions",
+                  "value": {
+                    "stringValue": "[{\"type\": \"text\", \"content\": \"SDF-FIXTURE-SECRET QWEN.md contents\"}]"
+                  }
+                },
+                {
+                  "key": "gen_ai.output.messages",
+                  "value": {
+                    "arrayValue": {
+                      "values": [
+                        {
+                          "kvlistValue": {
+                            "values": [
+                              {
+                                "key": "role",
+                                "value": {
+                                  "stringValue": "assistant"
+                                }
+                              },
+                              {
+                                "key": "content",
+                                "value": {
+                                  "stringValue": "SDF-FIXTURE-SECRET response text"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

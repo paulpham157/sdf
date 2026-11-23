@@ -11,10 +11,28 @@ prompt, request, or response text. The `qwen-code.tool_call` logs do carry
 made-up tool arguments and error text (a shell command, a `write_file` body),
 because Qwen Code sends those whatever `logPrompts` says. Every such value
 contains `SDF-FIXTURE-SECRET`, and the store and e2e tests check that none of
-it reaches the database.
+it reaches the database. `qwen_sensitive_*.json` is one more session as sent
+when a workspace or system settings file turns `includeSensitiveSpanAttributes`
+and `logPrompts` back on: `gen_ai.tool.call.arguments` and `.result` on
+`qwen-code.tool`, `gen_ai.input.messages`, `gen_ai.output.messages`, and
+`gen_ai.system_instructions` on `qwen-code.llm_request` and a
+`gen_ai.client.inference.operation.details` log, and a failing
+`qwen-code.hook` span, every value marked `SDF-FIXTURE-SECRET`. It is
+written by hand from the GenAI semantic conventions, not captured.
+
+`leak_*.json` is Review's content harness as samples, written by
+`leak_gen.py` (run it from the repository root): one
+session (`sample-leak-1`) from Qwen Code, Copilot, Grok, Claude Code, Codex,
+and Gemini CLI with every content key sdf drops (`prompt`, `request_text`,
+`gen_ai.input.messages.0.content`, case variants, nested maps, the
+resource, the log body, error text, span status, and metric attributes),
+each value marked `SDF-LEAK-NN-...`, next to values that must stay (token
+counts, tool names, models, and a Claude Code commit SHA inside
+`tool_parameters`). The store and e2e tests check that no marker is stored
+by default and that `--store-content` keeps them.
 
 Every resource carries `sdf.fixture=sample`. The shapes follow the attribute
-names documented for each tool (see the repository README) so ingest and
+names documented for each tool (see [docs/agents.md](../../docs/agents.md)) so ingest and
 summary tests can run without either CLI.
 
 `copilot_traces.json` and `copilot_metrics.json` follow the GitHub Copilot

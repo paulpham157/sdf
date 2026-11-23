@@ -1,6 +1,7 @@
 *.sqlite
 *.sqlite3
 sdf-telemetry.sqlite
+*.sqlite.lock
 dist/
 
 # Local static binary from `make build`.

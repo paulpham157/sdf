@@ -214,9 +214,10 @@ func Summarize(records []record.Record, allSpans bool) Report {
 // leaves computed cost unknown.
 func SummarizeWith(records []record.Record, allSpans bool, prices *pricing.Catalog) Report {
 	attributed, leftover := attribute(records)
+	qwen := buildQwenIndex(records)
 	sessions := make([]SessionSummary, 0, len(attributed))
 	for key, grouped := range attributed {
-		sessions = append(sessions, summarizeBucket(key.tool, key.id, grouped, allSpans, prices))
+		sessions = append(sessions, summarizeBucket(key.tool, key.id, grouped, allSpans, prices, qwen))
 	}
 	sort.SliceStable(sessions, func(i, j int) bool {
 		if sessions[i].Tool != sessions[j].Tool {
@@ -406,9 +407,10 @@ func attribute(records []record.Record) (map[sessionKey][]record.Record, []recor
 		bounds[key] = [2]int64{open, end}
 		boundsSet[key] = true
 	}
+	segments := qwenSegments(scoped)
 	var leftover []record.Record
 	for _, rec := range unscoped {
-		key, ok := matchSession(rec, traceKeys, spanKeys, bounds)
+		key, ok := matchSession(rec, traceKeys, spanKeys, bounds, segments)
 		if !ok {
 			leftover = append(leftover, rec)
 			continue
@@ -427,7 +429,7 @@ func addKey(index map[string]map[sessionKey]struct{}, id string, key sessionKey)
 	set[key] = struct{}{}
 }
 
-func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionKey]struct{}, bounds map[sessionKey][2]int64) (sessionKey, bool) {
+func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionKey]struct{}, bounds map[sessionKey][2]int64, qwenSegs map[sessionKey][]int64) (sessionKey, bool) {
 	if rec.TraceID != nil {
 		if key, ok := onlyKey(traceKeys[*rec.TraceID]); ok {
 			return key, true
@@ -476,6 +478,9 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 	}
 	if len(matches) == 1 {
 		return matches[0], true
+	}
+	if len(matches) == 0 {
+		return qwenLateFlush(tool, rec, stamp, qwenSegs)
 	}
 	return sessionKey{}, false
 }
@@ -529,7 +534,7 @@ func unattributed(records []record.Record) []Unattributed {
 	return groups
 }
 
-func summarizeBucket(tool, sessionID string, records []record.Record, allSpans bool, prices *pricing.Catalog) SessionSummary {
+func summarizeBucket(tool, sessionID string, records []record.Record, allSpans bool, prices *pricing.Catalog, qwen *qwenIndex) SessionSummary {
 	points := reduce(pointsOf(records))
 	spans, hidden := spanTree(records, allSpans)
 	durationMS, durationSource := duration(records, points)
@@ -540,7 +545,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Models:   modelList,
 		Tokens:   tokenMap(tokens),
 		Source:   deref(tokensSource),
-		Requests: requestTokens(records, deref(tokensSource)),
+		Requests: sessionRequests(records, deref(tokensSource), tokens),
 	})
 	failures := metricFailures(records)
 	summary := SessionSummary{
@@ -572,7 +577,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Repository:              repositoryFacts(records),
 	}
 	if tool == "qwen-code" {
-		summary = qwenSummary(summary, records, points, prices)
+		summary = qwenSummary(summary, records, points, prices, qwen)
 	}
 	return summary
 }
@@ -610,36 +615,134 @@ func spanTree(records []record.Record, allSpans bool) ([]SpanNode, int) {
 			}
 		}
 	}
-	children := map[string][]record.Record{}
-	var roots []record.Record
-	for _, rec := range shown {
+	children := map[string][]int{}
+	var roots []int
+	for i, rec := range shown {
 		parent := shownParent(rec, byID, shownIDs)
 		if parent == nil {
-			roots = append(roots, rec)
+			roots = append(roots, i)
 		} else {
-			children[*parent] = append(children[*parent], rec)
+			children[*parent] = append(children[*parent], i)
 		}
 	}
-	sort.SliceStable(roots, func(i, j int) bool { return spanLess(roots[i], roots[j]) })
-	var build func(record.Record) SpanNode
-	build = func(rec record.Record) SpanNode {
-		id := ""
-		if rec.SpanID != nil {
-			id = *rec.SpanID
+	return buildSpanTree(shown, roots, children, logs, spans), len(spans) - len(shown)
+}
+
+// MaxSpanDepth bounds how deep the span tree nests. Roots are depth 0. A
+// node at depth MaxSpanDepth holds every deeper descendant as a flat list of
+// leaf children (depth-first order) and records how many in
+// FlattenedDescendants. Without a bound, each span level adds two JSON
+// nesting levels: Go's encoder stops at 10000 (about 4997 span levels,
+// issue #267) and the indented output grows with depth squared. 32 is the
+// UI's drawing limit, so every node the page can draw keeps its place, and
+// the page still notes deeper spans at that node.
+const MaxSpanDepth = 32
+
+// buildSpanTree nests shown spans under their parents without recursion, so
+// a deep chain cannot exhaust the stack. roots and children hold indexes into
+// shown. A span already on the path from its root (or, below MaxSpanDepth,
+// already listed) is not expanded again, so a cycle formed by a repeated
+// span id cannot loop.
+func buildSpanTree(shown []record.Record, roots []int, children map[string][]int, logs map[string]record.Record, spans []record.Record) []SpanNode {
+	sortedKids := func(i int) []int {
+		kids := append([]int{}, children[deref(shown[i].SpanID)]...)
+		sort.SliceStable(kids, func(a, b int) bool { return spanLess(shown[kids[a]], shown[kids[b]]) })
+		return kids
+	}
+	sort.SliceStable(roots, func(a, b int) bool { return spanLess(shown[roots[a]], shown[roots[b]]) })
+	type entry struct {
+		span   int // index into shown
+		parent int // index into entries, -1 for a root
+		level  int
+		kids   []int // indexes into entries
+		flat   []int // indexes into shown, set at MaxSpanDepth
+	}
+	entries := make([]entry, 0, len(shown))
+	onPath := func(parent, span int) bool {
+		for p := parent; p >= 0; p = entries[p].parent {
+			if entries[p].span == span {
+				return true
+			}
 		}
-		kids := append([]record.Record{}, children[id]...)
-		sort.SliceStable(kids, func(i, j int) bool { return spanLess(kids[i], kids[j]) })
-		built := make([]SpanNode, len(kids))
-		for i, child := range kids {
-			built[i] = build(child)
+		return false
+	}
+	stack := make([]int, 0, len(roots))
+	for _, span := range roots {
+		entries = append(entries, entry{span: span, parent: -1, level: 0})
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		stack = append(stack, i)
+	}
+	for len(stack) > 0 {
+		idx := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if entries[idx].level >= MaxSpanDepth {
+			entries[idx].flat = flattenSpans(entries[idx].span, sortedKids)
+			continue
 		}
-		return spanNode(rec, built, logs, spans)
+		var kidIdx []int
+		for _, kid := range sortedKids(entries[idx].span) {
+			if onPath(idx, kid) {
+				continue
+			}
+			entries = append(entries, entry{span: kid, parent: idx, level: entries[idx].level + 1})
+			kidIdx = append(kidIdx, len(entries)-1)
+		}
+		entries[idx].kids = kidIdx
+		for i := len(kidIdx) - 1; i >= 0; i-- {
+			stack = append(stack, kidIdx[i])
+		}
+	}
+	// A child always comes after its parent in entries, so building in
+	// reverse order has every child ready before its parent.
+	built := make([]SpanNode, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		var kids []SpanNode
+		if e.flat != nil {
+			kids = make([]SpanNode, len(e.flat))
+			for j, span := range e.flat {
+				kids[j] = spanNode(shown[span], []SpanNode{}, logs, spans)
+			}
+		} else {
+			kids = make([]SpanNode, len(e.kids))
+			for j, k := range e.kids {
+				kids[j] = built[k]
+				built[k] = SpanNode{}
+			}
+		}
+		built[i] = spanNode(shown[e.span], kids, logs, spans)
+		built[i].FlattenedDescendants = len(e.flat)
 	}
 	nodes := make([]SpanNode, len(roots))
-	for i, rec := range roots {
-		nodes[i] = build(rec)
+	for i := range roots {
+		nodes[i] = built[i]
 	}
-	return nodes, len(spans) - len(shown)
+	return nodes
+}
+
+// flattenSpans lists every descendant of span depth-first, each once.
+func flattenSpans(span int, sortedKids func(int) []int) []int {
+	flat := []int{}
+	seen := map[int]bool{span: true}
+	var stack []int
+	push := func(of int) {
+		kids := sortedKids(of)
+		for i := len(kids) - 1; i >= 0; i-- {
+			if !seen[kids[i]] {
+				seen[kids[i]] = true
+				stack = append(stack, kids[i])
+			}
+		}
+	}
+	push(span)
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		flat = append(flat, cur)
+		push(cur)
+	}
+	return flat
 }
 
 func shownParent(rec record.Record, byID map[string]record.Record, shownIDs map[string]bool) *string {
@@ -743,6 +846,7 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 		ExecutionSource: execSource,
 		StatusCode:      statusCodeOf(rec),
 		StatusMessage:   rec.StatusMessage,
+		ErrorType:       errorTypeOf(rec),
 		Children:        children,
 	}
 }
@@ -886,27 +990,101 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 	return out
 }
 
+// sessionRequests returns the per-request token maps used for pricing. It is
+// requestTokens, plus the Codex metric case: codex.turn.token_usage is one
+// histogram sample per turn summed over every Responses call of that turn,
+// with no turn.id, and an exported point may merge several turns, so the
+// metric alone never yields per-request counts (issue #222). When the
+// session also has response.completed logs whose de-duplicated counts add
+// up to exactly the metric totals, those logs are the same tokens split per
+// call, and each one is priced on its own under the metric's keys. The
+// displayed totals stay the metric's, so nothing is counted twice.
+func sessionRequests(records []record.Record, source string, tokens OrderedFloats) []map[string]float64 {
+	if source == "metrics "+codexTokenMetric {
+		return codexMetricRequests(records, tokens)
+	}
+	return requestTokens(records, source)
+}
+
+// codexMetricKeys maps each response.completed count to the
+// codex.turn.token_usage token_type that carries the same tokens. "total"
+// is not priced and has no log field.
+var codexMetricKeys = [][2]string{
+	{"input_token_count", "input"},
+	{"cached_token_count", "cached_input"},
+	{"cache_write_token_count", "cache_write_input"},
+	{"output_token_count", "output"},
+	{"reasoning_token_count", "reasoning_output"},
+}
+
+// codexMetricRequests returns the session's de-duplicated response.completed
+// counts, renamed to codex.turn.token_usage keys, when their sums equal the
+// metric totals for every priced token type (a missing value is 0 on both
+// sides). Otherwise it returns nil and the metric aggregate is priced as
+// before: logs missing a call, or extra logs, cannot be trusted to split
+// the metric totals.
+func codexMetricRequests(records []record.Record, tokens OrderedFloats) []map[string]float64 {
+	logs := codexSSERequests(codexSSEEvents(records))
+	if len(logs) == 0 {
+		return nil
+	}
+	sums := map[string]float64{}
+	out := make([]map[string]float64, 0, len(logs))
+	for _, item := range logs {
+		renamed := map[string]float64{}
+		for _, pair := range codexMetricKeys {
+			if amount, ok := item[pair[0]]; ok {
+				renamed[pair[1]] = amount
+				sums[pair[1]] += amount
+			}
+		}
+		out = append(out, renamed)
+	}
+	for _, pair := range codexMetricKeys {
+		total, _ := tokens.Get(pair[1])
+		if total != sums[pair[1]] {
+			return nil
+		}
+	}
+	return out
+}
+
 func requestTokens(records []record.Record, source string) []map[string]float64 {
+	if source == "logs "+codexSSE+" response.completed" {
+		// One item per billed Responses API call, de-duplicated like the
+		// displayed totals, so the totals and the per-request prices come
+		// from the same events (issue #213).
+		return codexSSERequests(codexSSEEvents(records))
+	}
 	var keys []string
 	var match func(record.Record) bool
 	switch source {
 	case "logs " + claudeAPI:
-		keys = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		keys = claudeAPITokenFields
 		match = func(rec record.Record) bool {
 			return rec.Signal == "logs" && deref(rec.Name) == claudeAPI
 		}
 	case "logs " + grokAPI:
-		keys = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+		keys = grokAPITokenFields
 		match = func(rec record.Record) bool {
 			return rec.Signal == "logs" && logEventName(rec) == grokAPI
 		}
 	default:
 		return nil
 	}
+	// Claude and Grok api_request logs only: Codex returned above with its
+	// own codexSSEKey de-duplication (issue #214).
+	seen := map[string]bool{}
 	var out []map[string]float64
 	for _, rec := range records {
 		if !match(rec) {
 			continue
+		}
+		if key := apiRequestKey(rec, keys); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		item := map[string]float64{}
 		found := false
@@ -956,23 +1134,18 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 			claudeLogs = append(claudeLogs, rec)
 		}
 	}
+	claudeLogs = uniqueAPIRequests(claudeLogs, claudeAPITokenFields)
 	totals := OrderedFloats{}
 	found := false
 	for _, rec := range claudeLogs {
-		if addFields(&totals, rec, []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+		if addFields(&totals, rec, claudeAPITokenFields) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes")
+		return totals, record.Str("logs " + claudeAPI), record.Str("sum of per-request token attributes; " + apiRequestDedupMethod)
 	}
-	var events []record.Record
-	for _, rec := range records {
-		if rec.Signal == "logs" && deref(rec.Name) == codexSSE && strAttr(rec.Attributes, "event.kind") == "response.completed" {
-			events = append(events, rec)
-		}
-	}
-	if len(events) > 0 {
+	if events := codexSSEEvents(records); len(events) > 0 {
 		return codexSSETokens(events)
 	}
 	if gemini, source, method, ok := geminiTokens(records, points); ok {
@@ -1008,15 +1181,16 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 			grokLogs = append(grokLogs, rec)
 		}
 	}
+	grokLogs = uniqueAPIRequests(grokLogs, grokAPITokenFields)
 	grokTotals := OrderedFloats{}
 	grokFound := false
 	for _, rec := range grokLogs {
-		if addFields(&grokTotals, rec, []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+		if addFields(&grokTotals, rec, grokAPITokenFields) {
 			grokFound = true
 		}
 	}
 	if grokFound {
-		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens)")
+		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens); " + apiRequestDedupMethod)
 	}
 	return OrderedFloats{}, nil, nil
 }
@@ -1156,14 +1330,24 @@ func sumSpanMS(records []record.Record, match func(string) bool) *float64 {
 	return record.Float(sum(found))
 }
 
-// codexSSETokens sums Codex response.completed logs. Each event is the usage
-// of one Responses API call, and one turn makes several calls (one per tool
-// round trip), so every count is added up, like Codex's own
-// codex.turn.token_usage. A record stored twice (same conversation.id,
-// event.timestamp and counts) is counted once.
-func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
+// codexSSEEvents returns the Codex codex.sse_event response.completed logs.
+func codexSSEEvents(records []record.Record) []record.Record {
+	var events []record.Record
+	for _, rec := range records {
+		if rec.Signal == "logs" && deref(rec.Name) == codexSSE && strAttr(rec.Attributes, "event.kind") == "response.completed" {
+			events = append(events, rec)
+		}
+	}
+	return events
+}
+
+// codexSSERequests returns the token counts of each Codex response.completed
+// log, one map per Responses API call. A record stored twice (same
+// conversation.id, event.timestamp and counts) is returned once. Events
+// without any count are skipped. It returns nil when no event has a count.
+func codexSSERequests(events []record.Record) []map[string]float64 {
 	seen := map[string]bool{}
-	var totals OrderedFloats
+	var out []map[string]float64
 	for _, rec := range events {
 		key := codexSSEKey(rec)
 		if key != "" {
@@ -1172,10 +1356,32 @@ func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
 			}
 			seen[key] = true
 		}
+		item := map[string]float64{}
 		for _, field := range codexSSETokenFields {
 			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				item[field] = *amount
+			}
+		}
+		if len(item) > 0 {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// codexSSETokens sums Codex response.completed logs. Each event is the usage
+// of one Responses API call, and one turn makes several calls (one per tool
+// round trip), so every count is added up, like Codex's own
+// codex.turn.token_usage. A record stored twice (same conversation.id,
+// event.timestamp and counts) is counted once. The totals are the sum of
+// codexSSERequests, the same items pricing uses per request.
+func codexSSETokens(events []record.Record) (OrderedFloats, *string, *string) {
+	var totals OrderedFloats
+	for _, item := range codexSSERequests(events) {
+		for _, field := range codexSSETokenFields {
+			if amount, ok := item[field]; ok {
 				prev, _ := totals.Get(field)
-				totals.Set(field, prev+*amount)
+				totals.Set(field, prev+amount)
 			}
 		}
 	}
@@ -1200,6 +1406,69 @@ func codexSSEKey(rec record.Record) string {
 		}
 	}
 	return key
+}
+
+// Token fields of one claude_code.api_request / grok_code.api_request log.
+var (
+	claudeAPITokenFields = []string{"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"}
+	grokAPITokenFields   = []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}
+)
+
+// apiRequestKeyIDs are the identifiers an api_request log may carry. Claude
+// Code documents request_id (server request id), client_request_id,
+// prompt.id, event.sequence and event.timestamp on api_request; the Grok CLI
+// guide documents event.sequence and prompt.id on every event. Each one that
+// is present goes into the key, so two genuine requests do not share it.
+var apiRequestKeyIDs = []string{"session.id", "prompt.id", "request_id", "client_request_id", "event.sequence", "event.timestamp"}
+
+// apiRequestCostFields are the agent cost attributes, also part of the key.
+var apiRequestCostFields = []string{"cost_usd", "cost_usd_micros"}
+
+const apiRequestDedupMethod = "a log stored twice (same session.id, prompt.id, request_id, client_request_id, event.sequence, event.timestamp, log time, counts, and cost) counts once"
+
+// apiRequestKey identifies one claude_code.api_request or grok_code.api_request
+// log for de-duplication (issue #214), like codexSSEKey for Codex. A record
+// stored twice, for example after an OTLP export retry, has the same
+// attributes and log time. The key is empty, and the record is never merged,
+// when it has neither event.timestamp nor a log time.
+func apiRequestKey(rec record.Record, fields []string) string {
+	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
+		return ""
+	}
+	key := deref(rec.SessionID)
+	for _, id := range apiRequestKeyIDs {
+		key += "|" + strAttr(rec.Attributes, id)
+	}
+	key += "|"
+	if rec.TimeUnixNano != nil {
+		key += strconv.FormatInt(*rec.TimeUnixNano, 10)
+	}
+	for _, list := range [][]string{fields, apiRequestCostFields} {
+		for _, field := range list {
+			key += "|"
+			if amount := record.Number(rec.Attributes[field]); amount != nil {
+				key += strconv.FormatFloat(*amount, 'g', -1, 64)
+			}
+		}
+	}
+	return key
+}
+
+// uniqueAPIRequests drops api_request logs whose apiRequestKey was already
+// seen, keeping the first copy.
+func uniqueAPIRequests(records []record.Record, fields []string) []record.Record {
+	seen := map[string]bool{}
+	out := records[:0:0]
+	for _, rec := range records {
+		if key := apiRequestKey(rec, fields); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 func costOf(records []record.Record, points []point, tool string) (*float64, *string, *string) {
@@ -1237,13 +1506,27 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 	total := 0.0
 	found := false
 	var source *string
+	seenRequest := map[string]bool{}
 	for _, rec := range records {
 		if rec.Signal != "logs" {
 			continue
 		}
 		var amount *float64
 		var label string
-		switch logEventName(rec) {
+		event := logEventName(rec)
+		if event == claudeAPI || event == grokAPI {
+			fields := claudeAPITokenFields
+			if event == grokAPI {
+				fields = grokAPITokenFields
+			}
+			if key := apiRequestKey(rec, fields); key != "" {
+				if seenRequest[event+"|"+key] {
+					continue
+				}
+				seenRequest[event+"|"+key] = true
+			}
+		}
+		switch event {
 		case claudeAPI:
 			amount = record.Number(rec.Attributes["cost_usd"])
 			label = "logs " + claudeAPI + " cost_usd"
@@ -1305,6 +1588,7 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 			}
 		}
 	}
+	logs = uniqueExactCopies(logs)
 	logByID := map[string]record.Record{}
 	for _, rec := range logs {
 		if id := callID(rec); id != nil {
@@ -1313,8 +1597,22 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 	}
 	var primary []record.Record
 	seen := map[string]bool{}
+	// A tool span stored twice (same trace id and span id) is one call
+	// (issue #258). A span without both ids is never merged.
+	seenSpan := map[string]bool{}
+	firstCopy := func(rec record.Record) bool {
+		key, ok := spanKey(rec)
+		if !ok {
+			return true
+		}
+		if seenSpan[key] {
+			return false
+		}
+		seenSpan[key] = true
+		return true
+	}
 	for _, rec := range spans {
-		if !isDirectToolSpan(deref(rec.Name)) {
+		if !isDirectToolSpan(deref(rec.Name)) || !firstCopy(rec) {
 			continue
 		}
 		if id := callID(rec); id != nil {
@@ -1323,7 +1621,7 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 		primary = append(primary, rec)
 	}
 	for _, rec := range spans {
-		if deref(rec.Name) != "unified_exec.exec_command" {
+		if deref(rec.Name) != "unified_exec.exec_command" || !firstCopy(rec) {
 			continue
 		}
 		id := callID(rec)
@@ -1374,6 +1672,25 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 		})
 	}
 	return calls
+}
+
+// uniqueExactCopies drops tool logs whose exactCopyKey was already seen,
+// keeping the first copy (issue #258). gemini_cli.tool_call carries no call
+// id, so nothing looser than an exact copy can tell a re-sent log from a
+// second call of the same tool with the same result.
+func uniqueExactCopies(records []record.Record) []record.Record {
+	seen := map[string]bool{}
+	out := records[:0:0]
+	for _, rec := range records {
+		if key := exactCopyKey(rec); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 func callFromSpan(rec record.Record, log *record.Record, spans []record.Record) ToolCall {
@@ -1901,6 +2218,19 @@ func isToolCallSpan(name string) bool {
 	return isDirectToolSpan(name) || name == "unified_exec.exec_command"
 }
 
+// errorTypeOf is the first error class attribute of a span that is a short
+// token (record.IsErrorToken), the rule the default content drop keeps it
+// by. A free-text class (a row kept with --store-content, or written by an
+// older sdf) is not surfaced as error_type.
+func errorTypeOf(rec record.Record) *string {
+	for _, k := range []string{"error.type", "error_type", "exception.type"} {
+		if s, ok := rec.Attributes[k].(string); ok && record.IsErrorToken(s) {
+			return &s
+		}
+	}
+	return nil
+}
+
 func statusCodeOf(rec record.Record) string {
 	switch rec.StatusCode {
 	case "OK", "ERROR", "UNSET":
@@ -2054,6 +2384,10 @@ func sum(values []float64) float64 {
 	return total
 }
 
+// freeze is a canonical, unambiguous encoding of an attribute map, used as a
+// grouping and de-duplication key. Keys and string values are
+// length-prefixed (lengthKey) and lists carry their length, so values that
+// contain the separators cannot make two different maps encode alike.
 func freeze(attributes map[string]any) string {
 	keys := make([]string, 0, len(attributes))
 	for key := range attributes {
@@ -2062,7 +2396,7 @@ func freeze(attributes map[string]any) string {
 	sort.Strings(keys)
 	var b strings.Builder
 	for _, key := range keys {
-		b.WriteString(key)
+		b.WriteString(lengthKey(key))
 		b.WriteByte('=')
 		b.WriteString(freezeValue(attributes[key]))
 		b.WriteByte(';')
@@ -2075,7 +2409,7 @@ func freezeValue(v any) string {
 	case nil:
 		return "z"
 	case string:
-		return "s:" + t
+		return "s" + lengthKey(t)
 	case bool:
 		if t {
 			return "b:1"
@@ -2092,14 +2426,14 @@ func freezeValue(v any) string {
 		for i, item := range t {
 			parts[i] = freezeValue(item)
 		}
-		return "l:[" + strings.Join(parts, ",") + "]"
+		return "l" + strconv.Itoa(len(parts)) + ":[" + strings.Join(parts, ",") + "]"
 	case map[string]any:
 		return "m:{" + freeze(t) + "}"
 	default:
 		if n := record.Number(t); n != nil {
 			return "n:" + strconvFormat(*n)
 		}
-		return "o:" + strOr(t)
+		return "o" + lengthKey(strOr(t))
 	}
 }
 
@@ -2113,7 +2447,9 @@ func strconvFormat(f float64) string {
 		}
 		return "-inf"
 	}
-	return strings.TrimRight(strings.TrimRight(formatFixed(f), "0"), ".")
+	// FormatFloat with precision -1 never writes trailing fractional zeros,
+	// so nothing is trimmed: trimming "0" from "900" gave "9".
+	return formatFixed(f)
 }
 
 func formatFixed(f float64) string {
@@ -2237,18 +2573,71 @@ func geminiTokens(records []record.Record, points []point) (OrderedFloats, *stri
 	}
 	totals := OrderedFloats{}
 	found := false
+	seen := map[string]bool{}
 	for _, rec := range records {
 		if rec.Signal != "logs" || logEventName(rec) != geminiAPIResponse {
 			continue
+		}
+		if key := geminiResponseKey(rec); key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 		}
 		if addFields(&totals, rec, []string{"input_token_count", "output_token_count", "cached_content_token_count", "thoughts_token_count", "tool_token_count"}) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("logs " + geminiAPIResponse), record.Str("sum of per-response token attributes from gemini_cli.api_response (input_token_count, output_token_count, cached_content_token_count, thoughts_token_count, tool_token_count); total_token_count is not added"), true
+		return totals, record.Str("logs " + geminiAPIResponse), record.Str("sum of per-response token attributes from gemini_cli.api_response (input_token_count, output_token_count, cached_content_token_count, thoughts_token_count, tool_token_count); total_token_count is not added; " + geminiResponseDedupMethod), true
 	}
 	return OrderedFloats{}, nil, nil, false
+}
+
+const geminiResponseDedupMethod = "a log stored twice (same session, log time, body, and every attribute) counts once"
+
+// geminiResponseKey identifies one gemini_cli.api_response log for
+// de-duplication (issue #248), like apiRequestKey for Claude and Grok. The
+// event carries no response or request id: prompt_id is shared by every
+// response of one prompt (each tool round trip is another response), and two
+// responses may have the same model and counts. So the key is an exact copy:
+// the session id, the log record time, the body, and every attribute
+// (event.timestamp, prompt_id, duration_ms, status_code, counts, and the
+// rest). A record stored twice, for example after an OTLP export retry, has
+// all of them; two real responses differ at least in event.timestamp or log
+// time. The key is empty, and the record is never merged, when it has
+// neither event.timestamp nor a log time.
+func geminiResponseKey(rec record.Record) string {
+	return exactCopyKey(rec)
+}
+
+// exactCopyKey identifies a log record by everything it carries: session id,
+// log record time, body, and every attribute. Only a record stored twice
+// (for example after an OTLP export retry) shares it with another. It is
+// empty, and the record is never merged, when the record has neither
+// event.timestamp nor a log time.
+func exactCopyKey(rec record.Record) string {
+	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
+		return ""
+	}
+	when := ""
+	if rec.TimeUnixNano != nil {
+		when = strconv.FormatInt(*rec.TimeUnixNano, 10)
+	}
+	return lengthKey(deref(rec.SessionID), when, deref(rec.Body), freeze(rec.Attributes))
+}
+
+// lengthKey joins parts so that no choice of part values can produce the
+// same key from different parts: each part is written as its byte length,
+// ':', and the part.
+func lengthKey(parts ...string) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(strconv.Itoa(len(part)))
+		b.WriteByte(':')
+		b.WriteString(part)
+	}
+	return b.String()
 }
 
 // logToolName is the tool name on a tool-result log. Gemini CLI's

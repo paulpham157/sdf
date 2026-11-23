@@ -103,3 +103,5 @@ record.
 - A path inside a shell string (`sh -c "..."`) is not designated.
 - The secret scan covers added text lines only, with eleven rules.
 - No signature: the records are hashed, not signed.
+
+The GitHub Action that runs this on a pull request is in [action.md](action.md).

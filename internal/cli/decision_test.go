@@ -207,12 +207,66 @@ func TestDecisionLinkRejectsAnUnknownEndpointAndWritesNothing(t *testing.T) {
 	}
 }
 
+func TestDecisionAddRecordsWhoDecidedAndOmitsEmptyOptionalFields(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	out := run(t, "decision", "add", "--db", dbPath,
+		"--id", "dont-push",
+		"--statement", "Do not push until the user says so.",
+		"--status", "decision",
+		"--decided-by", "user",
+		"--alternatives", "push the branch now",
+		"--reason", "The user said don't push.")
+	if out.code != 0 || out.stdout != "" || out.stderr != "" {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	plain := run(t, "decision", "add", "--db", dbPath,
+		"--id", "use-sqlite",
+		"--statement", "Keep the collector store in SQLite.",
+		"--status", "decision")
+	if plain.code != 0 || plain.stdout != "" || plain.stderr != "" {
+		t.Fatalf("%d %q %q", plain.code, plain.stdout, plain.stderr)
+	}
+	rejected := run(t, "decision", "add", "--db", dbPath,
+		"--id", "bad-actor",
+		"--statement", "Someone decided this.",
+		"--status", "decision",
+		"--decided-by", "owner")
+	if rejected.code == 0 || rejected.stdout != "" {
+		t.Fatalf("bad decided-by accepted: %d %q %q", rejected.code, rejected.stdout, rejected.stderr)
+	}
+
+	db := openStore(t, dbPath)
+	srv := serveStore(t, db)
+	body := httpGet(t, srv.URL()+"api/decisions")
+	var raw struct {
+		Decisions []map[string]any `json:"decisions"`
+	}
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Decisions) != 2 {
+		t.Fatalf("%#v", raw.Decisions)
+	}
+	got := raw.Decisions[0]
+	if got["id"] != "dont-push" || got["decided_by"] != "user" || got["alternatives"] != "push the branch now" || got["reason"] != "The user said don't push." {
+		t.Fatalf("%#v", got)
+	}
+	for _, key := range []string{"decided_by", "alternatives", "reason", "source"} {
+		if _, ok := raw.Decisions[1][key]; ok {
+			t.Fatalf("empty %s was written: %#v", key, raw.Decisions[1])
+		}
+	}
+}
+
 type decisionJSON struct {
-	ID         string `json:"id"`
-	Statement  string `json:"statement"`
-	Status     string `json:"status"`
-	RecordedAt string `json:"recorded_at"`
-	Source     string `json:"source"`
+	ID           string `json:"id"`
+	Statement    string `json:"statement"`
+	Status       string `json:"status"`
+	RecordedAt   string `json:"recorded_at"`
+	Source       string `json:"source"`
+	DecidedBy    string `json:"decided_by"`
+	Alternatives string `json:"alternatives"`
+	Reason       string `json:"reason"`
 }
 
 type endpointJSON struct {
@@ -272,4 +326,46 @@ func serveStore(t *testing.T, db *store.Store) *ui.Server {
 	}
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv
+}
+
+func TestDecisionLinkValidationMessagesAndExitCodes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	seedTelemetry(t, dbPath)
+	for _, id := range []string{"old", "new"} {
+		if out := run(t, "decision", "add", "--db", dbPath, "--id", id, "--statement", id, "--status", "decision"); out.code != 0 {
+			t.Fatal(out.stderr)
+		}
+	}
+	link := func(rel, from, to string) result {
+		return run(t, "decision", "link", "--db", dbPath, "--relation", rel, "--from", from, "--to", to)
+	}
+	if out := link("supersedes", "decision:new", "decision:old"); out.code != 0 || out.stdout != "" || out.stderr != "" {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	rejected := []struct{ rel, from, to, stderr string }{
+		{"implements", "decision:old", "decision:old", "sdf decision link: an edge cannot link an endpoint to itself: decision:old\n"},
+		{"supersedes", "decision:old", "decision:new", "sdf decision link: supersedes cycle: decision:new already reaches decision:old through supersedes (new -> old), so decision:old cannot supersede decision:new\n"},
+		{"supersedes", "decision:new", "decision:old", "sdf decision link: edge already recorded: decision:new supersedes decision:old\n"},
+		{"supersedes", "session:sess-1", "decision:old", "sdf decision link: supersedes links a decision to a decision: from is session:sess-1\n"},
+	}
+	for _, r := range rejected {
+		out := link(r.rel, r.from, r.to)
+		if out.code != 1 || out.stdout != "" || out.stderr != r.stderr {
+			t.Fatalf("%s %s %s: %d %q %q", r.from, r.rel, r.to, out.code, out.stdout, out.stderr)
+		}
+	}
+	if out := link("validates", "session:sess-1", "decision:new"); out.code != 0 || out.stderr != "" {
+		t.Fatalf("%d %q", out.code, out.stderr)
+	}
+	warned := link("contradicts", "session:sess-1", "decision:new")
+	if warned.code != 0 || warned.stdout != "" || warned.stderr != "sdf decision link: warning: session:sess-1 and decision:new have both validates and contradicts edges\n" {
+		t.Fatalf("%d %q %q", warned.code, warned.stdout, warned.stderr)
+	}
+	got, err := decision.Load(openStore(t, dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Edges) != 3 {
+		t.Fatalf("%d edges, want 3 (one supersedes, validates, contradicts)", len(got.Edges))
+	}
 }

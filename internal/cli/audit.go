@@ -15,8 +15,8 @@ import (
 
 // Exit codes of sdf audit: 0 intact; 1 broken, a failed check, or a file
 // that is not a readable ledger database; 2 usage; 3 the ledger or an
-// --expect-head-file could not be opened or read (permissions, a missing
-// directory, EIO, a hot journal).
+// --expect-head-file / --expect-prefix-file could not be opened or read
+// (permissions, a missing path, EIO, a hot journal).
 const exitIO = 3
 
 // ioError marks an error reading an input file (exit 3, not 2).
@@ -121,26 +121,35 @@ func writeJSON(w io.Writer, v any) {
 	_ = enc.Encode(v)
 }
 
-// verifyLedger returns the report, or an exit code when there is none: 1
-// for a file that is not a readable ledger database (garbage, truncated,
-// damaged), 3 for any other failure to open or read it.
-func verifyLedger(name, path string, stderr io.Writer) (ledger.Report, int) {
+// openVerified opens the ledger and runs Verify once. On success the
+// caller must Close the store. An exit code of 1 is a file that is not
+// a readable ledger database (garbage, truncated, damaged); 3 is any
+// other failure to open or read it.
+func openVerified(name, path string, stderr io.Writer) (*ledger.Store, ledger.Report, int) {
 	l, err := ledger.Open(path)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n", name, ledger.Safe(err.Error()))
-		return ledger.Report{}, exitIO
+		return nil, ledger.Report{}, exitIO
 	}
-	defer l.Close()
 	rep, err := l.Verify(context.Background())
-	if errors.Is(err, ledger.ErrCorruptFile) {
-		fmt.Fprintf(stderr, "%s: ledger broken: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
-		return ledger.Report{}, 1
-	}
 	if err != nil {
+		_ = l.Close()
+		if errors.Is(err, ledger.ErrCorruptFile) {
+			fmt.Fprintf(stderr, "%s: ledger broken: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
+			return nil, ledger.Report{}, 1
+		}
 		fmt.Fprintf(stderr, "%s: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
-		return ledger.Report{}, exitIO
+		return nil, ledger.Report{}, exitIO
 	}
-	return rep, 0
+	return l, rep, 0
+}
+
+func verifyLedger(name, path string, stderr io.Writer) (ledger.Report, int) {
+	l, rep, code := openVerified(name, path, stderr)
+	if l != nil {
+		_ = l.Close()
+	}
+	return rep, code
 }
 
 func describeFailure(f *ledger.Failure) string {
@@ -151,7 +160,7 @@ func describeFailure(f *ledger.Failure) string {
 	return fmt.Sprintf("%s: %s: %s", where, ledger.Safe(string(f.Problem)), ledger.Safe(f.Detail))
 }
 
-const auditVerifyUsage = "usage: sdf audit verify [--ledger PATH] [--json] [--require-nonempty] [--expect-head HASH | --expect-head-file PATH]"
+const auditVerifyUsage = "usage: sdf audit verify [--ledger PATH] [--json] [--require-nonempty] [--expect-head HASH | --expect-head-file PATH | --expect-prefix SEQ:HASH | --expect-prefix-file PATH]"
 
 var entryHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
@@ -181,12 +190,29 @@ func readExpectedHead(path string) (string, error) {
 	return text, nil
 }
 
+// readExpectedPrefix reads a pin file and parses it with ledger.ParsePin.
+// A failure to read the file is an ioError (exit 3). A malformed pin is a
+// plain error (exit 2).
+func readExpectedPrefix(path string) (int64, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, "", &ioError{err}
+	}
+	seq, hash, err := ledger.ParsePin(string(data))
+	if err != nil {
+		return 0, "", err
+	}
+	return seq, hash, nil
+}
+
 func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 	const name = "sdf audit verify"
 	path := ""
 	asJSON, requireNonEmpty := false, false
 	expect, expectFile := "", ""
 	expectSet, expectFileSet := false, false
+	prefix, prefixFile := "", ""
+	prefixSet, prefixFileSet := false, false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		value := func(flag string) (string, bool) {
@@ -226,13 +252,33 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			expectFile, expectFileSet = v, true
+		case arg == "--expect-prefix" || strings.HasPrefix(arg, "--expect-prefix="):
+			v, ok := value("--expect-prefix")
+			if !ok {
+				fmt.Fprintf(stderr, "%s: --expect-prefix requires a value\n", name)
+				return 2
+			}
+			prefix, prefixSet = v, true
+		case arg == "--expect-prefix-file" || strings.HasPrefix(arg, "--expect-prefix-file="):
+			v, ok := value("--expect-prefix-file")
+			if !ok {
+				fmt.Fprintf(stderr, "%s: --expect-prefix-file requires a value\n", name)
+				return 2
+			}
+			prefixFile, prefixFileSet = v, true
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(arg))
 			return 2
 		}
 	}
-	if expectSet && expectFileSet {
-		fmt.Fprintf(stderr, "%s: --expect-head and --expect-head-file cannot be used together\n", name)
+	nExpect := 0
+	for _, set := range []bool{expectSet, expectFileSet, prefixSet, prefixFileSet} {
+		if set {
+			nExpect++
+		}
+	}
+	if nExpect > 1 {
+		fmt.Fprintf(stderr, "%s: --expect-head, --expect-head-file, --expect-prefix, and --expect-prefix-file cannot be used together\n", name)
 		return 2
 	}
 	if expectFileSet {
@@ -251,6 +297,29 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: expected head %q is not sha256: followed by 64 lowercase hex digits\n", name, expect)
 		return 2
 	}
+	var prefixSeq int64
+	var prefixHash string
+	if prefixFileSet {
+		seq, hash, err := readExpectedPrefix(prefixFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: --expect-prefix-file: %s\n", name, ledger.Safe(err.Error()))
+			var ioErr *ioError
+			if errors.As(err, &ioErr) {
+				return exitIO
+			}
+			return 2
+		}
+		prefixSeq, prefixHash = seq, hash
+	}
+	if prefixSet {
+		seq, hash, err := ledger.ParsePin(prefix)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: expected prefix %s\n", name, ledger.Safe(err.Error()))
+			return 2
+		}
+		prefixSeq, prefixHash = seq, hash
+	}
+	prefixEnabled := prefixSet || prefixFileSet
 	if path == "" {
 		p, err := ledger.DefaultPath()
 		if err != nil {
@@ -259,10 +328,11 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		}
 		path = p
 	}
-	rep, code := verifyLedger(name, path, stderr)
+	l, rep, code := openVerified(name, path, stderr)
 	if code != 0 {
 		return code
 	}
+	defer l.Close()
 
 	ok := rep.OK
 	emptyFail := requireNonEmpty && rep.Empty
@@ -282,10 +352,42 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	var prefixMatch *bool
+	var prefixEntry *ledger.Entry
+	var prefixActual string // "none" when the seq is absent
+	if prefixEnabled {
+		prefixActual = "none"
+		_, got, err := l.GetBySeq(context.Background(), prefixSeq)
+		switch {
+		case err == nil:
+			prefixEntry = &got
+			prefixActual = ledger.FormatPin(got.Seq, got.EntryHash)
+		case errors.Is(err, ledger.ErrNotFound), errors.Is(err, ledger.ErrCorrupt):
+			// truncated, never written, or the row itself is not trustworthy
+		default:
+			fmt.Fprintf(stderr, "%s: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
+			if errors.Is(err, ledger.ErrCorruptFile) {
+				return 1
+			}
+			return exitIO
+		}
+		// Reuse the Verify report already in hand; same condition as VerifyPrefix.
+		m := rep.OK && prefixEntry != nil && prefixEntry.EntryHash == prefixHash
+		prefixMatch = &m
+		if !m {
+			ok = false
+		}
+	}
+
 	if asJSON {
 		var expected *string
 		if expect != "" {
 			expected = &expect
+		}
+		var expectedPrefix *string
+		if prefixEnabled {
+			p := ledger.FormatPin(prefixSeq, prefixHash)
+			expectedPrefix = &p
 		}
 		writeJSON(stdout, struct {
 			Path            string          `json:"path"`
@@ -297,8 +399,10 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			Head            *auditEntry     `json:"head"`
 			ExpectedHead    *string         `json:"expected_head"`
 			HeadMatch       *bool           `json:"head_match"`
+			ExpectedPrefix  *string         `json:"expected_prefix"`
+			PrefixMatch     *bool           `json:"prefix_match"`
 			Failure         *ledger.Failure `json:"failure"`
-		}{rep.Path, ok, rep.OK, rep.Empty, requireNonEmpty, rep.Entries, toAuditEntry(rep.Head), expected, headMatch, rep.Failure})
+		}{rep.Path, ok, rep.OK, rep.Empty, requireNonEmpty, rep.Entries, toAuditEntry(rep.Head), expected, headMatch, expectedPrefix, prefixMatch, rep.Failure})
 	} else {
 		switch {
 		case rep.Empty && emptyFail:
@@ -325,6 +429,21 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stdout, "head mismatch: expected %s, actual none (the ledger is empty)\n", expect)
 			default:
 				fmt.Fprintf(stdout, "head mismatch: expected %s, actual %s (entries were removed, rewritten, or appended since the head was pinned)\n", expect, ledger.Safe(actual))
+			}
+		}
+		if prefixMatch != nil {
+			want := ledger.FormatPin(prefixSeq, prefixHash)
+			switch {
+			case *prefixMatch:
+				fmt.Fprintf(stdout, "prefix matches %s\n", want)
+			case !rep.OK:
+				fmt.Fprintf(stdout, "prefix not accepted: expected %s, but the chain is broken, so the stored prefix %s proves nothing\n", want, prefixActual)
+			case prefixEntry == nil && rep.Empty:
+				fmt.Fprintf(stdout, "prefix mismatch: expected %s, actual none (the ledger is empty)\n", want)
+			case prefixEntry == nil:
+				fmt.Fprintf(stdout, "prefix mismatch: expected %s, actual none (the ledger was truncated below that seq, or the entry was removed)\n", want)
+			default:
+				fmt.Fprintf(stdout, "prefix mismatch: expected %s, actual %s (the ledger was rewritten at or through that point)\n", want, prefixActual)
 			}
 		}
 	}

@@ -349,7 +349,7 @@ func resolveTarget(path string) (string, error) {
 		}
 		current = link
 	}
-	return "", fmt.Errorf("%s: too many levels of symbolic links", path)
+	return "", loopErr(path)
 }
 
 // checkWritable refuses a target that exists and that we may not write. It
@@ -371,6 +371,9 @@ func checkWritable(path string) error {
 	}
 	info, err := os.Stat(target)
 	if os.IsNotExist(err) {
+		if msg := danglingOutside(path, target); msg != "" {
+			return errors.New(msg)
+		}
 		return checkDirs(path, target)
 	}
 	if err != nil {

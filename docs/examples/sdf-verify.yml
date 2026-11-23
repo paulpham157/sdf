@@ -1,4 +1,4 @@
-# Demo of .github/actions/sdf-verify on this repository's own pull requests.
+# Example use of .github/actions/sdf-verify on this repository's own pull requests.
 # To enable it, copy this file to .github/workflows/sdf-verify.yml.
 #
 # It runs only when a pull request has a label sdf-task:<id> naming a task

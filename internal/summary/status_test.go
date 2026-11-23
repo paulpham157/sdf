@@ -114,3 +114,64 @@ func TestUnsetStatusIsTheDefault(t *testing.T) {
 		t.Fatalf("unset should stay unmarked\n%s", text)
 	}
 }
+
+func TestSpanErrorTypeIsShownOnceInTheTree(t *testing.T) {
+	span := func(id, msg, typ string) record.Record {
+		return record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("s"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str(id),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
+			StatusCode: "ERROR", StatusMessage: record.Str(msg),
+			Attributes: map[string]any{"exception.type": typ, "gen_ai.tool.call.id": id}, Resource: map[string]any{},
+		}
+	}
+	report := Summarize([]record.Record{span("a", "tool error: FileNotFoundError", "FileNotFoundError"), span("b", "write failed", "EACCES")}, false)
+	nodes := report.Sessions[0].Spans
+	if len(nodes) != 2 || deref(nodes[0].ErrorType) != "FileNotFoundError" || deref(nodes[1].ErrorType) != "EACCES" {
+		t.Fatalf("%+v", nodes)
+	}
+	text := Format(report)
+	if !strings.Contains(text, "status=ERROR (tool error: FileNotFoundError)") || strings.Contains(text, "error_type=FileNotFoundError") {
+		t.Fatalf("type in the message should not repeat:\n%s", text)
+	}
+	if !strings.Contains(text, "status=ERROR (write failed) error_type=EACCES") {
+		t.Fatalf("type missing:\n%s", text)
+	}
+}
+
+// error_type is shown only for a token value (^[A-Za-z0-9_.:/-]{1,64}$), as
+// the default drop keeps it; a free-text class in a kept or older row is
+// not surfaced.
+func TestErrorTypeIsOnlyAToken(t *testing.T) {
+	span := func(id string, typ any) record.Record {
+		return record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("s"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str(id),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(1_000_000),
+			StatusCode: "ERROR",
+			Attributes: map[string]any{"error.type": typ, "gen_ai.tool.call.id": id}, Resource: map[string]any{},
+		}
+	}
+	long := strings.Repeat("x", 65)
+	report := Summarize([]record.Record{
+		span("a", "EACCES"),
+		span("b", "open /home/me/secret.txt: permission denied"),
+		span("c", long),
+		span("d", "<img src=x onerror=alert(1)>"),
+		span("e", "pkg/errors.NotFound:v2"),
+		span("f", 42),
+	}, false)
+	got := map[string]string{}
+	for _, n := range report.Sessions[0].Spans {
+		got[deref(n.CallID)] = deref(n.ErrorType)
+	}
+	want := map[string]string{"a": "EACCES", "b": "", "c": "", "d": "", "e": "pkg/errors.NotFound:v2", "f": ""}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("span %s: error_type %q, want %q", id, got[id], w)
+		}
+	}
+	if text := Format(report); strings.Contains(text, "secret.txt") || strings.Contains(text, "onerror") {
+		t.Fatalf("free-text class shown:\n%s", text)
+	}
+}

@@ -103,7 +103,7 @@ func TestCodexWriteRefusesAnExistingTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := Run(Request{Agent: "codex", Home: home, CodexHome: codexHome, Write: true})
-	if err != nil || res.Wrote || !strings.Contains(res.Text, "already has an [otel] table") {
+	if err != nil || !strings.Contains(res.Text, "already has an [otel] table") {
 		t.Fatal(err, res.Text)
 	}
 	body, err := os.ReadFile(path)

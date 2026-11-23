@@ -62,6 +62,21 @@
 - Codex `response.completed` and OpenCode `SessionStep.attempt` counts are
   per request and are summed (issues #204 and #200), as described in
   [docs/summary.md](summary.md).
+  Claude Code and Grok CLI `api_request` logs stored twice count once
+  (issue #214). The key is every id and timestamp the log carries plus its
+  counts and cost; no real duplicated capture has been checked. A
+  re-sent log whose attributes or log time differ from the first copy is
+  still counted twice, and a log with no `event.timestamp` and no log time
+  is never de-duplicated.
+  Copilot CLI spans stored twice (same trace and span id) and Gemini CLI
+  `gemini_cli.api_response` logs stored twice (same session, log time,
+  body, and every attribute) count once (issue #248). A re-sent Gemini log
+  that differs from the first copy in any attribute is still counted twice.
+  Tool calls from a re-sent export are listed once (issue #258): spans by
+  trace and span id, tool logs only as exact copies. A tool span without
+  both ids, or a re-sent tool log that differs from the first copy, is
+  still listed twice. Qwen Code `api_response` and `tool_call` logs and
+  `llm_request` and `tool` spans follow the same rules (issue #261).
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
@@ -70,8 +85,21 @@
   or refreshed OpenRouter token price for the same de-duplicated counts.
   It is not an invoice either: override conditions other than
   `min_prompt_tokens` are refused, a session total at or above a
-  `min_prompt_tokens` threshold is unknown unless per-request counts exist,
-  a missing component price is unknown, and per-request or web-search fees
+  `min_prompt_tokens` threshold is unknown unless per-request counts exist
+  (Claude Code and Grok CLI `api_request` logs, Codex `response.completed`
+  logs). A Codex `codex.turn.token_usage` point is one turn or more, each
+  turn summed over its Responses calls, with no `turn.id` or
+  `conversation.id`, and SDF keeps only the histogram `sum`, so a
+  metric-only Codex session whose input total reaches 272000 on
+  `openai/gpt-5.4` and similar rows stays unknown even when every call was
+  below it (issue #222). Its `response.completed` logs, when they add up to
+  exactly the metric totals, are priced per call instead; when they do not,
+  it stays unknown,
+  a missing component price is unknown (except that cache reads on an
+  OpenRouter `:free` row whose prompt and completion are 0 are priced at 0,
+  issue #243; a paid row such as `mistralai/mistral-nemo` with no
+  `input_cache_read` stays unknown when cache reads are reported), and
+  per-request or web-search fees
   are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its
   token sources yet, so both cost fields are unknown for a Gemini CLI session.
@@ -79,20 +107,21 @@
   not joined; tool calls come from the logs. The Gemini CLI mapping and the
   `gemini_*.json` samples come from the published docs and source, not from a
   live session.
-- Prompt and tool content are not requested by the setup in
-  [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
-  SQLite file. The exception is tool arguments: Qwen Code sends the full
-  arguments of every tool call (`function_args`: shell commands, the content
-  of `write_file` and `edit`) and the tool's error text on
-  `qwen-code.tool_call` whatever `logPrompts` says, and Gemini CLI sends
-  `function_args` when its `logPrompts` is on. sdf drops `function_args`
-  from every record of every agent (not only Qwen and Gemini; a key of that
-  name from any agent is never stored), and `error` / `error.message` from Qwen and Gemini
-  tool-call records and Qwen tool spans (whose status message becomes
-  "tool error"), before anything is stored. It keeps the tool name, call
-  id, duration, success, and error type, the dropped sizes
-  (`function_args_bytes`, `error_bytes`), and the dropped keys in
-  `sdf.redacted`.
+- Content is dropped by default. Agents can send prompts, responses,
+  messages, tool arguments and output, and error text: Qwen Code sends
+  `function_args` and tool error text whatever `logPrompts` says, and a Qwen
+  workspace or system settings file can turn `logPrompts` and
+  `includeSensitiveSpanAttributes` back on over what `sdf init qwen` wrote;
+  Copilot CLI puts messages on spans with `SPAN_ONLY` or `SPAN_AND_EVENT`;
+  Gemini CLI with `logPrompts` and `telemetry.traces`; Claude Code and Grok
+  CLI with `OTEL_LOG_*`. sdf drops that text from every agent before it is
+  stored, whatever those settings say, and keeps it only under
+  `sdf serve --store-content`. The rules, what is kept, and how to scrub a
+  database written by an older sdf are in
+  [content storage](receiver.md#content-storage). Limits: the rules are by
+  key name, so content under a key they do not know (an agent's own
+  attribute name) is stored; span events and metric exemplars are not
+  stored at all.
 - Qwen Code reports no cost, and `internal/pricing` has no rule for its
   token sources, so both cost fields are unknown. Its token totals include
   subagents and the background memory extractor. Its metrics carry no
@@ -100,15 +129,21 @@
   HTTP when only a traces endpoint is set) are not modelled. Tokens come from
   per-response logs, which a resumed session (`qwen --resume`) does not
   reset. The `qwen-code.token.usage` fallback is a per-process cumulative
-  counter: its points are placed by their own time, each process run is
-  added up (the same rule as
-  [#191](https://github.com/paulpham157/sdf/pull/191), done in the Qwen code
-  so it does not wait for #191), and when the process started more than
-  10 s before the session (an earlier session in that process, after
-  `/clear`) the run's first point in the session is subtracted. Tokens used
-  before that first export are lost, and a `/clear` within 10 s of launch
-  is missed. With `telemetry.metrics.includeSessionId` the points are the
-  session's own and nothing is subtracted. The mapping and
+  counter: its points are placed by their own time, each process run
+  (attributes, resource, start time) is added up (the same rule as
+  [#191](https://github.com/paulpham157/sdf/pull/191)), and a point after
+  the last session window, such as the flush at exit, goes to the session
+  whose part in that run started latest (its first log or span no more than
+  10 s before the run's start time, so a session resumed in a new process
+  counts from when it resumed). From each run the session's share subtracts the run's latest point
+  before the session's first one, wherever that point was attributed (an
+  earlier session in that process, after `/clear`). With no such point the
+  share is the whole run when no other Qwen session started in the run, and
+  the tokens are unknown otherwise (not 0). Placement is by time, so a
+  concurrent Qwen process's session that overlaps a point in time can take
+  it, and a session of another process that started inside the run can
+  make the fallback unknown. With `telemetry.metrics.includeSessionId` the
+  points are the session's own and nothing is subtracted. The mapping and
   the `qwen_*.json` samples come from the v0.28.4 docs and source, not a
   live session.
 - The git hook sends the commit SHA, checkout path, and branch to the local
@@ -141,3 +176,11 @@
   signed-in Grok with telemetry not disabled, still send `x-userid` and
   `x-teamid` headers, and put `user.id` / `team.id` on the resource, which
   sdf stores. Sources are in [docs/agents.md](agents.md#grok-cli).
+- A span tree deeper than 32 levels below a root is flattened from that
+  depth on: deeper spans are leaves of the span at depth 32, in depth-first
+  order, so their own parent links below that point are not shown as
+  nesting (`flattened_descendants` counts them; see
+  [docs/summary.md](summary.md#deep-span-trees)). The response stays linear
+  in span count but is still large for a very deep session: about 16 MB of
+  indented JSON for a 5500-level chain. A large report is encoded in memory
+  before it is sent.

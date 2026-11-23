@@ -122,10 +122,16 @@ func Format(report Report) string {
 // WriteJSON writes the summary as indented JSON, with a trailing newline.
 // HTML characters are not escaped, matching Python's json.dump.
 func WriteJSON(w io.Writer, report Report) error {
+	return EncodeJSON(w, report)
+}
+
+// EncodeJSON writes v the way WriteJSON does: indented, HTML not escaped,
+// with a trailing newline.
+func EncodeJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	return enc.Encode(report)
+	return enc.Encode(v)
 }
 
 func join(values []string) string {
@@ -345,7 +351,32 @@ func formatCall(call ToolCall) string {
 	return strings.Join(parts, " ")
 }
 
-func formatSpan(lines *[]string, node SpanNode, indent int) {
+// formatSpan prints node and its subtree without recursion. A node at
+// MaxSpanDepth gets a note, then its flattened descendants one level in.
+func formatSpan(lines *[]string, root SpanNode, indent int) {
+	type item struct {
+		node   *SpanNode
+		indent int
+	}
+	stack := []item{{&root, indent}}
+	for len(stack) > 0 {
+		top := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		*lines = append(*lines, spanLine(*top.node, top.indent))
+		if n := top.node.FlattenedDescendants; n > 0 {
+			noun := "spans"
+			if n == 1 {
+				noun = "span"
+			}
+			*lines = append(*lines, strings.Repeat("  ", top.indent+1)+"("+itoa(n)+" deeper "+noun+" listed flat below; depth limit "+itoa(MaxSpanDepth)+")")
+		}
+		for i := len(top.node.Children) - 1; i >= 0; i-- {
+			stack = append(stack, item{&top.node.Children[i], top.indent + 1})
+		}
+	}
+}
+
+func spanLine(node SpanNode, indent int) string {
 	pad := strings.Repeat("  ", indent)
 	bits := []string{node.Name}
 	if node.ToolName != nil && *node.ToolName != "" && *node.ToolName != node.Name && !strings.HasSuffix(node.Name, " "+*node.ToolName) {
@@ -363,6 +394,10 @@ func formatSpan(lines *[]string, node SpanNode, indent int) {
 		} else {
 			bits = append(bits, "status=ERROR")
 		}
+		// sdf's replacement message usually names the type already.
+		if node.ErrorType != nil && *node.ErrorType != "" && (node.StatusMessage == nil || !strings.Contains(*node.StatusMessage, *node.ErrorType)) {
+			bits = append(bits, "error_type="+*node.ErrorType)
+		}
 	}
 	if node.Success != nil && *node.Success != "" {
 		if node.SuccessSource != nil && *node.SuccessSource != "" {
@@ -377,10 +412,7 @@ func formatSpan(lines *[]string, node SpanNode, indent int) {
 	if node.ExecutionMS != nil {
 		bits = append(bits, "execution="+fmtNum(*node.ExecutionMS)+"ms ("+deref(node.ExecutionSource)+")")
 	}
-	*lines = append(*lines, pad+"- "+strings.Join(bits, " "))
-	for _, child := range node.Children {
-		formatSpan(lines, child, indent+1)
-	}
+	return pad + "- " + strings.Join(bits, " ")
 }
 
 // FormatNumber renders a summary quantity the way the text report does.

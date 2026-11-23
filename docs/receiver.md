@@ -55,23 +55,150 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
-## Try it without an agent
+### WAL mode and backups
 
-`sdf demo` runs the same receiver on free localhost ports, sends one
-synthetic Claude Code-shaped session to it, and prints that session's summary.
-Traces and logs go over OTLP/HTTP JSON and metrics over OTLP/gRPC, so both
-listeners are exercised. Every resource carries `sdf.fixture=demo`. It needs
-no agent, API key, or network, and it does not touch `sdf-telemetry.sqlite`:
-the store is a temporary file unless `--db PATH` names one to keep. `--json`
-prints the report as `sdf summary --json` would. `--db` must name a new or
-empty file, or a store that holds only earlier demo sessions: a store with
-any telemetry not labeled `sdf.fixture=demo`, or any decision, is refused
-(exit 1) and left unchanged, so synthetic rows never mix into real summaries.
+`sdf serve` opens the database in SQLite WAL mode with a 5-second busy
+timeout, so `sdf summary` and other readers can run while the receiver
+writes. `sdf summary` only reads: it opens the file read-only
+(`mode=ro`, same busy timeout) and never creates it, applies the schema,
+adds columns, or changes its journal mode. A missing `--db` file in an
+existing directory reports an empty store and leaves no file behind; a
+missing directory is an error. A rollback-journal database keeps its
+journal mode and gets no sidecar files. Reading a WAL database needs its
+`-shm` file; when the directory is writable SQLite creates `-shm` (and an
+empty `-wal`) beside it, and a reader leaves them there. In a read-only
+directory without `-shm`, `sdf summary` falls back to SQLite's
+`immutable=1` read when there is no `-wal` file, since every committed
+write is then in the main file. `immutable=1` takes no locks and assumes
+nothing writes the file, so it is only a fallback after the normal
+read-only open fails, never the first choice. If a `-wal` file is there,
+it can hold writes the main file lacks, and `sdf summary` reports that
+instead of reading stale data: make the directory writable, or open the
+file once with `sdf serve` to checkpoint it. In WAL mode
+SQLite keeps two
+sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
+`sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
+until a checkpoint, so do not copy or delete the main file alone. Back up
+with SQLite's online backup instead:
 
 ```bash
-sdf demo
-sdf demo --db demo.sqlite && sdf summary --db demo.sqlite
+sqlite3 sdf-telemetry.sqlite ".backup sdf-telemetry.backup.sqlite"
 ```
+
+WAL needs shared memory between processes on one host, so keep the
+database on a local disk, not a network filesystem (NFS, SMB).
+
+## Content storage
+
+sdf drops content before anything is stored, for every agent, whatever the
+agent's own settings say (`logPrompts`, `includeSensitiveSpanAttributes`,
+`OTEL_LOG_*`, `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT`,
+`telemetry.traces`). Those settings decide what an agent sends; this
+decides what sdf keeps. What is dropped (`record.Redact`):
+
+- Attributes whose key names content, in record attributes, in nested maps
+  and lists at any depth, and in the resource. Keys are compared
+  case-insensitively: `prompt`, `request_text`, `response_text`,
+  `tool_input`, `tool_output`, `tool_parameters`, `full_command`,
+  `function_args`, `arguments`, `result`, `response`, `completion`,
+  `messages`, `message`, `content`, `text`, `input`, `output`, `stdout`,
+  `stderr`, `command`, `query`, `user_prompt`, `gen_ai.input.messages_ref`,
+  `gen_ai.output.messages_ref`, `gen_ai.system_instructions_ref`, and any
+  key equal to or under (`.`) one of `gen_ai.prompt`, `gen_ai.completion`,
+  `gen_ai.choice`, `gen_ai.input.messages`, `gen_ai.output.messages`,
+  `gen_ai.system_instructions`, `gen_ai.tool.call.arguments`,
+  `gen_ai.tool.call.result`, `gen_ai.tool.definitions`, `llm.input_messages`,
+  `llm.output_messages`, `llm.prompts`, `input.value`, `output.value`,
+  `tool.input`, `tool.output`, and `ai` (the Vercel AI SDK spans opencode
+  sends with `experimental.openTelemetry`: `ai.prompt`, `ai.response.text`,
+  `ai.toolCall.args`, and the rest). So the indexed `gen_ai.prompt.0.content`
+  goes too. Only text is dropped: a number or bool under one of these keys
+  (a token count named `input`, `ai.usage.promptTokens`) is kept.
+- Error text on logs and spans, at any depth: `error`, `error.message`,
+  `error_message`, `errorMessage`, `error.stack`, `exception.message`,
+  `exception.stacktrace`, `exception.stack`, `stack`, `stacktrace`.
+- An error class, code, or finish reason (`error.type`, `error_type`,
+  `exception.type`, `status_code`, `http.response.status_code`,
+  `http.status_code`, `rpc.grpc.status_code`, `finish_reason`,
+  `finish_reasons`, `gen_ai.response.finish_reasons`) is kept only while it
+  is a short token (`^[A-Za-z0-9_.:/-]{1,64}$`, or a list of them); free
+  text there is dropped.
+- A log body other than an event name (`claude_code.api_request` stays;
+  Gemini's "API response from ..." sentence goes). A log with no event name
+  gets its body as its name, so that name goes with the body.
+- A span status message. On an ERROR span sdf writes its own from the kept
+  fields only: "hook error" on hook spans, "tool error" on tool spans (by
+  the words of the span name in any case, such as `execute_tool bash`,
+  `Tool.execute`, `tool_call`, `Qwen-Code.Hook`, or a tool name attribute),
+  "error" elsewhere, followed by the error class and HTTP or gRPC code when
+  they are kept: `tool error: FileNotFoundError`,
+  `error: HTTP 429 Too Many Requests` (the reason phrase is Go's, not the
+  sent text). On an OK or UNSET span the message is cleared. The status
+  code stays, and the UI and `sdf summary` show `error_type` next to it.
+
+What stays: names (span names included), ids, models, token counts, cost,
+durations, success, token-shaped error classes and status codes, and
+everything else the summary reads, so every summary, cost, and tool list
+is the same as before. The size of each dropped text value is recorded as
+`<key>_bytes` (`error_bytes`, `body_bytes`) and the dropped keys are listed
+in `sdf.redacted`. A `git_commit_id` inside Claude Code's `tool_parameters`
+is copied to `sdf.git_commit_id` first, so commit links still work. Span
+events and metric exemplars are never stored. Content under a key sdf does
+not know is stored; see [gaps](gaps.md).
+
+To keep the text, opt in when starting the receiver:
+
+```bash
+sdf serve --store-content                      # every agent
+sdf serve --store-content=claude-code,qwen     # only these agents
+SDF_STORE_CONTENT=1 sdf serve                  # same as --store-content
+SDF_STORE_CONTENT=qwen sdf serve               # a list works here too
+```
+
+Agent names are `claude-code` (`claude`), `codex`, `opencode`, `pi`,
+`gemini-cli` (`gemini`), `qwen-code` (`qwen`), `grok-cli` (`grok`), and
+`copilot-cli` (`copilot`); an unknown name is an error. The flag wins over
+the variable, and `0`, `false`, or `off` turns it off. `sdf serve` prints a
+line saying whose content it stores, and those rows carry
+`sdf.content=kept`. The text then sits in the local SQLite file.
+
+Rows written by an older sdf are not changed when the database is opened;
+sdf never scrubs on its own. A new database is stamped (`PRAGMA
+user_version = 1`) as written under these rules. A database that already
+had rows and no stamp was written by an older sdf, and `sdf serve` prints
+one warning line at start while that is so. To remove the text from it,
+stop `sdf serve` on that file and run:
+
+```bash
+sdf redact --db sdf-telemetry.sqlite --dry-run   # count the rows that would change
+sdf redact --db sdf-telemetry.sqlite
+```
+
+`sdf redact` applies the same rules to every stored row, including rows kept
+with `--store-content` (their `sdf.content` mark goes too), including a log
+name that is a copy of its body. It reads the rows in batches inside one
+transaction (a crash leaves the file as it was), rewrites the rows that
+changed with `secure_delete` on, runs `VACUUM` so the old text does not stay
+in free pages, and stamps the file. `sdf serve` switches the telemetry database to WAL
+mode; `sdf redact` checkpoints and truncates that WAL after `VACUUM` so the
+old text does not remain in a sidecar file. A file still in rollback-journal
+mode is handled too (the checkpoints are no-ops). It needs free disk of about
+twice the file's size while it runs (the journal and `VACUUM`'s copy).
+Running it again changes nothing.
+
+- `--dry-run` opens the file read-only and writes nothing: no schema,
+  migration, stamp, or lock file.
+- The file must exist and have sdf's `records` table; any other file is
+  refused.
+- `sdf serve` holds `PATH.lock` (shared) while it runs, and `sdf redact`
+  takes it exclusively, so redact refuses while a serve uses the file and
+  a serve will not start while redact runs. An sdf older than this does
+  not take the lock, so stop it by hand.
+- The stamp only means the rows were written by an sdf with these rules
+  (or scrubbed). An older sdf opened on a stamped file writes content into
+  it with no warning; run `sdf redact` again after one has.
+- Copies of the file elsewhere (backups, Time Machine, `.sdf-bak`) are not
+  touched.
 
 ## Optional token authentication
 
@@ -104,7 +231,9 @@ the file named by `SDF_OTLP_TOKEN_FILE`; nothing when both are set, and,
 as with the hooks, nothing to a host that is not loopback). The
 token is checked before the media type, so a write that would pass gets 415
 and nothing is stored. A 401 is reported as `token required` (no token set
-here) or `token refused` (a different token), and `--check` exits 1.
+here) or `token refused` (a different token), and `--check` exits 1. Any
+other answer, including a redirect (which is not followed, so the token is
+never sent on), is reported as `unexpected answer` and also exits 1.
 
 Point an OpenTelemetry exporter at the receiver with:
 
@@ -203,10 +332,15 @@ again. `GET /api/summary` on the UI port is the same document as
 `GET /api/snapshot` is that report newest-first, plus the per-agent totals.
 `GET /api/decisions` reads the decision records. It is empty when none have
 been recorded, and recording one does not change the summary. All three are
-read-only. There is no route that writes or deletes.
+read-only. There is no route that writes or deletes. A response that cannot
+be encoded is `500` with a JSON error, not an empty `200` (issue #267).
 
 A known `0` is a published price of zero, such as a `:free` model whose
-token buckets are all priced. It is not a stand-in for a missing price. If
+token buckets are all priced. It is not a stand-in for a missing price,
+with one exception (issue #243). On an OpenRouter row whose id ends in
+`:free` and whose prompt and completion are both `0`, cache-read tokens are
+priced at `0` when the row has no `input_cache_read` price. The cost `note`
+says so. See [summary.md](summary.md). If
 any session in a total has an unknown computed cost, the total is unknown
 too. The summary does not split one session's tokens across several models,
 so the page does not either: several models stay unknown, with the session
@@ -218,7 +352,7 @@ stays unknown because merge status was not requested. The cost per accepted
 outcome uses that answer. It is unknown, not zero, when nothing merged or
 when a session has no known outcome.
 
-The UI is on by default so a local demo is `sdf serve` and a browser.
+The UI is on by default, so `sdf serve` and a browser are all it takes.
 `--no-ui` leaves the OTLP ports only. It is a second listener, embedded in
 the sdf binary (HTML, CSS, and script). The page does not load fonts,
 scripts, or anything else from the network.
@@ -245,7 +379,11 @@ file unless you pass `--write`. An existing file is copied to a sibling
 ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
 the new copy gets a timestamped name). The new bytes are written to a temp
 file and renamed into place, keeping the file mode. A read-only file is
-refused and left alone. Without `--write`, the JSON agents print only the
+refused and left alone. A symlink is written through; a link to a file
+that does not exist yet creates it, but sdf creates missing directories for
+it only inside the agent's config directory or `$HOME` (a link to
+`/elsewhere/missing/config.toml` is refused). A symlink loop is refused
+with a message saying so. Without `--write`, the JSON agents print only the
 keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
@@ -269,9 +407,30 @@ sdf init --check
 `--check` GETs `http://127.0.0.1:4318/health` and opens a TCP connection to
 `127.0.0.1:4317`. The TCP connect does not speak gRPC. Either listener
 counts as reachable. `--host`, `--port`, and `--grpc-port` match `sdf serve`.
-`--host` must be a host name, an IPv4 address, or an IPv6 address (bare or
-in brackets), and the ports must be 1-65535; anything else is refused
-before a file is written. Those values end up in files other programs run
+`--host` must be a host name (a fully qualified name may end in one dot,
+`example.com.`; `localhost.` is written as `localhost`), a dotted-decimal
+IPv4 address (short, hex, and octal forms such as `127.1`, `0x7f.0.0.1`, or
+`0177.0.0.1` are refused), or an IPv6 address (bare or in brackets). The
+unspecified address is refused in every spelling (`0.0.0.0`, `::`,
+`::ffff:0.0.0.0`, `::ffff:0:0`, `::0.0.0.0`): `sdf serve` can bind it, but an
+agent cannot send to it, so the error suggests `--host 127.0.0.1` (or `::1`,
+or this machine's address). The ports must be plain decimal 1-65535
+(`--port 0`, `08`, and `+4318` are refused); anything else is refused, with
+exit code 2, before `--check` probes anything or a file is written.
+`--host 127.0.0.1:4318` (or `127.0.0.1:`, `[::1]:4318`,
+`::ffff:127.0.0.1:4318`) is refused with a hint you can paste, such as
+`pass --host 127.0.0.1 --port 4318`. The hint only names a host and port
+init accepts: an unspecified host becomes `127.0.0.1`, an IPv4 address
+written as IPv6 becomes the IPv4 address, a host that is refused on its own
+(`[::%lo]:4318`, `127.1:4318`) is said to be refused, and a port outside
+1-65535 (`0`, `00`, `65536`) is not echoed. A bare IPv6 address whose last
+group reads as a port (`fe80::1:4318`) is refused with both readings; write
+it in brackets (`[fe80::1:4318]`) to mean the address. When the bracketed
+reading is refused too (`[::1:4318]` is `::0.1.67.24`), only the port
+reading is offered. An IPv4 address written as IPv6 (`::ffff:127.0.0.1`, or
+the deprecated `::127.0.0.1`) is refused with a hint to pass the IPv4
+address, or `::1` for IPv6 loopback. `--git-hooks` takes
+`::1` with or without brackets. Those values end up in files other programs run
 (`opencode.env` is sourced by a shell, the Claude Code and Codex session
 hooks are shell commands), and the URL is single-quoted in both.
 
@@ -280,21 +439,28 @@ hooks are shell commands), and the URL is single-quoted in both.
 the `telemetry` object of `$QWEN_HOME/settings.json` or
 `~/.qwen/settings.json`. Qwen Code's own default for `logPrompts` is true,
 so sdf turns it off even when the file says `true`, and warns. It does the
-same for `includeSensitiveSpanAttributes`. Key order, indentation, a UTF-8
+same for `includeSensitiveSpanAttributes`. A workspace or system file can
+still turn them back on (see below); the receiver drops that content before
+storing anything, whatever the settings ([content storage](#content-storage)). Key order, indentation, a UTF-8
 BOM, big integers, and `&`, `<`, `>` in strings are kept; other keys are not
 touched. The dry run prints only the telemetry keys sdf manages, not the
 rest of the file or other telemetry keys, which may hold secrets (MCP
 server env, `otlpHeaders`). A file with comments (Qwen Code accepts them)
-or that is not a JSON object is left untouched, and the `QWEN_TELEMETRY_*`
+or that is not a JSON object is left untouched, and so is an existing empty
+file (Qwen Code cannot load one either; put `{}` in it), and the `QWEN_TELEMETRY_*`
 variables are printed instead; with `--write` that is an error (non-zero
 exit). `telemetry.outfile`
 and per-signal `otlp*Endpoint` keys are kept and reported, because they
-override the endpoint. The write refuses a file the user cannot write. It
+override the endpoint. The write runs the same precheck as the other
+agents: it refuses a file with no write bit (0400, 0444, 0000, even as
+root), a file the user cannot write, an unwritable directory, and, as root,
+a symlink that resolves outside the settings directory and `$HOME` (for
+anyone else that link is written through with a warning). It
 goes through a temp file in the same directory (fsync, rename), keeps the
 mode and, where the process may, the owner. The rename gives the file a new
 inode, so a hard link keeps the old content and extended attributes or ACLs
 are not copied. A symlink is followed with `readlink`. It must end at a
-`.json` file (a link to `~/.bashrc` is refused). A link to a file that does
+`.json` file, compared exactly (a link to `~/.bashrc` or `Settings.JSON` is refused). A link to a file that does
 not exist yet (stow-style) creates it: inside the settings directory,
 missing parent directories are created with mode 0700; outside it, only
 when the target's directory already exists, so sdf never creates
@@ -323,17 +489,35 @@ records.
 lines, the receiver-token header, and the same settings as a `[telemetry]`
 table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
-`otel_endpoint` (the HTTP receiver). `--write` appends that table to
+`otel_endpoint` (the HTTP receiver), plus the four content gates pinned
+off: `otel_log_user_prompts`, `otel_log_assistant_responses`,
+`otel_log_tool_details`, and `otel_log_tool_content` all `= false` (an
+`OTEL_LOG_*` environment variable still wins). Pinning
+`otel_log_tool_details` off is stricter than the guide's "Recommended fleet
+gates", which turns that metadata gate on for SIEM joins; sdf does not need
+it for Grok. `--write` appends that table to
 `$GROK_HOME/config.toml` (default `~/.grok/config.toml`) when the file has
 no `[telemetry]` table, and writes `hooks/sdf-session.json` in that
-directory. An existing `[telemetry]` table is left unchanged; add the
-printed keys to it by hand. A project `.grok/config.toml` cannot set
+directory. Both files are checked before either is written, as for the
+other agents, so a read-only `config.toml` or an unwritable `hooks/`
+directory leaves both unchanged, with no `.sdf-bak`. An existing
+`[telemetry]` table is left unchanged; add the printed keys to it by hand.
+The file is parsed as TOML, so a `[ telemetry ]` header with spaces, an
+inline `telemetry = {...}`, dotted `telemetry.x = ...` keys, and a quoted
+`"telemetry"` key all count as an existing table (appending a second one
+would make Grok fail to parse the file). A `config.toml` that is not valid
+TOML is refused and left unchanged. A project `.grok/config.toml` cannot set
 `otel_*`. Grok reads the environment over the file, so an
 `OTEL_EXPORTER_OTLP_ENDPOINT` exported for another tool also redirects Grok.
-`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, and
-`OTEL_LOG_TOOL_CONTENT` set in the shell that runs `sdf init` are reported,
-because they put content on the stream; Grok's own defaults for all three
-are off. Grok has no config-file key for headers; a receiver token goes in
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`,
+`OTEL_LOG_TOOL_DETAILS`, and `OTEL_LOG_TOOL_CONTENT` set in the shell that
+runs `sdf init` are reported when Grok would read them as on (`1`, `true`,
+`yes`, or `on`, any case, as Grok's `env_bool` parses them; `0`, `false`,
+`no`, `off`, and unknown values leave the file's `false` in effect), because
+each one overrides the pinned key. Three put content on the stream;
+`OTEL_LOG_TOOL_DETAILS` is a metadata gate (a 4 KB `tool_parameters`
+preview, full file paths, verbatim MCP/skill/plugin names, no bodies).
+Grok's own defaults for all four are off. Grok has no config-file key for headers; a receiver token goes in
 `OTEL_EXPORTER_OTLP_HEADERS` (see
 [docs/agents.md](agents.md#optional-receiver-token)). The keys and paths are
 from grok-build `user-guide/24-monitoring-usage.md` ("Config file"),
@@ -350,7 +534,11 @@ stays open. An agent with no hook keeps the inferred window. For Claude Code
 (`~/.claude/settings.json`) and Codex (`hooks.json`), sdf adds its hook to the
 `SessionStart` and `SessionEnd` arrays and keeps every other entry, matcher,
 and event; an sdf hook already there, including one an older sdf wrote with
-another host or port, is updated in place, so a rerun changes nothing. The hook exits
+another host or port, is updated in place, so a rerun changes nothing. Only
+the exact command text an sdf build has written counts as sdf's hook; a user's
+own hook that also posts to `/v1/sessions` is never rewritten. An event whose
+value is not an array, `null` included, is refused and the file is left as it
+was. The hook exits
 without effect when the collector is not running, so it never blocks the
 agent. Codex posts only for the root thread, because a descendant's hook
 reports the shared session id while its spans carry the thread id. OpenCode
@@ -375,7 +563,9 @@ works from fish, which has no POSIX subshell):
 merges in place: line order and unrelated lines are kept, the endpoint and
 protocol lines are replaced (with a warning when the old value differed),
 and a capture-content line you already set is kept, with a warning when it
-puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). The write goes to a temp file in the same directory,
+puts content on spans (`SPAN_ONLY`, `SPAN_AND_EVENT`). That setting decides
+what Copilot CLI sends; sdf still drops the content before storing it unless
+`sdf serve --store-content` is on ([content storage](#content-storage)). The write goes to a temp file in the same directory,
 is fsynced, keeps the file mode (and the owner and group when the process
 may set them), and is renamed into place. Because the file is replaced,
 other hard links keep the old contents (a note is printed) and extended
@@ -644,13 +834,13 @@ its database in this directory:
 
 ```bash
 sdf init --git-hooks
-export OPENCODE_SESSION_ID=ses_demo
+export OPENCODE_SESSION_ID=ses_example
 git commit --allow-empty -m "try sdf git hook"
 unset OPENCODE_SESSION_ID
 sdf summary
 ```
 
-Summary shows session `ses_demo`, tool `opencode`, match `hook`. That commit
+Summary shows session `ses_example`, tool `opencode`, match `hook`. That commit
 is the whole session until OpenCode exports a trace with the same
 `session.id`; the trace joins it. A later commit in this shell with the
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
