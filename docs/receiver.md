@@ -716,7 +716,8 @@ trusted folder.
 
 ## Git hooks
 
-Pi, OpenCode, Codex, and Grok CLI do not export a commit SHA. `sdf init --git-hooks`
+Pi, OpenCode, Codex, Grok CLI, and Qwen Code do not export a commit SHA, and
+Claude Code exports one only with `OTEL_LOG_TOOL_DETAILS=1`. `sdf init --git-hooks`
 installs `post-commit`, `post-rewrite`, and `prepare-commit-msg` into the
 hooks directory Git actually runs (`git rev-parse --git-path hooks`). On
 Git 2.43 that directory is shared by linked worktrees, so one install covers
@@ -806,7 +807,8 @@ object after the link, the same way it does for a SHA the agent exported.
 `prepare-commit-msg` appends an `SDF-Session: <id>` trailer only when a
 session id is present. A commit made outside an agent gets neither a trailer
 nor an event. If two agents' ids are set at once, the commit is not
-attributed.
+attributed. Hooks installed by an older sdf do not read the Claude Code or
+Qwen Code variables; re-run `sdf init --git-hooks` to replace them in place.
 
 The id has to be the one the agent's telemetry already uses:
 
@@ -815,6 +817,8 @@ The id has to be the one the agent's telemetry already uses:
 | Pi | `PI_SESSION_FILE` | File name with a trailing `.jsonl` removed. pi-otel 0.3.0 does `basename(file, ".jsonl")`. `PI_SESSION_ID` is only the short trailing id and is not used. An ephemeral session has no file, exports no session id, and is not linked. |
 | OpenCode | `OPENCODE_SESSION_ID` | `session.id` on runner spans. Taken from the OpenCode shell-tool change; not run live here. |
 | Grok CLI | `GROK_SESSION_ID` | `session.id`, with `service.name` `grok-cli`. Grok adds `GROK_SESSION_ID` to its session environment, which its shell tool passes to each command (grok-build `xai-grok-shell/src/session/agent_rebuild.rs` and `xai-grok-tools/src/implementations/grok_build/bash/mod.rs` at `2bdd1d6`), and hooks receive the same variable (`user-guide/10-hooks.md`). Checked live with grok 1.0.92 on 2026-11-23: a commit made by Grok's shell tool carried an `SDF-Session` trailer equal to the exported `session.id`. A Pi, OpenCode, or Codex process started from a Grok shell inherits `GROK_SESSION_ID`, so its commits have two ids and are not attributed. |
+| Claude Code | `CLAUDE_CODE_SESSION_ID` | `session.id`, with `service.name` `claude-code`. Claude Code (v2.1.132 and later) sets the variable in its Bash and PowerShell tool and hook subprocesses, and its [environment variable reference](https://code.claude.com/docs/en/env-vars) says the value matches the hook `session_id` and changes on `/clear`. That hook `session_id` is the id sdf's Claude Code session hook already posts for the telemetry's `session.id`. When Claude Code also exports the commit SHA (`OTEL_LOG_TOOL_DETAILS=1`), the session links as `exact` and the hook event is not used. Not run live here. |
+| Qwen Code | `QWEN_CODE_SESSION_ID` | `session.id`, with `service.name` `qwen-code`. Qwen Code v0.28.4 sets `process.env.QWEN_CODE_SESSION_ID` to `Config.getSessionId()` (`packages/core/src/config/config.ts`, also on `/clear`) and passes it to its shell tool (`packages/core/src/services/shellContextEnv.ts`, from QwenLM/qwen-code#4649); `telemetry/loggers.ts` puts the same `getSessionId()` in `session.id`. A Qwen started from Claude Code's Bash tool inherits `CLAUDE_CODE_SESSION_ID`, so its commits have two ids and are not attributed. From the source, not run live here. |
 | Codex | `CODEX_THREAD_ID` | `conversation.id`, the emitting thread. On Codex 0.167.0, `CODEX_SESSION_ID` equaled `CODEX_THREAD_ID` for a live `codex exec` (`SessionId::from(thread_id)` in `codex-rs/core/src/session/session.rs` on tag `rust-v0.167.0` sets them equal on a root thread). A subagent can set `CODEX_SESSION_ID` to the root id instead, so the hook reads `CODEX_THREAD_ID` and does not read `CODEX_SESSION_ID`. |
 
 Pi was checked against pi-otel 0.3.0's source (`sessionIdRef = basename(file, ".jsonl")`) and the session file name `<timestamp>_<id>.jsonl`. The hook behavior below does not start an agent.
@@ -836,7 +840,8 @@ is the whole session until OpenCode exports a trace with the same
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
 session JSONL path (the stem is what pi-otel exports) rather than only
 `PI_SESSION_ID`. For Grok CLI, set `GROK_SESSION_ID` to the `session.id`
-the events carry. For Codex, set `CODEX_THREAD_ID` to the thread id from
+the events carry; for Claude Code and Qwen Code, set `CLAUDE_CODE_SESSION_ID`
+or `QWEN_CODE_SESSION_ID` the same way. For Codex, set `CODEX_THREAD_ID` to the thread id from
 `conversation.id`. On Codex 0.167.0, `CODEX_SESSION_ID` equaled
 `CODEX_THREAD_ID` for a live `codex exec`.
 
