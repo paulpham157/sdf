@@ -97,6 +97,11 @@ func (r *run) checkDisk() []string {
 			return nil
 		}
 		if rel == ".git" {
+			if r.gitHidden {
+				// A check made a new one: later git commands in the checkout
+				// would read its config (core.fsmonitor, hooks, ...).
+				problems = append(problems, ".git: added")
+			}
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -137,35 +142,17 @@ func (r *run) checkDisk() []string {
 }
 
 // hideGitDir moves the checkout's .git next to it, outside the directory
-// checks run in, and clears its write bits. That is not a boundary (a
-// check runs as the same user and can find it and chmod it back); it only
-// means checks see a plain tree. What matters is that the verifier no
-// longer reads the index or HEAD after this point: checkDisk compares the
-// disk with the tree it read before any check ran.
+// checks run in. An isolated check does not see it at all (the work
+// directory is covered, and only the checkout and the criterion's own
+// directory are bound back); an unisolated one could find it. What matters
+// is that the verifier no longer reads the index or HEAD after this point:
+// checkDisk compares the disk with the tree it read before any check ran,
+// and a .git a check creates in the checkout is a change.
 func (r *run) hideGitDir() error {
-	dst := filepath.Join(filepath.Dir(r.checkout), "git")
-	if err := os.Rename(filepath.Join(r.checkout, ".git"), dst); err != nil {
+	if err := os.Rename(filepath.Join(r.checkout, ".git"), filepath.Join(filepath.Dir(r.checkout), "git")); err != nil {
 		return err
 	}
-	var dirs []string
-	err := filepath.WalkDir(dst, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			dirs = append(dirs, p)
-			return nil
-		}
-		return os.Chmod(p, 0o444)
-	})
-	if err != nil {
-		return err
-	}
-	for i := len(dirs) - 1; i >= 0; i-- {
-		if err := os.Chmod(dirs[i], 0o555); err != nil {
-			return err
-		}
-	}
+	r.gitHidden = true
 	return nil
 }
 

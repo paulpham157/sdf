@@ -33,7 +33,7 @@ func TestPassRecordsEvidenceAndVerdictInTheLedger(t *testing.T) {
 	if res.Status != StatusPass || len(res.Reasons) != 0 {
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
-	if got := kinds(res); got != "task_snapshot checkout revision_identity designated_integrity secret_scan criterion:unit" {
+	if got := kinds(res); got != "task_snapshot checkout revision_identity designated_integrity secret_scan command_pins criterion:unit" {
 		t.Fatalf("evidence %q", got)
 	}
 	v := res.Verdict.Value

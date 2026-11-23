@@ -70,6 +70,7 @@ const (
 	CodeTaskUntrusted          = "TASK_UNTRUSTED"
 	CodeIsolationUnavailable   = "ISOLATION_UNAVAILABLE"
 	CodeTamperCapable          = "TAMPER_CAPABLE_CODE"
+	CodeCommandChanged         = "COMMAND_CHANGED"
 	CodeInfraError             = "INFRA_ERROR"
 )
 
@@ -79,7 +80,7 @@ var failCodes = map[string]bool{
 	CodeBaseNotAncestor: true, CodeDesignatedFileModified: true, CodeDesignatedFileAdded: true,
 	CodeSecretInDiff: true, CodeCheckoutDirty: true, CodeCheckoutModified: true,
 	CodeCheckFailed: true, CodeCheckTimeout: true, CodeDesignatedTestMissing: true,
-	CodeSymlinkOutside: true, CodeTestReportInvalid: true,
+	CodeSymlinkOutside: true, CodeTestReportInvalid: true, CodeCommandChanged: true,
 }
 
 // Record schemas, also the ledger kinds.
@@ -194,7 +195,9 @@ type run struct {
 	// treeAtSHA is the submitted tree, read from the fetched objects before
 	// any check runs; checkDisk compares the checkout with it.
 	treeAtSHA map[string]treeEntry
-	dirs      checkDirs
+	critN     int
+	gitHidden bool
+	pins      map[string]commandPin
 	isolation string
 	// reasonLater holds reasons found before their evidence record exists.
 	reasonLater []Reason
@@ -282,23 +285,9 @@ func (r *run) steps() {
 	}
 }
 
-// prepareChecks moves .git out of the checkout and makes the home and Go
-// directories checks get.
+// prepareChecks moves .git out of the checkout, decides isolation and pins
+// every criterion's command.
 func (r *run) prepareChecks() bool {
-	tmp := filepath.Dir(r.checkout)
-	r.dirs = checkDirs{
-		home:       filepath.Join(tmp, "home"),
-		tmp:        filepath.Join(tmp, "tmp"),
-		gopath:     filepath.Join(tmp, "gopath"),
-		gocache:    r.opt.GoCache,
-		gomodcache: r.opt.GoModCache,
-	}
-	if r.dirs.gocache == "" {
-		r.dirs.gocache = filepath.Join(tmp, "gocache")
-	}
-	if r.dirs.gomodcache == "" {
-		r.dirs.gomodcache = filepath.Join(tmp, "gomodcache")
-	}
 	if ok, why := isolationAvailable(); ok {
 		r.isolation = IsolationNamespace
 	} else {
@@ -309,18 +298,104 @@ func (r *run) prepareChecks() bool {
 			return false
 		}
 	}
-	err := r.hideGitDir()
-	for _, d := range []string{r.dirs.home, r.dirs.tmp, r.dirs.gopath, r.dirs.gocache, r.dirs.gomodcache} {
-		if err == nil {
-			err = os.MkdirAll(d, 0o700)
-		}
-	}
-	if err != nil {
+	if err := r.hideGitDir(); err != nil {
 		id := r.addEvidence("checkout", "", map[string]any{"status": "error", "error": err.Error()})
 		r.reason(CodeInfraError, id, "preparing checks: %v", err)
 		return false
 	}
+	r.pinCommands()
 	return true
+}
+
+// commandPin is a criterion's argv[0] as resolved before any check ran.
+type commandPin struct {
+	path, sha256 string
+}
+
+// pinCommands resolves every criterion's argv[0] (in --path, or in the
+// checkout) and hashes the file, before any check runs. Each criterion
+// re-resolves and re-hashes its command before it starts: a check that
+// drops a new `sh` into a PATH directory, or rewrites the `go` binary,
+// changes what a later criterion would run (atk_pathjack), and that is
+// COMMAND_CHANGED. Isolated checks cannot write PATH directories at all;
+// this also covers unisolated runs and changes made from outside.
+func (r *run) pinCommands() {
+	r.pins = map[string]commandPin{}
+	var list []any
+	for _, c := range r.spec.Criteria {
+		p, sum, err := r.resolveCommand(c.Argv[0])
+		e := map[string]any{"criterion": c.Name, "argv0": c.Argv[0]}
+		if err != nil {
+			e["error"] = err.Error()
+		} else {
+			r.pins[c.Name] = commandPin{p, sum}
+			e["path"], e["sha256"] = p, sum
+		}
+		list = append(list, e)
+	}
+	r.addEvidence("command_pins", "", map[string]any{"status": "pass", "commands": list})
+}
+
+// resolveCommand is argv0's path (lookPath) and the sha256 of the file it
+// names, symlinks followed.
+func (r *run) resolveCommand(argv0 string) (string, string, error) {
+	p, err := lookPath(argv0, r.checkout, r.opt.Path)
+	if err != nil {
+		return "", "", err
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", "", err
+	}
+	return p, "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// criterionDirs makes the new directories criterion c's check gets.
+func (r *run) criterionDirs() (checkDirs, error) {
+	r.critN++
+	root := filepath.Join(filepath.Dir(r.checkout), fmt.Sprintf("c%02d", r.critN))
+	d := checkDirs{
+		root:       root,
+		home:       filepath.Join(root, "home"),
+		tmp:        filepath.Join(root, "tmp"),
+		gopath:     filepath.Join(root, "gopath"),
+		gocache:    filepath.Join(root, "gocache"),
+		gomodcache: filepath.Join(root, "gomodcache"),
+		gotmp:      filepath.Join(root, "gotmp"),
+	}
+	dirs := []string{d.home, d.tmp, d.gopath, d.gocache, d.gomodcache, d.gotmp}
+	for _, tc := range []struct {
+		trusted string
+		dir     *string
+		name    string
+	}{{r.opt.GoCache, &d.gocache, "gocache"}, {r.opt.GoModCache, &d.gomodcache, "gomodcache"}} {
+		if tc.trusted == "" {
+			continue
+		}
+		if r.isolation != IsolationNamespace {
+			// Unisolated: the check uses the trusted cache itself and can
+			// write it (the verdict says isolation none).
+			*tc.dir = tc.trusted
+			continue
+		}
+		o := overlayMount{target: *tc.dir, lower: tc.trusted, upper: filepath.Join(root, tc.name+".upper"), work: filepath.Join(root, tc.name+".work")}
+		d.overlays = append(d.overlays, o)
+		dirs = append(dirs, o.upper, o.work)
+	}
+	for _, p := range dirs {
+		if p == r.opt.GoCache || p == r.opt.GoModCache {
+			continue
+		}
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			return d, err
+		}
+	}
+	return d, nil
 }
 
 func (r *run) failed() bool {
@@ -1004,7 +1079,9 @@ func nonNilStrings(v []string) []string {
 }
 
 func (r *run) runCriterion(c task.Criterion) {
-	env, envNames, envHash := checkEnv(r.opt.Path, r.dirs)
+	d, dirErr := r.criterionDirs()
+	defer func() { _ = removeTree(d.root) }()
+	env, envNames, envHash := checkEnv(r.opt.Path, d)
 	ev := map[string]any{
 		"cwd":         ".",
 		"path":        r.opt.Path,
@@ -1029,6 +1106,23 @@ func (r *run) runCriterion(c task.Criterion) {
 		ev["checkout_before"] = problems
 		fail(CodeCheckoutModified, "not run: the checkout differs from %s: %s", r.opt.SHA, strings.Join(problems, "; "))
 		return
+	}
+	if dirErr != nil {
+		fail(CodeInfraError, "criterion directories: %v", dirErr)
+		return
+	}
+	// The command must still be the file pinned before any check ran.
+	if pin, ok := r.pins[c.Name]; ok {
+		p, sum, err := r.resolveCommand(c.Argv[0])
+		ev["command_sha256"] = sum
+		if err != nil || p != pin.path || sum != pin.sha256 {
+			got := p + " " + sum
+			if err != nil {
+				got = err.Error()
+			}
+			fail(CodeCommandChanged, "not run: %s was %s %s before the checks, now %s", c.Argv[0], pin.path, pin.sha256, got)
+			return
+		}
 	}
 	goTest := task.IsGoTest(c.Argv)
 	var h *harness
@@ -1066,11 +1160,7 @@ func (r *run) runCriterion(c task.Criterion) {
 			return
 		}
 		argv, _ = goTestArgv(argv, h.overlay)
-		gotmp := filepath.Join(filepath.Dir(r.checkout), "gotmp")
-		if err := os.MkdirAll(gotmp, 0o700); err != nil {
-			fail(CodeInfraError, "%v", err)
-			return
-		}
+		gotmp := d.gotmp
 		// No cgo: a C constructor would run before the hook's init.
 		env = append(env, "CGO_ENABLED=0", "GOTMPDIR="+gotmp)
 		envNames = append(envNames, "CGO_ENABLED", "GOTMPDIR")
@@ -1094,11 +1184,17 @@ func (r *run) runCriterion(c task.Criterion) {
 	var cmd *exec.Cmd
 	ev["network"] = "host"
 	if r.isolation == IsolationNamespace {
-		cfg, unmasked := r.sandboxConfig(c, command, goroot, h)
+		cfg, unmasked := r.sandboxConfig(c, command, goroot, h, d)
 		if !cfg.hostNet {
 			ev["network"] = "loopback"
 		}
 		ev["masked"], ev["unmasked"] = nonNilStrings(cfg.mask), nonNilStrings(unmasked)
+		ev["writable"] = nonNilStrings(cfg.rw)
+		var ovl []string
+		for _, o := range cfg.overlay {
+			ovl = append(ovl, o.lower)
+		}
+		ev["read_only_caches"] = nonNilStrings(ovl)
 		if cmd, err = isolatedCommand(ctx, command, argv, cfg); err != nil {
 			if h != nil {
 				h.finish()

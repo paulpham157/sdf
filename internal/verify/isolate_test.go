@@ -10,13 +10,23 @@ import (
 	"github.com/paulpham157/sdf/internal/task"
 )
 
-// requireIsolation skips where namespaces are unavailable (for example
-// GitHub's ubuntu-24.04 runners, until the workflow lifts AppArmor's
-// restriction; see docs/action.md). Tests never change the host.
+// requireIsolation skips where namespaces are unavailable. Tests never
+// change the host to get them. On this repository's CI (GitHub's
+// ubuntu-24.04 runners) these tests skip: AppArmor's
+// kernel.apparmor_restrict_unprivileged_userns=1 confines unprivileged user
+// namespaces so they cannot mount. A workflow step before `go test`,
+//
+//   - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+//
+// would run them; it is not added here (changing .github/workflows needs
+// the repository owner's approval and a token with workflow scope).
 func requireIsolation(t *testing.T) {
 	t.Helper()
 	if ok, why := isolationAvailable(); !ok {
-		t.Skipf("isolation unavailable here: %s", why)
+		t.Skipf("isolation unavailable here, so this isolation test cannot run: %s. "+
+			"On GitHub's ubuntu-24.04 runners AppArmor confines unprivileged user namespaces; "+
+			"a workflow step `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` before `go test` enables these tests "+
+			"(not added: workflow changes need the owner's approval). The other tests run these checks unisolated (AllowUnisolated).", why)
 	}
 }
 

@@ -63,7 +63,7 @@ func TestVerifyPassAndFailExitCodes(t *testing.T) {
 	if err := json.Unmarshal([]byte(r.stdout), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Status != "PASS" || doc.Verdict.Kind != "sdf.verdict/v1" || len(doc.Evidence) != 6 {
+	if doc.Status != "PASS" || doc.Verdict.Kind != "sdf.verdict/v1" || len(doc.Evidence) != 7 {
 		t.Fatalf("%+v", doc)
 	}
 	// Re-canonicalizing the printed record gives back the hashed bytes.

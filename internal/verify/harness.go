@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -281,6 +282,10 @@ func wrapTests(file, pkg, tag string) (string, error) {
 // cannot collide with testing's own and code under test cannot name it
 // without knowing the tag. The socket path is a constant in it.
 func hookSource(tag, socket string) string {
+	return hookSourceFor(tag, socket, runtime.GOOS, runtime.GOARCH)
+}
+
+func hookSourceFor(tag, socket, goos, goarch string) string {
 	src := `package testing
 
 import (
@@ -291,7 +296,7 @@ import (
 	T_net "net"
 	T_os "os"
 	T_strconv "strconv"
-	T_sync "sync"
+	T_sync "sync"IMPORTS
 )
 
 var T_st struct {
@@ -318,6 +323,9 @@ func init() {
 		die("no key: " + err.Error())
 	}
 	T_st.conn, T_st.key = c, key
+	if msg := T_harden(); msg != "" {
+		die("hardening: " + msg)
+	}
 }
 
 // SdfVerifyTRun runs a designated test and reports its result.
@@ -350,9 +358,96 @@ func T_send(msg string) {
 	T_io.WriteString(T_st.conn, T_hex.EncodeToString(m.Sum(nil))+" "+body+"\n")
 }
 `
+	imports := ""
+	if goos == "linux" {
+		imports = "\n\tT_syscall \"syscall\"\n\tT_unsafe \"unsafe\""
+	}
+	src = strings.Replace(src, "IMPORTS", imports, 1)
+	src += hardenSource(goos, goarch)
 	src = strings.ReplaceAll(src, "SOCKET", strconv.Quote(socket))
 	src = strings.ReplaceAll(src, "SdfVerifyTRun", "SdfVerify"+tag+"Run")
 	return strings.ReplaceAll(src, "T_", "sdf"+tag+"_")
+}
+
+// hardenSource is T_harden for the test binary's platform (the host's: a
+// check's environment does not pass GOOS or GOARCH through).
+//
+// On Linux the test process makes itself non-dumpable, right after the key
+// exchange (the verifier's peer check reads its /proc entries first) and
+// before any code of the module runs. A non-dumpable process's
+// /proc/<pid>/mem (and fd/, environ, ...) belong to root, so code under test
+// cannot open /proc/self/mem to patch the testing package's code
+// (atk_tw5 writes a RET over (*common).Fail), and a child process cannot
+// ptrace or open it either. On amd64 and arm64 a seccomp filter, applied to
+// every thread and inherited by children, then refuses
+// prctl(PR_SET_DUMPABLE), so the process cannot turn that back on (and any
+// system call of another architecture's ABI). It does not stop code that
+// uses unsafe or assembly from writing memory directly: the tripwire flags
+// those.
+func hardenSource(goos, goarch string) string {
+	if goos != "linux" {
+		return "\nfunc T_harden() string { return \"\" }\n"
+	}
+	arch, prctl, seccomp := "", "", ""
+	switch goarch {
+	case "amd64":
+		arch, prctl, seccomp = "0xC000003E", "157", "317"
+	case "arm64":
+		arch, prctl, seccomp = "0xC00000B7", "167", "277"
+	}
+	src := `
+func T_harden() string {
+	const prSetDumpable, prGetDumpable, prSetNoNewPrivs = 4, 3, 38
+	if _, _, e := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prSetDumpable, 0, 0); e != 0 {
+		return "PR_SET_DUMPABLE: " + e.Error()
+	}
+	if ARCH != 0 {
+		filter := []T_sockFilter{
+			{0x20, 0, 0, 4},              // A = arch
+			{0x15, 0, 6, ARCH},           // not this ABI: deny
+			{0x20, 0, 0, 0},              // A = nr
+			{0x45, 4, 0, 0x40000000},     // x32 ABI: deny
+			{0x15, 0, 2, NR_PRCTL},       // not prctl: allow
+			{0x20, 0, 0, 16},             // A = args[0]
+			{0x15, 1, 0, prSetDumpable},  // PR_SET_DUMPABLE: deny
+			{0x06, 0, 0, 0x7fff0000},     // allow
+			{0x06, 0, 0, 0x00050000 | 1}, // EPERM
+		}
+		prog := struct {
+			n uint16
+			f *T_sockFilter
+		}{uint16(len(filter)), &filter[0]}
+		if _, _, e := T_syscall.RawSyscall6(T_syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0, 0, 0, 0); e != 0 {
+			return "PR_SET_NO_NEW_PRIVS: " + e.Error()
+		}
+		// SECCOMP_SET_MODE_FILTER with SECCOMP_FILTER_FLAG_TSYNC: every thread.
+		if r, _, e := T_syscall.RawSyscall(SYS_SECCOMP, 1, 1, uintptr(T_unsafe.Pointer(&prog))); e != 0 || r != 0 {
+			return "seccomp: " + e.Error()
+		}
+		if _, _, e := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prSetDumpable, 1, 0); e != T_syscall.EPERM {
+			return "the seccomp filter does not hold"
+		}
+	}
+	if r, _, _ := T_syscall.RawSyscall(T_syscall.SYS_PRCTL, prGetDumpable, 0, 0); r != 0 {
+		return "still dumpable"
+	}
+	return ""
+}
+
+type T_sockFilter struct {
+	code uint16
+	jt   uint8
+	jf   uint8
+	k    uint32
+}
+`
+	if arch == "" {
+		arch, prctl, seccomp = "0", "0", "0"
+	}
+	src = strings.ReplaceAll(src, "ARCH", arch)
+	src = strings.ReplaceAll(src, "NR_PRCTL", prctl)
+	src = strings.ReplaceAll(src, "SYS_SECCOMP", seccomp)
+	return src
 }
 
 func (h *harness) violate(format string, args ...any) {

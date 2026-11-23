@@ -41,11 +41,16 @@ var checkEnvNames = []string{
 	"LANG", "LC_ALL", "LOGNAME", "SYSTEMROOT", "TZ", "USER",
 }
 
-// checkDirs are the per-verification directories a check gets as its home
-// and Go state. All are outside the checkout and new, except caches the
-// caller passed in Options.
+// checkDirs are the directories one criterion's check gets as its home,
+// temp and Go state: all new, under root (outside the checkout), and
+// removed when the criterion ends, so nothing a check writes there (a
+// patched module, a poisoned build cache entry, a shell or git config)
+// reaches another criterion. Trusted caches the caller passed in Options
+// are mounted at gocache/gomodcache as overlays (isolated) or used
+// directly (unisolated).
 type checkDirs struct {
-	home, gopath, gocache, gomodcache, tmp string
+	root, home, gopath, gocache, gomodcache, tmp, gotmp string
+	overlays                                            []overlayMount
 }
 
 // absolutePath drops empty and relative entries from a PATH value.
