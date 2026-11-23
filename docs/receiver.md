@@ -55,24 +55,6 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
-## Try it without an agent
-
-`sdf demo` runs the same receiver on free localhost ports, sends one
-synthetic Claude Code-shaped session to it, and prints that session's summary.
-Traces and logs go over OTLP/HTTP JSON and metrics over OTLP/gRPC, so both
-listeners are exercised. Every resource carries `sdf.fixture=demo`. It needs
-no agent, API key, or network, and it does not touch `sdf-telemetry.sqlite`:
-the store is a temporary file unless `--db PATH` names one to keep. `--json`
-prints the report as `sdf summary --json` would. `--db` must name a new or
-empty file, or a store that holds only earlier demo sessions: a store with
-any telemetry not labeled `sdf.fixture=demo`, or any decision, is refused
-(exit 1) and left unchanged, so synthetic rows never mix into real summaries.
-
-```bash
-sdf demo
-sdf demo --db demo.sqlite && sdf summary --db demo.sqlite
-```
-
 ## Optional token authentication
 
 `--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or
@@ -210,7 +192,7 @@ stays unknown because merge status was not requested. The cost per accepted
 outcome uses that answer. It is unknown, not zero, when nothing merged or
 when a session has no known outcome.
 
-The UI is on by default so a local demo is `sdf serve` and a browser.
+The UI is on by default, so `sdf serve` and a browser are all it takes.
 `--no-ui` leaves the OTLP ports only. It is a second listener, embedded in
 the sdf binary (HTML, CSS, and script). The page does not load fonts,
 scripts, or anything else from the network.
@@ -636,13 +618,13 @@ its database in this directory:
 
 ```bash
 sdf init --git-hooks
-export OPENCODE_SESSION_ID=ses_demo
+export OPENCODE_SESSION_ID=ses_example
 git commit --allow-empty -m "try sdf git hook"
 unset OPENCODE_SESSION_ID
 sdf summary
 ```
 
-Summary shows session `ses_demo`, tool `opencode`, match `hook`. That commit
+Summary shows session `ses_example`, tool `opencode`, match `hook`. That commit
 is the whole session until OpenCode exports a trace with the same
 `session.id`; the trace joins it. A later commit in this shell with the
 variable unset is not linked to it. For Pi, set `PI_SESSION_FILE` to the
