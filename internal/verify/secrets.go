@@ -1,12 +1,10 @@
 package verify
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/paulpham157/sdf/internal/task"
@@ -57,79 +55,53 @@ func SecretRulesetHash() string {
 // sha256, so the evidence does not repeat the secret.
 type SecretFinding struct {
 	Rule        string
-	Path        string
+	Commit      string
+	Path        string // a file path, or "" for the commit message
 	Line        int64
 	MatchSHA256 string
 }
 
-// scanDiff reads `git diff -U0 --no-renames` output and checks every added
-// line. It returns the findings and the paths of binary files it could not
-// read.
-func scanDiff(diff []byte) (findings []SecretFinding, binary []string) {
-	sc := bufio.NewScanner(bytes.NewReader(diff))
-	sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
-	path := ""
-	inHunk := false
-	var line int64
-	for sc.Scan() {
-		l := sc.Text()
-		switch {
-		case strings.HasPrefix(l, "diff --git "):
-			path, inHunk = "", false
-		case !inHunk && strings.HasPrefix(l, "+++ "):
-			path = diffPath(strings.TrimPrefix(l, "+++ "))
-		case !inHunk && strings.HasPrefix(l, "Binary files "):
-			binary = append(binary, binaryPath(l))
-		case strings.HasPrefix(l, "@@ "):
-			inHunk = true
-			line = hunkStart(l)
-		case inHunk && strings.HasPrefix(l, "+"):
-			text := l[1:]
-			for _, r := range secretRules {
-				for _, m := range r.Re.FindAllString(text, -1) {
-					sum := sha256.Sum256([]byte(m))
-					findings = append(findings, SecretFinding{Rule: r.ID, Path: path, Line: line, MatchSHA256: hex.EncodeToString(sum[:])})
-				}
+// scanText checks each line of text (bytes, so binary content is scanned
+// too) and returns the findings, numbered from 1. A line in old, the
+// parent's copy of the file, is not new and is skipped.
+func scanText(commit, path string, text []byte, old map[string]bool) []SecretFinding {
+	var out []SecretFinding
+	for n, l := range bytes.Split(text, []byte("\n")) {
+		if old[string(l)] {
+			continue
+		}
+		for _, r := range secretRules {
+			for _, m := range r.Re.FindAll(l, -1) {
+				sum := sha256.Sum256(m)
+				out = append(out, SecretFinding{Rule: r.ID, Commit: commit, Path: path, Line: int64(n + 1), MatchSHA256: hex.EncodeToString(sum[:])})
 			}
-			line++
-		case inHunk && strings.HasPrefix(l, " "):
-			line++
 		}
 	}
-	return findings, binary
+	return out
 }
 
-func diffPath(s string) string {
-	if s == "/dev/null" {
-		return s
+func lineSet(text []byte) map[string]bool {
+	set := map[string]bool{}
+	for _, l := range bytes.Split(text, []byte("\n")) {
+		set[string(l)] = true
 	}
-	if strings.HasPrefix(s, `"`) {
-		if u, err := strconv.Unquote(s); err == nil {
-			s = u
+	return set
+}
+
+// rawChange is one record of `git diff-tree -r -z --no-abbrev` output.
+type rawChange struct {
+	oldMode, newMode, oldOID, newOID, status, path string
+}
+
+func parseRaw(b []byte) []rawChange {
+	var out []rawChange
+	toks := strings.Split(string(b), "\x00")
+	for i := 0; i+1 < len(toks); i += 2 {
+		f := strings.Fields(strings.TrimPrefix(toks[i], ":"))
+		if len(f) != 5 {
+			continue
 		}
+		out = append(out, rawChange{f[0], f[1], f[2], f[3], f[4], toks[i+1]})
 	}
-	return strings.TrimPrefix(s, "b/")
-}
-
-func binaryPath(l string) string {
-	// "Binary files a/x and b/y differ"
-	l = strings.TrimSuffix(strings.TrimPrefix(l, "Binary files "), " differ")
-	if i := strings.LastIndex(l, " and "); i >= 0 {
-		return diffPath(l[i+len(" and "):])
-	}
-	return l
-}
-
-// hunkStart reads c from "@@ -a,b +c,d @@".
-func hunkStart(l string) int64 {
-	i := strings.Index(l, " +")
-	if i < 0 {
-		return 0
-	}
-	rest := l[i+2:]
-	if j := strings.IndexAny(rest, ", "); j >= 0 {
-		rest = rest[:j]
-	}
-	n, _ := strconv.ParseInt(rest, 10, 64)
-	return n
+	return out
 }

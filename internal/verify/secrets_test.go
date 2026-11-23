@@ -5,34 +5,25 @@ import (
 	"testing"
 )
 
-func TestScanDiffLinesAndBinary(t *testing.T) {
+func TestScanTextSkipsOldLinesAndNeverKeepsTheMatch(t *testing.T) {
 	key := "xoxb-" + strings.Repeat("1234567890", 2)
-	diff := strings.Join([]string{
-		"diff --git a/a.txt b/a.txt",
-		"--- a/a.txt",
-		"+++ b/a.txt",
-		"@@ -0,0 +10,2 @@",
-		"+nothing here",
-		"+token " + key,
-		"diff --git a/b.bin b/b.bin",
-		"Binary files /dev/null and b/b.bin differ",
-		"diff --git a/c.txt b/c.txt",
-		"--- a/c.txt",
-		"+++ b/c.txt",
-		"@@ -1 +1 @@",
-		"-token " + key, // removed lines are not findings
-		"+++ not a header, an added line starting with ++",
-		"",
-	}, "\n")
-	findings, binary := scanDiff([]byte(diff))
-	if len(findings) != 1 || findings[0].Path != "a.txt" || findings[0].Line != 11 || findings[0].Rule != "slack-token" {
-		t.Fatalf("%+v", findings)
+	text := []byte("nothing here\ntoken " + key + "\nold " + key + "\x00bin\n")
+	got := scanText("c1", "a.txt", text, lineSet([]byte("old "+key+"\x00bin")))
+	if len(got) != 1 || got[0].Path != "a.txt" || got[0].Line != 2 || got[0].Rule != "slack-token" || got[0].Commit != "c1" {
+		t.Fatalf("%+v", got)
 	}
-	if strings.Contains(findings[0].MatchSHA256, key) || len(findings[0].MatchSHA256) != 64 {
-		t.Fatal(findings[0].MatchSHA256)
+	if strings.Contains(got[0].MatchSHA256, key) || len(got[0].MatchSHA256) != 64 {
+		t.Fatal(got[0].MatchSHA256)
 	}
-	if len(binary) != 1 || binary[0] != "b.bin" {
-		t.Fatalf("%v", binary)
+}
+
+func TestParseRawKeepsQuotedAndTabbedPaths(t *testing.T) {
+	z := strings.Repeat("0", 40)
+	raw := ":000000 100644 " + z + " " + strings.Repeat("a", 40) + " A\x00we ird\"name\t.txt\x00" +
+		":100644 000000 " + strings.Repeat("b", 40) + " " + z + " D\x00gone\x00"
+	got := parseRaw([]byte(raw))
+	if len(got) != 2 || got[0].path != "we ird\"name\t.txt" || got[0].status != "A" || got[1].status != "D" {
+		t.Fatalf("%+v", got)
 	}
 }
 

@@ -415,3 +415,17 @@ func TestBuildRefusesACriterionThatPinsNothing(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestWarningsForUnpinnedInterpretersMakeAndInlineScripts(t *testing.T) {
+	s := Spec{Criteria: []Criterion{
+		{Name: "sh", Argv: []string{"sh", "tests/run.sh"}},
+		{Name: "inline", Argv: []string{"bash", "-c", "sh tests/run.sh"}},
+		{Name: "make", Argv: []string{"make", "test"}},
+		{Name: "pinned", Argv: []string{"sh", "tests/run.sh"}, Designated: []string{"tests/**"}},
+		{Name: "go", Argv: []string{"go", "test", "./..."}},
+	}}
+	w := Warnings(s)
+	if len(w) != 3 || !strings.Contains(w[0], `"sh"`) || !strings.Contains(w[1], "inline bash -c") || !strings.Contains(w[2], "makefile") {
+		t.Fatalf("%q", w)
+	}
+}

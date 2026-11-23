@@ -68,13 +68,23 @@ const featureTest = "#!/bin/sh\ngrep -q done src/feature.txt\n"
 
 func newFixture(t *testing.T, criteria ...task.CriterionInput) *fixture {
 	t.Helper()
+	return newFixtureFiles(t, nil, criteria...)
+}
+
+// newFixtureFiles is newFixture with more files in the base.
+func newFixtureFiles(t *testing.T, extra map[string]string, criteria ...task.CriterionInput) *fixture {
+	t.Helper()
 	f := &fixture{repo: t.TempDir(), data: t.TempDir(), ledger: ledgertest.New(t)}
 	g(t, f.repo, "init", "-q", "-b", "main")
 	f.root = commit(t, f.repo, map[string]string{"README": "r\n"}, "root")
-	f.base = commit(t, f.repo, map[string]string{
+	files := map[string]string{
 		"src/feature.txt": "todo\n",
 		"tests/run.sh":    featureTest,
-	}, "base")
+	}
+	for p, c := range extra {
+		files[p] = c
+	}
+	f.base = commit(t, f.repo, files, "base")
 	if len(criteria) == 0 {
 		criteria = []task.CriterionInput{{Name: "unit", Argv: []string{"sh", "tests/run.sh"}, Designated: []string{"tests/*.sh"}, TimeoutS: 60}}
 	}

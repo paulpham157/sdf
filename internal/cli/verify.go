@@ -13,16 +13,23 @@ import (
 	"github.com/paulpham157/sdf/internal/verify"
 )
 
-const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--repo DIR]
-                  [--data-dir DIR | --no-data-dir] [--ledger PATH] [--out PATH]
-                  [--artifacts DIR] [--work-dir DIR] [--path PATH] [--keep]
+const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--task-hash HASH]
+                  [--repo DIR] [--data-dir DIR | --no-data-dir] [--ledger PATH]
+                  [--out PATH]
+                  [--artifacts DIR] [--work-dir DIR] [--path PATH]
+                  [--go-cache DIR] [--go-mod-cache DIR] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
 outside the repository. The task is read from --task-ref (the protected
-branch, for example origin/main) and the sdf data dir; every copy found has
-to agree. The working tree's .sdf/tasks file is not trusted. Checks run in
-the checkout root with --path (default: this PATH, relative entries
-dropped) as their only PATH.
+branch as just fetched, for example origin/main) and the sdf data dir;
+every copy found has to agree, and --task-hash pins the hash they must
+have. PASS needs --task-ref, a ledger entry, or --task-hash: a task found
+only in the data dir, which the agent can write, gives at best ERROR
+(TASK_UNTRUSTED). The
+working tree's .sdf/tasks file is never read. Checks run in the checkout
+root with --path (default: this PATH, relative entries dropped) as their
+only PATH, a new HOME, and new Go caches unless --go-cache/--go-mod-cache
+name ones the agent cannot write.
 
 --ledger PATH (or $SDF_LEDGER) also reads the task from that ledger and
 appends the evidence and then the verdict to it in one transaction; with
@@ -68,7 +75,8 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		}{
 			{"--task", &opt.TaskID}, {"--task-ref", &opt.TaskRef}, {"--repo", &opt.RepoDir},
 			{"--data-dir", &dataDir}, {"--out", &out}, {"--artifacts", &opt.ArtifactsDir},
-			{"--work-dir", &opt.WorkDir}, {"--path", &opt.Path},
+			{"--work-dir", &opt.WorkDir}, {"--path", &opt.Path}, {"--task-hash", &opt.TaskHash},
+			{"--go-cache", &opt.GoCache}, {"--go-mod-cache", &opt.GoModCache},
 		} {
 			v, ok, err := flagValue(f.name, &i, args)
 			if !ok {

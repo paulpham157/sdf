@@ -165,7 +165,7 @@ func TestSecretIsNotCopiedIntoEvidence(t *testing.T) {
 		}
 	}
 	for _, r := range res.Reasons {
-		if r.Code == CodeSecretInDiff && r.Detail != "src/x.go:3 (github-token)" {
+		if r.Code == CodeSecretInDiff && !strings.HasSuffix(r.Detail, ` "src/x.go":3 (github-token)`) {
 			t.Fatalf("detail %q", r.Detail)
 		}
 	}

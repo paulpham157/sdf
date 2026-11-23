@@ -91,8 +91,30 @@ func TestVerifyPassAndFailExitCodes(t *testing.T) {
 		t.Fatalf("fail: %d %q", r.code, r.stderr)
 	}
 
+	// B4: without --task-ref or --task-hash, the data dir copy (which the
+	// agent can write) is not enough for PASS.
+	r = run(t, "verify", good, "--task", "acc", "--repo", repo)
+	if r.code != 3 || !strings.Contains(r.stderr, "TASK_UNTRUSTED") || !strings.Contains(r.stdout, `"status": "ERROR"`) {
+		t.Fatalf("untrusted: %d %q", r.code, r.stderr)
+	}
+	var pinned struct {
+		Verdict struct {
+			Record struct {
+				TaskHash string `json:"task_hash"`
+			} `json:"record"`
+		} `json:"verdict"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	r = run(t, "verify", good, "--task", "acc", "--repo", repo, "--task-hash", pinned.Verdict.Record.TaskHash)
+	if r.code != 0 {
+		t.Fatalf("pinned hash: %d %q", r.code, r.stderr)
+	}
+
 	for _, args := range [][]string{
 		{"verify"},
+		{"verify", good, "--task", "acc", "--repo", repo, "--task-hash", "abc"},
 		{"verify", good},
 		{"verify", "abc", "--task", "acc", "--repo", repo},
 		{"verify", good, "--task", "acc", "--bogus"},

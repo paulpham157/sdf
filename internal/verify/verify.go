@@ -15,6 +15,7 @@
 package verify
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,12 +56,15 @@ const (
 	CodeBaseNotAncestor        = "BASE_NOT_ANCESTOR"
 	CodeDesignatedFileModified = "DESIGNATED_FILE_MODIFIED"
 	CodeDesignatedFileAdded    = "DESIGNATED_FILE_ADDED"
+	CodeDesignatedTestMissing  = "DESIGNATED_TEST_NOT_PASSED"
+	CodeSymlinkOutside         = "SYMLINK_OUTSIDE_CHECKOUT"
 	CodeSecretInDiff           = "SECRET_IN_DIFF"
 	CodeCheckoutDirty          = "CHECKOUT_DIRTY"
 	CodeCheckoutModified       = "CHECKOUT_MODIFIED"
 	CodeCheckFailed            = "CHECK_FAILED"
 	CodeCheckTimeout           = "CHECK_TIMEOUT"
 	CodeCheckError             = "CHECK_ERROR"
+	CodeTaskUntrusted          = "TASK_UNTRUSTED"
 	CodeInfraError             = "INFRA_ERROR"
 )
 
@@ -69,7 +73,8 @@ var failCodes = map[string]bool{
 	CodeRevisionUnresolvable: true, CodeRevisionMismatch: true, CodeBaseMismatch: true,
 	CodeBaseNotAncestor: true, CodeDesignatedFileModified: true, CodeDesignatedFileAdded: true,
 	CodeSecretInDiff: true, CodeCheckoutDirty: true, CodeCheckoutModified: true,
-	CodeCheckFailed: true, CodeCheckTimeout: true,
+	CodeCheckFailed: true, CodeCheckTimeout: true, CodeDesignatedTestMissing: true,
+	CodeSymlinkOutside: true,
 }
 
 // Record schemas, also the ledger kinds.
@@ -86,11 +91,22 @@ type Options struct {
 	SHA     string // full commit id to verify
 	TaskID  string
 
-	// Trusted task copies. At least one has to exist; all that exist have
-	// to agree. The working tree's .sdf/tasks file is never one of them.
-	TaskRef string      // a ref, normally the protected branch, holding .sdf/tasks/<id>.json
-	DataDir string      // the sdf data dir copy
-	Ledger  task.Ledger // also receives the evidence and verdict
+	// Task copies. At least one has to exist; all that exist have to
+	// agree. The working tree's .sdf/tasks file is never one of them.
+	//
+	// PASS needs a trusted source: TaskRef, a ledger entry, or TaskHash.
+	// The data dir copy is written by whoever runs sdf on the machine, the
+	// agent included, so a task found only there gives at best ERROR
+	// (TASK_UNTRUSTED).
+	TaskRef  string      // a ref, normally the protected branch, holding .sdf/tasks/<id>.json
+	DataDir  string      // the sdf data dir copy (untrusted on its own)
+	Ledger   task.Ledger // also receives the evidence and verdict
+	TaskHash string      // "sha256:..." pinned by the caller; every copy has to have it
+
+	// GoCache and GoModCache, when set, are the GOCACHE and GOMODCACHE
+	// checks use. They have to be directories the agent cannot write.
+	// Empty means new, empty ones for this verification.
+	GoCache, GoModCache string
 
 	// Path is the PATH the criteria run with, and the only one argv[0] is
 	// looked up in. Empty means the verifier's own PATH. Relative entries
@@ -128,7 +144,10 @@ type Result struct {
 	Checkout string // set when Options.Keep
 }
 
-var fullSHA = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+var (
+	fullSHA    = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+	taskHashRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+)
 
 // ErrUsage is returned for options that cannot be verified at all.
 var ErrUsage = errors.New("usage")
@@ -145,6 +164,10 @@ type run struct {
 	sources  []any
 	checkout string
 	tree     string
+	// treeAtSHA is the submitted tree, read from the fetched objects before
+	// any check runs; checkDisk compares the checkout with it.
+	treeAtSHA map[string]treeEntry
+	dirs      checkDirs
 	// reasonLater holds reasons found before their evidence record exists.
 	reasonLater []Reason
 }
@@ -159,6 +182,9 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	}
 	if !task.ValidID(opt.TaskID) {
 		return Result{}, fmt.Errorf("%w: task id %q", ErrUsage, opt.TaskID)
+	}
+	if opt.TaskHash != "" && !taskHashRe.MatchString(opt.TaskHash) {
+		return Result{}, fmt.Errorf("%w: task hash %q is not sha256:<64 hex>", ErrUsage, opt.TaskHash)
 	}
 	if opt.Now == nil {
 		opt.Now = time.Now
@@ -184,7 +210,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 
 	r.steps()
 	if r.checkout != "" && !opt.Keep {
-		_ = os.RemoveAll(filepath.Dir(r.checkout))
+		_ = removeTree(filepath.Dir(r.checkout))
 	}
 	res, err := r.finish()
 	if err != nil {
@@ -211,9 +237,42 @@ func (r *run) steps() {
 	if r.failed() {
 		return
 	}
+	if !r.prepareChecks() {
+		return
+	}
 	for _, c := range r.spec.Criteria {
 		r.runCriterion(c)
 	}
+}
+
+// prepareChecks moves .git out of the checkout and makes the home and Go
+// directories checks get.
+func (r *run) prepareChecks() bool {
+	tmp := filepath.Dir(r.checkout)
+	r.dirs = checkDirs{
+		home:       filepath.Join(tmp, "home"),
+		gopath:     filepath.Join(tmp, "gopath"),
+		gocache:    r.opt.GoCache,
+		gomodcache: r.opt.GoModCache,
+	}
+	if r.dirs.gocache == "" {
+		r.dirs.gocache = filepath.Join(tmp, "gocache")
+	}
+	if r.dirs.gomodcache == "" {
+		r.dirs.gomodcache = filepath.Join(tmp, "gomodcache")
+	}
+	err := r.hideGitDir()
+	for _, d := range []string{r.dirs.home, r.dirs.gopath, r.dirs.gocache, r.dirs.gomodcache} {
+		if err == nil {
+			err = os.MkdirAll(d, 0o700)
+		}
+	}
+	if err != nil {
+		id := r.addEvidence("checkout", "", map[string]any{"status": "error", "error": err.Error()})
+		r.reason(CodeInfraError, id, "preparing checks: %v", err)
+		return false
+	}
+	return true
 }
 
 func (r *run) failed() bool {
@@ -290,10 +349,21 @@ func (r *run) loadTask() bool {
 			specs = append(specs, c.Spec)
 		}
 	}
-	for _, f := range found {
+	trusted := false
+	for i, f := range found {
 		r.sources = append(r.sources, map[string]any{"where": f.where, "hash": f.hash})
+		if f.where == "ledger" || (r.opt.TaskRef != "" && i == 0 && strings.HasPrefix(f.where, "git:")) {
+			trusted = true
+		}
 	}
-	ev := map[string]any{"sources": r.sources, "problems": problems}
+	if r.opt.TaskHash != "" && len(found) > 0 {
+		if found[0].hash != r.opt.TaskHash {
+			problems = append(problems, fmt.Sprintf("%s has %s, --task-hash is %s", found[0].where, found[0].hash, r.opt.TaskHash))
+		} else {
+			trusted = true
+		}
+	}
+	ev := map[string]any{"sources": r.sources, "problems": problems, "trusted": trusted, "pinned_hash": r.opt.TaskHash}
 	if len(found) == 0 {
 		id := r.addEvidence("task_snapshot", "", withStatus(ev, "fail"))
 		detail := "no trusted copy of the task was found"
@@ -316,6 +386,12 @@ func (r *run) loadTask() bool {
 		return false
 	}
 	r.spec, r.taskHash = specs[0], found[0].hash
+	if !trusted {
+		// Run everything, but the verdict cannot be PASS.
+		id := r.addEvidence("task_snapshot", "", withStatus(ev, "untrusted"))
+		r.reason(CodeTaskUntrusted, id, "the task came only from %s, which the agent can write; pass --task-ref (a freshly fetched protected ref) or --task-hash", found[0].where)
+		return true
+	}
 	r.addEvidence("task_snapshot", "", withStatus(ev, "pass"))
 	return true
 }
@@ -494,15 +570,17 @@ func lsTree(ctx context.Context, dir, rev string) (map[string]treeEntry, error) 
 func (r *run) checkIntegrity() {
 	ev := map[string]any{}
 	at, err := lsTree(r.ctx, r.checkout, r.opt.SHA)
-	if err != nil {
+	atBase, err2 := lsTree(r.ctx, r.checkout, r.spec.BaseSHA)
+	if err = errors.Join(err, err2); err != nil {
 		ev["error"] = err.Error()
 		id := r.addEvidence("designated_integrity", "", withStatus(ev, "error"))
 		r.reason(CodeInfraError, id, "%v", err)
 		return
 	}
+	r.treeAtSHA = at
 	// The base has to hold exactly what the task pinned, or the task does
 	// not describe this repository's base.
-	if atBase, err := lsTree(r.ctx, r.checkout, r.spec.BaseSHA); err == nil {
+	{
 		var off []string
 		for _, f := range r.spec.DesignatedFiles {
 			if b, ok := atBase[f.Path]; !ok || b.mode != f.Mode || b.oid != f.GitBlob {
@@ -562,12 +640,36 @@ func (r *run) checkIntegrity() {
 					break
 				}
 			}
+			// A Go test input (a _test.go file, testdata, go.mod, go.work)
+			// of a package the criterion tests that is new or changed is as
+			// good as a new test: a TestMain there decides the result.
+			if !hit && len(task.GoTestPaths(c.Argv, []string{p})) > 0 {
+				b, ok := atBase[p]
+				hit = !ok || b != at[p]
+			}
 			if hit {
 				added = append(added, map[string]any{"path": p, "criterion": c.Name, "git_blob": at[p].oid})
 				break
 			}
 		}
 	}
+	// A symlink that is new or changed since the base and points outside
+	// the checkout would let a check read or run something the task never
+	// saw.
+	var escapes []any
+	var escapeMsgs []string
+	for _, p := range paths {
+		e := at[p]
+		if e.mode != "120000" || atBase[p] == e {
+			continue
+		}
+		target, err := git(r.ctx, r.checkout, "cat-file", "blob", e.oid)
+		if err != nil || isSymlinkOutside(p, string(target)) {
+			escapes = append(escapes, map[string]any{"path": p, "git_blob": e.oid})
+			escapeMsgs = append(escapeMsgs, p)
+		}
+	}
+	ev["symlinks_outside"] = nonNilAny(escapes)
 	taskFile := task.RepoTaskDir + "/" + r.spec.ID + ".json"
 	taskFileState := "absent"
 	if e, ok := at[taskFile]; ok {
@@ -584,7 +686,7 @@ func (r *run) checkIntegrity() {
 	ev["task_file"] = taskFileState
 	ev["checked"] = int64(len(r.spec.DesignatedFiles))
 	status := "pass"
-	if len(modified) > 0 || len(added) > 0 || (taskFileState != "absent" && taskFileState != "same") || len(r.reasonLater) > 0 {
+	if len(modified) > 0 || len(added) > 0 || len(escapes) > 0 || (taskFileState != "absent" && taskFileState != "same") || len(r.reasonLater) > 0 {
 		status = "fail"
 	}
 	id := r.addEvidence("designated_integrity", "", withStatus(ev, status))
@@ -602,6 +704,9 @@ func (r *run) checkIntegrity() {
 			ps = append(ps, a.(map[string]any)["path"].(string))
 		}
 		r.reason(CodeDesignatedFileAdded, id, "new files match designated globs: %s", strings.Join(ps, ", "))
+	}
+	if len(escapes) > 0 {
+		r.reason(CodeSymlinkOutside, id, "new symlinks point outside the checkout: %s", strings.Join(escapeMsgs, ", "))
 	}
 	if taskFileState != "absent" && taskFileState != "same" {
 		r.reason(CodeTaskFileModified, id, "%s at the submitted revision is %s", taskFile, taskFileState)
@@ -642,24 +747,30 @@ func fileSHA256(p, mode string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// scanSecrets checks every commit in base..SHA, not only the net diff: the
+// message, and each added or changed blob's new lines, read from the
+// objects (no diff, so no textconv or -diff attribute hides a file; binary
+// blobs are scanned too and listed).
 func (r *run) scanSecrets() {
 	ev := map[string]any{"ruleset": SecretRulesetID, "ruleset_sha256": SecretRulesetHash(), "range": r.spec.BaseSHA + ".." + r.opt.SHA}
-	diff, err := git(r.ctx, r.checkout, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "-U0", r.spec.BaseSHA, r.opt.SHA)
+	findings, commits, binary, err := r.secretFindings()
 	if err != nil {
 		ev["error"] = err.Error()
 		id := r.addEvidence("secret_scan", "", withStatus(ev, "error"))
 		r.reason(CodeInfraError, id, "secret scan: %v", err)
 		return
 	}
-	findings, binary := scanDiff(diff)
-	sum := sha256.Sum256(diff)
-	ev["diff_sha256"] = hex.EncodeToString(sum[:])
-	ev["skipped_binary"] = nonNilStrings(binary)
+	ev["commits"] = int64(commits)
+	ev["binary_scanned"] = nonNilStrings(binary)
 	var fs []any
 	var where []string
 	for _, f := range findings {
-		fs = append(fs, map[string]any{"rule": f.Rule, "path": f.Path, "line": f.Line, "match_sha256": f.MatchSHA256})
-		where = append(where, fmt.Sprintf("%s:%d (%s)", f.Path, f.Line, f.Rule))
+		fs = append(fs, map[string]any{"rule": f.Rule, "commit": f.Commit, "path": f.Path, "line": f.Line, "match_sha256": f.MatchSHA256})
+		loc := f.Path
+		if loc == "" {
+			loc = "message"
+		}
+		where = append(where, fmt.Sprintf("%s %q:%d (%s)", f.Commit[:12], loc, f.Line, f.Rule))
 	}
 	ev["findings"] = nonNilAny(fs)
 	status := "pass"
@@ -672,6 +783,54 @@ func (r *run) scanSecrets() {
 	}
 }
 
+func (r *run) secretFindings() ([]SecretFinding, int, []string, error) {
+	list, err := git(r.ctx, r.checkout, "rev-list", "--reverse", r.spec.BaseSHA+".."+r.opt.SHA)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	commits := strings.Fields(string(list))
+	var findings []SecretFinding
+	var binary []string
+	scanned := map[string]bool{}
+	for _, c := range commits {
+		obj, err := git(r.ctx, r.checkout, "cat-file", "commit", c)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		if _, msg, ok := bytes.Cut(obj, []byte("\n\n")); ok {
+			findings = append(findings, scanText(c, "", msg, nil)...)
+		}
+		raw, err := git(r.ctx, r.checkout, "diff-tree", "-r", "-z", "--no-renames", "--no-abbrev", c+"^", c)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		for _, ch := range parseRaw(raw) {
+			if ch.status == "D" || ch.newMode == "160000" || scanned[ch.newOID+"\x00"+ch.oldOID] {
+				continue
+			}
+			scanned[ch.newOID+"\x00"+ch.oldOID] = true
+			blob, err := git(r.ctx, r.checkout, "cat-file", "blob", ch.newOID)
+			if err != nil {
+				return nil, 0, nil, err
+			}
+			var old map[string]bool
+			if strings.Trim(ch.oldOID, "0") != "" && ch.oldMode != "160000" {
+				ob, err := git(r.ctx, r.checkout, "cat-file", "blob", ch.oldOID)
+				if err != nil {
+					return nil, 0, nil, err
+				}
+				old = lineSet(ob)
+			}
+			if bytes.IndexByte(blob, 0) >= 0 {
+				binary = append(binary, ch.path)
+			}
+			findings = append(findings, scanText(c, ch.path, blob, old)...)
+		}
+	}
+	sort.Strings(binary)
+	return findings, len(commits), binary, nil
+}
+
 func nonNilStrings(v []string) []string {
 	if v == nil {
 		return []string{}
@@ -680,22 +839,43 @@ func nonNilStrings(v []string) []string {
 }
 
 func (r *run) runCriterion(c task.Criterion) {
-	env, envNames, envHash := checkEnv(r.opt.Path)
+	env, envNames, envHash := checkEnv(r.opt.Path, r.dirs)
+	argv := goTestArgv(c.Argv)
 	ev := map[string]any{
 		"cwd":         ".",
 		"path":        r.opt.Path,
 		"argv":        c.Argv,
+		"run_argv":    argv,
 		"timeout_s":   c.TimeoutS,
 		"expect_exit": c.ExpectExit,
 		"env_names":   envNames,
 		"env_sha256":  envHash,
 		"tools":       toolVersions(r.ctx),
 	}
+	// The checkout must still be the submitted tree before the check runs:
+	// an earlier check may have changed a file this one uses.
+	if problems := r.checkDisk(); len(problems) > 0 {
+		ev["checkout_before"] = problems
+		id := r.addEvidence("criterion", c.Name, withStatus(ev, "fail"))
+		r.reason(CodeCheckoutModified, id, "%s not run: the checkout differs from %s: %s", c.Name, r.opt.SHA, strings.Join(problems, "; "))
+		return
+	}
+	var wantTests []string
+	if task.IsGoTest(c.Argv) {
+		var err error
+		if wantTests, err = designatedTests(r.checkout, r.spec, c); err != nil {
+			ev["error"] = err.Error()
+			id := r.addEvidence("criterion", c.Name, withStatus(ev, "error"))
+			r.reason(CodeInfraError, id, "%s: reading designated tests: %v", c.Name, err)
+			return
+		}
+		ev["designated_tests"] = nonNilStrings(wantTests)
+	}
 	outDir := filepath.Dir(r.checkout)
 	stdout, errOut := filepath.Join(outDir, c.Name+".stdout"), filepath.Join(outDir, c.Name+".stderr")
 	ctx, cancel := context.WithTimeout(r.ctx, time.Duration(c.TimeoutS)*time.Second)
 	defer cancel()
-	command, err := lookPath(c.Argv[0], r.checkout, r.opt.Path)
+	command, err := lookPath(argv[0], r.checkout, r.opt.Path)
 	if err != nil {
 		ev["error"] = err.Error()
 		id := r.addEvidence("criterion", c.Name, withStatus(ev, "error"))
@@ -703,8 +883,8 @@ func (r *run) runCriterion(c task.Criterion) {
 		return
 	}
 	ev["command"] = command
-	cmd := exec.CommandContext(ctx, command, c.Argv[1:]...)
-	cmd.Args[0] = c.Argv[0]
+	cmd := exec.CommandContext(ctx, command, argv[1:]...)
+	cmd.Args[0] = argv[0]
 	cmd.Dir = r.checkout
 	cmd.Env = env
 	cmd.WaitDelay = 5 * time.Second
@@ -743,11 +923,25 @@ func (r *run) runCriterion(c task.Criterion) {
 	}
 	ev["exit_code"] = exitCode
 
-	// The checkout must be the submitted revision, unmodified, afterwards.
-	head, _ := gitLine(r.ctx, r.checkout, "rev-parse", "HEAD")
-	status, statusErr := git(r.ctx, r.checkout, "status", "--porcelain", "--untracked-files=no")
-	unchanged := head == r.opt.SHA && statusErr == nil && len(status) == 0
+	// The checkout must be the submitted tree, unmodified, afterwards,
+	// read from disk (not from git's index, which a check could change).
+	after := r.checkDisk()
+	unchanged := len(after) == 0
 	ev["checkout_unchanged"] = unchanged
+	ev["checkout_after"] = nonNilStrings(after)
+
+	// For go test, each designated test has to report pass: a TestMain or
+	// init that exits 0 before the tests run passes no test.
+	var notPassed []string
+	if task.IsGoTest(c.Argv) {
+		passed, err := passedTests(stdout)
+		for _, w := range wantTests {
+			if err != nil || !passed[w] {
+				notPassed = append(notPassed, w)
+			}
+		}
+		ev["designated_tests_not_passed"] = nonNilStrings(notPassed)
+	}
 
 	var code, detail string
 	switch {
@@ -757,6 +951,10 @@ func (r *run) runCriterion(c task.Criterion) {
 		code, detail = CodeCheckError, runErr.Error()
 	case exitCode != c.ExpectExit:
 		code, detail = CodeCheckFailed, fmt.Sprintf("exit %v, expected %d", exitCode, c.ExpectExit)
+	case task.IsGoTest(c.Argv) && c.ExpectExit == 0 && len(wantTests) == 0:
+		code, detail = CodeDesignatedTestMissing, "no designated test to require: designate the package's _test.go files"
+	case c.ExpectExit == 0 && len(notPassed) > 0:
+		code, detail = CodeDesignatedTestMissing, fmt.Sprintf("%d of %d designated tests did not report pass: %s", len(notPassed), len(wantTests), strings.Join(notPassed, ", "))
 	}
 	st := "pass"
 	if code == CodeCheckError {
@@ -769,7 +967,7 @@ func (r *run) runCriterion(c task.Criterion) {
 		r.reason(code, id, "%s: %s", c.Name, detail)
 	}
 	if !unchanged {
-		r.reason(CodeCheckoutModified, id, "%s changed tracked files or HEAD in the checkout", c.Name)
+		r.reason(CodeCheckoutModified, id, "%s changed the checkout: %s", c.Name, strings.Join(after, "; "))
 	}
 }
 
