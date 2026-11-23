@@ -132,8 +132,9 @@ func copilotEndpoint(ep Endpoint) (Endpoint, error) {
 	return ep, nil
 }
 
-// shellQuote single-quotes value for a POSIX shell; an embedded ' becomes
-// '\”.
+// shellQuote single-quotes value for a POSIX shell. An embedded single
+// quote closes the quoting, is written as a backslash-escaped quote, and
+// reopens it.
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
