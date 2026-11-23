@@ -73,14 +73,117 @@ func TestCumulativeResetByValueDropWithoutStartTime(t *testing.T) {
 	}
 }
 
-func TestCumulativeResetToLowerValueWithinTheSameStartTime(t *testing.T) {
-	// A reset the exporter did not mark with a new start time.
+func TestCumulativeDropWithinTheSameStartTimeIsNotAReset(t *testing.T) {
+	// A cumulative UpDownCounter may go down without a restart. Within one
+	// start time the latest value is the run's value: 5, 3, 4 is 4, not 9.
 	got := cumulativeTokens(t, "input",
+		cum{value: 5, start: 5, when: 10, order: 1},
+		cum{value: 3, start: 5, when: 20, order: 2},
+		cum{value: 4, start: 5, when: 30, order: 3},
+	)
+	if got != 4 {
+		t.Fatalf("got %v, want 4", got)
+	}
+	drop := cumulativeTokens(t, "input",
 		cum{value: 1000, start: 5, when: 10, order: 1},
 		cum{value: 500, start: 5, when: 20, order: 2},
 	)
+	if drop != 500 {
+		t.Fatalf("got %v, want 500 (same start time is one run)", drop)
+	}
+}
+
+func TestCumulativeResourceChangeWithinOneStartTimeIsOneRun(t *testing.T) {
+	// The resource gains process.pid mid-run; the start time is unchanged.
+	got := cumulativeTokens(t, "input",
+		cum{value: 1000, start: 1, when: 10, order: 1, instance: "a"},
+		cum{value: 1500, start: 1, when: 20, order: 2, instance: "a pid=7"},
+	)
 	if got != 1500 {
 		t.Fatalf("got %v, want 1500", got)
+	}
+}
+
+func TestCumulativeMixedStartAndNoStartPoints(t *testing.T) {
+	// Only some points carry a start time. A point without one joins the run
+	// whose start is the latest at or before its time.
+	got := cumulativeTokens(t, "input",
+		cum{value: 1000, start: 1, when: 10, order: 1},
+		cum{value: 1500, when: 20, order: 2, instance: "other"},
+	)
+	if got != 1500 {
+		t.Fatalf("got %v, want 1500", got)
+	}
+	// An older start-time point does not replace a later no-start point.
+	got = cumulativeTokens(t, "input",
+		cum{value: 1500, when: 20, order: 1},
+		cum{value: 1000, start: 1, when: 10, order: 2},
+	)
+	if got != 1500 {
+		t.Fatalf("got %v, want 1500", got)
+	}
+	// Two runs by start time; the no-start point belongs to the second.
+	got = cumulativeTokens(t, "input",
+		cum{value: 1000, start: 1, when: 10, order: 1},
+		cum{value: 200, start: 30, when: 40, order: 2},
+		cum{value: 500, when: 50, order: 3},
+	)
+	if got != 1500 {
+		t.Fatalf("got %v, want 1500", got)
+	}
+	// A no-start point before every start time is its own run.
+	got = cumulativeTokens(t, "input",
+		cum{value: 300, when: 5, order: 1},
+		cum{value: 1000, start: 10, when: 20, order: 2},
+	)
+	if got != 1300 {
+		t.Fatalf("got %v, want 1300", got)
+	}
+}
+
+func TestCumulativeSameTimeIsOnePoint(t *testing.T) {
+	// Same timestamp, different values: an update of one point, the one
+	// stored last wins. Not 1900, and not a reset.
+	got := cumulativeTokens(t, "input",
+		cum{value: 1000, when: 10, order: 1},
+		cum{value: 900, when: 10, order: 2},
+	)
+	if got != 900 {
+		t.Fatalf("no start: got %v, want 900", got)
+	}
+	got = cumulativeTokens(t, "input",
+		cum{value: 900, when: 10, order: 1},
+		cum{value: 1000, when: 10, order: 2},
+		cum{value: 1200, when: 20, order: 3},
+	)
+	if got != 1200 {
+		t.Fatalf("no start, later point: got %v, want 1200", got)
+	}
+	got = cumulativeTokens(t, "input",
+		cum{value: 1000, start: 1, when: 10, order: 1},
+		cum{value: 900, start: 1, when: 10, order: 2},
+	)
+	if got != 900 {
+		t.Fatalf("start: got %v, want 900", got)
+	}
+}
+
+func TestCumulativeKnownLimits(t *testing.T) {
+	// Without a start time, a restart whose first value is not lower than
+	// the last is not seen: 100 then a new run at 150 reads as 150.
+	if got := cumulativeTokens(t, "input",
+		cum{value: 100, when: 10, order: 1},
+		cum{value: 150, when: 20, order: 2},
+	); got != 150 {
+		t.Fatalf("got %v, want 150 (documented undercount)", got)
+	}
+	// Two concurrent processes with the same start time (Gemini has no
+	// process.pid) read as one run, so the lower one is lost.
+	if got := cumulativeTokens(t, "input",
+		cum{value: 100, start: 1, when: 10, order: 1},
+		cum{value: 50, start: 1, when: 11, order: 2},
+	); got != 50 {
+		t.Fatalf("got %v, want 50 (documented limit)", got)
 	}
 }
 

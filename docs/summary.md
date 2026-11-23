@@ -90,14 +90,25 @@ recorded from `total_tokens`.
 
 Delta metric points are summed. Gauges keep the latest point for that
 attribute set. A cumulative series (same name and attributes) keeps the
-latest value of each run and adds the runs up. A run is one resource and
-`StartTimeUnixNano`; within it, a value lower than the one before also starts
-a new run. So when an agent resumes a session in a new process (`gemini
---resume` keeps the `session.id`, but its counters restart at 0), 1000 before
-the resume and 500 after it is 1500, not 500. Two processes exporting the
-same series at once each count once when their start times or resources
-differ. Without a start time and with the same resource their interleaved
-points look like resets and are over-counted. A Codex model id that contains `:` leaves the
+latest value of each process run and adds the runs up. So when an agent
+resumes a session in a new process (`gemini --resume` keeps the
+`session.id`, but its counters restart at 0), 1000 before the resume and 500
+after it is 1500, not 500.
+
+- A point with `StartTimeUnixNano` belongs to the run with that start time.
+  The latest point of the run (by time, then by storage order) is its value;
+  a lower value inside one start time is not a reset, because a cumulative
+  UpDownCounter may go down (5, 3, 4 is 4). The resource is ignored here, so
+  a resource that gains an attribute mid-run (`process.pid`) does not split
+  it.
+- A point without a start time joins the run with the latest start time at
+  or before its timestamp. If there is none, points are grouped by resource
+  and ordered by time, and a value lower than the one before starts a new
+  run.
+- Points of one group with the same timestamp are one point: the one stored
+  last wins (1000 then 900 at the same time is 900, not 1900).
+
+The limits are in [docs/gaps.md](gaps.md). A Codex model id that contains `:` leaves the
 turn metrics missing; the summary quotes the exporter error and uses the log
 and span fallbacks above.
 

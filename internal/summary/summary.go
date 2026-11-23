@@ -824,7 +824,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(claude) > 0 {
-		return sumBy(claude, "type"), record.Str("metrics " + claudeTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+		return sumBy(claude, "type"), record.Str("metrics " + claudeTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var codex []point
 	for _, p := range points {
@@ -833,7 +833,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(codex) > 0 {
-		return sumBy(codex, "token_type"), record.Str("metrics " + codexTokenMetric), record.Str("sum of delta histogram points; a cumulative series keeps its latest point")
+		return sumBy(codex, "token_type"), record.Str("metrics " + codexTokenMetric), record.Str("sum of delta histogram points; a cumulative series adds up the latest point of each process run")
 	}
 	var claudeLogs []record.Record
 	for _, rec := range records {
@@ -873,7 +873,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(piMetrics) > 0 {
-		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run")
 	}
 	var grok []point
 	for _, p := range points {
@@ -882,7 +882,7 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 		}
 	}
 	if len(grok) > 0 {
-		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
+		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series adds up the latest point of each process run. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
 	}
 	var grokLogs []record.Record
 	for _, rec := range records {
@@ -1611,41 +1611,80 @@ func later(a, b point) bool {
 // run is one segment, and the total is the sum of every segment's last value:
 // 1000 in the first run and 500 after a resume is 1500, not 500.
 //
-// Points are first split by resource and StartTimeUnixNano: the OTel SDK
+// Points with a StartTimeUnixNano are keyed by start time only. The OTel SDK
 // keeps one start time for the life of a cumulative stream, so a new start
-// time is a new run, and two processes exporting at once (different start
-// times or resources) are each counted once, not interleaved. Within one
-// split, points are ordered by time and a value that drops below the previous
-// one also starts a new segment. That catches a reset from an exporter that
-// sends no start time (start 0). Two concurrent processes with identical
-// resources and no start time cannot be told apart, and their interleaved
-// points read as resets, which over-counts.
+// time is a new run, and two processes exporting at once with different start
+// times are each counted once. Within one start time the latest point (by
+// time, then storage order) is the run's value; a lower value is not a reset,
+// because a cumulative UpDownCounter may go down (5, 3, 4 is 4). The resource
+// is not part of the key, so a resource that gains an attribute mid-run (for
+// example process.pid) does not split the run.
+//
+// A point without a start time (start 0) joins the run with the latest start
+// time at or before its own time, if there is one. Otherwise it is grouped by
+// resource, ordered by time, and a value lower than the previous one starts a
+// new segment; that is the only way to see a reset from an exporter that
+// sends no start time. Points of one group with the same time are one point:
+// the one stored last wins.
+//
+// Known limits: two concurrent processes with the same start time (and no
+// start time with the same resource) are read as one run or as resets; a
+// restart without a start time whose first value is not lower than the last
+// one is not seen, which undercounts.
 func cumulativeTotal(group []point) float64 {
-	type runKey struct {
-		resource string
-		start    int64
-	}
-	var keys []runKey
-	runs := map[runKey][]point{}
+	var starts []int64
+	byStart := map[int64]point{}
 	for _, p := range group {
-		key := runKey{p.resource, p.start}
-		if _, ok := runs[key]; !ok {
-			keys = append(keys, key)
+		if p.start == 0 {
+			continue
 		}
-		runs[key] = append(runs[key], p)
+		best, ok := byStart[p.start]
+		if !ok {
+			starts = append(starts, p.start)
+		}
+		if !ok || later(p, best) {
+			byStart[p.start] = p
+		}
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+	var resources []string
+	loose := map[string][]point{}
+	for _, p := range group {
+		if p.start != 0 {
+			continue
+		}
+		i := sort.Search(len(starts), func(i int) bool { return starts[i] > p.time }) - 1
+		if i >= 0 {
+			if best := byStart[starts[i]]; later(p, best) {
+				p.start = starts[i]
+				byStart[starts[i]] = p
+			}
+			continue
+		}
+		if _, ok := loose[p.resource]; !ok {
+			resources = append(resources, p.resource)
+		}
+		loose[p.resource] = append(loose[p.resource], p)
 	}
 	total := 0.0
-	for _, key := range keys {
-		run := append([]point(nil), runs[key]...)
+	for _, start := range starts {
+		total += byStart[start].value
+	}
+	for _, resource := range resources {
+		run := append([]point(nil), loose[resource]...)
 		sort.SliceStable(run, func(i, j int) bool { return later(run[j], run[i]) })
-		last := run[0].value
-		for _, p := range run[1:] {
-			if p.value < last {
-				total += last
+		var last point
+		for i, p := range run {
+			switch {
+			case i == 0:
+			case p.time == last.time:
+				// Same time: an update of the same point, not a new value.
+			case p.value < last.value:
+				total += last.value
 			}
-			last = p.value
+			last = p
 		}
-		total += last
+		total += last.value
 	}
 	return total
 }
