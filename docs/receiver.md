@@ -55,6 +55,24 @@ sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
 
+### WAL mode and backups
+
+The database is opened in SQLite WAL mode with a 5-second busy timeout, so
+`sdf summary` and other readers can run while the receiver writes. A
+database sdf cannot write (a read-only file or directory) keeps its
+existing journal mode and is still readable. In WAL mode SQLite keeps two
+sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
+`sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
+until a checkpoint, so do not copy or delete the main file alone. Back up
+with SQLite's online backup instead:
+
+```bash
+sqlite3 sdf-telemetry.sqlite ".backup sdf-telemetry.backup.sqlite"
+```
+
+WAL needs shared memory between processes on one host, so keep the
+database on a local disk, not a network filesystem (NFS, SMB).
+
 ## Optional token authentication
 
 `--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or

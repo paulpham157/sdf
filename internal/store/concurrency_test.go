@@ -27,8 +27,8 @@ func TestOpenSetsWALAndBusyTimeout(t *testing.T) {
 	if mode != "wal" {
 		t.Errorf("journal_mode = %q, want wal", mode)
 	}
-	if timeout <= 0 {
-		t.Errorf("busy_timeout = %d, want > 0", timeout)
+	if timeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000", timeout)
 	}
 }
 

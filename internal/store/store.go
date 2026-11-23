@@ -11,6 +11,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -101,9 +102,11 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	s := &Store{path: path, db: db}
-	if err := setWAL(db); err != nil {
-		_ = db.Close()
-		return nil, err
+	if !private(path) {
+		if err := setWAL(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
@@ -116,9 +119,18 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// private reports whether path names an in-memory (":memory:") or temporary
+// ("") database: one connection's own, so no other process shares it and WAL
+// does not apply.
+func private(path string) bool { return path == "" || path == ":memory:" }
+
 // dsn is a file: URI for path with query. The path is made absolute so a
-// relative --db keeps meaning the same file.
+// relative --db keeps meaning the same file; ":memory:" and "" keep their
+// SQLite meaning.
 func dsn(path, query string) (string, error) {
+	if private(path) {
+		return "file:" + path + "?" + query, nil
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -130,7 +142,22 @@ func dsn(path, query string) (string, error) {
 	return (&url.URL{Scheme: "file", Path: p, RawQuery: query}).String(), nil
 }
 
-// setWAL switches the file to WAL unless it already is.
+// sqliteReadonly is SQLITE_READONLY, the primary result code for a write to
+// a database this process cannot write.
+const sqliteReadonly = 8
+
+func sqliteCode(err error) int {
+	var coded interface{ Code() int }
+	if errors.As(err, &coded) {
+		return coded.Code()
+	}
+	return 0
+}
+
+// setWAL switches the file to WAL unless it already is. A file this process
+// cannot write (a read-only file, directory, or mount) keeps its current
+// journal mode: switching needs a write, and reading it (sdf summary) works
+// in either mode, as it did before Open set WAL.
 func setWAL(db *sql.DB) error {
 	var mode string
 	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
@@ -140,6 +167,9 @@ func setWAL(db *sql.DB) error {
 		return nil
 	}
 	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
+		if sqliteCode(err)&0xff == sqliteReadonly {
+			return nil
+		}
 		return err
 	}
 	if !strings.EqualFold(mode, "wal") {
