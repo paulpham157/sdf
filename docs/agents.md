@@ -25,7 +25,9 @@ for local Desktop Code-tab sessions.
 
 OTLP protocol is `grpc`, `http/protobuf`, or `http/json`. Claude Code has no
 default protocol, so set one. This receiver accepts all three. HTTP JSON and
-HTTP protobuf use port 4318. gRPC uses port 4317. `Content-Encoding: gzip`
+HTTP protobuf use port 4318 and send `Content-Type: application/json` or
+`application/x-protobuf`. Any other media type is HTTP 415. A request that
+carries an `Origin` header is HTTP 403. gRPC uses port 4317. `Content-Encoding: gzip`
 is inflated, including on a chunked body. The decompressed payload has the
 same 8,000,000 byte cap as the raw body. Any other content encoding is
 rejected with HTTP 415. gRPC `grpc-encoding: gzip` is accepted.

@@ -50,9 +50,14 @@ make build
 That listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
 `127.0.0.1:4317`, writes `sdf-telemetry.sqlite` in the current directory, and
 serves a read-only UI at `http://127.0.0.1:4320/`. Authentication is off by
-default; keep the bind address on localhost. `--otlp-token`,
-`--otlp-token-file`, `SDF_OTLP_TOKEN`, or `SDF_OTLP_TOKEN_FILE` is optional:
-when a token is set, OTLP writes require `Authorization: Bearer <token>`.
+default; keep both binds on localhost. `--otlp-token`, `--otlp-token-file`,
+`SDF_OTLP_TOKEN`, or `SDF_OTLP_TOKEN_FILE` is optional: when a token is set,
+OTLP writes require `Authorization: Bearer <token>`. The HTTP receiver stores
+a body only when `Content-Type` is `application/json` or `application/x-protobuf`,
+and it refuses a request that carries `Origin`. On a loopback bind it also
+refuses a `Host` other than `localhost`, `127.0.0.1`, or `[::1]`. The UI
+refuses that same foreign `Host` on every route. A token does not bypass
+those checks. Details are in [docs/receiver.md](docs/receiver.md).
 `GET /health` stays open and returns `{"status":"ok"}`.
 
 ```bash

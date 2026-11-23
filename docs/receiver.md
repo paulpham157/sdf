@@ -8,6 +8,27 @@ the bind address on localhost. Override with `--host`, `--port` (HTTP),
 `--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
 `SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
+The HTTP receiver stores a body only for `Content-Type: application/json`
+or `application/x-protobuf`. The type match is case-insensitive, and
+parameters such as `charset` are allowed. Any other type, including a
+missing `Content-Type`, `text/plain`, `multipart/form-data`, and
+`application/x-www-form-urlencoded`, is HTTP 415 and is not written.
+`POST /v1/sessions` accepts only `application/json` under that rule.
+A request that includes an `Origin` header is HTTP 403 and is not written,
+on every bind. Agent exporters, curl, and the git and session hooks do not
+send `Origin`. A browser does, including a `no-cors` post of a
+CORS-safelisted type, which is why the header is refused instead of
+answered with CORS.
+
+When the HTTP listener is bound to a loopback address, `Host` must be
+`localhost`, `127.0.0.1`, or `[::1]`. The port may be omitted; a port that
+is present has to be the bound port. Any other host is HTTP 403 and is not
+written. That stops a page that rebinds its own name onto 127.0.0.1.
+`--host` set to a non-loopback address does not apply this list. A remote
+exporter sends whatever address it was given, and that bind is already an
+exposure; `Origin` and the media-type check still apply. gRPC on 4317 is
+unchanged. Browsers do not speak that protocol.
+
 The same process serves a read-only UI at `http://127.0.0.1:4320/` unless
 you pass `--no-ui`. `--ui-addr` moves the UI. `--host` does not: the page
 stays on localhost when the receivers are bound wider. `--prices`, `--repo`,
@@ -15,8 +36,7 @@ stays on localhost when the receivers are bound wider. `--prices`, `--repo`,
 names one local ceiling file; without it the page has no budget.
 
 `GET /health` returns `{"status":"ok"}`. HTTP exports are `POST /v1/traces`,
-`POST /v1/metrics`, and `POST /v1/logs`, `Content-Type: application/json` or
-`application/x-protobuf`. The body may use `Content-Length` or
+`POST /v1/metrics`, and `POST /v1/logs`. The body may use `Content-Length` or
 `Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
 are chunked and omit `Content-Length`. When both headers are present, chunked
 encoding wins. `Content-Encoding: gzip` is inflated after the body is
@@ -55,7 +75,9 @@ When a token is set, these requests must send `Authorization: Bearer <token>`:
 
 A missing or wrong token is HTTP 401 or gRPC `Unauthenticated`. The comparison
 is constant-time. The token is not written to the request log. `GET /health`
-does not require the token, so `sdf init --check` still works.
+does not require the token, so `sdf init --check` still works. A valid token
+does not bypass the media-type, `Origin`, or loopback `Host` checks above.
+Those still return 415 or 403 and write nothing.
 
 Point an OpenTelemetry exporter at the receiver with:
 
@@ -81,6 +103,15 @@ on localhost unless you trust the network.
 
 The process prints `UI listening on http://127.0.0.1:4320/` (the default).
 Open that URL on the same machine.
+
+The UI checks `Host` before every route, including the HTML, CSS, and
+script. `localhost`, `127.0.0.1`, and `[::1]` are allowed. A non-loopback
+`--ui-addr` also allows that configured host. The port may be omitted; if
+it is present it has to be the bound port. Anything else is HTTP 403 and
+the handler does not run, so a rebound name cannot read `/api/summary` or
+trigger the `--github` lookups. The listener limits header reads to 5s,
+request reads to 30s, writes (including a GitHub lookup) to 3 minutes, and
+idle connections to 90s.
 
 The page has three views. Overview is the total across sessions and the cost
 per accepted outcome, including that figure per agent. Sessions lists every
@@ -122,9 +153,15 @@ scripts, or anything else from the network.
 `sdf serve --host 0.0.0.0` exposes the OTLP receivers on every interface.
 Those payloads can include prompts and filesystem paths when the agent is
 opted in. A bearer token is a shared secret, not a substitute for a trusted
-network. The UI still binds to `127.0.0.1` in that case. `--ui-addr
-0.0.0.0:4320` exposes the same telemetry in a browser and prints a warning.
-Do not do that on a network you do not trust.
+network. On that bind the HTTP receiver still rejects an `Origin` and a
+non-OTLP media type. It does not filter `Host`, because a remote exporter's
+`Host` is the address it was given. The UI still binds to `127.0.0.1` in
+that case. `--ui-addr 0.0.0.0:4320` listens on every interface and prints a
+warning. Requests are still limited to `Host` `0.0.0.0`, `localhost`,
+`127.0.0.1`, or `[::1]`, so a browser that opens the machine's LAN address
+is refused until `--ui-addr` names that address. The Host check is not
+authentication: anyone who can open the socket can send an allowed name.
+Do not bind the UI on a network you do not trust.
 
 An empty database shows an empty state that points at `sdf init`.
 

@@ -1,6 +1,12 @@
 // Package server is the local OTLP receiver.
 //
 // HTTP listens for JSON and protobuf on /v1/traces, /v1/metrics, and /v1/logs.
+// The media type has to be application/json or application/x-protobuf.
+// Anything else, including a missing Content-Type, is 415 and is not written.
+// A request that carries an Origin header is 403 and is not written. When the
+// listener is bound to loopback, Host must be localhost, 127.0.0.1, or [::1]
+// (port optional, or the bound port); any other host is 403. A non-loopback
+// bind does not apply that Host check.
 // A body may use Content-Length or Transfer-Encoding: chunked. Chunked wins
 // when both are present. Content-Encoding: gzip is inflated after the body
 // is read; the decompressed size shares the same limit as the raw body.
@@ -45,10 +51,12 @@ type Server struct {
 	// Log receives request lines when Quiet is false. When nil, stderr is used.
 	Log io.Writer
 
-	httpLn  net.Listener
-	grpcLn  net.Listener
-	grpcSrv *grpc.Server
-	log     io.Writer
+	httpLn   net.Listener
+	grpcLn   net.Listener
+	grpcSrv  *grpc.Server
+	log      io.Writer
+	httpHost string
+	httpPort string
 }
 
 // Start binds both listeners and serves until Shutdown.
@@ -76,8 +84,16 @@ func (s *Server) Start() error {
 		_ = httpLn.Close()
 		return err
 	}
+	httpHost, httpPort, err := net.SplitHostPort(httpLn.Addr().String())
+	if err != nil {
+		_ = httpLn.Close()
+		_ = grpcLn.Close()
+		return err
+	}
 	s.httpLn = httpLn
 	s.grpcLn = grpcLn
+	s.httpHost = httpHost
+	s.httpPort = httpPort
 	// OTLP Export RPCs are unary. The stream interceptor is defense in depth
 	// if a streaming method is added later.
 	s.grpcSrv = grpc.NewServer(
