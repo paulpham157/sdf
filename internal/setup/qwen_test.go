@@ -197,7 +197,7 @@ func TestQwenRefusesFilesItCannotRewriteSafely(t *testing.T) {
 
 func TestQwenRefusesReadOnlyTarget(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("root can write a 0400 file")
+		t.Skip("root can open a 0466 file it does not own for writing")
 	}
 	clearQwenEnv(t)
 	home := t.TempDir()

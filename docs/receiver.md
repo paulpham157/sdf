@@ -237,7 +237,11 @@ file unless you pass `--write`. An existing file is copied to a sibling
 ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
 the new copy gets a timestamped name). The new bytes are written to a temp
 file and renamed into place, keeping the file mode. A read-only file is
-refused and left alone. Without `--write`, the JSON agents print only the
+refused and left alone. A symlink is written through; a link to a file
+that does not exist yet creates it, but sdf creates missing directories for
+it only inside the agent's config directory or `$HOME` (a link to
+`/elsewhere/missing/config.toml` is refused). A symlink loop is refused
+with a message saying so. Without `--write`, the JSON agents print only the
 keys sdf would set, not the rest of the file. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 

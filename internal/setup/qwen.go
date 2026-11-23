@@ -412,7 +412,7 @@ func qwenResolveLink(path string) (string, error) {
 		}
 		current = link
 	}
-	return "", fmt.Errorf("%s: too many levels of symlinks", path)
+	return "", loopErr(path)
 }
 
 // qwenRename is replaced in tests to simulate a failed write.

@@ -256,3 +256,171 @@ func TestQwenEmptySettingsFileIsRefused(t *testing.T) {
 		assertUntouched(t, path, body)
 	}
 }
+
+// A dangling symlink whose directory is missing and outside the config dir
+// and $HOME is refused for every agent: sdf does not create directories
+// there (writeAtomic would MkdirAll them). Grok regressed to creating them
+// when it moved to replaceFile; the other agents already did.
+func TestDanglingSymlinkIntoMissingDirOutsideHomeIsRefused(t *testing.T) {
+	notRoot(t)
+	clearGrokEnv(t)
+	cases := map[string]func(home string) (Request, string){
+		"grok": func(h string) (Request, string) {
+			return grokWriteReq(h), filepath.Join(h, ".grok", "config.toml")
+		},
+		"grok hook": func(h string) (Request, string) {
+			return grokWriteReq(h), filepath.Join(h, ".grok", "hooks", "sdf-session.json")
+		},
+		"gemini": func(h string) (Request, string) {
+			return geminiRequest(h, true), filepath.Join(h, ".gemini", "settings.json")
+		},
+		"claude-code": func(h string) (Request, string) {
+			return Request{Agent: "claude-code", Home: h, Write: true, Endpoint: endpoint()}, filepath.Join(h, ".claude", "settings.json")
+		},
+		"codex": func(h string) (Request, string) {
+			return Request{Agent: "codex", Home: h, CodexHome: filepath.Join(h, ".codex"), Write: true, Endpoint: endpoint()}, filepath.Join(h, ".codex", "config.toml")
+		},
+		"opencode": func(h string) (Request, string) {
+			return Request{Agent: "opencode", Home: h, Write: true, Endpoint: endpoint()}, filepath.Join(h, ".config", "sdf", "opencode.env")
+		},
+		"pi": func(h string) (Request, string) {
+			return Request{Agent: "pi", Home: h, ProjectDir: h, Write: true, Endpoint: endpoint()}, filepath.Join(h, ".pi", "settings.json")
+		},
+		"copilot": func(h string) (Request, string) {
+			return Request{Agent: "copilot", Home: h, Write: true, Endpoint: endpoint()}, copilotEnvPath(h)
+		},
+		"qwen": func(h string) (Request, string) {
+			return qwenRequest(h, true), filepath.Join(h, ".qwen", "settings.json")
+		},
+	}
+	clearQwenEnv(t)
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			outside := filepath.Join(t.TempDir(), "missing")
+			req, link := setup(home)
+			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(outside, filepath.Base(link)), link); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Run(req)
+			if err == nil || !strings.Contains(err.Error(), "does not exist and is outside") {
+				t.Fatalf("want a refusal, got %v", err)
+			}
+			if _, err := os.Stat(outside); !os.IsNotExist(err) {
+				t.Fatalf("created %s: %v", outside, err)
+			}
+		})
+	}
+}
+
+// A dangling link into a missing directory inside $HOME (a fresh dotfiles
+// checkout) is still created, and so is one whose directory exists.
+func TestDanglingSymlinkIntoMissingDirInsideHomeIsCreated(t *testing.T) {
+	notRoot(t)
+	clearGrokEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config := filepath.Join(home, ".grok", "config.toml")
+	target := filepath.Join(home, "dotfiles", "grok", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, config); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(grokWriteReq(home))
+	if err != nil || !res.Wrote {
+		t.Fatal(err, res.Text)
+	}
+	if !strings.Contains(mustReadString(t, target), "[telemetry]") {
+		t.Fatal("target not written")
+	}
+	outsideDir := filepath.Join(t.TempDir(), "exists")
+	if err := os.MkdirAll(outsideDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home2 := t.TempDir()
+	t.Setenv("HOME", home2)
+	config2 := filepath.Join(home2, ".grok", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config2), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outsideDir, "config.toml"), config2); err != nil {
+		t.Fatal(err)
+	}
+	res, err = Run(grokWriteReq(home2))
+	if err != nil || !strings.Contains(res.Text, "warning: ") {
+		t.Fatal(err, res.Text)
+	}
+}
+
+func TestGrokSymlinkOutsideHomeWarns(t *testing.T) {
+	notRoot(t)
+	clearGrokEnv(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	real := filepath.Join(t.TempDir(), "elsewhere", "config.toml")
+	writeFileMode(t, real, "x = 1\n", 0o600)
+	config := filepath.Join(home, ".grok", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(config), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, config); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(grokWriteReq(home))
+	if err != nil || !res.Wrote {
+		t.Fatal(err, res.Text)
+	}
+	if !strings.Contains(res.Text, "warning: ") || !strings.Contains(res.Text, "outside") || !strings.Contains(res.Text, realPath(real)) {
+		t.Fatal(res.Text)
+	}
+	if got := mustReadString(t, real); !strings.HasPrefix(got, "x = 1\n") || !strings.Contains(got, "[telemetry]") {
+		t.Fatalf("target not written: %s", got)
+	}
+}
+
+// A symlink loop gets a clear message, for Grok and every other agent.
+func TestSymlinkLoopHasAClearError(t *testing.T) {
+	clearGrokEnv(t)
+	clearQwenEnv(t)
+	cases := map[string]func(home string) (Request, string){
+		"grok": func(h string) (Request, string) { return grokWriteReq(h), filepath.Join(h, ".grok", "config.toml") },
+		"gemini": func(h string) (Request, string) {
+			return geminiRequest(h, true), filepath.Join(h, ".gemini", "settings.json")
+		},
+		"qwen": func(h string) (Request, string) {
+			return qwenRequest(h, true), filepath.Join(h, ".qwen", "settings.json")
+		},
+		"copilot": func(h string) (Request, string) {
+			return Request{Agent: "copilot", Home: h, Write: true, Endpoint: endpoint()}, copilotEnvPath(h)
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			req, link := setup(home)
+			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			other := link + ".loop"
+			if err := os.Symlink(filepath.Base(other), link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Base(link), other); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Run(req)
+			if err == nil || !strings.Contains(err.Error(), "is a symlink loop") || !strings.Contains(err.Error(), "it was not changed") {
+				t.Fatalf("want a loop error, got %v", err)
+			}
+			if backups, _ := filepath.Glob(link + ".sdf-bak*"); len(backups) != 0 {
+				t.Fatal(backups)
+			}
+		})
+	}
+}
