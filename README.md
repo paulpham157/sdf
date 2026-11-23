@@ -162,7 +162,7 @@ sdf summary            # one block per session, then unattributed records
 sdf summary --json
 sdf summary --session ID --all-spans
 sdf decision add --id ID --statement TEXT --status hypothesis
-sdf decision link --relation implements --from decision:ID --to session:ID
+sdf decision link --relation implements --from session:ID --to decision:ID  # evidence -> decision
 sdf decision link --relation supersedes --from decision:NEW --to decision:OLD  # rejects self-links, duplicates, cycles
 sdf decision list      # decisions, superseded or active, and edges; --json is GET /api/decisions
 sdf decision retract --id ID --reason TEXT   # append-only; shows as retracted, deletes nothing
