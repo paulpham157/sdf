@@ -116,7 +116,7 @@ Read the environment of the shell you are running in. Use the first value that i
 - Pi: the basename of `$PI_SESSION_FILE` with a trailing `.jsonl` removed. Do not use `$PI_SESSION_ID` (it is only the short trailing id).
 - Grok CLI: `$GROK_SESSION_ID`.
 
-The sdf git hook reads `$CODEX_THREAD_ID`, `$OPENCODE_SESSION_ID`, `$PI_SESSION_FILE`, and `$GROK_SESSION_ID`. It does not read Claude Code or Qwen variables. If no session id is available, or a link returns `unknown reference`, keep the record and skip the session link.
+The sdf git hook reads `$CLAUDE_CODE_SESSION_ID`, `$CODEX_THREAD_ID`, `$QWEN_CODE_SESSION_ID`, `$OPENCODE_SESSION_ID`, `$PI_SESSION_FILE`, and `$GROK_SESSION_ID`, and attributes a commit only when exactly one of them is set. If no session id is available, or a link returns `unknown reference`, keep the record and skip the session link.
 
 For a commit SHA, `git rev-parse HEAD` is the usual source, but link it only when it is already in the store.
 
