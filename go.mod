@@ -2,6 +2,8 @@ module github.com/paulpham157/sdf
 
 go 1.26.0
 
+toolchain go1.26.11
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	go.opentelemetry.io/proto/otlp v1.11.1
