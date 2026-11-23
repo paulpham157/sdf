@@ -13,8 +13,10 @@ import (
 	"github.com/paulpham157/sdf/internal/ledger"
 )
 
-// Exit codes of sdf audit: 0 intact, 1 broken or a failed check, 2 usage,
-// 3 the ledger or an --expect-head-file could not be opened or read.
+// Exit codes of sdf audit: 0 intact; 1 broken, a failed check, or a file
+// that is not a readable ledger database; 2 usage; 3 the ledger or an
+// --expect-head-file could not be opened or read (permissions, a missing
+// directory, EIO, a hot journal).
 const exitIO = 3
 
 // ioError marks an error reading an input file (exit 3, not 2).
@@ -39,7 +41,7 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, auditUsage)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
+		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(args[0]))
 		return 2
 	}
 }
@@ -70,14 +72,14 @@ func parseAuditFlags(name, usage string, args []string, stdout, stderr io.Writer
 				return "", false, 2, true
 			}
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(arg))
 			return "", false, 2, true
 		}
 	}
 	if path == "" {
 		p, err := ledger.DefaultPath()
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			fmt.Fprintf(stderr, "%s: %s\n", name, ledger.Safe(err.Error()))
 			return "", false, exitIO, true
 		}
 		path = p
@@ -117,27 +119,34 @@ func writeJSON(w io.Writer, v any) {
 	_ = enc.Encode(v)
 }
 
-func verifyLedger(name, path string, stderr io.Writer) (ledger.Report, bool) {
+// verifyLedger returns the report, or an exit code when there is none: 1
+// for a file that is not a readable ledger database (garbage, truncated,
+// damaged), 3 for any other failure to open or read it.
+func verifyLedger(name, path string, stderr io.Writer) (ledger.Report, int) {
 	l, err := ledger.Open(path)
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", name, err)
-		return ledger.Report{}, false
+		fmt.Fprintf(stderr, "%s: %s\n", name, ledger.Safe(err.Error()))
+		return ledger.Report{}, exitIO
 	}
 	defer l.Close()
 	rep, err := l.Verify(context.Background())
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: %s: %v\n", name, path, err)
-		return ledger.Report{}, false
+	if errors.Is(err, ledger.ErrCorruptFile) {
+		fmt.Fprintf(stderr, "%s: ledger broken: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
+		return ledger.Report{}, 1
 	}
-	return rep, true
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %s: %s\n", name, ledger.Safe(path), ledger.Safe(err.Error()))
+		return ledger.Report{}, exitIO
+	}
+	return rep, 0
 }
 
 func describeFailure(f *ledger.Failure) string {
 	where := fmt.Sprintf("seq %d", f.Seq)
 	if f.Kind != "" || f.ID != "" {
-		where += fmt.Sprintf(" (%s %q)", f.Kind, f.ID)
+		where += fmt.Sprintf(" (%q %q)", f.Kind, f.ID)
 	}
-	return fmt.Sprintf("%s: %s: %s", where, f.Problem, f.Detail)
+	return fmt.Sprintf("%s: %s: %s", where, ledger.Safe(string(f.Problem)), ledger.Safe(f.Detail))
 }
 
 const auditVerifyUsage = "usage: sdf audit verify [--ledger PATH] [--json] [--require-nonempty] [--expect-head HASH | --expect-head-file PATH]"
@@ -216,7 +225,7 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			}
 			expectFile, expectFileSet = v, true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(arg))
 			return 2
 		}
 	}
@@ -227,7 +236,7 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 	if expectFileSet {
 		v, err := readExpectedHead(expectFile)
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: --expect-head-file: %v\n", name, err)
+			fmt.Fprintf(stderr, "%s: --expect-head-file: %s\n", name, ledger.Safe(err.Error()))
 			var ioErr *ioError
 			if errors.As(err, &ioErr) {
 				return exitIO
@@ -243,17 +252,17 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 	if path == "" {
 		p, err := ledger.DefaultPath()
 		if err != nil {
-			fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			fmt.Fprintf(stderr, "%s: %s\n", name, ledger.Safe(err.Error()))
 			return exitIO
 		}
 		path = p
 	}
-	rep, ok := verifyLedger(name, path, stderr)
-	if !ok {
-		return exitIO
+	rep, code := verifyLedger(name, path, stderr)
+	if code != 0 {
+		return code
 	}
 
-	ok = rep.OK
+	ok := rep.OK
 	emptyFail := requireNonEmpty && rep.Empty
 	if emptyFail {
 		ok = false
@@ -291,17 +300,17 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 	} else {
 		switch {
 		case rep.Empty && emptyFail:
-			fmt.Fprintf(stdout, "ledger empty: %s has no entries, and --require-nonempty was given\n", rep.Path)
+			fmt.Fprintf(stdout, "ledger empty: %s has no entries, and --require-nonempty was given\n", ledger.Safe(rep.Path))
 		case rep.Empty:
-			fmt.Fprintf(stdout, "ledger empty: %s has no entries\n", rep.Path)
+			fmt.Fprintf(stdout, "ledger empty: %s has no entries\n", ledger.Safe(rep.Path))
 		case rep.OK:
-			fmt.Fprintf(stdout, "ledger intact: %s, %d entries\n", rep.Path, rep.Entries)
-			fmt.Fprintf(stdout, "head seq %d entry_hash %s\n", rep.Head.Seq, rep.Head.EntryHash)
+			fmt.Fprintf(stdout, "ledger intact: %s, %d entries\n", ledger.Safe(rep.Path), rep.Entries)
+			fmt.Fprintf(stdout, "head seq %d entry_hash %s\n", rep.Head.Seq, ledger.Safe(rep.Head.EntryHash))
 		default:
-			fmt.Fprintf(stdout, "ledger broken: %s, %d entries\n", rep.Path, rep.Entries)
+			fmt.Fprintf(stdout, "ledger broken: %s, %d entries\n", ledger.Safe(rep.Path), rep.Entries)
 			fmt.Fprintf(stdout, "first failure: %s\n", describeFailure(rep.Failure))
 			if rep.Head != nil {
-				fmt.Fprintf(stdout, "stored head seq %d entry_hash %s (not trustworthy)\n", rep.Head.Seq, rep.Head.EntryHash)
+				fmt.Fprintf(stdout, "stored head seq %d entry_hash %s (not trustworthy)\n", rep.Head.Seq, ledger.Safe(rep.Head.EntryHash))
 			}
 		}
 		if headMatch != nil {
@@ -309,11 +318,11 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			case *headMatch:
 				fmt.Fprintf(stdout, "head matches expected %s\n", expect)
 			case !rep.OK:
-				fmt.Fprintf(stdout, "head not accepted: expected %s, but the chain is broken, so the stored head %s proves nothing\n", expect, actual)
+				fmt.Fprintf(stdout, "head not accepted: expected %s, but the chain is broken, so the stored head %s proves nothing\n", expect, ledger.Safe(actual))
 			case actual == "":
 				fmt.Fprintf(stdout, "head mismatch: expected %s, actual none (the ledger is empty)\n", expect)
 			default:
-				fmt.Fprintf(stdout, "head mismatch: expected %s, actual %s (entries were removed, rewritten, or appended since the head was pinned)\n", expect, actual)
+				fmt.Fprintf(stdout, "head mismatch: expected %s, actual %s (entries were removed, rewritten, or appended since the head was pinned)\n", expect, ledger.Safe(actual))
 			}
 		}
 	}
@@ -329,16 +338,16 @@ func cmdAuditHead(args []string, stdout, stderr io.Writer) int {
 	if done {
 		return code
 	}
-	rep, ok := verifyLedger(name, path, stderr)
-	if !ok {
-		return exitIO
+	rep, code := verifyLedger(name, path, stderr)
+	if code != 0 {
+		return code
 	}
 	if !rep.OK {
 		fmt.Fprintf(stderr, "%s: ledger broken, no head printed: %s (run sdf audit verify)\n", name, describeFailure(rep.Failure))
 		return 1
 	}
 	if rep.Empty || rep.Head == nil {
-		fmt.Fprintf(stderr, "%s: ledger empty: %s has no entries\n", name, rep.Path)
+		fmt.Fprintf(stderr, "%s: ledger empty: %s has no entries\n", name, ledger.Safe(rep.Path))
 		return 1
 	}
 	if asJSON {
@@ -348,6 +357,6 @@ func cmdAuditHead(args []string, stdout, stderr io.Writer) int {
 		}{rep.Path, toAuditEntry(rep.Head)})
 		return 0
 	}
-	fmt.Fprintf(stdout, "seq %d entry_hash %s\n", rep.Head.Seq, rep.Head.EntryHash)
+	fmt.Fprintf(stdout, "seq %d entry_hash %s\n", rep.Head.Seq, ledger.Safe(rep.Head.EntryHash))
 	return 0
 }

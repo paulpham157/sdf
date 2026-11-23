@@ -44,7 +44,9 @@ file read-only (`mode=ro`), and they never change the ledger file.
   serialized. Readers do not block writers. Every connection waits up to 5
   seconds on `SQLITE_BUSY` (`busy_timeout`). An append that still gets
   `SQLITE_BUSY` or `SQLITE_LOCKED` has rolled back, and it is retried with
-  backoff for up to 10 seconds. Commits use `synchronous=FULL`.
+  backoff for up to 10 seconds. The handle's lock is released between
+  attempts, so other calls on the same handle are not blocked while it waits.
+  Commits use `synchronous=FULL`.
 
 ## What is stored
 
@@ -106,12 +108,27 @@ checked by `ledger.ValidID`). This is the same rule as the verifier's
   collide. This keeps ids safe as file names on case-insensitive file systems
   (macOS and Windows defaults).
 
-`Get` returns `ErrInvalidID` for a bad id without looking it up. `Verify`
-reports a stored row whose id breaks these rules as `modified`.
+`Get` matches an id exactly, case included: after appending `TASK-1`,
+`Get(kind, "task-1")` is `ErrNotFound`. Only `Append` folds case, and only
+to refuse a case variant. `Get` returns `ErrInvalidID` for a bad id, and
+`ErrInvalid` for a kind that is empty, not UTF-8, or has a control
+character, in both cases without a lookup. `Verify` reports a stored row
+whose id or kind breaks these rules as `modified`.
 
 `Get` checks the row it reads: its fields, its payload hash, and its entry
 hash. A row that fails is `ErrCorrupt`, wrapped with the kind and id. `Get`
 does not walk the chain; `sdf audit verify` does.
+
+A file that is not a readable SQLite database (garbage, truncated, damaged:
+`SQLITE_NOTADB` or `SQLITE_CORRUPT`) gives an error wrapping
+`ErrCorruptFile`. Other failures to open or read (permissions, a missing
+directory, EIO) are returned as they are.
+
+Every kind, id, and other stored string in an error message or in `sdf
+audit` output is quoted (`%q`), or passed through `ledger.Safe`, which
+quotes a string with any non-printable character. A stored row cannot write
+a terminal escape sequence to the screen (for example `\x1b[2K\r`, which
+erases a line). `--json` output escapes control characters as JSON does.
 
 ## Encoding
 
@@ -143,7 +160,11 @@ Append rejects a hash that is not the hash of `kind` and the payload
 
 Genesis is seq 0: kind `sdf.ledger.genesis/v1`, id `genesis`, payload
 `{"schema":"sdf.ledger/v1"}`, and a `prev_hash` of `sha256:` followed by 64
-zeros.
+zeros. Its `chained_at` is set by the first append, so no fixed value can be
+checked. Genesis and seq 1 are written in one transaction with the same
+timestamp. `verify` checks that genesis has the `chained_at` form and is not
+later than seq 1. (A ledger from an earlier build has a genesis a moment
+earlier than seq 1, which also passes.)
 
 `internal/ledger/ledger_test.go` has known-answer values computed outside Go,
 for checking a writer in another language.
@@ -204,9 +225,12 @@ copy the head somewhere else.
 | Code | `verify` | `head` |
 | --- | --- | --- |
 | 0 | Intact, and every requested check passed | Head printed |
-| 1 | Broken chain, `--require-nonempty` on an empty ledger, or `--expect-head` mismatch | Broken or empty ledger |
+| 1 | Broken chain, a file that is not a readable ledger database (garbage, truncated, damaged), `--require-nonempty` on an empty ledger, or `--expect-head` mismatch | Broken, unreadable-as-a-database, or empty ledger |
 | 2 | Usage: unknown flag, missing value, both `--expect-head` flags, or an expected head that is not `sha256:` + 64 lowercase hex | Usage |
-| 3 | I/O: the ledger cannot be opened or read (not a SQLite file, a directory, permissions, a hot journal in an old rollback-mode file), no default path, or an unreadable `--expect-head-file` | I/O, as for `verify` |
+| 3 | I/O: the ledger cannot be opened or read (a directory, permissions, EIO, a hot journal in an old rollback-mode file), no default path, or an unreadable `--expect-head-file` | I/O, as for `verify` |
+
+For a file that is not a ledger database, and for exit 3, the message goes
+to stderr and nothing goes to stdout, `--json` included.
 
 ### Pinning the head in CI (planned)
 

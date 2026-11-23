@@ -78,7 +78,7 @@ func TestAuditVerifyReportsAHandEditedRow(t *testing.T) {
 	if out.code != 1 {
 		t.Fatalf("exit %d %q %q", out.code, out.stdout, out.stderr)
 	}
-	if !strings.Contains(out.stdout, "ledger broken") || !strings.Contains(out.stdout, `first failure: seq 2 (sdf.task/v1 "task-2"): modified`) {
+	if !strings.Contains(out.stdout, "ledger broken") || !strings.Contains(out.stdout, `first failure: seq 2 ("sdf.task/v1" "task-2"): modified`) {
 		t.Fatalf("%q", out.stdout)
 	}
 
@@ -283,18 +283,52 @@ func TestAuditVerifyExpectHeadUsage(t *testing.T) {
 	}
 }
 
-func TestAuditExitsThreeWhenItCannotRead(t *testing.T) {
+// A file that is not a readable SQLite database (garbage, or truncated) is
+// a broken ledger: exit 1, like a broken chain.
+func TestAuditExitsOneForAFileThatIsNotALedgerDatabase(t *testing.T) {
 	dir := t.TempDir()
 	garbage := filepath.Join(dir, "garbage.db")
 	if err := os.WriteFile(garbage, []byte(strings.Repeat("not a sqlite file ", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := seedLedger(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncated := filepath.Join(dir, "truncated.db")
+	if err := os.WriteFile(truncated, data[:len(data)/2+100], 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
 		{"audit", "verify", "--ledger", garbage},
 		{"audit", "verify", "--ledger", garbage, "--json"},
 		{"audit", "head", "--ledger", garbage},
-		{"audit", "verify", "--ledger", dir},
+		{"audit", "verify", "--ledger", truncated},
 	} {
+		out := run(t, args...)
+		if out.code != 1 || out.stdout != "" || !strings.Contains(out.stderr, "ledger broken") {
+			t.Fatalf("%v: %d %q %q", args, out.code, out.stdout, out.stderr)
+		}
+	}
+}
+
+// Failing to open or read for any other reason is I/O: exit 3.
+func TestAuditExitsThreeWhenItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	cases := [][]string{
+		{"audit", "verify", "--ledger", dir},
+		{"audit", "head", "--ledger", dir},
+	}
+	if os.Geteuid() != 0 {
+		path, _ := seedLedger(t)
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+		cases = append(cases, []string{"audit", "verify", "--ledger", path})
+	}
+	for _, args := range cases {
 		out := run(t, args...)
 		if out.code != 3 || out.stdout != "" || out.stderr == "" {
 			t.Fatalf("%v: %d %q %q", args, out.code, out.stdout, out.stderr)
@@ -324,6 +358,57 @@ func TestAuditVerifyExpectHeadOnABrokenChain(t *testing.T) {
 		t.Fatalf("%d %q", out.code, out.stdout)
 	}
 	if strings.Contains(out.stdout, "head mismatch") {
+		t.Fatalf("%q", out.stdout)
+	}
+}
+
+// A rechained row whose kind holds a terminal escape ("\x1b[2K\r" + "ledger
+// intact") must not reach the terminal raw: it would erase the failure line.
+func TestAuditVerifyNeverPrintsARawEscapeSequence(t *testing.T) {
+	path, _ := seedLedger(t)
+	l, err := ledger.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := l.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Close()
+	forged := head
+	forged.Kind = "sdf.task/v1\x1b[2K\rledger intact"
+	payload := []byte("{}")
+	forged.Hash = ledger.PayloadHash(forged.Kind, payload)
+	forged.EntryHash = ledger.EntryHash(forged)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE ledger_entries SET kind = ?, payload = ?, hash = ?, entry_hash = ? WHERE seq = ?`,
+		string(forged.Kind), payload, forged.Hash, forged.EntryHash, head.Seq); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	for _, args := range [][]string{
+		{"audit", "verify", "--ledger", path},
+		{"audit", "verify", "--ledger", path, "--json"},
+		{"audit", "verify", "--ledger", path, "--expect-head", head.EntryHash},
+		{"audit", "head", "--ledger", path},
+	} {
+		out := run(t, args...)
+		if out.code != 1 {
+			t.Fatalf("%v: exit %d", args, out.code)
+		}
+		if strings.ContainsAny(out.stdout+out.stderr, "\x1b\r") {
+			t.Fatalf("%v: raw control bytes in %q %q", args, out.stdout, out.stderr)
+		}
+		if !strings.Contains(out.stdout+out.stderr, "broken") && !strings.Contains(out.stdout, `"ok": false`) {
+			t.Fatalf("%v: does not say broken: %q %q", args, out.stdout, out.stderr)
+		}
+	}
+	out := run(t, "audit", "verify", "--ledger", path)
+	if !strings.Contains(out.stdout, `first failure: seq 3 ("sdf.task/v1\x1b[2K\rledger intact" "task-3"): modified`) {
 		t.Fatalf("%q", out.stdout)
 	}
 }

@@ -76,16 +76,29 @@ func TestEntryHashKnownAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := ledger.Entry{
-		Seq:       1,
-		Kind:      taskKind,
-		ID:        `t"1`,
-		Hash:      ledger.PayloadHash(taskKind, []byte("{}")),
-		PrevHash:  ledger.ZeroHash,
-		ChainedAt: at,
+	for _, tc := range []struct {
+		id, want string
+	}{
+		// An id Append accepts.
+		{"task-1", "sha256:fe846096f2d352b6e491d9e6d7b5136e95bbb51601c93df240a554fa4da6316d"},
+		// A raw encoding vector for the JSON escaping of '"'. Append would
+		// refuse this id; it is here for writers in other languages.
+		{`t"1`, "sha256:24d4d7c969de143a67dc11243a10cacca1ba43c20eb18ad7775664cfd76ad9c0"},
+	} {
+		e := ledger.Entry{
+			Seq:       1,
+			Kind:      taskKind,
+			ID:        tc.id,
+			Hash:      ledger.PayloadHash(taskKind, []byte("{}")),
+			PrevHash:  ledger.ZeroHash,
+			ChainedAt: at,
+		}
+		if got := ledger.EntryHash(e); got != tc.want {
+			t.Fatalf("%q: %q", tc.id, got)
+		}
 	}
-	if got := ledger.EntryHash(e); got != "sha256:24d4d7c969de143a67dc11243a10cacca1ba43c20eb18ad7775664cfd76ad9c0" {
-		t.Fatalf("%q", got)
+	if ledger.ValidID("task-1") != nil || ledger.ValidID(`t"1`) == nil {
+		t.Fatal("the vectors' ids are no longer what the comments say")
 	}
 }
 
@@ -339,7 +352,7 @@ func TestGetReportsAHandEditedPayload(t *testing.T) {
 	if !errors.Is(err, ledger.ErrCorrupt) {
 		t.Fatalf("err %v", err)
 	}
-	if !strings.Contains(err.Error(), `sdf.task/v1 "task-2"`) {
+	if !strings.Contains(err.Error(), `"sdf.task/v1" "task-2"`) {
 		t.Fatalf("error does not name kind and id: %v", err)
 	}
 	if got != nil || e != (ledger.Entry{}) {

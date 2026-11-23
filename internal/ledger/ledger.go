@@ -117,7 +117,24 @@ var (
 	// ErrInvalidID means an id breaks the id rules (see ValidID). It wraps
 	// ErrInvalid, so errors.Is(err, ErrInvalid) holds too.
 	ErrInvalidID = fmt.Errorf("%w: invalid id", ErrInvalid)
+	// ErrCorruptFile means the file is not a readable SQLite database: not
+	// SQLite at all, truncated, or damaged (SQLITE_NOTADB, SQLITE_CORRUPT).
+	// It is wrapped together with the driver error. Other failures to open
+	// or read (permissions, a missing directory, EIO) are returned as is.
+	ErrCorruptFile = errors.New("ledger: file is not a readable ledger database")
 )
+
+// classify wraps a SQLite NOTADB or CORRUPT error with ErrCorruptFile.
+func classify(err error) error {
+	if err == nil || errors.Is(err, ErrCorruptFile) {
+		return err
+	}
+	switch sqliteCode(err) & 0xff {
+	case 11, 26: // SQLITE_CORRUPT, SQLITE_NOTADB
+		return fmt.Errorf("%w: %w", ErrCorruptFile, err)
+	}
+	return err
+}
 
 // IDPattern is the id rule, the same pattern as task.ValidID in the
 // verifier (internal/task): 1 to MaxIDLen ASCII letters, digits, ".", "_",
@@ -332,6 +349,17 @@ func idProblem(id string) string {
 	return ""
 }
 
+// Safe returns s unchanged when every rune in it is printable (no control
+// characters, so no terminal escape sequences), and as a Go-quoted ASCII
+// string otherwise. Use it for any stored string shown to a person that is
+// not already quoted with %q.
+func Safe(s string) string {
+	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) < 0 {
+		return s
+	}
+	return strconv.QuoteToASCII(s)
+}
+
 // asciiLower folds A-Z to a-z and leaves every other byte alone, as
 // SQLite's NOCASE does.
 func asciiLower(s string) string {
@@ -405,7 +433,7 @@ func (s *Store) readDB(ctx context.Context) (*sql.DB, error) {
 	}
 	if err != nil {
 		if sqliteCode(err) == sqliteReadonlyRollback {
-			return nil, fmt.Errorf("ledger: %s has a hot journal from an interrupted write in the old rollback-journal mode; "+
+			return nil, fmt.Errorf("ledger: %q has a hot journal from an interrupted write in the old rollback-journal mode; "+
 				"reading it would mean rolling that write back, and reads do not write. The next append rolls it back "+
 				"and switches the file to WAL: %w", s.path, err)
 		}
@@ -545,19 +573,19 @@ func (s *Store) Append(ctx context.Context, kind Kind, id string, canonical []by
 	if hash != PayloadHash(kind, canonical) {
 		return Entry{}, ErrHashMismatch
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	db, err := s.writeDB()
-	if err != nil {
-		return Entry{}, err
-	}
+	// s.mu is held for one attempt at a time, never across a retry sleep.
 	var entry Entry
-	err = retryBusy(ctx, func() error {
-		var err error
+	err := retryBusy(ctx, func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		db, err := s.writeDB()
+		if err != nil {
+			return err
+		}
 		entry, err = appendOnce(ctx, db, kind, id, canonical, hash)
 		return err
 	})
-	return entry, err
+	return entry, classify(err)
 }
 
 // busyWait bounds how long Append retries SQLITE_BUSY and SQLITE_LOCKED,
@@ -608,7 +636,7 @@ func setWAL(ctx context.Context, conn *sql.Conn) error {
 		return err
 	}
 	if !strings.EqualFold(mode, "wal") {
-		return fmt.Errorf("ledger: could not switch the ledger to WAL (journal_mode is %s)", mode)
+		return fmt.Errorf("ledger: could not switch the ledger to WAL (journal_mode is %q)", mode)
 	}
 	return nil
 }
@@ -645,7 +673,7 @@ func appendLocked(ctx context.Context, conn *sql.Conn, kind Kind, id string, can
 	switch {
 	case err == nil:
 		if existing.entry.Hash != hash {
-			return Entry{}, fmt.Errorf("%w: %s %q is stored with hash %s", ErrConflict, kind, id, existing.entry.Hash)
+			return Entry{}, fmt.Errorf("%w: %q %q is stored with hash %q", ErrConflict, kind, id, existing.entry.Hash)
 		}
 		return existing.entry, nil
 	case !errors.Is(err, sql.ErrNoRows):
@@ -658,25 +686,27 @@ func appendLocked(ctx context.Context, conn *sql.Conn, kind Kind, id string, can
 		string(kind), id).Scan(&other, &otherSeq)
 	switch {
 	case err == nil:
-		return Entry{}, fmt.Errorf("%w: %s id %q differs only in case from stored id %q (seq %d)", ErrConflict, kind, id, other, otherSeq)
+		return Entry{}, fmt.Errorf("%w: %q id %q differs only in case from stored id %q (seq %d)", ErrConflict, kind, id, other, otherSeq)
 	case !errors.Is(err, sql.ErrNoRows):
 		return Entry{}, err
 	}
+	// Genesis and the first entry are written in one transaction with one
+	// timestamp, so genesis is never later than seq 1.
+	at := formatTime(now())
 	head, err := scanRow(conn.QueryRowContext(ctx, `SELECT `+selectCols+` FROM ledger_entries ORDER BY seq DESC LIMIT 1`))
 	if errors.Is(err, sql.ErrNoRows) {
 		g := []byte(GenesisPayload)
-		head.entry, err = insert(ctx, conn, 0, GenesisKind, GenesisID, g, PayloadHash(GenesisKind, g), ZeroHash)
+		head.entry, err = insert(ctx, conn, at, 0, GenesisKind, GenesisID, g, PayloadHash(GenesisKind, g), ZeroHash)
 		if err != nil {
 			return Entry{}, err
 		}
 	} else if err != nil {
 		return Entry{}, err
 	}
-	return insert(ctx, conn, head.entry.Seq+1, kind, id, canonical, hash, head.entry.EntryHash)
+	return insert(ctx, conn, at, head.entry.Seq+1, kind, id, canonical, hash, head.entry.EntryHash)
 }
 
-func insert(ctx context.Context, conn *sql.Conn, seq int64, kind Kind, id string, canonical []byte, hash, prev string) (Entry, error) {
-	at := formatTime(now())
+func insert(ctx context.Context, conn *sql.Conn, at string, seq int64, kind Kind, id string, canonical []byte, hash, prev string) (Entry, error) {
 	t, _ := time.Parse(TimeLayout, at)
 	e := Entry{Seq: seq, Kind: kind, ID: id, Hash: hash, PrevHash: prev, ChainedAt: t}
 	e.EntryHash = entryHash(seq, kind, id, hash, prev, at)
@@ -690,14 +720,24 @@ func insert(ctx context.Context, conn *sql.Conn, seq int64, kind Kind, id string
 	return e, nil
 }
 
-// Get implements Ledger. An id that breaks the id rules is ErrInvalidID,
-// without a lookup. It checks the row it reads: its fields, its payload
+// Get implements Ledger. Get matches the id exactly, case included (Append is
+// what refuses an id that differs from a stored one only in case). A kind
+// that is empty, not UTF-8, or has a control character is ErrInvalid, and
+// an id that breaks the id rules is ErrInvalidID, both without a lookup. It checks the row it reads: its fields, its payload
 // hash, and its entry hash. A row that fails is ErrCorrupt, wrapped with the
 // kind and id. Get does not walk the chain; Verify does.
 func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, error) {
+	if p := kindProblem(kind); p != "" {
+		return nil, Entry{}, fmt.Errorf("%w: %s", ErrInvalid, p)
+	}
 	if err := ValidID(id); err != nil {
 		return nil, Entry{}, err
 	}
+	payload, e, err := s.get(ctx, kind, id)
+	return payload, e, classify(err)
+}
+
+func (s *Store) get(ctx context.Context, kind Kind, id string) ([]byte, Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	db, err := s.readDB(ctx)
@@ -723,7 +763,7 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, e
 		problem = "entry fields do not hash to entry_hash"
 	}
 	if problem != "" {
-		return nil, Entry{}, fmt.Errorf("%w: %s %q: %s", ErrCorrupt, kind, id, problem)
+		return nil, Entry{}, fmt.Errorf("%w: %q %q: %s", ErrCorrupt, kind, id, problem)
 	}
 	return row.payload, row.entry, nil
 }
@@ -731,6 +771,11 @@ func (s *Store) Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, e
 // Head returns the last stored entry, or ErrNotFound for an empty ledger.
 // It does not verify the chain; Verify does.
 func (s *Store) Head(ctx context.Context) (Entry, error) {
+	e, err := s.head(ctx)
+	return e, classify(err)
+}
+
+func (s *Store) head(ctx context.Context) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	db, err := s.readDB(ctx)
@@ -801,7 +846,15 @@ type Report struct {
 // exactly, and that no (kind, id) appears twice. It stops at the first
 // failure. An absent or empty ledger is OK and Empty. Verify never writes
 // the ledger file (see readDB).
+//
+// A file that is not a readable SQLite database is an error wrapping
+// ErrCorruptFile.
 func (s *Store) Verify(ctx context.Context) (Report, error) {
+	rep, err := s.verify(ctx)
+	return rep, classify(err)
+}
+
+func (s *Store) verify(ctx context.Context) (Report, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rep := Report{Path: s.path, OK: true}
@@ -870,11 +923,15 @@ func (s *Store) Verify(ctx context.Context) (Report, error) {
 		case fieldProblem(row) != "":
 			fail(row, ProblemModified, "%s", fieldProblem(row))
 		case !payloadOK(row):
-			fail(row, ProblemModified, "payload does not hash to the chained hash %s", row.entry.Hash)
+			fail(row, ProblemModified, "payload does not hash to the chained hash %q", row.entry.Hash)
 		case prev != nil && row.entry.PrevHash != prev.entry.EntryHash:
 			fail(row, ProblemReordered, "prev_hash does not match the entry_hash of seq %d (a row was moved or inserted, or an earlier entry was rewritten)", prev.entry.Seq)
 		case !entryOK(row):
-			fail(row, ProblemModified, "entry fields do not hash to entry_hash %s", row.entry.EntryHash)
+			fail(row, ProblemModified, "entry fields do not hash to entry_hash %q", row.entry.EntryHash)
+		case want == 1 && prev.chainedAt > row.chainedAt:
+			// Genesis is written with seq 1, in the same transaction. Its
+			// exact time cannot be known in advance, but it is never later.
+			fail(*prev, ProblemModified, "genesis chained_at %q is later than seq 1 chained_at %q", prev.chainedAt, row.chainedAt)
 		default:
 			key := [2]string{string(row.entry.Kind), asciiLower(row.entry.ID)}
 			if first, dup := seen[key]; dup {
