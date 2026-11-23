@@ -124,7 +124,9 @@ func qwenDuration(records []record.Record) (*float64, *string) {
 		}
 	}
 	var total []float64
-	for _, rec := range qwenRecords(records, "traces", qwenInteraction) {
+	// An interaction span stored twice (same trace and span id) is one
+	// prompt (issue #261); a span without both ids is never merged.
+	for _, rec := range qwenUnique(qwenRecords(records, "traces", qwenInteraction)) {
 		if qwenNested(rec, byID) {
 			continue
 		}

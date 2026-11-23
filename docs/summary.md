@@ -138,8 +138,8 @@ So the same numbers are not added twice:
   `type`), and tool calls come from `qwen-code.tool` spans joined to
   `qwen-code.tool_call` logs. A log stored twice counts once only when it
   is an exact copy (same session, log time, body, and every attribute),
-  and a span stored twice (same trace and span id) counts once (issue
-  #261). See [docs/agents.md](agents.md#qwen-code).
+  and a span stored twice (same trace and span id), interaction spans
+  included, counts once (issue #261). See [docs/agents.md](agents.md#qwen-code).
 
 Codex `response.completed` logs are the fallback when `codex.turn.token_usage`
 is missing (for example an OpenRouter `:free` model id, whose `:` makes Codex

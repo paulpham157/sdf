@@ -131,3 +131,62 @@ func TestQwenResentSpansCountOnce(t *testing.T) {
 		}
 	}
 }
+
+func TestQwenSpansWithoutIDsAreAllKept(t *testing.T) {
+	usage := map[string]any{"gen_ai.request.model": "qwen3-max", "gen_ai.usage.input_tokens": 100, "gen_ai.usage.output_tokens": 5}
+	tool := map[string]any{"gen_ai.tool.name": "read_file"}
+	var rows []record.Record
+	for _, name := range []string{qwenLLMRequest, qwenToolSpan} {
+		attrs := usage
+		if name == qwenToolSpan {
+			attrs = tool
+		}
+		noSpan := qwenTestSpan("t", "", name, attrs)
+		noSpan.SpanID = nil
+		noTrace := qwenTestSpan("", "a", name, attrs)
+		noTrace.TraceID = nil
+		emptyTrace := qwenTestSpan("", "a", name, attrs)
+		rows = append(rows, noSpan, noTrace, emptyTrace)
+	}
+	// Each row and its re-sent copy are all kept: six llm_request spans
+	// and six tool spans.
+	s := qwenSessionOf(t, Summarize(resend(rows), false))
+	if deref(s.TokensSource) != "traces "+qwenLLMRequest || s.Tokens.Vals["gen_ai.usage.input_tokens"] != 600 || s.Tokens.Vals["gen_ai.usage.output_tokens"] != 30 {
+		t.Fatalf("%q %v, want all six llm_request rows", deref(s.TokensSource), s.Tokens)
+	}
+	if len(s.ToolCalls) != 6 {
+		t.Fatalf("%d tool calls, want all six tool rows", len(s.ToolCalls))
+	}
+}
+
+func TestQwenResentInteractionSpansCountDurationOnce(t *testing.T) {
+	first := qwenTestSpan("t1", "i1", qwenInteraction, nil)
+	second := qwenTestSpan("t2", "i1", qwenInteraction, nil) // same span id, another trace
+	second.StartUnixNano = record.Int64(5_000_000_000)
+	second.EndUnixNano = record.Int64(6_000_000_000)
+	rows := []record.Record{first, second}
+	for name, rows := range map[string][]record.Record{"once": rows, "re-sent": resend(rows)} {
+		s := qwenSessionOf(t, Summarize(rows, false))
+		if deref(s.DurationSource) != "traces "+qwenInteraction || s.DurationMS == nil || *s.DurationMS != 3000 {
+			t.Fatalf("%s: duration %v %q, want 2000 + 1000 ms", name, derefFloat(s.DurationMS), deref(s.DurationSource))
+		}
+	}
+	// Interaction spans without both ids are never merged.
+	bare := qwenTestSpan("t1", "", qwenInteraction, nil)
+	bare.SpanID = nil
+	s := qwenSessionOf(t, Summarize(resend([]record.Record{bare}), false))
+	if s.DurationMS == nil || *s.DurationMS != 4000 {
+		t.Fatalf("duration %v, want both id-less copies", derefFloat(s.DurationMS))
+	}
+}
+
+func TestQwenResentSampleDurationOnce(t *testing.T) {
+	once := qwenSessionOf(t, Summarize(qwenRows(t), false))
+	twice := qwenSessionOf(t, Summarize(resend(qwenRows(t)), false))
+	if once.DurationMS == nil || deref(once.DurationSource) != "traces "+qwenInteraction {
+		t.Fatalf("duration %v %q", derefFloat(once.DurationMS), deref(once.DurationSource))
+	}
+	if twice.DurationMS == nil || *twice.DurationMS != *once.DurationMS {
+		t.Fatalf("duration %v after a re-sent export, want %v", derefFloat(twice.DurationMS), *once.DurationMS)
+	}
+}
