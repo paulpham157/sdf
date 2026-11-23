@@ -225,7 +225,8 @@ func mustFixture(t *testing.T, models ...*Model) *Catalog {
 	return cat
 }
 
-func TestOpenCodeRenamedUsageKeys(t *testing.T) {
+func openCodePrice(t *testing.T) (func(map[string]float64) Cost, func(Cost, string) string) {
+	t.Helper()
 	cat := mustFixture(t, &Model{
 		ID: "vendor/model",
 		Prices: map[string]string{
@@ -243,28 +244,89 @@ func TestOpenCodeRenamedUsageKeys(t *testing.T) {
 		}
 		return ""
 	}
+	return price, tokensOf
+}
+
+// The summary folds old names before pricing. These cases call Price with
+// unfolded keys on purpose: the aliases in openCodeBuckets are a defensive
+// fallback for a caller that did not fold them.
+func TestOpenCodePricingFallbackAliases(t *testing.T) {
+	price, tokensOf := openCodePrice(t)
 	// The pre-v0.1.0 name alone is priced as cache write.
 	old := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_creation.input_tokens": 20})
 	if old.Status != "known" || tokensOf(old, "cache_write") != "20" || tokensOf(old, "input") != "80" {
 		t.Fatalf("%+v", old)
 	}
-	// Old and new names for the same quantity: the max, never the sum.
-	both := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_write.input_tokens": 20, "cache_creation.input_tokens": 25, "cache_creation_input_tokens": 5})
-	if both.Status != "known" || tokensOf(both, "cache_write") != "25" || tokensOf(both, "input") != "75" {
-		t.Fatalf("%+v", both)
+	under := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_creation_input_tokens": 7})
+	if under.Status != "known" || tokensOf(under, "cache_write") != "7" {
+		t.Fatalf("%+v", under)
 	}
-	reasoning := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "reasoning.output_tokens": 4, "reasoning_tokens": 3})
-	if reasoning.Status != "known" || tokensOf(reasoning, "reasoning") != "4" || tokensOf(reasoning, "output") != "6" {
+	reasoning := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "reasoning_tokens": 3})
+	if reasoning.Status != "known" || tokensOf(reasoning, "reasoning") != "3" || tokensOf(reasoning, "output") != "7" {
 		t.Fatalf("%+v", reasoning)
 	}
-	modality := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "text.input_tokens": 100, "image.output_tokens": 2, "text.cache_read.input_tokens": 1})
-	if modality.Status != "known" || tokensOf(modality, "input") != "100" || !strings.Contains(modality.Method, "per-modality") {
-		t.Fatalf("%+v", modality)
+}
+
+// Old and new names for the same quantity price the largest count, never
+// the sum, and the result does not depend on which key sorts first.
+func TestOpenCodeRenamedUsageKeysAreOrderIndependent(t *testing.T) {
+	price, tokensOf := openCodePrice(t)
+	for _, tc := range []struct {
+		tokens map[string]float64
+		want   string
+	}{
+		{map[string]float64{"cache_creation.input_tokens": 30, "cache_write.input_tokens": 20, "cache_write_input_tokens": 20}, "30"},
+		{map[string]float64{"cache_creation.input_tokens": 10, "cache_write.input_tokens": 20, "cache_write_input_tokens": 20}, "20"},
+		{map[string]float64{"cache_creation.input_tokens": 10, "cache_write.input_tokens": 20, "cache_write_input_tokens": 25}, "25"},
+		{map[string]float64{"cache_creation_input_tokens": 5, "cache_creation.input_tokens": 25, "cache_write.input_tokens": 20}, "25"},
+	} {
+		tokens := map[string]float64{"input_tokens": 100, "output_tokens": 10}
+		for k, v := range tc.tokens {
+			tokens[k] = v
+		}
+		got := price(tokens)
+		if got.Status != "known" || tokensOf(got, "cache_write") != tc.want {
+			t.Fatalf("%v: %+v", tc.tokens, got)
+		}
 	}
-	// Two pre-existing names for one bucket still refuse to guess.
+	reasoning := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "reasoning.output_tokens": 3, "reasoning_tokens": 4})
+	if reasoning.Status != "known" || tokensOf(reasoning, "reasoning") != "4" {
+		t.Fatalf("%+v", reasoning)
+	}
+	// Two pre-existing names for one bucket, with no renamed key, still refuse to guess.
 	dup := price(map[string]float64{"input_tokens": 100, "cache_read.input_tokens": 1, "cache_read_input_tokens": 1})
 	if dup.Status != "unknown" || !strings.Contains(dup.Reason, "twice") {
 		t.Fatalf("%+v", dup)
+	}
+	dupWrite := price(map[string]float64{"input_tokens": 100, "cache_write.input_tokens": 1, "cache_write_input_tokens": 1})
+	if dupWrite.Status != "unknown" || !strings.Contains(dupWrite.Reason, "twice") {
+		t.Fatalf("%+v", dupWrite)
+	}
+}
+
+func TestOpenCodeModalityKeys(t *testing.T) {
+	price, tokensOf := openCodePrice(t)
+	ok := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_read.input_tokens": 5, "text.input_tokens": 100, "image.output_tokens": 2, "text.cache_read.input_tokens": 5})
+	if ok.Status != "known" || tokensOf(ok, "input") != "95" || tokensOf(ok, "output") != "10" || !strings.Contains(ok.Method, "per-modality") {
+		t.Fatalf("%+v", ok)
+	}
+	// Review of #198: modality keys without their totals must not price as a
+	// known $0. On main this was unknown, and it stays unknown.
+	for _, tokens := range []map[string]float64{
+		{"text.input_tokens": 100, "text.output_tokens": 50},
+		{"input_tokens": 100, "text.output_tokens": 50},
+		{"input_tokens": 100, "output_tokens": 10, "text.cache_read.input_tokens": 5},
+		{"input_tokens": 100, "output_tokens": 10, "audio.cache_write.input_tokens": 5},
+	} {
+		got := price(tokens)
+		if got.Status != "unknown" || got.USD != "" || !strings.Contains(got.Reason, "without the") {
+			t.Fatalf("%v: %+v", tokens, got)
+		}
+	}
+	// A modality outside the allowlist is not skipped.
+	unknownModality := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "hologram.input_tokens": 1})
+	if unknownModality.Status != "unknown" || !strings.Contains(unknownModality.Reason, "hologram.input_tokens") {
+		t.Fatalf("%+v", unknownModality)
 	}
 	// A key that is neither a known total nor a modality breakdown is still unknown.
 	other := price(map[string]float64{"input_tokens": 100, "mystery_tokens": 1})
@@ -279,6 +341,8 @@ func TestIsModalityUsage(t *testing.T) {
 		"image.output_tokens":           true,
 		"audio.cache_read.input_tokens": true,
 		"video.input_tokens":            true,
+		"text.cache_write.input_tokens": true,
+		"hologram.input_tokens":         false,
 		"cache_read.input_tokens":       false,
 		"cache_write.input_tokens":      false,
 		"cache_creation.input_tokens":   false,

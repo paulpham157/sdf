@@ -10,6 +10,7 @@ import (
 
 // opencodeAttempts returns the sample OpenCode rows with extra
 // gen_ai.usage.* attributes on the two SessionStep.attempt spans, in order.
+// A nil value removes that attribute.
 // The sample's attempts report input 5601/5822 and cache_read 256/5760.
 func opencodeAttempts(t *testing.T, extra ...map[string]any) []record.Record {
 	t.Helper()
@@ -25,6 +26,10 @@ func opencodeAttempts(t *testing.T, extra ...map[string]any) []record.Record {
 				attrs[k] = v
 			}
 			for k, v := range extra[n] {
+				if v == nil {
+					delete(attrs, k)
+					continue
+				}
 				attrs[k] = v
 			}
 			rows[i].Attributes = attrs
@@ -144,5 +149,38 @@ func TestOpenCodeModalityTokensAreInformational(t *testing.T) {
 	}
 	if !strings.Contains(cost.Method, "per-modality") || !strings.Contains(cost.Method, "text.input_tokens") || !strings.Contains(cost.Method, "video.input_tokens") {
 		t.Fatal(cost.Method)
+	}
+}
+
+// reasoning_tokens is the pre-v0.1.0 spelling of reasoning.output_tokens. On
+// one span the two are one quantity (max); across requests they are summed.
+func TestOpenCodeReasoningTokensFoldIntoReasoningOutputTokens(t *testing.T) {
+	session := onlySession(t, opencodeAttempts(t,
+		map[string]any{"gen_ai.usage.reasoning_tokens": int64(10)},
+		map[string]any{"gen_ai.usage.reasoning_tokens": int64(4), "gen_ai.usage.reasoning.output_tokens": int64(20)},
+	))
+	if _, ok := session.Tokens.Get("reasoning_tokens"); ok {
+		t.Fatalf("old key kept: %v", session.Tokens.Vals)
+	}
+	if got, _ := session.Tokens.Get("reasoning.output_tokens"); got != 30 {
+		t.Fatalf("want 10 + max(4, 20): %v", session.Tokens.Vals)
+	}
+	cost := session.ComputedCost
+	if cost == nil || cost.Status != "known" || component(cost, "reasoning") != "30" {
+		t.Fatalf("%+v", cost)
+	}
+}
+
+// Review of #198: per-modality keys without the totals they break down must
+// leave the cost unknown, not a known $0.
+func TestOpenCodeModalityWithoutTotalsIsUnknown(t *testing.T) {
+	strip := map[string]any{
+		"gen_ai.usage.input_tokens": nil, "gen_ai.usage.output_tokens": nil, "gen_ai.usage.cache_read.input_tokens": nil,
+		"gen_ai.usage.text.input_tokens": int64(100), "gen_ai.usage.text.output_tokens": int64(50),
+	}
+	session := onlySession(t, opencodeAttempts(t, strip, strip))
+	cost := session.ComputedCost
+	if cost == nil || cost.Status != "unknown" || cost.USD != "" || !strings.Contains(cost.Reason, "without the") {
+		t.Fatalf("%+v", cost)
 	}
 }

@@ -96,11 +96,13 @@ var (
 	// into one key. GenAI semconv v0.1.0 renamed
 	// gen_ai.usage.cache_creation.input_tokens to
 	// gen_ai.usage.cache_write.input_tokens and removed the old name;
-	// OpenCode still sends the old one. When a span carries more than one of
-	// them, the largest value is kept; they are never added.
+	// OpenCode still sends the old one. reasoning_tokens is the pre-v0.1.0
+	// spelling of reasoning.output_tokens. When a span carries more than one
+	// of them, the largest value is kept; they are never added.
 	usageAliases = map[string]string{
 		"cache_creation.input_tokens": "cache_write.input_tokens",
 		"cache_creation_input_tokens": "cache_write.input_tokens",
+		"reasoning_tokens":            "reasoning.output_tokens",
 	}
 	usageOrder = []string{
 		"input_tokens",
