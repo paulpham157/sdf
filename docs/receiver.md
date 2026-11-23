@@ -88,7 +88,9 @@ An empty database shows an empty state that points at `sdf init`.
 
 `sdf init` prints the exporter settings for one agent. It does not change a
 file unless you pass `--write`. An existing file is copied to a sibling
-ending in `.sdf-bak` before it is changed. A file that is not valid JSON is
+ending in `.sdf-bak` before it is changed (an older `.sdf-bak` is kept, and
+the new copy gets a timestamped name). The new bytes are written to a temp
+file and renamed into place, keeping the file mode. A file that is not valid JSON is
 left untouched. An existing Codex `[otel]` table is left untouched.
 
 ```bash
@@ -144,17 +146,47 @@ Gemini CLI's settings are from its
 `sdf init gemini --write` (alias `gemini-cli`) merges `enabled: true`,
 `target: "local"`, `otlpEndpoint` (the HTTP receiver), and
 `otlpProtocol: "http"` into the `telemetry` object of
-`~/.gemini/settings.json`. It leaves every other key alone. It sets
-`logPrompts: false` only when the file does not already set `logPrompts`;
-Gemini CLI's own default is `true`. An existing file is copied to a
-`.sdf-bak` sibling. A file that is not plain JSON (Gemini CLI also accepts
-comments) is left untouched, and the printed `GEMINI_TELEMETRY_*` variables
-can be used instead. A `telemetry.outfile` already in the file wins over the
-endpoint in Gemini CLI, so it is reported, not removed. A workspace
-`.gemini/settings.json` overrides the user file. There is no session hook
-for Gemini CLI yet, so its window is inferred from the records.
+`~/.gemini/settings.json`. Other keys keep their values and their order, and
+the keys it adds go after them. Numbers keep every digit and `&`, `<`, `>`
+are not escaped. The file is re-indented (with the indentation of its first
+indented line) and an unneeded `\u` escape becomes the plain character. It
+sets `logPrompts: false` only when the file does not already set
+`logPrompts`; Gemini CLI's own default is `true`, and an existing
+`logPrompts: true` is kept with a warning. Replacing an existing `target`,
+`otlpEndpoint`, or `otlpProtocol` prints the old and new value. Without
+`--write` it prints the whole file it would write and the same warnings.
+
+An existing file is copied to a `.sdf-bak` sibling first. A backup that is
+already there is never overwritten: the copy goes to
+`.sdf-bak.<UTC timestamp>` instead (with `-2`, `-3` if that is taken too).
+The new bytes go to a temp file in the same directory, which is synced and
+then renamed over the old file, so a crash leaves either the old or the new
+file. The file mode is kept. When `settings.json` is a symlink, sdf writes
+through it: the link stays and its target is replaced, and the backup sits
+next to the link. If the write fails, the temp file and the backup it just
+made are removed. The same backup and atomic write apply to every file
+`sdf init --write` changes.
+
+A file that is not plain JSON (Gemini CLI also accepts comments) is left
+untouched, and the printed `GEMINI_TELEMETRY_*` variables can be used
+instead. A `telemetry.outfile` already in the file wins over the endpoint in
+Gemini CLI, so it is reported, not removed.
+
+Gemini CLI layers its settings files: the user file, then a workspace
+`.gemini/settings.json` (only when the folder is trusted), then the system
+file `/etc/gemini-cli/settings.json` (or `GEMINI_CLI_SYSTEM_SETTINGS_PATH`),
+which wins over both. `GEMINI_TELEMETRY_*` overrides every file, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` overrides `telemetry.otlpEndpoint` when
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset. There is no session hook for
+Gemini CLI yet, so its window is inferred from the records.
 `sdf init --check gemini` reports whether `GEMINI_TELEMETRY_OTLP_ENDPOINT` or
-the user settings file point at this receiver.
+the user settings file point at this receiver. It warns when
+`OTEL_EXPORTER_OTLP_ENDPOINT` points elsewhere (and
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset), when the system file sets
+telemetry that would keep records from sdf (`enabled: false`, another
+`target`, `otlpEndpoint`, or `otlpProtocol`, or an `outfile`), and when the
+current directory's `.gemini/settings.json` does, noting it applies only in a
+trusted folder.
 
 ## Git hooks
 

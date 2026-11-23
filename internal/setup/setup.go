@@ -20,9 +20,10 @@
 // on the receiver's HTTP port. grpc on 4317 also reaches sdf serve.
 // https://github.com/NikiforovAll/pi-otel
 //
-// Gemini CLI reads the telemetry block of ~/.gemini/settings.json (a
-// workspace .gemini/settings.json overrides it) and GEMINI_TELEMETRY_* env,
-// which overrides both. Its default protocol is grpc at localhost:4317. This
+// Gemini CLI reads the telemetry block of ~/.gemini/settings.json. A
+// workspace .gemini/settings.json (trusted folders only) overrides it, and the
+// system file /etc/gemini-cli/settings.json overrides both. GEMINI_TELEMETRY_*
+// env, then OTEL_EXPORTER_OTLP_ENDPOINT for the endpoint, override every file. Its default protocol is grpc at localhost:4317. This
 // setup selects http on the receiver's HTTP port, and sets logPrompts to false
 // only when the file does not already choose (Gemini's default is true).
 // https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md
@@ -39,6 +40,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -379,7 +381,8 @@ func gemini(req Request) (Result, error) {
 	fmt.Fprintf(&b, "It exports logs, metrics, and spans with session.id (spans carry gen_ai.conversation.id).\n")
 	fmt.Fprintf(&b, "Its default is grpc at http://localhost:4317, which sdf serve also accepts. This setup selects http on %s.\n", req.Endpoint.base())
 	fmt.Fprintf(&b, "logPrompts defaults to true in Gemini CLI. --write sets it to false unless %s already sets it.\n", path)
-	fmt.Fprintf(&b, "A workspace .gemini/settings.json overrides %s. GEMINI_TELEMETRY_* overrides both.\n", path)
+	fmt.Fprintf(&b, "Precedence, lowest first: %s, a workspace .gemini/settings.json (only in a trusted folder), then %s.\n", path, geminiSystemSettings())
+	fmt.Fprintf(&b, "GEMINI_TELEMETRY_* overrides every file. OTEL_EXPORTER_OTLP_ENDPOINT overrides telemetry.otlpEndpoint when GEMINI_TELEMETRY_OTLP_ENDPOINT is unset.\n")
 	fmt.Fprintf(&b, "telemetry.outfile, when set, replaces the endpoint, and nothing reaches sdf.\n")
 	fmt.Fprintf(&b, "Docs: https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md\n\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_ENABLED=true\n")
@@ -387,8 +390,9 @@ func gemini(req Request) (Result, error) {
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_ENDPOINT=%s\n", req.Endpoint.base())
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_OTLP_PROTOCOL=http\n")
 	fmt.Fprintf(&b, "export GEMINI_TELEMETRY_LOG_PROMPTS=false\n\n")
-	status, err := mergeJSON(path, req.Write, func(root map[string]any) (bool, error) {
-		changed, err := mergeAnyMap(root, "telemetry", geminiTelemetry(req.Endpoint))
+	want := geminiTelemetry(req.Endpoint)
+	merge := func(root map[string]any) (bool, error) {
+		changed, err := mergeAnyMap(root, "telemetry", want)
 		if err != nil {
 			return false, err
 		}
@@ -398,19 +402,52 @@ func gemini(req Request) (Result, error) {
 			changed = true
 		}
 		return changed, nil
-	})
-	if err != nil {
-		return Result{}, err
 	}
-	b.WriteString(status)
+	var warnings strings.Builder
 	if root, err := readJSON(path); err == nil {
 		if telemetry, ok := root["telemetry"].(map[string]any); ok {
+			for _, key := range []string{"target", "otlpEndpoint", "otlpProtocol"} {
+				if old, ok := telemetry[key]; ok && !jsonEqual(old, want[key]) {
+					fmt.Fprintf(&warnings, "warning: %s telemetry.%s %s -> %s\n", path, key, jsonText(old), jsonText(want[key]))
+				}
+			}
+			if lp, ok := telemetry["logPrompts"].(bool); ok && lp {
+				fmt.Fprintf(&warnings, "warning: %s sets telemetry.logPrompts=true, so prompt text is exported to sdf. sdf leaves an explicit choice alone; set it to false to keep prompts out.\n", path)
+			}
 			if outfile, ok := telemetry["outfile"].(string); ok && outfile != "" {
-				fmt.Fprintf(&b, "warning: %s sets telemetry.outfile=%s, which replaces the endpoint. Remove it to send to sdf.\n", path, outfile)
+				fmt.Fprintf(&warnings, "warning: %s sets telemetry.outfile=%s, which replaces the endpoint. Remove it to send to sdf.\n", path, outfile)
 			}
 		}
 	}
+	var status string
+	if req.Write {
+		var err error
+		status, err = mergeJSON(path, true, merge)
+		if err != nil {
+			return Result{}, err
+		}
+	} else {
+		encoded, changed, err := planJSON(path, merge)
+		switch {
+		case err != nil:
+			status = fmt.Sprintf("not written: %v. --write will refuse; use the variables above.\n", err)
+		case !changed:
+			status = path + " already has these values (not written)\n"
+		default:
+			status = fmt.Sprintf("not written (pass --write to update %s; an existing file is copied to a .sdf-bak sibling first). It would become:\n%s", path, encoded)
+		}
+	}
+	b.WriteString(status)
+	b.WriteString(warnings.String())
 	return Result{Text: b.String(), Wrote: strings.HasPrefix(status, "wrote ")}, nil
+}
+
+func jsonText(v any) string {
+	var buf bytes.Buffer
+	if err := encodeLeaf(&buf, v); err != nil {
+		return fmt.Sprint(v)
+	}
+	return buf.String()
 }
 
 func geminiTelemetry(ep Endpoint) map[string]any {
@@ -420,6 +457,55 @@ func geminiTelemetry(ep Endpoint) map[string]any {
 		"otlpEndpoint": ep.base(),
 		"otlpProtocol": "http",
 	}
+}
+
+// geminiSystemSettings is the system override file Gemini CLI loads after the
+// user and workspace files, so its telemetry keys win over both.
+// https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md
+func geminiSystemSettings() string {
+	if env := os.Getenv("GEMINI_CLI_SYSTEM_SETTINGS_PATH"); env != "" {
+		return env
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return "/Library/Application Support/GeminiCli/settings.json"
+	case "windows":
+		return `C:\ProgramData\gemini-cli\settings.json`
+	default:
+		return "/etc/gemini-cli/settings.json"
+	}
+}
+
+// geminiConflicts lists telemetry keys in path that would stop records from
+// reaching want.
+func geminiConflicts(path, want string) []string {
+	root, err := readJSON(path)
+	if err != nil {
+		return nil
+	}
+	telemetry, ok := root["telemetry"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	if v, ok := telemetry["enabled"]; ok && v != true {
+		out = append(out, "enabled="+jsonText(v))
+	}
+	if v, ok := telemetry["target"]; ok && v != "local" {
+		out = append(out, "target="+jsonText(v))
+	}
+	if v, ok := telemetry["otlpEndpoint"]; ok {
+		if s, _ := v.(string); !strings.Contains(s, want) {
+			out = append(out, "otlpEndpoint="+jsonText(v))
+		}
+	}
+	if v, ok := telemetry["otlpProtocol"]; ok && v != "http" {
+		out = append(out, "otlpProtocol="+jsonText(v))
+	}
+	if v, ok := telemetry["outfile"]; ok && v != "" {
+		out = append(out, "outfile="+jsonText(v))
+	}
+	return out
 }
 
 func geminiConfigured(req Request) string {
@@ -434,7 +520,24 @@ func geminiConfigured(req Request) string {
 			fileHit = enabled && strings.Contains(endpoint, want)
 		}
 	}
-	return fmt.Sprintf("gemini process env GEMINI_TELEMETRY_OTLP_ENDPOINT points at %s: %t; %s has telemetry enabled pointing at %s: %t\n", want, envHit, path, want, fileHit)
+	var b strings.Builder
+	fmt.Fprintf(&b, "gemini process env GEMINI_TELEMETRY_OTLP_ENDPOINT points at %s: %t; %s has telemetry enabled pointing at %s: %t\n", want, envHit, path, want, fileHit)
+	if os.Getenv("GEMINI_TELEMETRY_OTLP_ENDPOINT") == "" {
+		if otel := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); otel != "" && !strings.Contains(otel, want) {
+			fmt.Fprintf(&b, "warning: OTEL_EXPORTER_OTLP_ENDPOINT=%s overrides telemetry.otlpEndpoint in every settings file, so gemini sends there, not to %s. Unset it or set GEMINI_TELEMETRY_OTLP_ENDPOINT=%s.\n", otel, want, want)
+		}
+	}
+	system := geminiSystemSettings()
+	if conflicts := geminiConflicts(system, want); len(conflicts) > 0 {
+		fmt.Fprintf(&b, "warning: system settings %s override %s and set telemetry %s. GEMINI_TELEMETRY_* env still wins over it.\n", system, path, strings.Join(conflicts, ", "))
+	}
+	workspace := filepath.Join(req.ProjectDir, ".gemini", "settings.json")
+	if workspace != path {
+		if conflicts := geminiConflicts(workspace, want); len(conflicts) > 0 {
+			fmt.Fprintf(&b, "warning: workspace settings %s set telemetry %s. They override %s only when this folder is trusted.\n", workspace, strings.Join(conflicts, ", "), path)
+		}
+	}
+	return b.String()
 }
 
 func runPiInstall(req Request) (string, error) {
@@ -618,53 +721,6 @@ func readJSON(path string) (map[string]any, error) {
 	return root, nil
 }
 
-func mergeJSON(path string, write bool, merge func(map[string]any) (bool, error)) (string, error) {
-	if !write {
-		return "not written (pass --write to update " + path + "; an existing file is copied to a .sdf-bak sibling first)\n", nil
-	}
-	root := map[string]any{}
-	if body, err := os.ReadFile(path); err == nil {
-		if !json.Valid(body) {
-			return "", fmt.Errorf("%s is not JSON; it was not changed", path)
-		}
-		if err := json.Unmarshal(body, &root); err != nil {
-			return "", fmt.Errorf("%s: %w", path, err)
-		}
-		if root == nil {
-			root = map[string]any{}
-		}
-	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-	changed, err := merge(root)
-	if err != nil {
-		return "", err
-	}
-	if !changed {
-		return path + " already has these values\n", nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	backup, err := copyAside(path)
-	if err != nil {
-		return "", err
-	}
-	encoded, err := json.MarshalIndent(root, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	encoded = append(encoded, '\n')
-	mode := fileMode(path, 0o600)
-	if strings.Contains(path, string(filepath.Separator)+".pi"+string(filepath.Separator)) {
-		mode = fileMode(path, 0o644)
-	}
-	if err := os.WriteFile(path, encoded, mode); err != nil {
-		return "", err
-	}
-	return wrote(path, backup), nil
-}
-
 func mergeStringMap(root map[string]any, key string, values map[string]string) (bool, error) {
 	current, ok := root[key].(map[string]any)
 	if root[key] != nil && !ok {
@@ -702,7 +758,7 @@ func mergeInto(dst, src map[string]any) bool {
 	for key, value := range src {
 		child, ok := value.(map[string]any)
 		if !ok {
-			if fmt.Sprint(dst[key]) != fmt.Sprint(value) {
+			if have, ok := dst[key]; !ok || !jsonEqual(have, value) {
 				dst[key] = value
 				changed = true
 			}
@@ -730,43 +786,7 @@ func writeBytes(path string, body []byte, write bool) (string, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
-	backup, err := copyAside(path)
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, body, fileMode(path, 0o600)); err != nil {
-		return "", err
-	}
-	return wrote(path, backup), nil
-}
-
-func copyAside(path string) (string, error) {
-	body, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	dest := path + ".sdf-bak"
-	if _, err := os.Stat(dest); err == nil {
-		dest = path + ".sdf-bak." + time.Now().UTC().Format("20060102T150405Z")
-	}
-	if err := os.WriteFile(dest, body, fileMode(path, 0o600)); err != nil {
-		return "", err
-	}
-	return dest, nil
-}
-
-func fileMode(path string, fallback os.FileMode) os.FileMode {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fallback
-	}
-	return info.Mode().Perm()
+	return replaceFile(path, body, 0o600)
 }
 
 func wrote(path, backup string) string {

@@ -480,9 +480,18 @@ default and was used for the live capture.
 > signed-in session.
 
 Gemini CLI exports traces, logs, and metrics once `telemetry.enabled` is
-true. Settings live in the `telemetry` object of `~/.gemini/settings.json`
-(a workspace `.gemini/settings.json` overrides it), and `GEMINI_TELEMETRY_*`
-variables override both. The default exporter is gRPC at
+true. Settings live in the `telemetry` object of `~/.gemini/settings.json`. A
+workspace `.gemini/settings.json` overrides it, but only when Gemini CLI
+trusts the folder; in an untrusted folder the workspace file is not loaded.
+The system settings file (`/etc/gemini-cli/settings.json` on Linux,
+`/Library/Application Support/GeminiCli/settings.json` on macOS,
+`C:\ProgramData\gemini-cli\settings.json` on Windows, or
+`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) is applied after both and wins over them.
+`GEMINI_TELEMETRY_*` variables override every file, and
+`OTEL_EXPORTER_OTLP_ENDPOINT` overrides `telemetry.otlpEndpoint` when
+`GEMINI_TELEMETRY_OTLP_ENDPOINT` is unset
+([configuration layers](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md)).
+The default exporter is gRPC at
 `http://localhost:4317`, which reaches `sdf serve` as is. With
 `otlpProtocol: "http"` it posts OTLP/HTTP JSON to `<otlpEndpoint>/v1/traces`,
 `/v1/logs`, and `/v1/metrics`. `telemetry.outfile` replaces the endpoint, so
