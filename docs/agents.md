@@ -363,8 +363,23 @@ command's shape are in [docs/receiver.md](receiver.md#one-step-setup). With
 trailer and links to the session, because Grok puts `GROK_SESSION_ID` in
 its shell tool's environment
 ([docs/receiver.md](receiver.md#git-hooks)). These three were written from
-grok-build `2bdd1d6` (read 2026-11-23) and were not run against a live
-`grok`.
+grok-build `2bdd1d6` (read 2026-11-23) and then checked against a live,
+signed-in `grok` 1.0.92 in headless mode (`grok -p --always-approve`) on
+2026-11-23, with a throwaway repository whose path has a space:
+
+- With only the `config.toml` that `--write` produced (no `OTEL_*` or
+  `GROK_EXTERNAL_OTEL` in the environment), logs and metrics arrived with
+  `session.id`.
+- The hook posted an open (`source` was `new`) and a close (`reason` was
+  `shutdown`) for the same id the telemetry carried, with the repository
+  path as `cwd`.
+- A commit Grok made from its shell tool with the git hooks installed
+  carried `SDF-Session: <session.id>` and linked as `hook`. With the git
+  hooks removed, the next session's commit linked as `heuristic` from the
+  hook's `cwd`, with no `--repo`.
+- Grok ran the `SessionStart` hooks in `~/.claude/settings.json` with
+  `GROK_HOOK_EVENT=session_start`, and the sdf Claude Code hook there posted
+  nothing.
 
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal

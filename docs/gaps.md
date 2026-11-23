@@ -128,8 +128,8 @@
   add one. The session hook from `sdf init grok --write` posts the hook's
   `workspaceRoot` instead, and the heuristic uses it. Without that hook a
   Grok session links to a commit only with `--repo PATH` and one commit in
-  the time window (or a git hook or trailer). The hook path was written from
-  grok-build source, not checked against a live `grok`. Grok CLI spans come only
+  the time window (or a git hook or trailer). The hook path was checked
+  against a live `grok` 1.0.92 on 2026-11-23. Grok CLI spans come only
   from its internal, undocumented pipeline (`GROK_INTERNAL_OTLP_TRACES_ENDPOINT`
   with `GROK_INTERNAL_OTLP_HEADERS` replacing the xAI token). The span
   mapping follows grok 1.0.92 and can break on a newer release. Spans need a
