@@ -116,6 +116,8 @@ without --write. Agents: claude-code, codex, opencode, pi, qwen, grok, gemini, c
   --host, --port, --grpc-port   receiver address (defaults 127.0.0.1, 4318, 4317)
   --git-hooks            install git hooks in this checkout that record commit SHAs
   --uninstall-git-hooks  remove them
+  --db PATH              with --git-hooks or --git-template: the sdf serve store the
+                         pre-push decision check reads (see docs/receiver.md)
   --git-template         install the hooks into git's template dir (--set-template-dir sets init.templateDir)
   --uninstall-git-template  remove them (--unset-template-dir clears init.templateDir)`
 
@@ -134,7 +136,8 @@ pull requests in the same SQLite file as sdf serve.
   graph    sdf decision graph [--json]
   retract  sdf decision retract --id ID [--reason TEXT]
   audit    sdf decision audit [--json] [--since RFC3339] [--until RFC3339]
-Run sdf decision <add|link|list|graph|retract|audit> --help for the flags.`
+  pre-push run by the git pre-push hook: warns about pushed commits with no decision
+Run sdf decision <add|link|list|graph|retract|audit|pre-push> --help for the flags.`
 
 const auditHelp = `Checks the hash-chained ledger that sdf task declare --ledger and sdf verify
 --ledger append to.
