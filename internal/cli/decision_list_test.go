@@ -15,7 +15,8 @@ func seedDecisionGraph(t *testing.T, dbPath string) {
 	t.Helper()
 	seedTelemetry(t, dbPath)
 	adds := [][]string{
-		{"--id", "use-sqlite", "--statement", "Keep the collector store in SQLite.", "--status", "decision", "--source", "issue 168"},
+		{"--id", "use-sqlite", "--statement", "Keep the collector store in SQLite.", "--status", "decision", "--source", "issue 168",
+			"--decided-by", "user", "--alternatives", "Postgres", "--reason", "One file, no server."},
 		{"--id", "pure-go", "--statement", "The driver stays pure Go.", "--status", "hypothesis"},
 	}
 	for _, args := range adds {
@@ -52,9 +53,11 @@ func TestDecisionListPrintsDecisionsAndEdgesAsTables(t *testing.T) {
 	lines := strings.Split(strings.TrimSuffix(out.stdout, "\n"), "\n")
 	want := [][]string{
 		{"Decisions: 2"},
-		{"ID", "STATUS", "EFFECTIVE", "RECORDED AT", "SOURCE", "STATEMENT"},
-		{"use-sqlite", "decision", "active", graph.Decisions[0].RecordedAt, "issue 168", "Keep the collector store in SQLite."},
-		{"pure-go", "hypothesis", "active", graph.Decisions[1].RecordedAt, "-", "The driver stays pure Go."},
+		{"ID", "STATUS", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"},
+		{"use-sqlite", "decision", "active", "user", graph.Decisions[0].RecordedAt, "issue 168", "Keep the collector store in SQLite."},
+		{"", "", "", "", "", "", "alternatives: Postgres"},
+		{"", "", "", "", "", "", "reason: One file, no server."},
+		{"pure-go", "hypothesis", "active", "-", graph.Decisions[1].RecordedAt, "-", "The driver stays pure Go."},
 		{""},
 		{"Edges: 3"},
 		{"RELATION", "FROM", "TO", "RECORDED AT"},
@@ -71,11 +74,13 @@ func TestDecisionListPrintsDecisionsAndEdgesAsTables(t *testing.T) {
 		}
 	}
 	// Every row of a table starts each column at the same offset.
-	for _, block := range [][2]int{{1, 4}, {6, 10}} {
-		col := strings.Index(lines[block[0]], "RECORDED AT")
-		if block[0] == 6 {
-			col = strings.Index(lines[block[0]], "TO")
-		}
+	// The alternatives and reason lines start in the STATEMENT column.
+	for _, block := range []struct {
+		header, end int
+		column      string
+	}{{1, 6, "STATEMENT"}, {8, 12, "TO"}} {
+		col := strings.Index(lines[block.header], block.column)
+		block := [2]int{block.header, block.end}
 		for i := block[0] + 1; i < block[1]; i++ {
 			row := lines[i]
 			if col >= len(row) || row[col-1] != ' ' || row[col] == ' ' {

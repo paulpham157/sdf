@@ -2,6 +2,7 @@ package decision_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -28,6 +29,21 @@ func link(t *testing.T, db *store.Store, rel string, from, to decision.Endpoint)
 	}
 }
 
+// legacyEdge writes an edge straight into decision_edges, bypassing Link,
+// the way an sdf without link validation could have stored it.
+func legacyEdge(t *testing.T, db *store.Store, rel string, from, to decision.Endpoint) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`INSERT INTO decision_edges (relation, from_kind, from_ref, to_kind, to_ref, recorded_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		rel, from.Kind, from.Ref, to.Kind, to.Ref, "2026-01-01T00:00:00.000000+00:00"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func dec(id string) decision.Endpoint {
 	return decision.Endpoint{Kind: decision.KindDecision, Ref: id}
 }
@@ -45,14 +61,16 @@ func TestLoadComputesSupersededAtReadTime(t *testing.T) {
 	link(t, db, decision.RelSupersedes, dec("b"), dec("a"))
 	link(t, db, decision.RelSupersedes, dec("c"), dec("b"))
 	link(t, db, decision.RelSupersedes, dec("d"), dec("a"))
-	// A repeated edge names the replacement once.
-	link(t, db, decision.RelSupersedes, dec("b"), dec("a"))
-	// Ignored: other relations, a self-edge, and non-decision endpoints.
+	// A repeated edge names the replacement once. Link now rejects a
+	// duplicate, so it is written the way an older sdf stored it.
+	legacyEdge(t, db, decision.RelSupersedes, dec("b"), dec("a"))
+	// Ignored: other relations, and (from older databases, since Link now
+	// rejects them) a self-edge and non-decision endpoints.
 	link(t, db, decision.RelImplements, dec("e"), dec("c"))
-	link(t, db, decision.RelSupersedes, dec("e"), dec("e"))
-	link(t, db, decision.RelSupersedes, decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"}, dec("e"))
-	link(t, db, decision.RelSupersedes, decision.Endpoint{Kind: decision.KindCommit, Ref: sha}, dec("e"))
-	link(t, db, decision.RelSupersedes, dec("e"), decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"})
+	legacyEdge(t, db, decision.RelSupersedes, dec("e"), dec("e"))
+	legacyEdge(t, db, decision.RelSupersedes, decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"}, dec("e"))
+	legacyEdge(t, db, decision.RelSupersedes, decision.Endpoint{Kind: decision.KindCommit, Ref: sha}, dec("e"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("e"), decision.Endpoint{Kind: decision.KindSession, Ref: "sess-1"})
 
 	before, err := db.LoadDecisions()
 	if err != nil {
@@ -130,7 +148,8 @@ func TestSupersedesCycleMarksBothAndTerminates(t *testing.T) {
 	db := openDB(t)
 	addAll(t, db, "x", "y")
 	link(t, db, decision.RelSupersedes, dec("x"), dec("y"))
-	link(t, db, decision.RelSupersedes, dec("y"), dec("x"))
+	// Link now rejects the cycle; an older sdf could store it.
+	legacyEdge(t, db, decision.RelSupersedes, dec("y"), dec("x"))
 	g, err := decision.Load(db)
 	if err != nil {
 		t.Fatal(err)
@@ -167,5 +186,25 @@ func TestTextQuotesDELAndRTLButJSONKeepsThemRaw(t *testing.T) {
 	}
 	if !strings.Contains(raw.String(), "del\x7f rtl\u202e") {
 		t.Fatalf("json escaped DEL/RTL:\n%s", raw.String())
+	}
+}
+
+// TestSupersedesFromAnUnknownDecisionChangesNoStatus covers an older
+// database whose edge names a decision that was never stored. Only an edge
+// whose two endpoints are both stored decisions counts.
+func TestSupersedesFromAnUnknownDecisionChangesNoStatus(t *testing.T) {
+	db := openDB(t)
+	addAll(t, db, "real")
+	legacyEdge(t, db, decision.RelSupersedes, dec("ghost"), dec("real"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("real"), dec("ghost"))
+	g, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Decisions) != 1 || len(g.Edges) != 2 {
+		t.Fatalf("%d decisions, %d edges", len(g.Decisions), len(g.Edges))
+	}
+	if r := g.Decisions[0]; r.EffectiveStatus != decision.EffectiveActive || r.SupersededBy != nil {
+		t.Fatalf("ghost edge counted: %+v", r)
 	}
 }

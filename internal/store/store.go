@@ -9,6 +9,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -463,23 +464,66 @@ func (s *Store) LoadDecisions() ([]Decision, error) {
 	return out, rows.Err()
 }
 
-// InsertDecisionEdge appends one edge. The caller has already checked that
-// both endpoints name something the store knows.
-func (s *Store) InsertDecisionEdge(e DecisionEdge) error {
+// AppendDecisionEdge appends e only if check, given every edge already
+// stored, returns nil; otherwise it writes nothing and returns check's error.
+// The read, the check, and the insert run in one BEGIN IMMEDIATE
+// transaction. IMMEDIATE takes SQLite's write lock before reading, so
+// another Store or process appending at the same time waits (busy_timeout)
+// and then reads a set that already holds this edge: two writers cannot both
+// pass a check that only one of them should. The caller has already checked
+// that both endpoints name something the store knows. Nothing is updated or
+// deleted.
+func (s *Store) AppendDecisionEdge(e DecisionEdge, check func(existing []DecisionEdge) error) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+	existing, err := loadDecisionEdges(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := check(existing); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `
 		INSERT INTO decision_edges (relation, from_kind, from_ref, to_kind, to_ref, recorded_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, e.Relation, e.FromKind, e.FromRef, e.ToKind, e.ToRef, e.RecordedAt)
-	return err
+	`, e.Relation, e.FromKind, e.FromRef, e.ToKind, e.ToRef, e.RecordedAt); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // LoadDecisionEdges returns every edge in insertion order.
 func (s *Store) LoadDecisionEdges() ([]DecisionEdge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
+	return loadDecisionEdges(context.Background(), s.db)
+}
+
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func loadDecisionEdges(ctx context.Context, q querier) ([]DecisionEdge, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT relation, from_kind, from_ref, to_kind, to_ref, recorded_at
 		FROM decision_edges
 		ORDER BY id

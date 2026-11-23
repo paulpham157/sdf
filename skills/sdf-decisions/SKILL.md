@@ -5,7 +5,7 @@ description: Record important user and agent choices as sdf decision records. Us
 
 # sdf decision records
 
-Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in the UI and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision link` print nothing on success; tell the user what you recorded.
+Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI, and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision link` print nothing on success; tell the user what you recorded.
 
 ## When to record
 
@@ -80,6 +80,16 @@ sdf decision link --relation REL --from KIND:REF --to KIND:REF [--db PATH]
 - A `session` or `commit` endpoint is accepted only when the store already has telemetry for it. A missing one fails the link and does not alter the record; leave it unlinked and say so. You can link later once telemetry exists.
 - A commit `REF` must be the full 40-character SHA. Case is ignored and the stored ref is lowercase. Abbreviated SHAs are rejected.
 
+Link rules. A rejected link stores nothing and exits 1 with one `sdf decision link: …` line on stderr:
+
+- **No self-links.** `--from` and `--to` must be different endpoints, for every relation.
+- **No duplicates.** The same relation, `--from`, and `--to` can be stored only once. Before linking again, check `sdf decision list`.
+- **`supersedes` is decision → decision only.** `--from` is the new decision and `--to` is the one it replaces. A session or commit endpoint is rejected.
+- **No supersedes cycles.** `NEW supersedes OLD` is rejected when OLD already supersedes NEW, directly or through a chain. Several decisions may supersede the same one.
+- **validates + contradicts warns, but does not block.** If the same two endpoints now have both, the link is stored (exit 0) and stderr shows a `warning:` line. Tell the user the evidence conflicts.
+
+Directions to use: `implements` from a session or commit to a decision; `validates` and `contradicts` from a session, commit, or decision to a decision; `constrains` from a decision to whatever it limits. Only the `supersedes` direction is enforced.
+
 Typical links (FROM relation TO):
 
 ```bash
@@ -110,11 +120,27 @@ The sdf git hook reads `$CODEX_THREAD_ID`, `$OPENCODE_SESSION_ID`, `$PI_SESSION_
 
 For a commit SHA, `git rev-parse HEAD` is the usual source, but link it only when it is already in the store.
 
+## Read records back
+
+```bash
+sdf decision list [--db PATH] [--json]
+```
+
+`--json` is the same document as `GET /api/decisions`. Each record keeps the `status` it was recorded with (`hypothesis` or `decision`). sdf also adds two fields that are **computed when the records are read, not stored**:
+
+- `effective_status`: `superseded` when another stored decision supersedes it, otherwise `active`.
+- `superseded_by`: the ids of the decisions that supersede it. It is omitted when the record is active. Replacement is direct, so to find the current choice, follow `superseded_by` until a record is `active`.
+
+Never try to change a record to mark it replaced: the store is append-only. Add the new record and a `supersedes` link instead. The text table shows the same thing in its `EFFECTIVE` column (`active` or `superseded by ID`), plus `DECIDED BY`, and `alternatives:` / `reason:` lines when set.
+
 ## Errors
 
 - `sdf` not on `PATH`, or the command cannot be run: say so, and do not claim the record was written. The user needs `sdf` installed and on `PATH` (build it with `make build` in the sdf repo if needed).
 - `unknown reference: session …` or `unknown reference: commit …`: the add already succeeded; leave the record unlinked.
 - `UNIQUE constraint failed: decisions.id`: choose a new id and add again.
+- `edge already recorded: …`: that link exists already; nothing to do.
+- `an edge cannot link an endpoint to itself`, `supersedes links a decision to a decision`, or `supersedes cycle: …`: the link is invalid and was not stored. `supersedes` takes two decision endpoints, from the new decision to the one it replaces; do not supersede back along an existing chain.
+- `warning: … have both validates and contradicts edges`: the link was stored (exit 0). Tell the user the evidence now conflicts.
 - Other validation errors (bad status, bad decided-by, bad id, multi-line statement, bad relation) come back on stderr. Fix the argument and retry. A failed add writes nothing.
 
 After a successful add or link, briefly confirm the id, who decided, statement, status, alternatives and reason if any, optional source, and any links made (or that the record was left unlinked).
