@@ -78,8 +78,9 @@ func component(cost *pricing.Cost, name string) string {
 
 // OpenCode (anomalyco/opencode packages/core/src/session/runner/step.ts)
 // sends gen_ai.usage.cache_creation.input_tokens. GenAI semconv v0.1.0
-// renamed it to gen_ai.usage.cache_write.input_tokens. Before this fix the
-// count was summed across requests and the computed cost was unknown.
+// renamed it to gen_ai.usage.cache_write.input_tokens. Before #198 the
+// computed cost was unknown. Like input and cache read, cache write is a
+// per-request count and is summed across requests (issue #200).
 func TestOpenCodeCacheCreationIsCacheWriteAndPriced(t *testing.T) {
 	session := onlySession(t, opencodeAttempts(t,
 		map[string]any{"gen_ai.usage.cache_creation.input_tokens": int64(40)},
@@ -88,11 +89,12 @@ func TestOpenCodeCacheCreationIsCacheWriteAndPriced(t *testing.T) {
 	if _, ok := session.Tokens.Get("cache_creation.input_tokens"); ok {
 		t.Fatalf("old key kept: %v", session.Tokens.Vals)
 	}
-	if got, _ := session.Tokens.Get("cache_write.input_tokens"); got != 50 {
-		t.Fatalf("cache write should be the max 50, not the sum 90: %v", session.Tokens.Vals)
+	if got, _ := session.Tokens.Get("cache_write.input_tokens"); got != 40+50 {
+		t.Fatalf("cache write is per request and is summed: %v", session.Tokens.Vals)
 	}
 	cost := session.ComputedCost
-	if cost == nil || cost.Status != "known" || component(cost, "cache_write") != "50" || component(cost, "input") != "12" {
+	// input 11423 - cache read 6016 - cache write 90 = 5317 uncached.
+	if cost == nil || cost.Status != "known" || component(cost, "cache_write") != "90" || component(cost, "input") != "5317" {
 		t.Fatalf("%+v", cost)
 	}
 }
@@ -131,20 +133,20 @@ func TestOpenCodeReasoningOutputTokensArePriced(t *testing.T) {
 
 // Per-modality keys (gen_ai.usage.text.input_tokens and the like) are
 // breakdowns of the totals. They are kept in the token map as reported, use
-// the same max/sum rule as their total, and are not priced a second time.
+// the same per-request sum as their total, and are not priced a second time.
 func TestOpenCodeModalityTokensAreInformational(t *testing.T) {
 	session := onlySession(t, opencodeAttempts(t,
 		map[string]any{"gen_ai.usage.text.input_tokens": int64(5601), "gen_ai.usage.text.output_tokens": int64(212), "gen_ai.usage.video.input_tokens": int64(1)},
 		map[string]any{"gen_ai.usage.text.input_tokens": int64(5822), "gen_ai.usage.text.output_tokens": int64(94)},
 	))
-	if got, _ := session.Tokens.Get("text.input_tokens"); got != 5822 {
-		t.Fatalf("modality input takes the max: %v", session.Tokens.Vals)
+	if got, _ := session.Tokens.Get("text.input_tokens"); got != 5601+5822 {
+		t.Fatalf("modality input is summed like input_tokens: %v", session.Tokens.Vals)
 	}
 	if got, _ := session.Tokens.Get("text.output_tokens"); got != 306 {
 		t.Fatalf("modality output is summed: %v", session.Tokens.Vals)
 	}
 	cost := session.ComputedCost
-	if cost == nil || cost.Status != "known" || component(cost, "input") != "62" || component(cost, "output") != "306" {
+	if cost == nil || cost.Status != "known" || component(cost, "input") != "5407" || component(cost, "output") != "306" {
 		t.Fatalf("%+v", cost)
 	}
 	if !strings.Contains(cost.Method, "per-modality") || !strings.Contains(cost.Method, "text.input_tokens") || !strings.Contains(cost.Method, "video.input_tokens") {
