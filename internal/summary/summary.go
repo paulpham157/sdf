@@ -2252,6 +2252,10 @@ func sum(values []float64) float64 {
 	return total
 }
 
+// freeze is a canonical, unambiguous encoding of an attribute map, used as a
+// grouping and de-duplication key. Keys and string values are
+// length-prefixed (lengthKey) and lists carry their length, so values that
+// contain the separators cannot make two different maps encode alike.
 func freeze(attributes map[string]any) string {
 	keys := make([]string, 0, len(attributes))
 	for key := range attributes {
@@ -2260,7 +2264,7 @@ func freeze(attributes map[string]any) string {
 	sort.Strings(keys)
 	var b strings.Builder
 	for _, key := range keys {
-		b.WriteString(key)
+		b.WriteString(lengthKey(key))
 		b.WriteByte('=')
 		b.WriteString(freezeValue(attributes[key]))
 		b.WriteByte(';')
@@ -2273,7 +2277,7 @@ func freezeValue(v any) string {
 	case nil:
 		return "z"
 	case string:
-		return "s:" + t
+		return "s" + lengthKey(t)
 	case bool:
 		if t {
 			return "b:1"
@@ -2290,14 +2294,14 @@ func freezeValue(v any) string {
 		for i, item := range t {
 			parts[i] = freezeValue(item)
 		}
-		return "l:[" + strings.Join(parts, ",") + "]"
+		return "l" + strconv.Itoa(len(parts)) + ":[" + strings.Join(parts, ",") + "]"
 	case map[string]any:
 		return "m:{" + freeze(t) + "}"
 	default:
 		if n := record.Number(t); n != nil {
 			return "n:" + strconvFormat(*n)
 		}
-		return "o:" + strOr(t)
+		return "o" + lengthKey(strOr(t))
 	}
 }
 
@@ -2311,7 +2315,9 @@ func strconvFormat(f float64) string {
 		}
 		return "-inf"
 	}
-	return strings.TrimRight(strings.TrimRight(formatFixed(f), "0"), ".")
+	// FormatFloat with precision -1 never writes trailing fractional zeros,
+	// so nothing is trimmed: trimming "0" from "900" gave "9".
+	return formatFixed(f)
 }
 
 func formatFixed(f float64) string {
@@ -2473,11 +2479,24 @@ func geminiResponseKey(rec record.Record) string {
 	if strAttr(rec.Attributes, "event.timestamp") == "" && (rec.TimeUnixNano == nil || *rec.TimeUnixNano == 0) {
 		return ""
 	}
-	key := deref(rec.SessionID) + "|"
+	when := ""
 	if rec.TimeUnixNano != nil {
-		key += strconv.FormatInt(*rec.TimeUnixNano, 10)
+		when = strconv.FormatInt(*rec.TimeUnixNano, 10)
 	}
-	return key + "|" + deref(rec.Body) + "|" + freeze(rec.Attributes)
+	return lengthKey(deref(rec.SessionID), when, deref(rec.Body), freeze(rec.Attributes))
+}
+
+// lengthKey joins parts so that no choice of part values can produce the
+// same key from different parts: each part is written as its byte length,
+// ':', and the part.
+func lengthKey(parts ...string) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(strconv.Itoa(len(part)))
+		b.WriteByte(':')
+		b.WriteString(part)
+	}
+	return b.String()
 }
 
 // logToolName is the tool name on a tool-result log. Gemini CLI's
