@@ -29,7 +29,9 @@
 //
 // The file is in WAL mode. Opening a ledger and reading it never writes the
 // ledger file (SQLite may create its -wal and -shm sidecars). The file, the
-// schema, and the genesis entry are created by the first Append.
+// schema, and the genesis entry are created by the first Append (Prepare
+// creates the file and schema only). AppendAll chains several payloads in
+// one transaction.
 //
 // The chain makes tampering detectable, not impossible. Anyone who can write
 // the file can rebuild the whole chain or cut its tail. Only a head hash
@@ -98,6 +100,23 @@ type Ledger interface {
 	Append(ctx context.Context, kind Kind, id string, canonical []byte, hash string) (Entry, error)
 	// Get returns the stored bytes and entry, or ErrNotFound.
 	Get(ctx context.Context, kind Kind, id string) ([]byte, Entry, error)
+}
+
+// Item is one payload for AppendAll: the arguments of one Append.
+type Item struct {
+	Kind      Kind
+	ID        string
+	Canonical []byte
+	Hash      string
+}
+
+// BatchLedger is a Ledger that can chain several payloads in one
+// transaction. Store implements it.
+type BatchLedger interface {
+	Ledger
+	// AppendAll appends items in order, all or none: when any item fails,
+	// nothing from the call is stored. Each item follows Append's rules.
+	AppendAll(ctx context.Context, items []Item) ([]Entry, error)
 }
 
 var (
@@ -178,7 +197,7 @@ type Store struct {
 	writable bool
 }
 
-var _ Ledger = (*Store)(nil)
+var _ BatchLedger = (*Store)(nil)
 
 // DefaultPath is $SDF_LEDGER, else $XDG_DATA_HOME/sdf/ledger.db, else
 // ~/.local/share/sdf/ledger.db.
@@ -564,17 +583,37 @@ func entryOK(row storedRow) bool {
 
 // Append implements Ledger.
 func (s *Store) Append(ctx context.Context, kind Kind, id string, canonical []byte, hash string) (Entry, error) {
-	if err := checkKey(kind, id); err != nil {
+	entries, err := s.AppendAll(ctx, []Item{{Kind: kind, ID: id, Canonical: canonical, Hash: hash}})
+	if err != nil {
 		return Entry{}, err
 	}
-	if canonical == nil {
-		canonical = []byte{}
+	return entries[0], nil
+}
+
+// AppendAll implements BatchLedger. Every item is checked before the file
+// is touched, and all of them are chained in one BEGIN IMMEDIATE
+// transaction, so a failure part way leaves the chain as it was. An item
+// that repeats a stored (kind, id) with the same hash returns the stored
+// entry, as Append does.
+func (s *Store) AppendAll(ctx context.Context, items []Item) ([]Entry, error) {
+	if len(items) == 0 {
+		return nil, nil
 	}
-	if hash != PayloadHash(kind, canonical) {
-		return Entry{}, ErrHashMismatch
+	checked := make([]Item, len(items))
+	for i, it := range items {
+		if err := checkKey(it.Kind, it.ID); err != nil {
+			return nil, err
+		}
+		if it.Canonical == nil {
+			it.Canonical = []byte{}
+		}
+		if it.Hash != PayloadHash(it.Kind, it.Canonical) {
+			return nil, ErrHashMismatch
+		}
+		checked[i] = it
 	}
 	// s.mu is held for one attempt at a time, never across a retry sleep.
-	var entry Entry
+	var entries []Entry
 	err := retryBusy(ctx, func() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -582,10 +621,30 @@ func (s *Store) Append(ctx context.Context, kind Kind, id string, canonical []by
 		if err != nil {
 			return err
 		}
-		entry, err = appendOnce(ctx, db, kind, id, canonical, hash)
+		entries, err = appendOnce(ctx, db, checked)
 		return err
 	})
-	return entry, classify(err)
+	return entries, classify(err)
+}
+
+// Prepare makes sure the ledger can be written: it creates the file and its
+// table if they are missing, in one transaction, without appending an
+// entry (the genesis entry still comes with the first Append). A ledger
+// that cannot be created, opened for writing, or locked fails here, before
+// a caller does work whose record would then be lost. A file that is not a
+// ledger database is ErrCorruptFile.
+func (s *Store) Prepare(ctx context.Context) error {
+	err := retryBusy(ctx, func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		db, err := s.writeDB()
+		if err != nil {
+			return err
+		}
+		_, err = appendOnce(ctx, db, nil)
+		return err
+	})
+	return classify(err)
 }
 
 // busyWait bounds how long Append retries SQLITE_BUSY and SQLITE_LOCKED,
@@ -641,34 +700,42 @@ func setWAL(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-func appendOnce(ctx context.Context, db *sql.DB, kind Kind, id string, canonical []byte, hash string) (Entry, error) {
+// appendOnce chains items in one transaction. With no items it only
+// creates the schema (Prepare).
+func appendOnce(ctx context.Context, db *sql.DB, items []Item) ([]Entry, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return Entry{}, err
+		return nil, err
 	}
 	defer conn.Close()
 	if err := setWAL(ctx, conn); err != nil {
-		return Entry{}, err
+		return nil, err
 	}
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return Entry{}, err
+		return nil, err
 	}
-	entry, err := appendLocked(ctx, conn, kind, id, canonical, hash)
-	if err != nil {
+	rollback := func(err error) ([]Entry, error) {
 		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
-		return Entry{}, err
+		return nil, err
+	}
+	if _, err := conn.ExecContext(ctx, schema); err != nil {
+		return rollback(err)
+	}
+	entries := make([]Entry, 0, len(items))
+	for _, it := range items {
+		entry, err := appendLocked(ctx, conn, it.Kind, it.ID, it.Canonical, it.Hash)
+		if err != nil {
+			return rollback(err)
+		}
+		entries = append(entries, entry)
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
-		return Entry{}, err
+		return rollback(err)
 	}
-	return entry, nil
+	return entries, nil
 }
 
 func appendLocked(ctx context.Context, conn *sql.Conn, kind Kind, id string, canonical []byte, hash string) (Entry, error) {
-	if _, err := conn.ExecContext(ctx, schema); err != nil {
-		return Entry{}, err
-	}
 	existing, err := scanRow(conn.QueryRowContext(ctx, `SELECT `+selectCols+` FROM ledger_entries WHERE kind = ? AND id = ?`, string(kind), id))
 	switch {
 	case err == nil:

@@ -14,6 +14,11 @@ type (
 	// Ledger is an append-only store of canonical payloads. ledger.Store
 	// implements it.
 	Ledger = ledger.Ledger
+	// BatchLedger chains several payloads in one transaction, all or none.
+	// ledger.Store implements it.
+	BatchLedger = ledger.BatchLedger
+	// Item is one payload for BatchLedger.AppendAll.
+	Item = ledger.Item
 )
 
 // Record kinds.

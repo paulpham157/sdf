@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/paulpham157/sdf/internal/cli"
+	"github.com/paulpham157/sdf/internal/ledger"
 	"github.com/paulpham157/sdf/internal/ledger/ledgertest"
 	"github.com/paulpham157/sdf/internal/task"
 )
@@ -46,12 +46,24 @@ func taskRepo(t *testing.T) string {
 	return dir
 }
 
+// ledgerEntries opens the ledger file read-only, verifies its chain, and
+// returns how many entries it holds, genesis included.
+func ledgerEntries(t *testing.T, path string) int {
+	t.Helper()
+	s, err := ledger.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	return ledgertest.Entries(t, s)
+}
+
 func TestTaskDeclareAndShow(t *testing.T) {
 	repo := taskRepo(t)
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
-	l := ledgertest.New(t)
-	defer cli.SetTaskLedger(l)()
+	ledgerFile := filepath.Join(t.TempDir(), "ledger.db")
+	t.Setenv("SDF_LEDGER", ledgerFile)
 
 	args := []string{"task", "declare", "--repo", repo, "--write",
 		"--id", "add-widget", "--title", "Add the widget",
@@ -81,7 +93,7 @@ func TestTaskDeclareAndShow(t *testing.T) {
 		!strings.Contains(out.stdout, "written ledger\n") {
 		t.Fatalf("stdout %q", out.stdout)
 	}
-	if spec.Criteria[0].Name != "accept" || spec.Criteria[0].TimeoutS != 120 || ledgertest.Entries(t, l) != 2 {
+	if spec.Criteria[0].Name != "accept" || spec.Criteria[0].TimeoutS != 120 || ledgerEntries(t, ledgerFile) != 2 {
 		t.Fatalf("%+v", spec)
 	}
 

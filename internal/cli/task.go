@@ -20,19 +20,17 @@ const taskDeclareUsage = `usage: sdf task declare [--file PATH|-] [--id ID] [--t
                         [--base REV] [--check NAME=COMMAND]... [--designated NAME=GLOB]...
                         [--timeout SECONDS] [--no-secret-scan]
                         [--repo DIR] [--write] [--data-dir DIR | --no-data-dir]
+                        [--ledger PATH]
 
 --file reads a JSON task input. Flags override its id, title, objective,
 and base, and --check adds criteria. COMMAND is split on spaces with no
 quoting and runs without a shell. --designated adds a glob (** for any
 depth) to the criterion NAME. --write puts the task at .sdf/tasks/ID.json
-in --repo, for committing. The data dir copy is $XDG_DATA_HOME/sdf/tasks.`
+in --repo, for committing. The data dir copy is $XDG_DATA_HOME/sdf/tasks.
+--ledger PATH (or $SDF_LEDGER) also appends the task to that hash-chained
+ledger; with neither set no ledger is used.`
 
-const taskShowUsage = "usage: sdf task show ID [--repo DIR] [--data-dir DIR | --no-data-dir] [--json]"
-
-// taskLedger is the ledger sdf task writes to (an internal/ledger Store).
-// The command does not open one by default yet, so it is nil outside tests;
-// opening ledger.DefaultPath here is a follow-up.
-var taskLedger task.Ledger
+const taskShowUsage = "usage: sdf task show ID [--repo DIR] [--data-dir DIR | --no-data-dir] [--ledger PATH] [--json]"
 
 func cmdTask(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -79,7 +77,7 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 		timeout                          int64
 		noSecretScan, write, noDataDir   bool
 		repo                             = "."
-		dataDir                          string
+		dataDir, ledgerFlag              string
 	)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -111,6 +109,13 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 			{"--designated", func(v string) error { designated = append(designated, v); return nil }},
 			{"--repo", func(v string) error { repo = v; return nil }},
 			{"--data-dir", func(v string) error { dataDir = v; return nil }},
+			{"--ledger", func(v string) error {
+				if v == "" {
+					return fmt.Errorf("--ledger requires a value")
+				}
+				ledgerFlag = v
+				return nil
+			}},
 			{"--timeout", func(v string) error {
 				n, err := strconv.ParseInt(v, 10, 64)
 				if err != nil || n < 1 {
@@ -217,8 +222,9 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	st.WriteRepo = write
-	if !write && st.DataDir == "" && st.Ledger == nil {
-		fmt.Fprintf(stderr, "%s: nowhere to store the task: pass --write, or drop --no-data-dir\n", prefix)
+	ledgerPath := taskLedgerPath(ledgerFlag)
+	if !write && st.DataDir == "" && ledgerPath == "" {
+		fmt.Fprintf(stderr, "%s: nowhere to store the task: pass --write or --ledger, or drop --no-data-dir\n", prefix)
 		return 2
 	}
 	spec, err := task.Build(ctx, root, in)
@@ -228,6 +234,17 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 	}
 	for _, w := range task.Warnings(spec) {
 		fmt.Fprintf(stderr, "warning: %s\n", w)
+	}
+	// The ledger is opened and prepared before anything is written, so one
+	// that cannot be written stops the declaration with no copy made.
+	lg, err := openTaskLedger(ctx, ledgerPath, true)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+		return 1
+	}
+	if lg != nil {
+		defer lg.Close()
+		st.Ledger = lg
 	}
 	d, err := task.Declare(ctx, spec, st)
 	if err != nil {
@@ -247,8 +264,10 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// taskStore is the repo and data dir places. The caller adds a ledger
+// (openTaskLedger) only when one was asked for.
 func taskStore(repo, dataDir string, noDataDir bool) (task.Store, error) {
-	st := task.Store{RepoDir: repo, Ledger: taskLedger}
+	st := task.Store{RepoDir: repo}
 	if noDataDir {
 		return st, nil
 	}
@@ -266,9 +285,9 @@ func taskStore(repo, dataDir string, noDataDir bool) (task.Store, error) {
 func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 	const prefix = "sdf task show"
 	var (
-		id, dataDir       string
-		repo              = "."
-		asJSON, noDataDir bool
+		id, dataDir, ledgerFlag string
+		repo                    = "."
+		asJSON, noDataDir       bool
 	)
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -299,6 +318,17 @@ func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 			dataDir = v
 			continue
 		}
+		if v, ok, err := flagValue("--ledger", &i, args); ok {
+			if err == nil && v == "" {
+				err = fmt.Errorf("--ledger requires a value")
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+				return 2
+			}
+			ledgerFlag = v
+			continue
+		}
 		if strings.HasPrefix(arg, "-") || id != "" {
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
@@ -318,6 +348,16 @@ func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 		return 1
+	}
+	// Read only: show never creates a ledger file.
+	lg, err := openTaskLedger(context.Background(), taskLedgerPath(ledgerFlag), false)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+		return 1
+	}
+	if lg != nil {
+		defer lg.Close()
+		st.Ledger = lg
 	}
 	found, err := task.Load(context.Background(), id, st)
 	if err != nil {

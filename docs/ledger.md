@@ -4,6 +4,35 @@ The ledger is an append-only, hash-chained record of canonical payloads:
 tasks, attempts, evidence, verdicts. A verifier writes to it through
 `internal/ledger`. `sdf audit verify` and `sdf audit head` read it.
 
+## Who writes it
+
+Writing is opt-in. `sdf task declare` and `sdf verify` write to a ledger
+only when you pass `--ledger PATH` or set `$SDF_LEDGER`:
+
+- `sdf task declare` appends the task (`sdf.task/v1`).
+- `sdf verify` appends every evidence record (`sdf.evidence/v1`) and then
+  the verdict (`sdf.verdict/v1`), all in one transaction: either all of
+  them are chained or none is.
+- `sdf task show` reads the ledger too when one is given, and never creates
+  the file.
+
+With neither set, these commands do not open, create, or read a ledger, and
+their output is what it was before the ledger existed. They do not fall back
+to the `$XDG_DATA_HOME` or `~/.local/share` paths below; those defaults are
+for `sdf audit` only. Because `$SDF_LEDGER` is shared, setting it points
+`sdf task declare`, `sdf verify`, and `sdf audit` at the same file.
+
+Before it writes anything else, a command given a ledger prepares it: it
+creates the file and table if they are missing and takes the write lock
+once (`BEGIN IMMEDIATE`, no entry). A ledger that cannot be written (a
+read-only directory, a path that is a directory, a file that is not a
+ledger, a lock held past the busy timeout) stops the command with a
+`ledger PATH: ...` message: `sdf task declare` exits 1 with no task copy
+written, and `sdf verify` exits 3 before any check runs. If an append fails
+later anyway, the transaction rolls back and the chain is as it was;
+`sdf verify` still prints the verdict JSON, says `ledger: nothing appended`,
+and exits 3. A prepared ledger with no entries reads as empty.
+
 The collector does not write to the ledger. Telemetry stays in
 `sdf-telemetry.sqlite`. A payload may name a session id or a commit SHA, but
 the ledger never copies telemetry.
@@ -18,7 +47,10 @@ One SQLite file, separate from the telemetry store. The path is the first of:
 4. `~/.local/share/sdf/ledger.db`.
 
 The first append creates the directory (mode 0700), the file (mode 0600), the
-table, and the genesis entry. `sdf audit` on a path that does not exist
+table, and the genesis entry. (`sdf task declare` and `sdf verify` use only
+the first two; see [Who writes it](#who-writes-it).) Preparing a ledger for a
+write creates the directory, file, and table but no entry; genesis still comes
+with the first append. `sdf audit` on a path that does not exist
 reports an empty ledger and creates nothing.
 
 ### Journal mode, and what a read may touch

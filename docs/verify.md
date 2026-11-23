@@ -15,7 +15,8 @@ the same document to a file); a short summary goes to stderr.
 
 From trusted copies only: `--task-ref REF` (the task file committed on a
 protected branch, read as `REF:.sdf/tasks/<id>.json`), the sdf data dir
-copy (`--data-dir`, `--no-data-dir`), and the ledger when there is one.
+copy (`--data-dir`, `--no-data-dir`), and the ledger when one is given
+(`--ledger PATH` or `$SDF_LEDGER`; there is no default ledger path).
 At least one must exist and every one found must have the same hash. The
 `.sdf/tasks` file in the working tree, or in the submitted commit, is never
 a source.
@@ -74,9 +75,13 @@ Evidence (`sdf.evidence/v1`) and the verdict (`sdf.verdict/v1`) are RFC 8785
 JSON, hashed like a task: `"sha256:" + hex(sha256(kind + "\n" + canonical))`.
 The verdict lists every evidence id and hash, the task hash and its
 sources, the submitted commit and tree, and the secret rule set's hash.
-When a ledger is configured, evidence and then the verdict are appended to
-it ([docs/ledger.md](ledger.md)). `sdf verify` does not open a ledger file
-by default yet, so the printed JSON is the record.
+With `--ledger PATH` or `$SDF_LEDGER`, the evidence and then the verdict are
+appended to that ledger in one transaction ([docs/ledger.md](ledger.md#who-writes-it)):
+all of them or none. The ledger is prepared before the checkout, so one
+that cannot be written is exit 3 with nothing run. If the append itself
+fails, nothing is appended, the verdict JSON is still printed, and the exit
+is 3. With neither set, no ledger is opened and the printed JSON is the
+record.
 
 ## What this does not guarantee
 

@@ -872,7 +872,20 @@ func (r *run) finish() (Result, error) {
 	}
 	res := Result{Status: status, Reasons: r.reasons, Evidence: r.evidence, Verdict: verdict}
 	if l := r.opt.Ledger; l != nil {
-		for _, rec := range append(append([]Record(nil), r.evidence...), verdict) {
+		recs := append(append([]Record(nil), r.evidence...), verdict)
+		if b, ok := l.(task.BatchLedger); ok {
+			// One transaction: the evidence and the verdict are chained
+			// together or not at all.
+			items := make([]task.Item, len(recs))
+			for i, rec := range recs {
+				items[i] = task.Item{Kind: rec.Kind, ID: rec.ID, Canonical: rec.Canonical, Hash: rec.Hash}
+			}
+			if _, err := b.AppendAll(r.ctx, items); err != nil {
+				return res, fmt.Errorf("ledger: nothing appended: %w", err)
+			}
+			return res, nil
+		}
+		for _, rec := range recs {
 			if _, err := l.Append(r.ctx, rec.Kind, rec.ID, rec.Canonical, rec.Hash); err != nil {
 				return res, fmt.Errorf("ledger: %s %s: %w", rec.Kind, rec.ID, err)
 			}

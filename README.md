@@ -142,6 +142,8 @@ sdf summary --session ID --all-spans
 sdf decision add --id ID --statement TEXT --status hypothesis
 sdf decision link --relation implements --from decision:ID --to session:ID
 sdf audit verify       # hash-chained ledger; see docs/ledger.md
+sdf task declare --ledger PATH ...  # opt-in: also chain the task (or set SDF_LEDGER)
+sdf verify SHA --task ID --ledger PATH  # opt-in: chain the evidence and verdict
 sdf prices refresh     # the only command that calls the network for prices
 sdf init claude-code   # print exporter settings; --write changes a file
 sdf init qwen          # Qwen Code telemetry settings

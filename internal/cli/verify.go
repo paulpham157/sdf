@@ -14,7 +14,7 @@ import (
 )
 
 const verifyUsage = `usage: sdf verify SHA --task ID [--task-ref REF] [--repo DIR]
-                  [--data-dir DIR | --no-data-dir] [--out PATH]
+                  [--data-dir DIR | --no-data-dir] [--ledger PATH] [--out PATH]
                   [--artifacts DIR] [--work-dir DIR] [--path PATH] [--keep]
 
 Runs task ID's checks against commit SHA (a full id) in a fresh checkout
@@ -24,13 +24,18 @@ to agree. The working tree's .sdf/tasks file is not trusted. Checks run in
 the checkout root with --path (default: this PATH, relative entries
 dropped) as their only PATH.
 
+--ledger PATH (or $SDF_LEDGER) also reads the task from that ledger and
+appends the evidence and then the verdict to it in one transaction; with
+neither set no ledger is used. A ledger that cannot be written is exit 3,
+and nothing is appended.
+
 Prints the verdict and evidence as JSON. Exit 0 is PASS, 1 FAIL, 3 ERROR,
 2 a usage error.`
 
 func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	const prefix = "sdf verify"
 	opt := verify.Options{RepoDir: "."}
-	var out, dataDir string
+	var out, dataDir, ledgerFlag string
 	noDataDir := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -43,6 +48,17 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 			continue
 		case "--no-data-dir":
 			noDataDir = true
+			continue
+		}
+		if v, ok, err := flagValue("--ledger", &i, args); ok {
+			if err == nil && v == "" {
+				err = fmt.Errorf("--ledger requires a value")
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+				return 2
+			}
+			ledgerFlag = v
 			continue
 		}
 		matched := false
@@ -83,7 +99,17 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 		return 3
 	}
-	opt.DataDir, opt.Ledger = st.DataDir, st.Ledger
+	opt.DataDir = st.DataDir
+	// Prepared before any check runs, so an unwritable ledger fails fast.
+	lg, err := openTaskLedger(context.Background(), taskLedgerPath(ledgerFlag), true)
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
+		return 3
+	}
+	if lg != nil {
+		defer lg.Close()
+		opt.Ledger = lg
+	}
 
 	res, err := verify.Run(context.Background(), opt)
 	if errors.Is(err, verify.ErrUsage) {
