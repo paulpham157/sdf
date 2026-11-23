@@ -144,7 +144,7 @@ func claude(req Request) (Result, error) {
 		if err != nil {
 			return false, err
 		}
-		hooksChanged, err := mergeAnyMap(root, "hooks", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
+		hooksChanged, err := mergeSessionHooks(root, "claude-code", claudeHooks(req.Endpoint.base()+"/v1/sessions"))
 		if err != nil {
 			return false, err
 		}
@@ -235,7 +235,7 @@ func codex(req Request) (Result, error) {
 	}
 	b.WriteString("\n")
 	b.WriteString(wrote(path, backup))
-	hookStatus, err := writeBytes(filepath.Join(req.CodexHome, "hooks.json"), []byte(codexHooks(req.Endpoint.base()+"/v1/sessions")), true)
+	hookStatus, err := codexHookFile(filepath.Join(req.CodexHome, "hooks.json"), req.Endpoint.base()+"/v1/sessions")
 	if err != nil {
 		return Result{}, err
 	}
