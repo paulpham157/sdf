@@ -78,10 +78,26 @@ type env struct {
 
 // setup builds sdf with build.sh and makes a remote whose main has a
 // declared task "feat", and three pull request heads.
+// userns does what the action's userns.sh step does. On a GitHub-hosted
+// runner it runs that script and isolation must then work (the PASS cases
+// below need it); elsewhere, without user namespaces, the test is skipped.
+func userns(t *testing.T, action string) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("RUNNER_ENVIRONMENT") == "github-hosted" {
+		b, err := exec.Command("bash", filepath.Join(action, "userns.sh")).CombinedOutput()
+		t.Logf("userns.sh: %v %s", err, b)
+		return
+	}
+	if err := exec.Command("unshare", "-Urpf", "true").Run(); err != nil {
+		t.Skipf("no unprivileged user/pid namespaces here (%v); sdf verify would refuse to run", err)
+	}
+}
+
 func setup(t *testing.T) *env {
 	t.Helper()
 	need(t, "bash", "jq", "git", "go")
 	e := &env{action: actionDir(t), runnerTemp: t.TempDir()}
+	userns(t, e.action)
 
 	out := filepath.Join(e.runnerTemp, "build-output")
 	cmd := exec.Command("bash", filepath.Join(e.action, "build.sh"))
@@ -148,8 +164,11 @@ func (e *env) verify(t *testing.T, vars map[string]string) outcome {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	log, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("verify.sh must exit 0 once it sets a status: %v\n%s", err, log)
+	code := 0
+	if x, ok := err.(*exec.ExitError); ok {
+		code = x.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
 	}
 	o := outcome{outputs: map[string]string{}, log: string(log)}
 	b, _ := os.ReadFile(outFile)
@@ -160,6 +179,10 @@ func (e *env) verify(t *testing.T, vars map[string]string) outcome {
 	}
 	s, _ := os.ReadFile(summary)
 	o.summary = string(s)
+	// The step's exit code is the verdict.
+	if want := map[string]int{"PASS": 0, "FAIL": 1, "ERROR": 3}[o.outputs["status"]]; o.outputs["status"] == "" || code != want {
+		t.Fatalf("verify.sh exited %d with status %q\n%s", code, o.outputs["status"], log)
+	}
 	return o
 }
 

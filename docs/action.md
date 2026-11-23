@@ -44,9 +44,19 @@ skipped, so it cannot block the existing checks.
 5. Writes the status, task, commit, verdict hash, and every reason code to
    the job summary, and uploads `verdict.json` plus check output (named by
    sha256) as the `sdf-verdict` artifact.
-6. Fails the job unless the status is PASS. A missing verdict, a verdict
+6. The verify step's own exit code is the verdict: 0 PASS, 1 FAIL, 3 ERROR,
+   so the step and the job fail unless PASS. A missing verdict, a verdict
    file that disagrees with `sdf verify`'s exit code, or a script error is
-   ERROR, which fails too.
+   ERROR. A last step repeats the check, for a verify step that never ran.
+
+Before the checkout, a step (`userns.sh`) allows unprivileged user
+namespaces: ubuntu-24.04 (`ubuntu-latest`) blocks them through AppArmor, and
+hosted runners have passwordless sudo, so it runs `sudo sysctl -w
+kernel.apparmor_restrict_unprivileged_userns=0`. `sdf verify` runs every
+check in its own user and pid namespace and the action never passes
+`--allow-unisolated`, so on a runner where that does not work (a
+self-hosted runner without sudo) the verdict is ERROR
+`ISOLATION_UNAVAILABLE`, never an unisolated PASS.
 
 Outputs: `status`, `task`, `verdict-hash`.
 
@@ -93,13 +103,14 @@ asks for nothing more: `contents: read`, no secrets, no cache.
   not come from the pull request); or a designated glob covering `.github/**` in the task,
   so such a change fails verification when the job does run.
 - *Code that attacks the job it runs in.* The checks run as the runner's
-  user. `sdf verify` kills each check's process group when it exits, but a
-  process that detaches into its own session can outlive it and, as the
-  same user, rewrite the verdict file, the step output file, or write to
-  the job log. The exit code of the step that ran `sdf verify` and the
-  verdict hash it printed to the log are the record to trust, not the
-  artifact. Running the checks as a separate unprivileged OS user (hosted
-  runners allow creating one with sudo) would close this; it is not built.
+  user. Each check runs in its own pid namespace, which the kernel empties
+  when the check exits, so a process that detaches (`setsid`, a double
+  fork) does not outlive it to rewrite later files. While a check runs it
+  can still, as the same user, write anything that user can, including the
+  job's other files. The verify step's exit code (the verdict, see above)
+  and the verdict hash it printed to the log are the record to trust, not
+  the artifact. Running the checks as a separate unprivileged OS user
+  would close the rest; it is not built.
 - *A dishonest base branch.* Whoever can push to the base branch decides
   the task. Protect it.
 - No signature: the verdict is hashed, not signed. A ledger head check

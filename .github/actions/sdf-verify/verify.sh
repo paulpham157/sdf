@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Resolves the task id, runs sdf verify, writes the job summary and outputs.
-# It exits 0 once a status is set; the action's last step turns anything but
-# PASS into a failure. Inputs come only through environment variables, never
+# Its exit code is the verdict: 0 PASS, 1 FAIL, 3 ERROR (as sdf verify's). Inputs come only through environment variables, never
 # through ${{ }} in the script, so a label or branch name cannot inject shell.
 set -uo pipefail
 
@@ -14,7 +13,7 @@ finish() { # status, message
     echo "::error title=sdf verify::$2"
     printf '## sdf verify: %s\n\n%s\n' "$1" "$2" >>"$GITHUB_STEP_SUMMARY"
   fi
-  exit 0
+  case "$1" in PASS) exit 0 ;; FAIL) exit 1 ;; *) exit 3 ;; esac
 }
 
 task="${SDF_TASK:-}"

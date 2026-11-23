@@ -68,6 +68,10 @@ runs:
       shell: bash
       run: '"$GITHUB_ACTION_PATH/build.sh"'
 
+    # Each check runs in its own user and pid namespace; let it.
+    - shell: bash
+      run: '"$GITHUB_ACTION_PATH/userns.sh"'
+
     # Full history, so the base branch is there as origin/<base-ref>.
     # persist-credentials: false keeps the token out of .git/config, where
     # the checks (pull request code) could read it.
@@ -98,7 +102,8 @@ runs:
         path: ${{ steps.verify.outputs.out-dir }}
         if-no-files-found: warn
 
-    # Fail closed: anything but PASS, including no verdict at all, fails.
+    # The verify step already exits non-zero unless PASS. This repeats it so
+    # that a verify step that never ran or set no status fails the job too.
     - if: always()
       shell: bash
       env:
