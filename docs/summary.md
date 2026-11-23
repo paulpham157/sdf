@@ -148,7 +148,10 @@ Grok CLI guide documents `event.sequence` and `prompt.id` on every event,
 and grok 1.0.92 sent no `event.timestamp`. `event.sequence` is a
 per-process counter, so two real requests in one process do not share it.
 A record with neither `event.timestamp` nor a log time is never merged.
-This was not checked against real duplicated data.
+This was not checked against real duplicated data. Codex `response.completed`
+logs keep their own key above (`conversation.id`, `event.timestamp`, and
+counts) for both the totals and the per-request prices; the `api_request`
+key is not applied to them.
 
 What one value is, per source, and how values are combined:
 

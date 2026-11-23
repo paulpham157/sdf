@@ -207,3 +207,24 @@ func TestIssue214DuplicateUnnamedGrokAPIRequestCountsOnce(t *testing.T) {
 		t.Fatalf("agent cost %v", got.AgentReportedCostUSD)
 	}
 }
+
+func TestIssue214CodexPerRequestItemsKeepTheirOwnKey(t *testing.T) {
+	// Codex response.completed items (issue #213) are de-duplicated by
+	// codexSSEKey only. Two events with the same event.timestamp and counts
+	// but different conversation.id are two calls; the api_request key, which
+	// does not read conversation.id, must not merge them. A stored copy of
+	// one of them is still dropped.
+	first := codexRealResponse(1, "2026-11-23T09:21:09.025Z", "9142", 0, "48", "9190")
+	other := codexRealResponse(2, "2026-11-23T09:21:09.025Z", "9142", 0, "48", "9190")
+	other.Attributes = map[string]any{}
+	for k, v := range first.Attributes {
+		other.Attributes[k] = v
+	}
+	other.Attributes["conversation.id"] = "01a207b5-8611-7031-a2e8-000000000214"
+	copyOfFirst := first
+	copyOfFirst.ID = 3
+	source := "logs " + codexSSE + " response.completed"
+	if got := requestTokens([]record.Record{first, other, copyOfFirst}, source); len(got) != 2 {
+		t.Fatalf("codex requests %+v", got)
+	}
+}

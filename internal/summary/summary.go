@@ -909,6 +909,8 @@ func requestTokens(records []record.Record, source string) []map[string]float64 
 	default:
 		return nil
 	}
+	// Claude and Grok api_request logs only: Codex returned above with its
+	// own codexSSEKey de-duplication (issue #214).
 	seen := map[string]bool{}
 	var out []map[string]float64
 	for _, rec := range records {
