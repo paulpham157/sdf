@@ -540,7 +540,7 @@ func summarizeBucket(tool, sessionID string, records []record.Record, allSpans b
 		Models:   modelList,
 		Tokens:   tokenMap(tokens),
 		Source:   deref(tokensSource),
-		Requests: requestTokens(records, deref(tokensSource)),
+		Requests: sessionRequests(records, deref(tokensSource), tokens),
 	})
 	failures := metricFailures(records)
 	summary := SessionSummary{
@@ -882,6 +882,65 @@ func tokenMap(tokens OrderedFloats) map[string]float64 {
 	out := make(map[string]float64, tokens.Len())
 	for _, key := range tokens.Keys {
 		out[key] = tokens.Vals[key]
+	}
+	return out
+}
+
+// sessionRequests returns the per-request token maps used for pricing. It is
+// requestTokens, plus the Codex metric case: codex.turn.token_usage is one
+// histogram sample per turn summed over every Responses call of that turn,
+// with no turn.id, and an exported point may merge several turns, so the
+// metric alone never yields per-request counts (issue #222). When the
+// session also has response.completed logs whose de-duplicated counts add
+// up to exactly the metric totals, those logs are the same tokens split per
+// call, and each one is priced on its own under the metric's keys. The
+// displayed totals stay the metric's, so nothing is counted twice.
+func sessionRequests(records []record.Record, source string, tokens OrderedFloats) []map[string]float64 {
+	if source == "metrics "+codexTokenMetric {
+		return codexMetricRequests(records, tokens)
+	}
+	return requestTokens(records, source)
+}
+
+// codexMetricKeys maps each response.completed count to the
+// codex.turn.token_usage token_type that carries the same tokens. "total"
+// is not priced and has no log field.
+var codexMetricKeys = [][2]string{
+	{"input_token_count", "input"},
+	{"cached_token_count", "cached_input"},
+	{"cache_write_token_count", "cache_write_input"},
+	{"output_token_count", "output"},
+	{"reasoning_token_count", "reasoning_output"},
+}
+
+// codexMetricRequests returns the session's de-duplicated response.completed
+// counts, renamed to codex.turn.token_usage keys, when their sums equal the
+// metric totals for every priced token type (a missing value is 0 on both
+// sides). Otherwise it returns nil and the metric aggregate is priced as
+// before: logs missing a call, or extra logs, cannot be trusted to split
+// the metric totals.
+func codexMetricRequests(records []record.Record, tokens OrderedFloats) []map[string]float64 {
+	logs := codexSSERequests(codexSSEEvents(records))
+	if len(logs) == 0 {
+		return nil
+	}
+	sums := map[string]float64{}
+	out := make([]map[string]float64, 0, len(logs))
+	for _, item := range logs {
+		renamed := map[string]float64{}
+		for _, pair := range codexMetricKeys {
+			if amount, ok := item[pair[0]]; ok {
+				renamed[pair[1]] = amount
+				sums[pair[1]] += amount
+			}
+		}
+		out = append(out, renamed)
+	}
+	for _, pair := range codexMetricKeys {
+		total, _ := tokens.Get(pair[1])
+		if total != sums[pair[1]] {
+			return nil
+		}
 	}
 	return out
 }

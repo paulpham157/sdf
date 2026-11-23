@@ -78,7 +78,14 @@
   `min_prompt_tokens` are refused, a session total at or above a
   `min_prompt_tokens` threshold is unknown unless per-request counts exist
   (Claude Code and Grok CLI `api_request` logs, Codex `response.completed`
-  logs; a Codex `codex.turn.token_usage` total is per turn, not per request),
+  logs). A Codex `codex.turn.token_usage` point is one turn or more, each
+  turn summed over its Responses calls, with no `turn.id` or
+  `conversation.id`, and SDF keeps only the histogram `sum`, so a
+  metric-only Codex session whose input total reaches 272000 on
+  `openai/gpt-5.4` and similar rows stays unknown even when every call was
+  below it (issue #222). Its `response.completed` logs, when they add up to
+  exactly the metric totals, are priced per call instead; when they do not,
+  it stays unknown,
   a missing component price is unknown, and per-request or web-search fees
   are not added.
 - Gemini CLI reports no cost, and `internal/pricing` has no rule for its
