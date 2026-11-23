@@ -26,7 +26,7 @@ func TestBundledCatalogIsTheOpenRouterSnapshot(t *testing.T) {
 		t.Fatalf("%+v", flint)
 	}
 	if _, ok := flint.Prices["input_cache_read"]; ok {
-		t.Fatal("snapshot gained a cache-read price; the missing-price test needs an update")
+		t.Fatal("snapshot gained a cache-read price for flint; the :free zero rule (issue #243, cache_read_gap_test.go) is no longer exercised by it")
 	}
 	if flint.HasOverrides {
 		t.Fatal("overrides")

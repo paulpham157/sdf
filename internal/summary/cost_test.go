@@ -9,19 +9,51 @@ import (
 	"github.com/paulpham157/sdf/internal/record"
 )
 
-func TestComputedCostStaysUnknownWhenTheCatalogHasNoCachePrice(t *testing.T) {
+func TestClaudeFreeModelCacheReadComputesZeroFromTheBundledTable(t *testing.T) {
+	// The bundled flint row is an OpenRouter :free variant with prompt and
+	// completion "0" and no input_cache_read price. Cache reads there are
+	// priced at 0 (issue #243), so the live Claude Code session is $0.
 	session := Summarize(claudeFixture(), false).Sessions[0]
 	if session.AgentReportedCostUSD == nil || *session.AgentReportedCostUSD != 0.065346 {
 		t.Fatalf("agent %v", session.AgentReportedCostUSD)
 	}
+	if session.ComputedCost == nil || session.ComputedCost.Status != "known" || session.ComputedCost.USD != "0" {
+		t.Fatalf("%+v", session.ComputedCost)
+	}
+	if !strings.Contains(session.ComputedCost.Note, ":free") || !strings.Contains(session.ComputedCost.Note, "input_cache_read") {
+		t.Fatal(session.ComputedCost.Note)
+	}
+	var cacheRead string
+	for _, item := range session.ComputedCost.Components {
+		if item.Name == "cache_read" {
+			cacheRead = item.Tokens + "@" + item.USDPerToken
+		}
+	}
+	if cacheRead != "10752@0" {
+		t.Fatalf("%+v", session.ComputedCost.Components)
+	}
+	if session.ComputedCost.PriceSource != pricing.SourceURL || session.ComputedCost.PriceDate == "" {
+		t.Fatalf("%+v", session.ComputedCost)
+	}
+	text := Format(Report{Sessions: []SessionSummary{session}})
+	if !strings.Contains(text, "agent_reported_cost_usd: 0.065346") || strings.Contains(text, "computed_cost_usd: unknown") {
+		t.Fatal(text)
+	}
+}
+
+func TestComputedCostStaysUnknownWhenTheCatalogHasNoCachePrice(t *testing.T) {
+	// A row with a non-zero prompt price and no input_cache_read is not
+	// treated as free, whatever its id.
+	cat := mustPrices(t, &pricing.Model{
+		ID:     freeModel,
+		Prices: map[string]string{"prompt": "0.000001", "completion": "0.000002"},
+	})
+	session := SummarizeWith(claudeFixture(), false, cat).Sessions[0]
 	if session.ComputedCost == nil || session.ComputedCost.Status != "unknown" || session.ComputedCost.USD != "" {
 		t.Fatalf("%+v", session.ComputedCost)
 	}
 	if !strings.Contains(session.ComputedCost.Reason, "input_cache_read") || !strings.Contains(session.ComputedCost.Reason, freeModel) {
 		t.Fatal(session.ComputedCost.Reason)
-	}
-	if session.ComputedCost.PriceSource != pricing.SourceURL || session.ComputedCost.PriceDate == "" {
-		t.Fatalf("%+v", session.ComputedCost)
 	}
 	text := Format(Report{Sessions: []SessionSummary{session}})
 	if !strings.Contains(text, "agent_reported_cost_usd: 0.065346") || !strings.Contains(text, "computed_cost_usd: unknown") {

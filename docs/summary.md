@@ -297,9 +297,37 @@ Reasoning uses `internal_reasoning` when the row has it, and the completion
 price when it does not, because those reasoning tokens are already inside
 the output count.
 
-On the 2026-11-10 snapshot, `recursive/flint-v1.0:free` has prompt and
-completion `"0"` and no cache-read price. A Pi session, whose totals are
-input and output only, computes `$0`. A Claude Code session that also reports
-cache-read tokens stays `unknown` rather than treating the missing cache
-price as zero. The agent's `$0.065` on that model is still shown as
-`agent_reported_cost_usd`.
+A missing component price is not treated as zero, with one exception
+(issue #243). On the 2026-11-10 snapshot, and in the live API on
+2026-11-23, all 13 OpenRouter `:free` rows, such as
+`recursive/flint-v1.0:free`, have prompt and completion `"0"` and no
+`input_cache_read` price. The
+[Models API reference](https://openrouter.ai/docs/api_reference/models)
+("Sentinel prices") says models ending in `:free` set prompt and completion
+to `0`. The
+[Free Variant guide](https://openrouter.ai/docs/guides/routing/model-variants/free)
+says they are served without cost. So for a row whose id ends in `:free`
+and whose prompt and completion are both 0, cache-read tokens are priced at
+0. The cost `note` says so. On that model a Claude Code session with
+10752 cache-read tokens, a Codex session, and an OpenCode session all
+compute `$0`, and so does a Pi session, whose totals are input and output
+only. The agent's `$0.065` on that model is still shown as
+`agent_reported_cost_usd`. The rule covers cache read only. A cache-write
+count on a `:free` row with no `input_cache_write` price is still `unknown`.
+
+A paid row with no `input_cache_read` stays `unknown` when the session has
+cache-read tokens. `mistralai/mistral-nemo` is one example. Its row lists
+prompt `0.000000029` and completion `0.00000003`, which are DeepInfra's
+rates, and DeepInfra does not cache. In
+[its endpoint list](https://openrouter.ai/api/v1/models/mistralai/mistral-nemo/endpoints)
+on 2026-11-23, each endpoint that caches has its own prompt and cache-read
+rates. Io Net has prompt `0.00000001656` and cache read `0.0000000108`.
+Mistral has prompt `0.00000015` and cache read `0.000000015`. OpenRouter
+routes cached requests to such an endpoint
+([prompt caching, sticky routing](https://openrouter.ai/docs/guides/best-practices/prompt-caching)).
+The catalog holds only model-level rates, so it cannot say what those
+cached tokens cost, and OpenRouter does not document billing cache reads at
+the prompt rate. The real Codex capture in issue #204 (37400 input, 18560
+cached, 109 output) therefore stays `unknown` with
+`catalog has no input_cache_read price for model mistralai/mistral-nemo`. A
+mistral-nemo session with no cached tokens is priced at the row's rates.
