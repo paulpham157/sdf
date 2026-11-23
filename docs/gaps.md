@@ -34,7 +34,21 @@
   and names that limit. Metrics stay unattributed when they do not fall
   inside exactly one Pi session.
 - Retried delta exports can be double-counted. Cumulative series use the
-  latest point. Codex and OpenCode input tokens use the max, not the sum, as
+  latest point of each process run and add the runs up (see
+  [docs/summary.md](summary.md)). That is still wrong in these cases:
+  - Two processes exporting the same series at once with the same start
+    time are read as one run, so the total is whichever reported last
+    instead of the sum. The resource does not separate them, because runs
+    with a start time are keyed by start time alone.
+  - Without a start time, two processes with the same resource interleave
+    and their drops read as resets, which over-counts.
+  - Without a start time, a new run whose first value is not lower than the
+    last value of the run before is not seen as a reset, which
+    under-counts (100, then a restart that first reports 150, is 150, not
+    250).
+  - A cumulative UpDownCounter without a start time that goes down reads as
+    a reset.
+- Codex and OpenCode input tokens use the max, not the sum, as
   described in [docs/summary.md](summary.md). Pi per-turn input and output are summed, and that sum is
   not added to `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,
