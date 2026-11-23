@@ -28,14 +28,29 @@
     return node;
   }
 
+  // A hand-edited or truncated link can hold a malformed percent escape
+  // (#/decisions/x/%E0%A4%A); decodeURIComponent throws on it. Such a part
+  // reads as fallback instead, so the route still draws.
+  function safeDecode(part, fallback) {
+    try {
+      return decodeURIComponent(part);
+    } catch (err) {
+      return fallback;
+    }
+  }
+
   function route() {
     const hash = location.hash || "#/overview";
     if (hash.indexOf("#/sessions/") === 0) {
-      return { name: "detail", id: decodeURIComponent(hash.slice("#/sessions/".length)) };
+      // An undecodable id is shown as typed, which no session matches.
+      const raw = hash.slice("#/sessions/".length);
+      return { name: "detail", id: safeDecode(raw, raw) };
     }
     if (hash === "#/sessions") return { name: "sessions" };
     if (hash === "#/decisions" || hash.indexOf("#/decisions/") === 0) {
-      const parts = hash.slice("#/decisions".length).split("/").filter(Boolean).map(decodeURIComponent);
+      // An undecodable chapter or node falls back to the newest chapter or
+      // the chapter view.
+      const parts = hash.slice("#/decisions".length).split("/").filter(Boolean).map(function (part) { return safeDecode(part, ""); });
       return { name: "decisions", chapter: parts[0] || "", node: parts[1] || "" };
     }
     return { name: "overview" };
@@ -1619,16 +1634,19 @@
   }
 
   function render() {
-    const current = route();
-    if (!snapshot && !loadError) {
-      shell(current.name, h("p", { class: "detail" }, ["Reading the summary…"]));
-      return;
-    }
-    if (loadError && !snapshot) {
-      shell(current.name, null);
-      return;
-    }
+    // route() and the focus restore run inside the try: anything they throw
+    // draws as an error, never as a blank page.
+    let current = { name: "overview" };
     try {
+      current = route();
+      if (!snapshot && !loadError) {
+        shell(current.name, h("p", { class: "detail" }, ["Reading the summary…"]));
+        return;
+      }
+      if (loadError && !snapshot) {
+        shell(current.name, null);
+        return;
+      }
       let body;
       if (current.name === "detail") body = detail(current.id);
       else if (current.name === "sessions") body = sessions();
