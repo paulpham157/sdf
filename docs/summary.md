@@ -2,9 +2,13 @@
 
 ```bash
 ./sdf summary
+./sdf summary --db PATH
 ./sdf summary --session sample-claude-1
 ./sdf summary --json
 ./sdf summary --all-spans
+./sdf summary --prices bundled
+./sdf summary --repo PATH
+./sdf summary --github
 ./sdf summary --budget PATH
 ```
 
@@ -64,7 +68,9 @@ So the same numbers are not added twice:
   by `token_type`, else the sum of Claude `api_request` token attributes,
   else Codex `response.completed` with the rule below, else OpenCode
   `SessionStep.attempt` `gen_ai.usage.*` (input and cache use the max, output
-  is summed), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
+  and reasoning are summed; `cache_creation.input_tokens` is read as
+  `cache_write.input_tokens` and `reasoning_tokens` as
+  `reasoning.output_tokens`), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
   `output_tokens`. That Pi sum is not added to `gen_ai.client.token.usage`.
   If the chat spans have no usage attributes, the Pi token metric is the
   fallback. Else Grok CLI `grok_code.token.usage` by `type`, else the sum of
@@ -78,6 +84,12 @@ So the same numbers are not added twice:
   the text and in `--json` is the same number.
 - Cost SDF computed: those same token totals, after the de-dup rule above,
   times the OpenRouter per-token price. See below.
+- Qwen Code sessions use their own rules, applied after the ones above:
+  duration is the sum of `qwen-code.interaction` spans (else `logs qwen-code
+  window`), tokens are the sum of `qwen-code.api_response` token counts
+  (else `qwen-code.llm_request` usage, else `qwen-code.token.usage` by
+  `type`), and tool calls come from `qwen-code.tool` spans joined to
+  `qwen-code.tool_call` logs. See [docs/agents.md](agents.md#qwen-code).
 
 Codex `response.completed` token fields are not all additive. `input_token_count`,
 `cached_token_count`, and `cache_write_token_count` already include the
@@ -88,8 +100,30 @@ tokens and are summed. When `turn.id` is present, only the last
 attempt again. `tool_token_count` is ignored: at the cited Codex commit it is
 recorded from `total_tokens`.
 
-Delta metric points are summed. Cumulative points and gauges keep the latest
-point for that attribute set. A Codex model id that contains `:` leaves the
+Delta metric points are summed. Gauges keep the latest point for that
+attribute set. A cumulative series (same name and attributes) keeps the
+latest value of each process run and adds the runs up. So when an agent
+resumes a session in a new process (`gemini --resume` keeps the
+`session.id`, but its counters restart at 0), 1000 before the resume and 500
+after it is 1500, not 500.
+
+- A point with `StartTimeUnixNano` belongs to the run with that start time.
+  The latest point of the run (by time, then by storage order) is its value;
+  a lower value inside one start time is not a reset, because a cumulative
+  UpDownCounter may go down (5, 3, 4 is 4). The resource is ignored here, so
+  a resource that gains an attribute mid-run (`process.pid`) does not split
+  it.
+- A point without a start time joins the run with the latest start time at
+  or before its timestamp among the runs reported by the same resource. A
+  point from another resource never joins a run it did not report, so a
+  resumed process without a start time is its own run (1000, then 500 from
+  the new process, is 1500). If there is no such run, points are grouped by
+  resource and ordered by time, and a value lower than the one before starts
+  a new run.
+- Points of one group with the same timestamp are one point: the one stored
+  last wins (1000 then 900 at the same time is 900, not 1900).
+
+The limits are in [docs/gaps.md](gaps.md). A Codex model id that contains `:` leaves the
 turn metrics missing; the summary quotes the exporter error and uses the log
 and span fallbacks above.
 
@@ -119,6 +153,7 @@ sdf summary --prices /path/to/openrouter-models.json
 `sdf prices refresh` is the only command that calls the network for prices.
 It GETs the models URL with no API key and writes
 `$XDG_CACHE_HOME/sdf/openrouter-models.json` (or the path in `--out`).
+`--url` fetches a different models URL with the same shape.
 `SDF_PRICE_CACHE` changes the cache directory. A model id that is not in the
 table, or a token bucket whose price field is absent, is `computed_cost_usd`
 status `unknown` with a reason. The `usd` field is omitted in that case.
@@ -135,8 +170,9 @@ How a count is turned into a bucket:
 | Token source | Rule |
 | --- | --- |
 | Claude Code `claude_code.token.usage` and `api_request` | `input` excludes cache read and cache creation. Each is priced on its own. [Monitoring](https://code.claude.com/docs/en/monitoring-usage) documents that split. |
+| Qwen Code `qwen-code.api_response`, `llm_request`, and `token.usage` | No pricing rule yet, so computed cost is `unknown` (or unknown earlier when the model is not in the catalog). From `ApiResponseEvent` and the OpenAI converter at v0.28.4: input includes `cached_content_token_count`; with OpenAI-compatible providers output includes `thoughts_token_count` (possibly estimated), with Gemini-native responses it does not. A rule would have to know the provider. |
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
-| OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
+| OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. `gen_ai.usage.cache_creation.input_tokens` (what OpenCode sends) and `cache_creation_input_tokens` are the pre-v0.1.0 names for `gen_ai.usage.cache_write.input_tokens`; the summary folds them into `cache_write.input_tokens`, and when a span carries more than one of them the largest is kept, never the sum. Cache write is priced as a subset of input. When old and new names for one bucket arrive together, the largest is priced whatever the key order; two spellings of one bucket with no renamed key among them (for example `cache_write.input_tokens` and `cache_write_input_tokens`) still leave the cost unknown. `gen_ai.usage.reasoning.output_tokens` (the summary folds `reasoning_tokens` into it) is priced as a subset of output. Per-modality keys `gen_ai.usage.{text,image,audio,video}.{input_tokens,output_tokens,cache_read.input_tokens,cache_write.input_tokens}` are breakdowns of the totals: they stay in the token map, use the same max or sum rule as their total, are not priced again, and are named in the cost `method`. If the matching total is missing (for example only `text.input_tokens` and `text.output_tokens`), the cost is unknown, not $0. The v0.1.0 registry defines only text, image, and audio with `input_tokens`, `output_tokens`, and `cache_read.input_tokens`; `video.*` and `<modality>.cache_write.input_tokens` are not in it and are accepted for forward compatibility only. Any other modality or unrecognized key still leaves the computed cost unknown. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
 | Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
 
