@@ -5,6 +5,12 @@
 // the receivers without exposing this page. The HTML, CSS, and script are
 // embedded in the binary. Nothing on the page is loaded from the network.
 //
+// Every route checks Host before the handler runs. localhost, 127.0.0.1,
+// and [::1] are allowed, plus the host --ui-addr bound. The port may be
+// omitted; a port that is present has to be the bound port. Any other host
+// is 403, including static files, so a name that rebinds onto the loopback
+// address cannot read the summary or trigger a GitHub lookup.
+//
 // GET /api/summary is the sdf summary JSON document: summary.SummarizeWith
 // with the default span view, then outcome.Attach. GET /api/snapshot is that
 // same report arranged for the page. GET /api/decisions reads the append-only
@@ -27,6 +33,7 @@ import (
 	"time"
 
 	"github.com/paulpham157/sdf/internal/decision"
+	"github.com/paulpham157/sdf/internal/httphost"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/store"
@@ -38,6 +45,16 @@ import (
 const DefaultAddr = "127.0.0.1:4320"
 
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+
+// Timeouts bound a slow or idle client. WriteTimeout includes handler time,
+// and a --github refresh calls the GitHub API inside the handler, so the
+// write budget is long enough for a few of those calls.
+const (
+	uiReadHeaderTimeout = 5 * time.Second
+	uiReadTimeout       = 30 * time.Second
+	uiWriteTimeout      = 3 * time.Minute
+	uiIdleTimeout       = 90 * time.Second
+)
 
 //go:embed assets/index.html assets/app.css assets/app.js
 var assetFS embed.FS
@@ -78,18 +95,28 @@ func Start(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	lnHost, lnPort, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	h := &handler{
 		store:  cfg.Store,
 		prices: cfg.Prices,
 		repo:   cfg.Repo,
 		github: cfg.GitHub,
 		budget: cfg.Budget,
+		port:   lnPort,
+		hosts:  []string{host, lnHost},
 		mux:    http.NewServeMux(),
 	}
 	h.routes()
 	httpSrv := &http.Server{
 		Handler:           h,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: uiReadHeaderTimeout,
+		ReadTimeout:       uiReadTimeout,
+		WriteTimeout:      uiWriteTimeout,
+		IdleTimeout:       uiIdleTimeout,
 	}
 	go func() { _ = httpSrv.Serve(ln) }()
 	return &Server{ln: ln, http: httpSrv, warning: bindWarning(host)}, nil
@@ -156,6 +183,8 @@ type handler struct {
 	repo   string
 	github bool
 	budget string
+	port   string
+	hosts  []string
 	mux    *http.ServeMux
 }
 
@@ -174,6 +203,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Cache-Control", "no-store")
+	if !httphost.Allowed(r.Host, h.port, h.hosts...) {
+		writeText(w, http.StatusForbidden, "forbidden")
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 

@@ -1,0 +1,750 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "grok-cli"
+            }
+          },
+          {
+            "key": "sdf.fixture",
+            "value": {
+              "stringValue": "sample"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "0.0.0-sample"
+            }
+          },
+          {
+            "key": "client.name",
+            "value": {
+              "stringValue": "grok-sample"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": {
+            "name": "grok-cli"
+          },
+          "spans": [
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000001",
+              "name": "agent.prompt",
+              "startTimeUnixNano": "30000000000",
+              "endTimeUnixNano": "35815000000",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000002",
+              "name": "session.handle_prompt",
+              "startTimeUnixNano": "30002000000",
+              "endTimeUnixNano": "35812000000",
+              "parentSpanId": "a100000000000001"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000003",
+              "name": "session.process_conversation_turn",
+              "startTimeUnixNano": "30005000000",
+              "endTimeUnixNano": "35810000000",
+              "parentSpanId": "a100000000000002",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": "1200"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "90"
+                  }
+                },
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": "800"
+                  }
+                },
+                {
+                  "key": "stop_reason",
+                  "value": {
+                    "stringValue": "stop"
+                  }
+                },
+                {
+                  "key": "request_id",
+                  "value": {
+                    "stringValue": "sample-request-1"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000004",
+              "name": "turn.sampling",
+              "startTimeUnixNano": "30010000000",
+              "endTimeUnixNano": "31010000000",
+              "parentSpanId": "a100000000000003"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000005",
+              "name": "turn.build_request",
+              "startTimeUnixNano": "30011000000",
+              "endTimeUnixNano": "30012000000",
+              "parentSpanId": "a100000000000004"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000006",
+              "name": "http.create_response_stream",
+              "startTimeUnixNano": "30013000000",
+              "endTimeUnixNano": "31010000000",
+              "parentSpanId": "a100000000000004",
+              "attributes": [
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "50"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "https://example.invalid/"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000007",
+              "name": "tools.execute",
+              "startTimeUnixNano": "31020000000",
+              "endTimeUnixNano": "31220000000",
+              "parentSpanId": "a100000000000003",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000008",
+              "name": "permission.wait",
+              "startTimeUnixNano": "31021000000",
+              "endTimeUnixNano": "31040000000",
+              "parentSpanId": "a100000000000007"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000009",
+              "name": "tool.decision",
+              "startTimeUnixNano": "31041000000",
+              "endTimeUnixNano": "31042000000",
+              "parentSpanId": "a100000000000007",
+              "attributes": [
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "search_replace"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "call-sample-0"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "allow"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000000a",
+              "name": "tool.execution",
+              "startTimeUnixNano": "31045000000",
+              "endTimeUnixNano": "31210000000",
+              "parentSpanId": "a100000000000007",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "search_replace"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "call-sample-0"
+                  }
+                },
+                {
+                  "key": "tool_call_id",
+                  "value": {
+                    "stringValue": "call-sample-0"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "outcome",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000000b",
+              "name": "tool.search_replace",
+              "startTimeUnixNano": "31050000000",
+              "endTimeUnixNano": "31200000000",
+              "parentSpanId": "a10000000000000a"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000000c",
+              "name": "edit.lines",
+              "startTimeUnixNano": "31060000000",
+              "endTimeUnixNano": "31061000000",
+              "parentSpanId": "a10000000000000b",
+              "attributes": [
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "search_replace"
+                  }
+                },
+                {
+                  "key": "lines_added",
+                  "value": {
+                    "intValue": "1"
+                  }
+                },
+                {
+                  "key": "lines_removed",
+                  "value": {
+                    "intValue": "1"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000000d",
+              "name": "turn.sampling",
+              "startTimeUnixNano": "31230000000",
+              "endTimeUnixNano": "32230000000",
+              "parentSpanId": "a100000000000003"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000000e",
+              "name": "turn.build_request",
+              "startTimeUnixNano": "31231000000",
+              "endTimeUnixNano": "31232000000",
+              "parentSpanId": "a10000000000000d"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000000f",
+              "name": "http.create_response_stream",
+              "startTimeUnixNano": "31233000000",
+              "endTimeUnixNano": "32230000000",
+              "parentSpanId": "a10000000000000d",
+              "attributes": [
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "50"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "https://example.invalid/"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000010",
+              "name": "tools.execute",
+              "startTimeUnixNano": "32240000000",
+              "endTimeUnixNano": "32440000000",
+              "parentSpanId": "a100000000000003",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000011",
+              "name": "permission.wait",
+              "startTimeUnixNano": "32241000000",
+              "endTimeUnixNano": "32260000000",
+              "parentSpanId": "a100000000000010"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000012",
+              "name": "tool.decision",
+              "startTimeUnixNano": "32261000000",
+              "endTimeUnixNano": "32262000000",
+              "parentSpanId": "a100000000000010",
+              "attributes": [
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "run_terminal_command"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "call-sample-1"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "allow"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000013",
+              "name": "tool.execution",
+              "startTimeUnixNano": "32265000000",
+              "endTimeUnixNano": "32430000000",
+              "parentSpanId": "a100000000000010",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "run_terminal_command"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "call-sample-1"
+                  }
+                },
+                {
+                  "key": "tool_call_id",
+                  "value": {
+                    "stringValue": "call-sample-1"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": false
+                  }
+                },
+                {
+                  "key": "outcome",
+                  "value": {
+                    "stringValue": "error"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000014",
+              "name": "tool.run_terminal_cmd",
+              "startTimeUnixNano": "32270000000",
+              "endTimeUnixNano": "32420000000",
+              "parentSpanId": "a100000000000013"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000015",
+              "name": "turn.sampling",
+              "startTimeUnixNano": "32450000000",
+              "endTimeUnixNano": "33450000000",
+              "parentSpanId": "a100000000000003"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000016",
+              "name": "turn.build_request",
+              "startTimeUnixNano": "32451000000",
+              "endTimeUnixNano": "32452000000",
+              "parentSpanId": "a100000000000015"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000017",
+              "name": "http.create_response_stream",
+              "startTimeUnixNano": "32453000000",
+              "endTimeUnixNano": "33450000000",
+              "parentSpanId": "a100000000000015",
+              "attributes": [
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "50"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "https://example.invalid/"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000018",
+              "name": "tools.execute",
+              "startTimeUnixNano": "33460000000",
+              "endTimeUnixNano": "33660000000",
+              "parentSpanId": "a100000000000003",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a100000000000019",
+              "name": "permission.wait",
+              "startTimeUnixNano": "33461000000",
+              "endTimeUnixNano": "33480000000",
+              "parentSpanId": "a100000000000018"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000001a",
+              "name": "tool.decision",
+              "startTimeUnixNano": "33481000000",
+              "endTimeUnixNano": "33482000000",
+              "parentSpanId": "a100000000000018",
+              "attributes": [
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "run_terminal_command"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "call-sample-2"
+                  }
+                },
+                {
+                  "key": "decision",
+                  "value": {
+                    "stringValue": "allow"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000001b",
+              "name": "tool.execution",
+              "startTimeUnixNano": "33485000000",
+              "endTimeUnixNano": "33650000000",
+              "parentSpanId": "a100000000000018",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "run_terminal_command"
+                  }
+                },
+                {
+                  "key": "tool_use_id",
+                  "value": {
+                    "stringValue": "call-sample-2"
+                  }
+                },
+                {
+                  "key": "tool_call_id",
+                  "value": {
+                    "stringValue": "call-sample-2"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "outcome",
+                  "value": {
+                    "stringValue": "success"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000001c",
+              "name": "tool.run_terminal_cmd",
+              "startTimeUnixNano": "33490000000",
+              "endTimeUnixNano": "33640000000",
+              "parentSpanId": "a10000000000001b"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000001d",
+              "name": "turn.sampling",
+              "startTimeUnixNano": "33670000000",
+              "endTimeUnixNano": "34670000000",
+              "parentSpanId": "a100000000000003"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000001e",
+              "name": "turn.build_request",
+              "startTimeUnixNano": "33671000000",
+              "endTimeUnixNano": "33672000000",
+              "parentSpanId": "a10000000000001d"
+            },
+            {
+              "traceId": "47474747474747474747474747474747",
+              "spanId": "a10000000000001f",
+              "name": "http.create_response_stream",
+              "startTimeUnixNano": "33673000000",
+              "endTimeUnixNano": "34670000000",
+              "parentSpanId": "a10000000000001d",
+              "attributes": [
+                {
+                  "key": "model_id",
+                  "value": {
+                    "stringValue": "grok-sample-model"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "ttft_ms",
+                  "value": {
+                    "intValue": "50"
+                  }
+                },
+                {
+                  "key": "endpoint",
+                  "value": {
+                    "stringValue": "https://example.invalid/"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "49494949494949494949494949494949",
+              "spanId": "c100000000000020",
+              "name": "sampling.stream_decode",
+              "startTimeUnixNano": "31000000000",
+              "endTimeUnixNano": "31010000000",
+              "attributes": [
+                {
+                  "key": "chunk_count",
+                  "value": {
+                    "intValue": "4"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "20"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "48484848484848484848484848484848",
+              "spanId": "b100000000000021",
+              "name": "session",
+              "startTimeUnixNano": "35820000000",
+              "endTimeUnixNano": "35900000000",
+              "attributes": [
+                {
+                  "key": "session_id",
+                  "value": {
+                    "stringValue": "grok-sample-session-1"
+                  }
+                }
+              ]
+            },
+            {
+              "traceId": "48484848484848484848484848484848",
+              "spanId": "b100000000000022",
+              "name": "session_end.flush",
+              "startTimeUnixNano": "35830000000",
+              "endTimeUnixNano": "35890000000",
+              "parentSpanId": "b100000000000021"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

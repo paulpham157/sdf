@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/pricing"
+	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/summary"
 )
 
@@ -794,5 +795,78 @@ func TestCostReasonsUseSingularForOneSession(t *testing.T) {
 	}})
 	if got.Status != "known" || !strings.Contains(got.Note, "2 sessions have unknown computed cost and are not accepted") {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// grokRecords is a Grok CLI session in the shape of the external OTEL stream
+// (24-monitoring-usage.md, grok_code.schema.version=v1). The resource is the
+// fixed set Grok builds; it has no working directory. file_path is how Grok
+// writes it under OTEL_LOG_TOOL_DETAILS=1: home-scrubbed to "~/...".
+func grokRecords(session string, startSec int64) []record.Record {
+	resource := map[string]any{
+		"service.name":             "grok-cli",
+		"service.version":          "test",
+		"client.version":           "test",
+		"app.entrypoint":           "cli",
+		"terminal.type":            "xterm-256color",
+		"grok_code.schema.version": "v1",
+		"sdf.fixture":              "docs-schema",
+	}
+	log := func(name string, sec int64, attrs map[string]any) record.Record {
+		all := map[string]any{"session.id": session, "event.name": name}
+		for k, v := range attrs {
+			all[k] = v
+		}
+		return record.Record{
+			Signal: "logs", ServiceName: record.Str("grok-cli"), SessionID: record.Str(session),
+			Name: record.Str(name), Body: record.Str(name),
+			TimeUnixNano: record.Int64(sec * 1_000_000_000), Attributes: all, Resource: resource,
+		}
+	}
+	return []record.Record{
+		log("grok_code.session_start", startSec, map[string]any{"model": "grok-4.7", "permission_mode": "default", "is_git_repo": true}),
+		log("grok_code.tool_result", startSec+2, map[string]any{
+			"tool_name": "write", "outcome": "success", "success": "true", "duration_ms": 5,
+			"tool_use_id": "call-1", "file_extension": "go", "file_path": "~/proj/main.go",
+		}),
+		log("grok_code.session_end", startSec+5, map[string]any{"duration_secs": 5, "turn_count": 1, "model": "grok-4.7"}),
+	}
+}
+
+func TestGrokSessionHasNoWorkDirAndSaysToPassRepo(t *testing.T) {
+	report := summary.Summarize(grokRecords("grok-1", 1_700_000_000), false)
+	if len(report.Sessions) != 1 || report.Sessions[0].Tool != "grok-cli" {
+		t.Fatalf("%+v", report.Sessions)
+	}
+	if dirs := report.Sessions[0].Repository.WorkDirs; len(dirs) != 0 {
+		t.Fatalf("a directory was derived from Grok telemetry: %v", dirs)
+	}
+	Attach(&report, Options{})
+	got := report.Sessions[0].Outcome
+	if got.Status != "unlinked" || !strings.Contains(got.Reason, "no working directory") ||
+		!strings.Contains(got.Reason, "Grok CLI") || !strings.Contains(got.Reason, "OTEL_RESOURCE_ATTRIBUTES") ||
+		!strings.Contains(got.Reason, "--repo") || !strings.Contains(got.Reason, "sdf init grok --write") {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestGrokSessionLinksByTimeWindowWithExplicitRepo(t *testing.T) {
+	dir := gitRepo(t)
+	sha := commitAt(t, dir, 1_700_000_003, "grok change")
+	report := summary.Summarize(grokRecords("grok-2", 1_700_000_000), false)
+	Attach(&report, Options{Repo: dir})
+	got := report.Sessions[0].Outcome
+	if got.Status != "linked" || got.Match != "heuristic" || len(got.Commits) != 1 || got.Commits[0].SHA != sha {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestNoWorkDirReasonIsUnchangedForOtherTools(t *testing.T) {
+	item := sess("c", "", 1, 2, "1")
+	item.Tool = "codex"
+	report := &summary.Report{Sessions: []summary.SessionSummary{item}}
+	Attach(report, Options{})
+	if r := report.Sessions[0].Outcome.Reason; r != "no working directory attribute and no --repo" {
+		t.Fatal(r)
 	}
 }
