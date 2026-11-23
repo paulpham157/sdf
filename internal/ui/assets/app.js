@@ -222,6 +222,10 @@
     const edges = decisions && decisions.edges ? decisions.edges : [];
     if (!records.length && !edges.length) return null;
     const kids = [h("h2", null, ["Decisions"])];
+    const activeIDs = {};
+    records.forEach(function (record) {
+      if (record.effective_status === "active") activeIDs[record.id] = true;
+    });
     if (!records.length) {
       kids.push(h("p", null, ["no decision"]));
     } else {
@@ -246,8 +250,9 @@
         if (record.blocked && open.length) {
           line.push(h("span", { class: "relation-flag blocked" }, ["blocked by " + open.join(", ")]));
         }
-        if (record.conflicted && conflicts.length) {
-          line.push(h("span", { class: "relation-flag conflicted" }, ["conflicts with " + conflicts.join(", ")]));
+        const activeConflicts = conflicts.filter(function (id) { return activeIDs[id]; });
+        if (record.conflicted && activeConflicts.length) {
+          line.push(h("span", { class: "relation-flag conflicted" }, ["conflicts with " + activeConflicts.join(", ")]));
         }
         if (record.challenged) {
           line.push(h("span", { class: "relation-flag challenged" }, ["challenged"]));
@@ -261,7 +266,8 @@
         if (record.alternatives) extra.push("alternatives " + record.alternatives);
         if (record.reason) extra.push("reason " + record.reason);
         const blockers = Array.isArray(record.blocked_by) ? record.blocked_by : [];
-        if (blockers.length && !record.blocked) extra.push("blocked by " + blockers.join(", ") + " (settled)");
+        if (blockers.length && open.length === 0) extra.push("blocked by " + blockers.join(", ") + " (settled)");
+        else if (open.length && !record.blocked) extra.push("blocked by " + open.join(", ") + " (open)");
         if (conflicts.length && !record.conflicted) extra.push("conflicts with " + conflicts.join(", ") + " (resolved)");
         const refined = Array.isArray(record.refined_by) ? record.refined_by : [];
         if (refined.length) extra.push("refined by " + refined.join(", "));
