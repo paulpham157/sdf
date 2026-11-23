@@ -3,6 +3,7 @@ package summary
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -11,20 +12,18 @@ import (
 	"github.com/paulpham157/sdf/internal/samplepath"
 )
 
-// tests/samples/grok_traces.json is Grok CLI 1.0.92's internal spans from a
-// live headless session on 2026-11-23 (GROK_INTERNAL_OTLP_TRACES_ENDPOINT
-// pointed at sdf, Authorization overridden with GROK_INTERNAL_OTLP_HEADERS).
-// It keeps the agent.prompt trace, the session teardown trace, and one
-// parentless sampling.stream_decode span. user.id and team.id were removed
-// from the resource; the session id, request_id, and invocation_id were
-// replaced. It is marked sdf.fixture=live-scrubbed.
+// tests/samples/grok_traces.json is a hand-written sample (sdf.fixture=sample)
+// of Grok CLI's internal spans, shaped like what grok 1.0.92 sends when
+// GROK_INTERNAL_OTLP_TRACES_ENDPOINT points at sdf: one agent.prompt trace
+// with four model requests and three tool calls, a session teardown trace,
+// and one parentless sampling.stream_decode span. The ids are fake.
 
-const grokLiveSession = "live-grok-session-1"
+const grokLiveSession = "grok-sample-session-1"
 
 var grokLiveCalls = []struct{ id, name, success string }{
-	{"call-4357c83b-0640-4746-ae64-efd520163a3d-0", "search_replace", "true"},
-	{"call-744b90c3-00d8-41fc-bc77-2bca1bff98a3-1", "run_terminal_command", "false"},
-	{"call-73e2d194-6a18-43e9-89cf-3b9c47f9832c-2", "run_terminal_command", "true"},
+	{"call-sample-0", "search_replace", "true"},
+	{"call-sample-1", "run_terminal_command", "false"},
+	{"call-sample-2", "run_terminal_command", "true"},
 }
 
 func grokLiveSpans(t *testing.T) []record.Record {
@@ -40,19 +39,24 @@ func grokLiveSessionOf(t *testing.T, report Report) SessionSummary {
 	return report.Sessions[0]
 }
 
-func TestGrokLiveFixtureIsScrubbed(t *testing.T) {
+func TestGrokTraceSampleIsHandWritten(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(samplepath.Dir(), "grok_traces.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(body)
-	if !strings.Contains(text, `"live-scrubbed"`) {
-		t.Fatal("not marked sdf.fixture=live-scrubbed")
+	for _, rec := range grokLiveSpans(t) {
+		if rec.Resource["sdf.fixture"] != "sample" {
+			t.Fatalf("%s fixture=%v, want sample", deref(rec.Name), rec.Resource["sdf.fixture"])
+		}
 	}
-	for _, banned := range []string{`"user.id"`, `"team.id"`, `"organization.id"`, `"api_key.id"`, `"deployment.id"`, `"user.email"`, "Bearer", "@", "01a20753-5c28"} {
+	for _, banned := range []string{`"user.id"`, `"team.id"`, `"organization.id"`, `"api_key.id"`, `"deployment.id"`, `"user.email"`, "Bearer", "@", "os.version", "/tmp/", "/home/", "grok.com"} {
 		if strings.Contains(text, banned) {
 			t.Fatalf("fixture contains %q", banned)
 		}
+	}
+	if id := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).FindString(text); id != "" {
+		t.Fatalf("fixture contains a UUID-shaped id %s; sample ids are fake and readable", id)
 	}
 }
 
@@ -139,7 +143,7 @@ func TestGrokSpanTreeShowsPromptTurnsRequestsAndTools(t *testing.T) {
 func TestGrokToolCallsJoinSpansAndToolResultLogs(t *testing.T) {
 	rows := grokLiveSpans(t)
 	for i, call := range grokLiveCalls {
-		rows = append(rows, grokLog("grok_code.tool_result", grokLiveSession, 1_763_883_240_000_000_000+int64(i), map[string]any{
+		rows = append(rows, grokLog("grok_code.tool_result", grokLiveSession, 30_000_000_000+int64(i)*1_000_000_000, map[string]any{
 			"tool_name": call.name, "success": call.success, "duration_ms": 3, "tool_use_id": call.id,
 		}))
 	}

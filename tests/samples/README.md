@@ -47,13 +47,10 @@ cumulative metrics with `session.id`, and `llm_call` / `tool_call` spans with
 `telemetry.logPrompts=false` and `telemetry.traces=false`. They were not
 captured from a live session. Token counts are made up; the ids are fake.
 
-`grok_traces.json` is the exception: it is a scrubbed live capture, not a
-hand-written sample, and its resource carries `sdf.fixture=live-scrubbed`.
-It holds Grok CLI 1.0.92's internal spans from one headless session on
-2026-11-23 (`GROK_INTERNAL_OTLP_TRACES_ENDPOINT` pointed at sdf): the
-`agent.prompt` trace, the `session` teardown trace, and one parentless
-`sampling.stream_decode` span. sdf does not keep raw request bodies, so the
-file is rebuilt as OTLP JSON from the stored rows. `user.id` and `team.id`
-were removed from the resource, and the session id, `request_id`, and
-`invocation_id` were replaced. There is no prompt or response text; the only
-path is the throwaway repo's `/tmp/grok-live/repo/hello.py`.
+`grok_traces.json` holds Grok CLI internal spans (the pipeline sent when
+`GROK_INTERNAL_OTLP_TRACES_ENDPOINT` points at sdf). Its span names and
+attribute keys follow what grok 1.0.92 sends: one `agent.prompt` trace with
+four model requests and three `tool.execution` calls, a `session` teardown
+trace, and one parentless `sampling.stream_decode` span. It was not captured
+from a live session: timestamps and token counts are made up, the ids are
+fake, and there is no prompt text, path, or credential.

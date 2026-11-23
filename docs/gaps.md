@@ -118,9 +118,9 @@
   trailer stays in the git object. A GitHub squash merge keeps that trailer
   only when the squash commit message includes it. Husky, lefthook, and
   pre-commit are not edited; `core.hooksPath` is left as it was.
-- The only live capture committed in this tree is
-  `tests/samples/grok_traces.json` (Grok CLI 1.0.92 spans, scrubbed, marked
-  `sdf.fixture=live-scrubbed`). The other tests use the sample payloads. OpenCode and Pi behavior above is from the 2026-11-10
+- No live capture is committed in this tree; the tests use the hand-written
+  sample payloads (`tests/samples/grok_traces.json` follows the Grok CLI
+  1.0.92 span shapes but is not a capture). OpenCode and Pi behavior above is from the 2026-11-10
   checks of the named package versions, not from a fixture that was copied
   out of a live SQLite file.
 - Grok CLI's telemetry has no working directory. Its resource is a fixed

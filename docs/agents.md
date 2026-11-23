@@ -873,8 +873,9 @@ When there is no `session_end` or `turn_completed` log, duration is the sum
 of `agent.prompt` spans. Tokens and cost still come from the external metrics;
 the span token attributes are not added. Model requests outside the prompt
 trace (a `grok-4.6` request, a failed request) show as extra
-`http.create_response_stream` roots. The scrubbed capture is
-`tests/samples/grok_traces.json` (`sdf.fixture=live-scrubbed`).
+`http.create_response_stream` roots. The hand-written sample
+`tests/samples/grok_traces.json` (`sdf.fixture=sample`) follows these shapes;
+it is not the capture.
 
 Also seen in that run: the external stream accepted
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"` (logs
