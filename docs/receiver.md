@@ -162,7 +162,41 @@ the variable, and `0`, `false`, or `off` turns it off. `sdf serve` prints a
 line saying whose content it stores, and those rows carry
 `sdf.content=kept`. The text then sits in the local SQLite file.
 
-Rows written by an older sdf are not changed when the database is opened.
+Rows written by an older sdf are not changed when the database is opened;
+sdf never scrubs on its own. A new database is stamped (`PRAGMA
+user_version = 1`) as written under these rules. A database that already
+had rows and no stamp was written by an older sdf, and `sdf serve` prints
+one warning line at start while that is so. To remove the text from it,
+stop `sdf serve` on that file and run:
+
+```bash
+sdf redact --db sdf-telemetry.sqlite --dry-run   # count the rows that would change
+sdf redact --db sdf-telemetry.sqlite
+```
+
+`sdf redact` applies the same rules to every stored row, including rows kept
+with `--store-content` (their `sdf.content` mark goes too), including a log
+name that is a copy of its body. It reads the rows in batches inside one
+transaction (a crash leaves the file as it was), rewrites the rows that
+changed with `secure_delete` on, runs `VACUUM` so the old text does not stay
+in free pages, and stamps the file. sdf's files use SQLite's default
+rollback journal; a file switched to WAL mode is also checkpointed and its
+WAL truncated. It needs free disk of about twice the file's size while it
+runs (the journal and `VACUUM`'s copy). Running it again changes nothing.
+
+- `--dry-run` opens the file read-only and writes nothing: no schema,
+  migration, stamp, or lock file.
+- The file must exist and have sdf's `records` table; any other file is
+  refused.
+- `sdf serve` holds `PATH.lock` (shared) while it runs, and `sdf redact`
+  takes it exclusively, so redact refuses while a serve uses the file and
+  a serve will not start while redact runs. An sdf older than this does
+  not take the lock, so stop it by hand.
+- The stamp only means the rows were written by an sdf with these rules
+  (or scrubbed). An older sdf opened on a stamped file writes content into
+  it with no warning; run `sdf redact` again after one has.
+- Copies of the file elsewhere (backups, Time Machine, `.sdf-bak`) are not
+  touched.
 
 ## Optional token authentication
 
