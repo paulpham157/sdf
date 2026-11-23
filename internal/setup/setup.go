@@ -294,6 +294,12 @@ func codex(req Request) (Result, error) {
 		body = append(body, '\n')
 		body = append(body, []byte(block)...)
 	}
+	// Plan the hooks.json merge before config.toml is touched, so a corrupt
+	// or refused hooks.json (null, not an object) leaves both files as they
+	// were instead of [otel] written and the hook missing.
+	if err := codexHookCheck(hooks, hookURL); err != nil {
+		return Result{}, err
+	}
 	status, err := replaceFile(path, body, 0o600)
 	if err != nil {
 		return Result{}, err

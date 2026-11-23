@@ -56,8 +56,16 @@ func cmdHook(command string) map[string]any {
 
 func TestSdfHookDetectionMatchesEveryFormSdfWrote(t *testing.T) {
 	forms := sdfHookForms(t)
-	if len(forms) < 36 {
-		t.Fatalf("only %d forms in testdata", len(forms))
+	// Five generations on main (d066acd, 85485e8, a10a807, 0c150fb, 57239b0)
+	// x 2 tools x 2 edges x 2 URLs (loopback, other host) = 40 rows. 0c150fb
+	// and 57239b0 write the same non-loopback command (no token code), so 36
+	// of them are distinct.
+	distinct := map[[2]string]bool{}
+	for _, form := range forms {
+		distinct[form] = true
+	}
+	if len(forms) != 40 || len(distinct) != 36 {
+		t.Fatalf("testdata has %d forms, %d distinct; want 40 and 36", len(forms), len(distinct))
 	}
 	for _, form := range forms {
 		other := "codex"
@@ -244,5 +252,42 @@ func TestHookMergeKeepsTextNumbersAndOrder(t *testing.T) {
 		if z, h, a := strings.Index(text, `"zeta"`), strings.Index(text, `"hooks"`), strings.Index(text, `"alpha"`); !(z < h && h < a) {
 			t.Errorf("%s key order changed:\n%s", path, text)
 		}
+	}
+}
+
+// Review: with no [otel] table, a corrupt or null hooks.json was only found
+// after [otel] had been appended to config.toml, leaving the write half done.
+// The hooks.json merge is planned first, so both files stay as they were.
+func TestCodexInitRefusedHooksLeavesConfigUntouched(t *testing.T) {
+	for name, hooksBody := range map[string]string{
+		"corrupt":       `{"hooks": {`,
+		"null hooks":    `{"hooks": null}`,
+		"null event":    `{"hooks": {"SessionEnd": null}}`,
+		"not an object": `{"hooks": []}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			codexHome := filepath.Join(home, "codex")
+			config := filepath.Join(codexHome, "config.toml")
+			hooks := filepath.Join(codexHome, "hooks.json")
+			original := "model = \"keep\"\n"
+			writeSettings(t, config, original)
+			writeSettings(t, hooks, hooksBody)
+			res, err := Run(Request{Agent: "codex", Home: home, CodexHome: codexHome, Write: true, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+			if err == nil {
+				t.Fatalf("hooks.json %s was accepted:\n%s", hooksBody, res.Text)
+			}
+			if got, _ := os.ReadFile(config); string(got) != original {
+				t.Fatalf("config.toml changed:\n%s", got)
+			}
+			if got, _ := os.ReadFile(hooks); string(got) != hooksBody {
+				t.Fatalf("hooks.json changed:\n%s", got)
+			}
+			for _, p := range []string{config, hooks} {
+				if matches, _ := filepath.Glob(p + ".sdf-bak*"); len(matches) != 0 {
+					t.Fatalf("backup left: %v", matches)
+				}
+			}
+		})
 	}
 }

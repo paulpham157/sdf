@@ -197,6 +197,19 @@ func sdfHookURL(arg string) bool {
 		u.Path == "/v1/sessions" && u.RawQuery == "" && u.Fragment == "" && !u.ForceQuery
 }
 
+// codexHookCheck runs the hooks.json merge plan without writing, and returns
+// the error codexHookFile would hit: a file that is not JSON, or a hooks
+// value it refuses. A missing file is fine; codexHookFile creates it.
+func codexHookCheck(path, url string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	_, _, err := planJSON(path, func(root map[string]any) (bool, error) {
+		return mergeSessionHooks(root, "codex", codexHookCommands(url))
+	})
+	return err
+}
+
 // codexHookFile writes a new hooks.json, or merges sdf's hooks into an
 // existing one so the user's own hooks and other keys stay.
 func codexHookFile(path, url string) (string, error) {
