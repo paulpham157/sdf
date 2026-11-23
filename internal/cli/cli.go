@@ -279,7 +279,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		Token:    token,
 	}
 	if err := srv.Start(); err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 		return 1
 	}
 	defer srv.Shutdown()
@@ -294,7 +294,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			Budget: budgetPath,
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 			return 1
 		}
 		defer func() {
