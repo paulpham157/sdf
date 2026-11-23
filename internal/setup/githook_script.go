@@ -6,15 +6,22 @@ import (
 	"github.com/paulpham157/sdf/internal/genai"
 )
 
-// hookScriptTemplate is a POSIX /bin/sh git hook. __SDF_HOOK_URL__ and
-// __SDF_HOOK_KIND__ are replaced before it is written. The kind is
-// post-commit, post-rewrite, or prepare-commit-msg.
+// hookScriptTemplate is a POSIX /bin/sh git hook. __SDF_HOOK_URL__,
+// __SDF_HOOK_KIND__, __SDF_HOOK_BIN__, and __SDF_HOOK_DB__ are replaced
+// before it is written. The kind is post-commit, post-rewrite,
+// prepare-commit-msg, or pre-push.
 //
 // The script sends the commit SHA, the checkout toplevel, the branch name,
 // and the agent session id. It does not read the diff or the commit message.
 // prepare-commit-msg only appends an SDF-Session trailer, and only when a
 // session id is present. A down receiver or a missing curl does not fail
 // the commit. Proxy variables are cleared so the POST cannot leave the machine.
+//
+// pre-push sends nothing. It runs sdf decision pre-push with the hook's
+// stdin, which reads the store and only the SDF-Decision trailer of the
+// pushed commits. It returns non-zero only when a chained hook fails or
+// when that command blocks (block mode); a missing sdf or any failure of
+// the check lets the push go on.
 const hookScriptTemplate = `#!/bin/sh
 # sdf-git-hook:v1
 # Installed by sdf init --git-hooks. Re-run that command to replace this file.
@@ -23,9 +30,15 @@ const hookScriptTemplate = `#!/bin/sh
 # Failure is ignored, and the request cannot use an HTTP proxy.
 # A receiver token is read at run time from SDF_OTLP_TOKEN or
 # SDF_OTLP_TOKEN_FILE; it is never stored in this file.
+# pre-push posts nothing: it runs sdf decision pre-push, which warns about
+# pushed commits with no decision and reads only their SDF-Decision trailer.
+# It never fails a push because sdf or its store is unavailable.
+# Skip it with git push --no-verify or SDF_PRE_PUSH=off.
 
 SDF_HOOK_URL='__SDF_HOOK_URL__'
 SDF_HOOK_KIND='__SDF_HOOK_KIND__'
+SDF_HOOK_BIN=__SDF_HOOK_BIN__
+SDF_HOOK_DB=__SDF_HOOK_DB__
 
 sdf_json_escape() {
   printf '%s' "$1" | awk 'BEGIN{ORS=""} { if (NR>1) printf "\\n"; gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r"); print }'
@@ -361,6 +374,37 @@ sdf_send_one() {
   sdf_post "$payload"
 }
 
+# sdf_pre_push runs sdf decision pre-push on the refs git is pushing ($1 is
+# the remote). It returns 1 only when that command blocks the push (block
+# mode). No sdf, an sdf without the command, or any other failure prints
+# one line and lets the push go on.
+sdf_pre_push() {
+  case "${SDF_PRE_PUSH:-}" in
+    off|OFF|Off|0|false|no) return 0 ;;
+  esac
+  sdf_bin=$SDF_HOOK_BIN
+  if [ -z "$sdf_bin" ] || [ ! -x "$sdf_bin" ]; then
+    sdf_bin=$(command -v sdf 2>/dev/null || true)
+  fi
+  if [ -z "$sdf_bin" ]; then
+    echo 'sdf: pre-push decision check skipped: sdf is not installed or not on PATH. The push continues.' >&2
+    return 0
+  fi
+  sdf_db=${SDF_PRE_PUSH_DB:-$SDF_HOOK_DB}
+  if [ -n "$sdf_db" ]; then
+    printf '%s\n' "$captured" | "$sdf_bin" decision pre-push --remote "${1:-}" --db "$sdf_db"
+  else
+    printf '%s\n' "$captured" | "$sdf_bin" decision pre-push --remote "${1:-}"
+  fi
+  sdf_status=$?
+  case "$sdf_status" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  echo "sdf: pre-push decision check could not run (sdf exited $sdf_status). The push continues." >&2
+  return 0
+}
+
 prev="${0}.sdf-previous"
 prev_status=0
 if [ -t 0 ]; then
@@ -388,6 +432,13 @@ case "$SDF_HOOK_KIND" in
       fi
     fi
     ;;
+  pre-push)
+    if [ "$prev_status" -ne 0 ]; then
+      exit "$prev_status"
+    fi
+    sdf_pre_push "$@"
+    exit $?
+    ;;
   post-rewrite)
     printf '%s\n' "$captured" | while read -r old new extra; do
       if [ -n "$new" ]; then
@@ -404,7 +455,9 @@ esac
 exit "$prev_status"
 `
 
-func hookScript(url, kind string) string {
-	body := strings.ReplaceAll(hookScriptTemplate, "__SDF_HOOK_URL__", url)
-	return strings.ReplaceAll(body, "__SDF_HOOK_KIND__", kind)
+func hookScript(cfg hookConfig, kind string) string {
+	body := strings.ReplaceAll(hookScriptTemplate, "__SDF_HOOK_URL__", cfg.url)
+	body = strings.ReplaceAll(body, "__SDF_HOOK_KIND__", kind)
+	body = strings.ReplaceAll(body, "__SDF_HOOK_BIN__", shQuote(cfg.bin))
+	return strings.ReplaceAll(body, "__SDF_HOOK_DB__", shQuote(cfg.db))
 }

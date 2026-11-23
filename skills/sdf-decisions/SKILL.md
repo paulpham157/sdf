@@ -194,6 +194,12 @@ Read-only; it never writes or infers a record. It lists active decisions no `imp
 
 Run it before you finish a task that recorded decisions or made commits. For each finding, link only what you know: an `implements` edge from the session or commit that did the work, if it really implements that decision. Do not add a decision just to clear a finding, and do not link a commit to a decision it did not implement; an unlinked finding is better than a wrong edge. A stale edge needs no fix unless the work now follows a newer decision, in which case link it to that one.
 
+## Before you push
+
+If the repository has the sdf git hooks (`sdf init --git-hooks`), `git push` runs a pre-push check that warns about pushed commits SDF recorded that implement no decision. It prints `sdf: pre-push: … implement no decision`, then one `commit:SHA` block per commit with a ready `sdf decision link … --relation implements --from commit:SHA --to decision:ID` line. The push still succeeds unless the repository set `git config sdf.prePush block`.
+
+When you see it: if that commit really implements a recorded decision (the warning names the ones linked to your session), run the printed link command and tell the user. If the work followed a decision nobody recorded, record it first (see When to record), then link. Do not link a commit to a decision it did not implement, and do not add a decision only to silence the warning. A commit can also carry `--trailer "SDF-Decision: ID"`; the check accepts it, but it is public once pushed and does not add an edge to the store, so prefer the link. Do not bypass the check (`--no-verify`, `SDF_PRE_PUSH=off`) unless the user asks. A line starting `sdf: pre-push decision check skipped` means it could not check (no store, no `sdf`); the push went on, and nothing needs fixing in the decision graph.
+
 ## Errors
 
 - `sdf` not on `PATH`, or the command cannot be run: say so, and do not claim the record was written. The user needs `sdf` installed and on `PATH` (build it with `make build` in the sdf repo if needed).

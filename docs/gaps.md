@@ -156,6 +156,24 @@
   (`QWEN_CODE_SESSION_ID`) session ids the hook reads come from their docs
   and source, not a live commit; a hook installed by an older sdf does not
   read them until `sdf init --git-hooks` is run again.
+- The pre-push decision check ([#286](https://github.com/paulpham157/sdf/issues/286))
+  warns by default and never fails a push because SDF is unavailable, so it
+  is a reminder, not enforcement: `git push --no-verify`, `SDF_PRE_PUSH=off`,
+  a missing store, or pushing from a clone without the hooks skips it, and
+  `block` is opt-in per repository. It judges only commits SDF recorded (a
+  hook event or an `SDF-Decision` trailer); a commit made where the hooks did
+  not run (Codex's read-only `.git`, a GitHub web edit, a clone without the
+  hooks) is not judged. The `SDF-Decision` trailer satisfies the check but is
+  not stored as an edge, so `sdf decision audit` still reports it until
+  [#281](https://github.com/paulpham157/sdf/issues/281) reads it, and nothing
+  adds the trailer automatically. The check reads that one trailer from the
+  commit message locally (the other hooks read no message). It does not look
+  at which constraints a commit touches. The store path is fixed when the hook
+  is installed (`--db`) or taken from `SDF_PRE_PUSH_DB`; without either the
+  check is skipped with a note. A hook installed by an older sdf has no
+  pre-push; run `sdf init --git-hooks --db PATH` again. Tested with real
+  pushes to a local bare remote, not against a hosting service or from inside
+  an agent.
 - With a receiver token, a hook authenticates only when `SDF_OTLP_TOKEN` or
   `SDF_OTLP_TOKEN_FILE` is in the environment of the agent or `git` that
   runs it; an agent started from a desktop launcher or a GUI git client may
