@@ -503,7 +503,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|graph|retract|audit> [flags]"
+const decisionUsage = "usage: sdf decision <add|link|list|graph|retract|audit|pre-push> [flags]"
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -523,6 +523,8 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 		return cmdDecisionRetract(args[1:], stdout, stderr)
 	case "audit":
 		return cmdDecisionAudit(args[1:], stdout, stderr)
+	case "pre-push":
+		return cmdDecisionPrePush(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, decisionUsage)
 		fmt.Fprintln(stdout, "")
@@ -1080,7 +1082,7 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok|gemini|copilot] [--write] [--global] [--install]"
+const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--db PATH] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok|gemini|copilot] [--write] [--global] [--install]"
 
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	host := "127.0.0.1"
@@ -1096,6 +1098,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	uninstallTemplate := false
 	setTemplateDir := false
 	unsetTemplateDir := false
+	hookDB := ""
 	agent := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -1125,6 +1128,19 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			setTemplateDir = true
 		case arg == "--unset-template-dir":
 			unsetTemplateDir = true
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok || strings.TrimSpace(v) == "" {
+				fmt.Fprintln(stderr, "sdf init: --db requires a path")
+				return 2
+			}
+			hookDB = v
+		case strings.HasPrefix(arg, "--db="):
+			hookDB = strings.TrimPrefix(arg, "--db=")
+			if strings.TrimSpace(hookDB) == "" {
+				fmt.Fprintln(stderr, "sdf init: --db requires a path")
+				return 2
+			}
 		case arg == "--host":
 			v, ok := take(&i, args)
 			if !ok {
@@ -1194,6 +1210,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "sdf init: --unset-template-dir requires --uninstall-git-template")
 		return 2
 	}
+	if hookDB != "" && !gitHooks && !gitTemplate {
+		fmt.Fprintln(stderr, "sdf init: --db applies to --git-hooks and --git-template (the store the pre-push hook reads)")
+		return 2
+	}
 	if global && agent != "pi" {
 		fmt.Fprintln(stderr, "sdf init: --global applies to pi")
 		return 2
@@ -1257,7 +1277,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if gitHooks {
-		res, err := setup.InstallGitHooks("", ep)
+		res, err := setup.InstallGitHooksWith("", ep, hookOptions(hookDB))
 		if res.Text != "" {
 			fmt.Fprint(stdout, res.Text)
 		}
@@ -1277,7 +1297,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if gitTemplate {
-		res, err := setup.InstallGitTemplate(setup.TemplateOptions{SetConfig: setTemplateDir}, ep)
+		res, err := setup.InstallGitTemplate(setup.TemplateOptions{SetConfig: setTemplateDir, Hook: hookOptions(hookDB)}, ep)
 		if res.Text != "" {
 			fmt.Fprint(stdout, res.Text)
 		}
@@ -1287,6 +1307,17 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+// hookOptions names this sdf binary for the pre-push hook, so it does not
+// depend on PATH, and the store it reads. A binary path that cannot be
+// found is left empty and the hook uses sdf from PATH.
+func hookOptions(db string) setup.HookOptions {
+	opt := setup.HookOptions{DB: db}
+	if exe, err := os.Executable(); err == nil {
+		opt.Bin = exe
+	}
+	return opt
 }
 
 // parsePort reads a port written as plain decimal: no sign, no leading
