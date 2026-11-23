@@ -354,10 +354,17 @@ section and in `TelemetryConfig`, `xai-grok-telemetry/src/config.rs`), with
 `otel_log_tool_details`, and `otel_log_tool_content` pinned to `false`.
 Unset, `otel_log_assistant_responses` follows `otel_log_user_prompts`, so
 all four are written; an `OTEL_LOG_*` variable in the environment still
-wins over the file.
+wins over the file, and `sdf init grok` warns about each one Grok would read
+as on (`1`/`true`/`yes`/`on`). `otel_log_tool_details` is a metadata gate,
+not a body gate (a 4 KB `tool_parameters` preview, full file paths, verbatim
+MCP/skill/plugin names); pinning it off is stricter than the guide's
+"Recommended fleet gates", which turns it on for SIEM joins. sdf does not
+need it for Grok: the session hook supplies the working directory.
 `sdf init grok --write` appends that table to `$GROK_HOME/config.toml`
 (default `~/.grok/config.toml`) when the file has no `[telemetry]` table;
-an existing `[telemetry]` table is left unchanged. A project
+an existing `[telemetry]` table, in any TOML form (`[ telemetry ]`,
+inline `telemetry = {...}`, dotted `telemetry.x` keys), is left unchanged,
+and a `config.toml` that is not valid TOML is refused. A project
 `.grok/config.toml` cannot set `otel_*`. Environment variables win over the
 file. It also installs `hooks/sdf-session.json` beside it, a session hook
 that posts the session's open and close to `POST /v1/sessions`. Grok sets
