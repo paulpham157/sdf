@@ -34,9 +34,9 @@
 // one transaction.
 //
 // The chain makes tampering detectable, not impossible. Anyone who can write
-// the file can rebuild the whole chain or cut its tail. Only a head hash
-// kept somewhere else (CI, a signed export) turns that into a detectable
-// change. See docs/ledger.md.
+// the file can rebuild the whole chain or cut its tail. Only a head or
+// prefix hash kept somewhere else (CI, a signed export) turns that into a
+// detectable change. See docs/ledger.md.
 package ledger
 
 import (
@@ -129,7 +129,7 @@ var (
 	ErrNotFound = errors.New("ledger: not found")
 	// ErrCorrupt means a stored row no longer matches its payload hash or its
 	// entry hash, or holds a field the ledger would never write. Get wraps it
-	// with the kind and id.
+	// with the kind and id; GetBySeq wraps it with the seq, kind, and id.
 	ErrCorrupt = errors.New("ledger: stored entry does not match its hash")
 	// ErrInvalid means Append was given a kind or id the ledger does not accept.
 	ErrInvalid = errors.New("ledger: invalid kind or id")
@@ -141,6 +141,15 @@ var (
 	// It is wrapped together with the driver error. Other failures to open
 	// or read (permissions, a missing directory, EIO) are returned as is.
 	ErrCorruptFile = errors.New("ledger: file is not a readable ledger database")
+	// ErrPrefixMismatch means a prefix pin does not match the stored entry:
+	// the entry_hash differs, or the seq is missing. A missing seq also
+	// wraps ErrNotFound, so both errors.Is(err, ErrPrefixMismatch) and
+	// errors.Is(err, ErrNotFound) hold.
+	ErrPrefixMismatch = errors.New("ledger: prefix pin does not match")
+	// ErrChainBroken means Verify found a broken chain. VerifyPrefix
+	// returns a *ChainError that unwraps to this and carries the first
+	// Failure.
+	ErrChainBroken = errors.New("ledger: chain is broken")
 )
 
 // classify wraps a SQLite NOTADB or CORRUPT error with ErrCorruptFile.
@@ -860,6 +869,46 @@ func (s *Store) head(ctx context.Context) (Entry, error) {
 		return Entry{}, err
 	}
 	return row.entry, nil
+}
+
+// GetBySeq returns the stored payload and entry at seq, or ErrNotFound.
+// It checks the row the way Get does (fields, payload hash, entry hash).
+// A row that fails is ErrCorrupt, wrapped with the seq, kind, and id.
+// GetBySeq does not walk the chain; Verify and VerifyPrefix do.
+func (s *Store) GetBySeq(ctx context.Context, seq int64) ([]byte, Entry, error) {
+	payload, e, err := s.getBySeq(ctx, seq)
+	return payload, e, classify(err)
+}
+
+func (s *Store) getBySeq(ctx context.Context, seq int64) ([]byte, Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	db, err := s.readDB(ctx)
+	if err != nil || db == nil {
+		return nil, Entry{}, errOrNotFound(err)
+	}
+	if ok, err := hasTable(ctx, db); err != nil || !ok {
+		return nil, Entry{}, errOrNotFound(err)
+	}
+	row, err := scanRow(db.QueryRowContext(ctx, `SELECT `+selectCols+` FROM ledger_entries WHERE seq = ?`, seq))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, Entry{}, ErrNotFound
+	}
+	if err != nil {
+		return nil, Entry{}, err
+	}
+	problem := fieldProblem(row)
+	switch {
+	case problem != "":
+	case !payloadOK(row):
+		problem = "payload does not hash to the chained hash"
+	case !entryOK(row):
+		problem = "entry fields do not hash to entry_hash"
+	}
+	if problem != "" {
+		return nil, Entry{}, fmt.Errorf("%w: seq %d (%q %q): %s", ErrCorrupt, seq, row.entry.Kind, row.entry.ID, problem)
+	}
+	return row.payload, row.entry, nil
 }
 
 func errOrNotFound(err error) error {

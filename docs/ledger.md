@@ -201,11 +201,52 @@ earlier than seq 1, which also passes.)
 `internal/ledger/ledger_test.go` has known-answer values computed outside Go,
 for checking a writer in another language.
 
+## Prefix pins (library)
+
+Callers that need to accept a ledger that has grown since a checkpoint
+use `*Store`. The `Ledger` interface is unchanged, so existing fakes keep
+compiling.
+
+```go
+func (*Store) GetBySeq(ctx context.Context, seq int64) ([]byte, Entry, error)
+func (*Store) VerifyPrefix(ctx context.Context, seq int64, entryHash string) error
+func ParsePin(s string) (seq int64, entryHash string, err error)
+```
+
+`GetBySeq` looks up a row by seq and validates it the way `Get` does
+(fields, payload hash, entry hash). A missing seq is `ErrNotFound`. A
+row that fails validation is `ErrCorrupt`, wrapped with the seq, kind,
+and id. `GetBySeq` does not walk the chain.
+
+`VerifyPrefix` is the library form of `sdf audit verify --expect-prefix`.
+It is nil only when the entry at `seq` exists, its `entry_hash` equals
+`entryHash`, and the whole chain verifies, so later legitimate appends
+after the pin are allowed.
+
+- A missing seq is `ErrPrefixMismatch` wrapping `ErrNotFound`, so both
+  `errors.Is(err, ErrPrefixMismatch)` and `errors.Is(err, ErrNotFound)`
+  hold. Truncation below the pin is reported this way.
+- A stored `entry_hash` that does not equal `entryHash` is
+  `ErrPrefixMismatch`. The message includes expected and actual
+  (`seq:hash`); stored strings go through `Safe`.
+- A broken chain is a `*ChainError` whose `Unwrap` is `ErrChainBroken`
+  and whose `Failure` is the first problem `Verify` found, even if the
+  pinned entry still happens to match.
+- Other failures (I/O, `ErrCorruptFile`, a corrupt row) are returned as
+  from `Verify` or `GetBySeq`.
+
+`ParsePin` accepts `SEQ:HASH` (a non-negative seq and `sha256:` plus 64
+lowercase hex digits), the line `sdf audit head` prints (`seq N entry_hash
+HASH`), or `sdf audit head --json` output. `sdf audit verify
+--expect-prefix` and `--expect-prefix-file` use `ParsePin` and
+`VerifyPrefix`, so the CLI and the library agree.
+
 ## sdf audit
 
 ```bash
 sdf audit verify [--ledger PATH] [--json] [--require-nonempty]
-                 [--expect-head HASH | --expect-head-file PATH]
+                 [--expect-head HASH | --expect-head-file PATH
+                  | --expect-prefix SEQ:HASH | --expect-prefix-file PATH]
 sdf audit head   [--ledger PATH] [--json]
 ```
 
@@ -230,23 +271,39 @@ An intact ledger prints the head seq and its `entry_hash`.
 An empty or absent ledger is intact, so a mistyped path passes. Add
 `--require-nonempty` to make an absent or empty ledger exit 1.
 
-A chain with its newest entries deleted is still a valid chain. To catch that,
-pass the head you pinned earlier:
+A chain with its newest entries deleted, or with earlier entries rewritten
+and every hash recomputed, is still a valid chain. To catch that, pin a
+checkpoint you recorded earlier:
 
-- `--expect-head sha256:…` takes the hash itself.
-- `--expect-head-file PATH` reads it from a file. The file can hold the bare
-  hash, the line `sdf audit head` prints, or `sdf audit head --json` output.
+- `--expect-prefix SEQ:HASH` checks that the entry at `SEQ` still exists,
+  its `entry_hash` still equals the pinned hash, and the full chain verifies.
+  Later legitimate appends are allowed. This is the mode to use for a
+  ledger that keeps growing.
+- `--expect-prefix-file PATH` reads the same pin from a file. The file can
+  hold `SEQ:HASH`, the line `sdf audit head` prints, or
+  `sdf audit head --json` output. A missing or otherwise unreadable path
+  is an I/O error (exit 3). A malformed pin is a usage error (exit 2).
+- `--expect-head sha256:…` requires the current head's `entry_hash` to
+  equal the pinned hash exactly. Use this when the ledger must not have
+  grown.
+- `--expect-head-file PATH` reads that hash from a file (bare hash, the
+  `sdf audit head` line, or `sdf audit head --json` output).
 
-The two flags cannot be used together. An exact match is required: after a
-legitimate append, pin the new head. Verify exits 1 in each of these cases:
+These four flags cannot be used together. An `--expect-head` pin requires
+an exact match: after a legitimate append, pin the new head. An
+`--expect-prefix` pin allows later appends. Verify exits 1 in each of
+these cases:
 
-- The current head's `entry_hash` differs from the expected one. It prints
-  both values.
+- The pin does not match (`--expect-head`: the current head;
+  `--expect-prefix`: the entry at the pinned seq). It prints expected and
+  actual.
 - The ledger is empty. It prints `actual none`.
-- The chain is broken. It says the stored head proves nothing.
+- The chain is broken. It says the stored head or prefix proves nothing
+  (`head not accepted` / `prefix not accepted`).
 
 `--json` reports `ok` (every check), `chain_ok` (the chain alone),
-`require_nonempty`, `expected_head`, and `head_match`.
+`require_nonempty`, `expected_head`, `head_match`, `expected_prefix`, and
+`prefix_match`.
 
 `head` verifies first. It prints `seq N entry_hash sha256:…` only for an
 intact, non-empty ledger. Otherwise it prints nothing to stdout. Use it to
@@ -257,9 +314,9 @@ copy the head somewhere else.
 | Code | `verify` | `head` |
 | --- | --- | --- |
 | 0 | Intact, and every requested check passed | Head printed |
-| 1 | Broken chain, a file that is not a readable ledger database (garbage, truncated, damaged), `--require-nonempty` on an empty ledger, or `--expect-head` mismatch | Broken, unreadable-as-a-database, or empty ledger |
-| 2 | Usage: unknown flag, missing value, both `--expect-head` flags, or an expected head that is not `sha256:` + 64 lowercase hex | Usage |
-| 3 | I/O: the ledger cannot be opened or read (a directory, permissions, EIO, a hot journal in an old rollback-mode file), no default path, or an unreadable `--expect-head-file` | I/O, as for `verify` |
+| 1 | Broken chain, a file that is not a readable ledger database (garbage, truncated, damaged), `--require-nonempty` on an empty ledger, or an `--expect-head` / `--expect-prefix` mismatch | Broken, unreadable-as-a-database, or empty ledger |
+| 2 | Usage: unknown flag, missing value, more than one expect flag, or a pin that is not the required form (`sha256:` + 64 lowercase hex, or `SEQ:HASH`) | Usage |
+| 3 | I/O: the ledger cannot be opened or read (a directory, permissions, EIO, a hot journal in an old rollback-mode file), no default path, or an unreadable `--expect-head-file` or `--expect-prefix-file` (a missing path included) | I/O, as for `verify` |
 
 For a file that is not a ledger database, and for exit 3, the message goes
 to stderr and nothing goes to stdout, `--json` included.
@@ -269,15 +326,26 @@ to stderr and nothing goes to stdout, `--json` included.
 The verifier's GitHub Action is not part of this repository yet. This is how
 it is meant to use these commands.
 
-Keep the head somewhere the agent cannot write. After the CI job appends, it
-runs `sdf audit head --json` and stores the output as a CI artifact or on a
-protected ref. The next job, or anyone auditing later, runs:
+Keep a checkpoint somewhere the agent cannot write. After the CI job appends,
+it runs `sdf audit head --json` and stores the output as a CI artifact or on
+a protected ref.
+
+A ledger grows with every append, so re-pinning the exact head after every
+write is impractical. Prefer prefix mode. The next job, or anyone auditing
+later, runs:
 
 ```bash
-sdf audit verify --require-nonempty --expect-head-file pinned-head.json
+sdf audit verify --require-nonempty --expect-prefix-file pinned-head.json
 ```
 
-This passes only if the local file still ends at the entry CI recorded.
+This passes if the entry CI recorded still exists with the same
+`entry_hash` and the chain from that point on is intact. It fails if the
+ledger was truncated below that seq or rewritten at or through that point.
+Later legitimate appends are allowed; the pin does not need to be updated
+after every write.
+
+Use `--expect-head` / `--expect-head-file` only when you need the current
+head to equal the pinned hash exactly (the ledger must not have grown).
 
 ## What this does not protect against
 
@@ -288,11 +356,12 @@ limits:
   rewrite any entry and recompute every hash after it. It can also delete the
   last entries. The result is a valid chain, and a plain `sdf audit verify`
   passes.
-- That is only caught by comparing against a head hash stored **somewhere the
-  agent cannot write** (`--expect-head`). Without such a copy, a rewritten
-  ledger cannot be told apart from the real one.
+- That is only caught by comparing against a head or prefix hash stored
+  **somewhere the agent cannot write** (`--expect-prefix` or
+  `--expect-head`). Without such a copy, a rewritten ledger cannot be told
+  apart from the real one.
 - The intended trust anchor is CI (planned): the verifier's GitHub Action
-  runs outside the agent's machine and records the head there. Until that
-  exists, the local file is a working copy, not proof.
+  runs outside the agent's machine and records a checkpoint there. Until
+  that exists, the local file is a working copy, not proof.
 - There is no signature and no HMAC. Signing entries or exported heads with a
   key outside the agent's reach is future work.

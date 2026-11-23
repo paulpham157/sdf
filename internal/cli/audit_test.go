@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paulpham157/sdf/internal/ledger"
 )
@@ -300,11 +302,19 @@ func TestAuditExitsOneForAFileThatIsNotALedgerDatabase(t *testing.T) {
 	if err := os.WriteFile(truncated, data[:len(data)/2+100], 0o600); err != nil {
 		t.Fatal(err)
 	}
+	pin := "3:sha256:" + strings.Repeat("a", 64)
+	pinFile := filepath.Join(dir, "pin")
+	if err := os.WriteFile(pinFile, []byte(pin), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{
 		{"audit", "verify", "--ledger", garbage},
 		{"audit", "verify", "--ledger", garbage, "--json"},
 		{"audit", "head", "--ledger", garbage},
 		{"audit", "verify", "--ledger", truncated},
+		{"audit", "verify", "--ledger", garbage, "--expect-prefix", pin},
+		{"audit", "verify", "--ledger", garbage, "--expect-prefix-file", pinFile},
+		{"audit", "verify", "--ledger", garbage, "--expect-prefix", pin, "--json"},
 	} {
 		out := run(t, args...)
 		if out.code != 1 || out.stdout != "" || !strings.Contains(out.stderr, "ledger broken") {
@@ -316,9 +326,11 @@ func TestAuditExitsOneForAFileThatIsNotALedgerDatabase(t *testing.T) {
 // Failing to open or read for any other reason is I/O: exit 3.
 func TestAuditExitsThreeWhenItCannotRead(t *testing.T) {
 	dir := t.TempDir()
+	wellFormed := "1:sha256:" + strings.Repeat("a", 64)
 	cases := [][]string{
 		{"audit", "verify", "--ledger", dir},
 		{"audit", "head", "--ledger", dir},
+		{"audit", "verify", "--ledger", dir, "--expect-prefix", wellFormed},
 	}
 	if os.Geteuid() != 0 {
 		path, _ := seedLedger(t)
@@ -337,6 +349,10 @@ func TestAuditExitsThreeWhenItCannotRead(t *testing.T) {
 	path, _ := seedLedger(t)
 	out := run(t, "audit", "verify", "--ledger", path, "--expect-head-file", filepath.Join(dir, "absent"))
 	if out.code != 3 || !strings.Contains(out.stderr, "--expect-head-file") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	out = run(t, "audit", "verify", "--ledger", path, "--expect-prefix-file", filepath.Join(dir, "absent"))
+	if out.code != 3 || !strings.Contains(out.stderr, "--expect-prefix-file") {
 		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
 	}
 }
@@ -390,10 +406,12 @@ func TestAuditVerifyNeverPrintsARawEscapeSequence(t *testing.T) {
 	}
 	_ = db.Close()
 
+	pin := fmt.Sprintf("%d:%s", head.Seq, head.EntryHash)
 	for _, args := range [][]string{
 		{"audit", "verify", "--ledger", path},
 		{"audit", "verify", "--ledger", path, "--json"},
 		{"audit", "verify", "--ledger", path, "--expect-head", head.EntryHash},
+		{"audit", "verify", "--ledger", path, "--expect-prefix", pin},
 		{"audit", "head", "--ledger", path},
 	} {
 		out := run(t, args...)
@@ -410,5 +428,303 @@ func TestAuditVerifyNeverPrintsARawEscapeSequence(t *testing.T) {
 	out := run(t, "audit", "verify", "--ledger", path)
 	if !strings.Contains(out.stdout, `first failure: seq 3 ("sdf.task/v1\x1b[2K\rledger intact" "task-3"): modified`) {
 		t.Fatalf("%q", out.stdout)
+	}
+}
+
+func TestAuditVerifyExpectPrefixAllowsLaterAppends(t *testing.T) {
+	path, head := seedLedger(t)
+	pin := fmt.Sprintf("%d:%s", head.Seq, head.EntryHash)
+	l, err := ledger.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := []byte(`{"objective":"task-4"}`)
+	if _, err := l.Append(context.Background(), "sdf.task/v1", "task-4", p, ledger.PayloadHash("sdf.task/v1", p)); err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Close()
+
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-prefix", pin, "--require-nonempty")
+	if out.code != 0 || !strings.Contains(out.stdout, "prefix matches "+pin) {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+
+	dir := t.TempDir()
+	fText := filepath.Join(dir, "text")
+	if err := os.WriteFile(fText, []byte(fmt.Sprintf("seq %d entry_hash %s\n", head.Seq, head.EntryHash)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	jsHead, err := json.Marshal(map[string]any{"head": map[string]any{"seq": head.Seq, "entry_hash": head.EntryHash}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fJSON := filepath.Join(dir, "json")
+	if err := os.WriteFile(fJSON, jsHead, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fBare := filepath.Join(dir, "bare")
+	if err := os.WriteFile(fBare, []byte(pin+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cur := run(t, "audit", "head", "--ledger", path)
+	if cur.code != 0 {
+		t.Fatalf("head: %d %q %q", cur.code, cur.stdout, cur.stderr)
+	}
+	fHeadText := filepath.Join(dir, "head-text")
+	if err := os.WriteFile(fHeadText, []byte(cur.stdout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	curJSON := run(t, "audit", "head", "--ledger", path, "--json")
+	if curJSON.code != 0 {
+		t.Fatalf("head --json: %d %q %q", curJSON.code, curJSON.stdout, curJSON.stderr)
+	}
+	fHeadJSON := filepath.Join(dir, "head-json")
+	if err := os.WriteFile(fHeadJSON, []byte(curJSON.stdout), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err = ledger.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p = []byte(`{"objective":"task-5"}`)
+	if _, err := l.Append(context.Background(), "sdf.task/v1", "task-5", p, ledger.PayloadHash("sdf.task/v1", p)); err != nil {
+		t.Fatal(err)
+	}
+	_ = l.Close()
+	for _, f := range []string{fText, fJSON, fBare, fHeadText, fHeadJSON} {
+		if out := run(t, "audit", "verify", "--ledger", path, "--expect-prefix-file="+f); out.code != 0 {
+			t.Fatalf("%s: %d %q %q", f, out.code, out.stdout, out.stderr)
+		}
+	}
+}
+
+func TestAuditVerifyExpectPrefixDetectsTruncation(t *testing.T) {
+	path, head := seedLedger(t)
+	pin := fmt.Sprintf("%d:%s", head.Seq, head.EntryHash)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM ledger_entries WHERE seq >= 3`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	if out := run(t, "audit", "verify", "--ledger", path); out.code != 0 {
+		t.Fatalf("plain verify should pass a truncated chain: %d %q", out.code, out.stdout)
+	}
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-prefix", pin)
+	if out.code != 1 || !strings.Contains(out.stdout, "prefix mismatch: expected "+pin+", actual none") || !strings.Contains(out.stdout, "truncated below that seq") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	js := run(t, "audit", "verify", "--ledger", path, "--expect-prefix", pin, "--json")
+	var doc struct {
+		OK             bool   `json:"ok"`
+		ChainOK        bool   `json:"chain_ok"`
+		ExpectedPrefix string `json:"expected_prefix"`
+		PrefixMatch    *bool  `json:"prefix_match"`
+	}
+	if err := json.Unmarshal([]byte(js.stdout), &doc); err != nil || js.code != 1 {
+		t.Fatalf("%d %q %v", js.code, js.stdout, err)
+	}
+	if doc.OK || !doc.ChainOK || doc.ExpectedPrefix != pin || doc.PrefixMatch == nil || *doc.PrefixMatch {
+		t.Fatalf("%+v", doc)
+	}
+}
+
+func TestAuditVerifyExpectPrefixDetectsRewrite(t *testing.T) {
+	path, _ := seedLedger(t)
+	l, err := ledger.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, e2, err := l.GetBySeq(context.Background(), 2)
+	_ = l.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := fmt.Sprintf("%d:%s", e2.Seq, e2.EntryHash)
+	rewriteAndRehash(t, path, 2, `{"objective":"forged-task-2"}`)
+
+	if out := run(t, "audit", "verify", "--ledger", path); out.code != 0 {
+		t.Fatalf("plain verify should pass a fully rehashed chain: %d %q %q", out.code, out.stdout, out.stderr)
+	}
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-prefix", pin)
+	if out.code != 1 || !strings.Contains(out.stdout, "prefix mismatch: expected "+pin+", actual 2:sha256:") || !strings.Contains(out.stdout, "rewritten at or through that point") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	js := run(t, "audit", "verify", "--ledger", path, "--expect-prefix", pin, "--json")
+	var doc struct {
+		OK             bool   `json:"ok"`
+		ChainOK        bool   `json:"chain_ok"`
+		ExpectedPrefix string `json:"expected_prefix"`
+		PrefixMatch    *bool  `json:"prefix_match"`
+	}
+	if err := json.Unmarshal([]byte(js.stdout), &doc); err != nil || js.code != 1 {
+		t.Fatalf("%d %q %v", js.code, js.stdout, err)
+	}
+	if doc.OK || !doc.ChainOK || doc.ExpectedPrefix != pin || doc.PrefixMatch == nil || *doc.PrefixMatch {
+		t.Fatalf("%+v", doc)
+	}
+}
+
+func TestAuditVerifyExpectPrefixOnAnEmptyLedger(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "ledger.db")
+	hash := "sha256:" + strings.Repeat("a", 64)
+	pin := "3:" + hash
+	out := run(t, "audit", "verify", "--ledger", missing, "--expect-prefix", pin)
+	if out.code != 1 || !strings.Contains(out.stdout, "prefix mismatch: expected "+pin+", actual none (the ledger is empty)") {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+func TestAuditVerifyExpectPrefixOnABrokenChain(t *testing.T) {
+	path, head := seedLedger(t)
+	pin := fmt.Sprintf("%d:%s", head.Seq, head.EntryHash)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE ledger_entries SET payload = 'x' WHERE seq = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-prefix", pin)
+	if out.code != 1 || !strings.Contains(out.stdout, "prefix not accepted: expected "+pin+", but the chain is broken") {
+		t.Fatalf("%d %q", out.code, out.stdout)
+	}
+	if strings.Contains(out.stdout, "prefix mismatch") {
+		t.Fatalf("%q", out.stdout)
+	}
+}
+
+func TestAuditVerifyExpectPrefixUsage(t *testing.T) {
+	path, head := seedLedger(t)
+	pin := fmt.Sprintf("%d:%s", head.Seq, head.EntryHash)
+	f := filepath.Join(t.TempDir(), "prefix")
+	if err := os.WriteFile(f, []byte(pin), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	headFile := filepath.Join(t.TempDir(), "head")
+	if err := os.WriteFile(headFile, []byte(head.EntryHash), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(t.TempDir(), "bad")
+	if err := os.WriteFile(bad, []byte("not a prefix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"--expect-prefix", pin, "--expect-prefix-file", f},
+		{"--expect-prefix", pin, "--expect-head", head.EntryHash},
+		{"--expect-prefix-file", f, "--expect-head-file", headFile},
+		{"--expect-prefix", "sha256:" + strings.Repeat("a", 64)},
+		{"--expect-prefix", "3:sha256:XYZ"},
+		{"--expect-prefix", strings.TrimPrefix(head.EntryHash, "sha256:")},
+		{"--expect-prefix", "-1:" + head.EntryHash},
+		{"--expect-prefix"},
+		{"--expect-prefix-file", bad},
+	} {
+		full := append([]string{"audit", "verify", "--ledger", path}, args...)
+		if out := run(t, full...); out.code != 2 {
+			t.Fatalf("%v: exit %d %q %q", args, out.code, out.stdout, out.stderr)
+		}
+	}
+}
+
+func TestAuditVerifyExpectPrefixFileUnreadable(t *testing.T) {
+	path, head := seedLedger(t)
+	pin := fmt.Sprintf("%d:%s", head.Seq, head.EntryHash)
+	dir := t.TempDir()
+	out := run(t, "audit", "verify", "--ledger", path, "--expect-prefix-file", dir)
+	if out.code != 3 || !strings.Contains(out.stderr, "--expect-prefix-file:") {
+		t.Fatalf("dir: %d %q %q", out.code, out.stdout, out.stderr)
+	}
+	unreadable := filepath.Join(t.TempDir(), "pin")
+	if err := os.WriteFile(unreadable, []byte(pin), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o600) })
+	out = run(t, "audit", "verify", "--ledger", path, "--expect-prefix-file", unreadable)
+	if os.Geteuid() == 0 {
+		if out.code != 0 && out.code != 3 {
+			t.Fatalf("root read of mode 0000: %d %q %q", out.code, out.stdout, out.stderr)
+		}
+		return
+	}
+	if out.code != 3 || !strings.Contains(out.stderr, "--expect-prefix-file:") {
+		t.Fatalf("mode 0000: %d %q %q", out.code, out.stdout, out.stderr)
+	}
+}
+
+// rewriteAndRehash changes the payload at seq and recomputes every hash from
+// that point on, so the chain remains internally valid.
+func rewriteAndRehash(t *testing.T, path string, seq int64, payload string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT seq, kind, id, payload, hash, prev_hash, entry_hash, chained_at FROM ledger_entries ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type chainRow struct {
+		seq       int64
+		kind      string
+		id        string
+		payload   []byte
+		hash      string
+		prevHash  string
+		entryHash string
+		chainedAt string
+	}
+	var all []chainRow
+	for rows.Next() {
+		var r chainRow
+		if err := rows.Scan(&r.seq, &r.kind, &r.id, &r.payload, &r.hash, &r.prevHash, &r.entryHash, &r.chainedAt); err != nil {
+			t.Fatal(err)
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = rows.Close()
+
+	var prevHash string
+	found := false
+	for i := range all {
+		r := &all[i]
+		if r.seq == seq {
+			r.payload = []byte(payload)
+			r.hash = ledger.PayloadHash(ledger.Kind(r.kind), r.payload)
+			found = true
+		}
+		if found {
+			if r.seq != seq {
+				r.prevHash = prevHash
+			}
+			at, err := time.Parse(ledger.TimeLayout, r.chainedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.entryHash = ledger.EntryHash(ledger.Entry{
+				Seq:       r.seq,
+				Kind:      ledger.Kind(r.kind),
+				ID:        r.id,
+				Hash:      r.hash,
+				PrevHash:  r.prevHash,
+				ChainedAt: at,
+			})
+			if _, err := db.Exec(`UPDATE ledger_entries SET payload = ?, hash = ?, prev_hash = ?, entry_hash = ? WHERE seq = ?`,
+				r.payload, r.hash, r.prevHash, r.entryHash, r.seq); err != nil {
+				t.Fatal(err)
+			}
+		}
+		prevHash = r.entryHash
+	}
+	if !found {
+		t.Fatalf("seq %d not in ledger", seq)
 	}
 }
