@@ -1511,7 +1511,7 @@
                 {
                   "key": "gen_ai.tool.name",
                   "value": {
-                    "stringValue": "edit"
+                    "stringValue": "write_file"
                   }
                 },
                 {
@@ -1565,7 +1565,7 @@
                 {
                   "key": "tool.name",
                   "value": {
-                    "stringValue": "edit"
+                    "stringValue": "write_file"
                   }
                 },
                 {
@@ -1613,7 +1613,7 @@
                 {
                   "key": "gen_ai.tool.name",
                   "value": {
-                    "stringValue": "edit"
+                    "stringValue": "write_file"
                   }
                 },
                 {
@@ -1715,13 +1715,13 @@
                 {
                   "key": "error",
                   "value": {
-                    "stringValue": "Command exited with code 1."
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
                   }
                 }
               ],
               "status": {
                 "code": 2,
-                "message": "Command exited with code 1."
+                "message": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
               },
               "parentSpanId": "9e11000000000015"
             },
@@ -1832,13 +1832,13 @@
                 {
                   "key": "error",
                   "value": {
-                    "stringValue": "Command exited with code 1."
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
                   }
                 }
               ],
               "status": {
                 "code": 2,
-                "message": "Command exited with code 1."
+                "message": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
               },
               "parentSpanId": "9e1100000000001a"
             },

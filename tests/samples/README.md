@@ -7,7 +7,11 @@ prompts.
 `qwen_*.json` follow Qwen Code v0.28.4's telemetry docs and source
 (`QwenLM/qwen-code`, `packages/core/src/telemetry`) with `logPrompts: false`.
 They were not captured from a live session: ids are fake and there is no
-prompt, request, response, or file text.
+prompt, request, or response text. The `qwen-code.tool_call` logs do carry
+made-up tool arguments and error text (a shell command, a `write_file` body),
+because Qwen Code sends those whatever `logPrompts` says. Every such value
+contains `SDF-FIXTURE-SECRET`, and the store and e2e tests check that none of
+it reaches the database.
 
 Every resource carries `sdf.fixture=sample`. The shapes follow the attribute
 names documented for each tool (see the repository README) so ingest and

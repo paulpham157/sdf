@@ -77,6 +77,12 @@ func TestQwenSamplesAreMarkedAndHaveNoPromptText(t *testing.T) {
 				t.Fatal(name, "has content key", banned)
 			}
 		}
+		// Tool arguments are on purpose: Qwen Code sends them whatever
+		// logPrompts says, and the store must drop them (internal/store
+		// and tests/e2e check that).
+		if name == "qwen_logs.json" && (!strings.Contains(text, `"function_args"`) || !strings.Contains(text, "SDF-FIXTURE-SECRET")) {
+			t.Fatal(name, "lacks the realistic function_args the redaction tests need")
+		}
 	}
 }
 
@@ -134,7 +140,7 @@ func TestQwenSampleSessionTokensToolsDurationAndCost(t *testing.T) {
 		{"read_file", "true", 180, 10},
 		{"agent", "true", 6680, 10},
 		{"glob", "true", 35, 5},
-		{"edit", "true", 390, 4900},
+		{"write_file", "true", 390, 4900},
 		{"run_shell_command", "false", 1370, 20},
 	}
 	if len(s.ToolCalls) != len(wantCalls) {

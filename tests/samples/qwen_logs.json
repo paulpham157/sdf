@@ -402,7 +402,7 @@
                 {
                   "key": "function_args",
                   "value": {
-                    "stringValue": "{}"
+                    "stringValue": "{\n  \"absolute_path\": \"/home/dev/sdf/internal/summary/summary.go\"\n}"
                   }
                 },
                 {
@@ -696,7 +696,7 @@
                 {
                   "key": "function_args",
                   "value": {
-                    "stringValue": "{}"
+                    "stringValue": "{\n  \"pattern\": \"internal/**/*_test.go\"\n}"
                   }
                 },
                 {
@@ -834,7 +834,7 @@
                 {
                   "key": "function_args",
                   "value": {
-                    "stringValue": "{}"
+                    "stringValue": "{\n  \"description\": \"Find the cumulative reducer\",\n  \"prompt\": \"Find where cumulative metric points are reduced and list the callers.\",\n  \"subagent_type\": \"Explore\"\n}"
                   }
                 },
                 {
@@ -1251,7 +1251,7 @@
               "timeUnixNano": "1800000251400000000",
               "observedTimeUnixNano": "1800000251400000000",
               "body": {
-                "stringValue": "Tool call: edit. Decision: accept. Success: true. Duration: 5299ms."
+                "stringValue": "Tool call: write_file. Decision: accept. Success: true. Duration: 5299ms."
               },
               "attributes": [
                 {
@@ -1275,13 +1275,13 @@
                 {
                   "key": "function_name",
                   "value": {
-                    "stringValue": "edit"
+                    "stringValue": "write_file"
                   }
                 },
                 {
                   "key": "function_args",
                   "value": {
-                    "stringValue": "{}"
+                    "stringValue": "{\n  \"file_path\": \"/home/dev/sdf/internal/summary/reset.go\",\n  \"content\": \"package summary\\n\\n// apiKey = \\\"SDF-FIXTURE-SECRET-write-file\\\"\\nfunc reset() {}\\n\"\n}"
                   }
                 },
                 {
@@ -1338,7 +1338,7 @@
               "timeUnixNano": "1800000251410000000",
               "observedTimeUnixNano": "1800000251410000000",
               "body": {
-                "stringValue": "File operation: update. Lines: 90."
+                "stringValue": "File operation: create. Lines: 4."
               },
               "attributes": [
                 {
@@ -1362,19 +1362,19 @@
                 {
                   "key": "tool_name",
                   "value": {
-                    "stringValue": "edit"
+                    "stringValue": "write_file"
                   }
                 },
                 {
                   "key": "operation",
                   "value": {
-                    "stringValue": "update"
+                    "stringValue": "create"
                   }
                 },
                 {
                   "key": "lines",
                   "value": {
-                    "intValue": "90"
+                    "intValue": "4"
                   }
                 },
                 {
@@ -1425,7 +1425,7 @@
                 {
                   "key": "function_args",
                   "value": {
-                    "stringValue": "{}"
+                    "stringValue": "{\n  \"command\": \"OPENAI_API_KEY=SDF-FIXTURE-SECRET-shell go test ./internal/summary/...\",\n  \"description\": \"Run the summary tests\",\n  \"is_background\": false\n}"
                   }
                 },
                 {
@@ -1479,11 +1479,23 @@
                 {
                   "key": "error",
                   "value": {
-                    "stringValue": "Command exited with code 1."
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
+                  }
+                },
+                {
+                  "key": "error.message",
+                  "value": {
+                    "stringValue": "Command exited with code 1.\nOutput: --- FAIL: TestReset (0.00s)\n    reset_test.go:12: token SDF-FIXTURE-SECRET-stderr\nFAIL"
                   }
                 },
                 {
                   "key": "error_type",
+                  "value": {
+                    "stringValue": "tool_error"
+                  }
+                },
+                {
+                  "key": "error.type",
                   "value": {
                     "stringValue": "tool_error"
                   }

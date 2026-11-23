@@ -46,7 +46,17 @@
   added.
 - Prompt and tool content are not requested by the setup in
   [docs/agents.md](agents.md). If you turn those flags on, the text is stored in this local
-  SQLite file.
+  SQLite file. The exception is tool arguments: Qwen Code sends the full
+  arguments of every tool call (`function_args`: shell commands, the content
+  of `write_file` and `edit`) and the tool's error text on
+  `qwen-code.tool_call` whatever `logPrompts` says, and Gemini CLI sends
+  `function_args` when its `logPrompts` is on. sdf drops `function_args`
+  from every record, and `error` / `error.message` from Qwen and Gemini
+  tool-call records and Qwen tool spans (whose status message becomes
+  "tool error"), before anything is stored. It keeps the tool name, call
+  id, duration, success, and error type, the dropped sizes
+  (`function_args_bytes`, `error_bytes`), and the dropped keys in
+  `sdf.redacted`.
 - Qwen Code reports no cost, and `internal/pricing` has no rule for its
   token sources, so both cost fields are unknown. Its token totals include
   subagents and the background memory extractor. Its metrics carry no

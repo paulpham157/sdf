@@ -366,6 +366,15 @@ also when the file already says `true`. `includeSensitiveSpanAttributes`
 (default false) copies messages and tool data into spans; `sdf init qwen`
 sets it back to false when it finds it on.
 
+No setting turns off tool arguments: every `qwen-code.tool_call` log carries
+the full JSON arguments of the call in `function_args` (the shell command,
+the whole content passed to `write_file` or `edit`), and a failed call
+carries the tool's error text in `error` and `error.message`
+(`logToolCall`, `packages/core/src/telemetry/loggers.ts`, v0.28.4). Its
+tool spans repeat the error text. sdf discards these before storing
+anything: it keeps the tool name, call id, duration, success, and error
+type, and records `function_args_bytes`, `error_bytes`, and `sdf.redacted`.
+
 - Session: logs and spans carry `session.id` (LLM and interaction spans also
   `gen_ai.conversation.id`). The auto-instrumented HTTP `POST` child spans
   have no session id and are attributed through the trace id. Metrics carry
@@ -399,8 +408,9 @@ sets it back to false when it finds it on.
   `gen_ai.operation.name`; `QWEN_TELEMETRY_*` instead of
   `GEMINI_TELEMETRY_*`, and `OTEL_EXPORTER_OTLP_ENDPOINT` also sets the
   endpoint.
-- In a live run (spencerclark.dev, 2026-10-10) every `qwen-code.hook` span
-  was marked ERROR with "hook runner returned no output without error
+- A published run of an earlier Qwen Code release (spencerclark.dev,
+  2026-10-10; it predates v0.28.4 and was not repeated here) had every
+  `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
   detail" even with no hooks configured. The summary shows them as they
   arrive.
 

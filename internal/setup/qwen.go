@@ -247,7 +247,8 @@ func qwen(req Request) (Result, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Qwen Code exports traces, logs, and metrics when telemetry.enabled is true and an OTLP endpoint is set.\n")
 	fmt.Fprintf(&b, "otlpProtocol \"http\" sends OTLP/JSON to the HTTP receiver; logPrompts (default true) is set to false.\n")
-	fmt.Fprintf(&b, "Checked against qwen-code v0.28.4. Docs: https://github.com/QwenLM/qwen-code/blob/main/docs/developers/development/telemetry.md\n")
+	fmt.Fprintf(&b, "Checked against qwen-code v0.28.4. Docs: https://github.com/QwenLM/qwen-code/blob/v0.28.4/docs/developers/development/telemetry.md\n")
+	fmt.Fprintf(&b, "Qwen Code always sends tool arguments (shell commands, write_file and edit content) and tool error text on qwen-code.tool_call, whatever logPrompts says; sdf discards them before storing.\n")
 	fmt.Fprintf(&b, "Overrides, highest first: CLI flags, QWEN_TELEMETRY_* and OTEL_EXPORTER_OTLP_ENDPOINT, system settings %s, a trusted workspace .qwen/settings.json, then this file.\n\n", qwenSystemSettingsPath())
 	merged, tel, warnings, changed, mergeErr := qwenMerge(existing, req.Endpoint)
 	fmt.Fprintf(&b, "export %s=%s\nexport %s=%s\nexport %s=%s\nexport %s=%s\n\n",
