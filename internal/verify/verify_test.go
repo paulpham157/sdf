@@ -5,8 +5,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/paulpham157/sdf/internal/task"
 )
@@ -337,5 +339,21 @@ func TestRepoMayBeASubdirectory(t *testing.T) {
 	o.RepoDir = filepath.Join(f.repo, "src")
 	if res := mustRun(t, o); res.Status != StatusPass {
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+}
+
+func TestBackgroundProcessesDieWithTheCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups")
+	}
+	marker := filepath.Join(t.TempDir(), "late")
+	f := newFixture(t, task.CriterionInput{Name: "bg", Argv: []string{"sh", "-c", "(sleep 1; touch " + marker + ") & exit 0"}, Designated: []string{"tests/*.sh"}})
+	sha := f.agentCommit(t, map[string]string{"src/feature.txt": "done\n"})
+	if res := mustRun(t, f.opts(sha)); res.Status != StatusPass {
+		t.Fatalf("%s %+v", res.Status, res.Reasons)
+	}
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a background process outlived its check")
 	}
 }

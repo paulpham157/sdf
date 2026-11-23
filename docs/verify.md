@@ -83,6 +83,11 @@ it. This build has no ledger yet, so the printed JSON is the record.
   process running as that user at the same time could write the temporary
   checkout. Run verify where the agent is not running: in CI, or after it
   exits.
+- When a check exits, everything left in its process group is killed. A
+  process that leaves the group (`setsid`, a double fork into a new
+  session) survives, and as the same user it can change files the verifier
+  or the CI job writes later. Running the checks as a separate OS user is
+  the fix; it is not built yet.
 - `--task-ref` is read from the repository given. If the agent can move that
   ref locally, it is not protected. In CI, use the protected branch as
   fetched by the runner.

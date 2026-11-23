@@ -15,3 +15,13 @@ func isolateProcess(cmd *exec.Cmd) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// reapGroup kills whatever the check left running in its process group
+// once it has exited, so a background process cannot outlive the check and
+// change the checkout or the verifier's output afterwards. A process that
+// left the group (setsid) is not reached; see docs/verify.md.
+func reapGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}

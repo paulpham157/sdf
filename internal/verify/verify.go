@@ -720,6 +720,7 @@ func (r *run) runCriterion(c task.Criterion) {
 	cmd.Stdout, cmd.Stderr = so, se
 	started := r.opt.Now()
 	runErr := cmd.Run()
+	reapGroup(cmd)
 	ended := r.opt.Now()
 	so.Close()
 	se.Close()
