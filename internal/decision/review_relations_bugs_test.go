@@ -110,3 +110,24 @@ func TestReviewBugContradictsFromASupersededDecisionDoesNotChallenge(t *testing.
 		t.Fatal("c is contradicted by an active session, want challenged")
 	}
 }
+
+// The rule is symmetric: a validates from a decision that is no longer
+// active does not clear a challenge either. A session's validates still
+// does.
+func TestValidatesFromANonActiveDecisionDoesNotClearChallenged(t *testing.T) {
+	db := openDB(t)
+	seedSession(t, db)
+	addAll(t, db, "a", "r", "s", "s2")
+	link(t, db, decision.RelContradicts, session("sess-1"), dec("a"))
+	link(t, db, decision.RelValidates, dec("r"), dec("a"))
+	link(t, db, decision.RelValidates, dec("s"), dec("a"))
+	retract(t, db, "r", "", "")
+	link(t, db, decision.RelSupersedes, dec("s2"), dec("s"))
+	if !loadByID(t, db)["a"].Challenged {
+		t.Fatal("only withdrawn decisions validate a after the contradicts, want challenged")
+	}
+	link(t, db, decision.RelValidates, dec("s2"), dec("a"))
+	if loadByID(t, db)["a"].Challenged {
+		t.Fatal("active s2 validates a last, want not challenged")
+	}
+}

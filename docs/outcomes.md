@@ -248,9 +248,10 @@ once each, in the order the edges were recorded.
   record keeps its own `effective_status`; `refines` never supersedes.
 - `challenged`: `true` when the record is `active` and the latest `validates`
   or `contradicts` edge to it, in edge order, is `contradicts`. A later
-  `validates` clears it. A `contradicts` edge from a decision that is not
-  `active` (retracted or superseded) is ignored, as a withdrawn blocker
-  blocks nothing; one from a session or commit always counts.
+  `validates` clears it. A `validates` or `contradicts` edge from a decision
+  that is not `active` (retracted or superseded) is ignored, as a withdrawn
+  blocker blocks nothing: it neither challenges nor clears a challenge. One
+  from a session or commit always counts.
 
 `sdf decision list` adds `, blocked`, `, conflicted`, and `, challenged` to
 the `EFFECTIVE` cell, in that order, and prints `blocked by: IDS (open: IDS)`

@@ -677,10 +677,11 @@ func resolve(g *Graph) {
 //   - RefinedBy: every decision with a refines edge to this one. The record
 //     keeps its own EffectiveStatus.
 //   - Challenged: the record is active and the latest validates or
-//     contradicts edge to it, in edge order, is contradicts. A contradicts
-//     edge from a decision that is not active (retracted or superseded)
-//     counts for nothing, as a withdrawn blocker blocks nothing; a session
-//     or commit source always counts.
+//     contradicts edge to it, in edge order, is contradicts. A validates or
+//     contradicts edge from a decision that is not active (retracted or
+//     superseded) counts for nothing, as a withdrawn blocker blocks nothing:
+//     it neither challenges nor clears a challenge. A session or commit
+//     source always counts.
 func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string][]string) {
 	index := make(map[string]int, len(g.Decisions))
 	for i, d := range g.Decisions {
@@ -713,7 +714,7 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 			add(refinedBy, seenR, e.To.Ref, e.From.Ref)
 		case (e.Relation == RelValidates || e.Relation == RelContradicts) &&
 			e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To:
-			if e.Relation == RelContradicts && e.From.Kind == KindDecision && !active(e.From.Ref) {
+			if e.From.Kind == KindDecision && !active(e.From.Ref) {
 				continue
 			}
 			challenged[e.To.Ref] = e.Relation == RelContradicts
