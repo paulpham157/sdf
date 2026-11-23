@@ -82,7 +82,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Keep the first copy of a re-sent Copilot span and use unambiguous dedup keys ([#257](https://github.com/paulpham157/sdf/pull/257)).
 - List a tool call from a re-sent export once ([#259](https://github.com/paulpham157/sdf/pull/259), fixes [#258](https://github.com/paulpham157/sdf/issues/258)).
 - Count a re-sent Qwen Code log or span once ([#262](https://github.com/paulpham157/sdf/pull/262), fixes [#261](https://github.com/paulpham157/sdf/issues/261)).
-- `sdf prices refresh --help` and `-h` print usage and exit 0. The refresh flag parser used to reject both as unrecognized arguments.
+- `sdf prices refresh --help` and `-h` print usage and exit 0. The refresh flag parser used to reject both as unrecognized arguments ([#296](https://github.com/paulpham157/sdf/pull/296)).
 
 ### Security
 
