@@ -226,6 +226,9 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
 		return 1
 	}
+	for _, w := range task.Warnings(spec) {
+		fmt.Fprintf(stderr, "warning: %s\n", w)
+	}
 	d, err := task.Declare(ctx, spec, st)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", prefix, err)

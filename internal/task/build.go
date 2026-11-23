@@ -153,8 +153,17 @@ func Build(ctx context.Context, repoDir string, in Input) (Spec, error) {
 			c.Designated = append(c.Designated, gl)
 		}
 		sort.Strings(c.Designated)
+		pinned := len(c.Designated)
 		for _, p := range argvPaths(c.Argv, blobs) {
 			designated[p] = true
+			pinned++
+		}
+		for _, p := range goTestPaths(c.Argv, paths) {
+			designated[p] = true
+			pinned++
+		}
+		if pinned == 0 {
+			return Spec{}, fmt.Errorf("criterion %q designates no files: name what it depends on (its tests, fixtures, and scripts) with a designated glob; otherwise a submission can weaken the check without verify noticing", c.Name)
 		}
 		spec.Criteria = append(spec.Criteria, c)
 	}
@@ -358,6 +367,9 @@ func (g gitRepo) blob(ctx context.Context, oid string) ([]byte, error) {
 	return g.run(ctx, "cat-file", "blob", oid)
 }
 
+// MatchGlob reports whether the slash path p matches a designated glob.
+func MatchGlob(glob, p string) bool { return matchGlob(glob, p) }
+
 // checkKeys walks every JSON object in data and refuses a key that repeats
 // or is not lowercase.
 func checkKeys(data []byte) error {
@@ -422,4 +434,79 @@ func linkTarget(p, target string) (string, error) {
 		return "", fmt.Errorf("designated symlink %s points outside the repository (%q)", p, target)
 	}
 	return r, nil
+}
+
+// goTestPaths designates, for `go test` or `go vet`, every _test.go file
+// and every file under a testdata directory in the packages named by
+// relative patterns (".", "./x", "./x/..."; none means "."), plus go.mod and
+// go.sum at the repository root. An import-path pattern is not resolved.
+func goTestPaths(argv []string, paths []string) []string {
+	if len(argv) < 2 || path.Base(argv[0]) != "go" || (argv[1] != "test" && argv[1] != "vet") {
+		return nil
+	}
+	type pkg struct {
+		dir       string
+		recursive bool
+	}
+	var pkgs []pkg
+	for _, a := range argv[2:] {
+		if a != "." && a != "..." && !strings.HasPrefix(a, "./") {
+			continue
+		}
+		rec := a == "..." || strings.HasSuffix(a, "/...")
+		d := path.Clean(strings.TrimSuffix(strings.TrimSuffix(a, "..."), "/"))
+		if d == "" {
+			d = "."
+		}
+		if d == ".." || strings.HasPrefix(d, "../") {
+			continue
+		}
+		pkgs = append(pkgs, pkg{d, rec})
+	}
+	if len(pkgs) == 0 {
+		pkgs = []pkg{{".", false}}
+	}
+	var out []string
+	for _, p := range paths {
+		if p == "go.mod" || p == "go.sum" {
+			out = append(out, p)
+			continue
+		}
+		for _, k := range pkgs {
+			rel := p
+			if k.dir != "." {
+				var ok bool
+				if rel, ok = strings.CutPrefix(p, k.dir+"/"); !ok {
+					continue
+				}
+			}
+			dir, file := path.Split(rel)
+			dir = strings.TrimSuffix(dir, "/")
+			inTestdata := dir == "testdata" || strings.HasPrefix(dir, "testdata/") ||
+				(k.recursive && (strings.Contains("/"+dir+"/", "/testdata/")))
+			direct := dir == "" || k.recursive
+			if (direct && strings.HasSuffix(file, "_test.go")) || inTestdata {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// Interpreters whose argv files can source or import others that are not
+// designated. See Warnings.
+var interpreters = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "python": true, "python3": true, "node": true, "ruby": true, "perl": true}
+
+// Warnings returns notes on a Spec's coverage that do not refuse it: a
+// criterion run by an interpreter with no designated glob pins only the
+// files named in its argv, not what they source or import.
+func Warnings(s Spec) []string {
+	var w []string
+	for _, c := range s.Criteria {
+		if len(c.Designated) == 0 && interpreters[path.Base(c.Argv[0])] {
+			w = append(w, fmt.Sprintf("criterion %q pins only the files named in its argv; anything they source or import is not pinned, so designate it", c.Name))
+		}
+	}
+	return w
 }

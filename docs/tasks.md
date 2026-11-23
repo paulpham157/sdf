@@ -1,8 +1,8 @@
 # Tasks
 
 `sdf task declare` records what a piece of agent work has to pass, before
-the agent starts. It runs nothing. A later `sdf verify` (not built yet)
-reads the declared task and runs its checks against a submitted revision.
+the agent starts. It runs nothing. [`sdf verify`](verify.md) reads the
+declared task and runs its checks against a submitted revision.
 
 ```bash
 sdf task declare --id add-widget --title "Add the widget" \
@@ -59,6 +59,14 @@ when the command is `make`. A path inside a shell string (`sh -c "..."`) is
 not found. Each file is recorded with its git mode, blob id, and sha256, so
 verify can tell whether the submitted revision changed the tests that judge
 it.
+
+Every criterion has to designate at least one file, or the declaration is
+refused. For `go test` and `go vet`, the `_test.go` files and `testdata`
+directories of the packages named by relative patterns (`.`, `./x`,
+`./x/...`; none means `.`) are designated automatically, with `go.mod` and
+`go.sum`; import-path patterns are not resolved. A criterion run by a shell
+or interpreter with no designated glob is accepted with a warning: what its
+script sources or imports is not pinned.
 
 A designated symlink records its target string, and the file it points to
 is designated as well (through a chain of links). A link that points

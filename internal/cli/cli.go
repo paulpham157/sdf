@@ -54,6 +54,8 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdDecision(args[1:], stdout, stderr)
 	case "task":
 		return cmdTask(args[1:], stdout, stderr)
+	case "verify":
+		return cmdVerify(args[1:], stdout, stderr)
 	case "demo":
 		return cmdDemo(args[1:], stdout, stderr)
 	case "audit":
@@ -69,7 +71,7 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|task|version> [flags]"
+const usageLine = "usage: sdf <serve|summary|demo|check|init|prices|decision|audit|task|verify|version> [flags]"
 
 func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	for _, arg := range args {
