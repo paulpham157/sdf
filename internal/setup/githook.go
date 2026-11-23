@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/ledger"
 )
 
 const hookMarker = "# sdf-git-hook:v1"
@@ -457,7 +459,7 @@ func prePushNote(cfg hookConfig) string {
 	var b strings.Builder
 	b.WriteString("pre-push warns about pushed commits SDF recorded that implement no decision. It sends nothing and only reads the SDF-Decision trailer of the pushed commits, never the diff. The push still succeeds (warn mode), including when SDF is unavailable. Skip it with git push --no-verify or SDF_PRE_PUSH=off; git config sdf.prePush block makes it block.\n")
 	if cfg.db != "" {
-		fmt.Fprintf(&b, "pre-push reads the store %s.\n", cfg.db)
+		fmt.Fprintf(&b, "pre-push reads the store %s.\n", ledger.Safe(cfg.db))
 	} else {
 		b.WriteString("pre-push has no store to read: re-run with --db PATH (the db= path sdf serve prints), or set SDF_PRE_PUSH_DB. Until then it skips the check with a one-line note.\n")
 	}

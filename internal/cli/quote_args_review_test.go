@@ -129,6 +129,7 @@ func TestFlagValuePathsAreQuoted(t *testing.T) {
 		{"redact", "--db=" + bad},
 		{"serve", "--otlp-token-file=" + bad},
 		{"task", "declare", "--repo=" + bad, "--id", "t", "--title", "t", "--check", "c=true"},
+		{"decision", "pre-push", "--db=" + bad},
 	} {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
 			got := run(t, args...)

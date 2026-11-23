@@ -32,6 +32,7 @@ func TestUnrecognizedArgumentsQuoteControlCharacters(t *testing.T) {
 		{"decision", "graph", typo},
 		{"decision", "retract", typo},
 		{"decision", "audit", typo},
+		{"decision", "pre-push", typo},
 		{"task", typo},
 		{"task", "declare", typo},
 		{"task", "show", typo},
