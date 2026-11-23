@@ -57,8 +57,9 @@ So the same numbers are not added twice:
 - Duration: sum of `claude_code.interaction` spans, else `codex.turn.e2e_duration_ms`,
   else sum of `run_turn` spans, else sum of Pi `invoke_agent` spans, else sum
   of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
-  (active seconds, not wall clock), else the min-to-max timestamp
-  (`observed_window`).
+  (active seconds, not wall clock), else Grok CLI `grok_code.session_end`
+  `duration_secs`, else the sum of `grok_code.turn_completed` `duration_ms`,
+  else the min-to-max timestamp (`observed_window`).
 - Tokens: `claude_code.token.usage` by `type`, else `codex.turn.token_usage`
   by `token_type`, else the sum of Claude `api_request` token attributes,
   else Codex `response.completed` with the rule below, else OpenCode
@@ -66,13 +67,14 @@ So the same numbers are not added twice:
   is summed), else the sum of Pi `chat` `gen_ai.usage.input_tokens` and
   `output_tokens`. That Pi sum is not added to `gen_ai.client.token.usage`.
   If the chat spans have no usage attributes, the Pi token metric is the
-  fallback.
+  fallback. Else Grok CLI `grok_code.token.usage` by `type`, else the sum of
+  `grok_code.api_request` token attributes (including `cache_creation_tokens` when present). Live Grok CLI 1.0.92 capture, 2026-11-23.
 - Cost the agent reported: `claude_code.cost.usage` (USD), else
   `codex.turn.cost_microusd` divided by 1,000,000, else `cost_usd` on
   `claude_code.api_request`, else `usage.estimated_usd` on `codex.turn_cost`,
   else the sum of `pi.cost.usd` on Pi `chat` spans. Claude's figure is
   labeled as the agent's estimate, not the provider price. OpenCode emits
-  no cost. The text calls this `agent_reported_cost_usd`. `cost_usd` in
+  no cost. Grok CLI reports `grok_code.cost.usage` in USD (live 2026-11-23 capture; the published guide omitted it), else the sum of `grok_code.api_request` `cost_usd_micros` / 1,000,000. The text calls this `agent_reported_cost_usd`. `cost_usd` in
   the text and in `--json` is the same number.
 - Cost SDF computed: those same token totals, after the de-dup rule above,
   times the OpenRouter per-token price. See below.
@@ -136,6 +138,7 @@ How a count is turned into a bucket:
 | Codex `codex.turn.token_usage` and `response.completed` | `cached_input` is part of `input` (`TokenUsage.non_cached_input` in `codex-rs/protocol` at the commit cited above). `cache_write_input` is subtracted from input too. `reasoning_output` is subtracted from output. `total` is not priced. A negative remainder is unknown. |
 | OpenCode `SessionStep.attempt` | The summary has already taken the max of input and of cache. `gen_ai.usage.cache_read.input_tokens` is priced as a subset of input. |
 | Pi `chat` and `gen_ai.client.token.usage` | The summary's input and output only. Cache and reasoning attributes are left out of that total, so they are not priced. |
+| Grok CLI `grok_code.token.usage` and `api_request` | Live session (grok 1.0.92, 2026-11-23): `cache_read` is a subset of `input`, `cache_creation` (when present) is also subtracted from input, and `reasoning` is a subset of `output`. OpenRouter base rates matched `cost.usage` / `cost_usd_micros` only under that overlap. Reasoning uses `internal_reasoning` when the row has it, otherwise the completion price. Agent-reported cost is `grok_code.cost.usage` (USD) or `cost_usd_micros`. A catalog row with `pricing.overrides` (for example `x-ai/grok-4.7`) still leaves computed cost unknown. |
 
 Cache-creation counts mix the five-minute and one-hour lifetimes. If the
 catalog publishes both `input_cache_write` and `input_cache_write_1h` and

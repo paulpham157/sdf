@@ -24,12 +24,19 @@ const (
 	codexSSE            = "codex.sse_event"
 	codexTurnCost       = "codex.turn_cost"
 	piTokenMetric       = "gen_ai.client.token.usage"
+	grokTokenMetric     = "grok_code.token.usage"
+	grokCostMetric      = "grok_code.cost.usage"
+	grokAPI             = "grok_code.api_request"
+	grokSessionEnd      = "grok_code.session_end"
+	grokTurnCompleted   = "grok_code.turn_completed"
+	grokToolResult      = "grok_code.tool_result"
 )
 
 var (
 	toolLogs = map[string]bool{
 		"claude_code.tool_result": true,
 		"codex.tool_result":       true,
+		"grok_code.tool_result":   true,
 	}
 	claudeSpans = map[string]bool{
 		"claude_code.interaction":          true,
@@ -112,6 +119,14 @@ var (
 		"codex.sse_event":                true,
 		"codex.tool_result":              true,
 		"codex.turn_cost":                true,
+		"grok_code.session_start":        true,
+		"grok_code.session_end":          true,
+		"grok_code.user_prompt":          true,
+		"grok_code.assistant_response":   true,
+		"grok_code.api_request":          true,
+		"grok_code.api_error":            true,
+		"grok_code.turn_completed":       true,
+		"grok_code.model_switched":       true,
 	}
 	modelSpans = map[string]bool{
 		"claude_code.interaction":          true,
@@ -173,7 +188,7 @@ func SummarizeWith(records []record.Record, allSpans bool, prices *pricing.Catal
 	return Report{Sessions: sessions, Unattributed: unattributed(leftover)}
 }
 
-// ToolOf classifies a record as claude-code, codex, opencode, pi, or unknown.
+// ToolOf classifies a record as claude-code, codex, opencode, pi, grok-cli, or unknown.
 func ToolOf(rec record.Record) string {
 	service := strings.ToLower(deref(rec.ServiceName))
 	name := deref(rec.Name)
@@ -193,7 +208,72 @@ func ToolOf(rec record.Record) string {
 	if service == "pi" || system == "pi" || strings.HasPrefix(name, "pi.session.") || strings.HasPrefix(event, "pi.session.") {
 		return "pi"
 	}
+	if service == "grok-cli" || strings.HasPrefix(name, "grok_code.") || strings.HasPrefix(body, "grok_code.") || strings.HasPrefix(event, "grok_code.") {
+		return "grok-cli"
+	}
 	return "unknown"
+}
+
+// logEventName is the event name the summary should use. For Grok CLI it
+// prefers a stored name, then event.name, then an attribute-shape inference
+// used when a live export left LogRecord name, body, and event.name empty
+// (Grok CLI 1.0.92, 2026-11-23; the id may be on the OTEL event_name field
+// which older ingest did not copy).
+func logEventName(rec record.Record) string {
+	if ToolOf(rec) == "grok-cli" && rec.Signal == "logs" {
+		return grokEventName(rec)
+	}
+	return deref(rec.Name)
+}
+
+func grokEventName(rec record.Record) string {
+	if n := deref(rec.Name); n != "" {
+		return normalizeGrokEvent(n)
+	}
+	if n := strAttr(rec.Attributes, "event.name"); n != "" {
+		return normalizeGrokEvent(n)
+	}
+	a := rec.Attributes
+	switch {
+	case hasAttr(a, "from_model") && hasAttr(a, "to_model"):
+		return "grok_code.model_switched"
+	case hasAttr(a, "prompt_length"):
+		return "grok_code.user_prompt"
+	case hasAttr(a, "response_length"):
+		return "grok_code.assistant_response"
+	case hasAttr(a, "cost_usd_micros") || (hasAttr(a, "input_tokens") && hasAttr(a, "output_tokens")):
+		return grokAPI
+	case hasAttr(a, "tool_name") && (hasAttr(a, "success") || hasAttr(a, "outcome")) && !hasAttr(a, "decision"):
+		return grokToolResult
+	case hasAttr(a, "decision") && (hasAttr(a, "tool_use_id") || hasAttr(a, "tool")):
+		return "grok_code.tool_decision"
+	case hasAttr(a, "duration_secs") && hasAttr(a, "turn_count"):
+		return grokSessionEnd
+	case hasAttr(a, "tool_call_count") && hasAttr(a, "duration_ms") && hasAttr(a, "outcome"):
+		return grokTurnCompleted
+	case hasAttr(a, "permission_mode") || (hasAttr(a, "hook_count") && hasAttr(a, "is_git_repo")):
+		return "grok_code.session_start"
+	default:
+		return deref(rec.Name)
+	}
+}
+
+func normalizeGrokEvent(name string) string {
+	if strings.HasPrefix(name, "grok_code.") {
+		return name
+	}
+	if !strings.Contains(name, ".") {
+		return "grok_code." + name
+	}
+	return name
+}
+
+func hasAttr(attrs map[string]any, key string) bool {
+	if attrs == nil {
+		return false
+	}
+	_, ok := attrs[key]
+	return ok
 }
 
 func genAISystem(rec record.Record) string {
@@ -314,6 +394,11 @@ func matchSession(rec record.Record, traceKeys, spanKeys map[string]map[sessionK
 	// are not that session. Pi metrics have no session id and still use the
 	// time window below. Pi logs carry pi.session.id and are scoped at ingest.
 	if tool == "opencode" && (rec.Signal == "logs" || rec.Signal == "traces") {
+		return sessionKey{}, false
+	}
+	// Grok CLI startup histograms have no session.id. They can overlap a
+	// session window but are process startup, not session work.
+	if tool == "grok-cli" && rec.Signal == "metrics" && strings.HasPrefix(deref(rec.Name), "grok_code.startup.") {
 		return sessionKey{}, false
 	}
 	st := stamps(rec)
@@ -670,6 +755,32 @@ func duration(records []record.Record, points []point) (*float64, *string) {
 	if len(active) > 0 {
 		return record.Float(sum(active) * 1000), record.Str("metrics " + claudeActiveMetric)
 	}
+	var sessionEnd []float64
+	for _, rec := range records {
+		if rec.Signal != "logs" || logEventName(rec) != grokSessionEnd {
+			continue
+		}
+		secs := record.Number(rec.Attributes["duration_secs"])
+		if secs != nil {
+			sessionEnd = append(sessionEnd, *secs*1000)
+		}
+	}
+	if len(sessionEnd) > 0 {
+		return record.Float(sum(sessionEnd)), record.Str("logs " + grokSessionEnd)
+	}
+	var turnDur []float64
+	for _, rec := range records {
+		if rec.Signal != "logs" || logEventName(rec) != grokTurnCompleted {
+			continue
+		}
+		ms := record.Number(rec.Attributes["duration_ms"])
+		if ms != nil {
+			turnDur = append(turnDur, *ms)
+		}
+	}
+	if len(turnDur) > 0 {
+		return record.Float(sum(turnDur)), record.Str("logs " + grokTurnCompleted)
+	}
 	var stampsAll []int64
 	for _, rec := range records {
 		stampsAll = append(stampsAll, stamps(rec)...)
@@ -758,6 +869,31 @@ func tokensOf(records []record.Record, points []point) (OrderedFloats, *string, 
 	}
 	if len(piMetrics) > 0 {
 		return sumBy(piMetrics, "gen_ai.token.type"), record.Str("metrics " + piTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point")
+	}
+	var grok []point
+	for _, p := range points {
+		if p.name == grokTokenMetric {
+			grok = append(grok, p)
+		}
+	}
+	if len(grok) > 0 {
+		return sumBy(grok, "type"), record.Str("metrics " + grokTokenMetric), record.Str("sum of delta points; a cumulative series keeps its latest point. Live Grok CLI 1.0.92 (2026-11-23) type=input|output|reasoning|cache_read; cache_read is a subset of input and reasoning is a subset of output")
+	}
+	var grokLogs []record.Record
+	for _, rec := range records {
+		if rec.Signal == "logs" && logEventName(rec) == grokAPI {
+			grokLogs = append(grokLogs, rec)
+		}
+	}
+	grokTotals := OrderedFloats{}
+	grokFound := false
+	for _, rec := range grokLogs {
+		if addFields(&grokTotals, rec, []string{"input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_creation_tokens"}) {
+			grokFound = true
+		}
+	}
+	if grokFound {
+		return grokTotals, record.Str("logs " + grokAPI), record.Str("sum of per-request token attributes from grok_code.api_request (input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_creation_tokens)")
 	}
 	return OrderedFloats{}, nil, nil
 }
@@ -943,6 +1079,15 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 	if len(codex) > 0 {
 		return record.Float(sum(codex) / 1_000_000), record.Str("metrics " + codexCostMetric), nil
 	}
+	var grokCost []float64
+	for _, p := range points {
+		if p.name == grokCostMetric {
+			grokCost = append(grokCost, p.value)
+		}
+	}
+	if len(grokCost) > 0 {
+		return record.Float(sum(grokCost)), record.Str("metrics " + grokCostMetric), nil
+	}
 	total := 0.0
 	found := false
 	var source *string
@@ -952,7 +1097,7 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 		}
 		var amount *float64
 		var label string
-		switch deref(rec.Name) {
+		switch logEventName(rec) {
 		case claudeAPI:
 			amount = record.Number(rec.Attributes["cost_usd"])
 			label = "logs " + claudeAPI + " cost_usd"
@@ -960,6 +1105,11 @@ func costOf(records []record.Record, points []point, tool string) (*float64, *st
 			amount = record.Number(rec.Attributes["usage.estimated_usd"])
 			label = "logs " + codexTurnCost + " usage.estimated_usd"
 			note = nil
+		case grokAPI:
+			if micros := record.Number(rec.Attributes["cost_usd_micros"]); micros != nil {
+				amount = record.Float(*micros / 1_000_000)
+				label = "logs " + grokAPI + " cost_usd_micros"
+			}
 		default:
 			continue
 		}
@@ -1001,8 +1151,12 @@ func toolCalls(records []record.Record, points []point) []ToolCall {
 		if rec.Signal == "traces" {
 			spans = append(spans, rec)
 		}
-		if rec.Signal == "logs" && rec.Name != nil && toolLogs[*rec.Name] {
-			logs = append(logs, rec)
+		if rec.Signal == "logs" {
+			name := logEventName(rec)
+			if toolLogs[name] {
+				rec.Name = record.Str(name)
+				logs = append(logs, rec)
+			}
 		}
 	}
 	logByID := map[string]record.Record{}
@@ -1130,7 +1284,7 @@ func logLines(records []record.Record) []LogLine {
 	counts := map[string][]record.Record{}
 	var order []string
 	for _, rec := range ordinary {
-		name := deref(rec.Name)
+		name := logEventName(rec)
 		if name == "" {
 			name = "(unnamed)"
 		}
@@ -1230,6 +1384,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "no spans exported. OpenCode v2 exports traces when OTEL_EXPORTER_OTLP_ENDPOINT is set."
 		case "pi":
 			reason = "no spans exported. Pi has no built-in OTLP exporter; install pi-otel and set OTEL_EXPORTER_OTLP_PROTOCOL=http/json."
+		case "grok-cli":
+			reason = "Grok CLI's external OTEL stream exports logs and metrics only (no traces). Documented in xAI monitoring-usage (alpha, grok_code.schema.version=v1)."
 		default:
 			reason = "no spans exported for this session."
 		}
@@ -1246,6 +1402,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "OpenCode v2 does not export per-session logs. Its OTLP logs are process events without session.id, so none are attributed to this session."
 		case "pi":
 			reason = "pi-otel logs only session start and end (pi.session.start, pi.session.end) and only when PI_OTEL_LOGS=1. None are attributed to this session."
+		case "grok-cli":
+			reason = "no log events attributed to this session. Set GROK_EXTERNAL_OTEL=1 and OTEL_LOGS_EXPORTER=otlp. Events carry session.id once a session exists."
 		default:
 			reason = "no log events exported for this session."
 		}
@@ -1304,6 +1462,8 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			reason = "OpenCode v2 does not export OTLP metrics."
 		case "pi":
 			reason = "pi-otel metrics have no session id and are off unless PI_OTEL_METRICS=1. None were attributed by trace, span, or this session's time window."
+		case "grok-cli":
+			reason = "no metrics attributed to this session. Set GROK_EXTERNAL_OTEL=1 and OTEL_METRICS_EXPORTER=otlp. session.id is on metrics by default (OTEL_METRICS_INCLUDE_SESSION_ID=1)."
 		default:
 			reason = "no metrics exported for this session."
 		}

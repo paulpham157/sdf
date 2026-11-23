@@ -414,3 +414,58 @@ port 4318 and set the protocol:
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
+
+
+## Grok CLI
+
+> Mapping below was first sketched from the public xAI guide
+> [Monitoring Usage (External OpenTelemetry)](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md)
+> (`grok_code.schema.version = v1`, status alpha) and then corrected against
+> an authenticated `grok` 1.0.92 session on 2026-11-23 (Asia/Bangkok).
+
+Grok CLI exports **metrics and logs only** (no traces) when both the master
+switch and an exporter are set:
+
+```bash
+export GROK_EXTERNAL_OTEL=1
+export OTEL_METRICS_EXPORTER=otlp
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+grok
+```
+
+`service.name` is `grok-cli`. Events always carry `session.id`; metrics do
+too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
+(`grok_code.startup.*`) in the live capture had no `session.id` and stay
+unattributed even when they overlap a session window.
+
+The published guide said there was no cost metric. The live session exported
+`grok_code.cost.usage` in USD (sum of delta points). `grok_code.api_request`
+also carried `cost_usd_micros` and, on some events, `cache_creation_tokens`
+(0 in that session), which the public field list omitted. Agent-reported
+cost prefers the metric, then the sum of `cost_usd_micros / 1_000_000`.
+
+Token counts come from `grok_code.token.usage` (`type` = `input` \| `output`
+\| `reasoning` \| `cache_read`) or, if those points are missing, from
+`grok_code.api_request` token fields. Live rates matched OpenRouter only
+when `cache_read` is treated as a subset of `input` and `reasoning` as a
+subset of `output`. A model id such as `grok-4.7` may suffix-match
+`x-ai/grok-4.7`; if that catalog row has `pricing.overrides`, computed cost
+stays unknown even when the base rate would have matched the agent figure.
+
+Tool calls come from `grok_code.tool_result` (`tool_name`, `success`,
+`duration_ms`, `tool_use_id`). Duration prefers
+`grok_code.session_end.duration_secs`, then the sum of
+`grok_code.turn_completed.duration_ms`.
+
+Live logs arrived with an empty body and no `event.name` attribute. sdf
+reads the OTEL `LogRecord.event_name` field at ingest, and the summary
+also infers `grok_code.*` event names from attribute shapes so already
+stored unnamed records still summarize. The live model was `grok-4.7`.
+`tool_decision` used the name `search_replace` for two calls whose later
+`tool_result` used `write`.
+
+The official protocol list includes `grpc`. A cheap gRPC check is recorded
+in the 2026-11-23 notes when it was run; http/protobuf is the documented
+default and was used for the live capture.

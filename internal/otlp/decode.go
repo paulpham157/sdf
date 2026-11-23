@@ -194,7 +194,7 @@ func logs(msg *collogspb.ExportLogsServiceRequest) []record.Record {
 					signal:     "logs",
 					resource:   resource,
 					attributes: attrs,
-					name:       eventName(body, attrs, resource),
+					name:       eventName(body, attrs, resource, rec.GetEventName()),
 					when:       nano(rec.GetTimeUnixNano()),
 					body:       body,
 					traceID:    otelID(rec.GetTraceId()),
@@ -328,25 +328,51 @@ func bodyText(v *commonpb.AnyValue) *string {
 	return record.Str(pythonStr(parsed))
 }
 
-func eventName(body *string, attributes, resource map[string]any) *string {
+func eventName(body *string, attributes, resource map[string]any, eventField string) *string {
+	// OTEL LogRecord.event_name (JSON eventName) is a first-class field.
+	// A live Grok CLI 1.0.92 session on 2026-11-23 exported logs with an
+	// empty body and no event.name attribute; the event id belongs here.
+	field := emptyAsNil(eventField)
 	attr := record.OTLPText(attributes["event.name"])
-	if body != nil && (strings.HasPrefix(*body, "claude_code.") || strings.HasPrefix(*body, "codex.")) {
+	if body != nil && (strings.HasPrefix(*body, "claude_code.") || strings.HasPrefix(*body, "codex.") || strings.HasPrefix(*body, "grok_code.")) {
 		return body
 	}
-	if attr != nil && (strings.HasPrefix(*attr, "claude_code.") || strings.HasPrefix(*attr, "codex.")) {
+	if field != nil && (strings.HasPrefix(*field, "claude_code.") || strings.HasPrefix(*field, "codex.") || strings.HasPrefix(*field, "grok_code.")) {
+		return field
+	}
+	if attr != nil && (strings.HasPrefix(*attr, "claude_code.") || strings.HasPrefix(*attr, "codex.") || strings.HasPrefix(*attr, "grok_code.")) {
 		return attr
 	}
 	service := ""
 	if s := record.OTLPText(resource["service.name"]); s != nil {
 		service = *s
 	}
-	if attr != nil && strings.HasPrefix(service, "claude-code") && !strings.Contains(*attr, ".") {
-		return record.Str("claude_code." + *attr)
+	if name := prefixAgentEvent(service, field); name != nil {
+		return name
+	}
+	if name := prefixAgentEvent(service, attr); name != nil {
+		return name
+	}
+	if field != nil {
+		return field
 	}
 	if attr != nil {
 		return attr
 	}
 	return body
+}
+
+func prefixAgentEvent(service string, raw *string) *string {
+	if raw == nil || strings.Contains(*raw, ".") {
+		return nil
+	}
+	if strings.HasPrefix(service, "claude-code") {
+		return record.Str("claude_code." + *raw)
+	}
+	if service == "grok-cli" {
+		return record.Str("grok_code." + *raw)
+	}
+	return nil
 }
 
 func sessionID(attributes, resource map[string]any) *string {

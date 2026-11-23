@@ -281,6 +281,22 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 		return openCodeBuckets(tokens)
 	case "traces chat", "metrics gen_ai.client.token.usage":
 		return piBuckets(source, tokens)
+	case "metrics grok_code.token.usage":
+		return codexBuckets(tokens, map[string]string{
+			"input":       "input",
+			"output":      "output",
+			"cache_read":  "cache_read",
+			"cache_write": "cache_write",
+			"reasoning":   "reasoning",
+		}, "", "Live Grok CLI 1.0.92 (2026-11-23) token types: cache_read is a subset of input and reasoning is a subset of output. OpenRouter base rates matched grok_code.cost.usage / api_request cost_usd_micros only under that overlap. Reasoning uses internal_reasoning when the catalog row has it, otherwise completion")
+	case "logs grok_code.api_request":
+		return codexBuckets(tokens, map[string]string{
+			"input_tokens":           "input",
+			"output_tokens":          "output",
+			"cache_read_tokens":      "cache_read",
+			"cache_creation_tokens":  "cache_write",
+			"reasoning_tokens":       "reasoning",
+		}, "", "Live Grok CLI api_request fields: cache_read_tokens is a subset of input_tokens, cache_creation_tokens (when present) is also subtracted from input, and reasoning_tokens is a subset of output_tokens. Reasoning uses internal_reasoning when the catalog row has it, otherwise completion")
 	default:
 		if source == "" {
 			return nil, "", "token source is missing, so the counts were not priced"
@@ -292,6 +308,7 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 type bucketSpec struct {
 	name        string
 	priceKey    string
+	fallbackKey string
 	conflictKey string
 }
 
@@ -311,7 +328,7 @@ func disjoint(tokens map[string]float64, spec map[string]bucketSpec, method stri
 		if err != nil {
 			return nil, "", err.Error()
 		}
-		out = append(out, bucket{name: item.name, tokens: amount, priceKey: item.priceKey, conflictKey: item.conflictKey})
+		out = append(out, bucket{name: item.name, tokens: amount, priceKey: item.priceKey, fallbackKey: item.fallbackKey, conflictKey: item.conflictKey})
 	}
 	return out, method, ""
 }
