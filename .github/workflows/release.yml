@@ -1,0 +1,56 @@
+# Builds the archives and uploads them to a DRAFT GitHub Release when a
+# vMAJOR.MINOR.PATCH tag, optionally with a suffix (v0.1.0, v0.1.0-rc.1), is
+# pushed. .goreleaser.yaml sets release.draft, so a maintainer reviews the
+# draft and publishes it by hand. Nothing else triggers
+# this workflow: pull requests and pushes to main only run the snapshot build
+# in main.yml, which never creates a release.
+name: Release
+
+on:
+  push:
+    tags:
+      # GitHub filter pattern, not a regex: [0-9] is a digit, + is one or more
+      # of the preceding character, . is literal, and * is any characters
+      # except /. Matches v0.1.0, v10.2.3, and v0.1.0-rc.1; not v1 or vfoo.
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+# No token permissions by default. Only the release job gets contents: write.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  goreleaser:
+    name: goreleaser (release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Create the draft release and upload the archives and checksums.txt.
+      # contents: write also covers checkout of this public repo.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # GoReleaser reads the tag and the commit history for the changelog.
+          fetch-depth: 0
+          # GoReleaser publishes through the GitHub API with GITHUB_TOKEN from
+          # env; it never pushes with git. Do not leave the token in .git/config.
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          # The Go version in go.mod, so a release build is reproducible.
+          go-version-file: go.mod
+          # No shared module or build cache in a job that can write releases.
+          cache: false
+      - name: Test before publishing
+        run: make test
+      - name: Release
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: v2.20.0
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -7,16 +7,24 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/genai"
 )
 
 // Usage is the token total a summary already reduced.
 // Source is the summary's tokens_source string. The counts must already
-// follow that agent's de-dup rule (Codex and OpenCode take a max for the
-// prefix; Pi sums per-turn input and output and drops cache and reasoning).
+// follow that agent's de-dup rule (Codex response.completed takes a max for
+// the prefix; OpenCode sums per-request counts; Pi sums per-turn input and
+// output and drops cache and reasoning).
 type Usage struct {
 	Models []string
 	Tokens map[string]float64
 	Source string
+	// Requests are per-request token maps when those counts still exist
+	// (for example each grok_code.api_request log). Keys match the
+	// pricing rule for Source. Each request is priced with its own
+	// override tier and the USD totals are added.
+	Requests []map[string]float64
 }
 
 // Cost is the computed price for one session.
@@ -120,29 +128,161 @@ func Price(cat *Catalog, usage Usage) Cost {
 	out.Model = strings.Join(models, ", ")
 	out.CatalogID = match.Model.ID
 	out.MatchedBy = by
-	if match.Model.HasOverrides {
+	if len(usage.Requests) > 0 {
+		return priceRequests(out, match.Model, usage)
+	}
+	return priceTokens(out, match.Model, usage.Source, usage.Tokens, false)
+}
+
+func priceRequests(out Cost, model *Model, usage Usage) Cost {
+	warning := out.Note
+	var total big.Rat
+	var notes []string
+	var method string
+	type merge struct {
+		tokens *big.Rat
+		usd    *big.Rat
+		rate   string
+		mixed  bool
+	}
+	byName := map[string]*merge{}
+	var names []string
+	priced := 0
+	for i, req := range usage.Requests {
+		if len(req) == 0 {
+			continue
+		}
+		part := priceTokens(out, model, usage.Source, req, true)
+		if part.Status != "known" {
+			if len(usage.Requests) > 1 && part.Reason != "" {
+				part.Reason = fmt.Sprintf("request %d: %s", i+1, part.Reason)
+			}
+			return part
+		}
+		amount, ok := new(big.Rat).SetString(part.USD)
+		if !ok {
+			part.Status = "unknown"
+			part.USD = ""
+			part.Components = nil
+			part.Reason = "computed amount is not a terminating decimal"
+			return part
+		}
+		total.Add(&total, amount)
+		priced++
+		if method == "" {
+			method = part.Method
+		}
+		if part.Note != "" {
+			notes = append(notes, part.Note)
+		}
+		for _, item := range part.Components {
+			cur, ok := byName[item.Name]
+			if !ok {
+				tokens, tokOK := new(big.Rat).SetString(item.Tokens)
+				usd, usdOK := new(big.Rat).SetString(item.USD)
+				if !tokOK || !usdOK {
+					out.Status = "unknown"
+					out.Reason = "computed amount is not a terminating decimal"
+					out.Components = nil
+					return out
+				}
+				byName[item.Name] = &merge{tokens: tokens, usd: usd, rate: item.USDPerToken}
+				names = append(names, item.Name)
+				continue
+			}
+			tokens, tokOK := new(big.Rat).SetString(item.Tokens)
+			usd, usdOK := new(big.Rat).SetString(item.USD)
+			if !tokOK || !usdOK {
+				out.Status = "unknown"
+				out.Reason = "computed amount is not a terminating decimal"
+				out.Components = nil
+				return out
+			}
+			cur.tokens.Add(cur.tokens, tokens)
+			cur.usd.Add(cur.usd, usd)
+			if item.USDPerToken != cur.rate {
+				cur.mixed = true
+			}
+		}
+	}
+	if priced == 0 {
+		return priceTokens(out, model, usage.Source, usage.Tokens, false)
+	}
+	text, ok := decimalString(&total)
+	if !ok {
 		out.Status = "unknown"
-		out.Reason = "model " + match.Model.ID + " has conditional OpenRouter price overrides, and the session total is not one request, so the base rate was not applied"
+		out.Reason = "computed amount is not a terminating decimal"
+		out.Components = nil
 		return out
 	}
-	buckets, method, reason := bucketsFor(usage.Source, usage.Tokens)
+	out.Status = "known"
+	out.USD = text
+	if priced > 1 {
+		out.Method = fmt.Sprintf("sum of %d per-request costs; %s", priced, method)
+	} else {
+		out.Method = method
+	}
+	for _, name := range names {
+		cur := byName[name]
+		tokenText, tokOK := decimalString(cur.tokens)
+		usdText, usdOK := decimalString(cur.usd)
+		if !tokOK || !usdOK {
+			out.Status = "unknown"
+			out.Reason = "computed amount is not a terminating decimal"
+			out.Components = nil
+			return out
+		}
+		rate := cur.rate
+		if cur.mixed {
+			rate = "mixed"
+			notes = append(notes, name+" tokens used more than one rate")
+		}
+		out.Components = append(out.Components, Component{
+			Name:        name,
+			Tokens:      tokenText,
+			USDPerToken: rate,
+			USD:         usdText,
+		})
+	}
+	notes = append(notes, feeNote(model))
+	out.Note = joinNotes(warning, uniqueNotes(notes))
+	return out
+}
+
+func priceTokens(out Cost, model *Model, source string, tokens map[string]float64, singleRequest bool) Cost {
+	out.Components = nil
+	buckets, method, reason := bucketsFor(source, tokens)
 	if reason != "" {
 		out.Status = "unknown"
 		out.Reason = reason
+		out.USD = ""
+		out.Method = ""
 		return out
 	}
 	out.Method = method
+	prices, rateNote, reason := pricesFor(model, source, tokens, singleRequest)
+	if reason != "" {
+		out.Status = "unknown"
+		out.Reason = reason
+		out.USD = ""
+		out.Components = nil
+		return out
+	}
 	var total big.Rat
 	var notes []string
+	if rateNote != "" {
+		notes = append(notes, rateNote)
+	}
 	for _, item := range buckets {
 		if item.tokens.Sign() == 0 {
 			continue
 		}
-		perToken, priceText, note, reason := rateFor(match.Model, item)
+		perToken, priceText, note, reason := rateFor(model, item, prices)
 		if reason != "" {
 			out.Status = "unknown"
 			out.Reason = reason
 			out.Method = method
+			out.USD = ""
 			out.Components = nil
 			return out
 		}
@@ -156,6 +296,7 @@ func Price(cat *Catalog, usage Usage) Cost {
 		if !ok || !usdOK {
 			out.Status = "unknown"
 			out.Reason = "computed amount is not a terminating decimal"
+			out.USD = ""
 			out.Components = nil
 			return out
 		}
@@ -170,30 +311,30 @@ func Price(cat *Catalog, usage Usage) Cost {
 	if !ok {
 		out.Status = "unknown"
 		out.Reason = "computed amount is not a terminating decimal"
+		out.USD = ""
 		out.Components = nil
 		return out
 	}
 	out.Status = "known"
 	out.USD = text
-	notes = append(notes, feeNote(match.Model))
-	for _, note := range notes {
-		if note == "" {
-			continue
-		}
-		if out.Note != "" {
-			out.Note = out.Note + "; " + note
-		} else {
-			out.Note = note
-		}
+	out.Reason = ""
+	if !singleRequest {
+		notes = append(notes, feeNote(model))
+		out.Note = joinNotes(out.Note, uniqueNotes(notes))
+	} else {
+		out.Note = joinNotes("", uniqueNotes(notes))
 	}
 	return out
 }
 
-func rateFor(model *Model, item bucket) (rate *big.Rat, priceText, note, reason string) {
+func rateFor(model *Model, item bucket, prices map[string]string) (rate *big.Rat, priceText, note, reason string) {
+	if prices == nil {
+		prices = model.Prices
+	}
 	key := item.priceKey
 	if item.conflictKey != "" {
-		primary, primaryOK := model.Prices[item.priceKey]
-		alt, altOK := model.Prices[item.conflictKey]
+		primary, primaryOK := prices[item.priceKey]
+		alt, altOK := prices[item.conflictKey]
 		switch {
 		case primaryOK && altOK && primary != alt:
 			return nil, "", "", "model " + model.ID + " publishes both " + item.priceKey + " and " + item.conflictKey + " at different rates, and the token count does not say which rate applied"
@@ -205,10 +346,10 @@ func rateFor(model *Model, item bucket) (rate *big.Rat, priceText, note, reason 
 			return nil, "", "", "catalog has no " + item.priceKey + " price for model " + model.ID
 		}
 	}
-	text, ok := model.Prices[key]
+	text, ok := prices[key]
 	if !ok || text == "" {
 		if item.fallbackKey != "" {
-			text, ok = model.Prices[item.fallbackKey]
+			text, ok = prices[item.fallbackKey]
 			key = item.fallbackKey
 			note = item.name + " tokens are priced at " + item.fallbackKey + " because the catalog has no " + item.priceKey + " price"
 		}
@@ -276,10 +417,10 @@ func bucketsFor(source string, tokens map[string]float64) ([]bucket, string, str
 			"cache_write_token_count": "cache_write",
 			"output_token_count":      "output",
 			"reasoning_token_count":   "reasoning",
-		}, "", "Codex response.completed counts use the summary's max for input, cached, and cache_write, and the sum for output and reasoning. cached and cache_write are subtracted from input; reasoning is subtracted from output")
+		}, "", "Codex response.completed counts are per Responses API call (the summary sums them and prices each call on its own). cached and cache_write are subtracted from input; reasoning is subtracted from output")
 	case "traces SessionStep.attempt":
 		return openCodeBuckets(tokens)
-	case "traces chat", "metrics gen_ai.client.token.usage":
+	case "traces " + genai.OperationChat, "metrics " + genai.MetricClientTokenUsage:
 		return piBuckets(source, tokens)
 	case "metrics grok_code.token.usage":
 		return codexBuckets(tokens, map[string]string{
@@ -352,54 +493,122 @@ func codexBuckets(tokens map[string]float64, names map[string]string, ignore str
 	return overlapBuckets(values, method)
 }
 
+// IsModalityUsage reports whether label (a gen_ai.usage.* key without the
+// prefix) is a per-modality breakdown such as text.input_tokens. It forwards
+// to genai.IsModalityUsage, where the modality allowlist now lives.
+//
+// It stays here only so internal/summary does not change while the fix for
+// issue #200 (which rewrites that code) is in flight; call
+// genai.IsModalityUsage directly once that lands.
+func IsModalityUsage(label string) bool {
+	return genai.IsModalityUsage(label)
+}
+
+// renamedUsage marks OpenCode token keys that GenAI semconv renamed. When one
+// of them shares a bucket with other keys, every key in that bucket is the
+// same quantity under an old and a new name, so the largest count is priced.
+var renamedUsage = map[string]bool{
+	genai.UsageLabelCacheCreationInputTokens:           true,
+	genai.UsageLabelCacheCreationInputTokensUnderscore: true,
+	genai.UsageLabelReasoningOutputTokens:              true,
+}
+
 func openCodeBuckets(tokens map[string]float64) ([]bucket, string, string) {
 	// gen_ai.usage.cache_read.input_tokens is the OpenTelemetry name for cache
-	// reads included in input tokens. The summary has already replaced repeated
-	// prefix counts with the max.
+	// reads included in input tokens. The summary has already summed the
+	// per-request counts across SessionStep.attempt spans (issue #200), and
+	// has already folded
+	// gen_ai.usage.cache_creation.input_tokens (renamed to
+	// cache_write.input_tokens in GenAI semconv v0.1.0) and reasoning_tokens
+	// into the v0.1.0 names. The old names stay here as a defensive fallback,
+	// so a caller that did not fold them still gets a price rather than
+	// unknown.
 	aliases := map[string]string{
-		"input_tokens":             "input",
-		"output_tokens":            "output",
-		"cache_read.input_tokens":  "cache_read",
-		"cache_read_input_tokens":  "cache_read",
-		"cache_write.input_tokens": "cache_write",
-		"cache_write_input_tokens": "cache_write",
-		"reasoning_tokens":         "reasoning",
+		genai.UsageLabelInputTokens:                        "input",
+		genai.UsageLabelOutputTokens:                       "output",
+		genai.UsageLabelCacheReadInputTokens:               "cache_read",
+		genai.UsageLabelCacheReadInputTokensUnderscore:     "cache_read",
+		genai.UsageLabelCacheWriteInputTokens:              "cache_write",
+		genai.UsageLabelCacheWriteInputTokensUnderscore:    "cache_write",
+		genai.UsageLabelCacheCreationInputTokens:           "cache_write",
+		genai.UsageLabelCacheCreationInputTokensUnderscore: "cache_write",
+		genai.UsageLabelReasoningOutputTokens:              "reasoning",
+		genai.UsageLabelReasoningTokens:                    "reasoning",
 	}
-	seen := map[string]string{}
-	values := map[string]*big.Rat{}
 	var keys []string
 	for key := range tokens {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	groups := map[string][]string{}
+	var informational []string
 	for _, key := range keys {
+		// A breakdown with a modality genai does not recognize is not
+		// informational; it falls through to the alias lookup and leaves
+		// the cost unknown rather than being skipped.
+		if genai.IsModalityUsage(key) {
+			informational = append(informational, key)
+			continue
+		}
 		label, ok := aliases[key]
 		if !ok {
 			return nil, "", fmt.Sprintf("token key %q is not part of the OpenCode pricing rule", key)
 		}
-		if prev, ok := seen[label]; ok {
-			return nil, "", fmt.Sprintf("token keys %q and %q would price %s twice", prev, key, label)
-		}
-		seen[label] = key
-		amount, err := parseTokens(tokens[key])
-		if err != nil {
-			return nil, "", err.Error()
-		}
-		values[label] = amount
+		groups[label] = append(groups[label], key)
 	}
-	return overlapBuckets(values, "OpenCode input and cache totals already use the max across requests; cache read and cache write are priced as subsets of input, and reasoning as a subset of output")
+	values := map[string]*big.Rat{}
+	var labels []string
+	for label := range groups {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		group := groups[label]
+		renamed := false
+		for _, key := range group {
+			renamed = renamed || renamedUsage[key]
+		}
+		if len(group) > 1 && !renamed {
+			return nil, "", fmt.Sprintf("token keys %q and %q would price %s twice", group[0], group[1], label)
+		}
+		// One key, or a semconv rename that reports the same quantity under
+		// several names: price the largest count, never the sum. The result
+		// does not depend on key order.
+		for _, key := range group {
+			amount, err := parseTokens(tokens[key])
+			if err != nil {
+				return nil, "", err.Error()
+			}
+			if values[label] == nil || amount.Cmp(values[label]) > 0 {
+				values[label] = amount
+			}
+		}
+	}
+	for _, key := range informational {
+		// A per-modality total label maps to the same bucket as the total.
+		_, total, _ := genai.SplitModalityUsage(key)
+		bucket := aliases[total]
+		if values[bucket] == nil {
+			return nil, "", fmt.Sprintf("per-modality key %q is present without the %s total, so the counts were not priced", key, bucket)
+		}
+	}
+	method := "OpenCode input and cache totals are per-request sums; cache read and cache write are priced as subsets of input, and reasoning as a subset of output"
+	if len(informational) > 0 {
+		method += "; per-modality breakdown keys (" + strings.Join(informational, ", ") + ") are already part of the totals and are not priced again"
+	}
+	return overlapBuckets(values, method)
 }
 
 func piBuckets(source string, tokens map[string]float64) ([]bucket, string, string) {
 	allowed := map[string]bucketSpec{}
 	method := "Pi summarized tokens are input and output only; cache and reasoning attributes are excluded by the token rule and are not priced"
-	if source == "metrics gen_ai.client.token.usage" {
+	if source == "metrics "+genai.MetricClientTokenUsage {
 		allowed["input"] = bucketSpec{name: "input", priceKey: "prompt"}
 		allowed["output"] = bucketSpec{name: "output", priceKey: "completion"}
 		method = "Pi gen_ai.client.token.usage records input and output only; cache and reasoning are not on this metric and are not priced"
 	} else {
-		allowed["input_tokens"] = bucketSpec{name: "input", priceKey: "prompt"}
-		allowed["output_tokens"] = bucketSpec{name: "output", priceKey: "completion"}
+		allowed[genai.UsageLabelInputTokens] = bucketSpec{name: "input", priceKey: "prompt"}
+		allowed[genai.UsageLabelOutputTokens] = bucketSpec{name: "output", priceKey: "completion"}
 	}
 	return disjoint(tokens, allowed, method)
 }

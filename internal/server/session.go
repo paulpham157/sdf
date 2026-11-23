@@ -6,11 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
 // sessionEvent is what an agent hook posts to /v1/sessions. Tool is the agent
-// name the summary already classifies on (claude-code, codex, opencode, pi).
+// name the summary already classifies on (claude-code, codex, opencode, pi,
+// grok-cli).
 // Edge is open or close. Reason is whatever the agent said about why, and is
 // empty when the agent has nothing to say.
 type sessionEvent struct {
@@ -18,6 +20,11 @@ type sessionEvent struct {
 	SessionID string `json:"session_id"`
 	Edge      string `json:"edge"`
 	Reason    string `json:"reason"`
+	// Cwd is the working directory the hook read from the agent. Only the
+	// Grok CLI hook sends it, because Grok's telemetry has none. It is
+	// stored as sdf.session.cwd and the summary treats it as the session's
+	// working directory.
+	Cwd string `json:"cwd"`
 }
 
 // handleSession reads one hook event and stores it. The body is the hook's own
@@ -28,6 +35,14 @@ func (s *Server) handleSession(reader *bufio.Reader, writer *bufio.Writer, heade
 	body, err := readBody(reader, headers)
 	if err != nil {
 		return s.writeBodyError(writer, method, path, err, closeAfter)
+	}
+	// The hook posts application/json. text/plain is a CORS simple type, so a
+	// page could submit this JSON without a preflight if the type were ignored.
+	media, ok := otlp.HTTPMedia(headerGet(headers, "Content-Type"))
+	if !ok || media != "application/json" {
+		writeResponse(writer, 415, "text/plain", []byte("unsupported media type"), closeAfter)
+		s.logRequest(method, path, 415)
+		return closeAfter, nil
 	}
 	rec, err := sessionRecord(body, time.Now())
 	if err != nil {
@@ -57,10 +72,11 @@ func sessionRecord(body []byte, now time.Time) (record.Record, error) {
 	ev.SessionID = strings.TrimSpace(ev.SessionID)
 	ev.Edge = strings.TrimSpace(ev.Edge)
 	ev.Reason = strings.TrimSpace(ev.Reason)
+	ev.Cwd = strings.TrimSpace(ev.Cwd)
 	switch ev.Tool {
-	case "claude-code", "codex", "opencode", "pi":
+	case "claude-code", "codex", "opencode", "pi", "grok-cli":
 	default:
-		return record.Record{}, &bodyStatus{400, "session event tool must be claude-code, codex, opencode, or pi"}
+		return record.Record{}, &bodyStatus{400, "session event tool must be claude-code, codex, opencode, pi, or grok-cli"}
 	}
 	if ev.SessionID == "" {
 		return record.Record{}, &bodyStatus{400, "session event requires a session_id"}
@@ -77,6 +93,12 @@ func sessionRecord(body []byte, now time.Time) (record.Record, error) {
 	attrs := map[string]any{"session.id": ev.SessionID}
 	if ev.Reason != "" {
 		attrs["sdf.session.reason"] = ev.Reason
+	}
+	if ev.Cwd != "" {
+		if len(ev.Cwd) > 4096 || strings.ContainsAny(ev.Cwd, "\x00\n\r") {
+			return record.Record{}, &bodyStatus{400, "session event cwd must be one line of at most 4096 bytes"}
+		}
+		attrs["sdf.session.cwd"] = ev.Cwd
 	}
 	return record.Record{
 		Signal:       "logs",

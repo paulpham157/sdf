@@ -76,7 +76,7 @@ func TestFixturesAreMarkedSampleAndHaveNoSecrets(t *testing.T) {
 	}
 }
 
-func TestOpencodeSessionUsesSpanTokensWithoutSummingThePrefix(t *testing.T) {
+func TestOpencodeSessionSumsSpanTokensPerRequest(t *testing.T) {
 	report := Summarize(opencodeRows(t), false)
 	if len(report.Sessions) != 1 || report.Sessions[0].SessionID != opencodeSession {
 		t.Fatalf("%+v", report.Sessions)
@@ -94,10 +94,12 @@ func TestOpencodeSessionUsesSpanTokensWithoutSummingThePrefix(t *testing.T) {
 	if session.DurationMS == nil || !near(*session.DurationMS, 3437.29) || deref(session.DurationSource) != "traces SessionRunner.drain" {
 		t.Fatalf("duration %v %s", session.DurationMS, deref(session.DurationSource))
 	}
-	if in != 5822 || in == 5601+5822 || out != 212+94 || cache != 5760 || cache == 256+5760 {
+	// One SessionStep.attempt span is one request; input and cache are
+	// per-request counts and are summed, not maxed (issue #200).
+	if in != 5601+5822 || out != 212+94 || cache != 256+5760 {
 		t.Fatalf("tokens %v", session.Tokens.Vals)
 	}
-	if deref(session.TokensSource) != "traces SessionStep.attempt" || !strings.Contains(deref(session.TokensMethod), "max") || session.CostUSD != nil {
+	if deref(session.TokensSource) != "traces SessionStep.attempt" || !strings.Contains(deref(session.TokensMethod), "sum") || session.CostUSD != nil {
 		t.Fatalf("source %s method %s cost %v", deref(session.TokensSource), deref(session.TokensMethod), session.CostUSD)
 	}
 	if len(session.ToolCalls) != 1 || deref(session.ToolCalls[0].Name) != "write" || deref(session.ToolCalls[0].CallID) != "call_samplewrite0001" || deref(session.ToolCalls[0].Success) != "unknown" || session.ToolCalls[0].DurationMS == nil || !near(*session.ToolCalls[0].DurationMS, 3.602) || session.ToolCalls[0].Source != "traces Tool.execute" {
@@ -139,7 +141,7 @@ func TestOpencodeSessionUsesSpanTokensWithoutSummingThePrefix(t *testing.T) {
 		t.Fatalf("%+v", report.Unattributed)
 	}
 	text := Format(report)
-	for _, want := range []string{"tool: opencode", "Tool.execute write call_id=call_samplewrite0001", "success=unknown", "input_tokens=5822"} {
+	for _, want := range []string{"tool: opencode", "Tool.execute write call_id=call_samplewrite0001", "success=unknown", "input_tokens=11423"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\n%s", want, text)
 		}

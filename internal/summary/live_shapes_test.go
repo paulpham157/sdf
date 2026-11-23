@@ -193,7 +193,7 @@ func TestCodexOpenRouterShape(t *testing.T) {
 	}
 	in, _ := session.Tokens.Get("input_token_count")
 	out, _ := session.Tokens.Get("output_token_count")
-	if in != 9108 || out != 273+180+76 || session.CostUSD != nil || session.Metrics != 1 {
+	if in != 8896+9019+9108 || out != 273+180+76 || session.CostUSD != nil || session.Metrics != 1 {
 		t.Fatalf("tokens %v cost %v metrics %d", session.Tokens.Vals, session.CostUSD, session.Metrics)
 	}
 	foundStart := false

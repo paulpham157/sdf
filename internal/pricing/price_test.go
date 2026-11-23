@@ -109,19 +109,20 @@ func TestCodexSubtractsCacheAndReasoningAndIgnoresTotal(t *testing.T) {
 	}
 }
 
-func TestOpenCodePricesTheMaxNotTheSum(t *testing.T) {
+func TestOpenCodePricesTheSummaryTotals(t *testing.T) {
 	cat := mustFixture(t, &Model{
 		ID: "recursive/flint-v1.0:free",
 		Prices: map[string]string{
 			"prompt": "0", "completion": "0", "input_cache_read": "0",
 		},
 	})
-	// Counts are the already-reduced max, not 5601+5822.
+	// Counts are the summary's per-request sums (issue #200): input
+	// 5601+5822 and cache read 256+5760. Pricing does not reduce them again.
 	got := Price(cat, Usage{
 		Models: []string{"openrouter/recursive/flint-v1.0:free"},
 		Source: "traces SessionStep.attempt",
 		Tokens: map[string]float64{
-			"input_tokens": 5822, "output_tokens": 306, "cache_read.input_tokens": 5760,
+			"input_tokens": 11423, "output_tokens": 306, "cache_read.input_tokens": 6016,
 		},
 	})
 	if got.Status != "known" || got.USD != "0" || got.MatchedBy != "openrouter_prefix" {
@@ -130,7 +131,7 @@ func TestOpenCodePricesTheMaxNotTheSum(t *testing.T) {
 	foundInput := false
 	for _, item := range got.Components {
 		if item.Name == "input" {
-			foundInput = item.Tokens == "62"
+			foundInput = item.Tokens == "5407"
 		}
 	}
 	if !foundInput {
@@ -207,6 +208,9 @@ func TestFetchCopiesPricesAndDoesNotSendAKey(t *testing.T) {
 	if model.Prices["prompt"] != "0.000002" || !model.HasOverrides {
 		t.Fatalf("%+v", model)
 	}
+	if len(model.Overrides) != 1 || model.Overrides[0].MinPromptTokens == nil || *model.Overrides[0].MinPromptTokens != 10 || model.Overrides[0].Prices["prompt"] != "0.000004" {
+		t.Fatalf("overrides %+v", model.Overrides)
+	}
 	if !strings.Contains(string(snap.Body), `"retrieved_at"`) || !strings.Contains(string(snap.Body), "min_prompt_tokens") {
 		t.Fatalf("%s", snap.Body)
 	}
@@ -223,4 +227,136 @@ func mustFixture(t *testing.T, models ...*Model) *Catalog {
 		t.Fatal(err)
 	}
 	return cat
+}
+
+func openCodePrice(t *testing.T) (func(map[string]float64) Cost, func(Cost, string) string) {
+	t.Helper()
+	cat := mustFixture(t, &Model{
+		ID: "vendor/model",
+		Prices: map[string]string{
+			"prompt": "1", "completion": "1", "input_cache_read": "1", "input_cache_write": "1", "internal_reasoning": "1",
+		},
+	})
+	price := func(tokens map[string]float64) Cost {
+		return Price(cat, Usage{Models: []string{"vendor/model"}, Source: "traces SessionStep.attempt", Tokens: tokens})
+	}
+	tokensOf := func(cost Cost, name string) string {
+		for _, item := range cost.Components {
+			if item.Name == name {
+				return item.Tokens
+			}
+		}
+		return ""
+	}
+	return price, tokensOf
+}
+
+// The summary folds old names before pricing. These cases call Price with
+// unfolded keys on purpose: the aliases in openCodeBuckets are a defensive
+// fallback for a caller that did not fold them.
+func TestOpenCodePricingFallbackAliases(t *testing.T) {
+	price, tokensOf := openCodePrice(t)
+	// The pre-v0.1.0 name alone is priced as cache write.
+	old := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_creation.input_tokens": 20})
+	if old.Status != "known" || tokensOf(old, "cache_write") != "20" || tokensOf(old, "input") != "80" {
+		t.Fatalf("%+v", old)
+	}
+	under := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_creation_input_tokens": 7})
+	if under.Status != "known" || tokensOf(under, "cache_write") != "7" {
+		t.Fatalf("%+v", under)
+	}
+	reasoning := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "reasoning_tokens": 3})
+	if reasoning.Status != "known" || tokensOf(reasoning, "reasoning") != "3" || tokensOf(reasoning, "output") != "7" {
+		t.Fatalf("%+v", reasoning)
+	}
+}
+
+// Old and new names for the same quantity price the largest count, never
+// the sum, and the result does not depend on which key sorts first.
+func TestOpenCodeRenamedUsageKeysAreOrderIndependent(t *testing.T) {
+	price, tokensOf := openCodePrice(t)
+	for _, tc := range []struct {
+		tokens map[string]float64
+		want   string
+	}{
+		{map[string]float64{"cache_creation.input_tokens": 30, "cache_write.input_tokens": 20, "cache_write_input_tokens": 20}, "30"},
+		{map[string]float64{"cache_creation.input_tokens": 10, "cache_write.input_tokens": 20, "cache_write_input_tokens": 20}, "20"},
+		{map[string]float64{"cache_creation.input_tokens": 10, "cache_write.input_tokens": 20, "cache_write_input_tokens": 25}, "25"},
+		{map[string]float64{"cache_creation_input_tokens": 5, "cache_creation.input_tokens": 25, "cache_write.input_tokens": 20}, "25"},
+	} {
+		tokens := map[string]float64{"input_tokens": 100, "output_tokens": 10}
+		for k, v := range tc.tokens {
+			tokens[k] = v
+		}
+		got := price(tokens)
+		if got.Status != "known" || tokensOf(got, "cache_write") != tc.want {
+			t.Fatalf("%v: %+v", tc.tokens, got)
+		}
+	}
+	reasoning := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "reasoning.output_tokens": 3, "reasoning_tokens": 4})
+	if reasoning.Status != "known" || tokensOf(reasoning, "reasoning") != "4" {
+		t.Fatalf("%+v", reasoning)
+	}
+	// Two pre-existing names for one bucket, with no renamed key, still refuse to guess.
+	dup := price(map[string]float64{"input_tokens": 100, "cache_read.input_tokens": 1, "cache_read_input_tokens": 1})
+	if dup.Status != "unknown" || !strings.Contains(dup.Reason, "twice") {
+		t.Fatalf("%+v", dup)
+	}
+	dupWrite := price(map[string]float64{"input_tokens": 100, "cache_write.input_tokens": 1, "cache_write_input_tokens": 1})
+	if dupWrite.Status != "unknown" || !strings.Contains(dupWrite.Reason, "twice") {
+		t.Fatalf("%+v", dupWrite)
+	}
+}
+
+func TestOpenCodeModalityKeys(t *testing.T) {
+	price, tokensOf := openCodePrice(t)
+	ok := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "cache_read.input_tokens": 5, "text.input_tokens": 100, "image.output_tokens": 2, "text.cache_read.input_tokens": 5})
+	if ok.Status != "known" || tokensOf(ok, "input") != "95" || tokensOf(ok, "output") != "10" || !strings.Contains(ok.Method, "per-modality") {
+		t.Fatalf("%+v", ok)
+	}
+	// Review of #198: modality keys without their totals must not price as a
+	// known $0. On main this was unknown, and it stays unknown.
+	for _, tokens := range []map[string]float64{
+		{"text.input_tokens": 100, "text.output_tokens": 50},
+		{"input_tokens": 100, "text.output_tokens": 50},
+		{"input_tokens": 100, "output_tokens": 10, "text.cache_read.input_tokens": 5},
+		{"input_tokens": 100, "output_tokens": 10, "audio.cache_write.input_tokens": 5},
+	} {
+		got := price(tokens)
+		if got.Status != "unknown" || got.USD != "" || !strings.Contains(got.Reason, "without the") {
+			t.Fatalf("%v: %+v", tokens, got)
+		}
+	}
+	// A modality outside the allowlist is not skipped.
+	unknownModality := price(map[string]float64{"input_tokens": 100, "output_tokens": 10, "hologram.input_tokens": 1})
+	if unknownModality.Status != "unknown" || !strings.Contains(unknownModality.Reason, "hologram.input_tokens") {
+		t.Fatalf("%+v", unknownModality)
+	}
+	// A key that is neither a known total nor a modality breakdown is still unknown.
+	other := price(map[string]float64{"input_tokens": 100, "mystery_tokens": 1})
+	if other.Status != "unknown" || !strings.Contains(other.Reason, "mystery_tokens") {
+		t.Fatalf("%+v", other)
+	}
+}
+
+func TestIsModalityUsage(t *testing.T) {
+	for label, want := range map[string]bool{
+		"text.input_tokens":             true,
+		"image.output_tokens":           true,
+		"audio.cache_read.input_tokens": true,
+		"video.input_tokens":            true,
+		"text.cache_write.input_tokens": true,
+		"hologram.input_tokens":         false,
+		"cache_read.input_tokens":       false,
+		"cache_write.input_tokens":      false,
+		"cache_creation.input_tokens":   false,
+		"reasoning.output_tokens":       false,
+		"input_tokens":                  false,
+		"text.total_tokens":             false,
+		"Text.input_tokens":             false,
+	} {
+		if got := IsModalityUsage(label); got != want {
+			t.Errorf("%s: got %v want %v", label, got, want)
+		}
+	}
 }

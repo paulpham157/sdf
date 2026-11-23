@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/paulpham157/sdf/internal/genai"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -52,7 +53,20 @@ var sessionKeys = []string{
 	"session.id",
 	"conversation.id",
 	"pi.session.id",
-	"gen_ai.conversation.id",
+	genai.AttrConversationID,
+}
+
+// HTTPMedia reports the OTLP/HTTP media type. ok is false unless the type
+// is exactly application/json or application/x-protobuf. The comparison is
+// case-insensitive. Parameters such as charset are allowed and ignored.
+func HTTPMedia(contentType string) (media string, ok bool) {
+	media = mediaType(contentType)
+	switch media {
+	case "application/json", "application/x-protobuf":
+		return media, true
+	default:
+		return media, false
+	}
 }
 
 // sessionIDAlias is the camelCase key OpenCode v2.3.2 emits on session
@@ -62,8 +76,13 @@ var sessionKeys = []string{
 // value is kept and the alias is ignored.
 const sessionIDAlias = "sessionID"
 
+// grokSpanSessionKey is the session attribute on Grok CLI internal spans.
+const grokSpanSessionKey = "session_id"
+
 // Decode parses an OTLP export body. contentType application/json selects
-// JSON; every other media type, including an empty one, is protobuf.
+// JSON. application/x-protobuf selects protobuf. Any other media type,
+// including an empty one, is rejected. Parameters such as charset are
+// allowed. The type match is case-insensitive.
 func Decode(signal string, body []byte, contentType string) ([]record.Record, error) {
 	if signal != "traces" && signal != "metrics" && signal != "logs" {
 		return nil, errf("unknown signal " + signal)
@@ -72,7 +91,10 @@ func Decode(signal string, body []byte, contentType string) ([]record.Record, er
 		return nil, errf("payload too large")
 	}
 	msg := newRequest(signal)
-	media := mediaType(contentType)
+	media, ok := HTTPMedia(contentType)
+	if !ok {
+		return nil, errf("unsupported media type")
+	}
 	var err error
 	if media == "application/json" {
 		if !utf8.Valid(body) {
@@ -248,10 +270,19 @@ func makeRecord(p recordParts) record.Record {
 	if p.resource == nil {
 		p.resource = map[string]any{}
 	}
+	session := sessionID(p.attributes, p.scope, p.resource)
+	if service := record.OTLPText(p.resource["service.name"]); session == nil && p.signal == "traces" && service != nil && *service == "grok-cli" {
+		// Grok CLI's internal spans (GROK_INTERNAL_OTLP_TRACES_ENDPOINT) put the
+		// session in a snake_case session_id attribute, not session.id. Seen on
+		// agent.prompt, session.*, tools.execute, and tool.execution from grok
+		// 1.0.92 (live capture 2026-11-23). Scoped to grok-cli so another tool's
+		// unrelated session_id is never read.
+		session = record.OTLPText(p.attributes[grokSpanSessionKey])
+	}
 	return record.Record{
 		Signal:            p.signal,
 		ServiceName:       record.OTLPText(p.resource["service.name"]),
-		SessionID:         sessionID(p.attributes, p.scope, p.resource),
+		SessionID:         session,
 		Name:              p.name,
 		StartUnixNano:     p.start,
 		EndUnixNano:       p.end,

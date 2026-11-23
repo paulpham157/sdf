@@ -11,6 +11,7 @@ package check
 
 import (
 	"bytes"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,9 @@ import (
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/summary"
 )
+
+//go:embed testdata/cases/*.json
+var embeddedCases embed.FS
 
 const (
 	// Pass means the field matched the expected value.
@@ -75,7 +79,10 @@ type Report struct {
 	Skipped int
 }
 
-// DefaultDir is the reviewed case set committed with this package.
+// DefaultDir is the reviewed case set next to this source file.
+// make build and Goreleaser pass -trimpath, so a built binary's caller path
+// is the module path and this directory is not on disk. sdf check uses
+// LoadDefault, which reads the embedded copy in that case.
 func DefaultDir() string {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -84,8 +91,60 @@ func DefaultDir() string {
 	return filepath.Join(filepath.Dir(file), "testdata", "cases")
 }
 
+// LoadDefault reads the committed cases. It uses the source directory when
+// that directory exists, and the embedded copy when it does not. A -trimpath
+// build records caller paths like github.com/paulpham157/sdf/internal/check,
+// which is not a directory, so the binary must not depend on it.
+func LoadDefault() ([]Case, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return LoadEmbedded()
+	}
+	return loadDefaultAt(file)
+}
+
+func loadDefaultAt(callerFile string) ([]Case, error) {
+	dir := filepath.Join(filepath.Dir(callerFile), "testdata", "cases")
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return LoadEmbedded()
+	}
+	return Load(dir)
+}
+
+// LoadEmbedded reads the case files compiled into the binary.
+func LoadEmbedded() ([]Case, error) {
+	const dir = "testdata/cases"
+	entries, err := embeddedCases.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	cases := make([]Case, 0, len(names))
+	for _, name := range names {
+		body, err := embeddedCases.ReadFile(dir + "/" + name)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		one, err := decodeCase(body, name)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		cases = append(cases, one)
+	}
+	return cases, nil
+}
+
 // Load reads every *.json case in dir. Names sort byte-wise, which is the
-// order the cases run in. A name that is not a case file is an error.
+// order the cases run in. Other names are skipped. A JSON file that is not
+// a case is an error.
 func Load(dir string) ([]Case, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -115,6 +174,10 @@ func loadFile(path string) (Case, error) {
 	if err != nil {
 		return Case{}, err
 	}
+	return decodeCase(body, path)
+}
+
+func decodeCase(body []byte, name string) (Case, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	var one Case
@@ -125,7 +188,7 @@ func loadFile(path string) (Case, error) {
 		return Case{}, fmt.Errorf("trailing data")
 	}
 	if one.ID == "" {
-		one.ID = strings.TrimSuffix(filepath.Base(path), ".json")
+		one.ID = strings.TrimSuffix(filepath.Base(name), ".json")
 	}
 	if err := validate(one); err != nil {
 		return Case{}, err

@@ -139,6 +139,7 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 	if len(records) == 0 {
 		return 0, nil
 	}
+	records = record.Redact(records)
 	received := time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -381,6 +382,24 @@ func (s *Store) LoadDecisionEdges() ([]DecisionEdge, error) {
 		out = []DecisionEdge{}
 	}
 	return out, rows.Err()
+}
+
+// HoldsOtherThanFixture reports whether the store has anything besides
+// telemetry labeled sdf.fixture=label on its resource: a telemetry row
+// without that label, a decision, or a decision edge. sdf demo uses it to
+// refuse to mix its synthetic session into a real store.
+func (s *Store) HoldsOtherThanFixture(label string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	err := s.db.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM (SELECT 1 FROM records
+				WHERE json_extract(resource_json, '$."sdf.fixture"') IS NOT ? LIMIT 1))
+			+ (SELECT COUNT(*) FROM (SELECT 1 FROM decisions LIMIT 1))
+			+ (SELECT COUNT(*) FROM (SELECT 1 FROM decision_edges LIMIT 1))
+	`, label).Scan(&n)
+	return n > 0, err
 }
 
 // KnownSession reports whether any telemetry row carries this session id.

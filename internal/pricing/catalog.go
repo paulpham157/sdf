@@ -6,6 +6,9 @@
 // not fill in a missing price. https://openrouter.ai/api/v1/models and
 // https://openrouter.ai/docs/guides/overview/models (USD per token; "0"
 // means that component is free; pricing.overrides are conditional rates).
+// Overrides that only use min_prompt_tokens are applied when the prompt
+// token count can be compared to the threshold; any other condition key
+// leaves the cost unknown.
 package pricing
 
 import (
@@ -14,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,11 +43,22 @@ type Catalog struct {
 
 // Model is one catalog row. Prices holds the string fields from the API.
 // HasOverrides is true when the row included a non-empty pricing.overrides
-// array; those conditional rates are not applied.
+// array. Those entries are stored in Overrides and applied when the
+// condition is min_prompt_tokens and the prompt token count is known.
 type Model struct {
 	ID           string
 	Prices       map[string]string
 	HasOverrides bool
+	Overrides    []Override
+}
+
+// Override is one pricing.overrides entry from the OpenRouter row.
+// MinPromptTokens is the only condition this package applies. Any other
+// condition key is listed in UnknownConditions and leaves the cost unknown.
+type Override struct {
+	MinPromptTokens   *int64
+	Prices            map[string]string
+	UnknownConditions []string
 }
 
 type fileModel struct {
@@ -132,13 +148,15 @@ func decodeModel(row fileModel) (*Model, error) {
 		return nil, fmt.Errorf("price catalog: %s: %w", row.ID, err)
 	}
 	prices := make(map[string]string, len(raw))
+	var overrides []Override
 	hasOverrides := false
 	for key, value := range raw {
 		if key == "overrides" {
-			var items []json.RawMessage
-			if err := json.Unmarshal(value, &items); err != nil {
-				return nil, fmt.Errorf("price catalog: %s overrides: %w", row.ID, err)
+			items, err := decodeOverrides(row.ID, value)
+			if err != nil {
+				return nil, err
 			}
+			overrides = items
 			hasOverrides = len(items) > 0
 			continue
 		}
@@ -154,7 +172,44 @@ func decodeModel(row fileModel) (*Model, error) {
 	if _, ok := prices["completion"]; !ok {
 		return nil, fmt.Errorf("price catalog: %s has no completion price", row.ID)
 	}
-	return &Model{ID: row.ID, Prices: prices, HasOverrides: hasOverrides}, nil
+	return &Model{ID: row.ID, Prices: prices, HasOverrides: hasOverrides, Overrides: overrides}, nil
+}
+
+func decodeOverrides(modelID string, raw json.RawMessage) ([]Override, error) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("price catalog: %s overrides: %w", modelID, err)
+	}
+	out := make([]Override, 0, len(items))
+	for _, item := range items {
+		ov := Override{Prices: map[string]string{}}
+		var unknown []string
+		for key, value := range item {
+			switch {
+			case key == "min_prompt_tokens":
+				n, err := parseNonNegInt(value)
+				if err != nil {
+					unknown = append(unknown, "min_prompt_tokens")
+					continue
+				}
+				ov.MinPromptTokens = &n
+			case overridePriceField[key]:
+				var text string
+				if err := json.Unmarshal(value, &text); err != nil {
+					return nil, fmt.Errorf("price catalog: %s overrides %s is not a string", modelID, key)
+				}
+				ov.Prices[key] = text
+			default:
+				unknown = append(unknown, key)
+			}
+		}
+		if len(unknown) > 0 {
+			sort.Strings(unknown)
+			ov.UnknownConditions = unknown
+		}
+		out = append(out, ov)
+	}
+	return out, nil
 }
 
 // Match is one reported model id resolved to a catalog row.
@@ -283,4 +338,39 @@ func ResolveCatalog(spec string) (*Catalog, error) {
 		}
 		return Parse(data, "file")
 	}
+}
+
+// overridePriceField is the set of rate keys that may appear on a
+// pricing.overrides entry. Condition keys are handled separately.
+var overridePriceField = map[string]bool{
+	"prompt":               true,
+	"completion":           true,
+	"request":              true,
+	"image":                true,
+	"image_output":         true,
+	"image_token":          true,
+	"web_search":           true,
+	"internal_reasoning":   true,
+	"input_cache_read":     true,
+	"input_cache_write":    true,
+	"input_cache_write_1h": true,
+	"audio":                true,
+	"audio_output":         true,
+	"input_audio_cache":    true,
+}
+
+func parseNonNegInt(raw json.RawMessage) (int64, error) {
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil && n >= 0 {
+		return n, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		n, err = strconv.ParseInt(text, 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("not a non-negative integer: %s", text)
+		}
+		return n, nil
+	}
+	return 0, fmt.Errorf("not a non-negative integer")
 }

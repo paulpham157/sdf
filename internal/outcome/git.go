@@ -52,6 +52,9 @@ func linkSession(session summary.SessionSummary, opt Options, slack time.Duratio
 	}
 	toplevel, reason := resolveRepo(facts.WorkDirs, opt.Repo)
 	if reason != "" {
+		if reason == noWorkDir && session.Tool == "grok-cli" {
+			reason += grokNoWorkDir
+		}
 		return unlinked(reason)
 	}
 	if trailer := scan.link(session.SessionID, []string{toplevel}); trailer != nil {
@@ -435,6 +438,21 @@ func unlinked(reason string) *summary.SessionOutcome {
 	return &summary.SessionOutcome{Status: "unlinked", Reason: reason, AcceptedReason: reason}
 }
 
+// noWorkDir is the reason when neither telemetry nor --repo names a checkout.
+const noWorkDir = "no working directory attribute and no --repo"
+
+// grokNoWorkDir explains why a Grok CLI session has no checkout. Grok's
+// external OTEL resource is a fixed set (service.name, service.version,
+// client.version, app.entrypoint, terminal.type, grok_code.schema.version)
+// built with Resource::builder_empty(), so OTEL_RESOURCE_ATTRIBUTES is ignored
+// (xai-org/grok-build 24-monitoring-usage.md "Resource attributes";
+// xai-grok-telemetry/src/external/providers.rs build_resource).
+// grok_code.session_start carries only the boolean is_git_repo, and
+// tool_result file_path is home-scrubbed (~/...) and needs OTEL_LOG_TOOL_DETAILS.
+// The session hook from `sdf init grok --write` posts the hook's workspaceRoot
+// as sdf.session.cwd; this reason only appears when no hook log carried one.
+const grokNoWorkDir = "; Grok CLI telemetry has no working directory (OTEL_RESOURCE_ATTRIBUTES is ignored). Install the session hook with sdf init grok --write, or pass --repo PATH"
+
 func resolveRepo(workDirs []string, explicit string) (string, string) {
 	var tops []string
 	for _, dir := range workDirs {
@@ -469,7 +487,7 @@ func resolveRepo(workDirs []string, explicit string) (string, string) {
 	}
 	switch {
 	case len(tops) == 0 && explicitTop == "":
-		return "", "no working directory attribute and no --repo"
+		return "", noWorkDir
 	case len(tops) == 0:
 		return explicitTop, ""
 	case len(tops) > 1:

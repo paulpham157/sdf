@@ -52,8 +52,9 @@ func TestToolOfRecognizesGrokCLI(t *testing.T) {
 func TestGrokDocsSchemaSessionTokensCostToolsAndDuration(t *testing.T) {
 	session := grokDocsSession
 	// Happy-path model is in the bundled catalog and has no pricing.overrides.
-	// A real Grok CLI session may emit grok-4.6, which suffixes to x-ai/grok-4.6
-	// and is unknown because that row has overrides (tested separately).
+	// A real Grok CLI session may emit grok-4.6, which suffixes to x-ai/grok-4.6;
+	// that row has min_prompt_tokens overrides and is priced at the base rates
+	// when the prompt total is below the threshold (tested separately).
 	model := "openai/gpt-4o"
 	rows := []record.Record{
 		grokLog("grok_code.session_start", session, 1_000, map[string]any{"model": model, "permission_mode": "default"}),
@@ -128,7 +129,7 @@ func TestGrokDocsSchemaSessionTokensCostToolsAndDuration(t *testing.T) {
 			metrics = item.Reason
 		}
 	}
-	if !strings.Contains(traces, "logs and metrics only") || logs != "" || metrics != "" {
+	if !strings.Contains(traces, "logs and metrics only") || !strings.Contains(traces, "GROK_INTERNAL_OTLP_TRACES_ENDPOINT") || logs != "" || metrics != "" {
 		t.Fatalf("missing %+v", got.Missing)
 	}
 }
@@ -155,9 +156,10 @@ func TestGrokAPIRequestIsTokenFallbackWhenMetricsAbsent(t *testing.T) {
 	}
 }
 
-func TestGrok46CatalogRowWithOverridesIsUnknownCost(t *testing.T) {
-	// Suffix match of grok-4.6 (and live grok-4.7) hits x-ai/grok-4.6 or x-ai/grok-4.7,
-	// which have pricing.overrides in the bundled catalog, so computed cost stays unknown.
+func TestGrok46BelowOverrideThresholdUsesBaseRates(t *testing.T) {
+	// Suffix match of grok-4.6 hits x-ai/grok-4.6, which has min_prompt_tokens
+	// 200000 overrides. These totals are far below that, so base rates apply:
+	// 10*0.000002 + 2*0.000006 = 0.000032.
 	session := "ses_docs_grok_46"
 	model := "grok-4.6"
 	report := Summarize([]record.Record{
@@ -165,10 +167,48 @@ func TestGrok46CatalogRowWithOverridesIsUnknownCost(t *testing.T) {
 		metric(grokTokenMetric, 2, &session, "delta", "sum", map[string]any{"type": "output", "model": model}, 1, 2, "grok-cli"),
 	}, false)
 	got := report.Sessions[0]
-	if got.ComputedCost.Status != "unknown" || !strings.Contains(got.ComputedCost.Reason, "overrides") {
+	if got.ComputedCost.Status != "known" || got.ComputedCost.USD != "0.000032" {
 		t.Fatalf("%+v models=%v", got.ComputedCost, got.Models)
 	}
+	if !strings.Contains(got.ComputedCost.Note, "base rates") {
+		t.Fatalf("note %s", got.ComputedCost.Note)
+	}
 	_ = pricing.Bundled()
+}
+
+func TestGrok47LiveAPIRequestComputedCostIs014802(t *testing.T) {
+	session := "ses_live_grok_47_request"
+	report := Summarize([]record.Record{
+		grokLog("grok_code.api_request", session, 1, map[string]any{
+			"model":        "grok-4.7",
+			"input_tokens": 14454, "output_tokens": 177,
+			"reasoning_tokens": 121, "cache_read_tokens": 10112,
+			"cost_usd_micros": 14802,
+		}),
+	}, false)
+	got := report.Sessions[0]
+	if got.ComputedCost.Status != "known" || got.ComputedCost.USD != "0.014802" {
+		t.Fatalf("computed %+v", got.ComputedCost)
+	}
+	if got.AgentReportedCostUSD == nil || *got.AgentReportedCostUSD != 0.014802 {
+		t.Fatalf("agent %v", got.AgentReportedCostUSD)
+	}
+}
+
+func TestGrok47AggregateAboveThresholdWithoutRequestsIsUnknown(t *testing.T) {
+	session := "ses_docs_grok_47_over"
+	model := "grok-4.7"
+	report := Summarize([]record.Record{
+		metric(grokTokenMetric, 200000, &session, "delta", "sum", map[string]any{"type": "input", "model": model}, 1, 1, "grok-cli"),
+		metric(grokTokenMetric, 1, &session, "delta", "sum", map[string]any{"type": "output", "model": model}, 1, 2, "grok-cli"),
+	}, false)
+	got := report.Sessions[0]
+	if got.ComputedCost.Status != "unknown" || got.ComputedCost.USD != "" || !strings.Contains(got.ComputedCost.Reason, "overrides") {
+		t.Fatalf("%+v", got.ComputedCost)
+	}
+	if !strings.Contains(got.ComputedCost.Reason, "not one request") {
+		t.Fatalf("reason %s", got.ComputedCost.Reason)
+	}
 }
 
 func TestCapturedGrokStartupMetricsWithoutSessionStayUnattributed(t *testing.T) {
@@ -308,10 +348,11 @@ func TestGrokCostUsageMetricIsAgentReportedUSD(t *testing.T) {
 }
 
 func TestGrokLiveRequestCostMatchesOverlapPricing(t *testing.T) {
-	// First api_request of the live grok-4.7 session, priced at the bundled
-	// x-ai/grok-4.7 *base* rates (the catalog row also has overrides, which
-	// sdf will not apply to a session total). 4342*0.000002 + 10112*0.0000005
-	// + 56*0.000006 + 121*0.000006 = 0.014802, matching cost_usd_micros.
+	// First api_request of the live grok-4.7 session, using gpt-4o so this
+	// test locks the overlap arithmetic on a catalog row without overrides.
+	// The same counts at x-ai/grok-4.7 base rates are 0.014802; see
+	// TestGrok47LiveAPIRequestComputedCostIs014802. 4342*0.0000025 +
+	// 10112*0.00000125 + 56*0.00001 + 121*0.00001 is computed below.
 	session := "ses_live_grok_overlap"
 	rows := []record.Record{
 		grokLog("grok_code.api_request", session, 1, map[string]any{
