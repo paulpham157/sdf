@@ -31,6 +31,8 @@ const (
 	grokSessionEnd      = "grok_code.session_end"
 	grokTurnCompleted   = "grok_code.turn_completed"
 	grokToolResult      = "grok_code.tool_result"
+	grokPromptSpan      = "agent.prompt"
+	grokToolSpan        = "tool.execution"
 )
 
 var (
@@ -67,6 +69,22 @@ var (
 	execSpans = map[string]bool{
 		"claude_code.tool.execution": true,
 		"unified_exec.exec_command":  true,
+	}
+	// grokSpans is the default tree for Grok CLI internal spans, sent only
+	// when GROK_INTERNAL_OTLP_TRACES_ENDPOINT points at this receiver. Names
+	// are from a live grok 1.0.92 headless session (2026-11-23); Grok does not
+	// document this schema. agent.prompt is one prompt,
+	// session.process_conversation_turn the model loop, turn.sampling and
+	// http.create_response_stream one model request, tools.execute a tool
+	// batch, permission.wait the approval wait, and tool.execution one call.
+	grokSpans = map[string]bool{
+		grokPromptSpan:                      true,
+		"session.process_conversation_turn": true,
+		"turn.sampling":                     true,
+		"http.create_response_stream":       true,
+		"tools.execute":                     true,
+		"permission.wait":                   true,
+		grokToolSpan:                        true,
 	}
 	opencodeSpans = map[string]bool{
 		"SessionRunner.drain":   true,
@@ -628,6 +646,11 @@ func interestingSpan(rec record.Record) bool {
 	if strings.HasPrefix(name, qwenPrefix) && ToolOf(rec) == "qwen-code" {
 		return true
 	}
+	if ToolOf(rec) == "grok-cli" {
+		// tool.decision and edit.lines also carry tool_name; keep them out of
+		// the default tree so each call shows once.
+		return grokSpans[name]
+	}
 	if opencodeSpans[name] || piSpanHeads[spanHead(name)] {
 		return true
 	}
@@ -797,6 +820,9 @@ func duration(records []record.Record, points []point) (*float64, *string) {
 	}
 	if len(turnDur) > 0 {
 		return record.Float(sum(turnDur)), record.Str("logs " + grokTurnCompleted)
+	}
+	if prompts := sumSpanMS(records, func(name string) bool { return name == grokPromptSpan }); prompts != nil {
+		return prompts, record.Str("traces " + grokPromptSpan)
 	}
 	var stampsAll []int64
 	for _, rec := range records {
@@ -1406,7 +1432,7 @@ func missing(tool string, records []record.Record, points []point, failures [][2
 			// customer-facing traces exporter)". OTEL_TRACES_EXPORTER in Grok's
 			// source (xai-grok-config/src/endpoints.rs) only switches the internal
 			// span pipeline, whose exports carry the user's xAI bearer token.
-			reason = "Grok CLI's external OTEL stream exports logs and metrics only (no traces). Documented in xAI monitoring-usage (alpha, grok_code.schema.version=v1). OTEL_TRACES_EXPORTER does not add a customer traces exporter; it only switches Grok's internal span pipeline, which sends xAI credentials, so sdf does not ask for it."
+			reason = "no spans exported. Grok CLI's external OTEL stream is logs and metrics only. Its internal spans reach this receiver only with GROK_INTERNAL_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces, GROK_INTERNAL_OTLP_HEADERS=\"Authorization=Bearer <sdf token or any value>\" so the xAI token is not sent, and Grok telemetry not disabled (spans are dropped when it is off; it was on by default in the 2026-11-23 check)."
 		default:
 			reason = "no spans exported for this session."
 		}
@@ -1750,7 +1776,7 @@ func toolName(rec record.Record) *string {
 }
 
 func isDirectToolSpan(name string) bool {
-	return name == "claude_code.tool" || name == "exec_command" || name == "Tool.execute" || spanHead(name) == "execute_tool"
+	return name == "claude_code.tool" || name == "exec_command" || name == "Tool.execute" || name == grokToolSpan || spanHead(name) == "execute_tool"
 }
 
 func isToolCallSpan(name string) bool {

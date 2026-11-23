@@ -31,14 +31,19 @@ The default span tree keeps Claude's `claude_code.*` spans, the Codex spans
 `SessionRunner.drain`, `SessionRunner.runStep`, `SessionStep.attempt`,
 `Tool.execute`, `FileWrite.write`, and `POST`, and Pi's `invoke_agent`,
 `pi.turn`, `chat`, and `execute_tool` (the span name may continue with the
-agent, model, or tool). Any other span that carries a call id or tool name
-is kept too. Internal names such as `append_items`, `LLM.compile`, and
+agent, model, or tool). For Grok CLI internal spans it keeps only
+`agent.prompt`, `session.process_conversation_turn`, `turn.sampling`,
+`http.create_response_stream`, `tools.execute`, `permission.wait`, and
+`tool.execution` (see [docs/agents.md](agents.md#grok-cli)). For other tools,
+any other span that carries a call id or tool name is kept too. Internal names such as `append_items`, `LLM.compile`, and
 `Plugin.load` stay in the count and out of the tree. `--all-spans` prints
 them.
 
 Tool calls join `exec_command` or `claude_code.tool` to `codex.tool_result` /
 `claude_code.tool_result` on `call_id` or `tool_use_id`. OpenCode tool calls
-come from `Tool.execute` (`gen_ai.tool.name`, `gen_ai.tool.call.id`). Pi tool
+come from `Tool.execute` (`gen_ai.tool.name`, `gen_ai.tool.call.id`). Grok CLI tool calls come from `tool.execution` (`tool_name`, `tool_use_id`,
+`success`) joined to `grok_code.tool_result` on `tool_use_id`; without spans
+they come from the log alone. Pi tool
 calls come from `execute_tool` (`gen_ai.tool.name`, `gen_ai.tool.call.id`,
 `pi.tool.is_error`). Success comes from the log when the span has none. An
 OpenCode tool span has no success flag, so the call is `unknown`, unless the
@@ -59,6 +64,7 @@ So the same numbers are not added twice:
   of OpenCode `SessionRunner.drain` spans, else `claude_code.active_time.total`
   (active seconds, not wall clock), else Grok CLI `grok_code.session_end`
   `duration_secs`, else the sum of `grok_code.turn_completed` `duration_ms`,
+  else the sum of Grok `agent.prompt` spans,
   else the min-to-max timestamp (`observed_window`).
 - Tokens: `claude_code.token.usage` by `type`, else `codex.turn.token_usage`
   by `token_type`, else the sum of Claude `api_request` token attributes,

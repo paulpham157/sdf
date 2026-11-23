@@ -577,8 +577,8 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 > (`grok_code.schema.version = v1`, status alpha) and then corrected against
 > an authenticated `grok` 1.0.92 session on 2026-11-23 (Asia/Bangkok).
 
-Grok CLI exports **metrics and logs only** (no traces) when both the master
-switch and an exporter are set:
+Grok CLI's external stream is **metrics and logs only** when both the master
+switch and an exporter are set (spans: see **Traces** below):
 
 ```bash
 export GROK_EXTERNAL_OTEL=1
@@ -665,18 +665,85 @@ commit in the session window the link is `heuristic`. In that case the
 outcome reason says Grok's telemetry has no working directory and names both
 `sdf init grok --write` and `--repo`.
 
-**Traces.** Grok CLI has no customer-facing traces exporter. The guide says
-the external stream "exports **logs and metrics only**"
-([guide L175-L176](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L175-L176)), and its providers build only a logger and
-a meter ([providers.rs L1-L2](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-telemetry/src/external/providers.rs#L1-L2)).
-`OTEL_TRACES_EXPORTER` does appear in the source, but it only turns Grok's
-internal span pipeline on or off
-([endpoints.rs L80-L82](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L80-L82),
-[L212-L219](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L212-L219)). That pipeline
-defaults to xAI's proxy, and every export carries `Authorization: Bearer`
-with the user's xAI token
-([endpoints.rs L159-L177](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L159-L177),
-[xai-grok-otel config.rs L87](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L87)).
-Its span schema is internal and not documented. sdf does not point it at the
-receiver and has no Grok span mapping. A Grok session's `missing` line for
-traces says so.
+**Traces.** Grok CLI's external OTEL stream has no traces exporter
+([guide L175-L176](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md#L175-L176)). Grok also has an internal span pipeline
+that normally goes to xAI. It can be pointed at sdf; this was checked live
+with `grok` 1.0.92 headless (`grok -p`) on 2026-11-23:
+
+```bash
+export GROK_INTERNAL_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces
+# Replaces the xAI bearer token on these exports. Use the sdf token if the
+# receiver has one, or any value if it does not. Literal space, no %20.
+export GROK_INTERNAL_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+```
+
+- The endpoint is used verbatim and wins over the legacy `OTEL_EXPORTER_OTLP_*`
+  fallback, which applies only while `GROK_EXTERNAL_OTEL` is off
+  ([endpoints.rs L68-L71](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L68-L71),
+  [L159-L177](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L159-L177)).
+- Without the header override every export carries `Authorization: Bearer`
+  with the user's xAI token. `GROK_INTERNAL_OTLP_HEADERS` is applied after
+  it and replaces it ([xai-grok-otel config.rs L87-L93](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L87-L93)).
+  In the live run the receiver had a token set and every `/v1/traces` POST
+  returned 200, so the override reached it. `x-userid`, `x-teamid`,
+  `x-grok-client-version`, and `X-XAI-Token-Auth: xai-grok-cli` are still
+  sent ([config.rs L53-L95](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L53-L95)).
+  sdf reads headers only to check the token and never stores them; no
+  stored row in the live database contained the token or `Authorization`.
+- Spans are exported only when Grok has a usable login and its telemetry
+  mode has session metrics on ([provider.rs L164](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/provider.rs#L164)).
+  Unauthenticated, no spans arrived. Signed in, spans arrived with and
+  without `GROK_TELEMETRY_ENABLED=true`. Turning Grok telemetry on also sends
+  Grok's own analytics to xAI. `OTEL_TRACES_EXPORTER=none` turns these spans
+  off ([endpoints.rs L212-L219](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L212-L219)).
+- This schema is internal to Grok and undocumented. The names below are what
+  1.0.92 sent; a newer release can change them.
+
+Resource: `service.name=grok-cli`, `service.version` (`1.0.92 (b06756fd6256)`),
+`client.name` (`grok-pager`), `client.version`, `app.entrypoint`
+(`headless`), `terminal.type`, `host.arch`, `os.type`, `os.version`, and
+`user.id` / `team.id` (also `organization.id`, `api_key.id`, `deployment.id`
+when known, [config.rs L96-L106](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/config.rs#L96-L106)).
+No working directory, on the resource or on any span. The only path seen was
+`file_path` on `tool.search_replace`.
+
+The session id is the snake_case span attribute `session_id`, not
+`session.id`. It is on `agent.prompt`, `session`, `session.spawn`,
+`session.process_conversation_turn`, `tools.execute`, `tool.execution`, and
+a few `session.*` spans. sdf reads `session_id` only on `grok-cli` spans; the
+rest of a trace joins by trace id, and parentless spans (for example
+`sampling.stream_decode`) by the session's time window. One prompt produced
+about 230 spans in some 40 traces. The prompt trace:
+
+```text
+agent.prompt                                session_id
+  session.handle_prompt
+    session.process_conversation_turn       session_id, model_id, input_tokens, output_tokens, cache_read_tokens, stop_reason, request_id
+      turn.sampling                         one model request
+        http.create_response_stream         model_id, success, status_code, ttft_ms, endpoint
+      tools.execute                         one tool batch; session_id, model_id
+        permission.wait
+        tool.decision                       tool_name, tool_use_id, decision
+        tool.execution                      tool_name, tool_use_id (= tool_call_id), success, outcome, tool_id, tool_input_size_bytes, tool_result_size_bytes
+          tool.search_replace | tool.run_terminal_cmd | ...
+```
+
+Startup (`startup.*`, `session.new_session`, `session.spawn`) is a separate
+trace, and teardown (`session_end.*`) hangs off a `session` span.
+
+sdf's default tree keeps `agent.prompt`, `session.process_conversation_turn`,
+`turn.sampling`, `http.create_response_stream`, `tools.execute`,
+`permission.wait`, and `tool.execution`; `--all-spans` shows the rest. Tool
+calls come from `tool.execution` joined to `grok_code.tool_result` on
+`tool_use_id` (source `traces tool.execution; logs grok_code.tool_result`).
+When there is no `session_end` or `turn_completed` log, duration is the sum
+of `agent.prompt` spans. Tokens and cost still come from the external metrics;
+the span token attributes are not added. Model requests outside the prompt
+trace (a `grok-4.6` request, a failed request) show as extra
+`http.create_response_stream` roots. The scrubbed capture is
+`tests/samples/grok_traces.json` (`sdf.fixture=live-scrubbed`).
+
+Also seen in that run: the external stream accepted
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"` (logs
+and metrics POSTs returned 200 with a receiver token set), so 1.0.92 decodes
+`%20` there. A literal space also works.

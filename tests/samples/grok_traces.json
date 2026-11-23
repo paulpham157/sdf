@@ -1,0 +1,6974 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "app.entrypoint",
+      "value": {
+       "stringValue": "headless"
+      }
+     },
+     {
+      "key": "client.name",
+      "value": {
+       "stringValue": "grok-pager"
+      }
+     },
+     {
+      "key": "client.version",
+      "value": {
+       "stringValue": "1.0.92"
+      }
+     },
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "x64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "6.12.113+"
+      }
+     },
+     {
+      "key": "sdf.fixture",
+      "value": {
+       "stringValue": "live-scrubbed"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "grok-cli"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "1.0.92 (b06756fd6256)"
+      }
+     },
+     {
+      "key": "terminal.type",
+      "value": {
+       "stringValue": "dumb"
+      }
+     }
+    ]
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "grok-cli"
+     },
+     "spans": [
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "61878ab0268ae1a3",
+       "name": "session",
+       "startTimeUnixNano": "1795419233380062505",
+       "endTimeUnixNano": "1795419239619262049",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "22190106"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "124"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "6217010041"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_ctx"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ]
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "74d42a134b17eac1",
+       "name": "session.context_snapshot",
+       "startTimeUnixNano": "1795419233380269351",
+       "endTimeUnixNano": "1795419233903465565",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "22480092"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "309"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "500718230"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::run_loop"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "b39b42f8c4654482",
+       "name": "auth",
+       "startTimeUnixNano": "1795419233381959266",
+       "endTimeUnixNano": "1795419233381967719",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "7142"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2831"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "74d42a134b17eac1"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "d5ef0e49273ae055",
+       "name": "session.prefix_task",
+       "startTimeUnixNano": "1795419233383876888",
+       "endTimeUnixNano": "1795419233384652935",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "106500"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "876"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "670840"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::run_loop"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "99e1de06ab68f574",
+       "name": "build_prefix_after_mcp_wait",
+       "startTimeUnixNano": "1795419233384547959",
+       "endTimeUnixNano": "1795419233384643524",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "94116"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "127"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "4340"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::session_setup"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "d5ef0e49273ae055"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "57fea4e7278508f7",
+       "name": "build_user_message_prefix",
+       "startTimeUnixNano": "1795419233384557066",
+       "endTimeUnixNano": "1795419233384634414",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "75948"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "613"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2168"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::prompt_build"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "99e1de06ab68f574"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "51951c7682d9a1cc",
+       "name": "agent.prompt",
+       "startTimeUnixNano": "1795419233387365982",
+       "endTimeUnixNano": "1795419239208977703",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "569050"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1074"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "5821043359"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::mvp_agent::acp_agent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "49"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "acp-agent-worker"
+         }
+        }
+       ]
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "3c8ee3c2abab0598",
+       "name": "prompt.preamble",
+       "startTimeUnixNano": "1795419233387389282",
+       "endTimeUnixNano": "1795419233388015405",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1098"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::mvp_agent::acp_agent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "49"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "acp-agent-worker"
+         }
+        }
+       ],
+       "parentSpanId": "51951c7682d9a1cc"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "d2a9d75813e6a112",
+       "name": "prompt.await_turn",
+       "startTimeUnixNano": "1795419233388018630",
+       "endTimeUnixNano": "1795419239207574045",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1555"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::mvp_agent::acp_agent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "49"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "acp-agent-worker"
+         }
+        }
+       ],
+       "parentSpanId": "51951c7682d9a1cc"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "510fbdea7c1a2907",
+       "name": "ensure_prefix_ready",
+       "startTimeUnixNano": "1795419233388032523",
+       "endTimeUnixNano": "1795419233388084221",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "35086"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "155"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "18301"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::session_setup"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "2a98d247c33abd61",
+       "name": "session.handle_prompt",
+       "startTimeUnixNano": "1795419233388936310",
+       "endTimeUnixNano": "1795419239207406386",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "45637077"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "506"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "5772835772"
+         }
+        },
+        {
+         "key": "prompt_id",
+         "value": {
+          "stringValue": "d4eee498-880c-4927-bf75-a96781697227"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "intValue": "47"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "51951c7682d9a1cc"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "d3db1023b5a4f065",
+       "name": "prompt.parse",
+       "startTimeUnixNano": "1795419233390361665",
+       "endTimeUnixNano": "1795419233390389507",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "259"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::prompt_parser"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "acf4902da227fd8b",
+       "name": "session.process_conversation_turn_with_recovery",
+       "startTimeUnixNano": "1795419233393295745",
+       "endTimeUnixNano": "1795419239189759221",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "37073351"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2236"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "5759390963"
+         }
+        },
+        {
+         "key": "req_id",
+         "value": {
+          "stringValue": "d4eee498-880c-4927-bf75-a96781697227"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "f93d5ba30adab7de",
+       "name": "session.process_conversation_turn",
+       "startTimeUnixNano": "1795419233393303233",
+       "endTimeUnixNano": "1795419239189718656",
+       "attributes": [
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "grok-build-plan"
+         }
+        },
+        {
+         "key": "attempt",
+         "value": {
+          "intValue": "1"
+         }
+        },
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "36950326"
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": "49024"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2758"
+         }
+        },
+        {
+         "key": "effort",
+         "value": {
+          "stringValue": "high"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "5759467308"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": "61985"
+         }
+        },
+        {
+         "key": "last_sample.has_tool_call",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "last_sample.output_tokens",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": "173"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "main"
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "scrubbed-request_id"
+         }
+        },
+        {
+         "key": "response.has_tool_call",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "stop_reason",
+         "value": {
+          "stringValue": "stop"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "173"
+         }
+        }
+       ],
+       "parentSpanId": "acf4902da227fd8b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "7e2bb9a4f71fdf0f",
+       "name": "auth",
+       "startTimeUnixNano": "1795419233393880397",
+       "endTimeUnixNano": "1795419233393893316",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "8698"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "6569"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "af9af584ac0235c0",
+       "name": "turn.tool_prep",
+       "startTimeUnixNano": "1795419233393927004",
+       "endTimeUnixNano": "1795419233394050843",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "323"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "mcp_wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_count",
+         "value": {
+          "intValue": "27"
+         }
+        },
+        {
+         "key": "total_prep_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "27f88ff1ea2e3b29",
+       "name": "auth",
+       "startTimeUnixNano": "1795419233394157574",
+       "endTimeUnixNano": "1795419233394163189",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "4840"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1060"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "00937291f7a3ab6c",
+       "name": "turn.build_request",
+       "startTimeUnixNano": "1795419233395772498",
+       "endTimeUnixNano": "1795419233395915545",
+       "attributes": [
+        {
+         "key": "build_request_ms",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3217"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "4"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "42c3ad35f80b6570",
+       "name": "auth",
+       "startTimeUnixNano": "1795419233396100575",
+       "endTimeUnixNano": "1795419233396112966",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "8293"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "4530"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "f621485300e26561",
+       "name": "auth",
+       "startTimeUnixNano": "1795419233396135551",
+       "endTimeUnixNano": "1795419233396139782",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "3517"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "961"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "645b9eda7895f8ff",
+       "name": "turn.sampling_gate",
+       "startTimeUnixNano": "1795419233396339745",
+       "endTimeUnixNano": "1795419233396341550",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1618"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "3a79eec102458b3b",
+       "name": "turn.sampling",
+       "startTimeUnixNano": "1795419233396343648",
+       "endTimeUnixNano": "1795419234944476158",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1622"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "0eed07646e3c7657",
+       "name": "http.create_response_stream",
+       "startTimeUnixNano": "1795419233396752724",
+       "endTimeUnixNano": "1795419234870028084",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "919189"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1449"
+         }
+        },
+        {
+         "key": "endpoint",
+         "value": {
+          "stringValue": "https://cli-chat-proxy.grok.com/"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1472357065"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "request_build_us",
+         "value": {
+          "intValue": "585"
+         }
+        },
+        {
+         "key": "response_headers_ms",
+         "value": {
+          "intValue": "1472"
+         }
+        },
+        {
+         "key": "status_code",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "stream_setup_us",
+         "value": {
+          "intValue": "28"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::client"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "46"
+         }
+        },
+        {
+         "key": "ttft_outcome",
+         "value": {
+          "stringValue": "content"
+         }
+        }
+       ],
+       "parentSpanId": "3a79eec102458b3b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "c27afecef133a454",
+       "name": "http.create_response_stream.request_build",
+       "startTimeUnixNano": "1795419233396770151",
+       "endTimeUnixNano": "1795419233397352223",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "303"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "0eed07646e3c7657"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "808aec3a58cd18fe",
+       "name": "http.create_response_stream.response_headers",
+       "startTimeUnixNano": "1795419233397356057",
+       "endTimeUnixNano": "1795419234869898541",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "306"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "0eed07646e3c7657"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "910980f31a8d9521",
+       "name": "teardown.telemetry_drain",
+       "startTimeUnixNano": "1795419233681339083",
+       "endTimeUnixNano": "1795419233903444568",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "336"
+         }
+        },
+        {
+         "key": "elapsed_ms",
+         "value": {
+          "intValue": "222"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "pending",
+         "value": {
+          "intValue": "1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_ctx"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "74d42a134b17eac1"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "952bad3979a1f02c",
+       "name": "http.create_response_stream.stream_setup",
+       "startTimeUnixNano": "1795419234869913351",
+       "endTimeUnixNano": "1795419234869931426",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "309"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "0eed07646e3c7657"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "d62dc2faeba880d9",
+       "name": "http.create_response_stream.ttft",
+       "startTimeUnixNano": "1795419234869933850",
+       "endTimeUnixNano": "1795419234916439186",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "312"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "0eed07646e3c7657"
+      },
+      {
+       "traceId": "5f8cf336127692cb972230a424fc27f0",
+       "spanId": "78c82e241281ac5a",
+       "name": "sampling.stream_decode",
+       "startTimeUnixNano": "1795419234870102052",
+       "endTimeUnixNano": "1795419234944344230",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": "10"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "222"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": "75"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::stream::responses"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "46"
+         }
+        },
+        {
+         "key": "ttlb_ms",
+         "value": {
+          "intValue": "74"
+         }
+        }
+       ]
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "475112c052cdf5c8",
+       "name": "turn.stream_apply",
+       "startTimeUnixNano": "1795419234870187766",
+       "endTimeUnixNano": "1795419234944435804",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "bytes",
+         "value": {
+          "intValue": "34"
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": "10"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "47"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampling_events"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "47cbb057122461b0",
+       "name": "turn.stream_drain_barrier",
+       "startTimeUnixNano": "1795419234944499368",
+       "endTimeUnixNano": "1795419234944505538",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1665"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "a3749e81a3897290",
+       "name": "record_token_usage",
+       "startTimeUnixNano": "1795419234951446619",
+       "endTimeUnixNano": "1795419234951449977",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "2079"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "803"
+         }
+        },
+        {
+         "key": "completion_tokens",
+         "value": {
+          "intValue": "75"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2212"
+         }
+        },
+        {
+         "key": "reasoning_tokens",
+         "value": {
+          "intValue": "26"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::signals"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "ee9f056d8ab54626",
+       "name": "turn.record_response",
+       "startTimeUnixNano": "1795419234951855858",
+       "endTimeUnixNano": "1795419234951868263",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3812"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "2"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "69ff89fa5d6c5ff9",
+       "name": "tools.execute",
+       "startTimeUnixNano": "1795419234951957658",
+       "endTimeUnixNano": "1795419234956458262",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1598604"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "562"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2902318"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "b8bcd1e4cb700833",
+       "name": "tool.register",
+       "startTimeUnixNano": "1795419234952061777",
+       "endTimeUnixNano": "1795419234952141987",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "79666"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1727"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2152"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "69ff89fa5d6c5ff9"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "d499dda78ba63b8c",
+       "name": "permission.wait",
+       "startTimeUnixNano": "1795419234952271895",
+       "endTimeUnixNano": "1795419234952454969",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2120"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "69ff89fa5d6c5ff9"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "33f59779aa932d50",
+       "name": "tool.decision",
+       "startTimeUnixNano": "1795419234952464599",
+       "endTimeUnixNano": "1795419234952467353",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "368"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2178"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "allow"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2759"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "search_replace"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call-4357c83b-0640-4746-ae64-efd520163a3d-0"
+         }
+        },
+        {
+         "key": "wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "69ff89fa5d6c5ff9"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "8a04676da0aae343",
+       "name": "tool.execution",
+       "startTimeUnixNano": "1795419234952947081",
+       "endTimeUnixNano": "1795419234956201887",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "783294"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "135"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2471957"
+         }
+        },
+        {
+         "key": "invocation_id",
+         "value": {
+          "stringValue": "scrubbed-invocation_id"
+         }
+        },
+        {
+         "key": "invocation_source",
+         "value": {
+          "stringValue": "model"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "outcome",
+         "value": {
+          "stringValue": "success"
+         }
+        },
+        {
+         "key": "retry",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "source_reason",
+         "value": {
+          "stringValue": "not_instrumented"
+         }
+        },
+        {
+         "key": "source_status",
+         "value": {
+          "stringValue": "unknown"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::telemetry::tool_call"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_call_id",
+         "value": {
+          "stringValue": "call-4357c83b-0640-4746-ae64-efd520163a3d-0"
+         }
+        },
+        {
+         "key": "tool_id",
+         "value": {
+          "stringValue": "GrokBuild:search_replace"
+         }
+        },
+        {
+         "key": "tool_input_size_bytes",
+         "value": {
+          "intValue": "94"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "search_replace"
+         }
+        },
+        {
+         "key": "tool_result_size_bytes",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call-4357c83b-0640-4746-ae64-efd520163a3d-0"
+         }
+        },
+        {
+         "key": "tool_version",
+         "value": {
+          "stringValue": "current"
+         }
+        }
+       ],
+       "parentSpanId": "69ff89fa5d6c5ff9"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "b2c5f91c46ddbaec",
+       "name": "tool.search_replace",
+       "startTimeUnixNano": "1795419234953038689",
+       "endTimeUnixNano": "1795419234955909918",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "436458"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1055"
+         }
+        },
+        {
+         "key": "file_path",
+         "value": {
+          "stringValue": "/tmp/grok-live/repo/hello.py"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2438388"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::implementations::grok_build::search_replace"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "8a04676da0aae343"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "3fa4982b921969fc",
+       "name": "fs.unicode_path_fallback",
+       "startTimeUnixNano": "1795419234953532650",
+       "endTimeUnixNano": "1795419234954015666",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "77074"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "88"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "409674"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::util::fs"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "b2c5f91c46ddbaec"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "12c29644994257f6",
+       "name": "fs.read_file_bounded",
+       "startTimeUnixNano": "1795419234954044433",
+       "endTimeUnixNano": "1795419234954471943",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "42388"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "272"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "385916"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::computer::local::file_system"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "b2c5f91c46ddbaec"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "90b426267ac47d0c",
+       "name": "fs.write_file",
+       "startTimeUnixNano": "1795419234954489730",
+       "endTimeUnixNano": "1795419234955818909",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "71951"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "314"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1258080"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::computer::local::file_system"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "b2c5f91c46ddbaec"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "c0939eb6261771ac",
+       "name": "edit.lines",
+       "startTimeUnixNano": "1795419234955892580",
+       "endTimeUnixNano": "1795419234955900118",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "369"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "298"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "8031"
+         }
+        },
+        {
+         "key": "lines_added",
+         "value": {
+          "intValue": "1"
+         }
+        },
+        {
+         "key": "lines_removed",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::implementations::grok_build::search_replace"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "search_replace"
+         }
+        }
+       ],
+       "parentSpanId": "b2c5f91c46ddbaec"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "7c401cbcdd73163c",
+       "name": "auth",
+       "startTimeUnixNano": "1795419234956726965",
+       "endTimeUnixNano": "1795419234956739387",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "10033"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "3030"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "79ebbcddd3e29f70",
+       "name": "turn.build_request",
+       "startTimeUnixNano": "1795419234956941129",
+       "endTimeUnixNano": "1795419234957090152",
+       "attributes": [
+        {
+         "key": "build_request_ms",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3217"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "7"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "cf007c335fb13a84",
+       "name": "auth",
+       "startTimeUnixNano": "1795419234957219701",
+       "endTimeUnixNano": "1795419234957225461",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "4659"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1345"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "dccf998b1d6f6ebb",
+       "name": "auth",
+       "startTimeUnixNano": "1795419234957235656",
+       "endTimeUnixNano": "1795419234957238116",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "2073"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "590"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "328088bf2b243208",
+       "name": "turn.sampling_gate",
+       "startTimeUnixNano": "1795419234957864116",
+       "endTimeUnixNano": "1795419234957868505",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1618"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "4f42dac23ff790fb",
+       "name": "turn.sampling",
+       "startTimeUnixNano": "1795419234957871411",
+       "endTimeUnixNano": "1795419236832413569",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1622"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "40b53981caf6bff0",
+       "name": "http.create_response_stream",
+       "startTimeUnixNano": "1795419234958142369",
+       "endTimeUnixNano": "1795419236611772788",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "773573"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1449"
+         }
+        },
+        {
+         "key": "endpoint",
+         "value": {
+          "stringValue": "https://cli-chat-proxy.grok.com/"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1652857354"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "request_build_us",
+         "value": {
+          "intValue": "426"
+         }
+        },
+        {
+         "key": "response_headers_ms",
+         "value": {
+          "intValue": "1653"
+         }
+        },
+        {
+         "key": "status_code",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "stream_setup_us",
+         "value": {
+          "intValue": "35"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::client"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "209"
+         }
+        },
+        {
+         "key": "ttft_outcome",
+         "value": {
+          "stringValue": "content"
+         }
+        }
+       ],
+       "parentSpanId": "4f42dac23ff790fb"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "57ac685a26c2702d",
+       "name": "http.create_response_stream.request_build",
+       "startTimeUnixNano": "1795419234958154873",
+       "endTimeUnixNano": "1795419234958577925",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "303"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "40b53981caf6bff0"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "9ab4881c41a9d5d4",
+       "name": "http.create_response_stream.response_headers",
+       "startTimeUnixNano": "1795419234958581412",
+       "endTimeUnixNano": "1795419236611595308",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "306"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "40b53981caf6bff0"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "930b95b7632f0ba8",
+       "name": "http.create_response_stream.stream_setup",
+       "startTimeUnixNano": "1795419236611619419",
+       "endTimeUnixNano": "1795419236611638166",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "309"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "40b53981caf6bff0"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "330e90d73a2692f0",
+       "name": "http.create_response_stream.ttft",
+       "startTimeUnixNano": "1795419236611640440",
+       "endTimeUnixNano": "1795419236821598002",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "312"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "40b53981caf6bff0"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "cd9a872e5eda61de",
+       "name": "turn.stream_apply",
+       "startTimeUnixNano": "1795419236611912226",
+       "endTimeUnixNano": "1795419236832367253",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "bytes",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "47"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampling_events"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "1c798980780d1b99",
+       "name": "turn.stream_drain_barrier",
+       "startTimeUnixNano": "1795419236832426464",
+       "endTimeUnixNano": "1795419236832432152",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1665"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "1fae6209da5b7f00",
+       "name": "record_token_usage",
+       "startTimeUnixNano": "1795419236840557722",
+       "endTimeUnixNano": "1795419236840562150",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "2040"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "803"
+         }
+        },
+        {
+         "key": "completion_tokens",
+         "value": {
+          "intValue": "28"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "3716"
+         }
+        },
+        {
+         "key": "reasoning_tokens",
+         "value": {
+          "intValue": "4"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::signals"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "9c337343da4ed628",
+       "name": "turn.record_response",
+       "startTimeUnixNano": "1795419236840587286",
+       "endTimeUnixNano": "1795419236840598787",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3812"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "2"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "71b922678756539b",
+       "name": "tools.execute",
+       "startTimeUnixNano": "1795419236840703071",
+       "endTimeUnixNano": "1795419236852588797",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1081950"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "562"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "10804120"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "c4798c141905189a",
+       "name": "tool.register",
+       "startTimeUnixNano": "1795419236840740100",
+       "endTimeUnixNano": "1795419236841146146",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "405565"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1727"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1945"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "71b922678756539b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "6e710dec564d559d",
+       "name": "permission.wait",
+       "startTimeUnixNano": "1795419236841256937",
+       "endTimeUnixNano": "1795419236841962437",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2120"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "71b922678756539b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "54dfb46b3db85bbf",
+       "name": "tool.decision",
+       "startTimeUnixNano": "1795419236841987872",
+       "endTimeUnixNano": "1795419236841995504",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "547"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2178"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "allow"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "9692"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_terminal_command"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call-744b90c3-00d8-41fc-bc77-2bca1bff98a3-1"
+         }
+        },
+        {
+         "key": "wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "71b922678756539b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "dfd367d19abf84e3",
+       "name": "tool.execution",
+       "startTimeUnixNano": "1795419236842480940",
+       "endTimeUnixNano": "1795419236852285344",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "350165"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "135"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "9454941"
+         }
+        },
+        {
+         "key": "invocation_id",
+         "value": {
+          "stringValue": "scrubbed-invocation_id"
+         }
+        },
+        {
+         "key": "invocation_source",
+         "value": {
+          "stringValue": "model"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "outcome",
+         "value": {
+          "stringValue": "error"
+         }
+        },
+        {
+         "key": "retry",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "source_reason",
+         "value": {
+          "stringValue": "not_instrumented"
+         }
+        },
+        {
+         "key": "source_status",
+         "value": {
+          "stringValue": "unknown"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::telemetry::tool_call"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_call_id",
+         "value": {
+          "stringValue": "call-744b90c3-00d8-41fc-bc77-2bca1bff98a3-1"
+         }
+        },
+        {
+         "key": "tool_id",
+         "value": {
+          "stringValue": "GrokBuild:run_terminal_cmd"
+         }
+        },
+        {
+         "key": "tool_input_size_bytes",
+         "value": {
+          "intValue": "73"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_terminal_command"
+         }
+        },
+        {
+         "key": "tool_result_size_bytes",
+         "value": {
+          "intValue": "48"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call-744b90c3-00d8-41fc-bc77-2bca1bff98a3-1"
+         }
+        },
+        {
+         "key": "tool_version",
+         "value": {
+          "stringValue": "current"
+         }
+        }
+       ],
+       "parentSpanId": "71b922678756539b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "7a236bff64a3da7b",
+       "name": "tool.run_terminal_cmd",
+       "startTimeUnixNano": "1795419236842536750",
+       "endTimeUnixNano": "1795419236852015528",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "102504"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1879"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "9378642"
+         }
+        },
+        {
+         "key": "is_background",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::implementations::grok_build::bash"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "dfd367d19abf84e3"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "6631c3e07e843608",
+       "name": "bash.command_wait",
+       "startTimeUnixNano": "1795419236842584736",
+       "endTimeUnixNano": "1795419236851987434",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2138"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "output_bytes",
+         "value": {
+          "intValue": "38"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::implementations::grok_build::bash"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "7a236bff64a3da7b"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "3224b9d0b5ad67bb",
+       "name": "auth",
+       "startTimeUnixNano": "1795419236852953437",
+       "endTimeUnixNano": "1795419236852969644",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "13831"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "3329"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "11bc3f04c05ae1c5",
+       "name": "turn.build_request",
+       "startTimeUnixNano": "1795419236853279870",
+       "endTimeUnixNano": "1795419236853434984",
+       "attributes": [
+        {
+         "key": "build_request_ms",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3217"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "11"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "cef13211ac37d38a",
+       "name": "auth",
+       "startTimeUnixNano": "1795419236853596336",
+       "endTimeUnixNano": "1795419236853602877",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "5216"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1576"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "734dbfc33a922add",
+       "name": "auth",
+       "startTimeUnixNano": "1795419236853614774",
+       "endTimeUnixNano": "1795419236853617841",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "2668"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "601"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "98f955869258a54e",
+       "name": "turn.sampling_gate",
+       "startTimeUnixNano": "1795419236854206194",
+       "endTimeUnixNano": "1795419236854211203",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1618"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "c89982898ad857b1",
+       "name": "turn.sampling",
+       "startTimeUnixNano": "1795419236854214365",
+       "endTimeUnixNano": "1795419237987242629",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1622"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "ce21bbcc76aa08af",
+       "name": "http.create_response_stream",
+       "startTimeUnixNano": "1795419236854615539",
+       "endTimeUnixNano": "1795419237963703729",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1012991"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1449"
+         }
+        },
+        {
+         "key": "endpoint",
+         "value": {
+          "stringValue": "https://cli-chat-proxy.grok.com/"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1108076420"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "request_build_us",
+         "value": {
+          "intValue": "540"
+         }
+        },
+        {
+         "key": "response_headers_ms",
+         "value": {
+          "intValue": "1108"
+         }
+        },
+        {
+         "key": "status_code",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "stream_setup_us",
+         "value": {
+          "intValue": "38"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::client"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "16"
+         }
+        },
+        {
+         "key": "ttft_outcome",
+         "value": {
+          "stringValue": "content"
+         }
+        }
+       ],
+       "parentSpanId": "c89982898ad857b1"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "f1506e2361e7cb64",
+       "name": "http.create_response_stream.request_build",
+       "startTimeUnixNano": "1795419236854628821",
+       "endTimeUnixNano": "1795419236855166446",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "303"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "ce21bbcc76aa08af"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "325c891c75aed8be",
+       "name": "http.create_response_stream.response_headers",
+       "startTimeUnixNano": "1795419236855170063",
+       "endTimeUnixNano": "1795419237963527714",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "306"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "ce21bbcc76aa08af"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "00fb3daf5fb00abc",
+       "name": "http.create_response_stream.stream_setup",
+       "startTimeUnixNano": "1795419237963552024",
+       "endTimeUnixNano": "1795419237963573468",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "309"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "ce21bbcc76aa08af"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "4aa9389432c10f76",
+       "name": "http.create_response_stream.ttft",
+       "startTimeUnixNano": "1795419237963575775",
+       "endTimeUnixNano": "1795419237980104497",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "312"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "ce21bbcc76aa08af"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "db766e8226a9e083",
+       "name": "turn.stream_apply",
+       "startTimeUnixNano": "1795419237963880179",
+       "endTimeUnixNano": "1795419237987196687",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "bytes",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "47"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampling_events"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "a936a9927624a029",
+       "name": "turn.stream_drain_barrier",
+       "startTimeUnixNano": "1795419237987254613",
+       "endTimeUnixNano": "1795419237987259239",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1665"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "b8fa3b146772046b",
+       "name": "record_token_usage",
+       "startTimeUnixNano": "1795419237995068749",
+       "endTimeUnixNano": "1795419237995071826",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1595"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "803"
+         }
+        },
+        {
+         "key": "completion_tokens",
+         "value": {
+          "intValue": "33"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2258"
+         }
+        },
+        {
+         "key": "reasoning_tokens",
+         "value": {
+          "intValue": "8"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::signals"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "627b5b1df272481d",
+       "name": "turn.record_response",
+       "startTimeUnixNano": "1795419237995088858",
+       "endTimeUnixNano": "1795419237995100261",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3812"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "2"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "e1909cb8d12533ce",
+       "name": "tools.execute",
+       "startTimeUnixNano": "1795419237995171703",
+       "endTimeUnixNano": "1795419238018685834",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "982334"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "562"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "22532042"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "1b9ace9ac93a4e37",
+       "name": "tool.register",
+       "startTimeUnixNano": "1795419237995207218",
+       "endTimeUnixNano": "1795419237995555528",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "348149"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1727"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1677"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "e1909cb8d12533ce"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "607558886e1f8604",
+       "name": "permission.wait",
+       "startTimeUnixNano": "1795419237995649323",
+       "endTimeUnixNano": "1795419237996162711",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2120"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "e1909cb8d12533ce"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "985ba40a3089c68f",
+       "name": "tool.decision",
+       "startTimeUnixNano": "1795419237996174816",
+       "endTimeUnixNano": "1795419237996178778",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "548"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2178"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "allow"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "3805"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::tool_calls"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_terminal_command"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call-73e2d194-6a18-43e9-89cf-3b9c47f9832c-2"
+         }
+        },
+        {
+         "key": "wait_ms",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "parentSpanId": "e1909cb8d12533ce"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "a7c9c4f9d98ff8ee",
+       "name": "tool.execution",
+       "startTimeUnixNano": "1795419237996517296",
+       "endTimeUnixNano": "1795419238018353924",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "311373"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "135"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "21525823"
+         }
+        },
+        {
+         "key": "invocation_id",
+         "value": {
+          "stringValue": "scrubbed-invocation_id"
+         }
+        },
+        {
+         "key": "invocation_source",
+         "value": {
+          "stringValue": "model"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "outcome",
+         "value": {
+          "stringValue": "success"
+         }
+        },
+        {
+         "key": "retry",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "source_reason",
+         "value": {
+          "stringValue": "not_instrumented"
+         }
+        },
+        {
+         "key": "source_status",
+         "value": {
+          "stringValue": "unknown"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::telemetry::tool_call"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "tool_call_id",
+         "value": {
+          "stringValue": "call-73e2d194-6a18-43e9-89cf-3b9c47f9832c-2"
+         }
+        },
+        {
+         "key": "tool_id",
+         "value": {
+          "stringValue": "GrokBuild:run_terminal_cmd"
+         }
+        },
+        {
+         "key": "tool_input_size_bytes",
+         "value": {
+          "intValue": "72"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "run_terminal_command"
+         }
+        },
+        {
+         "key": "tool_result_size_bytes",
+         "value": {
+          "intValue": "14"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call-73e2d194-6a18-43e9-89cf-3b9c47f9832c-2"
+         }
+        },
+        {
+         "key": "tool_version",
+         "value": {
+          "stringValue": "current"
+         }
+        }
+       ],
+       "parentSpanId": "e1909cb8d12533ce"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "e48773634d5f38ca",
+       "name": "tool.run_terminal_cmd",
+       "startTimeUnixNano": "1795419237996559468",
+       "endTimeUnixNano": "1795419238017976418",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "97957"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1879"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "21319927"
+         }
+        },
+        {
+         "key": "is_background",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::implementations::grok_build::bash"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "a7c9c4f9d98ff8ee"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "849c4742a7d93b7f",
+       "name": "bash.command_wait",
+       "startTimeUnixNano": "1795419237996592929",
+       "endTimeUnixNano": "1795419238017937198",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2138"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "output_bytes",
+         "value": {
+          "intValue": "6"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_tools::implementations::grok_build::bash"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "e48773634d5f38ca"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "55ad0b687d6a30b6",
+       "name": "auth",
+       "startTimeUnixNano": "1795419238019071597",
+       "endTimeUnixNano": "1795419238019090169",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "14946"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "4834"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "456d8e75fd9a5633",
+       "name": "turn.build_request",
+       "startTimeUnixNano": "1795419238019490465",
+       "endTimeUnixNano": "1795419238019674799",
+       "attributes": [
+        {
+         "key": "build_request_ms",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3217"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "14"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "73f71fee2b04cf84",
+       "name": "auth",
+       "startTimeUnixNano": "1795419238019858641",
+       "endTimeUnixNano": "1795419238019870001",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "9649"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2204"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "6d7bef846955adca",
+       "name": "auth",
+       "startTimeUnixNano": "1795419238019883094",
+       "endTimeUnixNano": "1795419238019886560",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "3027"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1529"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "644"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_login::manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "token_type",
+         "value": {
+          "stringValue": "OidcSession"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "0e6892b6ff824b0d",
+       "name": "turn.sampling_gate",
+       "startTimeUnixNano": "1795419238020196952",
+       "endTimeUnixNano": "1795419238020199302",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1618"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "45be6ed2838f5e58",
+       "name": "turn.sampling",
+       "startTimeUnixNano": "1795419238020200722",
+       "endTimeUnixNano": "1795419239181907134",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1622"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "eb32d5e660f11c9f",
+       "name": "http.create_response_stream",
+       "startTimeUnixNano": "1795419238020587539",
+       "endTimeUnixNano": "1795419238925451262",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1253743"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1449"
+         }
+        },
+        {
+         "key": "endpoint",
+         "value": {
+          "stringValue": "https://cli-chat-proxy.grok.com/"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "903610673"
+         }
+        },
+        {
+         "key": "model_id",
+         "value": {
+          "stringValue": "grok-4.7"
+         }
+        },
+        {
+         "key": "request_build_us",
+         "value": {
+          "intValue": "608"
+         }
+        },
+        {
+         "key": "response_headers_ms",
+         "value": {
+          "intValue": "903"
+         }
+        },
+        {
+         "key": "status_code",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "stream_setup_us",
+         "value": {
+          "intValue": "43"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::client"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": "173"
+         }
+        },
+        {
+         "key": "ttft_outcome",
+         "value": {
+          "stringValue": "content"
+         }
+        }
+       ],
+       "parentSpanId": "45be6ed2838f5e58"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "f6df6ce32d77d4d9",
+       "name": "http.create_response_stream.request_build",
+       "startTimeUnixNano": "1795419238020601002",
+       "endTimeUnixNano": "1795419238021206278",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "303"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "eb32d5e660f11c9f"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "add379669f945ee6",
+       "name": "http.create_response_stream.response_headers",
+       "startTimeUnixNano": "1795419238021210243",
+       "endTimeUnixNano": "1795419238925008332",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "306"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "eb32d5e660f11c9f"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "0c3418f0592f914d",
+       "name": "http.create_response_stream.stream_setup",
+       "startTimeUnixNano": "1795419238925035046",
+       "endTimeUnixNano": "1795419238925059243",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "309"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "eb32d5e660f11c9f"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "316ccf2a701b6505",
+       "name": "http.create_response_stream.ttft",
+       "startTimeUnixNano": "1795419238925061343",
+       "endTimeUnixNano": "1795419239098869838",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "312"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_sampler::span_timing"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "eb32d5e660f11c9f"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "d5a56be6ea15b14c",
+       "name": "turn.stream_apply",
+       "startTimeUnixNano": "1795419238925600445",
+       "endTimeUnixNano": "1795419239181873134",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "bytes",
+         "value": {
+          "intValue": "81"
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": "23"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "47"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampling_events"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "79486d939e324d26",
+       "name": "turn.stream_drain_barrier",
+       "startTimeUnixNano": "1795419239181918043",
+       "endTimeUnixNano": "1795419239181921980",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1665"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::sampler_turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "4e4e508538cf62d6",
+       "name": "record_token_usage",
+       "startTimeUnixNano": "1795419239189276957",
+       "endTimeUnixNano": "1795419239189280270",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1688"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "803"
+         }
+        },
+        {
+         "key": "completion_tokens",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2391"
+         }
+        },
+        {
+         "key": "reasoning_tokens",
+         "value": {
+          "intValue": "14"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::signals"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "2cebc71fd3c6a528",
+       "name": "turn.record_response",
+       "startTimeUnixNano": "1795419239189292249",
+       "endTimeUnixNano": "1795419239189300552",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "3812"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "item_count",
+         "value": {
+          "intValue": "2"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "27f3d5b9cd6f49e1",
+       "name": "feedback.maybe_request_feedback",
+       "startTimeUnixNano": "1795419239189610195",
+       "endTimeUnixNano": "1795419239189635157",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "5926"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "547"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "19554"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::feedback_manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "f93d5ba30adab7de"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "052a7ddf2908a493",
+       "name": "session.flush_to_disk",
+       "startTimeUnixNano": "1795419239189773148",
+       "endTimeUnixNano": "1795419239196569106",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "13513"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "903"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "6782835"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::updates"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "abf7cb6bc59d521e",
+       "name": "session.end_prompt",
+       "startTimeUnixNano": "1795419239196585135",
+       "endTimeUnixNano": "1795419239196771397",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "70891"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "528"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "116636"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_workspace::session::file_state"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "6e2596cbec3584f3",
+       "name": "session.flush_to_disk",
+       "startTimeUnixNano": "1795419239196811097",
+       "endTimeUnixNano": "1795419239197899131",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "14378"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "903"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1075766"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::updates"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "304ad3711572a85c",
+       "name": "session.after_turn",
+       "startTimeUnixNano": "1795419239198440195",
+       "endTimeUnixNano": "1795419239205233640",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "5614652"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1403"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "1179733"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "c08165987c6d81be",
+       "name": "session.freeze_prompt_usage",
+       "startTimeUnixNano": "1795419239205295313",
+       "endTimeUnixNano": "1795419239205719164",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "42542"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2008"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "382169"
+         }
+        },
+        {
+         "key": "prompt_id",
+         "value": {
+          "stringValue": "d4eee498-880c-4927-bf75-a96781697227"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::turn"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "2a98d247c33abd61"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "31c52602aa98823a",
+       "name": "prompt.finalize",
+       "startTimeUnixNano": "1795419239207582380",
+       "endTimeUnixNano": "1795419239208958484",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1567"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::mvp_agent::acp_agent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "49"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "acp-agent-worker"
+         }
+        }
+       ],
+       "parentSpanId": "51951c7682d9a1cc"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "a3f0ea95bda8bc3f",
+       "name": "send_xai_notification_with_extra_meta",
+       "startTimeUnixNano": "1795419239207583940",
+       "endTimeUnixNano": "1795419239207654336",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "63746"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1429"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "9467"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::acp_session::updates"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "2d007e4b031cc93a32363f62f80faf9c",
+       "spanId": "221d1c3235bca951",
+       "name": "finalize.turn_usage",
+       "startTimeUnixNano": "1795419239207589410",
+       "endTimeUnixNano": "1795419239208114843",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "1570"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::mvp_agent::acp_agent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "49"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "acp-agent-worker"
+         }
+        }
+       ],
+       "parentSpanId": "31c52602aa98823a"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "4d536cef6f615ecf",
+       "name": "send_turn_delta_with_snapshot",
+       "startTimeUnixNano": "1795419239207665613",
+       "endTimeUnixNano": "1795419239207682096",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "13510"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "692"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "3272"
+         }
+        },
+        {
+         "key": "session_id",
+         "value": {
+          "stringValue": "live-grok-session-1"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::session::feedback_manager"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "6971450776297d3b",
+       "name": "reconcile_orphaned_subagents_with_backend",
+       "startTimeUnixNano": "1795419239207758392",
+       "endTimeUnixNano": "1795419239207776581",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "16338"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2849"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "2674"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::subagent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "5d8a0f390d5e2e53",
+       "name": "reconcile_orphaned_subagents_with_backend",
+       "startTimeUnixNano": "1795419239207787402",
+       "endTimeUnixNano": "1795419239207789682",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "1810"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "2849"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "760"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_shell::agent::subagent"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "ca88f4d20fc12a33",
+       "name": "session_end.workflows",
+       "startTimeUnixNano": "1795419239217807837",
+       "endTimeUnixNano": "1795419239217858264",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "853f7daade52d622",
+       "name": "session_end.workflows_drain",
+       "startTimeUnixNano": "1795419239217815114",
+       "endTimeUnixNano": "1795419239217828708",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "ca88f4d20fc12a33"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "e844f00339b4065d",
+       "name": "session_end.workflows_persist",
+       "startTimeUnixNano": "1795419239217831519",
+       "endTimeUnixNano": "1795419239217856629",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "ca88f4d20fc12a33"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "95128494f99ab00d",
+       "name": "session_end.hooks",
+       "startTimeUnixNano": "1795419239217967851",
+       "endTimeUnixNano": "1795419239218019989",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "942fa8d605cf1ab7",
+       "name": "session_end.hooks_stop",
+       "startTimeUnixNano": "1795419239217998167",
+       "endTimeUnixNano": "1795419239218012778",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "95128494f99ab00d"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "725850143b4a73df",
+       "name": "session_end.memory",
+       "startTimeUnixNano": "1795419239218028464",
+       "endTimeUnixNano": "1795419239218045397",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "c7a3450e8dc20bee",
+       "name": "session_end.feedback",
+       "startTimeUnixNano": "1795419239218288645",
+       "endTimeUnixNano": "1795419239420409642",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "667f6e4592edb24f",
+       "name": "session_end.feedback_drain",
+       "startTimeUnixNano": "1795419239218290572",
+       "endTimeUnixNano": "1795419239420059759",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "c7a3450e8dc20bee"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "c5fb8aada5d364d1",
+       "name": "session_end.background_tasks_save",
+       "startTimeUnixNano": "1795419239420071290",
+       "endTimeUnixNano": "1795419239420405235",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "c7a3450e8dc20bee"
+      },
+      {
+       "traceId": "7661884d60f189ebc8c9703143bb5f0b",
+       "spanId": "6f32922153c7473c",
+       "name": "session_end.exit_flush",
+       "startTimeUnixNano": "1795419239420463281",
+       "endTimeUnixNano": "1795419239420505607",
+       "attributes": [
+        {
+         "key": "busy_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "code.line.number",
+         "value": {
+          "intValue": "37"
+         }
+        },
+        {
+         "key": "idle_ns",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "target",
+         "value": {
+          "stringValue": "xai_grok_telemetry::session::session_end"
+         }
+        },
+        {
+         "key": "thread.id",
+         "value": {
+          "intValue": "68"
+         }
+        },
+        {
+         "key": "thread.name",
+         "value": {
+          "stringValue": "ses-live"
+         }
+        }
+       ],
+       "parentSpanId": "61878ab0268ae1a3"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

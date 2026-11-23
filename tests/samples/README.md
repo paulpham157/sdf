@@ -29,3 +29,14 @@ not that capture: the ids are fake and there is no prompt text.
 OpenCode v2 (`@opencode/cli`) and from Pi with the `pi-otel` extension.
 They are hand-written too: session ids, span ids, and tool call ids are
 fake, and there is no prompt text and no credential.
+
+`grok_traces.json` is the exception: it is a scrubbed live capture, not a
+hand-written sample, and its resource carries `sdf.fixture=live-scrubbed`.
+It holds Grok CLI 1.0.92's internal spans from one headless session on
+2026-11-23 (`GROK_INTERNAL_OTLP_TRACES_ENDPOINT` pointed at sdf): the
+`agent.prompt` trace, the `session` teardown trace, and one parentless
+`sampling.stream_decode` span. sdf does not keep raw request bodies, so the
+file is rebuilt as OTLP JSON from the stored rows. `user.id` and `team.id`
+were removed from the resource, and the session id, `request_id`, and
+`invocation_id` were replaced. There is no prompt or response text; the only
+path is the throwaway repo's `/tmp/grok-live/repo/hello.py`.

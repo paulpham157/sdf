@@ -62,6 +62,9 @@ var sessionKeys = []string{
 // value is kept and the alias is ignored.
 const sessionIDAlias = "sessionID"
 
+// grokSpanSessionKey is the session attribute on Grok CLI internal spans.
+const grokSpanSessionKey = "session_id"
+
 // Decode parses an OTLP export body. contentType application/json selects
 // JSON; every other media type, including an empty one, is protobuf.
 func Decode(signal string, body []byte, contentType string) ([]record.Record, error) {
@@ -248,10 +251,19 @@ func makeRecord(p recordParts) record.Record {
 	if p.resource == nil {
 		p.resource = map[string]any{}
 	}
+	session := sessionID(p.attributes, p.scope, p.resource)
+	if service := record.OTLPText(p.resource["service.name"]); session == nil && p.signal == "traces" && service != nil && *service == "grok-cli" {
+		// Grok CLI's internal spans (GROK_INTERNAL_OTLP_TRACES_ENDPOINT) put the
+		// session in a snake_case session_id attribute, not session.id. Seen on
+		// agent.prompt, session.*, tools.execute, and tool.execution from grok
+		// 1.0.92 (live capture 2026-11-23). Scoped to grok-cli so another tool's
+		// unrelated session_id is never read.
+		session = record.OTLPText(p.attributes[grokSpanSessionKey])
+	}
 	return record.Record{
 		Signal:            p.signal,
 		ServiceName:       record.OTLPText(p.resource["service.name"]),
-		SessionID:         sessionID(p.attributes, p.scope, p.resource),
+		SessionID:         session,
 		Name:              p.name,
 		StartUnixNano:     p.start,
 		EndUnixNano:       p.end,

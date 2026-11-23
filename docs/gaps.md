@@ -94,8 +94,9 @@
   trailer stays in the git object. A GitHub squash merge keeps that trailer
   only when the squash commit message includes it. Husky, lefthook, and
   pre-commit are not edited; `core.hooksPath` is left as it was.
-- No live capture is committed in this tree. The tests use the sample
-  payloads only. OpenCode and Pi behavior above is from the 2026-11-10
+- The only live capture committed in this tree is
+  `tests/samples/grok_traces.json` (Grok CLI 1.0.92 spans, scrubbed, marked
+  `sdf.fixture=live-scrubbed`). The other tests use the sample payloads. OpenCode and Pi behavior above is from the 2026-11-10
   checks of the named package versions, not from a fixture that was copied
   out of a live SQLite file.
 - Grok CLI's telemetry has no working directory. Its resource is a fixed
@@ -104,7 +105,10 @@
   `workspaceRoot` instead, and the heuristic uses it. Without that hook a
   Grok session links to a commit only with `--repo PATH` and one commit in
   the time window (or a git hook or trailer). The hook path was written from
-  grok-build source, not checked against a live `grok`. Grok CLI has no customer-facing
-  traces exporter; `OTEL_TRACES_EXPORTER` only switches its internal span
-  pipeline, which sends xAI credentials, so sdf has no Grok span mapping.
-  Sources are in [docs/agents.md](agents.md#grok-cli).
+  grok-build source, not checked against a live `grok`. Grok CLI spans come only
+  from its internal, undocumented pipeline (`GROK_INTERNAL_OTLP_TRACES_ENDPOINT`
+  with `GROK_INTERNAL_OTLP_HEADERS` replacing the xAI token). The span
+  mapping follows grok 1.0.92 and can break on a newer release. Spans need a
+  signed-in Grok with telemetry not disabled, still send `x-userid` and
+  `x-teamid` headers, and put `user.id` / `team.id` on the resource, which
+  sdf stores. Sources are in [docs/agents.md](agents.md#grok-cli).
