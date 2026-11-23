@@ -41,7 +41,10 @@ go install github.com/paulpham157/sdf/cmd/sdf@latest
 ```
 
 This is the primary install path. It puts `sdf` in `$(go env GOPATH)/bin`
-(usually `~/go/bin`); make sure that directory is on your `PATH`. Until the
+(usually `~/go/bin`); make sure that directory is on your `PATH`. If
+`sdf version` says command not found, run
+`export PATH="$(go env GOPATH)/bin:$PATH"` and add that line to your shell
+profile. Until the
 first tagged release, `@latest` resolves to the newest commit on `main`.
 
 Prebuilt binaries for Linux, macOS, and Windows on amd64 and arm64 will be on
@@ -94,8 +97,46 @@ runs the case set embedded in the binary against the summary and prints one
 line per case; `not_checked` is reported and is not a failure. See
 [docs/check.md](docs/check.md).
 
-Then point a real agent at it: `sdf serve` in one terminal, and
-`sdf init claude-code` (or `codex`, `opencode`, `pi`, `grok`) for the settings.
+## First real session
+
+Steps 5 to 8 need the agent you already use (and its own login or API key).
+sdf supports eight agents: `claude-code`, `codex`, `opencode`, `pi`, `qwen`,
+`grok`, `gemini`, and `copilot`.
+
+**5. Start the receiver** in its own terminal and leave it running:
+
+```bash
+sdf serve
+```
+
+Its first line ends with `db=PATH`, the absolute path of the SQLite file
+(`sdf-telemetry.sqlite` in the directory you started it from), and the last
+line is the UI address, `http://127.0.0.1:4320/`.
+
+**6. Point your agent at it.** In another terminal:
+
+```bash
+sdf init claude-code            # prints the settings; changes nothing
+sdf init claude-code --write    # writes them; the old file is kept as .sdf-bak
+sdf init --check                # receiver reachable, and any token accepted
+```
+
+Use your agent's name in place of `claude-code`. A name sdf does not know is
+refused with the closest match. What `--write` changes for each agent (and
+the two that need a step of their own: OpenCode and Copilot read a snippet
+you source, and Pi needs `sdf init pi --install`) is in
+[docs/receiver.md](docs/receiver.md#one-step-setup).
+
+**7. Restart the agent.** Quit it and start a new session. An agent reads
+these settings only when it starts, so a session that was already open
+exports nothing.
+
+**8. See the session.** Use the agent for a minute, then open
+`http://127.0.0.1:4320/` and refresh, or run `sdf summary` in the directory
+where `sdf serve` runs (anywhere else, pass `--db` with the path it printed).
+Nothing there? `sdf init --check claude-code` shows what that agent's
+settings point at, and [docs/agents.md](docs/agents.md) lists what each agent
+exports.
 
 ## Build from source
 

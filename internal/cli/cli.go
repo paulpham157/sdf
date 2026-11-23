@@ -1103,6 +1103,7 @@ func cmdDemo(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, "The temporary store was removed. Pass --db PATH to keep it.")
 	}
-	fmt.Fprintln(stdout, "Next: sdf check, then sdf serve and sdf init claude-code|codex|opencode|pi|grok|qwen|gemini|copilot to point a real agent at it.")
+	fmt.Fprintln(stdout, "Next: run sdf serve in its own terminal, then sdf init <agent> --write and restart the agent.")
+	fmt.Fprintln(stdout, "Agents: "+strings.Join(initAgents, ", ")+". Results: http://127.0.0.1:4320/ or sdf summary.")
 	return 0
 }

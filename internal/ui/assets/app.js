@@ -151,9 +151,9 @@
   function emptyState() {
     return h("section", { class: "empty" }, [
       h("h2", null, ["No telemetry sessions in the store."]),
-      h("p", null, ["This database has no sessions yet. Point an agent at the receiver, then refresh."]),
-      h("pre", null, ["sdf init claude-code\nsdf init codex\nsdf init opencode\nsdf init pi"]),
-      h("p", { class: "detail" }, ["init prints the exporter settings. --write saves them. Leave sdf serve running while the agent exports."]),
+      h("p", null, ["This database has no sessions yet. Point an agent at the receiver, restart the agent, then refresh."]),
+      h("pre", null, ["sdf init <agent> --write\nsdf init --check"]),
+      h("p", { class: "detail" }, ["Agents: claude-code, codex, opencode, pi, qwen, grok, gemini, copilot. Without --write, init only prints the settings. The agent reads them when it starts, so restart it. Leave sdf serve running while the agent exports."]),
     ]);
   }
 
