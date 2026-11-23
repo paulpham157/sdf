@@ -1,10 +1,9 @@
-//go:build reviewbugs
-
 package decision_test
 
-// Review test for PR #278 (1001dc5). It FAILS (times out) on 1001dc5 and
-// passes in well under a millisecond on c3fc1f2, whose heads() kept one
-// visited set. Run: go test -tags reviewbugs -run PR278 ./internal/decision/
+// Review test for PR #278 (1001dc5). It failed (timed out) on 1001dc5,
+// whose heads() walked every path; it ran behind a reviewbugs build tag
+// until headResolver memoized heads per decision, and now runs in the
+// default suite.
 
 import (
 	"fmt"
@@ -46,5 +45,66 @@ func TestReviewPR278LoadStaysFastOnASupersedesDiamondLadder(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Load did not return within 5s on a %d-level supersedes diamond ladder (%d paths)", levels, 1<<levels)
+	}
+}
+
+// The mixed case: a blocker with no head where one path runs into a
+// supersedes cycle and another ends in a retraction is open.
+func TestPR278CycleOnOnePathRetractionOnAnotherIsOpen(t *testing.T) {
+	db := openDB(t)
+	addHypotheses(t, db, "x", "y", "w", "z")
+	addAll(t, db, "target")
+	link(t, db, decision.RelSupersedes, dec("y"), dec("x"))
+	link(t, db, decision.RelSupersedes, dec("z"), dec("x"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("w"), dec("y"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("y"), dec("w"))
+	retract(t, db, "z", "", "")
+	link(t, db, decision.RelBlocks, dec("x"), dec("target"))
+	if d := loadByID(t, db)["target"]; !d.Blocked || len(d.OpenBlockers) != 1 {
+		t.Fatalf("%+v: x has no head and one path is a cycle, want open", d)
+	}
+}
+
+// Two blockers enter the same legacy cycle through different members, and
+// two more reach it below a diamond. Whichever member the walk entered
+// first, each blocker is open. Once a decision record supersedes l, the
+// blockers whose paths pass l have a head and are settled, while the ones
+// that reach only the cycle stay open.
+func TestPR278SharedCycleIsOpenFromEveryEntry(t *testing.T) {
+	db := openDB(t)
+	addHypotheses(t, db, "a", "b", "c", "e1", "e2", "top", "l", "r", "m")
+	addAll(t, db, "settled-by", "t1", "t2", "t3", "t4")
+	// Cycle a -> b -> c -> a (each superseded by the next).
+	legacyEdge(t, db, decision.RelSupersedes, dec("b"), dec("a"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("c"), dec("b"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("a"), dec("c"))
+	// e1 enters at a, e2 at b.
+	link(t, db, decision.RelSupersedes, dec("a"), dec("e1"))
+	link(t, db, decision.RelSupersedes, dec("b"), dec("e2"))
+	// A diamond top -> l, r -> m, then m enters the cycle at c.
+	link(t, db, decision.RelSupersedes, dec("l"), dec("top"))
+	link(t, db, decision.RelSupersedes, dec("r"), dec("top"))
+	link(t, db, decision.RelSupersedes, dec("m"), dec("l"))
+	link(t, db, decision.RelSupersedes, dec("m"), dec("r"))
+	link(t, db, decision.RelSupersedes, dec("c"), dec("m"))
+	link(t, db, decision.RelBlocks, dec("e1"), dec("t1"))
+	link(t, db, decision.RelBlocks, dec("e2"), dec("t2"))
+	link(t, db, decision.RelBlocks, dec("top"), dec("t3"))
+	link(t, db, decision.RelBlocks, dec("l"), dec("t4"))
+	got := loadByID(t, db)
+	for _, id := range []string{"t1", "t2", "t3", "t4"} {
+		if !got[id].Blocked {
+			t.Fatalf("%s %+v: blocker reaches only the cycle, want blocked", id, got[id])
+		}
+	}
+	// A decision record now also supersedes l: l and top have a head (a
+	// decision), so a cycle on their other path does not reopen them.
+	link(t, db, decision.RelSupersedes, dec("settled-by"), dec("l"))
+	got = loadByID(t, db)
+	want := map[string]bool{"t1": true, "t2": true, "t3": false, "t4": false}
+	for id, blocked := range want {
+		if got[id].Blocked != blocked {
+			t.Fatalf("%s %+v: blocked = %v, want %v", id, got[id], got[id].Blocked, blocked)
+		}
 	}
 }
