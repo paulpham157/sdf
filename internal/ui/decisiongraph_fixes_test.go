@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -453,5 +454,56 @@ func TestDecisionListView(t *testing.T) {
 	focused := renderPage(t, srv, "#/decisions", `click=~List,click=[data-node="capture"]`)
 	if focused.Hash != "#/decisions/ch-capture/capture" || !strings.Contains(focused.Active, `data-node="capture"`) || !strings.Contains(focused.Active, "dg-list-node") {
 		t.Errorf("list choice: hash %q focus %q", focused.Hash, focused.Active)
+	}
+}
+
+// Cheap review polish: costs at 2 decimals, "1 of 1 ending reached", and
+// long ids cut with an ellipsis and a title holding the whole id.
+func TestDecisionPanelPolish(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	var ending string
+	edit := func(doc map[string]any) {
+		c := doc["chapters"].([]any)[0].(map[string]any)
+		c["cost"] = map[string]any{"status": "known", "usd": "2.655"}
+		c["facts"].(map[string]any)["endings_total"] = 1
+		c["facts"].(map[string]any)["endings_reached"] = 1
+		eachEnding(doc, func(node map[string]any) {
+			if node["role"] == "reached" {
+				ending = node["id"].(string)
+				end := node["ending"].(map[string]any)
+				end["cost"] = map[string]any{"status": "partial", "usd": "0.855"}
+				end["sessions"] = []any{"ses_agent_status_0123456789"}
+			}
+		})
+	}
+	sum := graphPage(t, srv, edit, "#/decisions", "")
+	for _, want := range []string{"computed 2.66 USD", "1 of 1 ending reached", "0.86 USD"} {
+		if !strings.Contains(sum.Text, want) {
+			t.Errorf("summary is missing %q:\n%s", want, sum.Text)
+		}
+	}
+	if strings.Contains(sum.Text, "2.655") || strings.Contains(sum.Text, "endings reached") {
+		t.Errorf("unrounded cost or plural for one ending:\n%s", sum.Text)
+	}
+	end := graphPage(t, srv, edit, "#/decisions/ch-capture/"+strings.ReplaceAll(ending, ":", "%3A"), "")
+	if !strings.Contains(end.Markup, `title="ses_agent_status_0123456789">session ses_agent_st…</a>`) {
+		t.Errorf("long session id not ellipsized with a title:\n%s", end.Markup)
+	}
+	if !strings.Contains(end.Text, "Computed cost 0.86 USD (partial)") {
+		t.Errorf("ending cost:\n%s", end.Text)
+	}
+}
+
+// No text in the UI is set below 11px, in the stylesheet or in the script.
+func TestUITextIsAtLeast11px(t *testing.T) {
+	sizes := regexp.MustCompile(`font(?:-size)?\s*:[^;{}"]*?(\d+(?:\.\d+)?)px`)
+	for _, name := range []string{"app.css", "app.js"} {
+		for _, m := range sizes.FindAllStringSubmatch(readAsset(t, name), -1) {
+			if v, err := strconv.ParseFloat(m[1], 64); err == nil && v < 11 {
+				t.Errorf("%s sets text below 11px: %s", name, m[0])
+			}
+		}
 	}
 }

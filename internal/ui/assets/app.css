@@ -637,7 +637,7 @@ g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
 .dg-focus-link { float: right; text-decoration: underline; font-size: 12px; }
 .dg-endings li { border-top: 1px solid var(--line); padding: 5px 0; }
 .dg-endings .detail { display: block; font-size: 12px; margin-left: 18px; }
-.dg-ending-mark { display: inline-block; width: 11px; height: 11px; margin-right: 7px; border: 1.5px solid var(--green); background: var(--green-soft); font-size: 9px; line-height: 11px; vertical-align: -1px; text-align: center; }
+.dg-ending-mark { display: inline-block; width: 12px; height: 12px; margin-right: 7px; border: 1.5px solid var(--green); background: var(--green-soft); font-size: 11px; line-height: 12px; vertical-align: -1px; text-align: center; overflow: hidden; }
 .dg-ending-locked_ending .dg-ending-mark { border: 0; background: none; }
 .dg-ending-unreached .dg-ending-mark { background: var(--paper); border-style: dashed; }
 .dg-linkish { border: 0; background: none; padding: 0; font: inherit; color: var(--green); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; text-align: left; }

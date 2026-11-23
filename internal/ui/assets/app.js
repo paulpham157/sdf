@@ -1563,8 +1563,8 @@
     if (chapter.branches && chapter.branches.length) meta.push("branches " + chapter.branches.join(", "));
     if (chapter.pull_requests && chapter.pull_requests.length) meta.push("PRs " + chapter.pull_requests.map(function (n) { return "#" + n; }).join(" "));
     if (chapter.sessions && chapter.sessions.length) meta.push(chapter.sessions.length + " session" + (chapter.sessions.length === 1 ? "" : "s"));
-    if (chapter.cost && chapter.cost.status !== "unknown") meta.push("computed " + chapter.cost.usd + " USD" + (chapter.cost.status === "partial" ? " (partial)" : ""));
-    const facts = [h("strong", null, [f.endings_reached + " of " + f.endings_total + " endings reached"])];
+    if (chapter.cost && chapter.cost.status !== "unknown") meta.push("computed " + dgUsd(chapter.cost.usd) + " USD" + (chapter.cost.status === "partial" ? " (partial)" : ""));
+    const facts = [h("strong", null, [f.endings_reached + " of " + f.endings_total + (f.endings_total === 1 ? " ending reached" : " endings reached")])];
     if (f.locked) facts.push(" · ", h("span", { class: "dg-amber" }, [f.locked + " locked"]));
     if (f.conflicts) facts.push(" · ", h("span", { class: "dg-red" }, [f.conflicts + " conflict" + (f.conflicts === 1 ? "" : "s")]));
     if (f.challenged) facts.push(" · ", h("span", { class: "dg-red" }, [f.challenged + " challenged"]));
@@ -1591,7 +1591,7 @@
     else kids.push(h("ul", { class: "dg-endings" }, endings.map(function (node) {
       const end = node.ending || {};
       const bits = [node.detail];
-      if (end.cost && end.cost.status !== "unknown") bits.push(end.cost.usd + " USD");
+      if (end.cost && end.cost.status !== "unknown") bits.push(dgUsd(end.cost.usd) + " USD");
       return h("li", { class: "dg-ending-" + node.role }, [
         h("button", { type: "button", class: "dg-linkish", onclick: function () { dgGo(chapter.id, node.id); } }, [
           h("span", { class: "dg-ending-mark", "aria-hidden": "true" }, [end.locked ? "🔒" : ""]),
@@ -1630,13 +1630,30 @@
     return typeof url === "string" && url.indexOf(GITHUB_PREFIX) === 0 && !/[\s\\]/.test(url);
   }
 
+  // A long id is cut to 12 characters with an ellipsis; the caller puts the
+  // full id in a title.
+  function dgShortId(ref) {
+    ref = String(ref || "");
+    return ref.length > 12 ? ref.slice(0, 12) + "…" : ref;
+  }
+
+  // Costs at 2 decimals; a non-zero cost under half a cent reads "<0.01",
+  // never as 0.00. A value that is not a number passes through.
+  function dgUsd(usd) {
+    const n = Number(usd);
+    if (usd == null || usd === "" || !isFinite(n)) return String(usd == null ? "" : usd);
+    if (n > 0 && n < 0.005) return "<0.01";
+    // Round half up on the decimal value (2.655 → 2.66), not the binary one.
+    return (Math.round(n * 100 + (n >= 0 ? 1e-7 : -1e-7)) / 100).toFixed(2);
+  }
+
   function dgLinkTarget(chapter, kind, ref) {
     if (kind === "decision") {
       const inChapter = chapter.nodes.some(function (node) { return node.id === ref; });
       return inChapter ? h("button", { type: "button", class: "dg-linkish", onclick: function () { dgGo(chapter.id, ref); } }, [ref]) : h("span", null, [ref]);
     }
-    if (kind === "session") return h("a", { href: "#/sessions/" + encodeURIComponent(ref) }, ["session " + ref.slice(0, 12)]);
-    if (kind === "commit") return h("code", null, [ref.slice(0, 12)]);
+    if (kind === "session") return h("a", { href: "#/sessions/" + encodeURIComponent(ref), title: ref.length > 12 ? ref : null }, ["session " + dgShortId(ref)]);
+    if (kind === "commit") return h("code", { title: ref.length > 12 ? ref : null }, [dgShortId(ref)]);
     if (kind === "node") {
       const node = chapter.nodes.filter(function (n) { return n.id === ref; })[0];
       return h("button", { type: "button", class: "dg-linkish", onclick: function () { dgGo(chapter.id, ref); } }, [node ? node.title : ref]);
@@ -1823,7 +1840,7 @@
       else if (end.pull_request) kids.push(h("p", { class: "detail" }, ["Pull request #" + end.pull_request]));
       if (end.via && end.via.length) kids.push(h("p", null, [end.locked ? "Waits on " : "Reached via "].concat(end.via.map(function (id, i) { return [i ? ", " : "", dgLinkTarget(chapter, "decision", id)]; }).flat())));
       if (end.sessions && end.sessions.length) kids.push(h("p", null, ["Sessions "].concat(end.sessions.map(function (id, i) { return [i ? ", " : "", dgLinkTarget(chapter, "session", id)]; }).flat())));
-      if (end.cost && end.cost.status !== "unknown") kids.push(h("p", { class: "detail" }, ["Computed cost " + end.cost.usd + " USD" + (end.cost.status === "partial" ? " (partial)" : "")]));
+      if (end.cost && end.cost.status !== "unknown") kids.push(h("p", { class: "detail" }, ["Computed cost " + dgUsd(end.cost.usd) + " USD" + (end.cost.status === "partial" ? " (partial)" : "")]));
       return kids;
     }
     const rec = node.decision || {};
