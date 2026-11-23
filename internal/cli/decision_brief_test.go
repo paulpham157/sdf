@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -112,11 +113,40 @@ func TestDecisionBriefMissingDBIsSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := run(t, "decision", "brief", "--db", bad, "--format", "json")
-	if out.code != 0 || out.stdout != "" || out.stderr != "" {
+	if out.code != 0 || out.stderr != "" || out.stdout != "{\"unavailable\":true}\n" {
 		t.Fatalf("corrupt: %d %q %q", out.code, out.stdout, out.stderr)
+	}
+	text := run(t, "decision", "brief", "--db", bad)
+	if text.code != 0 || text.stderr != "" || text.stdout != "sdf decision brief unavailable: run sdf decision list\n" {
+		t.Fatalf("corrupt text: %d %q %q", text.code, text.stdout, text.stderr)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "missing.sqlite")); !os.IsNotExist(err) {
 		t.Fatal("brief created a missing database")
+	}
+}
+
+func TestDecisionBriefNonRegularFileIsUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	asDir := run(t, "decision", "brief", "--db", dir)
+	if asDir.code != 0 || asDir.stderr != "" || asDir.stdout != "sdf decision brief unavailable: run sdf decision list\n" {
+		t.Fatalf("dir: %d %q %q", asDir.code, asDir.stdout, asDir.stderr)
+	}
+
+	fifo := filepath.Join(dir, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan result, 1)
+	go func() {
+		done <- run(t, "decision", "brief", "--db", fifo, "--format", "json")
+	}()
+	select {
+	case out := <-done:
+		if out.code != 0 || out.stderr != "" || out.stdout != "{\"unavailable\":true}\n" {
+			t.Fatalf("fifo: %d %q %q", out.code, out.stdout, out.stderr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fifo brief did not return")
 	}
 }
 

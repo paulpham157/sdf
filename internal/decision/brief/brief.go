@@ -10,9 +10,11 @@
 //
 //  1. Constraints. An active settled decision (status decision) that the
 //     user made, or that is the source of a constrains edge. User decisions
-//     are locked and are ranked first. Other constraints follow. Insertion
-//     order is kept inside each of those two tiers. A locked user decision
-//     stays here even when it is also blocked or conflicted.
+//     are locked and come first, newest first. Other constraints follow in
+//     insertion order. A locked user decision stays here even when it is
+//     also blocked or conflicted. Each statement is cut to statementBudget
+//     bytes on a rune boundary, ending in "…", so one long rule cannot
+//     crowd the others out.
 //  2. Blocked. Record.Blocked, which Load sets for an active decision that
 //     still has an open blocks blocker, and that is not itself a constraint.
 //  3. Conflicting. Record.Conflicted, which Load sets for an active decision
@@ -36,6 +38,10 @@ import (
 )
 
 const (
+	// statementBudget is the most bytes of a statement an item keeps.
+	// A longer statement is cut on a rune boundary and ends with "…".
+	statementBudget = 200
+
 	// KindConstraint is an active settled decision the user made, or the
 	// source of a constrains edge.
 	KindConstraint = "constraint"
@@ -94,7 +100,7 @@ func Classify(g decision.Graph) []Item {
 	for _, d := range order {
 		item := Item{
 			ID:        d.ID,
-			Statement: d.Statement,
+			Statement: limitStatement(d.Statement),
 			Status:    d.Status,
 			DecidedBy: d.DecidedBy,
 		}
@@ -115,12 +121,37 @@ func Classify(g decision.Graph) []Item {
 			conflicting = append(conflicting, item)
 		}
 	}
+	reverseItems(locked)
 	out := make([]Item, 0, len(locked)+len(other)+len(blockedItems)+len(conflicting))
 	out = append(out, locked...)
 	out = append(out, other...)
 	out = append(out, blockedItems...)
 	out = append(out, conflicting...)
 	return out
+}
+
+func reverseItems(items []Item) {
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+}
+
+// limitStatement cuts s to statementBudget bytes. The cut is on a rune
+// boundary and the result ends with "…". A short statement is unchanged.
+func limitStatement(s string) string {
+	if len(s) <= statementBudget {
+		return s
+	}
+	const ellipsis = "…"
+	budget := statementBudget - len(ellipsis)
+	if budget < 0 {
+		return ellipsis
+	}
+	i := budget
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return s[:i] + ellipsis
 }
 
 // Select classifies g and applies the caps. maxItems or maxBytes below zero
@@ -130,24 +161,102 @@ func Select(g decision.Graph, maxItems, maxBytes int, render func(Result) []byte
 	return Trim(Classify(g), maxItems, maxBytes, render)
 }
 
-// Trim keeps a prefix of the already-ranked items. maxItems or maxBytes
-// below zero means that cap is off. Items are dropped from the end until
-// the rendered form fits, and each dropped item counts in Omitted. When
-// items are dropped, the omitted line (or the JSON omitted field) is part
-// of the rendered form. If that note alone is still over maxBytes, it is
-// kept: the count has to stay visible.
+// Trim keeps items in the order given, which is Classify's priority order.
+// maxItems or maxBytes below zero means that cap is off. It fills greedily:
+// an item that does not fit is skipped and counted in Omitted, and a later
+// smaller item can still be kept. The byte check is one pass. It adds each
+// item's rendered size to a fixed envelope and footer reserve, and does not
+// render the whole document again for every skip. When items are skipped,
+// the omitted line (or the JSON omitted field) is part of that reserve. If
+// the note alone is still over maxBytes, it is kept: the count has to stay
+// visible. render is only used to tell text from JSON. Nil means no byte cap.
 func Trim(items []Item, maxItems, maxBytes int, render func(Result) []byte) Result {
-	n := len(items)
-	if maxItems >= 0 && n > maxItems {
-		n = maxItems
+	if maxItems < 0 || maxItems > len(items) {
+		maxItems = len(items)
 	}
-	for {
-		r := resultOf(items[:n], len(items)-n)
-		if maxBytes < 0 || render == nil || len(render(r)) <= maxBytes || n == 0 {
-			return r
+	jsonOut := maxBytes >= 0 && jsonRender(render)
+	reserve := 0
+	if maxBytes >= 0 {
+		reserve = envelopeReserve(len(items), jsonOut)
+	}
+	kept := make([]Item, 0, maxItems)
+	used := reserve
+	omitted := 0
+	for _, item := range items {
+		if len(kept) >= maxItems {
+			omitted++
+			continue
 		}
-		n--
+		cost := itemBytes(item, len(kept) > 0, jsonOut)
+		if maxBytes >= 0 && used+cost > maxBytes {
+			omitted++
+			continue
+		}
+		kept = append(kept, item)
+		used += cost
 	}
+	return resultOf(kept, omitted)
+}
+
+// envelopeReserve is the fixed bytes that are not an item: the JSON
+// document around the array, or the text footer at its widest for n items.
+func envelopeReserve(n int, jsonOut bool) int {
+	digits := len(strconv.Itoa(n))
+	if !jsonOut {
+		return digits + len(" more: run sdf decision list\n")
+	}
+	// {\n  "items": [\n ... \n  ],\n  "omitted": N\n}\n
+	return len("{\n  \"items\": [\n") + len("\n  ],\n  \"omitted\": ") + digits + len("\n}\n")
+}
+
+// itemBytes is the rendered size of one item. A later JSON item also pays
+// for the comma and newline that separate it from the one before.
+func itemBytes(item Item, later, jsonOut bool) int {
+	if !jsonOut {
+		return len(textLine(item))
+	}
+	n := len(jsonItem(item))
+	if later {
+		n += len(",\n")
+	}
+	return n
+}
+
+func textLine(item Item) string {
+	by := item.DecidedBy
+	if by == "" {
+		by = "-"
+	}
+	return item.Kind + "\t" + quoteField(item.ID) + "\t" + quoteField(by) + "\t" + quoteField(item.Statement) + "\n"
+}
+
+func jsonItem(item Item) []byte {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(item); err != nil {
+		return nil
+	}
+	raw := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	lines := bytes.Split(raw, []byte("\n"))
+	out := make([]byte, 0, len(raw)+2*len(lines))
+	for i, line := range lines {
+		if i > 0 {
+			out = append(out, '\n')
+		}
+		out = append(out, ' ', ' ', ' ', ' ')
+		out = append(out, line...)
+	}
+	return out
+}
+
+func jsonRender(render func(Result) []byte) bool {
+	if render == nil {
+		return false
+	}
+	b := render(Result{})
+	return len(b) > 0 && b[0] == '{'
 }
 
 func resultOf(items []Item, omitted int) Result {
@@ -165,18 +274,7 @@ func FormatText(r Result) string {
 	r = ready(r)
 	var b strings.Builder
 	for _, item := range r.Items {
-		by := item.DecidedBy
-		if by == "" {
-			by = "-"
-		}
-		b.WriteString(item.Kind)
-		b.WriteByte('\t')
-		b.WriteString(quoteField(item.ID))
-		b.WriteByte('\t')
-		b.WriteString(quoteField(by))
-		b.WriteByte('\t')
-		b.WriteString(quoteField(item.Statement))
-		b.WriteByte('\n')
+		b.WriteString(textLine(item))
 	}
 	if r.Omitted > 0 {
 		b.WriteString(strconv.Itoa(r.Omitted))
@@ -212,10 +310,10 @@ func ready(r Result) Result {
 }
 
 func quoteField(s string) string {
-	if utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool {
+	if !strings.HasPrefix(s, `"`) && utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool {
 		return r == '\t' || !unicode.IsPrint(r)
 	}) < 0 {
 		return s
 	}
-	return strconv.QuoteToASCII(s)
+	return strconv.Quote(s)
 }
