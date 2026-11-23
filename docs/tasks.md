@@ -28,12 +28,14 @@ Or from a JSON file (`--file PATH`, `-` for stdin):
 ```
 
 Flags override the file's `id`, `title`, `objective`, and `base`.
-`--no-secret-scan` turns the secret scan off (it is on by default, including
-when a file omits `secret_scan`). Each `--check` adds a criterion. A
-`--check` command is split on spaces with no quoting and runs without a
-shell. `--timeout SECONDS` sets the timeout for each criterion added with
-`--check`; it must be a positive number of seconds, and if the flag is
-omitted those criteria use the default 600 s. It does not change
+`--no-secret-scan` stores `secret_scan: false` (the field is true by
+default, including when a file omits `secret_scan`). [`sdf verify`](verify.md)
+then skips its scan of added lines for secrets, and a secret in the diff
+no longer fails verification (`SECRET_IN_DIFF`). Each `--check` adds a
+criterion. A `--check` command is split on spaces with no quoting and runs
+without a shell. `--timeout SECONDS` sets the timeout for each criterion
+added with `--check`; it must be a positive number of seconds, and if the
+flag is omitted those criteria use the default 600 s. It does not change
 criteria already in the file. Use the file for anything else.
 
 ## What is declared
@@ -128,5 +130,5 @@ it, so protect the copy you trust (review on the protected branch).
 Every place is read before anything is written. If any one already holds
 the id with a different hash, nothing is written. `sdf task show` reads
 every place, checks each copy is canonical, and fails if they disagree.
-`--json` prints the stored task as indented JSON (the canonical form);
-without it, a text listing is printed.
+`--json` prints the canonical JSON, indented for reading; the stored hash
+covers the compact form. Without `--json`, a text listing is printed.
