@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Schema is the value of Spec.Schema and the hash domain.
@@ -69,8 +71,22 @@ type Spec struct {
 	SecretScan      bool             `json:"secret_scan"`
 }
 
-// ValidID reports whether id can name a task.
-func ValidID(id string) bool { return idPattern.MatchString(id) }
+// ValidID reports whether id can name a task (or a criterion): valid UTF-8,
+// no newline or other control character, and the id pattern, which is
+// stricter (ASCII letters, digits, ".", "_", "-"; at most 128 bytes). The
+// first two rules are the ledger's own for an id; they are checked here
+// too so a looser pattern later cannot let them through.
+func ValidID(id string) bool {
+	if !utf8.ValidString(id) {
+		return false
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return idPattern.MatchString(id)
+}
 
 // Validate checks a Spec is complete and in normal order: criteria sorted
 // by name, designated globs and files sorted by path, with no duplicates.
@@ -123,7 +139,7 @@ func (s Spec) Validate() error {
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func (c Criterion) validate() error {
-	if !idPattern.MatchString(c.Name) {
+	if !ValidID(c.Name) {
 		return fmt.Errorf("criterion name %q must match %s", c.Name, idPattern)
 	}
 	if len(c.Argv) == 0 || c.Argv[0] == "" {

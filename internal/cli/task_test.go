@@ -152,6 +152,15 @@ func TestTaskDeclareUsageErrors(t *testing.T) {
 			t.Errorf("%v: %d %q", args, r.code, r.stderr)
 		}
 	}
+	for _, id := range []string{"a\nb", "a\x01", string([]byte{'a', 0xff})} {
+		r := run(t, "task", "declare", "--repo", repo, "--id", id, "--title", "t", "--check", "a=true", "--write")
+		if r.code != 1 || !strings.Contains(r.stderr, "must match") {
+			t.Errorf("declare id %q: %d %q", id, r.code, r.stderr)
+		}
+		if r := run(t, "task", "show", id, "--repo", repo); r.code != 1 {
+			t.Errorf("show id %q: %d", id, r.code)
+		}
+	}
 	if r := run(t, "task", "show", "missing", "--repo", repo); r.code != 1 {
 		t.Errorf("show missing: %d", r.code)
 	}

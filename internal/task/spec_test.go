@@ -225,3 +225,46 @@ func TestMatchGlob(t *testing.T) {
 		}
 	}
 }
+
+func TestValidIDRefusesControlAndBadUTF8(t *testing.T) {
+	for _, id := range []string{"a\nb", "a\x00", "a\tb", "a\u0085b", string([]byte{'a', 0xff}), "é", "", " a", "a b", strings.Repeat("a", 129)} {
+		if ValidID(id) {
+			t.Errorf("%q accepted", id)
+		}
+	}
+	for _, id := range []string{"a", "add-widget", "v1.2_x", strings.Repeat("a", 128)} {
+		if !ValidID(id) {
+			t.Errorf("%q refused", id)
+		}
+	}
+}
+
+func TestParseAndLoadRefuseABadID(t *testing.T) {
+	dir, _ := testRepo(t, repoFiles)
+	s, err := Build(context.Background(), dir, sampleInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := s.value()
+	v["id"] = "add\nwidget"
+	b, err := Canonical(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Parse(b); err == nil {
+		t.Fatal("parse accepted an id with a newline")
+	}
+	if _, err := Load(context.Background(), "add\nwidget", Store{RepoDir: dir}); err == nil {
+		t.Fatal("load accepted an id with a newline")
+	}
+	in := sampleInput()
+	in.ID = "add\x00widget"
+	if _, err := Build(context.Background(), dir, in); err == nil {
+		t.Fatal("build accepted an id with NUL")
+	}
+	in = sampleInput()
+	in.Criteria[0].Name = "unit\n"
+	if _, err := Build(context.Background(), dir, in); err == nil {
+		t.Fatal("build accepted a criterion name with a newline")
+	}
+}

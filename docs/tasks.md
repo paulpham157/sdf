@@ -33,6 +33,11 @@ quoting and runs without a shell. Use the file for anything else.
 
 ## What is declared
 
+A task id, and each criterion name, is 1 to 128 ASCII letters, digits, `.`,
+`_`, or `-`, starting with a letter or digit. That also keeps them inside
+the ledger's rules (valid UTF-8, no newline or control character).
+
+
 The task is pinned to a **base revision** (`--base`, default `HEAD`),
 resolved to a full commit SHA and its tree id. Only committed content
 counts: an uncommitted edit in the working tree is not read.

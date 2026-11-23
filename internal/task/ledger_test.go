@@ -92,3 +92,29 @@ func TestHashesMatchLedgerKnownAnswers(t *testing.T) {
 		t.Fatalf("entry hash %s", got)
 	}
 }
+
+func TestMemLedgerRefusesBadKeys(t *testing.T) {
+	ctx := context.Background()
+	l := NewMemLedger(nil)
+	p := []byte("{}")
+	for name, kind := range map[string]Kind{
+		"empty":       "",
+		"newline":     "sdf.task/v1\nx",
+		"control":     "sdf.task/v1\x01",
+		"bad utf8":    Kind([]byte{0xff}),
+		"reserved":    "sdf.ledger.genesis/v1",
+		"reserved v2": "sdf.ledger.other",
+	} {
+		if _, err := l.Append(ctx, kind, "id", p, PayloadHash(kind, p)); err == nil {
+			t.Errorf("kind %s accepted", name)
+		}
+	}
+	for name, id := range map[string]string{"empty": "", "bad utf8": string([]byte{'a', 0xff})} {
+		if _, err := l.Append(ctx, KindTask, id, p, PayloadHash(KindTask, p)); err == nil {
+			t.Errorf("id %s accepted", name)
+		}
+	}
+	if len(l.Entries()) != 0 {
+		t.Fatal("a refused append wrote")
+	}
+}

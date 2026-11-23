@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The names below mirror the interface the ledger package will export
@@ -128,8 +130,8 @@ func (m *MemLedger) Append(ctx context.Context, kind Kind, id string, canonical 
 	if err := ctx.Err(); err != nil {
 		return Entry{}, err
 	}
-	if kind == "" || id == "" {
-		return Entry{}, fmt.Errorf("ledger: kind and id are required")
+	if err := validKey(kind, id); err != nil {
+		return Entry{}, err
 	}
 	if PayloadHash(kind, canonical) != hash {
 		return Entry{}, ErrHashMismatch
@@ -142,9 +144,6 @@ func (m *MemLedger) Append(ctx context.Context, kind Kind, id string, canonical 
 			return old.entry, nil
 		}
 		return Entry{}, ErrConflict
-	}
-	if kind == GenesisKind {
-		return Entry{}, fmt.Errorf("ledger: kind %s is reserved", GenesisKind)
 	}
 	if len(m.entries) == 0 {
 		g := []byte(GenesisPayload)
@@ -176,6 +175,27 @@ func (m *MemLedger) insert(kind Kind, id string, canonical []byte, hash string) 
 	m.index[memKey(kind, id)] = len(m.entries)
 	m.entries = append(m.entries, memEntry{entry: e, payload: bytes.Clone(canonical)})
 	return e, nil
+}
+
+// ReservedKindPrefix is the kind prefix only the ledger itself writes.
+const ReservedKindPrefix = "sdf.ledger."
+
+// validKey applies the ledger's rules to a caller's kind and id: both valid
+// UTF-8 and not empty, no control character (newline included) in the
+// kind, and no kind under ReservedKindPrefix.
+func validKey(kind Kind, id string) error {
+	k := string(kind)
+	switch {
+	case k == "" || id == "":
+		return fmt.Errorf("ledger: kind and id are required")
+	case !utf8.ValidString(k) || !utf8.ValidString(id):
+		return fmt.Errorf("ledger: kind and id must be valid UTF-8")
+	case strings.IndexFunc(k, unicode.IsControl) >= 0:
+		return fmt.Errorf("ledger: kind %q contains a control character", k)
+	case strings.HasPrefix(k, ReservedKindPrefix):
+		return fmt.Errorf("ledger: kind prefix %s is reserved", ReservedKindPrefix)
+	}
+	return nil
 }
 
 // Get implements Ledger.
