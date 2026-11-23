@@ -81,12 +81,18 @@ func copilotSpans(records []record.Record, head string) []record.Record {
 }
 
 // copilotSpanIndex maps trace id + span id to the span. Span ids are only
-// unique within a trace, so the trace id is part of the key.
+// unique within a trace, so the trace id is part of the key. A span stored
+// twice keeps its first copy, the same copy copilotSpans returns, so the
+// ancestry walk and the counted spans never disagree.
 func copilotSpanIndex(records []record.Record) map[string]record.Record {
 	byID := map[string]record.Record{}
 	for _, rec := range records {
-		if rec.Signal == "traces" && rec.SpanID != nil {
-			byID[copilotSpanKey(rec.TraceID, *rec.SpanID)] = rec
+		if rec.Signal != "traces" || rec.SpanID == nil {
+			continue
+		}
+		key := copilotSpanKey(rec.TraceID, *rec.SpanID)
+		if _, seen := byID[key]; !seen {
+			byID[key] = rec
 		}
 	}
 	return byID
