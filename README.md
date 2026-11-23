@@ -17,6 +17,8 @@ flowchart TB
   end
 ```
 
+![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)
+
 ## Install
 
 With Go 1.26 or newer:
