@@ -75,7 +75,8 @@
   Tool calls from a re-sent export are listed once (issue #258): spans by
   trace and span id, tool logs only as exact copies. A tool span without
   both ids, or a re-sent tool log that differs from the first copy, is
-  still listed twice, and Qwen Code tool calls are not de-duplicated yet.
+  still listed twice. Qwen Code `api_response` and `tool_call` logs and
+  `llm_request` and `tool` spans follow the same rules (issue #261).
   Pi per-turn input and output are summed, and that sum is not added to
   `gen_ai.client.token.usage`.
 - The agent-reported cost is whatever the tool put on the wire (Claude USD,

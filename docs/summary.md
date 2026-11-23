@@ -57,7 +57,8 @@ A tool log (`claude_code.tool_result`, `codex.tool_result`,
 only when it is an exact copy (same session, log time, body, and every
 attribute); `gemini_cli.tool_call` has no call id, so two calls of the same
 tool with the same result are both listed (issue #258). Qwen Code tool
-calls are not de-duplicated yet. An
+calls follow the same rule: `qwen-code.tool` spans by trace and span id,
+`qwen-code.tool_call` logs only as exact copies (issue #261). An
 OpenCode tool span has no success flag, so the call is `unknown`, unless the
 span status is `ERROR`. An `ERROR` span is marked in the text tree
 (`status=ERROR`, plus the status message when one was exported, and
@@ -135,7 +136,10 @@ So the same numbers are not added twice:
   window`), tokens are the sum of `qwen-code.api_response` token counts
   (else `qwen-code.llm_request` usage, else `qwen-code.token.usage` by
   `type`), and tool calls come from `qwen-code.tool` spans joined to
-  `qwen-code.tool_call` logs. See [docs/agents.md](agents.md#qwen-code).
+  `qwen-code.tool_call` logs. A log stored twice counts once only when it
+  is an exact copy (same session, log time, body, and every attribute),
+  and a span stored twice (same trace and span id) counts once (issue
+  #261). See [docs/agents.md](agents.md#qwen-code).
 
 Codex `response.completed` logs are the fallback when `codex.turn.token_usage`
 is missing (for example an OpenRouter `:free` model id, whose `:` makes Codex

@@ -510,9 +510,10 @@ error type, and records `function_args_bytes`, `error_bytes`, and
   min-to-max timestamp of Qwen logs (`logs qwen-code window`).
 - Tokens are the sum of `input_token_count`, `output_token_count`,
   `cached_content_token_count`, and `thoughts_token_count` on
-  `qwen-code.api_response` logs (`total_token_count` is not added), else
-  `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
-  spans, else `qwen-code.token.usage` by `type` (`input`, `output`,
+  `qwen-code.api_response` logs (`total_token_count` is not added; an exact
+  copy of a log, same session, time, body, and attributes, counts once),
+  else `gen_ai.usage.*` and `thoughts_token_count` on `qwen-code.llm_request`
+  spans (a span stored twice, same trace and span id, counts once), else `qwen-code.token.usage` by `type` (`input`, `output`,
   `thought`, `cache`). That counter belongs to the process, not the session:
   sdf places its points by their own time (a flush after the last log goes
   to the latest session of that process run), adds up process runs, and

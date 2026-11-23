@@ -71,6 +71,34 @@ func qwenRecords(records []record.Record, signal, name string) []record.Record {
 	return out
 }
 
+// qwenUnique drops records stored twice, for example after an OTLP export
+// retry: a log by exactCopyKey (an exact copy only; a log without
+// event.timestamp and log time is never merged) and a span by trace id +
+// span id (spanKey; a span without both ids is never merged). The first copy
+// is kept.
+func qwenUnique(records []record.Record) []record.Record {
+	seen := map[string]bool{}
+	out := records[:0:0]
+	for _, rec := range records {
+		key, ok := "", false
+		switch rec.Signal {
+		case "logs":
+			key = exactCopyKey(rec)
+			ok = key != ""
+		case "traces":
+			key, ok = spanKey(rec)
+		}
+		if ok {
+			if seen[rec.Signal+"|"+key] {
+				continue
+			}
+			seen[rec.Signal+"|"+key] = true
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
 // qwenSummary replaces the fields whose generic rules do not fit Qwen Code.
 func qwenSummary(s SessionSummary, records []record.Record, points []point, prices *pricing.Catalog, idx *qwenIndex) SessionSummary {
 	s.DurationMS, s.DurationSource = qwenDuration(records)
@@ -156,21 +184,21 @@ func qwenNested(rec record.Record, byID map[string]record.Record) bool {
 func qwenTokens(records []record.Record, points []point, sessionID string, idx *qwenIndex) (OrderedFloats, *string, *string) {
 	totals := OrderedFloats{}
 	found := false
-	for _, rec := range qwenRecords(records, "logs", qwenAPIResponse) {
+	for _, rec := range qwenUnique(qwenRecords(records, "logs", qwenAPIResponse)) {
 		if addFields(&totals, rec, qwenLogTokens) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("logs " + qwenAPIResponse), record.Str("sum of input_token_count, output_token_count, cached_content_token_count, and thoughts_token_count on qwen-code.api_response; total_token_count is not added. Input includes cached tokens. With OpenAI-compatible providers output includes thoughts (which may be estimated from text); with Gemini-native responses it does not")
+		return totals, record.Str("logs " + qwenAPIResponse), record.Str("sum of input_token_count, output_token_count, cached_content_token_count, and thoughts_token_count on qwen-code.api_response; total_token_count is not added; a log stored twice (same session, log time, body, and every attribute) counts once. Input includes cached tokens. With OpenAI-compatible providers output includes thoughts (which may be estimated from text); with Gemini-native responses it does not")
 	}
-	for _, rec := range qwenRecords(records, "traces", qwenLLMRequest) {
+	for _, rec := range qwenUnique(qwenRecords(records, "traces", qwenLLMRequest)) {
 		if addFields(&totals, rec, qwenSpanTokens) {
 			found = true
 		}
 	}
 	if found {
-		return totals, record.Str("traces " + qwenLLMRequest), record.Str("sum of gen_ai.usage.* and thoughts_token_count on qwen-code.llm_request spans; a request whose provider reported only a total has no usage fields")
+		return totals, record.Str("traces " + qwenLLMRequest), record.Str("sum of gen_ai.usage.* and thoughts_token_count on qwen-code.llm_request spans (a span stored twice counts once); a request whose provider reported only a total has no usage fields")
 	}
 	if metric, ok := qwenMetricTokens(records, sessionID, idx); ok {
 		return metric, record.Str("metrics " + qwenTokenMetric), record.Str(qwenMetricMethod)
@@ -503,7 +531,7 @@ func qwenToolCalls(records []record.Record, points []point) []ToolCall {
 			spans = append(spans, rec)
 		}
 	}
-	logs := qwenRecords(records, "logs", qwenToolCallLog)
+	logs := qwenUnique(qwenRecords(records, "logs", qwenToolCallLog))
 	logByID := map[string]record.Record{}
 	for _, rec := range logs {
 		if id := callID(rec); id != nil {
@@ -512,7 +540,7 @@ func qwenToolCalls(records []record.Record, points []point) []ToolCall {
 	}
 	seen := map[string]bool{}
 	var calls []ToolCall
-	for _, rec := range qwenRecords(records, "traces", qwenToolSpan) {
+	for _, rec := range qwenUnique(qwenRecords(records, "traces", qwenToolSpan)) {
 		id := firstText(rec.Attributes, genai.AttrToolCallID, "tool.call_id")
 		var log *record.Record
 		if id != nil {
