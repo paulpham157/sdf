@@ -14,6 +14,10 @@
 // against @opencode/cli 2.2.6 on 2026-11-10. The v1 experimental.openTelemetry
 // flag is not the v2 switch.
 //
+// Grok CLI reads GROK_EXTERNAL_OTEL and OTEL_* or [telemetry] otel_* in
+// $GROK_HOME/config.toml, and loads hooks from $GROK_HOME/hooks/*.json. See
+// grok.go for the sources.
+//
 // Pi has no built-in OTLP exporter. pi-otel 0.3.0 reads .pi/settings.json in
 // the project and ~/.pi/agent/settings.json, then OTEL_* and PI_OTEL_* env.
 // Its default protocol is grpc at 127.0.0.1:4317. This setup uses http/json
@@ -45,9 +49,11 @@ type Endpoint struct {
 
 // Request is one init invocation.
 type Request struct {
-	Agent      string
-	Home       string
-	CodexHome  string
+	Agent     string
+	Home      string
+	CodexHome string
+	// GrokHome replaces $GROK_HOME and ~/.grok. Empty reads GROK_HOME.
+	GrokHome   string
 	ProjectDir string
 	Endpoint   Endpoint
 	Write      bool
@@ -82,8 +88,10 @@ func Run(req Request) (Result, error) {
 		return qwen(req)
 	case "pi":
 		return pi(req)
+	case "grok", "grok-cli":
+		return grok(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok)", req.Agent)
 	}
 }
 
@@ -476,6 +484,8 @@ func Configured(req Request) (string, error) {
 		return qwenConfigured(req), nil
 	case "pi":
 		return piConfigured(req), nil
+	case "grok", "grok-cli":
+		return grokConfigured(req), nil
 	default:
 		return "", fmt.Errorf("unknown agent %q", req.Agent)
 	}

@@ -10,7 +10,8 @@ import (
 )
 
 // sessionEvent is what an agent hook posts to /v1/sessions. Tool is the agent
-// name the summary already classifies on (claude-code, codex, opencode, pi).
+// name the summary already classifies on (claude-code, codex, opencode, pi,
+// grok-cli).
 // Edge is open or close. Reason is whatever the agent said about why, and is
 // empty when the agent has nothing to say.
 type sessionEvent struct {
@@ -58,9 +59,9 @@ func sessionRecord(body []byte, now time.Time) (record.Record, error) {
 	ev.Edge = strings.TrimSpace(ev.Edge)
 	ev.Reason = strings.TrimSpace(ev.Reason)
 	switch ev.Tool {
-	case "claude-code", "codex", "opencode", "pi":
+	case "claude-code", "codex", "opencode", "pi", "grok-cli":
 	default:
-		return record.Record{}, &bodyStatus{400, "session event tool must be claude-code, codex, opencode, or pi"}
+		return record.Record{}, &bodyStatus{400, "session event tool must be claude-code, codex, opencode, pi, or grok-cli"}
 	}
 	if ev.SessionID == "" {
 		return record.Record{}, &bodyStatus{400, "session event requires a session_id"}

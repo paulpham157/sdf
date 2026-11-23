@@ -31,12 +31,20 @@ func sessionHookCommand(tool, edge, url string) string {
 // claudeHooks is the command sdf adds to each event under "hooks" in
 // ~/.claude/settings.json (see mergeSessionHooks). Both events carry
 // session_id, which is the session.id the exporter sends.
+//
+// Grok CLI also runs the hooks in ~/.claude/settings.json by default
+// (grok-build user-guide/10-hooks.md, "Hook Locations") and sets
+// GROK_HOOK_EVENT on every hook process (xai-grok-hooks/src/runner/command.rs).
+// Without the guard a Grok session would post a claude-code open and close.
+// ${GROK_HOOK_EVENT:-} is a modifier form, which Grok leaves for sh.
 func claudeHooks(url string) map[string]string {
 	return map[string]string{
-		"SessionStart": sessionHookCommand("claude-code", "open", url),
-		"SessionEnd":   sessionHookCommand("claude-code", "close", url),
+		"SessionStart": claudeGuard + sessionHookCommand("claude-code", "open", url),
+		"SessionEnd":   claudeGuard + sessionHookCommand("claude-code", "close", url),
 	}
 }
+
+const claudeGuard = `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; `
 
 func hookGroup(command string) map[string]any {
 	return map[string]any{
