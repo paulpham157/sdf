@@ -250,3 +250,30 @@ func TestCycleCheckIgnoresEdgesThroughAnUnknownDecision(t *testing.T) {
 		t.Fatalf("%+v", g.Decisions)
 	}
 }
+
+// TestCycleCheckSeesADecisionAddedJustBeforeTheTransaction: "ghost" is
+// stored after the link's pre-checks but before its transaction, turning
+// a -> ghost -> b into a real supersedes path. The cycle check reads the
+// decision ids inside the transaction, so b supersedes a is refused.
+func TestCycleCheckSeesADecisionAddedJustBeforeTheTransaction(t *testing.T) {
+	db := openDB(t)
+	addAll(t, db, "a", "b")
+	legacyEdge(t, db, decision.RelSupersedes, dec("a"), dec("ghost"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("ghost"), dec("b"))
+	other, err := store.Open(db.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	defer decision.SetBeforeAppendEdgeForTest(func() {
+		addAll(t, other, "ghost")
+	})()
+	before := edgeCount(t, db)
+	_, _, err = decision.LinkWithWarnings(db, decision.EdgeInput{Relation: decision.RelSupersedes, From: dec("b"), To: dec("a")})
+	if !errors.Is(err, decision.ErrSupersedesCycle) {
+		t.Fatalf("err %v", err)
+	}
+	if got := edgeCount(t, db); got != before {
+		t.Fatalf("%d edges, want %d", got, before)
+	}
+}

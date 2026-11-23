@@ -198,8 +198,8 @@ func TestAppendDecisionRetractionIsAtomicWithLinks(t *testing.T) {
 	seen := -1
 	errRetracted := errors.New("retracted")
 	err := linker.AppendDecisionEdge(store.DecisionEdge{Relation: "implements", FromKind: "decision", FromRef: "a", ToKind: "decision", ToRef: "b", RecordedAt: "y"},
-		func(_ []store.DecisionEdge, retracted []store.DecisionRetraction) error {
-			seen = len(retracted)
+		func(g store.DecisionGraph) error {
+			seen = len(g.Retractions)
 			if seen > 0 {
 				return errRetracted
 			}

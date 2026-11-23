@@ -215,11 +215,19 @@ func Link(s *store.Store, in EdgeInput) (Edge, error) {
 // It warns, and still stores the edge, when the same two endpoints, in
 // either direction, now have both a validates and a contradicts edge.
 //
-// The retracted, duplicate, cycle, and warning checks read the stored edges
-// and retractions in the same transaction as the insert (store.AppendDecisionEdge), so concurrent
-// links cannot both pass them. Nothing is updated or deleted. Edges an older
+// The retracted, duplicate, cycle, and warning checks read the stored
+// decision ids, edges, and retractions in the same transaction as the insert
+// (store.AppendDecisionEdge), so concurrent writers cannot slip a change
+// between the check and the insert: two links cannot both pass, and a
+// decision added meanwhile (for example one that turns a dangling edge into
+// a real supersedes step) is seen by the cycle check. Nothing is updated or deleted. Edges an older
 // sdf stored without these checks stay as they are; they are read back
 // unchanged and count as existing edges here.
+// beforeAppendEdge, when set by a test, runs after LinkWithWarnings' checks
+// that need no transaction and before store.AppendDecisionEdge. It is nil
+// in production.
+var beforeAppendEdge func()
+
 func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	edge, err := newEdge(in, now())
 	if err != nil {
@@ -242,16 +250,8 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	if err := known(s, edge.To); err != nil {
 		return Edge{}, nil, err
 	}
-	// The stored decision ids, for the cycle check. Decisions are
-	// append-only, so reading them before the transaction is safe: an id can
-	// appear but never disappear.
-	rows, err := s.LoadDecisions()
-	if err != nil {
-		return Edge{}, nil, err
-	}
-	stored := make(map[string]bool, len(rows))
-	for _, d := range rows {
-		stored[d.ID] = true
+	if beforeAppendEdge != nil {
+		beforeAppendEdge()
 	}
 	var warnings []string
 	err = s.AppendDecisionEdge(store.DecisionEdge{
@@ -261,16 +261,16 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 		ToKind:     edge.To.Kind,
 		ToRef:      edge.To.Ref,
 		RecordedAt: edge.RecordedAt,
-	}, func(rows []store.DecisionEdge, retractions []store.DecisionRetraction) error {
-		for _, r := range retractions {
+	}, func(g store.DecisionGraph) error {
+		for _, r := range g.Retractions {
 			for _, end := range []Endpoint{edge.From, edge.To} {
 				if end.Kind == KindDecision && end.Ref == r.DecisionID {
 					return fmt.Errorf("%w: %s takes no new edges", ErrRetracted, endpointText(end))
 				}
 			}
 		}
-		existing := make([]Edge, 0, len(rows))
-		for _, r := range rows {
+		existing := make([]Edge, 0, len(g.Edges))
+		for _, r := range g.Edges {
 			existing = append(existing, Edge{
 				Relation: r.Relation,
 				From:     Endpoint{Kind: r.FromKind, Ref: r.FromRef},
@@ -278,7 +278,7 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 			})
 		}
 		var err error
-		warnings, err = checkAgainst(edge, existing, stored)
+		warnings, err = checkAgainst(edge, existing, g.DecisionIDs)
 		return err
 	})
 	if err != nil {
