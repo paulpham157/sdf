@@ -42,8 +42,9 @@ file read-only (`mode=ro`), and they never change the ledger file.
   to WAL.
 - **Concurrency.** Appends take `BEGIN IMMEDIATE`, so two writers are
   serialized. Readers do not block writers. Every connection waits up to 5
-  seconds on `SQLITE_BUSY` (`busy_timeout`) before failing. Commits use
-  `synchronous=FULL`.
+  seconds on `SQLITE_BUSY` (`busy_timeout`). An append that still gets
+  `SQLITE_BUSY` or `SQLITE_LOCKED` has rolled back, and it is retried with
+  backoff for up to 10 seconds. Commits use `synchronous=FULL`.
 
 ## What is stored
 
@@ -60,9 +61,16 @@ One table, `ledger_entries`. Each row is one entry, payload included:
 | `entry_hash` | Hash of this entry's own fields |
 | `chained_at` | UTC time the entry was written |
 
-`(kind, id)` is unique. Appending the same `(kind, id)` with the same hash
-again returns the stored entry. A different hash for a stored `(kind, id)` is
+`(kind, id)` is unique, and so is `(kind, id)` under ASCII case-folding (see
+the id rules). Appending the same `(kind, id)` with the same hash again
+returns the stored entry. A different hash for a stored `(kind, id)` is
 `ErrConflict`. Nothing updates or deletes a row.
+
+The case rule is checked inside the append transaction, using a plain
+(non-unique) index on `(kind, id COLLATE NOCASE)`. It is not a UNIQUE
+index, because a ledger written by an earlier build may already hold two
+such ids, and a unique index could not be built there. Such a ledger still
+opens and takes appends, and `verify` reports the pair as `duplicate`.
 
 `Append` returns `ErrInvalid` for:
 
@@ -88,11 +96,15 @@ checked by `ledger.ValidID`). This is the same rule as the verifier's
   flag), no leading `.` (not hidden, and never `.` or `..` on its own);
 - `..` inside an id, as in `a..b`, is allowed. With no separator it cannot
   leave a directory;
-- case is preserved and significant. A canonical ULID is uppercase
-  (`01JD5Z9X8Y7W6V5T4S3R2Q1P0N`) and is valid as it is. `Add-Widget` and
-  `add-widget` are two different ids. On a case-insensitive file system
-  (macOS and Windows defaults), two such ids would name the same file if
-  used as file names.
+- case is preserved. A canonical ULID is uppercase
+  (`01JD5Z9X8Y7W6V5T4S3R2Q1P0N`) and is stored and returned as it is, and
+  `Get` matches an id exactly;
+- within one kind, two ids may not differ only in ASCII case. After
+  `TASK-1`, appending `task-1` or `Task-1` is `ErrConflict`, and the error
+  names both ids. That holds whatever the payload is. Appending `TASK-1`
+  again with the same hash is still idempotent. Different kinds do not
+  collide. This keeps ids safe as file names on case-insensitive file systems
+  (macOS and Windows defaults).
 
 `Get` returns `ErrInvalidID` for a bad id without looking it up. `Verify`
 reports a stored row whose id breaks these rules as `modified`.
@@ -157,7 +169,8 @@ no `(kind, id)` appears twice. It reports the first failure:
 - `missing`: a seq is absent (a deleted row), or genesis is gone.
 - `gap-reordered`: a `prev_hash` does not link to the entry before. A row was
   moved or inserted, or an earlier entry was rewritten along with its hashes.
-- `duplicate`: a `(kind, id)` is stored twice.
+- `duplicate`: a `(kind, id)` is stored twice, or two ids of one kind differ
+  only in ASCII case.
 
 An intact ledger prints the head seq and its `entry_hash`.
 

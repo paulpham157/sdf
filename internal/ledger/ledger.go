@@ -103,8 +103,9 @@ type Ledger interface {
 var (
 	// ErrHashMismatch means the hash passed to Append is not the hash of the payload.
 	ErrHashMismatch = errors.New("ledger: hash does not match payload")
-	// ErrConflict means (kind, id) is already stored with a different hash.
-	ErrConflict = errors.New("ledger: id already stored with a different hash")
+	// ErrConflict means (kind, id) is already stored with a different hash,
+	// or the kind already holds an id that differs from id only in ASCII case.
+	ErrConflict = errors.New("ledger: conflicts with a stored entry")
 	// ErrNotFound means no entry has that (kind, id), or the ledger is empty.
 	ErrNotFound = errors.New("ledger: not found")
 	// ErrCorrupt means a stored row no longer matches its payload hash or its
@@ -145,6 +146,11 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     chained_at TEXT NOT NULL,
     UNIQUE (kind, id)
 );
+-- Not UNIQUE on purpose: a ledger from an earlier build may already hold
+-- two ids that differ only in case, and the index must still build there.
+-- Append refuses a new case variant (ErrConflict); Verify flags old ones.
+CREATE INDEX IF NOT EXISTS ledger_entries_kind_id_nocase
+    ON ledger_entries (kind, id COLLATE NOCASE);
 `
 
 // Store is one ledger file. It implements Ledger.
@@ -324,6 +330,18 @@ func idProblem(id string) string {
 		return "may contain only ASCII letters, digits, '.', '_', and '-'"
 	}
 	return ""
+}
+
+// asciiLower folds A-Z to a-z and leaves every other byte alone, as
+// SQLite's NOCASE does.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 func isIDStart(c byte) bool {
@@ -627,9 +645,20 @@ func appendLocked(ctx context.Context, conn *sql.Conn, kind Kind, id string, can
 	switch {
 	case err == nil:
 		if existing.entry.Hash != hash {
-			return Entry{}, ErrConflict
+			return Entry{}, fmt.Errorf("%w: %s %q is stored with hash %s", ErrConflict, kind, id, existing.entry.Hash)
 		}
 		return existing.entry, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return Entry{}, err
+	}
+	// NOCASE folds ASCII only, which is all an id may contain.
+	var other string
+	var otherSeq int64
+	err = conn.QueryRowContext(ctx, `SELECT id, seq FROM ledger_entries WHERE kind = ? AND id = ? COLLATE NOCASE ORDER BY seq LIMIT 1`,
+		string(kind), id).Scan(&other, &otherSeq)
+	switch {
+	case err == nil:
+		return Entry{}, fmt.Errorf("%w: %s id %q differs only in case from stored id %q (seq %d)", ErrConflict, kind, id, other, otherSeq)
 	case !errors.Is(err, sql.ErrNoRows):
 		return Entry{}, err
 	}
@@ -741,7 +770,8 @@ const (
 	// before it (a row moved, was inserted, or an earlier entry was rewritten).
 	ProblemReordered Problem = "gap-reordered"
 	// ProblemDuplicate: a (kind, id) is stored twice (the unique index was
-	// dropped and a row inserted by hand).
+	// dropped and a row inserted by hand), or two ids of one kind differ only
+	// in ASCII case.
 	ProblemDuplicate Problem = "duplicate"
 )
 
@@ -797,7 +827,11 @@ func (s *Store) Verify(ctx context.Context) (Report, error) {
 	}
 	defer rows.Close()
 	var prev *storedRow
-	seen := map[[2]string]int64{}
+	type seenID struct {
+		id  string
+		seq int64
+	}
+	seen := map[[2]string]seenID{}
 	genesisHash := PayloadHash(GenesisKind, []byte(GenesisPayload))
 	fail := func(row storedRow, p Problem, format string, args ...any) {
 		if rep.Failure != nil {
@@ -842,11 +876,15 @@ func (s *Store) Verify(ctx context.Context) (Report, error) {
 		case !entryOK(row):
 			fail(row, ProblemModified, "entry fields do not hash to entry_hash %s", row.entry.EntryHash)
 		default:
-			key := [2]string{string(row.entry.Kind), row.entry.ID}
+			key := [2]string{string(row.entry.Kind), asciiLower(row.entry.ID)}
 			if first, dup := seen[key]; dup {
-				fail(row, ProblemDuplicate, "(kind, id) is already stored at seq %d", first)
+				if first.id == row.entry.ID {
+					fail(row, ProblemDuplicate, "(kind, id) is already stored at seq %d", first.seq)
+				} else {
+					fail(row, ProblemDuplicate, "id %q differs only in case from id %q at seq %d", row.entry.ID, first.id, first.seq)
+				}
 			} else {
-				seen[key] = row.entry.Seq
+				seen[key] = seenID{row.entry.ID, row.entry.Seq}
 			}
 		}
 		r := row
