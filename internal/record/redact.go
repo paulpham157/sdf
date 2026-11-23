@@ -167,6 +167,12 @@ var errorInfoKeys = map[string]bool{
 
 var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_.:/-]{1,64}$`)
 
+// IsErrorToken reports whether s is a value sdf keeps for an error class,
+// code, or finish reason: ^[A-Za-z0-9_.:/-]{1,64}$. Readers that show such
+// a value (the span tree's error_type) use it too, so a free-text class in
+// a row kept with --store-content or written by an older sdf is not shown.
+func IsErrorToken(s string) bool { return tokenPattern.MatchString(s) }
+
 // isToken reports whether v is a short token or a list of them.
 func isToken(v any) bool {
 	switch t := v.(type) {
