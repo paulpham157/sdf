@@ -138,7 +138,9 @@ not an ordering: use `blocks` for "this must wait for that".
 **Aliases.** `--relation blocked_by --from decision:b --to decision:a` and
 `--relation depends_on --from decision:b --to decision:a` both store
 `a blocks b`. An alias is never stored, and it is the same edge as the
-canonical form for the duplicate and cycle checks.
+canonical form for the duplicate and cycle checks. Refs and endpoint kinds
+are checked as typed, before the swap, so the message names the alias and the
+flag you gave: `depends_on links a decision to a decision: to is session:sess-1`.
 
 **Canonical order.** `conflicts_with` between two decisions is stored with the
 endpoint that sorts first (`decision:ID`, byte order) as `from`. `a
@@ -178,6 +180,8 @@ Every relation also has these rules:
 - **Already superseded.** `conflicts_with` and `refines` are refused between
   two decisions when one already supersedes the other, in either direction:
   `pair already linked by supersedes: decision:a and decision:b; one already replaces the other, so refines is not recorded`.
+  The other way round is allowed: `supersedes` after `conflicts_with` is
+  stored, and resolves the conflict.
 - **Blocks over a linked pair.** A `blocks` edge between two decisions that
   already have a `supersedes` or `conflicts_with` edge is stored, and prints
   `sdf decision link: warning: decision:a and decision:b also have a conflicts_with edge`.
@@ -229,7 +233,9 @@ once each, in the order the edges were recorded.
   blocker is open when any head has status `hypothesis`. So a blocking
   hypothesis stays open when another hypothesis replaces it, and clears once a
   `decision` record replaces it or it is retracted. A blocker that was
-  recorded as a `decision` is settled from the start.
+  recorded as a `decision` is settled from the start. A blocker that reaches
+  no head only because its `supersedes` chain runs into a cycle (rows an older
+  sdf stored) is open: no decision record settled it.
 - `blocked`: `true` when the record is `active` and `open_blockers` is not
   empty. A superseded or retracted record is never blocked, though its
   `blocked_by` and `open_blockers` are still listed.
@@ -242,7 +248,9 @@ once each, in the order the edges were recorded.
   record keeps its own `effective_status`; `refines` never supersedes.
 - `challenged`: `true` when the record is `active` and the latest `validates`
   or `contradicts` edge to it, in edge order, is `contradicts`. A later
-  `validates` clears it.
+  `validates` clears it. A `contradicts` edge from a decision that is not
+  `active` (retracted or superseded) is ignored, as a withdrawn blocker
+  blocks nothing; one from a session or commit always counts.
 
 `sdf decision list` adds `, blocked`, `, conflicted`, and `, challenged` to
 the `EFFECTIVE` cell, in that order, and prints `blocked by: IDS (open: IDS)`
@@ -272,9 +280,10 @@ refines         decision:push-after-ok  decision:dont-push      2026-11-23T17:18
 
 The edges above were written with `depends_on` (design-schema on which-db),
 `conflicts_with` from use-sqlite to use-postgres, and `refines`; the table
-shows the stored, canonical form. The UI shows "blocked by", "conflicts with",
-and "challenged" next to the record, and "refined by", settled blockers, and
-resolved conflicts on its detail line.
+shows the stored, canonical form. The UI shows "blocked by" (open blockers),
+"conflicts with" (only the sides still active), and "challenged" next to the
+record, and "refined by", settled or still-open blockers of a record that is
+not blocked, and resolved conflicts on its detail line.
 
 ### Superseded at read time
 

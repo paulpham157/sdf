@@ -164,8 +164,8 @@ sdf decision list [--db PATH] [--json]
 
 - `blocked_by`, `open_blockers`, `blocked`: the decisions that block this one, the ones still unsettled (a blocker is unsettled while its current replacement is a `hypothesis`; a retracted blocker blocks nothing), and `true` when this record is active with an open blocker.
 - `conflicts_with`, `conflicted`: the other side of each conflict, and `true` while this record and at least one of them are both active. Resolve a conflict by superseding or retracting one side.
-- `refined_by`: the decisions that refine this one. A refined record stays active.
-- `challenged`: `true` when the record is active and its latest evidence is `contradicts`. Tell the user.
+- `refined_by`: the decisions that refine this one. A refined record keeps its own `effective_status`.
+- `challenged`: `true` when the record is active and its latest evidence is `contradicts`. A `contradicts` from a decision that is retracted or superseded does not count; one from a session or commit always does. Tell the user.
 
 These are omitted when empty or false. `sdf decision list` shows them as `, blocked`, `, conflicted`, `, challenged` in `EFFECTIVE` and as `blocked by:`, `conflicts with:`, `refined by:` lines under the statement.
 
