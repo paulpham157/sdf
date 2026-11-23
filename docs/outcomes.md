@@ -609,11 +609,13 @@ migrates, and never creates a file. There is no environment variable for the
 path.
 
 The list is built from the same graph `sdf decision list` and
-`GET /api/decisions` load, then narrowed to in-force settled decisions
-(`status` `decision` and `effective_status` `active`, the set
-`decision.Active` returns). Retracted records, superseded records, and
-hypotheses are omitted. A decision appears in at most one group, in this
-order:
+`GET /api/decisions` load, then narrowed to records whose
+`effective_status` is `active`. Retracted and superseded records are
+omitted. Constraints are still only in-force settled decisions (`status`
+`decision`). The blocked and conflicting groups also include an active
+hypothesis that Load marked blocked or conflicted. `decision.Active` is
+unchanged (settled only); `sdf decision check` still reads that set, not
+this list. A record appears in at most one group, in this order:
 
 1. **Constraints.** An in-force settled decision that the user made, or that
    is the source of a `constrains` edge. A locked constraint is a settled
@@ -624,15 +626,16 @@ order:
    in this group even when it is also blocked or conflicted. Each statement
    is capped at 200 bytes, cut on a rune boundary, and ends in `…` when it
    is cut.
-2. **Blocked.** An in-force settled decision that is not a constraint, and
-   that Load marked `blocked`: it has at least one open blocker (see Blocked,
-   conflicted, refined, and challenged at read time).
-3. **Conflicting.** An in-force settled decision that is in neither group
-   above, and that Load marked `conflicted`: it has a `conflicts_with` edge
-   to another active decision. `challenged` (the latest evidence edge is
-   `contradicts`) is not a group.
+2. **Blocked.** An active record that is not a constraint, and that Load
+   marked `blocked`: it has at least one open blocker (see Blocked,
+   conflicted, refined, and challenged at read time). This includes an
+   active hypothesis.
+3. **Conflicting.** An active record that is in neither group above, and
+   that Load marked `conflicted`: it has a `conflicts_with` edge to another
+   active decision. This includes an active hypothesis. `challenged` (the
+   latest evidence edge is `contradicts`) is not a group.
 
-An in-force settled decision that is none of these does not appear.
+A record that is none of these does not appear.
 
 Text is one tab-separated line per item: `kind`, `id`, `decided_by`, and
 `statement`. `kind` is `constraint`, `blocked`, or `conflicting`. An empty
@@ -742,9 +745,9 @@ exit code is still 1 when it is forbidden.
 
 The rows are in insertion order. The command keeps the records
 `decision.Active` returns: `status` `decision` and `effective_status`
-`active`. `sdf decision brief` ranks a narrower set (a locked user
-decision, or the source of a `constrains` edge), so a brief is not the
-forbid list.
+`active`. `sdf decision brief` is not the forbid list: its constraints
+are a ranked subset of that set, and it can also include an active
+blocked or conflicting hypothesis, which this command does not read.
 
 
 ## Local budget
