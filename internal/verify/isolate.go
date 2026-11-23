@@ -35,6 +35,10 @@ const (
 	IsolationNone      = "none"
 )
 
+// IsolationAvailable reports whether checks can run in their own
+// namespaces here, and why not.
+func IsolationAvailable() (bool, string) { return isolationAvailable() }
+
 var (
 	probeMu    sync.Mutex
 	probeDone  bool
