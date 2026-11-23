@@ -20,6 +20,41 @@ What each tool exports:
 
 The sections below cover settings, signal catalogs, and how to point each tool at the receiver.
 
+## Decisions at session start
+
+The session hooks `sdf init --write` installs today only report a session
+opening and, where the agent has such an event, closing. They post to
+`POST /v1/sessions` and do not give the agent a decision brief. See
+[One-step setup](receiver.md#one-step-setup).
+
+To see the constraints, blocked decisions, and conflicting decisions that
+are in force, run `sdf decision brief` at the start of a session (the same
+`--db` as `sdf serve`, default `sdf-telemetry.sqlite` in the working
+directory). `sdf` must be on `PATH`. Install the `sdf-decisions` skill
+where that is documented, or run the command yourself. Before a push,
+merge, release, deploy, or architecture change, that skill also requires
+`sdf decision check`. The commands are in [Decision brief](outcomes.md#decision-brief)
+and [Checking an action](outcomes.md#checking-an-action).
+
+A later Hooks PR is expected to inject the brief from a SessionStart hook
+for Claude Code and Codex only. That hook is not in this tree. Until it
+lands, those two agents use the same fallback as the others.
+
+| Agent | Session hook today | Decision brief at session start | Fallback |
+| --- | --- | --- | --- |
+| Claude Code | `SessionStart` and `SessionEnd` in `~/.claude/settings.json` post open and close | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
+| Codex CLI | `SessionStart` and `SessionEnd` in `$CODEX_HOME/hooks.json` post open and close | Not injected | The `sdf-decisions` skill, or run `sdf decision brief` |
+| Grok CLI | `$GROK_HOME/hooks/sdf-session.json` posts open and close (and `cwd`) | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
+| OpenCode v2 | `~/.config/opencode/plugins/sdf-session.js` posts open only | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
+| Pi | `.pi/extensions/sdf-session.js` (or `~/.pi/agent/extensions` with `--global`) posts open and close | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
+| Qwen Code | None. The session window is inferred from the records | Not injected | The `sdf-decisions` skill (install path in [skills/README.md](../skills/README.md)), or run `sdf decision brief` |
+| Gemini CLI | None. The session window is inferred from the records | Not injected | Run `sdf decision brief`, or install the skill if the agent will load it |
+| GitHub Copilot CLI | None. Environment only | Not injected | Run `sdf decision brief` |
+
+The skill is not loaded from this repository automatically. Copy or symlink
+it into the location your agent reads. Install paths are documented for
+Claude Code, Codex, and Qwen Code in [skills/README.md](../skills/README.md).
+
 ## Claude Code
 
 Docs: [Monitoring](https://code.claude.com/docs/en/monitoring-usage).
