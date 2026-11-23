@@ -334,6 +334,20 @@ compute `$0`, and so does a Pi session, whose totals are input and output
 only. The agent's `$0.065` on that model is still shown as
 `agent_reported_cost_usd`. The rule covers cache read only. A cache-write
 count on a `:free` row with no `input_cache_write` price is still `unknown`.
+Prompt and completion must both parse as zero. A `:free` row whose prompt or
+completion is `-1` (OpenRouter's dynamic-router sentinel), empty, not a
+decimal, or non-zero does not get the rule.
+
+The rule needs the `:free` suffix, so zero-priced rows without it are not
+covered. On the 2026-11-10 snapshot, `openrouter/free` (the Free Models
+Router), `google/lyria-3-clip-preview`, and `google/lyria-3-pro-preview`
+each have only prompt `"0"` and completion `"0"`. A session on one of them
+with input and output only computes `$0`. A session that also reports
+cache-read tokens stays `unknown` with
+`catalog has no input_cache_read price for model <id>`. The router's actual
+model and the preview rows' cache billing are not in the catalog. The other
+`openrouter/*` router rows (`openrouter/auto`, `openrouter/fusion`, and
+others) have prompt and completion `-1`, so they are never priced.
 
 A paid row with no `input_cache_read` stays `unknown` when the session has
 cache-read tokens. `mistralai/mistral-nemo` is one example. Its row lists

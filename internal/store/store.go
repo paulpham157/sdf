@@ -346,6 +346,11 @@ func (s *Store) Load() ([]record.Record, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanRecords(rows)
+}
+
+// scanRecords reads rows selected in Load's column order.
+func scanRecords(rows *sql.Rows) ([]record.Record, error) {
 	var out []record.Record
 	for rows.Next() {
 		var rec record.Record

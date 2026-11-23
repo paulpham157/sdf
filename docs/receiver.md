@@ -57,11 +57,24 @@ sqlite3 sdf-telemetry.sqlite \
 
 ### WAL mode and backups
 
-The database is opened in SQLite WAL mode with a 5-second busy timeout, so
-`sdf summary` and other readers can run while the receiver writes. A
-read-only rollback-journal database keeps its journal mode and stays
-readable. A WAL database needs its `-shm` file or a writable directory to
-be read; in a read-only directory without one, open fails. In WAL mode
+`sdf serve` opens the database in SQLite WAL mode with a 5-second busy
+timeout, so `sdf summary` and other readers can run while the receiver
+writes. `sdf summary` only reads: it opens the file read-only
+(`mode=ro`, same busy timeout) and never creates it, applies the schema,
+adds columns, or changes its journal mode. A missing `--db` file in an
+existing directory reports an empty store and leaves no file behind; a
+missing directory is an error. A rollback-journal database keeps its
+journal mode and gets no sidecar files. Reading a WAL database needs its
+`-shm` file; when the directory is writable SQLite creates `-shm` (and an
+empty `-wal`) beside it, and a reader leaves them there. In a read-only
+directory without `-shm`, `sdf summary` falls back to SQLite's
+`immutable=1` read when there is no `-wal` file, since every committed
+write is then in the main file. `immutable=1` takes no locks and assumes
+nothing writes the file, so it is only a fallback after the normal
+read-only open fails, never the first choice. If a `-wal` file is there,
+it can hold writes the main file lacks, and `sdf summary` reports that
+instead of reading stale data: make the directory writable, or open the
+file once with `sdf serve` to checkpoint it. In WAL mode
 SQLite keeps two
 sidecar files next to the database, `sdf-telemetry.sqlite-wal` and
 `sdf-telemetry.sqlite-shm`; recent writes may live only in the `-wal` file
@@ -149,7 +162,41 @@ the variable, and `0`, `false`, or `off` turns it off. `sdf serve` prints a
 line saying whose content it stores, and those rows carry
 `sdf.content=kept`. The text then sits in the local SQLite file.
 
-Rows written by an older sdf are not changed when the database is opened.
+Rows written by an older sdf are not changed when the database is opened;
+sdf never scrubs on its own. A new database is stamped (`PRAGMA
+user_version = 1`) as written under these rules. A database that already
+had rows and no stamp was written by an older sdf, and `sdf serve` prints
+one warning line at start while that is so. To remove the text from it,
+stop `sdf serve` on that file and run:
+
+```bash
+sdf redact --db sdf-telemetry.sqlite --dry-run   # count the rows that would change
+sdf redact --db sdf-telemetry.sqlite
+```
+
+`sdf redact` applies the same rules to every stored row, including rows kept
+with `--store-content` (their `sdf.content` mark goes too), including a log
+name that is a copy of its body. It reads the rows in batches inside one
+transaction (a crash leaves the file as it was), rewrites the rows that
+changed with `secure_delete` on, runs `VACUUM` so the old text does not stay
+in free pages, and stamps the file. sdf's files use SQLite's default
+rollback journal; a file switched to WAL mode is also checkpointed and its
+WAL truncated. It needs free disk of about twice the file's size while it
+runs (the journal and `VACUUM`'s copy). Running it again changes nothing.
+
+- `--dry-run` opens the file read-only and writes nothing: no schema,
+  migration, stamp, or lock file.
+- The file must exist and have sdf's `records` table; any other file is
+  refused.
+- `sdf serve` holds `PATH.lock` (shared) while it runs, and `sdf redact`
+  takes it exclusively, so redact refuses while a serve uses the file and
+  a serve will not start while redact runs. An sdf older than this does
+  not take the lock, so stop it by hand.
+- The stamp only means the rows were written by an sdf with these rules
+  (or scrubbed). An older sdf opened on a stamped file writes content into
+  it with no warning; run `sdf redact` again after one has.
+- Copies of the file elsewhere (backups, Time Machine, `.sdf-bak`) are not
+  touched.
 
 ## Optional token authentication
 
@@ -276,7 +323,11 @@ been recorded, and recording one does not change the summary. All three are
 read-only. There is no route that writes or deletes.
 
 A known `0` is a published price of zero, such as a `:free` model whose
-token buckets are all priced. It is not a stand-in for a missing price. If
+token buckets are all priced. It is not a stand-in for a missing price,
+with one exception (issue #243). On an OpenRouter row whose id ends in
+`:free` and whose prompt and completion are both `0`, cache-read tokens are
+priced at `0` when the row has no `input_cache_read` price. The cost `note`
+says so. See [summary.md](summary.md). If
 any session in a total has an unknown computed cost, the total is unknown
 too. The summary does not split one session's tokens across several models,
 so the page does not either: several models stay unknown, with the session
