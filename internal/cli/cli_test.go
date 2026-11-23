@@ -141,7 +141,7 @@ func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
 
 func TestServeHelpMentionsTheLocalUI(t *testing.T) {
 	out := run(t, "serve", "--help")
-	if out.code != 0 || !strings.Contains(out.stdout, "--no-ui") || !strings.Contains(out.stdout, "127.0.0.1:4320") || !strings.Contains(out.stdout, "--host does not change it") {
+	if out.code != 0 || !strings.Contains(out.stdout, "--no-ui") || !strings.Contains(out.stdout, "127.0.0.1:4320") || !strings.Contains(out.stdout, "--host does not change it") || !strings.Contains(out.stdout, "--otlp-token") || !strings.Contains(out.stdout, "SDF_OTLP_TOKEN") {
 		t.Fatalf("%d %s", out.code, out.stdout)
 	}
 	bad := run(t, "serve", "--ui-addr")
@@ -152,6 +152,107 @@ func TestServeHelpMentionsTheLocalUI(t *testing.T) {
 	if worse.code != 2 {
 		t.Fatalf("%d %s", worse.code, worse.stderr)
 	}
+	missing := run(t, "serve", "--otlp-token")
+	if missing.code != 2 || !strings.Contains(missing.stderr, "--otlp-token") {
+		t.Fatalf("%d %s", missing.code, missing.stderr)
+	}
+}
+
+func TestServeOTLPTokenFromFlagAndEnv(t *testing.T) {
+	token := "test-otlp-token"
+	payload := []byte(`{"resourceSpans":[]}`)
+
+	t.Run("flag", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", "")
+		base, done := startServeOTLP(t, token, "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+	})
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", token)
+		base, done := startServeOTLP(t, "", "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+	})
+	t.Run("flag overrides env", func(t *testing.T) {
+		t.Setenv("SDF_OTLP_TOKEN", "env-otlp-token")
+		base, done := startServeOTLP(t, token, "")
+		defer stopServe(t, done)
+		assertOTLPAuth(t, base, token)
+		// The env value must not be accepted once the flag is set.
+		resp := postOTLP(t, base+"/v1/traces", "Bearer env-otlp-token", payload)
+		if resp.statusCode != 401 {
+			t.Fatalf("env token after flag: %d %s", resp.statusCode, resp.body)
+		}
+	})
+}
+
+type otlpResp struct {
+	statusCode int
+	body       string
+}
+
+func startServeOTLP(t *testing.T, flagToken, _ string) (string, <-chan int) {
+	t.Helper()
+	httpAddr := freeLoopback(t)
+	grpcAddr := freeLoopback(t)
+	_, httpPort, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, grpcPort, err := net.SplitHostPort(grpcAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	args := []string{"serve", "--no-ui", "--db", dbPath, "--port", httpPort, "--grpc-port", grpcPort}
+	if flagToken != "" {
+		args = append(args, "--otlp-token", flagToken)
+	}
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Main(args)
+	}()
+	select {
+	case code := <-done:
+		t.Fatalf("serve exited %d before /health", code)
+	case <-time.After(200 * time.Millisecond):
+	}
+	base := "http://" + httpAddr
+	waitForListener(t, base+"/health")
+	return base, done
+}
+
+func assertOTLPAuth(t *testing.T, base, token string) {
+	t.Helper()
+	payload := []byte(`{"resourceSpans":[]}`)
+	missing := postOTLP(t, base+"/v1/traces", "", payload)
+	if missing.statusCode != 401 || missing.body != "unauthorized" {
+		t.Fatalf("missing %+v", missing)
+	}
+	ok := postOTLP(t, base+"/v1/traces", "Bearer "+token, payload)
+	if ok.statusCode != 200 {
+		t.Fatalf("correct %+v", ok)
+	}
+}
+
+func postOTLP(t *testing.T, url, authorization string, body []byte) otlpResp {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+	return otlpResp{resp.StatusCode, string(got)}
 }
 
 func TestUISummaryMatchesTheSummaryCommandOnSamples(t *testing.T) {

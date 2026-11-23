@@ -69,6 +69,11 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 	}
 	closeAfter := connectionClose(headers)
 	path = strings.SplitN(path, "?", 2)[0]
+	if s.requiresAuth(method, path) && !s.authorizedBearer(headerGet(headers, "Authorization")) {
+		writeResponse(writer, 401, "text/plain", []byte("unauthorized"), true)
+		s.logRequest(method, path, 401)
+		return true, nil
+	}
 	if expect100(headers) {
 		fmt.Fprintf(writer, "HTTP/1.1 100 Continue\r\n\r\n")
 		if err := writer.Flush(); err != nil {
@@ -387,6 +392,8 @@ func reason(status int) string {
 	switch status {
 	case 200:
 		return "OK"
+	case 401:
+		return "Unauthorized"
 	case 400:
 		return "Bad Request"
 	case 404:

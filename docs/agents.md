@@ -265,6 +265,33 @@ and reasoning attributes stay out of that total. `execute_tool` carries
 `gen_ai.tool.name`, `gen_ai.tool.call.id`, and `pi.tool.is_error` (false means
 the call succeeded).
 
+## Optional receiver token
+
+When `sdf serve` is started with `--otlp-token` or `SDF_OTLP_TOKEN`, exporters
+must send the same value as `Authorization: Bearer <token>`.
+
+For agents that honor the standard OpenTelemetry environment variables
+(Claude Code, OpenCode v2, Pi with pi-otel, and Grok CLI):
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
+```
+
+Codex does not read `OTEL_*`. Put a `headers` table on each `otlp-http`
+exporter instead. Those values are literal; `${SDF_OTLP_TOKEN}` is not
+expanded:
+
+```toml
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary", headers = { Authorization = "Bearer TOKEN" } } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary", headers = { Authorization = "Bearer TOKEN" } } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary", headers = { Authorization = "Bearer TOKEN" } } }
+```
+
+`sdf init --write` does not add the header or the Codex `headers` field.
+Session hooks and `sdf init --git-hooks` post without `Authorization`, so
+they fail if the receiver requires a token until you add the header there
+too. See [docs/receiver.md](receiver.md#optional-token-authentication).
+
 ## Point Claude Code at it
 
 Set these in the shell that launches `claude`, or in `~/.claude/settings.json`.
@@ -286,6 +313,9 @@ export OTEL_METRIC_EXPORT_INTERVAL=10000
 export OTEL_LOGS_EXPORT_INTERVAL=5000
 export OTEL_TRACES_EXPORT_INTERVAL=5000
 ```
+
+If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
 
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` with
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` also works. The signal
@@ -319,7 +349,9 @@ metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics"
 
 Each endpoint is the full signal URL. Codex does not append `/v1/logs` for
 you. `protocol = "json"` also works. Header values in this file are literal;
-`${ENV_VAR}` is not expanded.
+`${ENV_VAR}` is not expanded. If the receiver has a token set, add
+`headers = { Authorization = "Bearer TOKEN" }` to each `otlp-http` table,
+with the token written out (see [Optional receiver token](#optional-receiver-token)).
 
 Quit Codex so the exporter flushes. Then:
 
@@ -392,7 +424,9 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 opencode run --model "openrouter/recursive/flint-v1.0:free" "..."
 ```
 
-`OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs.
+`OTEL_EXPORTER_OTLP_ENDPOINT` is the only variable this receiver needs when
+no token is set. If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
 
 ## Point Pi at it
 
@@ -406,6 +440,9 @@ export PI_OTEL_LOGS=1
 export PI_OTEL_SPAN_NAMING=genai
 pi --print --provider openrouter --model "recursive/flint-v1.0:free" "..."
 ```
+
+If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
 
 HTTP JSON still works if you would rather not use gRPC. Point the endpoint at
 port 4318 and set the protocol:
@@ -434,6 +471,9 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 grok
 ```
+
+If the receiver has a token set, also export
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`.
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
