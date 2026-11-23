@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/decision"
@@ -137,5 +138,34 @@ func TestSupersedesCycleMarksBothAndTerminates(t *testing.T) {
 	if g.Decisions[0].EffectiveStatus != decision.EffectiveSuperseded || !reflect.DeepEqual(g.Decisions[0].SupersededBy, []string{"y"}) ||
 		g.Decisions[1].EffectiveStatus != decision.EffectiveSuperseded || !reflect.DeepEqual(g.Decisions[1].SupersededBy, []string{"x"}) {
 		t.Fatalf("%+v", g.Decisions)
+	}
+}
+
+func TestTextQuotesDELAndRTLButJSONKeepsThemRaw(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{ID: "old", Statement: "del\x7f rtl\u202e", Status: decision.StatusDecision}); err != nil {
+		t.Fatal(err)
+	}
+	addAll(t, db, "new")
+	link(t, db, decision.RelSupersedes, dec("new"), dec("old"))
+	g, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text, raw bytes.Buffer
+	if err := decision.WriteText(&text, g); err != nil {
+		t.Fatal(err)
+	}
+	if err := decision.WriteJSON(&raw, g); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), `"del\x7f rtl\u202e"`) || strings.ContainsAny(text.String(), "\x7f\u202e") {
+		t.Fatalf("table did not quote the cell:\n%s", text.String())
+	}
+	if !strings.Contains(text.String(), "superseded by new") {
+		t.Fatalf("%s", text.String())
+	}
+	if !strings.Contains(raw.String(), "del\x7f rtl\u202e") {
+		t.Fatalf("json escaped DEL/RTL:\n%s", raw.String())
 	}
 }

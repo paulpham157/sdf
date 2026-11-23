@@ -137,8 +137,14 @@ active. To find the latest replacement, follow `superseded_by`. A cycle, such as
 them from the same code. The UI shows "superseded by ID" next to the record.
 
 `sdf decision list` prints the records and then the edges, each as a table in
-insertion order. An empty source prints as `-`. A value with a control
-character, such as a tab, is printed Go-quoted so it cannot break the columns.
+insertion order. An empty source prints as `-`. A cell that holds a
+non-printing character, such as a tab, DEL, or a right-to-left override like
+U+202E, or that is not valid UTF-8, is printed Go-quoted so it cannot break the
+columns or reorder the terminal line. Every column follows this rule, including
+`EFFECTIVE`, and any column added later must too. `--json` does not quote: it
+leaves DEL and RTL characters raw in the JSON strings, exactly as
+`GET /api/decisions` does, so a reader that prints JSON values to a terminal
+has to escape them itself.
 `sdf decision list --json` prints exactly what `GET /api/decisions` returns,
 because both read the store through the same code. Like `sdf summary`, it opens
 `sdf-telemetry.sqlite` unless `--db` names another file, and opening a file
