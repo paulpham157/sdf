@@ -1,12 +1,11 @@
-//go:build reviewbugs
-
 package decision_test
 
-// Review tests for c3fc1f2 that state the behaviour the review asks for.
-// They FAIL on c3fc1f2 and are behind the reviewbugs tag so the default
-// suite stays green: go test -tags reviewbugs ./internal/decision/ -run ReviewBug
+// Review tests for c3fc1f2 that state the behaviour the review asked for.
+// They failed on c3fc1f2 and were behind a reviewbugs build tag; with the
+// fixes they run in the default suite.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/decision"
@@ -46,5 +45,68 @@ func TestReviewBugContradictsFromARetractedDecisionDoesNotChallenge(t *testing.T
 	retract(t, db, "b", "", "")
 	if loadByID(t, db)["a"].Challenged {
 		t.Fatal("a is challenged only by a withdrawn decision")
+	}
+}
+
+// The alias's ref errors name the caller's flag as well.
+func TestReviewBugAliasRefErrorNamesTheCallersFlag(t *testing.T) {
+	db := openDB(t)
+	addAll(t, db, "b")
+	for _, rel := range []string{decision.AliasBlockedBy, decision.AliasDependsOn} {
+		_, err := decision.Link(db, decision.EdgeInput{Relation: rel, From: dec("b"), To: dec("bad ref")})
+		if err == nil || !strings.HasPrefix(err.Error(), "to: ") {
+			t.Fatalf("%s: err %v, want it to name to", rel, err)
+		}
+	}
+}
+
+// Two supersedes paths that meet again are not a cycle: b and c both
+// supersede a, d supersedes both and is retracted, so the blocker a has no
+// head and is settled (withdrawn), not open.
+func TestReviewBugSupersedesDiamondIsNotACycle(t *testing.T) {
+	db := openDB(t)
+	addHypotheses(t, db, "a", "b", "c", "d")
+	addAll(t, db, "target")
+	link(t, db, decision.RelSupersedes, dec("b"), dec("a"))
+	link(t, db, decision.RelSupersedes, dec("c"), dec("a"))
+	link(t, db, decision.RelSupersedes, dec("d"), dec("b"))
+	link(t, db, decision.RelSupersedes, dec("d"), dec("c"))
+	link(t, db, decision.RelBlocks, dec("a"), dec("target"))
+	retract(t, db, "d", "", "")
+	if d := loadByID(t, db)["target"]; d.Blocked || len(d.OpenBlockers) != 0 {
+		t.Fatalf("%+v: a's only head was retracted, want settled", d)
+	}
+}
+
+// A legacy cycle on one branch does not reopen a blocker that a decision
+// record settled on another: the blocker has a head, and it is a decision.
+func TestReviewBugCycleBesideADecisionHeadIsSettled(t *testing.T) {
+	db := openDB(t)
+	addHypotheses(t, db, "x", "y")
+	addAll(t, db, "r", "target")
+	legacyEdge(t, db, decision.RelSupersedes, dec("x"), dec("y"))
+	legacyEdge(t, db, decision.RelSupersedes, dec("y"), dec("x"))
+	link(t, db, decision.RelSupersedes, dec("r"), dec("x"))
+	link(t, db, decision.RelBlocks, dec("x"), dec("target"))
+	if d := loadByID(t, db)["target"]; d.Blocked {
+		t.Fatalf("%+v: r settled x, want not blocked", d)
+	}
+}
+
+// A contradicts from a superseded decision does not challenge either, and
+// an earlier contradicts from an active source still does.
+func TestReviewBugContradictsFromASupersededDecisionDoesNotChallenge(t *testing.T) {
+	db := openDB(t)
+	seedSession(t, db)
+	addAll(t, db, "a", "b", "b2", "c")
+	link(t, db, decision.RelContradicts, dec("b"), dec("a"))
+	link(t, db, decision.RelSupersedes, dec("b2"), dec("b"))
+	if loadByID(t, db)["a"].Challenged {
+		t.Fatal("a is challenged only by a superseded decision")
+	}
+	link(t, db, decision.RelContradicts, session("sess-1"), dec("c"))
+	link(t, db, decision.RelContradicts, dec("b"), dec("c"))
+	if !loadByID(t, db)["c"].Challenged {
+		t.Fatal("c is contradicted by an active session, want challenged")
 	}
 }

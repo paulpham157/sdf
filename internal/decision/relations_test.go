@@ -167,7 +167,8 @@ func TestEndpointKindsPerRelation(t *testing.T) {
 	}{
 		{decision.RelBlocks, session("sess-1"), dec("a"), "blocks links a decision to a decision: from is session:sess-1"},
 		{decision.RelBlocks, dec("a"), commit(sha), "blocks links a decision to a decision: to is commit:" + sha},
-		{decision.AliasBlockedBy, dec("a"), session("sess-1"), "blocks links a decision to a decision: from is session:sess-1"},
+		{decision.AliasBlockedBy, dec("a"), session("sess-1"), "blocked_by links a decision to a decision: to is session:sess-1"},
+		{decision.AliasDependsOn, session("sess-1"), dec("a"), "depends_on links a decision to a decision: from is session:sess-1"},
 		{decision.RelConflictsWith, dec("a"), session("sess-1"), "conflicts_with links a decision to a decision: to is session:sess-1"},
 		{decision.RelRefines, commit(sha), dec("a"), "refines links a decision to a decision: from is commit:" + sha},
 		{decision.RelImplements, dec("a"), dec("b"), "implements links a session or commit to a decision: from is decision:a"},

@@ -264,14 +264,14 @@ func Link(s *store.Store, in EdgeInput) (Edge, error) {
 // (store.AppendDecisionEdge), so concurrent writers cannot slip a change
 // between the check and the insert: two links cannot both pass, and a
 // decision added meanwhile (for example one that turns a dangling edge into
-// a real supersedes step) is seen by the cycle check. Nothing is updated or deleted. Edges an older
-// sdf stored without these checks stay as they are; they are read back
-// unchanged and count as existing edges here.
-// beforeAppendEdge, when set by a test, runs after LinkWithWarnings' checks
-// that need no transaction and before store.AppendDecisionEdge. It is nil
-// in production.
-var beforeAppendEdge func()
-
+// a real supersedes step) is seen by the cycle check. Nothing is updated or
+// deleted. Edges an older sdf stored without these checks stay as they are;
+// they are read back unchanged and count as existing edges here.
+//
+// An alias (blocked_by, depends_on) is checked as the caller typed it, so a
+// ref or kind error names the caller's own from or to. Only then are the
+// ends swapped into the stored blocks edge; the later checks and the returned
+// Edge use that canonical form.
 func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	edge, err := newEdge(in, now())
 	if err != nil {
@@ -283,6 +283,7 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	if err := checkKinds(edge); err != nil {
 		return Edge{}, nil, err
 	}
+	edge = canonical(edge)
 	if err := known(s, edge.From); err != nil {
 		return Edge{}, nil, err
 	}
@@ -325,6 +326,11 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	}
 	return edge, warnings, nil
 }
+
+// beforeAppendEdge, when set by a test, runs after LinkWithWarnings' checks
+// that need no transaction and before store.AppendDecisionEdge. It is nil
+// in production.
+var beforeAppendEdge func()
 
 // checkAgainst applies the rules that depend on the stored edges.
 func checkAgainst(edge Edge, existing []Edge, stored map[string]bool) ([]string, error) {
@@ -416,7 +422,11 @@ func countsAs(e Edge, stored map[string]bool, rel string) bool {
 // checkKinds applies each relation's endpoint kinds. It needs no store, so
 // it runs before the refs are looked up.
 //
-//   - supersedes, blocks, conflicts_with, refines: decision to decision;
+// An alias is checked under its own name and with the ends as the caller
+// gave them, before canonical swaps them.
+//
+//   - supersedes, blocks, conflicts_with, refines, and the aliases
+//     blocked_by and depends_on: decision to decision;
 //   - implements: session or commit to decision;
 //   - validates, contradicts: any kind to a decision;
 //   - constrains: from a decision to any kind.
@@ -429,7 +439,7 @@ func checkKinds(e Edge) error {
 		return kindError{msg: msg}
 	}
 	switch e.Relation {
-	case RelSupersedes, RelBlocks, RelConflictsWith, RelRefines:
+	case RelSupersedes, RelBlocks, RelConflictsWith, RelRefines, AliasBlockedBy, AliasDependsOn:
 		if e.From.Kind != KindDecision {
 			return fail("links a decision to a decision", "from", e.From)
 		}
@@ -658,14 +668,19 @@ func resolve(g *Graph) {
 //     blocker blocks nothing. So a blocking hypothesis clears once a
 //     decision record supersedes it (records never change status, so
 //     superseding is how a hypothesis gets settled), or once it is
-//     retracted. Blocked: the record is active and OpenBlockers is not
-//     empty.
+//     retracted. A blocker that reaches no head because its supersedes chain
+//     only runs into a cycle (an older sdf could store one) is open: no
+//     decision record settled it. Blocked: the record is active and
+//     OpenBlockers is not empty.
 //   - ConflictsWith: the other side of every conflicts_with edge.
 //     Conflicted: the record is active and at least one of those is active.
 //   - RefinedBy: every decision with a refines edge to this one. The record
 //     keeps its own EffectiveStatus.
 //   - Challenged: the record is active and the latest validates or
-//     contradicts edge to it, in edge order, is contradicts.
+//     contradicts edge to it, in edge order, is contradicts. A contradicts
+//     edge from a decision that is not active (retracted or superseded)
+//     counts for nothing, as a withdrawn blocker blocks nothing; a session
+//     or commit source always counts.
 func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string][]string) {
 	index := make(map[string]int, len(g.Decisions))
 	for i, d := range g.Decisions {
@@ -682,6 +697,10 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 	}
 	blockedBy, conflicts, refinedBy := map[string][]string{}, map[string][]string{}, map[string][]string{}
 	seenB, seenC, seenR := map[[2]string]bool{}, map[[2]string]bool{}, map[[2]string]bool{}
+	active := func(id string) bool {
+		i, ok := index[id]
+		return ok && g.Decisions[i].EffectiveStatus == EffectiveActive
+	}
 	challenged := map[string]bool{}
 	for _, e := range g.Edges {
 		switch {
@@ -694,34 +713,47 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 			add(refinedBy, seenR, e.To.Ref, e.From.Ref)
 		case (e.Relation == RelValidates || e.Relation == RelContradicts) &&
 			e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To:
+			if e.Relation == RelContradicts && e.From.Kind == KindDecision && !active(e.From.Ref) {
+				continue
+			}
 			challenged[e.To.Ref] = e.Relation == RelContradicts
 		}
 	}
-	active := func(id string) bool {
-		i, ok := index[id]
-		return ok && g.Decisions[i].EffectiveStatus == EffectiveActive
-	}
-	var heads func(id string, seen map[string]bool) []string
-	heads = func(id string, seen map[string]bool) []string {
-		if seen[id] {
-			return nil
+	// heads collects the current heads of id into out. It reports cyclic
+	// when a path from id comes back to a decision already on it. onPath
+	// holds the decisions on the current path only, so two paths that meet
+	// again (b and c both superseded by d) are not taken for a cycle.
+	var heads func(id string, onPath map[string]bool, out *[]string) (cyclic bool)
+	heads = func(id string, onPath map[string]bool, out *[]string) bool {
+		if onPath[id] {
+			return true
 		}
-		seen[id] = true
 		i, ok := index[id]
 		if !ok || g.Decisions[i].Retraction != nil {
-			return nil
+			return false
 		}
-		if next := supersededBy[id]; len(next) > 0 {
-			var out []string
-			for _, n := range next {
-				out = append(out, heads(n, seen)...)
+		next := supersededBy[id]
+		if len(next) == 0 {
+			*out = append(*out, id)
+			return false
+		}
+		onPath[id] = true
+		cyclic := false
+		for _, n := range next {
+			if heads(n, onPath, out) {
+				cyclic = true
 			}
-			return out
 		}
-		return []string{id}
+		delete(onPath, id)
+		return cyclic
 	}
 	unsettled := func(blocker string) bool {
-		for _, h := range heads(blocker, map[string]bool{}) {
+		var hs []string
+		cyclic := heads(blocker, map[string]bool{}, &hs)
+		if len(hs) == 0 {
+			return cyclic
+		}
+		for _, h := range hs {
 			if g.Decisions[index[h]].Status == StatusHypothesis {
 				return true
 			}
@@ -965,12 +997,12 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	}, nil
 }
 
+// newEdge checks the relation and both endpoints as the caller gave them,
+// so an alias keeps its name and its ends here; canonical stores it.
 func newEdge(in EdgeInput, recordedAt string) (Edge, error) {
 	switch in.Relation {
 	case RelConstrains, RelImplements, RelSupersedes, RelValidates, RelContradicts,
-		RelBlocks, RelConflictsWith, RelRefines:
-	case AliasBlockedBy, AliasDependsOn:
-		in = EdgeInput{Relation: RelBlocks, From: in.To, To: in.From}
+		RelBlocks, RelConflictsWith, RelRefines, AliasBlockedBy, AliasDependsOn:
 	default:
 		return Edge{}, fmt.Errorf("%s", relationList)
 	}
@@ -982,15 +1014,27 @@ func newEdge(in EdgeInput, recordedAt string) (Edge, error) {
 	if err != nil {
 		return Edge{}, fmt.Errorf("to: %w", err)
 	}
-	// conflicts_with is symmetric: store the smaller endpoint first, so "a
-	// conflicts_with b" and "b conflicts_with a" are the same stored edge.
-	// Only two decisions are swapped; any other pair is refused by the kind
-	// check, whose message then names the ends as the caller gave them.
-	if in.Relation == RelConflictsWith && from.Kind == KindDecision && to.Kind == KindDecision &&
-		endpointText(to) < endpointText(from) {
-		from, to = to, from
-	}
 	return Edge{Relation: in.Relation, From: from, To: to, RecordedAt: recordedAt}, nil
+}
+
+// canonical returns the edge in its stored form. It runs after checkKinds,
+// so every error before it names the ends as the caller gave them.
+//
+//   - blocked_by and depends_on become blocks with the ends swapped: "b
+//     blocked_by a" and "b depends_on a" both store "a blocks b".
+//   - conflicts_with is symmetric: the smaller endpoint goes first, so "a
+//     conflicts_with b" and "b conflicts_with a" are the same stored edge.
+func canonical(e Edge) Edge {
+	switch e.Relation {
+	case AliasBlockedBy, AliasDependsOn:
+		e.Relation = RelBlocks
+		e.From, e.To = e.To, e.From
+	case RelConflictsWith:
+		if endpointText(e.To) < endpointText(e.From) {
+			e.From, e.To = e.To, e.From
+		}
+	}
+	return e
 }
 
 func endpoint(e Endpoint) (Endpoint, error) {
