@@ -222,7 +222,14 @@ When only a session aggregate exists and that prompt total is at or above
 the lowest threshold, the cost stays `unknown`: a request could have crossed
 the threshold, and the base rate is not applied to the total. Per-request
 counts are used when the token source is already `grok_code.api_request` or
-`claude_code.api_request` logs. An override entry with any other condition
+`claude_code.api_request` logs, or Codex `response.completed` logs: each
+de-duplicated `response.completed` event (the same events the displayed
+totals sum) is priced on its own, so a Codex session whose summed prompt
+tokens reach 272000 is still priced when every call is below the
+`min_prompt_tokens` 272000 override on `openai/gpt-5.4` and similar rows,
+and a single call at or above it uses the override rates (issue #213). A
+Codex session whose token source is `codex.turn.token_usage` is still priced
+from that aggregate. An override entry with any other condition
 key (for example `utc_start` / `utc_end`) leaves the cost unknown, including
 when a `min_prompt_tokens` field is present but not a non-negative integer.
 
