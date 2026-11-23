@@ -300,13 +300,147 @@ decision_retractions`, in its own migration step, after the existing column
 migration. It only adds a table: no column or table changes, and running it
 again does nothing. A database written before this, including the Python
 receiver's, gains the empty table on its first open by a command that writes
-(`sdf decision add`, `link`, `retract`, or the receiver). `sdf summary` and
-`sdf decision list` open read-only and do not add it. An older sdf binary reads
+(`sdf decision add`, `link`, `retract`, or the receiver). `sdf summary`,
+`sdf decision list`, and `sdf decision audit` open read-only and do not add it. An older sdf binary reads
 a newer database as before. It does not know the table, so it shows a retracted
 decision by its stored status and edges, without the retraction. A file that
 cannot be written, such as a read-only copy, is opened without the table and
 reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
+
+### Auditing the graph
+
+`sdf decision audit` lists what the graph is missing, from stored structure
+only. It reads decisions, edges, and retractions through the same code as
+`sdf decision list` (so `effective_status` is the one `list` shows), and the
+commit SHA and session id that stored events carry. It does not read a log
+body, a prompt, a commit message, or tool content, it never infers a
+decision, and it never writes. Like `list`, it opens the store with
+`OpenReadOnly`: a missing file in an existing directory audits as an empty
+store and is not created, a missing directory is an error, and an older file
+is read without being migrated.
+
+```bash
+sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
+```
+
+It reports three kinds of finding:
+
+1. **Active decision with no `implements` edge** (`active_without_implements`).
+   A decision whose `effective_status` is `active` and that no `implements`
+   edge points at (`--to decision:ID`, from any kind). Hypotheses are
+   included; the finding carries `status` so a reader can filter them.
+2. **Commit whose session is not linked** (`unlinked_session_commits`). A
+   commit is a distinct SHA named by a stored event, by the same rules
+   `link` uses to accept a `commit:` endpoint: an `sdf.git.commit` hook event
+   (`vcs.ref.head.revision`) or a `claude_code.tool_result` log
+   (`sdf.git_commit_id`, `vcs.ref.head.revision`, `git_commit_id`, or
+   `git_commit_id` in `tool_parameters`). Its session is the stored
+   `session_id` of that event, which the receiver takes from the event's
+   `session.id`; the git hook sets `session.id` from the agent's session
+   variable. The commit is a finding when it has a session and neither any of
+   its sessions nor the commit itself has an edge, in either direction and of
+   any relation, to a stored decision. A commit with no session is counted in
+   `commits_total` but is never a finding. The git hook posts only when an
+   agent session id is set, so such a commit comes from a tool-result log that
+   carried no `session.id`; a commit made outside any session is unknown to
+   the store and is not counted. The `SDF-Session:` trailer is
+   **not** read: the hook writes it into the commit message, and the store
+   never holds commit messages, so `source` is always `event` today.
+   (`trailer` is reserved for a session read from a stored trailer.)
+3. **Edge at a retracted or superseded decision** (`stale_edges`). An edge
+   with a decision end whose `effective_status` is `retracted` or
+   `superseded`, at either end. `supersedes` edges are not checked: they are
+   how a decision becomes superseded.
+
+Exit codes: **0** no findings, **1** at least one finding, **2** usage error
+(unknown flag, a time that is not RFC3339, `--since` not before `--until`),
+**3** the store could not be opened or read. So a CI step or an agent
+Stop/SessionEnd hook can tell "something to link" (1) from "could not check"
+(3).
+
+**Window.** `--since` (inclusive) and `--until` (exclusive) take RFC3339
+times, for example `2026-11-21T00:00:00Z`, so two runs split at one instant
+count every item once. They apply to a decision's `recorded_at` (finding 1
+and the `decisions_*` totals), a commit's time (finding 2 and the `commits_*`
+totals), and an edge's `recorded_at` (finding 3 and `edges_checked`). A
+commit's time is the record time of the first stored event that names it
+(`received_at` when the event has none). Links are read from every edge
+whatever its time, because work is often linked after it lands: a commit in
+the window whose session was linked later counts as linked. With a bound, an
+item whose stored time does not parse is left out.
+
+Text output is a summary line and one section per kind with findings:
+
+```text
+Findings: 3
+
+Active decisions with no implements edge: 1 of 3
+  decision:store-columns  decision  2026-11-20T15:02:11.000000+00:00  Store hot attributes in their own columns.
+
+Commits whose session is not linked to a decision: 1 of 3 with a session
+  commit:a1b2c3d4e5f60718293a4b5c6d7e8f9012345678  session:grok-7f3c2a9e  2026-11-20T14:40:00.000000+00:00  (event sdf.git.commit)
+
+Edges at a retracted or superseded decision: 1 of 4 checked
+  validates  commit:3f2a9c1e5b7d4a6c8e0f1a2b3c4d5e6f7a8b9c0d  decision:drop-cgo  2026-11-20T15:03:40.000000+00:00  (to drop-cgo retracted)
+```
+
+With no findings it prints one line, `No findings: N active decisions, N
+commits (N with a session, N linked), N edges checked.`
+
+**JSON (`--json`), schema `sdf.decision.audit/v1`.** Field names are stable;
+a change that removes or renames one gets a new `schema` value. Every list is
+`[]`, never `null`, and lists are in store insertion order.
+
+```json
+{
+  "schema": "sdf.decision.audit/v1",
+  "window": {},
+  "totals": {
+    "commits_total": 4,
+    "commits_with_session": 3,
+    "commits_linked": 2,
+    "decisions_active": 3,
+    "decisions_active_with_implements": 2,
+    "edges_checked": 4
+  },
+  "finding_count": 3,
+  "findings": {
+    "active_without_implements": [
+      {"id": "store-columns", "status": "decision", "recorded_at": "2026-11-20T15:02:11.000000+00:00", "statement": "Store hot attributes in their own columns."}
+    ],
+    "unlinked_session_commits": [
+      {"sha": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", "session_id": "grok-7f3c2a9e", "timestamp": "2026-11-20T14:40:00.000000+00:00",
+       "source": "event", "event": "sdf.git.commit", "repo": "/home/dev/sdf", "branch": "fix/wal"}
+    ],
+    "stale_edges": [
+      {"relation": "validates", "from": {"kind": "commit", "ref": "3f2a9c1e5b7d4a6c8e0f1a2b3c4d5e6f7a8b9c0d"}, "to": {"kind": "decision", "ref": "drop-cgo"},
+       "recorded_at": "2026-11-20T15:03:40.000000+00:00", "stale": [{"end": "to", "id": "drop-cgo", "effective_status": "retracted"}]}
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `window.since`, `window.until` | The bounds given, RFC3339 in UTC; omitted when not given (`{}` with neither) |
+| `totals.commits_total` | Distinct commit SHAs in the window, with or without a session |
+| `totals.commits_with_session` | Of those, commits some event names a session for |
+| `totals.commits_linked` | Commits in the window one of whose sessions has an edge to or from a stored decision, or with such an edge on `commit:SHA` itself; includes commits with no session that are linked directly |
+| `totals.decisions_active` | Decisions in the window whose `effective_status` is `active` |
+| `totals.decisions_active_with_implements` | Of those, the ones an `implements` edge points at |
+| `totals.edges_checked` | Edges in the window, other than `supersedes`, with at least one end a stored decision |
+| `finding_count` | Total number of findings, all kinds |
+| `active_without_implements[]` | `id`, `status` (as stored), `recorded_at`, `statement` |
+| `unlinked_session_commits[]` | `sha` (lowercase), `session_id`, `timestamp` (record time of the event that named the session, UTC), `source` (`event` or `trailer`), `event` (`sdf.git.commit` or `claude_code.tool_result`), and `repo` and `branch` when the hook sent them |
+| `stale_edges[]` | `relation`, `from`, `to`, `recorded_at`, and `stale[]`: each decision end that is stale, with `end` (`from` or `to`), `id`, `effective_status`, and `superseded_by` when superseded |
+
+The totals are denominators: `decisions_active - decisions_active_with_implements`
+is the number of `active_without_implements` findings, and
+`commits_with_session` minus the `unlinked_session_commits` findings is the
+number of commits with a session that are linked. Link recall over commits
+with a session is `(commits_with_session - len(unlinked_session_commits)) /
+commits_with_session`, and over all commits `commits_linked / commits_total`.
 
 ## Local budget
 

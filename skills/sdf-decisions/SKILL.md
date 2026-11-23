@@ -146,6 +146,16 @@ Retract when the user (or you) withdraws a decision or hypothesis and nothing re
 - A decision can be retracted once. A second retract is rejected.
 - A retracted decision takes no new links in either direction; edges from before stay.
 
+## Check for gaps
+
+```bash
+sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
+```
+
+Read-only; it never writes or infers a record. It lists active decisions no `implements` edge points at, commits (from the git hook or a Claude Code tool result) whose session is not linked to any decision and that are not linked themselves, and edges that touch a retracted or superseded decision. Exit 0 means nothing to do, 1 means findings, 2 a usage error, 3 the store could not be read.
+
+Run it before you finish a task that recorded decisions or made commits. For each finding, link only what you know: an `implements` edge from the session or commit that did the work, if it really implements that decision. Do not add a decision just to clear a finding, and do not link a commit to a decision it did not implement; an unlinked finding is better than a wrong edge. A stale edge needs no fix unless the work now follows a newer decision, in which case link it to that one.
+
 ## Errors
 
 - `sdf` not on `PATH`, or the command cannot be run: say so, and do not claim the record was written. The user needs `sdf` installed and on `PATH` (build it with `make build` in the sdf repo if needed).
