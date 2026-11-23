@@ -3,9 +3,10 @@
 `./sdf serve` listens for OTLP/HTTP on `http://127.0.0.1:4318` and OTLP/gRPC on
 `127.0.0.1:4317`, and writes `sdf-telemetry.sqlite` in the current directory.
 4318 is the OTLP/HTTP default. 4317 is the OTLP/gRPC default, which is where
-pi-otel exports unless you change it. There is no authentication on either
-port; keep the bind address on localhost. Override with `--host`, `--port`
-(HTTP), `--grpc-port`, and `--db`.
+pi-otel exports unless you change it. Authentication is off by default; keep
+the bind address on localhost. Override with `--host`, `--port` (HTTP),
+`--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
+`SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
 The same process serves a read-only UI at `http://127.0.0.1:4320/` unless
 you pass `--no-ui`. `--ui-addr` moves the UI. `--host` does not: the page
@@ -32,6 +33,49 @@ open, and a missing code is `UNSET`. Inspect them with SQLite:
 sqlite3 sdf-telemetry.sqlite \
   "select signal, session_id, name from records order by id desc limit 20"
 ```
+
+## Optional token authentication
+
+`--otlp-token TOKEN`, `--otlp-token-file PATH`, `SDF_OTLP_TOKEN`, or
+`SDF_OTLP_TOKEN_FILE` turns on a shared bearer token. The two flags are
+mutually exclusive, as are the two environment variables. A flag beats the
+environment. The token is read once at startup.
+
+`--otlp-token` or `SDF_OTLP_TOKEN` with a blank value is the same as unset:
+the receiver stays open, which is the default. A token file is trimmed of
+leading and trailing whitespace. An empty or unreadable file is a startup
+error; it does not disable authentication. On Unix, a group- or
+world-readable token file prints a warning.
+
+When a token is set, these requests must send `Authorization: Bearer <token>`:
+
+- `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs`, and `POST /v1/sessions`
+- gRPC `TraceService`, `MetricsService`, and `LogsService` `Export` RPCs, as
+  metadata key `authorization`
+
+A missing or wrong token is HTTP 401 or gRPC `Unauthenticated`. The comparison
+is constant-time. The token is not written to the request log. `GET /health`
+does not require the token, so `sdf init --check` still works.
+
+Point an OpenTelemetry exporter at the receiver with:
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer%20$SDF_OTLP_TOKEN"
+```
+
+The space after `Bearer` is written as `%20`, as the OpenTelemetry
+specification requires for `OTEL_EXPORTER_OTLP_HEADERS`. The same header
+works for HTTP and gRPC exporters that honor that variable. Agent-specific
+settings are in [docs/agents.md](agents.md#optional-receiver-token).
+
+`sdf init --write` and the session and git hooks do not add this header yet.
+If the receiver has a token set, those hooks and an init-generated config
+without the header will be rejected until you add it yourself.
+
+A token only detects callers that do not have it. `--otlp-token-file`
+keeps the token out of the process listing, but a world-readable file, a
+settings file, or an agent log can still expose it. Keep the bind address
+on localhost unless you trust the network.
 
 ## The UI
 
@@ -77,10 +121,10 @@ scripts, or anything else from the network.
 
 `sdf serve --host 0.0.0.0` exposes the OTLP receivers on every interface.
 Those payloads can include prompts and filesystem paths when the agent is
-opted in, and the receiver has no authentication. The UI still binds to
-`127.0.0.1` in that case. `--ui-addr 0.0.0.0:4320` exposes the same
-telemetry in a browser and prints a warning. Do not do that on a network
-you do not trust.
+opted in. A bearer token is a shared secret, not a substitute for a trusted
+network. The UI still binds to `127.0.0.1` in that case. `--ui-addr
+0.0.0.0:4320` exposes the same telemetry in a browser and prints a warning.
+Do not do that on a network you do not trust.
 
 An empty database shows an empty state that points at `sdf init`.
 

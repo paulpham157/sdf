@@ -70,12 +70,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	repoPath := ""
 	github := false
 	budgetPath := ""
+	tokenFlag := ""
+	tokenFlagSet := false
+	tokenFileFlag := ""
+	tokenFileFlagSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "usage: sdf serve [--host HOST] [--port PORT] [--grpc-port PORT] [--db PATH] [--otlp-token TOKEN | --otlp-token-file PATH] [--no-ui] [--ui-addr HOST:PORT] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
+			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -175,13 +180,43 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			budgetPath = v
 		case strings.HasPrefix(arg, "--budget="):
 			budgetPath = strings.TrimPrefix(arg, "--budget=")
+		case arg == "--otlp-token":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --otlp-token requires a value")
+				return 2
+			}
+			tokenFlag = v
+			tokenFlagSet = true
+		case strings.HasPrefix(arg, "--otlp-token="):
+			tokenFlag = strings.TrimPrefix(arg, "--otlp-token=")
+			tokenFlagSet = true
+		case arg == "--otlp-token-file":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf serve: --otlp-token-file requires a path")
+				return 2
+			}
+			tokenFileFlag = v
+			tokenFileFlagSet = true
+		case strings.HasPrefix(arg, "--otlp-token-file="):
+			tokenFileFlag = strings.TrimPrefix(arg, "--otlp-token-file=")
+			tokenFileFlagSet = true
 		default:
 			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
 			return 2
 		}
 	}
+	token, code := resolveServeOTLPToken(tokenFlag, tokenFlagSet, tokenFileFlag, tokenFileFlagSet, os.Getenv, stderr)
+	if code != 0 {
+		return code
+	}
 	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
-		fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+		if token == "" {
+			fmt.Fprintln(stderr, "warning: this receiver has no authentication; binding beyond localhost exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+		} else {
+			fmt.Fprintln(stderr, "warning: a shared bearer token is not a substitute for a trusted network; binding beyond localhost still exposes telemetry that can include prompts and paths. The UI does not follow --host.")
+		}
 	}
 	if _, err := summary.LoadBudget(budgetPath); err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
@@ -204,6 +239,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		HTTPPort: port,
 		GRPCPort: grpcPort,
 		Store:    db,
+		Token:    token,
 	}
 	if err := srv.Start(); err != nil {
 		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
