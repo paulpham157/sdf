@@ -450,11 +450,19 @@ func TestTrimTenThousandDecisions(t *testing.T) {
 	start := time.Now()
 	got := brief.Trim(items, len(items), 1<<30, render)
 	elapsed := time.Since(start)
-	if elapsed > 100*time.Millisecond {
-		t.Fatalf("trim took %s", elapsed)
-	}
 	if got.Omitted != 0 || len(got.Items) != len(items) {
 		t.Fatalf("omitted %d kept %d", got.Omitted, len(got.Items))
+	}
+	if testing.Short() {
+		t.Logf("trim of 10000 decisions: %s (timing skipped, short)", elapsed)
+		return
+	}
+	budget := 100 * time.Millisecond
+	if raceEnabled {
+		budget *= 10
+	}
+	if elapsed > budget {
+		t.Fatalf("trim took %s, budget %s", elapsed, budget)
 	}
 	t.Logf("trim of 10000 decisions: %s", elapsed)
 }
