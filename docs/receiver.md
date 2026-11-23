@@ -250,7 +250,19 @@ same `{"hooks": {"SessionStart": [...]}}` shape. Its stdin carries
 `session_id` (a snake_case alias of `sessionId`), `source` on `SessionStart`,
 and `reason` on `SessionEnd`. `SessionStart` does not fire for a subagent's
 own session, and a child's `SessionEnd` carries `subagentType`, so the hook
-posts nothing for it. Grok substitutes `$VAR` in a hook command from its own
+posts nothing for it. The hook also sends the working directory as `cwd`:
+the envelope's `workspaceRoot`, which Grok sets to the git toplevel of the
+session directory (or that directory outside a checkout), else its `cwd`
+(`xai-grok-shell/src/session/acp_session_impl/spawn.rs`,
+`find_git_root_from_path(session_info.cwd)`; `session/acp_session/hooks.rs`,
+`make_hook_envelope`). The value is passed on as the escaped JSON string it
+already is, so spaces, quotes, and backslashes in the path survive. The
+collector stores it as `sdf.session.cwd` on the open and close logs (one
+line, at most 4096 bytes; anything else is a 400), and the summary uses it
+as the session's working directory (see
+[docs/outcomes.md](outcomes.md#linking-a-session-to-a-commit)). Only the
+Grok hook sends `cwd`; the other agents' hooks are unchanged. Grok
+substitutes `$VAR` in a hook command from its own
 environment when it loads the file, and refuses a command with a `$VAR` it
 cannot resolve unless the command assigns it; the sdf command uses
 `sdf_`-prefixed local names and `${PATH:-}` for that reason. `SessionEnd`

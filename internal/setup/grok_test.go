@@ -235,10 +235,10 @@ func TestGrokHookCommandPostsAndSkipsAChildSession(t *testing.T) {
 	if len(posts) != 2 {
 		t.Fatalf("posts %q", posts)
 	}
-	if posts[0] != `{"tool":"grok-cli","session_id":"0199a1b2-c3d4","edge":"open","reason":"startup"}` {
+	if posts[0] != `{"tool":"grok-cli","session_id":"0199a1b2-c3d4","edge":"open","reason":"startup","cwd":"/repo"}` {
 		t.Fatal(posts[0])
 	}
-	if posts[1] != `{"tool":"grok-cli","session_id":"0199a1b2-c3d4","edge":"close","reason":"exit"}` {
+	if posts[1] != `{"tool":"grok-cli","session_id":"0199a1b2-c3d4","edge":"close","reason":"exit","cwd":"/repo"}` {
 		t.Fatal(posts[1])
 	}
 }
@@ -284,4 +284,48 @@ func mustReadFile(t *testing.T, path string) string {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestGrokHookCommandSendsTheWorkingDirectory(t *testing.T) {
+	var posts []map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var got map[string]string
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Errorf("payload is not JSON: %v %s", err, body)
+		}
+		posts = append(posts, got)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	odd := `/tmp/my repo/it's "quoted" \\ back\slash $HOME %s`
+	envelope := func(fields map[string]any) string {
+		fields["session_id"] = "s1"
+		fields["sessionId"] = "s1"
+		fields["source"] = "startup"
+		fields["hook_event_name"] = "SessionStart"
+		// A decoy: another value that contains the key name, escaped.
+		fields["transcriptPath"] = `x"workspaceRoot":"/decoy"`
+		b, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	cmd := grokHookCommand("open", srv.URL)
+	runHook(t, cmd, envelope(map[string]any{"cwd": "/tmp/my repo/sub", "workspaceRoot": odd}))
+	runHook(t, cmd, envelope(map[string]any{"cwd": "/only/cwd dir"}))
+	runHook(t, cmd, envelope(map[string]any{}))
+	if len(posts) != 3 {
+		t.Fatalf("posts %v", posts)
+	}
+	if posts[0]["cwd"] != odd {
+		t.Fatalf("workspaceRoot: got %q want %q", posts[0]["cwd"], odd)
+	}
+	if posts[1]["cwd"] != "/only/cwd dir" {
+		t.Fatalf("cwd fallback: %q", posts[1]["cwd"])
+	}
+	if posts[2]["cwd"] != "" || posts[2]["session_id"] != "s1" {
+		t.Fatalf("no directory: %v", posts[2])
+	}
 }

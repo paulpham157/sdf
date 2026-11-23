@@ -35,8 +35,9 @@ merge can stay attributed after the original SHA is gone, and only when the
 squash message still contains it. See [Git hooks](receiver.md#git-hooks).
 
 A link is **heuristic** when none of those fired, the session has one
-absolute working directory (`pi.cwd` from pi-otel, or a single
-`workspace.host_paths` value from Claude Code), that directory is a git
+absolute working directory (`pi.cwd` from pi-otel, a single
+`workspace.host_paths` value from Claude Code, or `sdf.session.cwd` from the
+Grok CLI session hook that `sdf init grok --write` installs), that directory is a git
 checkout on this machine, and exactly one commit has a committer time inside
 the session window widened by two seconds. Zero commits, or more than one,
 stays unlinked. The same commit in two sessions' windows unlinks both.

@@ -326,17 +326,39 @@ func stripTomlComment(value string) string {
 // them, and PATH uses ${PATH:-}, which Grok leaves for sh. A SessionEnd that
 // carries subagentType is a child session closing, not the session the
 // exporter reports, so it posts nothing.
+//
+// The hook also sends the working directory as cwd. It reads workspaceRoot,
+// which Grok sets to the git toplevel of the session directory, or that
+// directory when it is not in a checkout (xai-grok-shell
+// session/acp_session_impl/spawn.rs: find_git_root_from_path(session_info.cwd),
+// else session_info.cwd; session/acp_session/hooks.rs make_hook_envelope).
+// When workspaceRoot is missing it falls back to cwd, the session directory.
+// Both are camelCase keys of HookEventEnvelope (xai-grok-hooks/src/event.rs).
+// The value is copied as the escaped JSON string body it already is, so a
+// quote or backslash in the path stays escaped and cannot end the payload
+// string; the server decodes it.
 func grokHookCommand(edge, url string) string {
-	body := fmt.Sprintf(`{"tool":"grok-cli","session_id":"%%s","edge":%q,"reason":"%%s"}`, edge)
+	body := fmt.Sprintf(`{"tool":"grok-cli","session_id":"%%s","edge":%q,"reason":"%%s","cwd":"%%s"}`, edge)
 	return fmt.Sprintf(`export PATH="${PATH:-}:/usr/bin:/bin"; sdf_json=$(cat); `+
 		`case "$sdf_json" in *'"subagentType"'*) exit 0 ;; esac; `+
 		`sdf_sid=$(printf '%%s' "$sdf_json" | %s); [ -n "$sdf_sid" ] || exit 0; `+
 		`sdf_reason=$(printf '%%s' "$sdf_json" | %s); `+
 		`[ -n "$sdf_reason" ] || sdf_reason=$(printf '%%s' "$sdf_json" | %s); `+
-		`sdf_payload=$(printf '%s' "$sdf_sid" "$sdf_reason"); `+
+		`sdf_cwd=$(printf '%%s' "$sdf_json" | %s); `+
+		`[ -n "$sdf_cwd" ] || sdf_cwd=$(printf '%%s' "$sdf_json" | %s); `+
+		`sdf_payload=$(printf '%s' "$sdf_sid" "$sdf_reason" "$sdf_cwd"); `+
 		`curl -sf -m 1 -X POST -H 'content-type: application/json' `+
 		`--data "$sdf_payload" %s >/dev/null 2>&1 || true`,
-		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"), body, shQuote(url))
+		fieldExpr("session_id"), fieldExpr("source"), fieldExpr("reason"),
+		jsonStringExpr("workspaceRoot"), jsonStringExpr("cwd"), body, shQuote(url))
+}
+
+// jsonStringExpr prints the body of one JSON string value with its escapes
+// left in place. ([^"\\]|\\.)* cannot stop at an escaped quote, and an
+// escaped key inside another value ("x\"workspaceRoot\":...") does not match,
+// because the name is followed by a backslash there, not a quote.
+func jsonStringExpr(name string) string {
+	return `sed -n -E 's/.*"` + name + `"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p'`
 }
 
 func grokHookCommands(url string) map[string]string {
