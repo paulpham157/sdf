@@ -115,6 +115,9 @@ For a commit SHA, `git rev-parse HEAD` is the usual source, but link it only whe
 - `sdf` not on `PATH`, or the command cannot be run: say so, and do not claim the record was written. The user needs `sdf` installed and on `PATH` (build it with `make build` in the sdf repo if needed).
 - `unknown reference: session …` or `unknown reference: commit …`: the add already succeeded; leave the record unlinked.
 - `UNIQUE constraint failed: decisions.id`: choose a new id and add again.
+- `edge already recorded: …`: that link exists already; nothing to do.
+- `an edge cannot link an endpoint to itself`, `supersedes links a decision to a decision`, or `supersedes cycle: …`: the link is invalid and was not stored. `supersedes` takes two decision endpoints, from the new decision to the one it replaces; do not supersede back along an existing chain.
+- `warning: … have both validates and contradicts edges`: the link was stored (exit 0). Tell the user the evidence now conflicts.
 - Other validation errors (bad status, bad decided-by, bad id, multi-line statement, bad relation) come back on stderr. Fix the argument and retry. A failed add writes nothing.
 
 After a successful add or link, briefly confirm the id, who decided, statement, status, alternatives and reason if any, optional source, and any links made (or that the record was left unlinked).

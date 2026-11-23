@@ -112,13 +112,63 @@ writes one edge. It needs a relation and two `KIND:REF` endpoints, where
 `KIND` is `decision`, `session`, or `commit`. No route writes a record. An
 agent skill that uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
 
+### Link rules
+
+`sdf decision link` checks an edge before storing it, and stores nothing when a
+check fails. It exits 1 with one `sdf decision link: ...` line on stderr, the
+same as for an unknown session, commit, or decision. Usage errors, such as a
+missing flag, exit 2.
+
+| Relation | Valid direction | Enforced |
+| --- | --- | --- |
+| `supersedes` | decision → decision: `from` replaces `to` | Yes. A session or commit endpoint is rejected |
+| `implements` | session or commit → decision: the work implements the decision | No, any known endpoints |
+| `validates` | session, commit, or decision → decision: evidence that it holds | No, any known endpoints |
+| `contradicts` | session, commit, or decision → decision: evidence against it | No, any known endpoints |
+| `constrains` | decision → decision, session, or commit: the decision limits it | No, any known endpoints |
+
+Every relation also has these rules:
+
+- **Self-link.** `from` and `to` cannot be the same endpoint. The message is
+  `an edge cannot link an endpoint to itself: decision:a`.
+- **Duplicate.** The same relation, `from`, and `to` cannot be stored twice.
+  A commit SHA is compared in lowercase. The message is
+  `edge already recorded: decision:a implements decision:b`. The other
+  direction, or another relation between the same two endpoints, is a
+  different edge.
+- **Supersedes endpoints.** The message is
+  `supersedes links a decision to a decision: from is session:sess-1`. This is
+  checked before the store is asked whether the ref exists.
+- **Supersedes cycle.** `a supersedes b` is rejected when `b` already reaches
+  `a` through `supersedes` edges, including `b supersedes a`. The message names
+  the path, for example
+  `supersedes cycle: decision:c already reaches decision:a through supersedes (c -> b -> a), so decision:a cannot supersede decision:c`.
+  Two decisions may supersede the same one.
+- **Validates and contradicts.** When the same two endpoints, in either
+  direction and in either order, end up with both a `validates` and a
+  `contradicts` edge, the edge is still stored and the command exits 0. It
+  prints
+  `sdf decision link: warning: session:sess-1 and decision:a have both validates and contradicts edges`
+  on stderr.
+
+The duplicate, cycle, and warning checks read the stored edges inside the same
+SQLite transaction as the insert (`BEGIN IMMEDIATE`, which takes the write lock
+first). Two `sdf decision link` runs at the same moment therefore cannot both
+pass a check that only one of them should. The checks only read: no edge or
+record is updated or deleted. Edges that an older sdf stored without these
+checks stay readable, count as existing edges for the duplicate and cycle
+checks, and are handled at read time as described below. No HTTP route writes
+an edge, so `sdf decision link` is the only way to write one.
+
 ### Superseded at read time
 
 A `supersedes` edge reads as "`from` supersedes `to`": the `from` decision
 replaces the `to` decision. Only an edge between two different decisions
-counts. A `supersedes` edge with a session or commit endpoint, or from a
-decision to itself, is still stored and listed with the other edges, but it
-changes no status.
+counts. `sdf decision link` no longer stores a `supersedes` edge with a
+session or commit endpoint, a self-link, or a cycle (see Link rules). A
+database written by an older sdf may still hold such edges. They stay as
+stored and are listed with the other edges, but a non-decision or self
+`supersedes` edge changes no status.
 
 The stored record never changes. Each time the records are read, every record
 gets two fields that are not stored:

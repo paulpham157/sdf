@@ -327,3 +327,45 @@ func serveStore(t *testing.T, db *store.Store) *ui.Server {
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv
 }
+
+func TestDecisionLinkValidationMessagesAndExitCodes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	seedTelemetry(t, dbPath)
+	for _, id := range []string{"old", "new"} {
+		if out := run(t, "decision", "add", "--db", dbPath, "--id", id, "--statement", id, "--status", "decision"); out.code != 0 {
+			t.Fatal(out.stderr)
+		}
+	}
+	link := func(rel, from, to string) result {
+		return run(t, "decision", "link", "--db", dbPath, "--relation", rel, "--from", from, "--to", to)
+	}
+	if out := link("supersedes", "decision:new", "decision:old"); out.code != 0 || out.stdout != "" || out.stderr != "" {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	rejected := []struct{ rel, from, to, stderr string }{
+		{"implements", "decision:old", "decision:old", "sdf decision link: an edge cannot link an endpoint to itself: decision:old\n"},
+		{"supersedes", "decision:old", "decision:new", "sdf decision link: supersedes cycle: decision:new already reaches decision:old through supersedes (new -> old), so decision:old cannot supersede decision:new\n"},
+		{"supersedes", "decision:new", "decision:old", "sdf decision link: edge already recorded: decision:new supersedes decision:old\n"},
+		{"supersedes", "session:sess-1", "decision:old", "sdf decision link: supersedes links a decision to a decision: from is session:sess-1\n"},
+	}
+	for _, r := range rejected {
+		out := link(r.rel, r.from, r.to)
+		if out.code != 1 || out.stdout != "" || out.stderr != r.stderr {
+			t.Fatalf("%s %s %s: %d %q %q", r.from, r.rel, r.to, out.code, out.stdout, out.stderr)
+		}
+	}
+	if out := link("validates", "session:sess-1", "decision:new"); out.code != 0 || out.stderr != "" {
+		t.Fatalf("%d %q", out.code, out.stderr)
+	}
+	warned := link("contradicts", "session:sess-1", "decision:new")
+	if warned.code != 0 || warned.stdout != "" || warned.stderr != "sdf decision link: warning: session:sess-1 and decision:new have both validates and contradicts edges\n" {
+		t.Fatalf("%d %q %q", warned.code, warned.stdout, warned.stderr)
+	}
+	got, err := decision.Load(openStore(t, dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Edges) != 3 {
+		t.Fatalf("%d edges, want 3 (one supersedes, validates, contradicts)", len(got.Edges))
+	}
+}

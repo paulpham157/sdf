@@ -150,32 +150,162 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 	return rec, nil
 }
 
-// Link stores one edge. A session or commit endpoint is rejected with
-// ErrUnknownRef unless the store already has telemetry for it. A decision
-// endpoint must name a decision already stored.
+// ErrSelfLink, ErrSupersedesKind, ErrSupersedesCycle, and ErrDuplicateEdge
+// are the link rules. Link wraps them with the endpoints involved, so
+// errors.Is matches and the message names the edge.
+var (
+	ErrSelfLink        = errors.New("an edge cannot link an endpoint to itself")
+	ErrSupersedesKind  = errors.New("supersedes links a decision to a decision")
+	ErrSupersedesCycle = errors.New("supersedes cycle")
+	ErrDuplicateEdge   = errors.New("edge already recorded")
+)
+
+// Link stores one edge, after LinkWithWarnings' checks. It drops the
+// warnings; a caller that reports them uses LinkWithWarnings.
 func Link(s *store.Store, in EdgeInput) (Edge, error) {
+	edge, _, err := LinkWithWarnings(s, in)
+	return edge, err
+}
+
+// LinkWithWarnings stores one edge and returns any warnings about it. In
+// order, it rejects:
+//
+//   - a bad relation, kind, or ref;
+//   - ErrSelfLink: from and to are the same endpoint, for any relation;
+//   - ErrSupersedesKind: supersedes with a session or commit endpoint.
+//     "from supersedes to" means the from decision replaces the to
+//     decision, so both ends are decisions;
+//   - ErrUnknownRef: a session or commit the store has no telemetry for,
+//     or a decision id not stored;
+//   - ErrDuplicateEdge: the same relation, from, and to already stored;
+//   - ErrSupersedesCycle: from supersedes to when to already reaches from
+//     through decision-to-decision supersedes edges, including to
+//     superseding from directly.
+//
+// It warns, and still stores the edge, when the same two endpoints, in
+// either direction, now have both a validates and a contradicts edge.
+//
+// The duplicate, cycle, and warning checks read the stored edges in the
+// same transaction as the insert (store.AppendDecisionEdge), so concurrent
+// links cannot both pass them. Nothing is updated or deleted. Edges an older
+// sdf stored without these checks stay as they are; they are read back
+// unchanged and count as existing edges here.
+func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	edge, err := newEdge(in, now())
 	if err != nil {
-		return Edge{}, err
+		return Edge{}, nil, err
+	}
+	if edge.From == edge.To {
+		return Edge{}, nil, fmt.Errorf("%w: %s", ErrSelfLink, endpointText(edge.From))
+	}
+	if edge.Relation == RelSupersedes {
+		if edge.From.Kind != KindDecision {
+			return Edge{}, nil, fmt.Errorf("%w: from is %s", ErrSupersedesKind, endpointText(edge.From))
+		}
+		if edge.To.Kind != KindDecision {
+			return Edge{}, nil, fmt.Errorf("%w: to is %s", ErrSupersedesKind, endpointText(edge.To))
+		}
 	}
 	if err := known(s, edge.From); err != nil {
-		return Edge{}, err
+		return Edge{}, nil, err
 	}
 	if err := known(s, edge.To); err != nil {
-		return Edge{}, err
+		return Edge{}, nil, err
 	}
-	if err := s.InsertDecisionEdge(store.DecisionEdge{
+	var warnings []string
+	err = s.AppendDecisionEdge(store.DecisionEdge{
 		Relation:   edge.Relation,
 		FromKind:   edge.From.Kind,
 		FromRef:    edge.From.Ref,
 		ToKind:     edge.To.Kind,
 		ToRef:      edge.To.Ref,
 		RecordedAt: edge.RecordedAt,
-	}); err != nil {
-		return Edge{}, err
+	}, func(rows []store.DecisionEdge) error {
+		existing := make([]Edge, 0, len(rows))
+		for _, r := range rows {
+			existing = append(existing, Edge{
+				Relation: r.Relation,
+				From:     Endpoint{Kind: r.FromKind, Ref: r.FromRef},
+				To:       Endpoint{Kind: r.ToKind, Ref: r.ToRef},
+			})
+		}
+		var err error
+		warnings, err = checkAgainst(edge, existing)
+		return err
+	})
+	if err != nil {
+		return Edge{}, nil, err
 	}
-	return edge, nil
+	return edge, warnings, nil
 }
+
+// checkAgainst applies the rules that depend on the stored edges.
+func checkAgainst(edge Edge, existing []Edge) ([]string, error) {
+	for _, e := range existing {
+		if e.Relation == edge.Relation && e.From == edge.From && e.To == edge.To {
+			return nil, fmt.Errorf("%w: %s %s %s", ErrDuplicateEdge, endpointText(edge.From), edge.Relation, endpointText(edge.To))
+		}
+	}
+	if edge.Relation == RelSupersedes {
+		if path := supersedesPath(existing, edge.To.Ref, edge.From.Ref); path != nil {
+			return nil, fmt.Errorf("%w: %s already reaches %s through supersedes (%s), so %s cannot supersede %s",
+				ErrSupersedesCycle, endpointText(edge.To), endpointText(edge.From), strings.Join(path, " -> "),
+				endpointText(edge.From), endpointText(edge.To))
+		}
+	}
+	var warnings []string
+	if edge.Relation == RelValidates || edge.Relation == RelContradicts {
+		other := RelContradicts
+		if edge.Relation == RelContradicts {
+			other = RelValidates
+		}
+		for _, e := range existing {
+			if e.Relation == other && (e.From == edge.From && e.To == edge.To || e.From == edge.To && e.To == edge.From) {
+				warnings = append(warnings, fmt.Sprintf("%s and %s have both validates and contradicts edges", endpointText(edge.From), endpointText(edge.To)))
+				break
+			}
+		}
+	}
+	return warnings, nil
+}
+
+// supersedesPath returns the decision ids from start to goal along
+// decision-to-decision supersedes edges (from -> to), or nil when goal is
+// not reachable. Self-edges an older sdf may have stored are skipped, as at
+// read time. The search is breadth-first, so the path is a shortest one.
+func supersedesPath(edges []Edge, start, goal string) []string {
+	next := map[string][]string{}
+	for _, e := range edges {
+		if e.Relation == RelSupersedes && e.From.Kind == KindDecision && e.To.Kind == KindDecision && e.From.Ref != e.To.Ref {
+			next[e.From.Ref] = append(next[e.From.Ref], e.To.Ref)
+		}
+	}
+	prev := map[string]string{start: ""}
+	queue := []string{start}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == goal {
+			var path []string
+			for n := goal; n != ""; n = prev[n] {
+				path = append([]string{n}, path...)
+				if n == start {
+					break
+				}
+			}
+			return path
+		}
+		for _, n := range next[cur] {
+			if _, seen := prev[n]; !seen {
+				prev[n] = cur
+				queue = append(queue, n)
+			}
+		}
+	}
+	return nil
+}
+
+func endpointText(e Endpoint) string { return e.Kind + ":" + e.Ref }
 
 // Load reads the graph back. An empty store returns empty lists, not nil.
 func Load(s *store.Store) (Graph, error) {
@@ -279,7 +409,7 @@ func WriteText(w io.Writer, g Graph) error {
 	}
 	edges := [][]string{{"RELATION", "FROM", "TO", "RECORDED AT"}}
 	for _, e := range g.Edges {
-		edges = append(edges, []string{e.Relation, e.From.Kind + ":" + e.From.Ref, e.To.Kind + ":" + e.To.Ref, e.RecordedAt})
+		edges = append(edges, []string{e.Relation, endpointText(e.From), endpointText(e.To), e.RecordedAt})
 	}
 	if err := writeTable(w, fmt.Sprintf("Decisions: %d", len(g.Decisions)), decisions); err != nil {
 		return err

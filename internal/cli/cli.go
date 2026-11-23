@@ -668,13 +668,17 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	if _, err := decision.Link(db, decision.EdgeInput{
+	_, warnings, err := decision.LinkWithWarnings(db, decision.EdgeInput{
 		Relation: relation,
 		From:     fromEnd,
 		To:       toEnd,
-	}); err != nil {
+	})
+	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
 		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintf(stderr, "sdf decision link: warning: %s\n", w)
 	}
 	return 0
 }
