@@ -445,8 +445,48 @@ func TestPageDoesNotCallAnOpenBlockerOfASupersededRecordSettled(t *testing.T) {
 	if strings.Contains(page, "(settled)") {
 		t.Fatalf("which-db is still a hypothesis, not settled:\n%s", page)
 	}
-	if !strings.Contains(page, "blocked by which-db (open)") {
+	if !strings.Contains(page, "blocked by which-db (open: which-db)") {
 		t.Fatalf("missing the open blocker:\n%s", page)
+	}
+}
+
+// Like sdf decision list, the UI lists every blocker and marks the open
+// ones: a settled blocker next to an open one is still shown.
+func TestPageListsEveryBlockerAndMarksTheOpenOnes(t *testing.T) {
+	db := openDB(t)
+	adds := []decision.RecordInput{
+		{ID: "which-db", Statement: "Pick the store.", Status: decision.StatusHypothesis},
+		{ID: "which-auth", Statement: "Pick auth.", Status: decision.StatusDecision},
+		{ID: "design-schema", Statement: "Design the schema.", Status: decision.StatusDecision},
+		{ID: "write-docs", Statement: "Write the docs.", Status: decision.StatusDecision},
+	}
+	for _, in := range adds {
+		if _, err := decision.Add(db, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := func(id string) decision.Endpoint { return decision.Endpoint{Kind: decision.KindDecision, Ref: id} }
+	for _, e := range []decision.EdgeInput{
+		{Relation: decision.RelBlocks, From: d("which-db"), To: d("design-schema")},
+		{Relation: decision.RelBlocks, From: d("which-auth"), To: d("design-schema")},
+		{Relation: decision.RelBlocks, From: d("which-auth"), To: d("write-docs")},
+	} {
+		if _, err := decision.Link(db, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	page := renderedPage(t, srv)
+	for _, want := range []string{
+		"blocked by which-db, which-auth (open: which-db)",
+		"blocked by which-auth (settled)",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q:\n%s", want, page)
+		}
+	}
+	if strings.Count(page, "blocked by") != 2 {
+		t.Fatalf("each blocked record lists its blockers once:\n%s", page)
 	}
 }
 

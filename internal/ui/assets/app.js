@@ -247,8 +247,13 @@
         }
         const open = Array.isArray(record.open_blockers) ? record.open_blockers : [];
         const conflicts = Array.isArray(record.conflicts_with) ? record.conflicts_with : [];
-        if (record.blocked && open.length) {
-          line.push(h("span", { class: "relation-flag blocked" }, ["blocked by " + open.join(", ")]));
+        // Every blocker, then the open ones, as sdf decision list prints it.
+        const blockers = Array.isArray(record.blocked_by) ? record.blocked_by : [];
+        const blockerText = blockers.length
+          ? "blocked by " + blockers.join(", ") + (open.length ? " (open: " + open.join(", ") + ")" : " (settled)")
+          : "";
+        if (record.blocked && blockers.length) {
+          line.push(h("span", { class: "relation-flag blocked" }, [blockerText]));
         }
         const activeConflicts = conflicts.filter(function (id) { return activeIDs[id]; });
         if (record.conflicted && activeConflicts.length) {
@@ -265,9 +270,7 @@
         const extra = [];
         if (record.alternatives) extra.push("alternatives " + record.alternatives);
         if (record.reason) extra.push("reason " + record.reason);
-        const blockers = Array.isArray(record.blocked_by) ? record.blocked_by : [];
-        if (blockers.length && open.length === 0) extra.push("blocked by " + blockers.join(", ") + " (settled)");
-        else if (open.length && !record.blocked) extra.push("blocked by " + open.join(", ") + " (open)");
+        if (blockers.length && !record.blocked) extra.push(blockerText);
         if (conflicts.length && !record.conflicted) extra.push("conflicts with " + conflicts.join(", ") + " (resolved)");
         const refined = Array.isArray(record.refined_by) ? record.refined_by : [];
         if (refined.length) extra.push("refined by " + refined.join(", "));
