@@ -410,6 +410,7 @@ footer p { margin: 0; }
 }
 .span-duration { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
 .span-line { display: inline; }
+.span-leaf { padding-left: 1.15em; }
 .span-tree details > summary {
   cursor: pointer;
 }
