@@ -78,6 +78,40 @@ func TestClassifyUserDecisionStaysAConstraintWhenItAlsoConflicts(t *testing.T) {
 	}
 }
 
+func TestClassifyIncludesBlockedAndConflictingHypotheses(t *testing.T) {
+	blockedQ := rec("which-db", decision.StatusHypothesis, decision.DecidedByAgent, decision.EffectiveActive, "Pick the store.")
+	blockedQ.Blocked = true
+	conflictQ := rec("maybe-postgres", decision.StatusHypothesis, decision.DecidedByAgent, decision.EffectiveActive, "Maybe use Postgres.")
+	conflictQ.Conflicted = true
+	userQ := rec("maybe-ban", decision.StatusHypothesis, decision.DecidedByUser, decision.EffectiveActive, "Maybe ban deploys.")
+	userQ.Blocked = true
+	old := rec("old-ban", decision.StatusHypothesis, decision.DecidedByUser, decision.EffectiveSuperseded, "Do not push, ever.")
+	old.Blocked = true
+	gone := rec("withdrawn", decision.StatusHypothesis, decision.DecidedByAgent, decision.EffectiveRetracted, "Forget the ban.")
+	gone.Conflicted = true
+	g := decision.Graph{Decisions: []decision.Record{
+		blockedQ,
+		userQ,
+		rec("dont-push", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Do not push until the user says so."),
+		conflictQ,
+		old,
+		gone,
+	}}
+	got := brief.Classify(g)
+	want := []string{"constraint:dont-push", "blocked:which-db", "blocked:maybe-ban", "conflicting:maybe-postgres"}
+	if gotIDs := strings.Join(ids(got), ","); gotIDs != strings.Join(want, ",") {
+		t.Fatalf("got %s", gotIDs)
+	}
+	for _, item := range got {
+		if item.Status == decision.StatusHypothesis && item.Kind == brief.KindConstraint {
+			t.Fatalf("hypothesis classified as a constraint: %+v", item)
+		}
+	}
+	if got[0].Locked != true || got[1].Status != decision.StatusHypothesis || got[2].DecidedBy != decision.DecidedByUser {
+		t.Fatalf("%+v", got)
+	}
+}
+
 func TestClassifyEmptyGraph(t *testing.T) {
 	got := brief.Classify(decision.Graph{})
 	if got == nil || len(got) != 0 {

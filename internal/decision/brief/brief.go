@@ -15,11 +15,11 @@
 //     also blocked or conflicted. Each statement is cut to statementBudget
 //     bytes on a rune boundary, ending in "…", so one long rule cannot
 //     crowd the others out.
-//  2. Blocked. Record.Blocked, which Load sets for an active decision that
-//     still has an open blocks blocker, and that is not itself a constraint.
-//  3. Conflicting. Record.Conflicted, which Load sets for an active decision
-//     with a conflicts_with edge to another active decision, and that is in
-//     neither group above.
+//  2. Blocked. Any active record Load marked Blocked, hypothesis or
+//     decision, that is not itself a constraint. An open question the
+//     agent should not act on is included.
+//  3. Conflicting. Any active record Load marked Conflicted, hypothesis
+//     or decision, that is in neither group above.
 //
 // Challenged (the latest evidence edge is contradicts) is not a group.
 // constrains is not the blocks relation: blocks is what makes Record.Blocked.
@@ -75,10 +75,17 @@ type Result struct {
 // Classify ranks the active constraints, blocked decisions, and conflicting
 // decisions in g. The result is never nil.
 func Classify(g decision.Graph) []Item {
-	order := decision.Active(g)
-	active := make(map[string]bool, len(order))
-	for _, d := range order {
+	// Every active record, hypotheses included. Constraints below still
+	// require status decision. decision.Active stays settled-only; Guard
+	// reads that, not this list.
+	order := make([]decision.Record, 0, len(g.Decisions))
+	active := make(map[string]bool, len(g.Decisions))
+	for _, d := range g.Decisions {
+		if d.EffectiveStatus != decision.EffectiveActive {
+			continue
+		}
 		active[d.ID] = true
+		order = append(order, d)
 	}
 	constrainsFrom := map[string]bool{}
 	for _, e := range g.Edges {
