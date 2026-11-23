@@ -253,8 +253,11 @@ func codex(req Request) (Result, error) {
 	fmt.Fprintf(&b, "Docs: https://developers.openai.com/codex/config-reference\n")
 	fmt.Fprintf(&b, "https://github.com/openai/codex/blob/main/codex-rs/otel/README.md\n\n")
 	b.WriteString(block)
+	hooks := filepath.Join(req.CodexHome, "hooks.json")
+	hookURL := req.Endpoint.base() + "/v1/sessions"
 	if !req.Write {
 		b.WriteString("\nnot written (pass --write to append this block; an existing [otel] table is left unchanged)\n")
+		b.WriteString(codexHookPreview(hooks, hookURL))
 		return Result{Text: b.String()}, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -264,11 +267,21 @@ func codex(req Request) (Result, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return Result{}, readErr(path, err)
 	}
+	// An existing [otel] table is left alone, but the session hook is still
+	// merged: a user who set up [otel] by hand would otherwise get no hook.
 	if hasOtelTable(string(existing)) {
+		if err := checkAllWritable(hooks); err != nil {
+			return Result{}, err
+		}
 		b.WriteString("\nnot written: " + path + " already has an [otel] table; it was not changed\n")
-		return Result{Text: b.String()}, nil
+		hookStatus, err := codexHookFile(hooks, hookURL)
+		if err != nil {
+			return Result{}, err
+		}
+		b.WriteString(hookStatus)
+		b.WriteString(hookTokenNoteFor(req.Endpoint))
+		return Result{Text: b.String(), Wrote: strings.HasPrefix(hookStatus, "wrote ")}, nil
 	}
-	hooks := filepath.Join(req.CodexHome, "hooks.json")
 	if err := checkAllWritable(path, hooks); err != nil {
 		return Result{}, err
 	}
@@ -289,13 +302,19 @@ func codex(req Request) (Result, error) {
 			return Result{}, fmt.Errorf("%s: appending the [otel] table would not be valid TOML (%v); add the printed keys by hand; it was not changed", path, err)
 		}
 	}
+	// Plan the hooks.json merge before config.toml is touched, so a corrupt
+	// or refused hooks.json (null, not an object) leaves both files as they
+	// were instead of [otel] written and the hook missing.
+	if err := codexHookCheck(hooks, hookURL); err != nil {
+		return Result{}, err
+	}
 	status, err := replaceFile(path, body, 0o600)
 	if err != nil {
 		return Result{}, err
 	}
 	b.WriteString("\n")
 	b.WriteString(status)
-	hookStatus, err := codexHookFile(hooks, req.Endpoint.base()+"/v1/sessions")
+	hookStatus, err := codexHookFile(hooks, hookURL)
 	if err != nil {
 		return Result{}, err
 	}
