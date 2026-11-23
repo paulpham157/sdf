@@ -438,7 +438,13 @@ before a writing command has added the table. `retract` then fails on it.
 `GET /api/decisions/graph` arranges the decision records into chapters for the
 UI's Decisions tab. `sdf decision graph --json` prints the same bytes for the
 same `--db`, `--prices`, `--repo`, and `--github`, because both call
-`decisiongraph.Build` on the same records and the same summarized sessions.
+`decisiongraph.Build` on the same records and the same summarized sessions
+(`outcome.Summarize`, without the budget: a budget file that fails to load
+breaks `/api/summary`, not the Decisions tab). The route answers through the
+same buffered JSON writer as the other routes, with `Content-Length`. Under
+`sdf serve`, requests that arrive while the summary is being built share
+that build, so the page's parallel requests make one round of GitHub
+lookups.
 Without `--json` it prints one line per chapter with its facts and explored
 count, plus one line per item that needs attention. It opens the store
 read-only, like `sdf decision list`. It only reads; the tab has no write
@@ -473,20 +479,25 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   tensions" is on or one end is focused. `relation_types` lists every relation
   with its glyph and label.
 - **Facts and explored.** `facts` counts endings reached and total, locked
-  decisions, active conflict pairs, and challenged decisions;
-  `needs_attention` lists them. They are the read-time `blocked`,
-  `conflicted`, and `challenged` fields above, so the same rules hold: a
-  blocker whose `supersedes` chain only reaches a cycle is open, a conflict
-  pair needs both sides `active`, and only evidence from an active decision
-  (or any session or commit) counts; a challenged item names that source. `explored` counts choice points only:
-  decided ÷ (decided + not taken + hypotheses + locked), rounded half up.
-  Superseded and retracted decisions count as decided; refinements and commits
-  do not count.
+  records, active conflict pairs (a pair stored in both orders by an older
+  sdf is one pair, drawn once), and challenged decisions; `needs_attention`
+  lists them. They are the read-time `blocked`, `conflicted`, and
+  `challenged` fields above, so the same rules hold: a blocker with no head
+  is open when any path of its `supersedes` chain reaches a cycle, a
+  conflict pair needs both sides `active`, and only evidence from an active
+  decision (or any session or commit) counts; a challenged item names that
+  source. `explored` counts choice points only: decided ÷ (decided + not
+  taken + hypotheses + locked), rounded half up. A blocked record, decision
+  or hypothesis, counts as locked, in `facts.locked` and `explored.locked`
+  alike. Superseded and retracted decisions count as decided; a superseded
+  or retracted hypothesis, a refinement, and a commit do not count.
 - **Cost.** The sum of the chapter's sessions' computed cost: `known`, `partial`
   when some session has no known cost, or `unknown`.
 - **What-if.** Each alternative carries `command`, an `sdf decision add ...
   --status hypothesis` line the page copies to the clipboard. The page never
-  runs it.
+  runs it. The new id is `PARENT-alt-N`; a parent longer than 110 characters
+  is cut to 100 and followed by `-` and 8 hex digits of its SHA-256, so the
+  id stays within 128 characters and two long parents do not collide.
 
 ## Local budget
 
