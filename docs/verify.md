@@ -101,7 +101,7 @@ ref or a full commit id prints a warning and records the kind as
    `ISOLATION_UNAVAILABLE` and nothing runs. `--allow-unisolated` runs the
    checks anyway with only process-group cleanup; the verdict then records
    `"isolation": "none"` and a warning is printed. A run with isolation
-   records `"isolation": "namespace"`. The Action never allows unisolated
+   records `"isolation": "pid-namespace"`. The Action never allows unisolated
    runs.
    **Go test results.** `go test` stdout is not trusted: code under test can
    print a fake `--- PASS`. Instead `go test` runs with `-count=1` and an
