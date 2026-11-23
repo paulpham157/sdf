@@ -472,8 +472,10 @@ func TestSessionPageShowsSpanTreeAndErrors(t *testing.T) {
 	}
 
 	script := readAsset(t, "app.js")
-	if strings.Contains(script, "innerHTML") || strings.Contains(script, "document.write") {
-		t.Fatal("span rendering must stay on text nodes")
+	for _, banned := range []string{"innerHTML", "document.write", "insertAdjacentHTML", "outerHTML"} {
+		if strings.Contains(script, banned) {
+			t.Fatalf("span rendering must stay on text nodes: %s", banned)
+		}
 	}
 	if !strings.Contains(script, "function spanSection") || !strings.Contains(script, "status=ERROR") || !strings.Contains(script, "Show ") || !strings.Contains(script, "SPAN_SIBLING_LIMIT") {
 		t.Fatal("app.js should render the span tree, errors, and a show-more cap")
@@ -517,12 +519,129 @@ func TestSessionPageCapsLongSpanTrees(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := startUI(t, db)
-	page := renderedPageAt(t, srv, "#/sessions/ses-wide")
-	if !strings.Contains(page, "Show 5 more spans") {
-		t.Fatalf("expected a show-more cap on a 45-span tree:\n%s", page)
+	page := renderPage(t, srv, "#/sessions/ses-wide", "")
+	if !strings.Contains(page.Text, "Show 5 more spans") {
+		t.Fatalf("expected a show-more cap on a 45-span tree:\n%s", page.Text)
 	}
-	if !strings.Contains(page, "call_id=span0") || !strings.Contains(page, "call_id=span44") {
-		t.Fatalf("capped tree dropped a span:\n%s", page)
+	if !strings.Contains(page.Text, "call_id=span0") {
+		t.Fatalf("visible spans missing span0:\n%s", page.Text)
+	}
+	if strings.Contains(page.Text, "call_id=span44") {
+		t.Fatalf("hidden spans should be built lazily, but span44 was already in the page:\n%s", page.Text)
+	}
+	opened := renderPage(t, srv, "#/sessions/ses-wide", "open-more")
+	if !strings.Contains(opened.Text, "call_id=span44") {
+		t.Fatalf("opening show-more should build the remaining spans:\n%s", opened.Text)
+	}
+}
+
+func TestSessionPageRendersDeepSpanTrees(t *testing.T) {
+	db := openDB(t)
+	const depth = 80
+	var recs []record.Record
+	var parent *string
+	for i := 0; i < depth; i++ {
+		id := "d" + strconv.Itoa(i)
+		rec := record.Record{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-deep"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str(id), ParentSpanID: parent,
+			StartUnixNano: record.Int64(int64(i) * 1_000_000), EndUnixNano: record.Int64(int64(i+1) * 1_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": id},
+			Resource:   map[string]any{},
+		}
+		if i == depth-1 {
+			rec.StatusCode = "ERROR"
+			rec.StatusMessage = record.Str("deep chain failed")
+		}
+		recs = append(recs, rec)
+		idCopy := id
+		parent = &idCopy
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderPage(t, srv, "#/sessions/ses-deep", "")
+	if strings.Contains(page.Text, "Maximum call stack size exceeded") || strings.Contains(page.Text, "The page could not be drawn") {
+		t.Fatalf("deep tree crashed the page:\n%s", page.Text)
+	}
+	if !strings.Contains(page.Text, "Deeper spans not shown (depth limit 32).") {
+		t.Fatalf("expected a truncated-depth note:\n%s", page.Text)
+	}
+	if !strings.Contains(page.Text, "call_id=d0") {
+		t.Fatalf("missing the root of the deep tree:\n%s", page.Text)
+	}
+	if !strings.Contains(page.Text, "deep chain failed") || !strings.Contains(page.Text, "status=ERROR") {
+		t.Fatalf("banner should still report the deep ERROR:\n%s", page.Text)
+	}
+}
+
+func TestSessionPageOpensErrorAncestors(t *testing.T) {
+	db := openDB(t)
+	recs := []record.Record{
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("SessionRunner.runStep"), SpanID: record.Str("root"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(8_000_000),
+			StatusCode: "OK", Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("SessionStep.attempt"), SpanID: record.Str("mid"), ParentSpanID: record.Str("root"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(7_000_000),
+			StatusCode: "OK", Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("FileWrite.write"), SpanID: record.Str("err-parent"), ParentSpanID: record.Str("mid"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(3_000_000),
+			StatusCode: "OK", Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("POST"), SpanID: record.Str("err-leaf"), ParentSpanID: record.Str("err-parent"),
+			StartUnixNano: record.Int64(0), EndUnixNano: record.Int64(2_000_000),
+			StatusCode: "ERROR", StatusMessage: record.Str("boom"),
+			Attributes: map[string]any{}, Resource: map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str("ok-parent"), ParentSpanID: record.Str("mid"),
+			StartUnixNano: record.Int64(4_000_000), EndUnixNano: record.Int64(6_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": "ok-parent"},
+			Resource:   map[string]any{},
+		},
+		{
+			Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-open"),
+			Name: record.Str("Tool.execute"), SpanID: record.Str("ok-leaf"), ParentSpanID: record.Str("ok-parent"),
+			StartUnixNano: record.Int64(4_000_000), EndUnixNano: record.Int64(5_000_000),
+			StatusCode: "OK",
+			Attributes: map[string]any{"gen_ai.tool.name": "read", "gen_ai.tool.call.id": "ok-leaf"},
+			Resource:   map[string]any{},
+		},
+	}
+	if _, err := db.Insert(recs); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	page := renderPage(t, srv, "#/sessions/ses-open", "")
+	for _, name := range []string{"SessionRunner.runStep", "SessionStep.attempt", "FileWrite.write"} {
+		open, found := detailsState(page.Markup, name)
+		if !found {
+			t.Fatalf("missing details for %s:\n%s", name, page.Markup)
+		}
+		if !open {
+			t.Fatalf("ancestor %s should have the open attribute:\n%s", name, page.Markup)
+		}
+	}
+	open, found := detailsState(page.Markup, "call_id=ok-parent")
+	if !found {
+		t.Fatalf("missing details for the non-error branch:\n%s", page.Markup)
+	}
+	if open {
+		t.Fatalf("non-error node at depth 2 should stay collapsed:\n%s", page.Markup)
 	}
 }
 
@@ -822,15 +941,25 @@ func renderedPage(t *testing.T, srv *ui.Server) string {
 
 func renderedPageAt(t *testing.T, srv *ui.Server, hash string) string {
 	t.Helper()
+	return renderPage(t, srv, hash, "").Text
+}
+
+type pageResult struct {
+	Text   string
+	Markup string
+}
+
+func renderPage(t *testing.T, srv *ui.Server, hash, flags string) pageResult {
+	t.Helper()
 	status, _, html := get(t, srv.URL())
 	if status != 200 {
 		t.Fatalf("page %d", status)
 	}
 	_, _, script := get(t, srv.URL()+"app.js")
-	return runPage(t, srv.URL(), html, script, hash)
+	return runPage(t, srv.URL(), html, script, hash, flags)
 }
 
-func runPage(t *testing.T, base, html, script, hash string) string {
+func runPage(t *testing.T, base, html, script, hash, flags string) pageResult {
 	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -844,12 +973,36 @@ func runPage(t *testing.T, base, html, script, hash string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, node, page)
-	cmd.Stdin = strings.NewReader(base + "\n" + hash + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
+	cmd.Stdin = strings.NewReader(base + "\n" + hash + "\n" + flags + "\n" + html + "\n/*SDF_PAGE_SPLIT*/\n" + script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("render: %v\n%s", err, out)
 	}
-	return string(out)
+	parts := strings.SplitN(string(out), "\n/*SDF_PAGE_RESULT*/\n", 2)
+	res := pageResult{Text: parts[0]}
+	if len(parts) == 2 {
+		res.Markup = parts[1]
+	}
+	return res
+}
+
+func detailsState(markup, needle string) (open bool, found bool) {
+	pieces := strings.Split(markup, "<details")
+	for i, part := range pieces {
+		if i == 0 {
+			continue
+		}
+		gt := strings.Index(part, ">")
+		sumEnd := strings.Index(part, "</summary>")
+		if gt < 0 || sumEnd < 0 {
+			continue
+		}
+		if !strings.Contains(part[:sumEnd], needle) {
+			continue
+		}
+		return strings.Contains(part[:gt], "open"), true
+	}
+	return false, false
 }
 
 func pricedDB(t *testing.T) *store.Store {
@@ -896,8 +1049,8 @@ func writeBudget(t *testing.T, ceiling string) string {
 
 // pageRunner executes the page script the browser would, then prints the text
 // of the drawn page. It implements only the DOM surface app.js uses:
-// createElement, setAttribute, className, addEventListener, append,
-// replaceChildren, and textContent. fetch is pointed at the server under test.
+// createElement, setAttribute, className, addEventListener, removeEventListener, append,
+// replaceChildren, textContent, and the details open property. fetch is pointed at the server under test.
 const pageRunner = `"use strict";
 const { createInterface } = require("node:readline");
 
@@ -912,6 +1065,21 @@ class Node {
     for (const kid of arguments) this.children.push(kid);
   }
 }
+function markup(node) {
+  if (!node) return "";
+  if (node.nodeType === 3) {
+    return String(node.text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  const attrs = Object.assign({}, node.attrs);
+  if (node.className) attrs.class = node.className;
+  let bits = "";
+  Object.keys(attrs).forEach(function (key) {
+    bits += " " + key + '="' + String(attrs[key]).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"';
+  });
+  const inner = (node.children || []).map(markup).join("");
+  return "<" + node.tag + bits + ">" + inner + "</" + node.tag + ">";
+}
+
 class Element extends Node {
   constructor(tag) {
     super();
@@ -922,7 +1090,27 @@ class Element extends Node {
     this.listeners = {};
   }
   setAttribute(key, value) { this.attrs[key] = String(value); }
-  addEventListener(type, fn) { this.listeners[type] = fn; }
+  addEventListener(type, fn) {
+    if (!this.listeners[type]) this.listeners[type] = [];
+    this.listeners[type].push(fn);
+  }
+  removeEventListener(type, fn) {
+    const list = this.listeners[type];
+    if (!list) return;
+    this.listeners[type] = list.filter(function (item) { return item !== fn; });
+  }
+  fire(type) {
+    const list = (this.listeners[type] || []).slice();
+    for (let i = 0; i < list.length; i++) list[i].call(this);
+  }
+  get open() { return Object.prototype.hasOwnProperty.call(this.attrs, "open"); }
+  set open(value) {
+    const next = !!value;
+    const was = this.open;
+    if (next) this.attrs.open = "true";
+    else delete this.attrs.open;
+    if (next !== was) this.fire("toggle");
+  }
   replaceChildren() {
     this.children = [];
     this.append.apply(this, arguments);
@@ -947,7 +1135,10 @@ lines.on("close", async () => {
   const rest = raw.slice(splitAt + 1);
   const hashAt = rest.indexOf("\n");
   const hash = rest.slice(0, hashAt);
-  const page = rest.slice(hashAt + 1);
+  const afterHash = rest.slice(hashAt + 1);
+  const flagAt = afterHash.indexOf("\n");
+  const flags = afterHash.slice(0, flagAt);
+  const page = afterHash.slice(flagAt + 1);
   const marker = "\n/*SDF_PAGE_SPLIT*/\n";
   const cut = page.indexOf(marker);
   const script = page.slice(cut + marker.length);
@@ -1009,7 +1200,18 @@ lines.on("close", async () => {
     }
     setImmediate(drain);
   });
-  process.stdout.write(app.textContent);
+  if (flags.split(",").indexOf("open-more") >= 0) {
+    function openMore(node) {
+      if (!node || node.nodeType === 3) return;
+      if (node.tag === "details") {
+        const sum = (node.children || []).find(function (child) { return child.tag === "summary"; });
+        if (sum && textOf(sum).indexOf("Show ") === 0) node.open = true;
+      }
+      (node.children || []).forEach(openMore);
+    }
+    openMore(app);
+  }
+  process.stdout.write(app.textContent + "\n/*SDF_PAGE_RESULT*/\n" + markup(app));
 });
 `
 

@@ -524,24 +524,35 @@
   const SPAN_SIBLING_LIMIT = 40;
   const SPAN_OPEN_DEPTH = 2;
   const SPAN_ERROR_BANNER_LIMIT = 8;
+  const SPAN_DEPTH_LIMIT = 32;
+  const spanErrorFlag = new WeakMap();
 
-  function collectSpanErrors(nodes, out) {
-    (nodes || []).forEach(function (node) {
-      if (node && node.status_code === "ERROR") {
-        out.push({ name: node.name || "(unnamed)", message: node.status_message || "" });
+  function annotateSpanTree(roots) {
+    const errors = [];
+    const ordered = [];
+    const st = [];
+    const list = roots || [];
+    for (let i = list.length - 1; i >= 0; i--) st.push(list[i]);
+    while (st.length) {
+      const node = st.pop();
+      if (!node) continue;
+      ordered.push(node);
+      if (node.status_code === "ERROR") {
+        errors.push({ name: node.name || "(unnamed)", message: node.status_message || "" });
       }
-      collectSpanErrors(node && node.children, out);
-    });
-  }
-
-  function spanHasError(node) {
-    if (!node) return false;
-    if (node.status_code === "ERROR") return true;
-    const kids = node.children || [];
-    for (let i = 0; i < kids.length; i++) {
-      if (spanHasError(kids[i])) return true;
+      const kids = node.children || [];
+      for (let i = kids.length - 1; i >= 0; i--) st.push(kids[i]);
     }
-    return false;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const node = ordered[i];
+      let has = node.status_code === "ERROR";
+      const kids = node.children || [];
+      for (let j = 0; j < kids.length && !has; j++) {
+        if (kids[j] && spanErrorFlag.get(kids[j])) has = true;
+      }
+      spanErrorFlag.set(node, has);
+    }
+    return errors;
   }
 
   function formatSpanNum(value) {
@@ -552,10 +563,8 @@
     return String(n);
   }
 
-  function spanErrorBanner(summary) {
-    const errors = [];
-    collectSpanErrors(summary && summary.spans, errors);
-    if (!errors.length) return null;
+  function spanErrorBanner(errors) {
+    if (!errors || !errors.length) return null;
     const heading = errors.length === 1
       ? "This session has a span with status=ERROR."
       : "This session has " + errors.length + " spans with status=ERROR.";
@@ -570,7 +579,7 @@
         "And " + (errors.length - shown.length) + " more in the span tree below.",
       ]));
     }
-    return h("div", { class: "callout span-errors", role: "status" }, kids);
+    return h("div", { class: "callout span-errors" }, kids);
   }
 
   function spanLine(node) {
@@ -610,41 +619,65 @@
     return h("span", { class: "span-line" }, kids);
   }
 
-  function spanForest(nodes, depth) {
+  function buildSpanList(nodes, depth) {
+    const ul = h("ul", { class: "span-tree" }, []);
+    const jobs = [{ nodes: nodes || [], depth: depth, parent: ul }];
+    while (jobs.length) {
+      const job = jobs.pop();
+      appendSpanChildren(job.nodes, job.depth, job.parent, jobs);
+    }
+    return ul;
+  }
+
+  function appendSpanChildren(nodes, depth, ul, jobs) {
     const list = nodes || [];
     const visible = list.slice(0, SPAN_SIBLING_LIMIT);
     const rest = list.slice(SPAN_SIBLING_LIMIT);
-    const items = visible.map(function (node) {
-      return spanItem(node, depth);
-    });
-    if (rest.length) {
-      items.push(h("li", { class: "span-more" }, [
-        h("details", null, [
-          h("summary", null, ["Show " + rest.length + " more spans"]),
-          h("ul", { class: "span-tree" }, rest.map(function (node) {
-            return spanItem(node, depth);
-          })),
-        ]),
-      ]));
+    for (let i = 0; i < visible.length; i++) {
+      ul.append(makeSpanItem(visible[i], depth, jobs));
     }
-    return h("ul", { class: "span-tree" }, items);
+    if (rest.length) {
+      ul.append(lazyMoreItem(rest, depth));
+    }
   }
 
-  function spanItem(node, depth) {
+  function lazyMoreItem(rest, depth) {
+    const details = h("details", null, [
+      h("summary", null, ["Show " + rest.length + " more spans"]),
+    ]);
+    function onToggle() {
+      if (!details.open) return;
+      details.removeEventListener("toggle", onToggle);
+      details.append(buildSpanList(rest, depth));
+    }
+    details.addEventListener("toggle", onToggle);
+    return h("li", { class: "span-more" }, [details]);
+  }
+
+  function makeSpanItem(node, depth, jobs) {
     const kids = (node && node.children) || [];
     const className = node && node.status_code === "ERROR" ? "span-node span-error" : "span-node";
     const line = spanLine(node);
     if (!kids.length) {
-      return h("li", { class: className }, [line]);
+      return h("li", { class: className + " span-leaf" }, [line]);
+    }
+    if (depth >= SPAN_DEPTH_LIMIT) {
+      return h("li", { class: className + " span-leaf" }, [
+        line,
+        h("p", { class: "detail span-truncated" }, [
+          "Deeper spans not shown (depth limit " + SPAN_DEPTH_LIMIT + ").",
+        ]),
+      ]);
     }
     const props = {};
-    if (depth < SPAN_OPEN_DEPTH || spanHasError(node)) props.open = true;
-    return h("li", { class: className }, [
-      h("details", props, [
-        h("summary", null, [line]),
-        spanForest(kids, depth + 1),
-      ]),
+    if (depth < SPAN_OPEN_DEPTH || spanErrorFlag.get(node)) props.open = true;
+    const childList = h("ul", { class: "span-tree" }, []);
+    const details = h("details", props, [
+      h("summary", null, [line]),
+      childList,
     ]);
+    jobs.push({ nodes: kids, depth: depth + 1, parent: childList });
+    return h("li", { class: className }, [details]);
   }
 
   function spanSection(summary) {
@@ -653,7 +686,7 @@
     if (!spans.length) {
       kids.push(h("p", { class: "detail" }, ["none in the default view"]));
     } else {
-      kids.push(spanForest(spans, 0));
+      kids.push(buildSpanList(spans, 0));
     }
     if (summary && summary.spans_hidden) {
       const noun = summary.spans_hidden === 1 ? "span" : "spans";
@@ -683,6 +716,7 @@
       ]);
     }
     const summary = view.summary;
+    const spanErrors = annotateSpanTree(summary.spans || []);
     return h("div", null, [
       budgetSection(),
       h("p", { class: "crumb" }, [h("a", { href: "#/sessions" }, ["All sessions"])]),
@@ -696,7 +730,7 @@
           "traces " + summary.traces + " · logs " + summary.logs + " · metrics " + summary.metrics
         )]),
       ]),
-      spanErrorBanner(summary),
+      spanErrorBanner(spanErrors),
       h("section", { class: "section cards" }, [
         costCard("Computed cost", view.computed_cost_usd, summary.computed_cost_usd, true),
         costCard("Agent-reported cost", view.agent_reported_cost_usd, null, false),
@@ -865,11 +899,16 @@
       shell(current.name, null);
       return;
     }
-    let body;
-    if (current.name === "detail") body = detail(current.id);
-    else if (current.name === "sessions") body = sessions();
-    else body = overview();
-    shell(current.name, body);
+    try {
+      let body;
+      if (current.name === "detail") body = detail(current.id);
+      else if (current.name === "sessions") body = sessions();
+      else body = overview();
+      shell(current.name, body);
+    } catch (err) {
+      const message = err && err.message ? err.message : "The page could not be drawn.";
+      shell(current.name, h("div", { class: "error" }, [h("p", null, [message])]));
+    }
   }
 
   function readJSON(url, label) {
