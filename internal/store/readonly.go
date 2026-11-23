@@ -191,9 +191,13 @@ func addCompatViews(db *sql.DB) error {
 				exprs[i] = fmt.Sprintf("CAST(NULL AS %s) AS %s", c.typ, quoteIdent(c.name))
 			}
 		}
+		// A view has no rowid of its own, and LoadDecisions orders by rowid
+		// (insertion order), so the view carries the table's.
 		from := "FROM main." + quoteIdent(table)
+		exprs = append([]string{"rowid AS rowid"}, exprs...)
 		if len(have) == 0 {
 			from = "WHERE 0"
+			exprs[0] = "CAST(NULL AS INTEGER) AS rowid"
 		}
 		view := fmt.Sprintf("CREATE TEMP VIEW %s AS SELECT %s %s", quoteIdent(table), strings.Join(exprs, ", "), from)
 		if _, err := db.Exec(view); err != nil {
