@@ -74,7 +74,7 @@ sdf decision add --id use-sqlite \
 sdf decision link --relation REL --from KIND:REF --to KIND:REF [--db PATH]
 ```
 
-`REL` is one of `constrains`, `implements`, `supersedes`, `validates`, or `contradicts`. Each endpoint is `KIND:REF` with `KIND` one of `decision`, `session`, or `commit`.
+`REL` is one of `constrains`, `implements`, `supersedes`, `validates`, `contradicts`, `blocks`, `conflicts_with`, or `refines`. `blocked_by` and `depends_on` are aliases of `blocks` with the ends swapped. Each endpoint is `KIND:REF` with `KIND` one of `decision`, `session`, or `commit`.
 
 - A `decision` ref must already exist in the store.
 - A `session` or `commit` endpoint is accepted only when the store already has telemetry for it. A missing one fails the link and does not alter the record; leave it unlinked and say so. You can link later once telemetry exists.
@@ -84,11 +84,42 @@ Link rules. A rejected link stores nothing and exits 1 with one `sdf decision li
 
 - **No self-links.** `--from` and `--to` must be different endpoints, for every relation.
 - **No duplicates.** The same relation, `--from`, and `--to` can be stored only once. Before linking again, check `sdf decision list`.
-- **`supersedes` is decision → decision only.** `--from` is the new decision and `--to` is the one it replaces. A session or commit endpoint is rejected.
-- **No supersedes cycles.** `NEW supersedes OLD` is rejected when OLD already supersedes NEW, directly or through a chain. Several decisions may supersede the same one.
-- **validates + contradicts warns, but does not block.** If the same two endpoints now have both, the link is stored (exit 0) and stderr shows a `warning:` line. Tell the user the evidence conflicts.
+- **Endpoint kinds are enforced:**
+  - `supersedes`, `blocks`, `conflicts_with`, `refines`: decision → decision only.
+  - `implements`: session or commit → decision.
+  - `validates`, `contradicts`: session, commit, or decision → decision.
+  - `constrains`: decision → decision, session, or commit.
+- **No cycles** through `supersedes`, `blocks`, or `refines` edges (each relation on its own). A `blocks` cycle would be a deadlock. Several decisions may supersede, block, or refine the same one.
+- **`conflicts_with` is symmetric.** sdf stores it in one canonical order, so linking the same pair again in either order is a duplicate.
+- **`conflicts_with` and `refines` are refused when one decision already supersedes the other.** The replacement already settled it.
+- **Warnings do not block.** validates + contradicts on the same pair, or `blocks` on a pair that already has `supersedes` or `conflicts_with`, stores the link (exit 0) and prints a `warning:` line. Tell the user.
 
-Directions to use: `implements` from a session or commit to a decision; `validates` and `contradicts` from a session, commit, or decision to a decision; `constrains` from a decision to whatever it limits. Only the `supersedes` direction is enforced.
+## Which relation to use
+
+| Situation | Link |
+| --- | --- |
+| A new record fully replaces an old one, and the old one no longer applies | `supersedes` from NEW to OLD |
+| A new record adds detail, narrows, or partly amends an old one, and the old one still holds | `refines` from NEW to OLD |
+| B cannot be settled or acted on until A is settled | `blocks` from A to B (or `depends_on` / `blocked_by` from B to A) |
+| Two records cannot both hold, and neither has replaced the other yet | `conflicts_with` (either order) |
+| A rule limits a decision, session, or commit (for example "don't push" limits a session) | `constrains` from the rule |
+| This session or commit carries out the decision | `implements` |
+| This session, commit, or decision is evidence for or against the decision | `validates` / `contradicts` |
+
+**supersedes vs refines.** "Don't push" followed by "push feature branches once the user says OK" is `refines`: the rule still holds, with a stated exception. "Use the default journal" followed by "use WAL mode" is `supersedes`: the old choice is gone. If you are unsure whether the old record still applies, ask.
+
+**blocks and open questions.** Records never change status, so an open question is a `hypothesis` record. A blocker is settled once a `decision` record supersedes it. For example, when the user still has to approve a push:
+
+```bash
+sdf decision add --id await-push-ok --statement "Waiting for the user's OK to push decision-relations." --status hypothesis --decided-by agent
+sdf decision add --id push-decision-relations --statement "Push decision-relations and open a PR." --status decision --decided-by agent
+sdf decision link --relation blocks --from decision:await-push-ok --to decision:push-decision-relations
+# later, when the user says OK:
+sdf decision add --id user-ok-push --statement "User approved pushing decision-relations." --status decision --decided-by user
+sdf decision link --relation supersedes --from decision:user-ok-push --to decision:await-push-ok
+```
+
+Other blocks examples: "choose the database" blocks "design the schema"; "user picks the auth provider" blocks "write the login flow". Do not act on a record that reads `blocked` until its open blockers are settled. Do not use `constrains` for ordering; it is a rule, not a dependency.
 
 Typical links (FROM relation TO):
 
@@ -130,6 +161,13 @@ sdf decision list [--db PATH] [--json]
 
 - `effective_status`: `superseded` when another stored decision supersedes it, otherwise `active`.
 - `superseded_by`: the ids of the decisions that supersede it. It is omitted when the record is active. Replacement is direct, so to find the current choice, follow `superseded_by` until a record is `active`.
+
+- `blocked_by`, `open_blockers`, `blocked`: the decisions that block this one, the ones still unsettled (a blocker is unsettled while its current replacement is a `hypothesis`; a retracted blocker blocks nothing), and `true` when this record is active with an open blocker.
+- `conflicts_with`, `conflicted`: the other side of each conflict, and `true` while this record and at least one of them are both active. Resolve a conflict by superseding or retracting one side.
+- `refined_by`: the decisions that refine this one. A refined record stays active.
+- `challenged`: `true` when the record is active and its latest evidence is `contradicts`. Tell the user.
+
+These are omitted when empty or false. `sdf decision list` shows them as `, blocked`, `, conflicted`, `, challenged` in `EFFECTIVE` and as `blocked by:`, `conflicts with:`, `refined by:` lines under the statement.
 
 - `retraction`: present when the decision was retracted (`retracted_at`, and `reason` / `retracted_by` when given). `effective_status` is then `retracted`, even if it is also superseded; `superseded_by` is still listed.
 

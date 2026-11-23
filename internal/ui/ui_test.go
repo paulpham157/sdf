@@ -307,7 +307,7 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := decision.Link(db, decision.EdgeInput{
-		Relation: decision.RelImplements,
+		Relation: decision.RelConstrains,
 		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "pure-go"},
 		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-sqlite"},
 	}); err != nil {
@@ -333,7 +333,7 @@ func TestPageRendersDecisionsAndBudget(t *testing.T) {
 	if !strings.Contains(page, "The driver stays pure Go.") || !strings.Contains(page, "hypothesis") {
 		t.Fatalf("hypothesis record not rendered:\n%s", page)
 	}
-	if !strings.Contains(page, "implements") || !strings.Contains(page, "pure-go") || !strings.Contains(page, "keep-sqlite") {
+	if !strings.Contains(page, "constrains") || !strings.Contains(page, "pure-go") || !strings.Contains(page, "keep-sqlite") {
 		t.Fatalf("decision edge not rendered:\n%s", page)
 	}
 	if !strings.Contains(page, "validates") || !strings.Contains(page, "sess-1") {
@@ -371,6 +371,49 @@ func TestPageShowsSupersededDecisions(t *testing.T) {
 		if strings.Count(page, "superseded by") != 1 {
 			t.Fatalf("%q: only keep-sqlite is superseded:\n%s", hash, page)
 		}
+	}
+}
+
+func TestPageShowsBlockedConflictedRefinedAndChallenged(t *testing.T) {
+	db := openDB(t)
+	adds := []decision.RecordInput{
+		{ID: "which-db", Statement: "Pick the store.", Status: decision.StatusHypothesis},
+		{ID: "design-schema", Statement: "Design the schema.", Status: decision.StatusDecision},
+		{ID: "use-sqlite", Statement: "Use SQLite.", Status: decision.StatusDecision},
+		{ID: "use-postgres", Statement: "Use Postgres.", Status: decision.StatusDecision},
+		{ID: "bucket-per-minute", Statement: "Bucket per minute.", Status: decision.StatusDecision},
+	}
+	for _, in := range adds {
+		if _, err := decision.Add(db, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := func(id string) decision.Endpoint { return decision.Endpoint{Kind: decision.KindDecision, Ref: id} }
+	for _, e := range []decision.EdgeInput{
+		{Relation: decision.AliasBlockedBy, From: d("design-schema"), To: d("which-db")},
+		{Relation: decision.RelConflictsWith, From: d("use-sqlite"), To: d("use-postgres")},
+		{Relation: decision.RelRefines, From: d("bucket-per-minute"), To: d("use-sqlite")},
+		{Relation: decision.RelContradicts, From: d("bucket-per-minute"), To: d("design-schema")},
+	} {
+		if _, err := decision.Link(db, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := startUIWithBudget(t, db, writeBudget(t, "2"))
+	page := renderedPage(t, srv)
+	for _, want := range []string{
+		"blocked by which-db",
+		"conflicts with use-postgres",
+		"conflicts with use-sqlite",
+		"refined by bucket-per-minute",
+		"challenged",
+	} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("missing %q:\n%s", want, page)
+		}
+	}
+	if strings.Count(page, "blocked by") != 1 {
+		t.Fatalf("only design-schema is blocked:\n%s", page)
 	}
 }
 

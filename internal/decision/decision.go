@@ -46,7 +46,27 @@ const (
 	RelSupersedes  = "supersedes"
 	RelValidates   = "validates"
 	RelContradicts = "contradicts"
+	// RelBlocks reads "from blocks to": the to decision cannot be settled or
+	// acted on until the from decision is settled. Decision to decision.
+	RelBlocks = "blocks"
+	// RelConflictsWith says the two decisions cannot both hold. It is
+	// symmetric and stored with the endpoints in canonical order.
+	RelConflictsWith = "conflicts_with"
+	// RelRefines reads "from refines to": the from decision elaborates,
+	// narrows, or partly amends the to decision, which still holds.
+	RelRefines = "refines"
 )
+
+// Relation aliases accepted on input. Each is stored as RelBlocks with the
+// endpoints swapped: "b blocked_by a" and "b depends_on a" both store
+// "a blocks b".
+const (
+	AliasBlockedBy = "blocked_by"
+	AliasDependsOn = "depends_on"
+)
+
+// relationList is the message for an unknown relation.
+const relationList = "relation must be constrains, implements, supersedes, validates, contradicts, blocks, conflicts_with, or refines (aliases: blocked_by, depends_on)"
 
 // ErrUnknownRef is returned when an edge names a session or commit the
 // store has no telemetry for.
@@ -94,6 +114,16 @@ type Record struct {
 	EffectiveStatus string      `json:"effective_status"`
 	SupersededBy    []string    `json:"superseded_by,omitempty"`
 	Retraction      *Retraction `json:"retraction,omitempty"`
+
+	// The fields below are derived when the graph is read and never stored.
+	// They are omitted from JSON when empty or false. See resolve.
+	BlockedBy     []string `json:"blocked_by,omitempty"`
+	OpenBlockers  []string `json:"open_blockers,omitempty"`
+	Blocked       bool     `json:"blocked,omitempty"`
+	ConflictsWith []string `json:"conflicts_with,omitempty"`
+	Conflicted    bool     `json:"conflicted,omitempty"`
+	RefinedBy     []string `json:"refined_by,omitempty"`
+	Challenged    bool     `json:"challenged,omitempty"`
 }
 
 // Retraction is the append-only record that a decision was withdrawn. It is
@@ -121,7 +151,8 @@ type Endpoint struct {
 }
 
 // Edge connects two endpoints. Relation is one of constrains, implements,
-// supersedes, validates, contradicts.
+// supersedes, validates, contradicts, blocks, conflicts_with, refines. An
+// alias is never stored.
 type Edge struct {
 	Relation   string   `json:"relation"`
 	From       Endpoint `json:"from"`
@@ -182,6 +213,16 @@ var (
 	ErrSupersedesKind  = errors.New("supersedes links a decision to a decision")
 	ErrSupersedesCycle = errors.New("supersedes cycle")
 	ErrDuplicateEdge   = errors.New("edge already recorded")
+	// ErrEndpointKind rejects an endpoint kind the relation does not take.
+	// A supersedes kind error matches both it and ErrSupersedesKind.
+	ErrEndpointKind = errors.New("endpoint kind not allowed for relation")
+	// ErrBlocksCycle and ErrRefinesCycle reject an edge that would close a
+	// cycle through edges of the same relation.
+	ErrBlocksCycle  = errors.New("blocks cycle")
+	ErrRefinesCycle = errors.New("refines cycle")
+	// ErrAlreadySuperseded rejects conflicts_with or refines between two
+	// decisions when one already supersedes the other.
+	ErrAlreadySuperseded = errors.New("pair already linked by supersedes")
 	// ErrRetracted rejects a new edge with a retracted decision at either end.
 	ErrRetracted = errors.New("decision retracted")
 	// ErrAlreadyRetracted rejects retracting a decision a second time, as
@@ -201,19 +242,22 @@ func Link(s *store.Store, in EdgeInput) (Edge, error) {
 //
 //   - a bad relation, kind, or ref;
 //   - ErrSelfLink: from and to are the same endpoint, for any relation;
-//   - ErrSupersedesKind: supersedes with a session or commit endpoint.
-//     "from supersedes to" means the from decision replaces the to
-//     decision, so both ends are decisions;
+//   - ErrEndpointKind (and ErrSupersedesKind for supersedes): an endpoint
+//     kind the relation does not take, see checkKinds;
 //   - ErrUnknownRef: a session or commit the store has no telemetry for,
 //     or a decision id not stored;
 //   - ErrRetracted: either end is a retracted decision;
-//   - ErrDuplicateEdge: the same relation, from, and to already stored;
-//   - ErrSupersedesCycle: from supersedes to when to already reaches from
-//     through decision-to-decision supersedes edges, including to
-//     superseding from directly.
+//   - ErrDuplicateEdge: the same relation, from, and to already stored
+//     (for conflicts_with, in either order);
+//   - ErrSupersedesCycle, ErrBlocksCycle, ErrRefinesCycle: the edge would
+//     close a cycle through decision-to-decision edges of its relation;
+//   - ErrAlreadySuperseded: conflicts_with or refines between two decisions
+//     one of which already supersedes the other.
 //
 // It warns, and still stores the edge, when the same two endpoints, in
-// either direction, now have both a validates and a contradicts edge.
+// either direction, now have both a validates and a contradicts edge, and
+// when a blocks edge joins two decisions that already have a supersedes or
+// conflicts_with edge.
 //
 // The retracted, duplicate, cycle, and warning checks read the stored
 // decision ids, edges, and retractions in the same transaction as the insert
@@ -236,13 +280,8 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 	if edge.From == edge.To {
 		return Edge{}, nil, fmt.Errorf("%w: %s", ErrSelfLink, endpointText(edge.From))
 	}
-	if edge.Relation == RelSupersedes {
-		if edge.From.Kind != KindDecision {
-			return Edge{}, nil, fmt.Errorf("%w: from is %s", ErrSupersedesKind, endpointText(edge.From))
-		}
-		if edge.To.Kind != KindDecision {
-			return Edge{}, nil, fmt.Errorf("%w: to is %s", ErrSupersedesKind, endpointText(edge.To))
-		}
+	if err := checkKinds(edge); err != nil {
+		return Edge{}, nil, err
 	}
 	if err := known(s, edge.From); err != nil {
 		return Edge{}, nil, err
@@ -290,18 +329,54 @@ func LinkWithWarnings(s *store.Store, in EdgeInput) (Edge, []string, error) {
 // checkAgainst applies the rules that depend on the stored edges.
 func checkAgainst(edge Edge, existing []Edge, stored map[string]bool) ([]string, error) {
 	for _, e := range existing {
-		if e.Relation == edge.Relation && e.From == edge.From && e.To == edge.To {
+		if e.Relation != edge.Relation {
+			continue
+		}
+		same := e.From == edge.From && e.To == edge.To
+		if edge.Relation == RelConflictsWith && e.From == edge.To && e.To == edge.From {
+			same = true
+		}
+		if same {
 			return nil, fmt.Errorf("%w: %s %s %s", ErrDuplicateEdge, endpointText(edge.From), edge.Relation, endpointText(edge.To))
 		}
 	}
-	if edge.Relation == RelSupersedes {
-		if path := supersedesPath(existing, stored, edge.To.Ref, edge.From.Ref); path != nil {
-			return nil, fmt.Errorf("%w: %s already reaches %s through supersedes (%s), so %s cannot supersede %s",
-				ErrSupersedesCycle, endpointText(edge.To), endpointText(edge.From), strings.Join(path, " -> "),
-				endpointText(edge.From), endpointText(edge.To))
+	cycles := map[string]struct {
+		err  error
+		verb string
+	}{
+		RelSupersedes: {ErrSupersedesCycle, "supersede"},
+		RelBlocks:     {ErrBlocksCycle, "block"},
+		RelRefines:    {ErrRefinesCycle, "refine"},
+	}
+	if c, ok := cycles[edge.Relation]; ok {
+		if path := relationPath(existing, stored, edge.Relation, edge.To.Ref, edge.From.Ref); path != nil {
+			return nil, fmt.Errorf("%w: %s already reaches %s through %s (%s), so %s cannot %s %s",
+				c.err, endpointText(edge.To), endpointText(edge.From), edge.Relation, strings.Join(path, " -> "),
+				endpointText(edge.From), c.verb, endpointText(edge.To))
+		}
+	}
+	pairHas := func(rel string) bool {
+		for _, e := range existing {
+			if countsAs(e, stored, rel) && (e.From == edge.From && e.To == edge.To || e.From == edge.To && e.To == edge.From) {
+				return true
+			}
+		}
+		return false
+	}
+	if edge.Relation == RelConflictsWith || edge.Relation == RelRefines {
+		if pairHas(RelSupersedes) {
+			return nil, fmt.Errorf("%w: %s and %s; one already replaces the other, so %s is not recorded",
+				ErrAlreadySuperseded, endpointText(edge.From), endpointText(edge.To), edge.Relation)
 		}
 	}
 	var warnings []string
+	if edge.Relation == RelBlocks {
+		for _, rel := range []string{RelSupersedes, RelConflictsWith} {
+			if pairHas(rel) {
+				warnings = append(warnings, fmt.Sprintf("%s and %s also have a %s edge", endpointText(edge.From), endpointText(edge.To), rel))
+			}
+		}
+	}
 	if edge.Relation == RelValidates || edge.Relation == RelContradicts {
 		other := RelContradicts
 		if edge.Relation == RelContradicts {
@@ -324,19 +399,83 @@ func checkAgainst(edge Edge, existing []Edge, stored map[string]bool) ([]string,
 // self-edge, a session or commit end, or an id never stored); such an edge
 // is still listed but replaces nothing.
 func countsAsSupersedes(e Edge, stored map[string]bool) bool {
-	return e.Relation == RelSupersedes &&
+	return countsAs(e, stored, RelSupersedes)
+}
+
+// countsAs is the same rule for any decision-to-decision relation
+// (supersedes, blocks, conflicts_with, refines): the relation matches, both
+// ends are different decisions, and both ids are stored. Read time and the
+// cycle checks use it, so an edge that fails it is listed but drives nothing.
+func countsAs(e Edge, stored map[string]bool, rel string) bool {
+	return e.Relation == rel &&
 		e.From.Kind == KindDecision && e.To.Kind == KindDecision &&
 		e.From.Ref != e.To.Ref &&
 		stored[e.From.Ref] && stored[e.To.Ref]
 }
 
-// supersedesPath returns the decision ids from start to goal along edges
-// that countsAsSupersedes (from -> to), or nil when goal is not reachable.
+// checkKinds applies each relation's endpoint kinds. It needs no store, so
+// it runs before the refs are looked up.
+//
+//   - supersedes, blocks, conflicts_with, refines: decision to decision;
+//   - implements: session or commit to decision;
+//   - validates, contradicts: any kind to a decision;
+//   - constrains: from a decision to any kind.
+func checkKinds(e Edge) error {
+	fail := func(rule, end string, ep Endpoint) error {
+		msg := fmt.Sprintf("%s %s: %s is %s", e.Relation, rule, end, endpointText(ep))
+		if e.Relation == RelSupersedes {
+			return kindError{msg: msg, also: ErrSupersedesKind}
+		}
+		return kindError{msg: msg}
+	}
+	switch e.Relation {
+	case RelSupersedes, RelBlocks, RelConflictsWith, RelRefines:
+		if e.From.Kind != KindDecision {
+			return fail("links a decision to a decision", "from", e.From)
+		}
+		if e.To.Kind != KindDecision {
+			return fail("links a decision to a decision", "to", e.To)
+		}
+	case RelImplements:
+		if e.From.Kind != KindSession && e.From.Kind != KindCommit {
+			return fail("links a session or commit to a decision", "from", e.From)
+		}
+		if e.To.Kind != KindDecision {
+			return fail("links a session or commit to a decision", "to", e.To)
+		}
+	case RelValidates, RelContradicts:
+		if e.To.Kind != KindDecision {
+			return fail("points to a decision", "to", e.To)
+		}
+	case RelConstrains:
+		if e.From.Kind != KindDecision {
+			return fail("starts from a decision", "from", e.From)
+		}
+	}
+	return nil
+}
+
+// kindError is an endpoint kind error. Its message is the rule alone, for
+// example "blocks links a decision to a decision: from is session:s1", and
+// errors.Is matches ErrEndpointKind (and also, when set).
+type kindError struct {
+	msg  string
+	also error
+}
+
+func (k kindError) Error() string { return k.msg }
+
+func (k kindError) Is(target error) bool {
+	return target == ErrEndpointKind || (k.also != nil && target == k.also)
+}
+
+// relationPath returns the decision ids from start to goal along edges
+// that countsAs rel (from -> to), or nil when goal is not reachable.
 // The search is breadth-first, so the path is a shortest one.
-func supersedesPath(edges []Edge, stored map[string]bool, start, goal string) []string {
+func relationPath(edges []Edge, stored map[string]bool, rel, start, goal string) []string {
 	next := map[string][]string{}
 	for _, e := range edges {
-		if countsAsSupersedes(e, stored) {
+		if countsAs(e, stored, rel) {
 			next[e.From.Ref] = append(next[e.From.Ref], e.To.Ref)
 		}
 	}
@@ -500,6 +639,119 @@ func resolve(g *Graph) {
 			d.EffectiveStatus = EffectiveActive
 		}
 	}
+	resolveRelations(g, stored, by)
+}
+
+// resolveRelations fills the fields blocks, conflicts_with, refines,
+// validates, and contradicts drive. Only an edge that countsAs its relation
+// (two different stored decisions) counts for blocks, conflicts_with, and
+// refines; validates and contradicts count only when they point to a stored
+// decision from another endpoint. Any other stored edge, such as one an
+// older sdf wrote before the endpoint kinds were enforced, is listed in
+// Edges and drives nothing. Ids are listed once each, in edge order.
+//
+//   - BlockedBy: every decision with a blocks edge to this one.
+//     OpenBlockers: those still unsettled. A blocker is unsettled when any
+//     of its current heads is a hypothesis. A head is found by following
+//     SupersededBy from the blocker until an active decision is reached; a
+//     retracted decision on the way contributes no head, because a withdrawn
+//     blocker blocks nothing. So a blocking hypothesis clears once a
+//     decision record supersedes it (records never change status, so
+//     superseding is how a hypothesis gets settled), or once it is
+//     retracted. Blocked: the record is active and OpenBlockers is not
+//     empty.
+//   - ConflictsWith: the other side of every conflicts_with edge.
+//     Conflicted: the record is active and at least one of those is active.
+//   - RefinedBy: every decision with a refines edge to this one. The record
+//     keeps its own EffectiveStatus.
+//   - Challenged: the record is active and the latest validates or
+//     contradicts edge to it, in edge order, is contradicts.
+func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string][]string) {
+	index := make(map[string]int, len(g.Decisions))
+	for i, d := range g.Decisions {
+		if _, dup := index[d.ID]; !dup {
+			index[d.ID] = i
+		}
+	}
+	add := func(m map[string][]string, seen map[[2]string]bool, key, val string) {
+		if seen[[2]string{key, val}] {
+			return
+		}
+		seen[[2]string{key, val}] = true
+		m[key] = append(m[key], val)
+	}
+	blockedBy, conflicts, refinedBy := map[string][]string{}, map[string][]string{}, map[string][]string{}
+	seenB, seenC, seenR := map[[2]string]bool{}, map[[2]string]bool{}, map[[2]string]bool{}
+	challenged := map[string]bool{}
+	for _, e := range g.Edges {
+		switch {
+		case countsAs(e, stored, RelBlocks):
+			add(blockedBy, seenB, e.To.Ref, e.From.Ref)
+		case countsAs(e, stored, RelConflictsWith):
+			add(conflicts, seenC, e.To.Ref, e.From.Ref)
+			add(conflicts, seenC, e.From.Ref, e.To.Ref)
+		case countsAs(e, stored, RelRefines):
+			add(refinedBy, seenR, e.To.Ref, e.From.Ref)
+		case (e.Relation == RelValidates || e.Relation == RelContradicts) &&
+			e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To:
+			challenged[e.To.Ref] = e.Relation == RelContradicts
+		}
+	}
+	active := func(id string) bool {
+		i, ok := index[id]
+		return ok && g.Decisions[i].EffectiveStatus == EffectiveActive
+	}
+	var heads func(id string, seen map[string]bool) []string
+	heads = func(id string, seen map[string]bool) []string {
+		if seen[id] {
+			return nil
+		}
+		seen[id] = true
+		i, ok := index[id]
+		if !ok || g.Decisions[i].Retraction != nil {
+			return nil
+		}
+		if next := supersededBy[id]; len(next) > 0 {
+			var out []string
+			for _, n := range next {
+				out = append(out, heads(n, seen)...)
+			}
+			return out
+		}
+		return []string{id}
+	}
+	unsettled := func(blocker string) bool {
+		for _, h := range heads(blocker, map[string]bool{}) {
+			if g.Decisions[index[h]].Status == StatusHypothesis {
+				return true
+			}
+		}
+		return false
+	}
+	for i := range g.Decisions {
+		d := &g.Decisions[i]
+		d.BlockedBy = blockedBy[d.ID]
+		d.OpenBlockers = nil
+		for _, b := range d.BlockedBy {
+			if unsettled(b) {
+				d.OpenBlockers = append(d.OpenBlockers, b)
+			}
+		}
+		isActive := d.EffectiveStatus == EffectiveActive
+		d.Blocked = isActive && len(d.OpenBlockers) > 0
+		d.ConflictsWith = conflicts[d.ID]
+		d.Conflicted = false
+		if isActive {
+			for _, c := range d.ConflictsWith {
+				if active(c) {
+					d.Conflicted = true
+					break
+				}
+			}
+		}
+		d.RefinedBy = refinedBy[d.ID]
+		d.Challenged = isActive && challenged[d.ID]
+	}
 }
 
 // WriteJSON writes the graph the way the summary JSON is written.
@@ -532,7 +784,7 @@ func WriteText(w io.Writer, g Graph) error {
 	}
 	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"}}
 	for _, d := range g.Decisions {
-		row := []string{d.ID, d.Status, effectiveText(d), orDash(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
+		row := []string{d.ID, d.Status, effectiveText(d) + flagsText(d), orDash(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
 		decisions = append(decisions, row)
 		// Alternatives and reason are free text, up to 500 bytes each, so
 		// they go on their own lines under STATEMENT instead of widening
@@ -545,6 +797,11 @@ func WriteText(w io.Writer, g Graph) error {
 			}
 			line := make([]string, len(row))
 			line[len(row)-1] = extra[0] + ": " + cell(extra[1])
+			decisions = append(decisions, line)
+		}
+		for _, extra := range relationLines(d) {
+			line := make([]string, len(row))
+			line[len(row)-1] = extra
 			decisions = append(decisions, line)
 		}
 		if r := d.Retraction; r != nil {
@@ -571,6 +828,44 @@ func WriteText(w io.Writer, g Graph) error {
 		return err
 	}
 	return writeTable(w, fmt.Sprintf("Edges: %d", len(g.Edges)), edges)
+}
+
+// flagsText is appended to the EFFECTIVE cell: ", blocked", ", conflicted",
+// and ", challenged", in that order, for each derived flag that is set.
+func flagsText(d Record) string {
+	var b strings.Builder
+	for _, f := range []struct {
+		on   bool
+		name string
+	}{{d.Blocked, "blocked"}, {d.Conflicted, "conflicted"}, {d.Challenged, "challenged"}} {
+		if f.on {
+			b.WriteString(", " + f.name)
+		}
+	}
+	return b.String()
+}
+
+// relationLines are the "blocked by: ", "conflicts with: ", and
+// "refined by: " lines printed under STATEMENT. A blocked-by line ends with
+// "(open: IDS)" when some blockers are still unsettled, or "(settled)".
+func relationLines(d Record) []string {
+	var out []string
+	if len(d.BlockedBy) > 0 {
+		text := "blocked by: " + cell(strings.Join(d.BlockedBy, ", "))
+		if len(d.OpenBlockers) > 0 {
+			text += " (open: " + cell(strings.Join(d.OpenBlockers, ", ")) + ")"
+		} else {
+			text += " (settled)"
+		}
+		out = append(out, text)
+	}
+	if len(d.ConflictsWith) > 0 {
+		out = append(out, "conflicts with: "+cell(strings.Join(d.ConflictsWith, ", ")))
+	}
+	if len(d.RefinedBy) > 0 {
+		out = append(out, "refined by: "+cell(strings.Join(d.RefinedBy, ", ")))
+	}
+	return out
 }
 
 func orDash(s string) string {
@@ -672,9 +967,12 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 
 func newEdge(in EdgeInput, recordedAt string) (Edge, error) {
 	switch in.Relation {
-	case RelConstrains, RelImplements, RelSupersedes, RelValidates, RelContradicts:
+	case RelConstrains, RelImplements, RelSupersedes, RelValidates, RelContradicts,
+		RelBlocks, RelConflictsWith, RelRefines:
+	case AliasBlockedBy, AliasDependsOn:
+		in = EdgeInput{Relation: RelBlocks, From: in.To, To: in.From}
 	default:
-		return Edge{}, fmt.Errorf("relation must be constrains, implements, supersedes, validates, or contradicts")
+		return Edge{}, fmt.Errorf("%s", relationList)
 	}
 	from, err := endpoint(in.From)
 	if err != nil {
@@ -683,6 +981,14 @@ func newEdge(in EdgeInput, recordedAt string) (Edge, error) {
 	to, err := endpoint(in.To)
 	if err != nil {
 		return Edge{}, fmt.Errorf("to: %w", err)
+	}
+	// conflicts_with is symmetric: store the smaller endpoint first, so "a
+	// conflicts_with b" and "b conflicts_with a" are the same stored edge.
+	// Only two decisions are swapped; any other pair is refused by the kind
+	// check, whose message then names the ends as the caller gave them.
+	if in.Relation == RelConflictsWith && from.Kind == KindDecision && to.Kind == KindDecision &&
+		endpointText(to) < endpointText(from) {
+		from, to = to, from
 	}
 	return Edge{Relation: in.Relation, From: from, To: to, RecordedAt: recordedAt}, nil
 }

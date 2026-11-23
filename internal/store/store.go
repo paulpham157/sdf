@@ -427,7 +427,7 @@ type Decision struct {
 
 // DecisionEdge is one directed edge. Kind is "decision", "session", or
 // "commit". Relation is one of constrains, implements, supersedes,
-// validates, contradicts.
+// validates, contradicts, blocks, conflicts_with, refines.
 type DecisionEdge struct {
 	Relation   string
 	FromKind   string

@@ -28,7 +28,7 @@ func seedDecisionGraph(t *testing.T, dbPath string) {
 		}
 	}
 	links := [][3]string{
-		{"implements", "decision:pure-go", "decision:use-sqlite"},
+		{"constrains", "decision:pure-go", "decision:use-sqlite"},
 		{"validates", "session:sess-1", "decision:use-sqlite"},
 		{"validates", "commit:" + decisionSHA, "decision:use-sqlite"},
 	}
@@ -63,7 +63,7 @@ func TestDecisionListPrintsDecisionsAndEdgesAsTables(t *testing.T) {
 		{""},
 		{"Edges: 3"},
 		{"RELATION", "FROM", "TO", "RECORDED AT"},
-		{"implements", "decision:pure-go", "decision:use-sqlite", graph.Edges[0].RecordedAt},
+		{"constrains", "decision:pure-go", "decision:use-sqlite", graph.Edges[0].RecordedAt},
 		{"validates", "session:sess-1", "decision:use-sqlite", graph.Edges[1].RecordedAt},
 		{"validates", "commit:" + decisionSHA, "decision:use-sqlite", graph.Edges[2].RecordedAt},
 	}

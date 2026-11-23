@@ -241,6 +241,17 @@
         if (superseded) {
           line.push(h("span", { class: "superseded-by" }, ["superseded by " + by.join(", ")]));
         }
+        const open = Array.isArray(record.open_blockers) ? record.open_blockers : [];
+        const conflicts = Array.isArray(record.conflicts_with) ? record.conflicts_with : [];
+        if (record.blocked && open.length) {
+          line.push(h("span", { class: "relation-flag blocked" }, ["blocked by " + open.join(", ")]));
+        }
+        if (record.conflicted && conflicts.length) {
+          line.push(h("span", { class: "relation-flag conflicted" }, ["conflicts with " + conflicts.join(", ")]));
+        }
+        if (record.challenged) {
+          line.push(h("span", { class: "relation-flag challenged" }, ["challenged"]));
+        }
         line.push(document.createTextNode(record.statement || ""));
         let cls = "decision";
         if (retraction) cls = "decision retracted-record";
@@ -249,6 +260,11 @@
         const extra = [];
         if (record.alternatives) extra.push("alternatives " + record.alternatives);
         if (record.reason) extra.push("reason " + record.reason);
+        const blockers = Array.isArray(record.blocked_by) ? record.blocked_by : [];
+        if (blockers.length && !record.blocked) extra.push("blocked by " + blockers.join(", ") + " (settled)");
+        if (conflicts.length && !record.conflicted) extra.push("conflicts with " + conflicts.join(", ") + " (resolved)");
+        const refined = Array.isArray(record.refined_by) ? record.refined_by : [];
+        if (refined.length) extra.push("refined by " + refined.join(", "));
         if (retraction) {
           const parts = ["retraction " + (retraction.retracted_at || "")];
           if (retraction.retracted_by) parts.push("by " + retraction.retracted_by);
