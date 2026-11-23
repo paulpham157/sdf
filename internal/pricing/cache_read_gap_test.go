@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"sort"
 	"strings"
 	"testing"
 )
@@ -177,16 +178,24 @@ func TestFreeZeroRuleNeedsParsableZeroPromptAndCompletion(t *testing.T) {
 		&Model{ID: "vendor/zero-decimal:free", Prices: map[string]string{"prompt": "0.0", "completion": "0.000"}},
 	)
 	cat := mustFixture(t, models...)
+	// NewFixture requires prompt and completion keys, so a row that lacks
+	// both is injected after the fixture is built.
+	cat.Models["vendor/missing-keys:free"] = &Model{ID: "vendor/missing-keys:free", Prices: map[string]string{}}
 	for id := range cases {
 		got := Price(cat, cacheReadOnly(id))
 		if got.Status != "unknown" || got.USD != "" || !strings.Contains(got.Reason, "input_cache_read") {
 			t.Errorf("%s %v: want unknown for missing input_cache_read, got %+v", id, cases[id], got)
 		}
 	}
+	got := Price(cat, cacheReadOnly("vendor/missing-keys:free"))
+	if got.Status != "unknown" || got.USD != "" || !strings.Contains(got.Reason, "input_cache_read") {
+		t.Errorf("vendor/missing-keys:free: want unknown for a :free row with no prompt or completion key, got %+v", got)
+	}
 	for _, id := range []string{"vendor/zero:free", "vendor/zero-decimal:free"} {
 		got := Price(cat, cacheReadOnly(id))
-		if got.Status != "known" || got.USD != "0" {
-			t.Errorf("%s: %+v", id, got)
+		wantNote := "cache_read tokens are priced at 0 because " + id + " is an OpenRouter :free variant with prompt and completion 0 and no input_cache_read price"
+		if got.Status != "known" || got.USD != "0" || got.Note != wantNote {
+			t.Errorf("%s: %+v, want note %q", id, got, wantNote)
 		}
 	}
 }
@@ -222,5 +231,53 @@ func TestBundledZeroRowsWithoutFreeSuffixKeepCacheReadUnknown(t *testing.T) {
 		if plain.Status != "known" || plain.USD != "0" {
 			t.Errorf("%s without cache reads: %+v", id, plain)
 		}
+	}
+}
+
+// Every bundled row whose prompt and completion are both "-1" is a dynamic
+// router (OpenRouter's sentinel), including the non-openrouter routers
+// nvidia/switchyard and typesafe/jev-router. They stay unknown: the catalog
+// has no real rate to apply.
+func TestBundledNegativeRouterRowsStayUnknown(t *testing.T) {
+	cat := Bundled()
+	want := []string{
+		"nvidia/switchyard",
+		"openrouter/auto",
+		"openrouter/auto-beta",
+		"openrouter/auto-code",
+		"openrouter/bodybuilder",
+		"openrouter/fusion",
+		"openrouter/pareto-code",
+		"typesafe/jev-router",
+	}
+	var found []string
+	seen := map[string]bool{}
+	for id, model := range cat.Models {
+		if model.Prices["prompt"] != "-1" || model.Prices["completion"] != "-1" {
+			continue
+		}
+		found = append(found, id)
+		seen[id] = true
+		plain := Price(cat, Usage{
+			Models: []string{id},
+			Source: "metrics claude_code.token.usage",
+			Tokens: map[string]float64{"input": 100, "output": 10, "cacheRead": 0, "cacheCreation": 0},
+		})
+		if plain.Status != "unknown" || plain.USD != "" || !strings.Contains(plain.Reason, "catalog price prompt for model "+id+" is negative") {
+			t.Errorf("%s: %+v, want unknown because prompt is negative", id, plain)
+		}
+		got := Price(cat, cacheReadOnly(id))
+		if got.Status != "unknown" || got.USD != "" {
+			t.Errorf("%s with cache reads: %+v", id, got)
+		}
+	}
+	sort.Strings(found)
+	for _, id := range want {
+		if !seen[id] {
+			t.Errorf("bundled snapshot has no -1/-1 row %s; update this test and docs/summary.md", id)
+		}
+	}
+	if cat.RetrievedAtRaw == "2026-11-10T10:53:46Z" && strings.Join(found, ",") != strings.Join(want, ",") {
+		t.Fatalf("2026-11-10 snapshot -1/-1 rows %v, want %v", found, want)
 	}
 }
