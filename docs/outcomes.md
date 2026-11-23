@@ -642,6 +642,13 @@ a change that removes or renames one gets a new `schema` value. Every list is
 | `unlinked_session_commits[]` | `sha` (lowercase), `session_id`, `timestamp` (record time of the event that named the session, UTC), `source` (`event` or `trailer`), `event` (`sdf.git.commit` or `claude_code.tool_result`), and `repo` and `branch` when the hook sent them |
 | `stale_edges[]` | `relation`, `from`, `to`, `recorded_at`, and `stale[]`: each decision end that is stale, with `end` (`from` or `to`), `id`, `effective_status`, and `superseded_by` when superseded |
 
+`sdf decision pre-push`, which the `pre-push` git hook runs, applies the
+same rules to the commits a push sends and warns (or, with
+`sdf.prePush=block`, blocks) when one SDF recorded has no `implements` edge
+to a decision that is not retracted. Unlike audit, a session link does not
+satisfy it, and it also accepts an `SDF-Decision: <id>` trailer. See
+[Pre-push decision check](receiver.md#pre-push-decision-check).
+
 The totals are denominators, counted over the same window as `commits[]`:
 `decisions_active - decisions_active_with_implements` is the number of
 `active_without_implements` findings; `commits_with_session` is
