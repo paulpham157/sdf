@@ -415,3 +415,49 @@ func TestBuildRefusesACriterionThatPinsNothing(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestWarningsForUnpinnedInterpretersMakeAndInlineScripts(t *testing.T) {
+	s := Spec{Criteria: []Criterion{
+		{Name: "sh", Argv: []string{"sh", "tests/run.sh"}},
+		{Name: "inline", Argv: []string{"bash", "-c", "sh tests/run.sh"}},
+		{Name: "make", Argv: []string{"make", "test"}},
+		{Name: "pinned", Argv: []string{"sh", "tests/run.sh"}, Designated: []string{"tests/**"}},
+		{Name: "go", Argv: []string{"go", "test", "./..."}},
+	}}
+	w := Warnings(s)
+	if len(w) != 3 || !strings.Contains(w[0], `"sh"`) || !strings.Contains(w[1], "inline bash -c") || !strings.Contains(w[2], "makefile") {
+		t.Fatalf("%q", w)
+	}
+}
+
+// /tmp/r209/nest atk3: a nested module's tests run by a script are not
+// harnessed, so an init that prints "ok" and exits 0 passes. Declare warns.
+func TestWarningsForDesignatedTestsNoGoTestRuns(t *testing.T) {
+	s := Spec{
+		Criteria:        []Criterion{{Name: "unit", Argv: []string{"sh", "scripts/t.sh"}, Designated: []string{"sub/s_test.go"}}},
+		DesignatedFiles: []DesignatedFile{{Path: "scripts/t.sh"}, {Path: "sub/s_test.go"}},
+	}
+	w := Warnings(s)
+	if len(w) != 1 || !strings.Contains(w[0], "sub/s_test.go is not run by any `go test` criterion") {
+		t.Fatalf("%q", w)
+	}
+	s.Criteria = append(s.Criteria, Criterion{Name: "go", Argv: []string{"go", "test", "-C", "sub", "./..."}})
+	if w := Warnings(s); len(w) != 0 {
+		t.Fatalf("covered by go test -C sub: %q", w)
+	}
+}
+
+func TestGoTestPathsWithChdir(t *testing.T) {
+	paths := []string{"go.mod", "sub/go.mod", "sub/s_test.go", "sub/x/y_test.go", "a/a_test.go", "sub/testdata/d"}
+	got := strings.Join(GoTestPaths([]string{"go", "test", "-C", "sub", "./..."}, paths), " ")
+	if got != "go.mod sub/go.mod sub/s_test.go sub/x/y_test.go sub/testdata/d" {
+		t.Fatalf("%s", got)
+	}
+	got = strings.Join(GoTestPaths([]string{"go", "test", "-C=sub", "."}, paths), " ")
+	if got != "go.mod sub/go.mod sub/s_test.go sub/testdata/d" {
+		t.Fatalf("%s", got)
+	}
+	if got := GoTestPaths([]string{"go", "test", "-C", "../x", "."}, paths); len(got) != 0 {
+		t.Fatalf("outside: %v", got)
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"github.com/paulpham157/sdf/internal/samplepath"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/ui"
+	"github.com/paulpham157/sdf/internal/verify"
 )
 
 func TestSummaryOfANewDatabase(t *testing.T) {
@@ -816,6 +817,12 @@ type result struct {
 
 func run(t *testing.T, args ...string) result {
 	t.Helper()
+	// Where checks cannot be isolated (GitHub's ubuntu-24.04 runners, which
+	// the tests do not reconfigure), sdf verify would refuse to run them;
+	// the verify package tests isolation itself.
+	if ok, _ := verify.IsolationAvailable(); !ok && len(args) > 0 && args[0] == "verify" {
+		args = append([]string{"verify", "--allow-unisolated"}, args[1:]...)
+	}
 	oldOut, oldErr := os.Stdout, os.Stderr
 	outR, outW, err := os.Pipe()
 	if err != nil {

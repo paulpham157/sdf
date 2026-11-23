@@ -33,7 +33,7 @@ func TestPassRecordsEvidenceAndVerdictInTheLedger(t *testing.T) {
 	if res.Status != StatusPass || len(res.Reasons) != 0 {
 		t.Fatalf("%s %+v", res.Status, res.Reasons)
 	}
-	if got := kinds(res); got != "task_snapshot checkout revision_identity designated_integrity secret_scan criterion:unit" {
+	if got := kinds(res); got != "task_snapshot checkout revision_identity designated_integrity secret_scan command_pins criterion:unit" {
 		t.Fatalf("evidence %q", got)
 	}
 	v := res.Verdict.Value
@@ -165,7 +165,7 @@ func TestSecretIsNotCopiedIntoEvidence(t *testing.T) {
 		}
 	}
 	for _, r := range res.Reasons {
-		if r.Code == CodeSecretInDiff && r.Detail != "src/x.go:3 (github-token)" {
+		if r.Code == CodeSecretInDiff && !strings.HasSuffix(r.Detail, ` "src/x.go":3 (github-token)`) {
 			t.Fatalf("detail %q", r.Detail)
 		}
 	}
