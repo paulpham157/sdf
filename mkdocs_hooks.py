@@ -6,9 +6,9 @@ The Markdown under docs/ is left unchanged. At build time this hook:
   scripts to the MkDocs file set
 - writes a small index page for the scripts directory
 - rewrites the few links whose repo-relative targets would miss the
-  site layout (docs pages pointing at ../skills/..., and skill pages
-  pointing at ../docs/...)
-- writes the GitHub Pages CNAME into the built site
+  site layout (docs pages pointing at ../skills/..., skill pages
+  pointing at ../docs/..., and docs/diagrams/README.md pointing at
+  ../../README.md and ../../CONTRIBUTING.md)
 - points the Edit button on skill pages at the real source path
 """
 
@@ -45,6 +45,19 @@ PAGE_LINK_REWRITES = {
     "skills/sdf-decisions/SKILL.md": (
         (re.compile(r"\]\(\.\./\.\./docs/outcomes\.md\)"), "](../../outcomes.md)"),
     ),
+    # PR #325: docs/diagrams/README.md links to repo-root files that are
+    # not part of the MkDocs docs_dir. Point those at GitHub so --strict
+    # still passes once that tree is merged.
+    "diagrams/README.md": (
+        (
+            re.compile(r"\]\(\.\./\.\./README\.md\)"),
+            "](https://github.com/paulpham157/sdf/blob/main/README.md)",
+        ),
+        (
+            re.compile(r"\]\(\.\./\.\./CONTRIBUTING\.md\)"),
+            "](https://github.com/paulpham157/sdf/blob/main/CONTRIBUTING.md)",
+        ),
+    ),
 }
 
 # Rewrites on any page under docs/ that points out at ../skills/...
@@ -60,7 +73,6 @@ DOCS_SKILL_REWRITES = (
     ),
 )
 
-CNAME = "docs.softwaredecisionfabric.tech\n"
 
 SCRIPTS_INDEX_MARKDOWN = """# sdf-decisions scripts
 
@@ -128,6 +140,3 @@ def on_pre_page(page: Page, config: MkDocsConfig, files: Files) -> Page:
         page.edit_url = None
     return page
 
-
-def on_post_build(config: MkDocsConfig) -> None:
-    (Path(config.site_dir) / "CNAME").write_text(CNAME, encoding="utf-8")

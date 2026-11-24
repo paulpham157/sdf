@@ -1,11 +1,26 @@
 /* Brand colors from the Software Decision Fabric mark and landing site. */
 :root,
-[data-md-color-scheme="default"],
-[data-md-color-scheme="slate"] {
+[data-md-color-scheme="default"] {
   --md-primary-fg-color: #9e2a1c;
   --md-primary-fg-color--light: #c65a2e;
   --md-primary-fg-color--dark: #7f2218;
   --md-accent-fg-color: #c65a2e;
+  --md-typeset-a-color: #9e2a1c;
+}
+
+/* #9e2a1c on Material slate is ~2.15:1. #e07050 is a lighter rust that
+   stays on-brand and is checked to meet 4.5:1 against the slate surface. */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #e07050;
+  --md-primary-fg-color--light: #e8896a;
+  --md-primary-fg-color--dark: #c65a2e;
+  --md-accent-fg-color: #e07050;
+  --md-typeset-a-color: #e07050;
+}
+
+[data-md-color-scheme="slate"] .md-typeset a,
+[data-md-color-scheme="slate"] .md-typeset a code {
+  color: var(--md-typeset-a-color);
 }
 
 .md-header__button.md-logo img,

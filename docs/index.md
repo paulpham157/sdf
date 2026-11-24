@@ -62,11 +62,11 @@ flowchart TB
     DB --> UI["UI at 127.0.0.1:4320"]
     DB --> OUT["sdf summary / sdf decision"]
   end
-  subgraph optional["Optional"]
-    direction LR
+  subgraph optional["Optional (beside collection)"]
     T["sdf task declare"] --> V["sdf verify"]
-    V --> L["ledger"]
-    V --> G["GitHub Action<br/>no-data-dir, no ledger"]
+    T -.-> L["optional ledger"]
+    V -.-> L
+    GHA["GitHub Action sdf-verify"] -.-> V
   end
   telemetry ~~~ optional
 ```
@@ -76,8 +76,7 @@ summaries and outcomes, and (by default) drops prompt and tool text
 before the row is written. Decisions are recorded separately; the
 summary does not infer them from telemetry. Task declaration, verify,
 and the ledger are optional and sit beside collection, not in its path.
-The `sdf verify` GitHub Action runs with `--no-data-dir` and does not
-open the ledger.
+The GitHub Action runs `sdf verify`; it does not open a ledger today.
 
 ## Documentation
 

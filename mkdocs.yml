@@ -15,6 +15,13 @@ copyright: >
   <a href="https://softwaredecisionfabric.tech/">softwaredecisionfabric.tech</a>
 
 strict: true
+
+# Built when present (PR #325) but not required in nav on this branch.
+# Hook rewrites the README's ../../README.md and ../../CONTRIBUTING.md
+# links so --strict still passes after that PR lands.
+not_in_nav: |
+  diagrams/README.md
+
 docs_dir: docs
 site_dir: site
 use_directory_urls: true

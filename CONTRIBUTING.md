@@ -65,23 +65,28 @@ make docs-serve    # http://127.0.0.1:8000/
 
 ### One-time GitHub Pages setup
 
-This is a maintainer step. The workflow does not enable Pages, create
-DNS records, or change repository settings.
+Do this **before** merging a change that deploys the docs site to
+`main`. The workflow does not enable Pages, create DNS records, or
+change repository settings. If Pages is not enabled first, the deploy
+job on the merge commit will fail; after you enable it, re-run the
+Docs workflow on `main` (`workflow_dispatch`).
 
 1. In the repository on GitHub: **Settings → Pages → Build and
    deployment → Source**, choose **GitHub Actions**.
-2. Merge a change that triggers the Docs workflow on `main`, or run the
+2. After Pages is enabled, merge the docs-site change (or any later
+   change that triggers the Docs workflow) to `main`, or run the
    **Docs** workflow from the Actions tab (`workflow_dispatch`) on
-   `main`. The first deploy after step 1 is what publishes the site.
-   Until a custom domain is attached, the site is at
-   `https://paulpham157.github.io/sdf/`.
+   `main`. Until a custom domain is attached in the Pages settings,
+   the site is at `https://paulpham157.github.io/sdf/`.
 3. Custom domain (optional, intended production URL):
    - Create a DNS `CNAME` record for `docs.softwaredecisionfabric.tech`
      pointing at `paulpham157.github.io`.
    - In **Settings → Pages → Custom domain**, enter
      `docs.softwaredecisionfabric.tech` and wait for the TLS
      certificate. Turn on **Enforce HTTPS** once it is ready.
-   - The built site already contains a `CNAME` file with that hostname.
+   - Do not add a `CNAME` file to the built site. Setting the domain
+     only in the Pages settings keeps
+     `https://paulpham157.github.io/sdf/` working as a fallback.
 4. If the GitHub `github-pages` environment is created with required
    reviewers, a maintainer has to approve the first deploy.
 
