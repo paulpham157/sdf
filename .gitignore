@@ -7,3 +7,12 @@ dist/
 # Local static binary from `make build`.
 /sdf
 *.exe
+
+# Local MkDocs build and documentation virtualenv.
+/site/
+/.venv-docs/
+/.mkdocs-gen/
+
+# Python bytecode from mkdocs_hooks.py.
+__pycache__/
+*.py[cod]
