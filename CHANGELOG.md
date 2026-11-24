@@ -111,6 +111,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Shorten the README overview and add a diagram ([#265](https://github.com/paulpham157/sdf/pull/265)).
 - Add a Decisions page screenshot to the README ([#266](https://github.com/paulpham157/sdf/pull/266)).
 - Document the OpenCode camelCase `sessionID` alias (already implemented in #182) and stop saying OpenCode does not export per-session logs ([#230](https://github.com/paulpham157/sdf/pull/230)).
+- Rewrite the README (features, quick start, usage, configuration, documentation, contributing, security, and license). Add `SECURITY.md` asking that vulnerabilities be reported privately through GitHub advisories. In `docs/summary.md`, say `sdf prices refresh` writes `openrouter-models.json` under `os.UserCacheDir()` (or `--out` / `SDF_PRICE_CACHE`), does not change the bundled table, and that `--prices bundled` forces the bundled table ([#308](https://github.com/paulpham157/sdf/pull/308)).
 
 ### CI/Build
 
