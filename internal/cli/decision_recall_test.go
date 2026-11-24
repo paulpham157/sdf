@@ -18,7 +18,9 @@ func TestDecisionRecallProxyAndFlags(t *testing.T) {
 		miss    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 		outside = "cccccccccccccccccccccccccccccccccccccccc"
 	)
-	at := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	// Far enough in the past that --since 24h excludes it on any clock after
+	// 2020-01-16.
+	at := time.Date(2020, 1, 15, 14, 0, 0, 0, time.UTC)
 	ingest(t, dbPath, [][]byte{
 		hookPayload("recall-fixture", "recall", sess, linked, "/tmp/recall-fixture", "main", at),
 		hookPayload("recall-fixture", "recall", sess, miss, "/tmp/recall-fixture", "main", at.Add(time.Hour)),
@@ -55,7 +57,7 @@ func TestDecisionRecallProxyAndFlags(t *testing.T) {
 		t.Fatalf("sessions %+v", doc)
 	}
 	if len(doc.MissedCommits) != 1 || doc.MissedCommits[0].SHA != miss || doc.MissedCommits[0].SessionID != sess ||
-		doc.MissedCommits[0].Timestamp != "2026-11-20T15:00:00.000000+00:00" {
+		doc.MissedCommits[0].Timestamp != "2020-01-15T15:00:00.000000+00:00" {
 		t.Fatalf("misses %+v", doc.MissedCommits)
 	}
 
@@ -73,7 +75,7 @@ func TestDecisionRecallProxyAndFlags(t *testing.T) {
 		t.Fatalf("%d %q", top.code, top.stdout)
 	}
 
-	window := run(t, "decision", "recall", "--db", dbPath, "--json", "--since", "2026-11-20T14:30:00Z")
+	window := run(t, "decision", "recall", "--db", dbPath, "--json", "--since", "2020-01-15T14:30:00Z")
 	if window.code != 0 {
 		t.Fatal(window.stderr)
 	}
@@ -81,7 +83,7 @@ func TestDecisionRecallProxyAndFlags(t *testing.T) {
 	if late.CommitsInDecisionSessions != 1 || late.CommitsLinked != 0 || late.Misses != 1 || late.LinkRecallByProxy == nil || *late.LinkRecallByProxy != 0 {
 		t.Fatalf("since window %+v", late)
 	}
-	early := run(t, "decision", "recall", "--db", dbPath, "--json", "--until", "2026-11-20T14:30:00Z")
+	early := run(t, "decision", "recall", "--db", dbPath, "--json", "--until", "2020-01-15T14:30:00Z")
 	if early.code != 0 {
 		t.Fatal(early.stderr)
 	}

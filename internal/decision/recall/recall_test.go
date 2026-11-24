@@ -2,7 +2,9 @@ package recall_test
 
 import (
 	"math"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/decision/recall"
@@ -84,6 +86,35 @@ func TestSkillOnlyBaseline(t *testing.T) {
 		if m.Wilson95 == nil || m.Wilson95.Low != 0 || m.Wilson95.High <= 0 || m.Wilson95.High >= 1 {
 			t.Fatalf("%s wilson %+v", name, m.Wilson95)
 		}
+	}
+}
+
+func TestFixtureLinkMustNameAnIngestedCommit(t *testing.T) {
+	const body = `{
+	  "name": "bad-link",
+	  "notes": "The labeled commit is not in the log export.",
+	  "logs": [{
+	    "resourceLogs": [{
+	      "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "recall-fixture"}}]},
+	      "scopeLogs": [{"logRecords": [{
+	        "timeUnixNano": "1579100000000000000",
+	        "body": {"stringValue": "Use WAL mode for the store."},
+	        "attributes": [
+	          {"key": "event.name", "value": {"stringValue": "recall.turn"}},
+	          {"key": "session.id", "value": {"stringValue": "recall-bad"}}
+	        ]
+	      }]}]
+	    }]
+	  }],
+	  "labels": {
+	    "decisions": [{"id": "use-wal", "statement": "Use WAL mode for the store.", "status": "decision", "decided_by": "user"}],
+	    "links": [{"commit": "1111111111111111111111111111111111111111", "decision": "use-wal"}]
+	  }
+	}`
+	fsys := fstest.MapFS{"bad-link.json": &fstest.MapFile{Data: []byte(body)}}
+	_, err := recall.MeasureFS(fsys, recall.SkillOnly{})
+	if err == nil || !strings.Contains(err.Error(), "1111111111111111111111111111111111111111") {
+		t.Fatal(err)
 	}
 }
 

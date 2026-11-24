@@ -187,6 +187,17 @@
   hold the writer's mutex; `GET /api/snapshot` and `GET /api/summary` still
   call `store.Load()` under that mutex
   ([#272](https://github.com/paulpham157/sdf/issues/272)).
+- Decision and link recall against a live agent is not run in CI. The
+  deterministic gate is the skill-only baseline on synthetic fixtures
+  (`internal/decision/recall/fixtures`): decision recall 0/7, link recall
+  0/6, precision undefined, because SDF does not infer a decision from
+  telemetry. Issue #284's target (link recall at least 95 percent, precision
+  drop at most 5 points) waits on a recorder such as the auto-linker in
+  [#281](https://github.com/paulpham157/sdf/issues/281). Runs with k=5 on a
+  cheap model, and A/B tests, are periodic and are not in this tree. See
+  [docs/recall.md](recall.md). `sdf decision recall` reports the unlabeled
+  proxy (`commits_linked / commits_in_decision_sessions`) from the local
+  store.
 - With a receiver token, a hook authenticates only when `SDF_OTLP_TOKEN` or
   `SDF_OTLP_TOKEN_FILE` is in the environment of the agent or `git` that
   runs it; an agent started from a desktop launcher or a GUI git client may

@@ -8,6 +8,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Features
 
+- Add a labeled recall harness (`internal/decision/recall`) and `sdf decision recall`. The harness ingests synthetic OTLP fixtures and scores decision recall, commit-link recall, and precision, with a 95% Wilson interval. CI gates on the measured skill-only baseline: both recalls are 0/labeled (7 decisions, 6 links) because SDF does not infer a decision, and precision is undefined. `sdf decision recall` reports link recall by proxy from `sdf decision audit` (`commits_linked / commits_in_decision_sessions`) on a read-only store. `--since` accepts a duration such as `24h` or RFC3339. Live-agent runs are not included ([#284](https://github.com/paulpham157/sdf/issues/284)).
 - Serve the Software Decision Fabric mark as the UI favicon at `/favicon.svg` and `/favicon.ico` ([#321](https://github.com/paulpham157/sdf/pull/321)).
 - The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316), [#318](https://github.com/paulpham157/sdf/pull/318)).
 
