@@ -316,7 +316,12 @@ request reads to 30s, writes (including a GitHub lookup) to 3 minutes, and
 idle connections to 90s.
 
 The page has three views. Overview is the total across sessions and the cost
-per accepted outcome, including that figure per agent. Sessions lists every
+per accepted outcome, including that figure per agent, plus charts of
+decision-link recall over time, unlinked commits and unlinked decisions
+(the same gaps `sdf decision audit` reports), and sessions and computed
+cost by UTC day. The charts are inline SVG with a data table under each
+plot, and they are omitted when the store has no commits, decisions, or
+dated sessions. Sessions lists every
 stored session, newest first, with the agent, start time, duration, models,
 input and output tokens, computed cost, the cost the agent reported, the
 linked commit or pull request, and whether the link was exact, hook, trailer,
@@ -329,9 +334,20 @@ directory or commit, merge status not requested).
 Those numbers are the `sdf summary` report. The decision records and the budget are drawn on every view, the overview, the session list, and the session detail, and both are drawn even when the store has no sessions. The page does not price tokens
 again. `GET /api/summary` on the UI port is the same document as
 `sdf summary --json` for that database, including `--prices` and `--repo`.
-`GET /api/snapshot` is that report newest-first, plus the per-agent totals.
-`GET /api/decisions` reads the decision records. It is empty when none have
-been recorded, and recording one does not change the summary. All three are
+`GET /api/snapshot` is that report newest-first, plus the per-agent totals
+and `activity_by_day` (session counts and computed cost by the UTC day
+the session started; sessions with no start time are `undated_sessions`,
+not a day). `GET /api/decisions` reads the decision records. It is empty when none have
+been recorded, and recording one does not change the summary.
+`GET /api/overview-charts` is the decision-link recall and unlinked-gap
+series for the overview charts, reusing `sdf decision audit` on a
+read-only connection so a long read does not hold the writer's mutex
+(issue #272). Recall is the share of SDF-recorded commits that have an
+`implements` edge to a stored decision. `SDF-Decision` trailers are not
+in the store, so they are not counted (issue #281). Days are UTC
+calendar dates; a quiet day between the first and last event is included
+with zeros, and a day with no commits omits daily recall rather than
+calling it zero. All four routes are
 read-only. There is no route that writes or deletes. A response that cannot
 be encoded is `500` with a JSON error, not an empty `200` (issue #267).
 

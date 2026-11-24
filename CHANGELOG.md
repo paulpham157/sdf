@@ -9,6 +9,7 @@ This file covers the first public release of the current product: a vendor-neutr
 ### Features
 
 - Serve the Software Decision Fabric mark as the UI favicon at `/favicon.svg` and `/favicon.ico` ([#321](https://github.com/paulpham157/sdf/pull/321)).
+- The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316), [#318](https://github.com/paulpham157/sdf/pull/318)).
 
 ### Docs
 

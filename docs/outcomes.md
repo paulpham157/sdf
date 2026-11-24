@@ -737,6 +737,15 @@ decision, and it never writes. Like `list`, it opens the store with
 store and is not created, a missing directory is an error, and an older file
 is read without being migrated.
 
+The overview page in the UI plots these gaps as charts (recall over time,
+unlinked commit and decision counts, plus sessions and computed cost by
+UTC day) without listing every finding. `GET /api/overview-charts` reuses
+this audit logic on a read-only connection. Recall is the share of
+SDF-recorded commits that have an `implements` edge to a stored decision;
+`SDF-Decision` trailers are not stored, so they are not counted yet
+(issue #281). The charts do not cover constraint-touch metrics (issue #305)
+or the hash-ledger `sdf audit` command.
+
 ```bash
 sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
 ```
