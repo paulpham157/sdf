@@ -47,7 +47,9 @@ One SQLite file, separate from the telemetry store. The path is the first of:
 4. `~/.local/share/sdf/ledger.db`.
 
 The first append creates the directory (mode 0700), the file (mode 0600), the
-table, and the genesis entry. (`sdf task declare` and `sdf verify` use only
+table, and the genesis entry. An existing ledger that group or others can
+read is tightened to owner-only when it is opened (see
+[security.md](security.md#file-permissions)). (`sdf task declare` and `sdf verify` use only
 the first two; see [Who writes it](#who-writes-it).) Preparing a ledger for a
 write creates the directory, file, and table but no entry; genesis still comes
 with the first append. `sdf audit` on a path that does not exist

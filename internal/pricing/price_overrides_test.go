@@ -241,4 +241,39 @@ func TestClaudeDisjointPromptIncludesCache(t *testing.T) {
 	}
 }
 
+func TestOverrideChangesOnlySomeRatesFallsBackToBase(t *testing.T) {
+	cat := mustFixture(t, &Model{
+		ID:           "vendor/partial",
+		HasOverrides: true,
+		Prices:       map[string]string{"prompt": "0.000001", "completion": "0.000002", "input_cache_read": "0.0000004"},
+		Overrides: []Override{{
+			MinPromptTokens: int64Ptr(100),
+			// Only prompt is overridden; completion and cache-read stay at the base rates.
+			Prices: map[string]string{"prompt": "0.000003"},
+		}},
+	})
+	tokens := map[string]float64{"input_tokens": 100, "output_tokens": 4, "cache_read_tokens": 10}
+	got := Price(cat, Usage{
+		Models:   []string{"vendor/partial"},
+		Source:   "logs grok_code.api_request",
+		Tokens:   tokens,
+		Requests: []map[string]float64{tokens},
+	})
+	// overlap: (100-10)*0.000003 + 10*0.0000004 + 4*0.000002
+	// = 0.00027 + 0.000004 + 0.000008 = 0.000282
+	if got.Status != "known" || got.USD != "0.000282" {
+		t.Fatalf("%+v", got)
+	}
+	if !strings.Contains(got.Note, "override rates") {
+		t.Fatalf("note %s", got.Note)
+	}
+	byName := map[string]Component{}
+	for _, item := range got.Components {
+		byName[item.Name] = item
+	}
+	if byName["input"].USDPerToken != "0.000003" || byName["output"].USDPerToken != "0.000002" || byName["cache_read"].USDPerToken != "0.0000004" {
+		t.Fatalf("components %+v", got.Components)
+	}
+}
+
 func int64Ptr(n int64) *int64 { return &n }

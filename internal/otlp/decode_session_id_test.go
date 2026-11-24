@@ -195,6 +195,54 @@ func TestEmptySessionIDAliasIsIgnored(t *testing.T) {
 	}
 }
 
+// Non-string session keys go through record.OTLPText, the same helper
+// canonical session.id uses: ints become decimal text, bools become
+// Python-style "True" / "False", and empty strings stay absent.
+func TestSessionIDNonStringValuesMatchSessionDotID(t *testing.T) {
+	cases := []struct {
+		name string
+		attr string
+		want string
+	}{
+		{
+			name: "sessionID int is stringified",
+			attr: `{"key":"sessionID","value":{"intValue":"842"}}`,
+			want: "842",
+		},
+		{
+			name: "session.id int is stringified",
+			attr: `{"key":"session.id","value":{"intValue":"842"}}`,
+			want: "842",
+		},
+		{
+			name: "sessionID bool true becomes True",
+			attr: `{"key":"sessionID","value":{"boolValue":true}}`,
+			want: "True",
+		},
+		{
+			name: "sessionID bool false becomes False",
+			attr: `{"key":"sessionID","value":{"boolValue":false}}`,
+			want: "False",
+		},
+		{
+			name: "session.id bool true becomes True",
+			attr: `{"key":"session.id","value":{"boolValue":true}}`,
+			want: "True",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recs, err := Decode("logs", []byte(openCodeLogJSON("", "", tc.attr)), "application/json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recs[0].SessionID == nil || *recs[0].SessionID != tc.want {
+				t.Fatalf("session %v want %s", recs[0].SessionID, tc.want)
+			}
+		})
+	}
+}
+
 func openCodeResourceJSON(extra string) string {
 	attrs := `{"key":"service.name","value":{"stringValue":"opencode"}},{"key":"sdf.fixture","value":{"stringValue":"sample"}}`
 	if extra != "" {

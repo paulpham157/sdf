@@ -352,6 +352,8 @@ sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
 sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
+sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
+sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
 ```
 
 ```text
@@ -432,6 +434,187 @@ decision by its stored status and edges, without the retraction. A file that
 cannot be written, such as a read-only copy, is opened without the table and
 reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
+
+### The decision graph (Decisions tab)
+
+`GET /api/decisions/graph` arranges the decision records into chapters for the
+UI's Decisions tab. `sdf decision graph --json` prints the same bytes for the
+same `--db`, `--prices`, `--repo`, and `--github`, because both call
+`decisiongraph.Build` on the same records and the same summarized sessions
+(`outcome.Summarize`, without the budget: a budget file that fails to load
+breaks `/api/summary`, not the Decisions tab). The route answers through the
+same buffered JSON writer as the other routes, with `Content-Length`. Under
+`sdf serve`, requests that arrive while the summary is being built share
+that build, so the page's parallel requests make one round of GitHub
+lookups.
+Without `--json` it prints one line per chapter with its facts and explored
+count, plus one line per item that needs attention. It opens the store
+read-only, like `sdf decision list`. It only reads; the tab has no write
+action.
+
+```bash
+sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]
+```
+
+- **Chapter.** One connected component of decisions. Decisions are joined by a
+  decision-to-decision edge, or by both linking the same session (a commit
+  counts as the session the report attributes it to). Its title is the git
+  branch of the hook commits, else the pull request, else the first session,
+  else the first decision id; `label_source` says which. The id is
+  `ch-` plus the first decision's id. Chapters are sorted newest first.
+- **Nodes.** `start`, `decision`, `alternative` (a not-taken option split from
+  `alternatives` on `;`, else on `, or `), and `ending`. `role` is one of
+  `path`, `locked`, `hypothesis`, `refinement`, `superseded`, `retracted`,
+  `not_taken`, `reached`, `unreached`, and `locked_ending`. `lane`
+  (`spine`, `left`, `right`, or `none` for an alternative folded into its
+  decision's "+N not taken") and `row` are computed here, so the page only maps
+  them to coordinates. Over 25 nodes a chapter is `compact` and folds every
+  alternative.
+- **Endings.** A linked session's pull request (reached when merged), else its
+  first commit, plus any linked commit no linked session stands for. A blocked
+  decision on the path with no ending gets a `locked_ending` that names its
+  open blockers. `via` lists the decisions that lead to it, `implements` and
+  `validates` first.
+- **Edges.** The stored edges between decisions, plus derived `next` (the
+  chosen path), `after`, `not_taken`, and `outcome`. `tension` marks
+  `conflicts_with` and `contradicts`, which the page hides until "Show
+  tensions" is on or one end is focused. `relation_types` lists every relation
+  with its glyph and label.
+- **Facts and explored.** `facts` counts endings reached and total, locked
+  records, active conflict pairs (a pair stored in both orders by an older
+  sdf is one pair, drawn once), and challenged decisions; `needs_attention`
+  lists them. They are the read-time `blocked`, `conflicted`, and
+  `challenged` fields above, so the same rules hold: a blocker with no head
+  is open when any path of its `supersedes` chain reaches a cycle, a
+  conflict pair needs both sides `active`, and only evidence from an active
+  decision (or any session or commit) counts; a challenged item names that
+  source. `explored` counts choice points only: decided ÷ (decided + not
+  taken + hypotheses + locked), rounded half up. A blocked record, decision
+  or hypothesis, counts as locked, in `facts.locked` and `explored.locked`
+  alike. Superseded and retracted decisions count as decided; a superseded
+  or retracted hypothesis, a refinement, and a commit do not count.
+- **Cost.** The sum of the chapter's sessions' computed cost: `known`, `partial`
+  when some session has no known cost, or `unknown`.
+- **What-if.** Each alternative carries `command`, an `sdf decision add ...
+  --status hypothesis` line the page copies to the clipboard. The page never
+  runs it. The new id is `PARENT-alt-N`; a parent longer than 110 characters
+  is cut to 100 and followed by `-` and 8 hex digits of its SHA-256, so the
+  id stays within 128 characters and two long parents do not collide.
+- **Replay.** A scrubber under the canvas replays the chapter. Its timeline
+  has one event per decision (`recorded_at`), per stored edge that touches
+  one of the chapter's decisions (`links[].recorded_at`), and per retraction
+  (`retraction.retracted_at`), ordered by the full stored time (to the
+  microsecond the store writes, not only the millisecond), then decision,
+  edge, retraction, then the order the API lists them. A time with no zone
+  is read as UTC, the zone the store writes; a time that cannot be read
+  sorts last and is labelled "time unknown". It needs no other endpoint.
+  Ticks are spaced by event order; filled is a user decision, hollow an
+  agent one, a small dot an edge. The label at the playhead reads, for
+  example, `Nov 22 · 09:14 GMT+7 · agent-status · 10 of 13`: the time is in
+  the browser's time zone with its label, as every other time on the page.
+  The slider is `role="slider"` with `aria-valuemin`, `aria-valuemax`,
+  `aria-valuenow`, and `aria-valuetext`: ←/→ or `[`/`]` step one event
+  (`[`/`]` work anywhere on the tab outside a text field), PageUp/PageDown
+  step a tenth, Home/End jump, Space plays or pauses, and dragging scrubs.
+  `#/decisions/<chapter>[/<node>]?at=N` opens the chapter at event N; a
+  link to a chapter that no longer exists opens the newest chapter at now
+  and ignores `at`. The `?` sheet lists the replay keys.
+
+  As of the playhead, the derived fields are **recomputed, not
+  approximated**: the page re-runs the read-time rules above (superseded,
+  retracted, blocked with open blockers, conflicted, challenged) over only
+  the decisions and edges recorded so far, then rebuilds roles, facts,
+  needs attention, and explored the way the graph does. At the last event
+  the page shows the server's chapter unchanged. Layout is not recomputed:
+  every node keeps its final lane and row, and a node not recorded yet is a
+  faint outline with no text, out of the tab order; its panel (reached by
+  link) says it is not recorded yet and shows no status chips. Two things are
+  approximated because nothing stores their time: an ending appears once
+  every decision it came from is recorded and linked to a session or commit,
+  and a pull request's merged state is today's. With
+  `prefers-reduced-motion`, replay steps without the fade and at a slower
+  pace (1.6 s instead of 0.9 s). The live region announces when playback
+  starts, pauses, and finishes; each step is in the slider's
+  `aria-valuetext`. Open blockers are resolved with the same memoized
+  supersedes-head walk as the server (linear in the decisions and edges,
+  cycles detected by component), so a step stays fast on long or diamond
+  shaped supersedes chains. If a step fails, playback stops and the tab is
+  drawn again from scratch.
+
+### Checking an action
+
+`sdf decision check <action>` answers whether an in-force decision forbids
+an action. An agent runs it before a push, merge, release, deploy, or an
+architecture change, and stops when it exits non-zero. It reads the same
+graph as `sdf decision list` and does not write: a missing file in an
+existing directory is an empty store (allowed, exit 0) and is not created.
+A missing directory exits 3.
+
+`<action>` is one argument. `push`, `merge`, `release`, and `deploy` are
+named actions, compared case-insensitively after trimming. Any other text,
+including `git push` or `replace sqlite`, is an architecture change.
+
+A decision forbids the action only when it is still in force and its
+**statement** matches. In force means `status` is `decision` (a hypothesis
+does not forbid), `effective_status` is `active` (superseded does not), and
+it is not retracted. `blocked`, `conflicted`, and `challenged` do not clear
+a forbid: a settled "do not push" still forbids push while a blocker is
+open. The id, the reason, the source, and the edges are not matched.
+`supersedes` and `retract` matter only because they take the record out of
+force.
+
+The match is case-insensitive, on whole words:
+
+- A tag `forbid:push`, `forbid:merge`, `forbid:release`, `forbid:deploy`, or
+  `forbid:architecture`. The tag is a token, so `forbid:pushing` does not
+  match `push`.
+- A phrase whose cue is immediately followed by the action word. The cues are
+  `do not`, `don't`, `dont`, `never`, `must not`, `forbidden to`, and
+  `forbid`. `Do not push until the user says so.` forbids `push`.
+- `no push` (and the same for the other named actions) only when that action
+  ends the statement or is followed by `.` `,` `;` or `:`. `no push notification`
+  does not forbid `push`.
+- An architecture change matches `forbid:architecture`, the phrase
+  `no architecture change` (or `changes`), or a cue followed within four
+  words by the word `architecture` (`Do not change the architecture.`).
+  A named-action forbid does not cover an architecture change, and an
+  architecture forbid does not cover a named action.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Allowed. Nothing in force forbids the action. |
+| 1 | Forbidden. Stdout lists each blocking decision. |
+| 2 | Usage. Missing action, an extra argument, or a bad flag. |
+| 3 | The store could not be read, or the verdict could not be written. |
+
+Text is one verdict line, then a header and one row per decision. The
+columns are separated by tabs. A cell is quoted the way `sdf decision list`
+quotes one. An empty decided-by prints as `-`. An architecture change names
+the class so the rule that fired is obvious:
+
+```text
+forbidden: push
+ID	DECIDED BY	MATCH	STATEMENT
+dont-push	user	do not push	Do not push until the user says so.
+```
+
+```text
+allowed: replace sqlite (architecture)
+```
+
+`--json` is one object, `action`, `kind` (`push`, `merge`, `release`,
+`deploy`, or `architecture`), `allowed`, and `blocking`. Each blocking entry
+is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
+or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
+exit code is still 1 when it is forbidden.
+
+The rows are in insertion order. The command opens the store with the same
+read-only path as `sdf decision brief` and keeps the records `decision.Active`
+returns: `status` `decision` and `effective_status` `active`. `sdf decision
+brief` ranks a narrower set (a user decision, or the source of a `constrains`
+edge), so a brief is not the forbid list.
 
 ### Auditing the graph
 
@@ -575,6 +758,13 @@ a change that removes or renames one gets a new `schema` value. Every list is
 | `active_without_implements[]` | `id`, `status` (as stored), `recorded_at`, `statement` |
 | `unlinked_session_commits[]` | `sha` (lowercase), `session_id`, `timestamp` (record time of the event that named the session, UTC), `source` (`event` or `trailer`), `event` (`sdf.git.commit` or `claude_code.tool_result`), and `repo` and `branch` when the hook sent them |
 | `stale_edges[]` | `relation`, `from`, `to`, `recorded_at`, and `stale[]`: each decision end that is stale, with `end` (`from` or `to`), `id`, `effective_status`, and `superseded_by` when superseded |
+
+`sdf decision pre-push`, which the `pre-push` git hook runs, applies the
+same rules to the commits a push sends and warns (or, with
+`sdf.prePush=block`, blocks) when one SDF recorded has no `implements` edge
+to a decision that is not retracted. Unlike audit, a session link does not
+satisfy it, and it also accepts an `SDF-Decision: <id>` trailer. See
+[Pre-push decision check](receiver.md#pre-push-decision-check).
 
 The totals are denominators, counted over the same window as `commits[]`:
 `decisions_active - decisions_active_with_implements` is the number of

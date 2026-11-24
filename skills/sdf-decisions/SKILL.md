@@ -1,11 +1,33 @@
 ---
 name: sdf-decisions
-description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit.
+description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. Before a push, merge, release, deploy, or architecture change, run `sdf decision check` and stop if it fails.
 ---
 
 # sdf decision records
 
 Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI, and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision retract` print nothing on success. `sdf decision link` prints nothing on success either, except when the new link leaves the same two endpoints with both a `validates` and a `contradicts` edge: the link is still stored and the command exits 0, but it writes one `sdf decision link: warning: …` line on stderr (see Link rules). So check stderr, not only the exit code, and tell the user what you recorded.
+
+## Before a push, merge, release, deploy, or architecture change
+
+This step is mandatory. Run it before any of those actions, including a second attempt after a failure. Do not push, merge, release, deploy, or change the architecture until it exits 0.
+
+```bash
+sdf decision check ACTION [--db PATH] [--json]
+```
+
+`ACTION` is one argument: exactly `push`, `merge`, `release`, or `deploy`, or one free-text architecture change such as `replace sqlite`. `git push` is not the named action `push`; pass `push`. Use the same `--db` as the other `sdf decision` commands. `--json` prints `action`, `kind`, `allowed`, and `blocking` (`id`, `decided_by`, `statement`, `match`).
+
+- Exit 0, and a line starting with `allowed`: nothing in force forbids it. You may proceed.
+- Exit 1, and a line starting with `forbidden`: stop. Do not do the action. Show the user every blocking id, who set it (`decided_by`), and the statement, and ask how to proceed. Do not retract, supersede, or reword a decision to get past this check unless the user tells you to.
+- Exit 2: the command was called wrong. Fix it and run it again. Do not proceed without an exit 0.
+- Exit 3, or `sdf` missing from `PATH`: the check did not run. Stop and tell the user. A failed check is not permission.
+
+A missing store file is an empty store: exit 0, and the file is not created. A hypothesis does not forbid an action. A superseded or retracted decision does not either. The check reads the statement of each settled decision that is still in force. Put the forbid in that statement, not only in the id, the reason, or a `blocks` / `constrains` edge:
+
+- `Do not push until the user says so.` or `forbid:push` (the same shape for `merge`, `release`, and `deploy`)
+- `Do not change the architecture.` or `forbid:architecture` or `no architecture change`
+
+`sdf decision check push` exits 1 on the "Do not push" example below. The match rules are in [docs/outcomes.md](../../docs/outcomes.md).
 
 ## When to record
 
@@ -193,6 +215,12 @@ sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
 Read-only; it never writes or infers a record. It lists active decisions no `implements` edge points at, commits (from the git hook or a Claude Code tool result) whose session is not linked to any decision and that are not linked themselves, and edges that touch a retracted or superseded decision. Exit 0 means nothing to do, 1 means findings, 2 a usage error, 3 the store could not be read.
 
 Run it before you finish a task that recorded decisions or made commits. For each finding, link only what you know: an `implements` edge from the session or commit that did the work, if it really implements that decision. Do not add a decision just to clear a finding, and do not link a commit to a decision it did not implement; an unlinked finding is better than a wrong edge. A stale edge needs no fix unless the work now follows a newer decision, in which case link it to that one.
+
+## Before you push
+
+If the repository has the sdf git hooks (`sdf init --git-hooks`), `git push` runs a pre-push check that warns about pushed commits SDF recorded that implement no decision. It prints `sdf: pre-push: … implement no decision`, then one `commit:SHA` block per commit with a ready `sdf decision link … --relation implements --from commit:SHA --to decision:ID` line. The push still succeeds unless the repository set `git config sdf.prePush block`.
+
+When you see it: if that commit really implements a recorded decision (the warning names the ones linked to your session), run the printed link command and tell the user. If the work followed a decision nobody recorded, record it first (see When to record), then link. Do not link a commit to a decision it did not implement, and do not add a decision only to silence the warning. A commit can also carry `--trailer "SDF-Decision: ID"`; the check accepts it, but it is public once pushed and does not add an edge to the store, so prefer the link. Do not bypass the check (`--no-verify`, `SDF_PRE_PUSH=off`) unless the user asks. A line starting `sdf: pre-push decision check skipped` means it could not check (no store, no `sdf`); the push went on, and nothing needs fixing in the decision graph.
 
 ## Errors
 
