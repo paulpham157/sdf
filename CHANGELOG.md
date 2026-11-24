@@ -18,7 +18,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Fixes
 
-- `GET /api/summary`, `GET /api/snapshot`, and the report behind `GET /api/decisions/graph` on the UI port read the records table through a separate read-only connection (`store.OpenReadOnly`) instead of the receiver's writer connection, so a long UI read no longer holds the writer's mutex and blocks OTLP ingest. The JSON is unchanged; an in-memory store is still read through the writer ([#272](https://github.com/paulpham157/sdf/issues/272)).
+- `GET /api/summary`, `GET /api/snapshot`, and the report behind `GET /api/decisions/graph` on the UI port read the records table through a separate read-only connection (`store.OpenReadOnly`) instead of the receiver's writer connection, so a long UI read no longer holds the writer's mutex and blocks OTLP ingest. The JSON is unchanged; an in-memory store is still read through the writer ([#272](https://github.com/paulpham157/sdf/issues/272), [#328](https://github.com/paulpham157/sdf/pull/328)).
 
 ## [0.1.0] — 2026-11-24
 
