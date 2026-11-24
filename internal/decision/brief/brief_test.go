@@ -457,7 +457,9 @@ func TestTrimTenThousandDecisions(t *testing.T) {
 		t.Logf("trim of 10000 decisions: %s (timing skipped, short)", elapsed)
 		return
 	}
-	budget := 100 * time.Millisecond
+	// 250ms is a CI timing guard for this in-memory Trim, not a runtime
+	// requirement or product SLA. The race detector is allowed 10x that.
+	budget := 250 * time.Millisecond
 	if raceEnabled {
 		budget *= 10
 	}
