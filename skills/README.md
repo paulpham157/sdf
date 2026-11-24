@@ -4,9 +4,9 @@ Agent skills that ship with sdf. They are not loaded from this folder automatica
 
 ## sdf-decisions
 
-Instructs an agent to write important choices down with `sdf decision add` and `sdf decision link`. That includes decisions the user makes (an approval, a rejection, a choice between options, a constraint) and decisions the agent makes. Each record names who decided, what was decided, the alternatives, a reason only when one was given, and is linked to the session when the store already has it. At session start, the skill requires `sdf decision brief`. Before a push, merge, release, deploy, or architecture change, the skill requires `sdf decision check <action>`, and the agent stops to ask the user when that command exits non-zero.
+Instructs an agent to write important choices down with `sdf decision add` and `sdf decision link`. That includes decisions the user makes (an approval, a rejection, a choice between options, a constraint) and decisions the agent makes. Each record names who decided, what was decided, the alternatives, a reason only when one was given, and is linked to the session when the store already has it. At session start, the skill requires [`scripts/brief`](sdf-decisions/scripts/brief) (or `sdf decision brief`). Before a push, merge, release, deploy, or architecture change, the skill requires [`scripts/check`](sdf-decisions/scripts/check) (or `sdf decision check <action>`), and the agent stops to ask the user when that command exits non-zero.
 
-The skill lives at [`sdf-decisions/SKILL.md`](sdf-decisions/SKILL.md). The commands and fields it uses are those of the `sdf` CLI; see [docs/outcomes.md](../docs/outcomes.md).
+The skill lives at [`sdf-decisions/SKILL.md`](sdf-decisions/SKILL.md), with helpers in [`sdf-decisions/scripts/`](sdf-decisions/scripts/). A `cp -R skills/sdf-decisions …` or symlink of the whole skill folder takes the scripts with it. The commands and fields it uses are those of the `sdf` CLI; see [docs/outcomes.md](../docs/outcomes.md).
 
 ### Claude Code
 
@@ -73,4 +73,4 @@ You can also paste the same instructions into `QWEN.md` or `AGENTS.md` if you wa
 
 ### After installing
 
-`sdf` must be on `PATH`, and the agent should run the commands against the same store `sdf serve` is using (default `sdf-telemetry.sqlite` in the current directory, or `--db PATH`).
+`sdf` must be on `PATH`, and the agent should run the commands against the same store `sdf serve` is using (default `sdf-telemetry.sqlite` in the current directory, or `--db PATH`). The SessionStart hook installed by `sdf init --write` stays an inline `sdf decision brief` command; it does not call these skill scripts, so init still works when the skill folder is not installed.

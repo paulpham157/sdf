@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-action helper for the sdf-decisions skill. Runs `sdf decision check`.
+#
+# Forwards arguments and exit codes from the CLI: 0 allowed, 1 forbidden,
+# 2 usage, 3 store or write error. Do not swallow a non-zero exit; the skill
+# requires the agent to stop on failure. ACTION and flags (--db, --json) are
+# passed through as arguments (no eval).
+
+if ! command -v sdf >/dev/null 2>&1; then
+	printf '%s\n' "sdf decision check: sdf not found on PATH" >&2
+	exit 127
+fi
+exec sdf decision check "$@"

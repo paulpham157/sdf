@@ -116,7 +116,8 @@ writes one edge. It needs a relation and two `KIND:REF` endpoints, where
 constraints, blocked records, and conflicting records
 (see Decision brief). `sdf decision check` reports whether an in-force
 decision forbids an action (see Checking an action). An agent skill that
-uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
+uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md),
+with helpers in [`scripts/`](../skills/sdf-decisions/scripts/).
 
 ### Link rules
 
