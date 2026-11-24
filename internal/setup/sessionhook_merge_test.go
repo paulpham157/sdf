@@ -68,6 +68,8 @@ func eventCommands(t *testing.T, path, event string) []string {
 			cmd := h.Command
 			if isSdfDecisionBriefHook(map[string]any{"type": "command", "command": cmd}) {
 				cmd = "sdf-brief"
+			} else if isSdfStopHook(map[string]any{"type": "command", "command": cmd}) {
+				cmd = "sdf-stop"
 			} else if isSdfSessionHook(map[string]any{"type": "command", "command": cmd}, "claude-code") || isSdfSessionHook(map[string]any{"type": "command", "command": cmd}, "codex") {
 				cmd = "sdf"
 				if i := strings.Index(h.Command, "http://"); i >= 0 {
@@ -207,7 +209,7 @@ func TestCodexInitKeepsUserHooks(t *testing.T) {
 	run()
 	sameList(t, "SessionStart", eventCommands(t, path, "SessionStart"), []string{"startup|echo mine", "|sdf http://127.0.0.1:4318/v1/sessions", "|sdf-brief"})
 	sameList(t, "SessionEnd", eventCommands(t, path, "SessionEnd"), []string{"|sdf http://127.0.0.1:4318/v1/sessions", "|echo bye"})
-	sameList(t, "Stop", eventCommands(t, path, "Stop"), []string{"|echo stop"})
+	sameList(t, "Stop", eventCommands(t, path, "Stop"), []string{"|echo stop", "|sdf-stop"})
 	got, _ := os.ReadFile(path)
 	if !strings.Contains(string(got), `"other": true`) || !strings.Contains(string(got), "thread_id") {
 		t.Fatal(string(got))

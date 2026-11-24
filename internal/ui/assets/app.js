@@ -4,6 +4,8 @@
   let decisions = null;
   let decisionGraph = null;
   let decisionGraphError = "";
+  let overviewCharts = null;
+  let overviewChartsError = "";
   let budget = undefined;
   let loadError = "";
   let agentFilter = "all";
@@ -236,14 +238,323 @@
           stat("Output tokens", inlineAmount(totals.output_tokens)),
         ]),
       ]));
+      kids.push(chartsSection());
       kids.push(h("section", { class: "section" }, [
         h("h2", null, ["By agent"]),
         agentTable(snapshot.agents || []),
       ]));
     }
+    if (isEmpty()) kids.push(chartsSection());
     if (snapshot.unattributed && snapshot.unattributed.length) kids.push(unattributedBlock(snapshot.unattributed));
     kids.push(decisionsSection());
     return h("div", null, kids);
+  }
+
+  function chartsHasData() {
+    if (overviewChartsError && !overviewCharts) return true;
+    if (!overviewCharts) return false;
+    const totals = overviewCharts.totals || {};
+    if ((totals.commits_total || 0) > 0) return true;
+    if ((totals.unlinked_commits || 0) > 0 || (totals.unlinked_decisions || 0) > 0) return true;
+    if ((totals.decisions_active || 0) > 0) return true;
+    const activity = snapshot && snapshot.activity_by_day ? snapshot.activity_by_day : [];
+    if (activity.length) return true;
+    if (snapshot && snapshot.undated_sessions) return true;
+    return false;
+  }
+
+  function chartsSection() {
+    if (!chartsHasData()) return null;
+    const kids = [h("h2", null, ["Overview charts"])];
+    if (overviewChartsError && !overviewCharts) {
+      kids.push(h("p", { class: "reason" }, [overviewChartsError]));
+      return h("section", { class: "section charts-section", "aria-label": "Overview charts" }, kids);
+    }
+    kids.push(h("p", { class: "detail" }, [
+      "Decision-link recall is the share of SDF-recorded commits that have an implements edge to a stored decision. SDF-Decision trailers are not stored, so they are not counted. Unlinked commits and unlinked decisions are the same gaps sdf decision audit reports. Sessions and computed cost are grouped by the UTC day the session started."
+    ]));
+    kids.push(h("div", { class: "charts" }, [
+      recallChartCard(),
+      unlinkedChartCard(),
+      activityChartCard(),
+    ]));
+    return h("section", { class: "section charts-section", "aria-label": "Overview charts" }, kids);
+  }
+
+  function formatPercent(text) {
+    if (text == null || text === "") return "";
+    const n = Number(text);
+    if (!isFinite(n)) return "";
+    const pct = Math.round(n * 1000) / 10;
+    return String(pct) + "%";
+  }
+
+  function recallChartCard() {
+    const totals = overviewCharts.totals || {};
+    const series = overviewCharts.recall_by_day || [];
+    const known = totals.recall_status === "known";
+    const headline = known
+      ? (String(totals.commits_with_implements || 0) + " of " + String(totals.commits_total || 0) + " SDF-recorded commits have an implements edge (" + formatPercent(totals.recall) + ").")
+      : (totals.recall_reason || "No commits in the store.");
+    const table = h("table", { class: "chart-table", id: "chart-recall-table" }, [
+      h("thead", null, [h("tr", null, [
+        h("th", { scope: "col" }, ["Day (UTC)"]),
+        h("th", { scope: "col" }, ["Commits"]),
+        h("th", { scope: "col" }, ["With implements"]),
+        h("th", { scope: "col" }, ["Daily recall"]),
+        h("th", { scope: "col" }, ["Cumulative recall"]),
+      ])]),
+      h("tbody", null, series.length ? series.map(function (row) {
+        return h("tr", null, [
+          h("td", null, [row.day]),
+          h("td", null, [String(row.commits_total)]),
+          h("td", null, [String(row.commits_with_implements)]),
+          h("td", null, [row.recall_status === "known" ? formatPercent(row.recall) : "—"]),
+          h("td", null, [row.cumulative_recall_status === "known" ? formatPercent(row.cumulative_recall) : "—"]),
+        ]);
+      }) : [h("tr", null, [h("td", { colspan: "5" }, ["No commits recorded yet."])])]),
+    ]);
+    const values = series.map(function (row) {
+      return row.cumulative_recall_status === "known" ? Number(row.cumulative_recall) : null;
+    });
+    const svg = lineChart(series.map(function (row) { return row.day; }), values, {
+      max: 1,
+      yLabel: function (v) { return formatPercent(String(v)) || "0%"; },
+      label: "Cumulative decision-link recall by UTC day",
+      describedBy: "chart-recall-table",
+    });
+    return chartCard("Decision recall", headline, svg, table, "No commits recorded yet, so there is no recall to plot.");
+  }
+
+  function unlinkedChartCard() {
+    const totals = overviewCharts.totals || {};
+    const series = overviewCharts.unlinked_by_day || [];
+    const headline = String(totals.unlinked_commits || 0) + " unlinked commits, " +
+      String(totals.unlinked_decisions || 0) + " unlinked decisions (the same gaps sdf decision audit reports).";
+    const table = h("table", { class: "chart-table", id: "chart-unlinked-table" }, [
+      h("thead", null, [h("tr", null, [
+        h("th", { scope: "col" }, ["Day (UTC)"]),
+        h("th", { scope: "col" }, ["Unlinked commits"]),
+        h("th", { scope: "col" }, ["Unlinked decisions"]),
+      ])]),
+      h("tbody", null, series.length ? series.map(function (row) {
+        return h("tr", null, [
+          h("td", null, [row.day]),
+          h("td", null, [String(row.unlinked_commits)]),
+          h("td", null, [String(row.unlinked_decisions)]),
+        ]);
+      }) : [h("tr", null, [h("td", { colspan: "3" }, ["No unlinked gaps in the store."])])]),
+    ]);
+    const svg = barChart(series.map(function (row) { return row.day; }), [
+      { name: "Unlinked commits", values: series.map(function (row) { return row.unlinked_commits; }), cls: "chart-bar-a" },
+      { name: "Unlinked decisions", values: series.map(function (row) { return row.unlinked_decisions; }), cls: "chart-bar-b" },
+    ], { label: "Unlinked commits and unlinked decisions by UTC day", describedBy: "chart-unlinked-table" });
+    return chartCard("Unlinked commits and decisions", headline, svg, table, "No days to plot yet.");
+  }
+
+  function activityChartCard() {
+    const series = snapshot && snapshot.activity_by_day ? snapshot.activity_by_day : [];
+    const undated = snapshot && snapshot.undated_sessions ? snapshot.undated_sessions : 0;
+    let total = 0;
+    series.forEach(function (row) { total += row.sessions || 0; });
+    let headline = String(total) + " dated session" + (total === 1 ? "" : "s") + " by UTC start day.";
+    if (undated) headline += " " + String(undated) + " session" + (undated === 1 ? "" : "s") + " had no start time and " + (undated === 1 ? "is" : "are") + " not plotted.";
+    const table = h("table", { class: "chart-table", id: "chart-activity-table" }, [
+      h("thead", null, [h("tr", null, [
+        h("th", { scope: "col" }, ["Day (UTC)"]),
+        h("th", { scope: "col" }, ["Sessions"]),
+        h("th", { scope: "col" }, ["Computed USD"]),
+      ])]),
+      h("tbody", null, series.length ? series.map(function (row) {
+        const cost = row.computed_cost_usd || {};
+        const costText = cost.status === "known" ? (cost.value == null ? "0" : String(cost.value)) : "unknown";
+        return h("tr", null, [
+          h("td", null, [row.day]),
+          h("td", null, [String(row.sessions)]),
+          h("td", null, [costText]),
+        ]);
+      }) : [h("tr", null, [h("td", { colspan: "3" }, ["No sessions with a start time."])])]),
+    ]);
+    const days = series.map(function (row) { return row.day; });
+    const sessions = series.map(function (row) { return row.sessions || 0; });
+    const costs = series.map(function (row) {
+      const cost = row.computed_cost_usd || {};
+      return cost.status === "known" && cost.value != null && cost.value !== "" ? Number(cost.value) : null;
+    });
+    const svg = comboChart(days, sessions, costs, {
+      label: "Session count and computed cost in USD by UTC day",
+      describedBy: "chart-activity-table",
+    });
+    return chartCard("Sessions and cost", headline, svg, table, "No sessions with a start time, so there is nothing to plot.");
+  }
+
+  function chartCard(title, headline, svg, table, empty) {
+    const plot = svg || h("p", { class: "chart-empty" }, [empty || "The chart could not be drawn. The table below has the same figures."]);
+    return h("article", { class: "chart-card" }, [
+      h("h3", null, [title]),
+      h("p", { class: "detail" }, [headline]),
+      h("div", { class: "chart-plot" }, [plot]),
+      table,
+    ]);
+  }
+
+  function chartLayout(n) {
+    const W = Math.max(320, Math.min(640, 72 + Math.max(n, 1) * 48));
+    const H = 200;
+    const pad = { l: 44, r: 48, t: 14, b: 36 };
+    return { W: W, H: H, pad: pad, iw: W - pad.l - pad.r, ih: H - pad.t - pad.b };
+  }
+
+  function shortDay(day) {
+    if (!day || day.length < 10) return day || "";
+    return day.slice(5);
+  }
+
+  function niceMax(values) {
+    let max = 0;
+    values.forEach(function (v) {
+      if (v != null && isFinite(v) && v > max) max = v;
+    });
+    if (max <= 0) return 1;
+    const pow = Math.pow(10, Math.floor(Math.log(max) / Math.LN10));
+    const n = max / pow;
+    const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return nice * pow;
+  }
+
+  function lineChart(days, values, opts) {
+    if (!days.length) return null;
+    const box = chartLayout(days.length);
+    const max = opts.max != null ? opts.max : niceMax(values);
+    const kids = chartFrame(box, days, max, opts.yLabel);
+    const pts = [];
+    values.forEach(function (v, i) {
+      if (v == null || !isFinite(v)) return;
+      const x = box.pad.l + (days.length === 1 ? box.iw / 2 : box.iw * i / (days.length - 1));
+      const y = box.pad.t + box.ih * (1 - v / max);
+      pts.push({ x: x, y: y });
+      kids.push(s("circle", { cx: x, cy: y, r: 3, class: "chart-point" }));
+    });
+    if (pts.length >= 2) {
+      let d = "M " + pts[0].x + " " + pts[0].y;
+      for (let i = 1; i < pts.length; i++) d += " L " + pts[i].x + " " + pts[i].y;
+      kids.push(s("path", { d: d, class: "chart-line", fill: "none" }));
+    }
+    return chartSvg(box, opts.label, opts.describedBy, kids);
+  }
+
+  function barChart(days, series, opts) {
+    if (!days.length) return null;
+    const box = chartLayout(days.length);
+    let all = [];
+    series.forEach(function (srow) { all = all.concat(srow.values); });
+    const max = niceMax(all);
+    const kids = chartFrame(box, days, max, null);
+    const groupW = days.length === 0 ? box.iw : box.iw / days.length;
+    const inner = groupW * 0.72;
+    const barW = inner / Math.max(series.length, 1);
+    days.forEach(function (day, i) {
+      series.forEach(function (srow, si) {
+        const v = srow.values[i] || 0;
+        const h = max === 0 ? 0 : box.ih * (v / max);
+        const x = box.pad.l + i * groupW + (groupW - inner) / 2 + si * barW;
+        const y = box.pad.t + box.ih - h;
+        kids.push(s("rect", {
+          x: x, y: y, width: Math.max(barW - 1, 1), height: Math.max(h, v > 0 ? 1 : 0),
+          class: srow.cls || "chart-bar-a",
+        }));
+      });
+    });
+    const legendY = 10;
+    series.forEach(function (srow, si) {
+      const x = box.pad.l + si * 150;
+      kids.push(s("rect", { x: x, y: legendY - 6, width: 10, height: 10, class: srow.cls || "chart-bar-a" }));
+      kids.push(s("text", { x: x + 14, y: legendY + 3, class: "chart-legend" }, [srow.name]));
+    });
+    return chartSvg(box, opts.label, opts.describedBy, kids);
+  }
+
+  function comboChart(days, sessions, costs, opts) {
+    if (!days.length) return null;
+    const box = chartLayout(days.length);
+    const sMax = niceMax(sessions);
+    const cMax = niceMax(costs.map(function (v) { return v == null ? 0 : v; }));
+    const kids = [];
+    kids.push(s("line", { x1: box.pad.l, y1: box.pad.t + box.ih, x2: box.pad.l + box.iw, y2: box.pad.t + box.ih, class: "chart-axis" }));
+    kids.push(s("line", { x1: box.pad.l, y1: box.pad.t, x2: box.pad.l, y2: box.pad.t + box.ih, class: "chart-axis" }));
+    kids.push(s("line", { x1: box.pad.l + box.iw, y1: box.pad.t, x2: box.pad.l + box.iw, y2: box.pad.t + box.ih, class: "chart-axis" }));
+    for (let t = 0; t <= 4; t++) {
+      const frac = t / 4;
+      const y = box.pad.t + box.ih * (1 - frac);
+      kids.push(s("line", { x1: box.pad.l, y1: y, x2: box.pad.l + box.iw, y2: y, class: "chart-grid" }));
+      const sVal = sMax * frac;
+      const cVal = cMax * frac;
+      kids.push(s("text", { x: box.pad.l - 6, y: y + 3, class: "chart-tick chart-tick-left" }, [String(sVal % 1 === 0 ? sVal : Math.round(sVal * 10) / 10)]));
+      kids.push(s("text", { x: box.pad.l + box.iw + 6, y: y + 3, class: "chart-tick chart-tick-right" }, [String(cVal % 1 === 0 ? cVal : Math.round(cVal * 100) / 100)]));
+    }
+    kids.push(s("text", { x: box.pad.l, y: 12, class: "chart-legend" }, ["Sessions"]));
+    kids.push(s("text", { x: box.pad.l + box.iw, y: 12, class: "chart-legend chart-tick-right" }, ["USD"]));
+    const groupW = box.iw / days.length;
+    const barW = groupW * 0.5;
+    days.forEach(function (day, i) {
+      const v = sessions[i] || 0;
+      const h = sMax === 0 ? 0 : box.ih * (v / sMax);
+      const x = box.pad.l + i * groupW + (groupW - barW) / 2;
+      const y = box.pad.t + box.ih - h;
+      kids.push(s("rect", {
+        x: x, y: y, width: Math.max(barW, 1), height: Math.max(h, v > 0 ? 1 : 0),
+        class: "chart-bar-a",
+      }));
+      const labelX = box.pad.l + i * groupW + groupW / 2;
+      kids.push(s("text", { x: labelX, y: box.H - 10, class: "chart-tick chart-tick-x" }, [shortDay(day)]));
+    });
+    const pts = [];
+    costs.forEach(function (v, i) {
+      if (v == null || !isFinite(v)) return;
+      const x = box.pad.l + i * groupW + groupW / 2;
+      const y = box.pad.t + box.ih * (1 - (cMax === 0 ? 0 : v / cMax));
+      pts.push({ x: x, y: y });
+      kids.push(s("circle", { cx: x, cy: y, r: 3, class: "chart-point" }));
+    });
+    if (pts.length >= 2) {
+      let d = "M " + pts[0].x + " " + pts[0].y;
+      for (let i = 1; i < pts.length; i++) d += " L " + pts[i].x + " " + pts[i].y;
+      kids.push(s("path", { d: d, class: "chart-line", fill: "none" }));
+    }
+    return chartSvg(box, opts.label, opts.describedBy, kids);
+  }
+
+  function chartFrame(box, days, max, yLabel) {
+    const kids = [];
+    kids.push(s("line", { x1: box.pad.l, y1: box.pad.t + box.ih, x2: box.pad.l + box.iw, y2: box.pad.t + box.ih, class: "chart-axis" }));
+    kids.push(s("line", { x1: box.pad.l, y1: box.pad.t, x2: box.pad.l, y2: box.pad.t + box.ih, class: "chart-axis" }));
+    for (let t = 0; t <= 4; t++) {
+      const frac = t / 4;
+      const y = box.pad.t + box.ih * (1 - frac);
+      const val = max * frac;
+      kids.push(s("line", { x1: box.pad.l, y1: y, x2: box.pad.l + box.iw, y2: y, class: "chart-grid" }));
+      const label = yLabel ? yLabel(val) : String(val % 1 === 0 ? val : Math.round(val * 100) / 100);
+      kids.push(s("text", { x: box.pad.l - 6, y: y + 3, class: "chart-tick chart-tick-left" }, [label]));
+    }
+    const groupW = days.length === 0 ? box.iw : box.iw / days.length;
+    days.forEach(function (day, i) {
+      const x = days.length === 1 ? box.pad.l + box.iw / 2 : box.pad.l + i * groupW + groupW / 2;
+      kids.push(s("text", { x: x, y: box.H - 10, class: "chart-tick chart-tick-x" }, [shortDay(day)]));
+    });
+    return kids;
+  }
+
+  function chartSvg(box, label, describedBy, kids) {
+    return s("svg", {
+      width: "100%",
+      height: box.H,
+      viewBox: "0 0 " + box.W + " " + box.H,
+      role: "img",
+      "aria-label": label,
+      "aria-describedby": describedBy,
+      focusable: "false",
+      class: "chart-svg",
+    }, kids);
   }
 
   function budgetSection() {
@@ -2908,16 +3219,22 @@
       readJSON("/api/decisions/graph", "decision graph").catch(function (err) {
         return { error: err && err.message ? err.message : "The decision graph could not be read." };
       }),
+      readJSON("/api/overview-charts", "overview charts").catch(function (err) {
+        return { error: err && err.message ? err.message : "The overview charts could not be read." };
+      }),
     ])
       .then(function (bodies) {
         snapshot = bodies[0];
         if (!snapshot.sessions) snapshot.sessions = [];
+        if (!snapshot.activity_by_day) snapshot.activity_by_day = [];
         decisions = bodies[1] || { decisions: [], edges: [] };
         if (!decisions.decisions) decisions.decisions = [];
         if (!decisions.edges) decisions.edges = [];
         budget = bodies[2] && Object.prototype.hasOwnProperty.call(bodies[2], "budget") ? bodies[2].budget : null;
         decisionGraph = bodies[3] && !bodies[3].error ? bodies[3] : null;
         decisionGraphError = bodies[3] && bodies[3].error ? bodies[3].error : "";
+        overviewCharts = bodies[4] && !bodies[4].error && bodies[4].schema ? bodies[4] : null;
+        overviewChartsError = bodies[4] && bodies[4].error ? bodies[4].error : "";
         loadError = "";
         render();
       })

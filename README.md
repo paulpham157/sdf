@@ -38,7 +38,9 @@ no API key or network connection.
 
 - A local OTLP receiver (HTTP on `127.0.0.1:4318`, gRPC on
   `127.0.0.1:4317`) that stores traces, metrics, and logs in SQLite, plus
-  a read-only UI at <http://127.0.0.1:4320/>
+  a read-only UI at <http://127.0.0.1:4320/>, with overview charts for
+  decision-link recall, unlinked commits and decisions, and cost or
+  sessions by day
 - Session summaries: duration, tokens, tool calls, and a computed cost
   (separate from any cost the agent reported). SDF does not estimate
   tokens or duration. A model with no published price is `unknown`, not
