@@ -52,9 +52,12 @@ Other agents do not get that hook. At the start of a session, run
 `sdf decision brief` yourself (the same `--db` as `sdf serve`, default
 `sdf-telemetry.sqlite` in the working directory), or install the
 `sdf-decisions` skill where the agent will load it. `sdf` must be on
-`PATH`. That skill requires `sdf decision brief` at session start. Before a
-push, merge, release, deploy, or architecture change, that skill requires
-`sdf decision check`. See [Decision brief](outcomes.md#decision-brief)
+`PATH`. That skill requires `scripts/brief` (or `sdf decision brief`) at
+session start. Before a push, merge, release, deploy, or architecture
+change, that skill requires `scripts/check` (or `sdf decision check`).
+The SessionStart hook stays the inline command above; `sdf init` does not
+call the skill scripts, so it still works when the skill folder is not
+installed. See [Decision brief](outcomes.md#decision-brief)
 and [Checking an action](outcomes.md#checking-an-action).
 
 | Agent | Session hook today | Decision brief at session start | Fallback |
@@ -70,7 +73,8 @@ and [Checking an action](outcomes.md#checking-an-action).
 | Cursor | No `sdf init` target and no session hook to install | Not injected | Run `sdf decision brief` in the session, or install the skill if the agent will load it |
 
 The skill is not loaded from this repository automatically. Copy or symlink
-it into the location your agent reads. Install paths are documented for
+the whole `skills/sdf-decisions` folder (including `scripts/`) into the
+location your agent reads. Install paths are documented for
 Claude Code, Codex, and Qwen Code in [skills/README.md](../skills/README.md).
 
 ## Claude Code
