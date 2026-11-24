@@ -118,7 +118,7 @@ func Run(req Request) (Result, error) {
 	case "gemini", "gemini-cli":
 		return gemini(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok, gemini)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok, gemini, copilot)", req.Agent)
 	}
 }
 

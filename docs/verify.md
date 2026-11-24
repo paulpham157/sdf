@@ -33,31 +33,57 @@ fetched commit id). The Action does this. `--task-ref` with a local branch,
 a tag, or anything but a remote-tracking ref or a full commit id prints a
 warning and records the kind as `task_ref_kind` in the evidence.
 
-**Ledger pins.** With `--expect-prefix`, the ledger must verify and its
-head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
-- **Pins are single-use today.** Every `sdf verify` that writes to the
-  ledger appends its evidence and verdict (about 20 entries), so the head
-  moves and the old pin no longer matches: a ledger that has grown past the
-  pin is `TASK_UNTRUSTED`. Take a new pin for each run: `sdf audit head` prints `seq N entry_hash HASH`, which is `--expect-prefix N:HASH`.
+**Ledger pins.** `--expect-prefix SEQ:sha256:<entry hash>` is how
+`sdf verify` can trust a task found in the ledger. The ledger must
+verify as a chain.
+
+- **`sdf verify` today only accepts an exact current head.** If the pin
+  names the current head and the hash matches, the ledger is trusted. If
+  the hash at that head does not match, the pin contradicts the ledger
+  (`TASK_HASH_MISMATCH`, FAIL). If the ledger has grown past the pinned
+  seq, `sdf verify` does not yet look up that earlier entry: the task is
+  `TASK_UNTRUSTED` (the checks still run, but the verdict cannot be PASS).
+  Every `sdf verify` that writes to the ledger appends its evidence and
+  verdict (about 20 entries), so a pin taken at the previous head becomes
+  untrusted on the next run. Take a new pin for each run: `sdf audit head`
+  prints `seq N entry_hash HASH`, which is `--expect-prefix N:HASH`.
+- **`sdf audit verify --expect-prefix` already uses
+  `Store.VerifyPrefix`:** the pinned entry must still exist with that hash
+  and the whole chain must verify; later legitimate appends are allowed.
+  See [Prefix pins](ledger.md#prefix-pins-library). `sdf verify` does not
+  call `VerifyPrefix` yet (`ledgerPinned` in `internal/verify/verify.go`
+  has a TODO to look up the pinned seq).
 - **Take the pin before the agent can write the ledger**, from a copy you
   trust. A pin read after the agent had write access only pins what the
   agent wrote.
-- A follow-up will switch to the ledger's `VerifyPrefix` (pull request
-  #220: the pinned entry exists with that hash and the whole chain
-  verifies, later appends allowed), so a pin survives later appends.
 
 ## What runs, in order
 
-1. **Checkout.** A new repository in a temporary directory outside the
+![sdf verify pipeline: loadTask, prepareCheckout, checkRevision, checkIntegrity, scanSecrets, prepareChecks, runCriterion, then finish.](diagrams/06-verify-pipeline.png)
+
+Source: [06-verify-pipeline.tldr](diagrams/06-verify-pipeline.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
+The binary loads the task first (`run.steps` in
+`internal/verify/verify.go`). If no trusted copy is found, or the copies
+disagree, later steps do not run. If the task is found only in an
+untrusted place, the remaining steps still run, but the verdict cannot be
+PASS (`TASK_UNTRUSTED`).
+
+1. **Load the task.** Read `--task-ref`, the data dir, and the ledger
+   (when given). Every copy found must have the same hash. PASS needs a
+   trusted source: `--task-ref`, `--task-hash`, or an exact-head
+   `--expect-prefix` pin (see above). The `.sdf/tasks` file in the working
+   tree, or in the submitted commit, is never a source.
+2. **Checkout.** A new repository in a temporary directory outside the
    repository (`--work-dir` sets the parent). The submitted commit and the
    task's base are fetched from the repository, so git re-hashes every
    object it receives, then the commit is checked out detached. The commit
    does not have to be on a branch. Hooks, user and system git config, and
    `GIT_*` variables are not used. `--keep` leaves the directory.
-2. **Revision identity.** HEAD is the submitted commit, the base's tree is
+3. **Revision identity.** HEAD is the submitted commit, the base's tree is
    the one the task recorded, the base is an ancestor of the commit, and the
    fresh checkout is clean.
-3. **Designated files.** The base holds exactly the blobs the task pinned
+4. **Designated files.** The base holds exactly the blobs the task pinned
    (else `BASE_MISMATCH`). Every designated file has the same mode and blob
    at the commit as at the base, and the same sha256 on disk, read without
    following symlinks (the on-disk type must match the git mode). A new file that
@@ -72,7 +98,7 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    since the base and points outside the checkout fails
    (`SYMLINK_OUTSIDE_CHECKOUT`). So does a copy of this task's
    `.sdf/tasks/<id>.json` in the commit that differs from the trusted one.
-4. **Secret scan** (when the task has `secret_scan`). Every commit in
+5. **Secret scan** (when the task has `secret_scan`). Every commit in
    `base..SHA`, not only the net diff: each whole commit object (message,
    author, committer and any extra header), every added or changed path
    name, and the new lines of every added or changed blob, read from the objects (so a `-diff` or
@@ -82,7 +108,7 @@ head must be exactly that entry, else `TASK_HASH_MISMATCH` (FAIL).
    Slack, Anthropic, OpenAI, xAI, Google, and Stripe live keys). A finding
    records the rule, commit, path, line, and the sha256 of the match, never
    the match (a path that itself matches is recorded as a hash). This is not a replacement for a full scanner.
-5. **Criteria**, only if nothing above failed: the submitted code does not
+6. **Criteria**, only if nothing above failed: the submitted code does not
    run otherwise. Criteria run one at a time in **name order** (the task
    file sorts them by name, and the hash covers that order, not the order
    they were declared in): name them `a-…`, `b-…` when order matters.

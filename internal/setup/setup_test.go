@@ -340,3 +340,14 @@ func TestInstallFlagIsPiOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRunUnknownAgentListsCopilot(t *testing.T) {
+	_, err := Run(Request{Agent: "not-an-agent", Home: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := `unknown agent "not-an-agent" (claude-code, codex, opencode, pi, qwen, grok, gemini, copilot)`
+	if err.Error() != want {
+		t.Fatalf("got %q, want %q", err.Error(), want)
+	}
+}

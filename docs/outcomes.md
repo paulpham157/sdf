@@ -7,6 +7,10 @@ pass `--github`.
 
 ## Linking a session to a commit
 
+![How a session is linked to a commit, a pull request, a decision, and cost per accepted outcome.](diagrams/16-session-outcomes.png)
+
+Source: [16-session-outcomes.tldr](diagrams/16-session-outcomes.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 A link is **exact** when `claude_code.tool_result` carries
 `vcs.ref.head.revision` or a full 40-character `git_commit_id` (including one
 inside `tool_parameters`). Claude Code adds those only when
@@ -120,6 +124,10 @@ uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.m
 with helpers in [`scripts/`](../skills/sdf-decisions/scripts/).
 
 ### Link rules
+
+![Stored decision relations and their allowed endpoint kinds: supersedes, blocks, conflicts_with, refines, implements, validates, contradicts, and constrains.](diagrams/03-decision-relations.png)
+
+Source: [03-decision-relations.tldr](diagrams/03-decision-relations.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 `sdf decision link` checks an edge before storing it, and stores nothing when a
 check fails. It exits 1 with one `sdf decision link: ...` line on stderr, the
@@ -445,6 +453,10 @@ reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
 
 ### The decision graph (Decisions tab)
+
+![Anatomy of one Decisions-tab chapter: start, spine, left and right lanes, node roles, and derived edges.](diagrams/05-decision-graph.png)
+
+Source: [05-decision-graph.tldr](diagrams/05-decision-graph.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 `GET /api/decisions/graph` arranges the decision records into chapters for the
 UI's Decisions tab. `sdf decision graph --json` prints the same bytes for the
