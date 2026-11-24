@@ -5,7 +5,7 @@ description: Record important user and agent choices as sdf decision records. Us
 
 # sdf decision records
 
-Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI, and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision retract` print nothing on success. `sdf decision link` prints nothing on success either, except when the new link leaves the same two endpoints with both a `validates` and a `contradicts` edge: the link is still stored and the command exits 0, but it writes one `sdf decision link: warning: …` line on stderr (see Link rules). So check stderr, not only the exit code, and tell the user what you recorded.
+Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI (including overview charts of decision-link recall and unlinked gaps), and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision retract` print nothing on success. `sdf decision link` prints nothing on success either, except when the new link leaves the same two endpoints with both a `validates` and a `contradicts` edge: the link is still stored and the command exits 0, but it writes one `sdf decision link: warning: …` line on stderr (see Link rules). So check stderr, not only the exit code, and tell the user what you recorded.
 
 ## At session start
 

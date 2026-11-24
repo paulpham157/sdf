@@ -182,6 +182,18 @@
   pre-push; run `sdf init --git-hooks --db PATH` again. Tested with real
   pushes to a local bare remote, not against a hosting service or from inside
   an agent.
+- The overview charts ([#316](https://github.com/paulpham157/sdf/issues/316))
+  reuse `sdf decision audit` for recall and unlinked gaps, and the
+  snapshot's session starts for cost and session counts by UTC day. They
+  do not list every audit finding, do not include `SDF-Decision` trailers
+  in recall (those are not stored; see
+  [#281](https://github.com/paulpham157/sdf/issues/281)), and do not plot
+  constraint-touch metrics
+  ([#305](https://github.com/paulpham157/sdf/issues/305)).
+  `GET /api/overview-charts` opens a read-only connection so it does not
+  hold the writer's mutex; `GET /api/snapshot` and `GET /api/summary` still
+  call `store.Load()` under that mutex
+  ([#272](https://github.com/paulpham157/sdf/issues/272)).
 - With a receiver token, a hook authenticates only when `SDF_OTLP_TOKEN` or
   `SDF_OTLP_TOKEN_FILE` is in the environment of the agent or `git` that
   runs it; an agent started from a desktop launcher or a GUI git client may
