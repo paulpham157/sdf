@@ -46,6 +46,7 @@ import (
 	"github.com/paulpham157/sdf/internal/httphost"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
+	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
 )
@@ -401,7 +402,7 @@ func (h *handler) buildReport() (summary.Report, *pricing.Catalog, error) {
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
-	records, err := h.store.Load()
+	records, err := h.readRecords()
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
@@ -415,6 +416,25 @@ func (h *handler) buildReport() (summary.Report, *pricing.Catalog, error) {
 		}
 	}
 	return outcome.Summarize(records, cat, opt), cat, nil
+}
+
+// readRecords reads every record for a report through a separate
+// read-only connection to the same file (store.OpenReadOnly), not the
+// receiver's writer connection, so a long read does not hold the writer's
+// mutex and block OTLP Insert (issue #272). In WAL mode the read sees the
+// last committed state and does not wait for the writer. An in-memory
+// store has no file another connection could open, so it is read through
+// the writer as before.
+func (h *handler) readRecords() ([]record.Record, error) {
+	if h.store.InMemory() {
+		return h.store.Load()
+	}
+	ro, err := store.OpenReadOnly(h.store.Path())
+	if err != nil {
+		return nil, err
+	}
+	defer ro.Close()
+	return ro.Load()
 }
 
 // writeJSON runs encode into memory first, then sends the result with

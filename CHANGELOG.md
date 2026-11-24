@@ -16,6 +16,10 @@ This file covers the first public release of the current product: a vendor-neutr
 - Center the README opening, title it Software Decision Fabric, and describe cost per accepted outcome, the decision layer, and that SDF runs locally without sending telemetry to an outside SaaS ([#319](https://github.com/paulpham157/sdf/pull/319)).
 - Add the Software Decision Fabric logo to the centered README opening ([#320](https://github.com/paulpham157/sdf/pull/320)).
 
+### Fixes
+
+- `GET /api/summary`, `GET /api/snapshot`, and the report behind `GET /api/decisions/graph` on the UI port read the records table through a separate read-only connection (`store.OpenReadOnly`) instead of the receiver's writer connection, so a long UI read no longer holds the writer's mutex and blocks OTLP ingest. The JSON is unchanged; an in-memory store is still read through the writer ([#272](https://github.com/paulpham157/sdf/issues/272), [#328](https://github.com/paulpham157/sdf/pull/328)).
+
 ## [0.1.0] — 2026-11-24
 
 The first tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` or with the prebuilt archives on [GitHub Releases](https://github.com/paulpham157/sdf/releases/tag/v0.1.0).
