@@ -97,7 +97,7 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 			}
 			format = v
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
