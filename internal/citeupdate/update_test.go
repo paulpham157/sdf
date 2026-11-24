@@ -1,0 +1,821 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const (
+	// Published v0.1.0 is an annotated tag. The ref points at the tag
+	// object; the commit below is what CITATION.cff must record.
+	v010TagObject = "1041cc90c022ce273e77febc646e85581732baad"
+	v010Commit    = "0fd24b622bf4f6e7a0db29d144e739a7c45a0d67"
+	otherCommit   = "0123456789abcdef0123456789abcdef01234567"
+)
+
+func TestStableVersionAndDate(t *testing.T) {
+	ver, ok := stableVersion("v0.2.0")
+	if !ok || ver != "0.2.0" {
+		t.Fatalf("stable got %q %v", ver, ok)
+	}
+	for _, tag := range []string{"v0.1.0-rc.1", "v0.1", "0.1.0", "v0.1.0+build", "vv0.1.0", "v0.1.0 ", "V0.1.0"} {
+		if _, ok := stableVersion(tag); ok {
+			t.Fatalf("accepted %q", tag)
+		}
+	}
+	date, err := releaseDate("2026-11-24T07:46:11Z")
+	if err != nil || date != "2026-11-24" {
+		t.Fatalf("utc date %q %v", date, err)
+	}
+	date, err = releaseDate("2026-11-24T00:30:00+02:00")
+	if err != nil || date != "2026-11-23" {
+		t.Fatalf("offset before midnight UTC %q %v", date, err)
+	}
+	date, err = releaseDate("2026-11-24T23:30:00-05:00")
+	if err != nil || date != "2026-11-25" {
+		t.Fatalf("offset after midnight UTC %q %v", date, err)
+	}
+	if _, err := releaseDate("2026-02-29"); err == nil {
+		t.Fatal("accepted a non-leap 29 February")
+	}
+	if date, err = releaseDate("2024-02-29"); err != nil || date != "2024-02-29" {
+		t.Fatalf("leap day %q %v", date, err)
+	}
+	if _, err := releaseDate("2026-11-24T07:46:11"); err == nil {
+		t.Fatal("accepted a timestamp without a zone")
+	}
+	if _, err := releaseDate(""); err == nil {
+		t.Fatal("accepted an empty timestamp")
+	}
+}
+
+func TestUpdateRewritesOnlyCitationFields(t *testing.T) {
+	const original = "" +
+		"cff-version: 1.2.0\n" +
+		"title: \"Software Decision Fabric\"\n" +
+		"authors:\n" +
+		"  - family-names: Pham\n" +
+		"    version: 9.9.9\n" +
+		"license: Apache-2.0\n" +
+		"version: \"0.1.0\" # cite\n" +
+		"date-released: 2026-11-24\n" +
+		"url: \"https://github.com/paulpham157/sdf\"\n" +
+		"commit: 0fd24b622bf4f6e7a0db29d144e739a7c45a0d67\n"
+	in := []byte(original)
+	got, err := Update(in, "0.2.0", "2026-12-01", otherCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusUpdated {
+		t.Fatalf("status %s", got.Status)
+	}
+	if !bytes.Equal(in, []byte(original)) {
+		t.Fatal("Update mutated the input")
+	}
+	assertOnlyKeys(t, in, got.Content, keyVersion, keyDate, keyCommit)
+	text := string(got.Content)
+	for _, want := range []string{
+		"cff-version: 1.2.0\n",
+		"title: \"Software Decision Fabric\"\n",
+		"  - family-names: Pham\n",
+		"    version: 9.9.9\n",
+		"license: Apache-2.0\n",
+		"version: \"0.2.0\" # cite\n",
+		"date-released: 2026-12-01\n",
+		"url: \"https://github.com/paulpham157/sdf\"\n",
+		"commit: " + otherCommit + "\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, v010TagObject) {
+		t.Fatal("wrote the annotated tag object")
+	}
+}
+
+func TestUpdateKeepsBytesWhenCurrent(t *testing.T) {
+	in := []byte("version:  0.1.0\r\ndate-released: 2026-11-24\r\ncommit: " + v010Commit + "\r\nlicense: Apache-2.0")
+	got, err := Update(in, "0.1.0", "2026-11-24", v010Commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusUnchanged || !bytes.Equal(got.Content, in) {
+		t.Fatalf("status %s changed %v", got.Status, !bytes.Equal(got.Content, in))
+	}
+}
+
+func TestUpdateSkipsOlderRelease(t *testing.T) {
+	in := []byte("version: 0.2.0\ndate-released: 2026-12-01\ncommit: " + otherCommit + "\n")
+	got, err := Update(in, "0.1.10", "2026-11-01", v010Commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusSkipped || !bytes.Equal(got.Content, in) {
+		t.Fatalf("status %s reason %s", got.Status, got.Reason)
+	}
+	// "0.1.10" < "0.1.9" as text and 0.1.10 > 0.1.9 as versions.
+	older := []byte("version: 0.1.9\ndate-released: 2026-11-01\ncommit: " + v010Commit + "\n")
+	got, err = Update(older, "0.1.10", "2026-11-02", otherCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusUpdated {
+		t.Fatalf("status %s", got.Status)
+	}
+}
+
+func TestUpdateSameVersionReplacesCommit(t *testing.T) {
+	in := []byte("version: 0.2.0\ndate-released: 2026-12-01\ncommit: " + v010Commit + "\n")
+	got, err := Update(in, "0.2.0", "2026-12-01", otherCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusUpdated {
+		t.Fatalf("status %s", got.Status)
+	}
+	assertOnlyKeys(t, in, got.Content, keyCommit)
+	if !bytes.Contains(got.Content, []byte("commit: "+otherCommit+"\n")) {
+		t.Fatalf("%s", got.Content)
+	}
+	if !bytes.Contains(got.Content, []byte("version: 0.2.0\n")) {
+		t.Fatalf("version line changed:\n%s", got.Content)
+	}
+}
+
+func TestUpdateRejectsBadFields(t *testing.T) {
+	ok := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	cases := []struct {
+		name, version, date, commit string
+		file                        []byte
+	}{
+		{name: "leading v", version: "v0.2.0", date: "2026-12-01", commit: otherCommit, file: ok},
+		{name: "bad date", version: "0.2.0", date: "2026-02-29", commit: otherCommit, file: ok},
+		{name: "upper sha", version: "0.2.0", date: "2026-12-01", commit: strings.ToUpper(otherCommit), file: ok},
+		{name: "short sha", version: "0.2.0", date: "2026-12-01", commit: "abcd", file: ok},
+		{name: "missing commit", version: "0.2.0", date: "2026-12-01", commit: otherCommit, file: []byte("version: 0.1.0\ndate-released: 2026-11-24\n")},
+		{name: "duplicate version", version: "0.2.0", date: "2026-12-01", commit: otherCommit, file: []byte("version: 0.1.0\nversion: 0.1.1\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")},
+		{name: "flow value", version: "0.2.0", date: "2026-12-01", commit: otherCommit, file: []byte("version: [0.1.0]\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")},
+		{name: "weird current version", version: "0.2.0", date: "2026-12-01", commit: otherCommit, file: []byte("version: 0.1.0-rc.1\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Update(tc.file, tc.version, tc.date, tc.commit); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+func TestUpdateCRLFAndNoFinalNewline(t *testing.T) {
+	in := []byte("version: 0.1.0\r\ndate-released: 2026-11-24\r\ncommit: " + v010Commit + "\r\nlicense: Apache-2.0")
+	got, err := Update(in, "0.2.0", "2026-11-24", v010Commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasSuffix(got.Content, []byte("license: Apache-2.0")) || !bytes.Contains(got.Content, []byte("\r\n")) {
+		t.Fatalf("%q", got.Content)
+	}
+	if !bytes.Contains(got.Content, []byte("version: 0.2.0\r\n")) {
+		t.Fatalf("%q", got.Content)
+	}
+}
+
+func TestRepositoryCitationFile(t *testing.T) {
+	body := readRepoFile(t, "CITATION.cff")
+	parsed, err := parseFile(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := parsed.fields[keyVersion].value
+	date := parsed.fields[keyDate].value
+	commit := parsed.fields[keyCommit].value
+	got, err := Update(body, version, date, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusUnchanged || !bytes.Equal(got.Content, body) {
+		t.Fatalf("reapplying the checked-in fields changed the file: %s", got.Status)
+	}
+	nextVer, err := bumpPatch(version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = Update(body, nextVer, date, commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusUpdated {
+		t.Fatalf("status %s", got.Status)
+	}
+	assertOnlyKeys(t, body, got.Content, keyVersion)
+	for _, keep := range []string{
+		"title: \"Software Decision Fabric\"\n",
+		"family-names: Pham\n",
+		"license: Apache-2.0\n",
+		"url: \"https://github.com/paulpham157/sdf\"\n",
+		"repository-code: \"https://github.com/paulpham157/sdf\"\n",
+		"email: paulpham157@gmail.com\n",
+	} {
+		if !bytes.Contains(got.Content, []byte(keep)) {
+			t.Fatalf("dropped %q", keep)
+		}
+	}
+}
+
+func TestPeel(t *testing.T) {
+	nested := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name    string
+		start   gitObj
+		next    map[string]gitObj
+		commit  string
+		tag     string
+		wantErr string
+	}{
+		{
+			name:   "lightweight",
+			start:  gitObj{Type: "commit", SHA: v010Commit},
+			commit: v010Commit,
+		},
+		{
+			name:   "annotated",
+			start:  gitObj{Type: "tag", SHA: v010TagObject},
+			next:   map[string]gitObj{v010TagObject: {Type: "commit", SHA: v010Commit}},
+			commit: v010Commit,
+			tag:    v010TagObject,
+		},
+		{
+			name:  "nested annotated",
+			start: gitObj{Type: "tag", SHA: v010TagObject},
+			next: map[string]gitObj{
+				v010TagObject: {Type: "tag", SHA: nested},
+				nested:        {Type: "commit", SHA: v010Commit},
+			},
+			commit: v010Commit,
+			tag:    v010TagObject,
+		},
+		{
+			name:    "tag object used as commit",
+			start:   gitObj{Type: "tag", SHA: v010TagObject},
+			next:    map[string]gitObj{v010TagObject: {Type: "commit", SHA: v010TagObject}},
+			wantErr: "annotated tag object",
+		},
+		{
+			name:    "blob",
+			start:   gitObj{Type: "tag", SHA: v010TagObject},
+			next:    map[string]gitObj{v010TagObject: {Type: "blob", SHA: otherCommit}},
+			wantErr: "not a commit",
+		},
+		{
+			name:    "cycle",
+			start:   gitObj{Type: "tag", SHA: v010TagObject},
+			next:    map[string]gitObj{v010TagObject: {Type: "tag", SHA: v010TagObject}},
+			wantErr: "cycle",
+		},
+		{
+			name:   "uppercase lightweight",
+			start:  gitObj{Type: "Commit", SHA: strings.ToUpper(v010Commit)},
+			commit: v010Commit,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			commit, tag, err := peel(tc.start, func(sha string) (gitObj, error) {
+				calls++
+				obj, ok := tc.next[sha]
+				if !ok {
+					t.Fatalf("unexpected lookup %s", sha)
+				}
+				return obj, nil
+			})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if commit != tc.commit || tag != tc.tag {
+				t.Fatalf("commit %s tag %s", commit, tag)
+			}
+			if tc.name == "lightweight" && calls != 0 {
+				t.Fatalf("lightweight tag looked up %d annotated objects", calls)
+			}
+		})
+	}
+}
+
+func TestSyncAnnotatedReleaseUsesCommit(t *testing.T) {
+	// The checked-in file cites v0.1.0. Publish v0.2.0 and require the
+	// peeled commit, not the annotated tag object.
+	gh := &fakeGitHub{
+		tagName: "v0.2.0",
+		refType: "tag",
+		refSHA:  v010TagObject,
+		commit:  otherCommit,
+		file:    readRepoFile(t, "CITATION.cff"),
+		blob:    strings.Repeat("b", 40),
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T01:02:03Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusUpdated || result.Commit != otherCommit || result.TagObject != v010TagObject || result.Version != "0.2.0" || result.Date != "2026-12-02" {
+		t.Fatalf("%+v", result)
+	}
+	if strings.Contains(result.String(), "test-token") {
+		t.Fatal("status line contains the token")
+	}
+	if len(gh.puts) != 1 {
+		t.Fatalf("puts %d", len(gh.puts))
+	}
+	body := gh.puts[0]
+	if _, ok := body["force"]; ok {
+		t.Fatal("contents update set force")
+	}
+	for _, key := range []string{"message", "content", "sha", "branch"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("missing %s in %#v", key, body)
+		}
+	}
+	if len(body) != 4 {
+		t.Fatalf("unexpected fields %#v", body)
+	}
+	if body["sha"] != strings.Repeat("b", 40) {
+		t.Fatalf("blob sha %v", body["sha"])
+	}
+	if body["branch"] != "main" {
+		t.Fatalf("branch %v", body["branch"])
+	}
+	msg, _ := body["message"].(string)
+	if !strings.Contains(msg, "docs: update CITATION.cff for 0.2.0") || !strings.Contains(msg, "The tag is not moved.") || strings.Contains(msg, "force") {
+		t.Fatalf("message %q", msg)
+	}
+	decoded := decodePut(t, body["content"])
+	if !bytes.Contains(decoded, []byte("commit: "+otherCommit+"\n")) {
+		t.Fatalf("commit line missing:\n%s", decoded)
+	}
+	if bytes.Contains(decoded, []byte(v010TagObject)) {
+		t.Fatal("wrote the annotated tag object into CITATION.cff")
+	}
+	if !bytes.Contains(decoded, []byte("family-names: Pham\n")) || !bytes.Contains(decoded, []byte("license: Apache-2.0\n")) {
+		t.Fatalf("citation identity changed:\n%s", decoded)
+	}
+	for _, path := range gh.paths {
+		if strings.Contains(path, "/commits/") {
+			t.Fatalf("used the commits API instead of peeling the tag: %s", path)
+		}
+	}
+}
+
+func TestSyncAlreadyCurrentAnnotatedTag(t *testing.T) {
+	gh := &fakeGitHub{
+		tagName: "v0.1.0",
+		refType: "tag",
+		refSHA:  v010TagObject,
+		commit:  v010Commit,
+		file:    readRepoFile(t, "CITATION.cff"),
+		blob:    strings.Repeat("b", 40),
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	result, err := Sync(context.Background(), gh.config(srv, "v0.1.0", "2026-11-24T07:46:11Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusUnchanged || result.Commit != v010Commit || result.TagObject != v010TagObject {
+		t.Fatalf("%+v", result)
+	}
+	if len(gh.puts) != 0 {
+		t.Fatalf("committed an unchanged file: %d", len(gh.puts))
+	}
+}
+
+func TestSyncLightweightAndSkips(t *testing.T) {
+	file := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	gh := &fakeGitHub{
+		tagName: "v0.2.0",
+		refType: "commit",
+		refSHA:  strings.ToUpper(otherCommit),
+		commit:  otherCommit,
+		file:    file,
+		blob:    strings.Repeat("b", 40),
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	cfg := gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z")
+	result, err := Sync(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusUpdated || result.Commit != otherCommit || result.TagObject != "" {
+		t.Fatalf("%+v", result)
+	}
+	for _, path := range gh.paths {
+		if strings.Contains(path, "/git/tags/") {
+			t.Fatalf("lightweight tag fetched an annotated object: %s", path)
+		}
+	}
+
+	gh.puts = nil
+	gh.paths = nil
+	cfg.Prerelease = true
+	result, err = Sync(context.Background(), cfg)
+	if err != nil || result.Status != StatusSkipped || result.Reason != "prerelease" || len(gh.paths) != 0 {
+		t.Fatalf("result %+v err %v paths %v", result, err, gh.paths)
+	}
+	cfg.Prerelease = false
+	cfg.Draft = true
+	result, err = Sync(context.Background(), cfg)
+	if err != nil || result.Status != StatusSkipped || result.Reason != "draft release" || len(gh.paths) != 0 {
+		t.Fatalf("result %+v err %v paths %v", result, err, gh.paths)
+	}
+	cfg.Draft = false
+	cfg.Tag = "v0.2.0-rc.1"
+	result, err = Sync(context.Background(), cfg)
+	if err != nil || result.Status != StatusSkipped || !strings.Contains(result.Reason, "v0.2.0-rc.1") || len(gh.paths) != 0 {
+		t.Fatalf("result %+v err %v paths %v", result, err, gh.paths)
+	}
+}
+
+func TestSyncSkipsOlderAndRetriesConflict(t *testing.T) {
+	current := []byte("version: 0.3.0\ndate-released: 2026-12-01\ncommit: " + otherCommit + "\n")
+	gh := &fakeGitHub{
+		tagName: "v0.2.0",
+		refType: "commit",
+		refSHA:  v010Commit,
+		commit:  v010Commit,
+		file:    current,
+		blob:    strings.Repeat("b", 40),
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-11-24T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusSkipped || len(gh.puts) != 0 {
+		t.Fatalf("%+v puts %d", result, len(gh.puts))
+	}
+
+	gh.file = []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	gh.conflictsLeft = 1
+	result, err = Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusUpdated || len(gh.puts) != 2 {
+		t.Fatalf("%+v puts %d", result, len(gh.puts))
+	}
+	if gh.puts[0]["sha"] != strings.Repeat("b", 40) || gh.puts[1]["sha"] != strings.Repeat("c", 40) {
+		t.Fatalf("retry did not reread the blob: %#v then %#v", gh.puts[0]["sha"], gh.puts[1]["sha"])
+	}
+}
+
+func TestSyncRefusesMissingFileAndRuleset(t *testing.T) {
+	gh := &fakeGitHub{
+		tagName:     "v0.2.0",
+		refType:     "commit",
+		refSHA:      otherCommit,
+		commit:      otherCommit,
+		missingFile: true,
+		blob:        strings.Repeat("b", 40),
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "refusing to create") {
+		t.Fatalf("err %v", err)
+	}
+	if len(gh.puts) != 0 {
+		t.Fatal("created CITATION.cff")
+	}
+
+	gh.missingFile = false
+	gh.file = []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	gh.putStatus = http.StatusForbidden
+	_, err = Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "write CITATION.cff") {
+		t.Fatalf("err %v", err)
+	}
+	if len(gh.puts) != 1 {
+		t.Fatalf("retried a refusal: %d", len(gh.puts))
+	}
+}
+
+func TestSyncStopsAfterRepeatedConflicts(t *testing.T) {
+	gh := &fakeGitHub{
+		tagName:       "v0.2.0",
+		refType:       "commit",
+		refSHA:        otherCommit,
+		commit:        otherCommit,
+		file:          []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n"),
+		blob:          strings.Repeat("b", 40),
+		conflictsLeft: 5,
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err == nil {
+		t.Fatal("expected a conflict error")
+	}
+	if len(gh.puts) != contentAttempts {
+		t.Fatalf("puts %d", len(gh.puts))
+	}
+}
+
+func TestSyncRefusesRedirect(t *testing.T) {
+	gh := &fakeGitHub{tagName: "v0.2.0", redirectRef: true}
+	srv := gh.server(t)
+	defer srv.Close()
+	cfg := gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z")
+	cfg.Client = githubClient()
+	_, err := Sync(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "redirect") {
+		t.Fatalf("err %v", err)
+	}
+	if len(gh.paths) != 1 || strings.Contains(strings.Join(gh.paths, " "), "/stolen") {
+		t.Fatalf("paths %v", gh.paths)
+	}
+}
+
+func TestConfigFromEnv(t *testing.T) {
+	env := map[string]string{
+		"GITHUB_TOKEN":          "test-token",
+		"GITHUB_REPOSITORY":     "paulpham157/sdf",
+		"CITATION_TAG":          "v0.2.0",
+		"CITATION_PUBLISHED_AT": "2026-12-02T00:00:00Z",
+		"CITATION_BRANCH":       "main",
+		"CITATION_PRERELEASE":   "false",
+		"CITATION_DRAFT":        "false",
+	}
+	cfg, err := configFromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIBase != "https://api.github.com" || cfg.Tag != "v0.2.0" || cfg.Prerelease || cfg.Draft {
+		t.Fatalf("%+v", cfg)
+	}
+	env["GITHUB_API_URL"] = "http://169.254.169.254/"
+	if _, err := configFromEnv(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("accepted an http API URL")
+	}
+	env["GITHUB_API_URL"] = "https://api.github.com/extra"
+	if _, err := configFromEnv(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("accepted an API URL with a path")
+	}
+	env["GITHUB_API_URL"] = "https://user:pass@api.github.com"
+	if _, err := configFromEnv(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("accepted credentials in the API URL")
+	}
+	delete(env, "GITHUB_API_URL")
+	env["CITATION_DRAFT"] = "yes"
+	if _, err := configFromEnv(func(k string) string { return env[k] }); err == nil {
+		t.Fatal("accepted a non-boolean draft flag")
+	}
+	err = run(func(string) string { return "" })
+	if err == nil {
+		t.Fatal("run accepted an empty environment")
+	}
+}
+
+func TestWorkflowFiles(t *testing.T) {
+	root := moduleRoot(t)
+	citation := string(readRepoFile(t, ".github/workflows/citation.yml"))
+	for _, want := range []string{
+		"types: [published]",
+		"github.event.action == 'published'",
+		"github.event.release.draft == false",
+		"github.event.release.prerelease == false",
+		"persist-credentials: false",
+		"contents: write",
+		"permissions: {}",
+		"github.event.repository.default_branch",
+		"go run ./internal/citeupdate",
+		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+		"actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0",
+	} {
+		if !strings.Contains(citation, want) {
+			t.Fatalf("citation.yml missing %q", want)
+		}
+	}
+	for _, banned := range []string{"git push", "--force", "force:", "workflow_dispatch", "pull_request:"} {
+		if strings.Contains(citation, banned) {
+			t.Fatalf("citation.yml contains %q", banned)
+		}
+	}
+	release := string(readRepoFile(t, ".github/workflows/release.yml"))
+	if !strings.Contains(release, "\non:\n  push:\n") || strings.Contains(release, "types: [published]") {
+		t.Fatal("release.yml no longer only runs on a tag push")
+	}
+	gore := string(readRepoFile(t, ".goreleaser.yaml"))
+	if !strings.Contains(gore, "draft: true") || !strings.Contains(gore, "prerelease: auto") {
+		t.Fatal("goreleaser no longer creates a draft")
+	}
+	if _, err := os.Stat(filepath.Join(root, "internal/citeupdate/main.go")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type fakeGitHub struct {
+	tagName       string
+	refType       string
+	refSHA        string
+	commit        string
+	file          []byte
+	blob          string
+	puts          []map[string]any
+	paths         []string
+	conflictsLeft int
+	putStatus     int
+	missingFile   bool
+	redirectRef   bool
+}
+
+func (f *fakeGitHub) config(srv *httptest.Server, tag, published string) Config {
+	return Config{
+		Token:       "test-token",
+		Repo:        "paulpham157/sdf",
+		APIBase:     srv.URL,
+		Tag:         tag,
+		PublishedAt: published,
+		Branch:      "main",
+		Client:      srv.Client(),
+	}
+}
+
+func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Errorf("authorization %q", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("User-Agent") != userAgent {
+			t.Errorf("user agent %q", r.Header.Get("User-Agent"))
+		}
+		if strings.Contains(r.URL.RequestURI(), "test-token") {
+			t.Errorf("token leaked into %s", r.URL.RequestURI())
+		}
+		f.paths = append(f.paths, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/git/ref/tags/"+f.tagName:
+			if f.redirectRef {
+				http.Redirect(w, r, "/stolen", http.StatusFound)
+				return
+			}
+			writeJSON(t, w, map[string]any{"object": map[string]string{"type": f.refType, "sha": f.refSHA}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/git/tags/"+f.refSHA:
+			if f.refType != "tag" {
+				t.Errorf("looked up an annotated tag for a %s ref", f.refType)
+				http.NotFound(w, r)
+				return
+			}
+			writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": f.commit}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/contents/CITATION.cff":
+			if r.URL.Query().Get("ref") != "main" {
+				t.Errorf("contents ref %q", r.URL.Query().Get("ref"))
+			}
+			if f.missingFile {
+				http.NotFound(w, r)
+				return
+			}
+			writeJSON(t, w, map[string]any{
+				"sha":      f.blob,
+				"encoding": "base64",
+				"type":     "file",
+				"content":  wrapBase64(f.file),
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/repos/paulpham157/sdf/contents/CITATION.cff":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("put body: %v", err)
+				http.Error(w, `{"message":"bad json"}`, http.StatusBadRequest)
+				return
+			}
+			f.puts = append(f.puts, body)
+			if f.conflictsLeft > 0 {
+				f.conflictsLeft--
+				f.blob = strings.Repeat("c", 40)
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"message":"sha mismatch"}`))
+				return
+			}
+			if f.putStatus != 0 {
+				w.WriteHeader(f.putStatus)
+				_, _ = w.Write([]byte(`{"message":"refused by ruleset"}`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"content":{"sha":"dddddddddddddddddddddddddddddddddddddddd"}}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.RequestURI())
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Errorf("encode: %v", err)
+	}
+}
+
+func wrapBase64(b []byte) string {
+	s := base64.StdEncoding.EncodeToString(b)
+	var out strings.Builder
+	for len(s) > 60 {
+		out.WriteString(s[:60])
+		out.WriteByte('\n')
+		s = s[60:]
+	}
+	out.WriteString(s)
+	return out.String()
+}
+
+func decodePut(t *testing.T, content any) []byte {
+	t.Helper()
+	s, ok := content.(string)
+	if !ok {
+		t.Fatalf("content type %T", content)
+	}
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func assertOnlyKeys(t *testing.T, before, after []byte, keys ...string) {
+	t.Helper()
+	b := splitKeep(before)
+	a := splitKeep(after)
+	if len(b) != len(a) {
+		t.Fatalf("line count %d vs %d", len(b), len(a))
+	}
+	allowed := map[string]bool{}
+	for _, key := range keys {
+		allowed[key] = true
+	}
+	for i := range b {
+		if bytes.Equal(b[i], a[i]) {
+			continue
+		}
+		body, _ := trimNL(a[i])
+		key, _, ok := splitKey(body)
+		if !ok || !allowed[key] {
+			t.Fatalf("line %d changed outside %v:\n-%s\n+%s", i+1, keys, b[i], a[i])
+		}
+	}
+}
+
+func bumpPatch(version string) (string, error) {
+	n, err := parseVer(version)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d.%d.%d", n[0], n[1], n[2]+1), nil
+}
+
+func readRepoFile(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(moduleRoot(t), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
+	}
+}

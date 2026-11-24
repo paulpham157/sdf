@@ -1,0 +1,65 @@
+# After a maintainer publishes the draft release created by release.yml,
+# write version, date-released, and commit into CITATION.cff on the default
+# branch. GitHub's Cite this repository widget reads that file there. This
+# workflow does not create the release and does not move the tag.
+#
+# Creating the draft does not emit `published`. Publishing a prerelease does
+# (`published` fires for pre-releases, including ones published from a draft),
+# and this job does not run for those. The updater also skips a tag that is
+# not vMAJOR.MINOR.PATCH, a file that already matches, and a release older
+# than the version already in CITATION.cff.
+#
+# commit is the peeled commit of the release tag. An annotated tag's object
+# id is not written into the file. When the tag is annotated, the log line
+# includes tag-object so the two ids can be compared.
+name: Citation
+
+on:
+  release:
+    types: [published]
+
+# No permissions by default. The job below is the only one that writes.
+permissions: {}
+
+concurrency:
+  # One citation update at a time. A second publish waits.
+  group: citation-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  citation:
+    name: update CITATION.cff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: "${{ github.event.action == 'published' && github.event.release.draft == false && github.event.release.prerelease == false }}"
+    permissions:
+      # One contents-API commit of CITATION.cff on the default branch.
+      # contents: write also covers checkout of this public repo.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release event's SHA is the tagged commit. Run the updater
+          # from the default branch, which is the branch the widget reads.
+          # The token is not left in .git/config. The commit is a contents
+          # API update of CITATION.cff.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          # Same go.mod toolchain as release.yml.
+          go-version-file: go.mod
+          # This job can write to the default branch, so it does not use
+          # the shared module cache. The updater imports only the standard
+          # library.
+          cache: false
+      - name: Update CITATION.cff
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CITATION_TAG: ${{ github.event.release.tag_name }}
+          CITATION_PUBLISHED_AT: ${{ github.event.release.published_at }}
+          CITATION_BRANCH: ${{ github.event.repository.default_branch }}
+          CITATION_PRERELEASE: ${{ github.event.release.prerelease }}
+          CITATION_DRAFT: ${{ github.event.release.draft }}
+        run: go run ./internal/citeupdate

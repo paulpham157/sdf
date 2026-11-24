@@ -16,6 +16,10 @@ This file covers the first public release of the current product: a vendor-neutr
 - Center the README opening, title it Software Decision Fabric, and describe cost per accepted outcome, the decision layer, and that SDF runs locally without sending telemetry to an outside SaaS ([#319](https://github.com/paulpham157/sdf/pull/319)).
 - Add the Software Decision Fabric logo to the centered README opening ([#320](https://github.com/paulpham157/sdf/pull/320)).
 
+### CI/Build
+
+- Update `CITATION.cff` on the default branch when a stable GitHub Release is published, setting `version`, `date-released`, and the release tag's commit. Drafts, prereleases, and tags other than `vMAJOR.MINOR.PATCH` are skipped, and the tag is not moved (`.github/workflows/citation.yml`).
+
 ## [0.1.0] — 2026-11-24
 
 The first tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` or with the prebuilt archives on [GitHub Releases](https://github.com/paulpham157/sdf/releases/tag/v0.1.0).
