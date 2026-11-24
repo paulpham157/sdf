@@ -515,6 +515,7 @@ var decisionCommands = []struct {
 	{"list", cmdDecisionList},
 	{"graph", cmdDecisionGraph},
 	{"brief", cmdDecisionBrief},
+	{"check", cmdDecisionCheck},
 	{"retract", cmdDecisionRetract},
 	{"audit", cmdDecisionAudit},
 	{"pre-push", cmdDecisionPrePush},
@@ -978,6 +979,100 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+const decisionCheckUsage = "usage: sdf decision check <action> [--db PATH] [--json]"
+
+// cmdDecisionCheck reports whether an in-force decision forbids an action.
+// Exit 0 is allowed, 1 is forbidden (the blocking decisions are on stdout),
+// 2 is a usage error, and 3 is a store or write error. A missing store file
+// in an existing directory is an empty store, which is allowed: the command
+// opens the file read-only and does not create it. The action is one of
+// push, merge, release, deploy, or any other text, which is an architecture
+// change. Matching is decision.CheckAction.
+func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	var action string
+	actionSet := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionCheckUsage)
+			return 0
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision check: --db requires a value")
+				return 2
+			}
+			dbPath = v
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--json":
+			asJSON = true
+		case strings.HasPrefix(arg, "-"):
+			unrecognizedArgs(stderr, arg)
+			return 2
+		default:
+			if actionSet {
+				fmt.Fprintln(stderr, decisionCheckUsage)
+				return 2
+			}
+			action, actionSet = arg, true
+		}
+	}
+	if !actionSet || strings.TrimSpace(action) == "" {
+		fmt.Fprintln(stderr, decisionCheckUsage)
+		return 2
+	}
+	// Same default path as sdf decision brief, and the same read: a 200ms
+	// busy timeout, then LoadContext. A missing file in an existing
+	// directory is an empty store and is not created.
+	db, err := store.OpenReadOnlyBusy(dbPath, int(briefBusyTimeout/time.Millisecond))
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	ctx := context.Background()
+	graph, err := decision.LoadContext(ctx, db)
+	_ = db.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	verdict, err := decision.CheckAction(activeForCheck(graph), action)
+	if errors.Is(err, decision.ErrEmptyAction) {
+		fmt.Fprintln(stderr, decisionCheckUsage)
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	write := decision.WriteCheckText
+	if asJSON {
+		write = decision.WriteCheckJSON
+	}
+	if err := write(stdout, verdict); err != nil {
+		fmt.Fprintf(stderr, "sdf decision check: %v\n", err)
+		return 3
+	}
+	if !verdict.Allowed {
+		return 1
+	}
+	return 0
+}
+
+// activeForCheck is the set sdf decision check matches. decision.Active is
+// that set: every settled decision still in force, user or agent, including
+// blocked and conflicted records, in insertion order. brief.Classify is
+// narrower. It keeps a decision only when the user decided it or it is the
+// source of a constrains edge, so an agent's "Do not push" with no
+// constrains edge would disappear.
+func activeForCheck(g decision.Graph) []decision.Record {
+	return decision.Active(g)
 }
 
 func parseEndpoint(v string) (decision.Endpoint, error) {

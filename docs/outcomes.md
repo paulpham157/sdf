@@ -352,6 +352,8 @@ sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
 sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
+sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
+sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
 ```
 
 ```text
@@ -538,6 +540,81 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   cycles detected by component), so a step stays fast on long or diamond
   shaped supersedes chains. If a step fails, playback stops and the tab is
   drawn again from scratch.
+
+### Checking an action
+
+`sdf decision check <action>` answers whether an in-force decision forbids
+an action. An agent runs it before a push, merge, release, deploy, or an
+architecture change, and stops when it exits non-zero. It reads the same
+graph as `sdf decision list` and does not write: a missing file in an
+existing directory is an empty store (allowed, exit 0) and is not created.
+A missing directory exits 3.
+
+`<action>` is one argument. `push`, `merge`, `release`, and `deploy` are
+named actions, compared case-insensitively after trimming. Any other text,
+including `git push` or `replace sqlite`, is an architecture change.
+
+A decision forbids the action only when it is still in force and its
+**statement** matches. In force means `status` is `decision` (a hypothesis
+does not forbid), `effective_status` is `active` (superseded does not), and
+it is not retracted. `blocked`, `conflicted`, and `challenged` do not clear
+a forbid: a settled "do not push" still forbids push while a blocker is
+open. The id, the reason, the source, and the edges are not matched.
+`supersedes` and `retract` matter only because they take the record out of
+force.
+
+The match is case-insensitive, on whole words:
+
+- A tag `forbid:push`, `forbid:merge`, `forbid:release`, `forbid:deploy`, or
+  `forbid:architecture`. The tag is a token, so `forbid:pushing` does not
+  match `push`.
+- A phrase whose cue is immediately followed by the action word. The cues are
+  `do not`, `don't`, `dont`, `never`, `must not`, `forbidden to`, and
+  `forbid`. `Do not push until the user says so.` forbids `push`.
+- `no push` (and the same for the other named actions) only when that action
+  ends the statement or is followed by `.` `,` `;` or `:`. `no push notification`
+  does not forbid `push`.
+- An architecture change matches `forbid:architecture`, the phrase
+  `no architecture change` (or `changes`), or a cue followed within four
+  words by the word `architecture` (`Do not change the architecture.`).
+  A named-action forbid does not cover an architecture change, and an
+  architecture forbid does not cover a named action.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Allowed. Nothing in force forbids the action. |
+| 1 | Forbidden. Stdout lists each blocking decision. |
+| 2 | Usage. Missing action, an extra argument, or a bad flag. |
+| 3 | The store could not be read, or the verdict could not be written. |
+
+Text is one verdict line, then a header and one row per decision. The
+columns are separated by tabs. A cell is quoted the way `sdf decision list`
+quotes one. An empty decided-by prints as `-`. An architecture change names
+the class so the rule that fired is obvious:
+
+```text
+forbidden: push
+ID	DECIDED BY	MATCH	STATEMENT
+dont-push	user	do not push	Do not push until the user says so.
+```
+
+```text
+allowed: replace sqlite (architecture)
+```
+
+`--json` is one object, `action`, `kind` (`push`, `merge`, `release`,
+`deploy`, or `architecture`), `allowed`, and `blocking`. Each blocking entry
+is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
+or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
+exit code is still 1 when it is forbidden.
+
+The rows are in insertion order. The command opens the store with the same
+read-only path as `sdf decision brief` and keeps the records `decision.Active`
+returns: `status` `decision` and `effective_status` `active`. `sdf decision
+brief` ranks a narrower set (a user decision, or the source of a `constrains`
+edge), so a brief is not the forbid list.
 
 ### Auditing the graph
 
