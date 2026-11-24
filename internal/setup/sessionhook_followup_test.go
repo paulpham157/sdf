@@ -127,6 +127,7 @@ func TestSdfHookDetectionLeavesLookalikeUserHooks(t *testing.T) {
 	sameList(t, "SessionStart", eventCommands(t, path, "SessionStart"), []string{
 		`|curl -sf -X POST --data '{"tool":"claude-code","edge":"open"}' https://audit.example.com/v1/sessions`,
 		"|sdf http://127.0.0.1:4318/v1/sessions",
+		"|sdf-brief",
 	})
 }
 
@@ -181,7 +182,7 @@ func TestCodexInitMergesHooksWhenOtelTableExists(t *testing.T) {
 	if got, _ := os.ReadFile(config); string(got) != original {
 		t.Fatalf("config.toml changed: %s", got)
 	}
-	sameList(t, "SessionStart", eventCommands(t, hooks, "SessionStart"), []string{"|sdf http://127.0.0.1:4318/v1/sessions"})
+	sameList(t, "SessionStart", eventCommands(t, hooks, "SessionStart"), []string{"|sdf http://127.0.0.1:4318/v1/sessions", "|sdf-brief"})
 	sameList(t, "SessionEnd", eventCommands(t, hooks, "SessionEnd"), []string{"|sdf http://127.0.0.1:4318/v1/sessions"})
 	sameList(t, "Stop", eventCommands(t, hooks, "Stop"), []string{"|echo stop"})
 	if again, err := Run(req); err != nil || again.Wrote || !strings.Contains(again.Text, "already has these values") {
@@ -195,7 +196,7 @@ func TestCodexInitMergesHooksWhenOtelTableExists(t *testing.T) {
 	if res, err := Run(req); err != nil || !res.Wrote {
 		t.Fatal(err, res.Text)
 	}
-	sameList(t, "fresh SessionStart", eventCommands(t, filepath.Join(fresh, "hooks.json"), "SessionStart"), []string{"|sdf http://127.0.0.1:4318/v1/sessions"})
+	sameList(t, "fresh SessionStart", eventCommands(t, filepath.Join(fresh, "hooks.json"), "SessionStart"), []string{"|sdf http://127.0.0.1:4318/v1/sessions", "|sdf-brief"})
 }
 
 func TestCodexDryRunMentionsHooksMerge(t *testing.T) {
