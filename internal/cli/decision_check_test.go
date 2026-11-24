@@ -145,7 +145,7 @@ func TestDecisionCheckUsageAndStoreError(t *testing.T) {
 		}
 	}
 	help := run(t, "decision", "check", "--help")
-	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision check <action> [--db PATH] [--json]") || !strings.Contains(help.stdout, "Exit 0 is allowed") || !strings.Contains(help.stdout, "Exit 1 is forbidden") || !strings.Contains(help.stdout, "Exit 2 is a usage error") || !strings.Contains(help.stdout, "Exit 3 is a store or write error") || !strings.Contains(help.stdout, "200ms busy timeout") || !strings.Contains(help.stdout, "sdf-decisions") {
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision check <action> [--db PATH] [--json]") || !strings.Contains(help.stdout, "Exit 0 is allowed") || !strings.Contains(help.stdout, "Exit 1 is forbidden") || !strings.Contains(help.stdout, "Exit 2 is a usage error") || !strings.Contains(help.stdout, "Exit 3 is a store or write error") || !strings.Contains(help.stdout, "200ms busy timeout") || !strings.Contains(help.stdout, "sdf-decisions") || !strings.Contains(help.stdout, "scripts/check") {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	if strings.Contains(help.stdout, "500ms") {

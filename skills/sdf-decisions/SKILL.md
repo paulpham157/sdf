@@ -55,7 +55,9 @@ sh scripts/check ACTION [--db PATH] [--json]
 - Exit 0, and a line starting with `allowed`: nothing in force forbids it. You may proceed.
 - Exit 1, and a line starting with `forbidden`: stop. Do not do the action. Show the user every blocking id, who set it (`decided_by`), and the statement, and ask how to proceed. Do not retract, supersede, or reword a decision to get past this check unless the user tells you to.
 - Exit 2: the command was called wrong. Fix it and run it again. Do not proceed without an exit 0.
-- Exit 3, or `sdf` missing from `PATH`: the check did not run. Stop and tell the user. A failed check is not permission.
+- Exit 3: the check did not run. Stop and tell the user. A failed check is not permission.
+- Exit 127 from `scripts/check` (or a shell `command not found` from the raw command): `sdf` is not on `PATH`, so the check did not run. Stop and tell the user.
+- Any other non-zero exit: stop and ask the user. Only exit 0 allows the action.
 
 A missing store file is an empty store: exit 0, and the file is not created. A hypothesis does not forbid an action. A superseded or retracted decision does not either. The check reads the statement of each settled decision that is still in force. Put the forbid in that statement, not only in the id, the reason, or a `blocks` / `constrains` edge:
 

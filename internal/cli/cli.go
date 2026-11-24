@@ -997,7 +997,10 @@ store file in an existing directory is an empty store: exit 0, and the
 file is not created. A missing directory exits 3.
 
 The store is opened read-only with a 200ms busy timeout. --json prints
-action, kind, allowed, and blocking (id, decided_by, statement, match).`
+action, kind, allowed, and blocking (id, decided_by, statement, match).
+
+The sdf-decisions skill ships scripts/check, a helper that runs this
+command and keeps its exit code.`
 
 // cmdDecisionCheck reports whether an in-force decision forbids an action.
 // Exit 0 is allowed, 1 is forbidden (the blocking decisions are on stdout),

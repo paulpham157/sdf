@@ -255,7 +255,7 @@ func TestCheckPreservesExitCodesAndArgs(t *testing.T) {
 	if out.code != 127 {
 		t.Fatalf("missing sdf exit %d, want 127: %+v", out.code, out)
 	}
-	if !strings.Contains(out.stderr, "sdf not found on PATH") {
+	if out.stdout != "" || !strings.Contains(out.stderr, "sdf not found on PATH") {
 		t.Fatalf("missing sdf stderr: %+v", out)
 	}
 }
