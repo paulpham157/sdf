@@ -6,10 +6,24 @@
 
 A local OpenTelemetry collector and decision ledger for coding agents.
 
-SDF records tokens, cost, tool use, sessions, and decisions on your
-machine, and summarizes them. It does not launch, route, or sandbox the
-agents; it only listens. The receiver needs no API key or network
-connection.
+The distinctive figure is cost per accepted outcome. SDF links each
+agent's OTLP traces to commits and pull requests, and with `--github` to
+whether those pull requests merged or were closed without merging, so you
+can see the cost of merged work and of work that was not accepted, not
+only token or session counts.
+
+The decision layer records who decided (user or agent), why, and which
+alternatives were considered, and links each decision to the sessions and
+commits that implemented it. The Decisions graph shows the path taken,
+paths not taken, blocked or conflicting points, and the cost of that
+chapter's sessions.
+
+SDF runs entirely on your machine: it listens on `127.0.0.1` and stores
+data in SQLite. Prompt, response, tool, and error text is dropped before
+storing unless you opt in with `--store-content`. You can collect this
+information without sending telemetry to an outside SaaS. It does not
+launch, route, or sandbox the agents; it only listens. The receiver needs
+no API key or network connection.
 
 ![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)
 
