@@ -1013,7 +1013,7 @@ func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
 		case arg == "--json":
 			asJSON = true
 		case strings.HasPrefix(arg, "-"):
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		default:
 			if actionSet {
