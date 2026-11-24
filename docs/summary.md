@@ -284,20 +284,25 @@ The field names and the meaning of `"0"` (that component is free) are
 `retrieved_at` are the URL and the UTC time of the download. Nothing in that
 file was typed in by hand.
 
-Offline summary uses the bundled file. A file written by refresh wins when
-it is present:
+Offline summary uses the bundled file. A file written by refresh is used
+when it is present and you do not pass `--prices`:
 
 ```bash
 sdf prices refresh
+sdf summary
 sdf summary --prices bundled
 sdf summary --prices /path/to/openrouter-models.json
 ```
 
 `sdf prices refresh` is the only command that calls the network for prices.
-It GETs the models URL with no API key and writes
-`$XDG_CACHE_HOME/sdf/openrouter-models.json` (or the path in `--out`).
+It does not change the table bundled in the binary. It GETs the models URL
+with no API key and writes `openrouter-models.json` under the user cache
+directory (`os.UserCacheDir()`, which is `$XDG_CACHE_HOME` when that is
+set, otherwise typically `~/.cache` on Linux or `~/Library/Caches` on
+macOS), in a `sdf/` subdirectory, unless `--out` names a file.
 `--url` fetches a different models URL with the same shape.
-`SDF_PRICE_CACHE` changes the cache directory. A model id that is not in the
+`SDF_PRICE_CACHE` replaces that `sdf` cache directory. `--prices bundled`
+forces the bundled table and ignores the cache. A model id that is not in the
 table, or a token bucket whose price field is absent, is `computed_cost_usd`
 status `unknown` with a reason. The `usd` field is omitted in that case.
 It is not `0`.
