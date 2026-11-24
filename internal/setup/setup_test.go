@@ -351,3 +351,14 @@ func TestRunUnknownAgentListsCopilot(t *testing.T) {
 		t.Fatalf("got %q, want %q", err.Error(), want)
 	}
 }
+
+func TestConfiguredUnknownAgentListsCopilot(t *testing.T) {
+	_, err := Configured(Request{Agent: "not-an-agent", Home: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := `unknown agent "not-an-agent" (claude-code, codex, opencode, pi, qwen, grok, gemini, copilot)`
+	if err.Error() != want {
+		t.Fatalf("got %q, want %q", err.Error(), want)
+	}
+}

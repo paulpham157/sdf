@@ -96,6 +96,10 @@ type Result struct {
 
 // Run prints the agent setup. It writes files only when Request.Write is set,
 // and it copies an existing file to a sibling .sdf-bak before replacing bytes.
+// knownAgentsHint is the parenthetical list on unknown-agent errors from
+// Run and Configured. Keep it in the same order as CLI help (initAgents).
+const knownAgentsHint = "claude-code, codex, opencode, pi, qwen, grok, gemini, copilot"
+
 func Run(req Request) (Result, error) {
 	if err := normalize(&req); err != nil {
 		return Result{}, err
@@ -118,7 +122,7 @@ func Run(req Request) (Result, error) {
 	case "gemini", "gemini-cli":
 		return gemini(req)
 	default:
-		return Result{}, fmt.Errorf("unknown agent %q (claude-code, codex, opencode, pi, qwen, grok, gemini, copilot)", req.Agent)
+		return Result{}, fmt.Errorf("unknown agent %q (%s)", req.Agent, knownAgentsHint)
 	}
 }
 
@@ -949,7 +953,7 @@ func Configured(req Request) (string, error) {
 	case "gemini", "gemini-cli":
 		return geminiConfigured(req), nil
 	default:
-		return "", fmt.Errorf("unknown agent %q", req.Agent)
+		return "", fmt.Errorf("unknown agent %q (%s)", req.Agent, knownAgentsHint)
 	}
 }
 
