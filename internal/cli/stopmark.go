@@ -12,10 +12,15 @@ import (
 // A missing file is not reminded. An unreadable file fails open (true, err)
 // so the caller does not block.
 func stopAlreadyReminded(path, id string) (bool, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
+	if err != nil {
+		return true, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, stopMarkerMax))
 	if err != nil {
 		return true, err
 	}
@@ -34,7 +39,7 @@ func markStopReminded(path, id string) (fresh bool, err error) {
 		_ = lock.Close()
 		_ = os.Remove(lock.Name())
 	}()
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return false, err
 	}
@@ -42,18 +47,35 @@ func markStopReminded(path, id string) (fresh bool, err error) {
 	if err := f.Chmod(0o600); err != nil {
 		return false, err
 	}
-	b, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	info, err := f.Stat()
 	if err != nil {
 		return false, err
 	}
-	if stopMarkerHas(b, id) {
-		return false, nil
+	// The marker is bounded. Past stopMarkerMax it starts over, so an old
+	// session could be reminded once more, which is cheaper than an
+	// unbounded file or a partial read.
+	if info.Size()+int64(len(id))+1 > stopMarkerMax {
+		if err := f.Truncate(0); err != nil {
+			return false, err
+		}
+	} else {
+		b, err := io.ReadAll(f)
+		if err != nil {
+			return false, err
+		}
+		if stopMarkerHas(b, id) {
+			return false, nil
+		}
 	}
+	// O_APPEND: the id always lands at the end, after a whole line.
 	if _, err := f.Write([]byte(id + "\n")); err != nil {
 		return false, err
 	}
 	return true, nil
 }
+
+// stopMarkerMax caps the marker file (about 28k UUID session ids).
+const stopMarkerMax = 1 << 20
 
 func stopMarkerHas(b []byte, id string) bool {
 	for _, line := range bytes.Split(b, []byte("\n")) {
