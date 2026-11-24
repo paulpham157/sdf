@@ -388,7 +388,7 @@ export default function sdfSession(pi) {
   // One more turn, at most, when this session committed and did not record
   // the decision. spawnSync throws nothing on a missing sdf; a non-zero
   // status or a body that does not ask to continue lets the session settle.
-  pi.on("agent_before_settle", () => {
+  pi.on("agent_before_settle", (event) => {
     let id = ""
     try { id = pi.sessionManager.getSessionId() } catch (e) { return }
     if (!id) return
@@ -402,7 +402,11 @@ export default function sdfSession(pi) {
       if (!res || res.status !== 0 || !res.stdout) return
       parsed = JSON.parse(res.stdout)
     } catch (e) { return }
-    if (parsed && parsed.continue === true) return parsed
+    if (!parsed || parsed.continue !== true || !Array.isArray(parsed.entries)) return
+    // A returned entries list replaces the proposal so far; keep what
+    // earlier handlers proposed.
+    const prior = event && Array.isArray(event.entries) ? event.entries : []
+    return { continue: true, entries: [...prior, ...parsed.entries] }
   })
 }
 `, jsHeaders(url), url)
