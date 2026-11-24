@@ -105,7 +105,7 @@ those two is below so it can be installed by hand.
 | Gemini CLI | `AfterAgent` in `~/.gemini/settings.json`, matcher `*`, timeout 2000 (milliseconds) | same `decision`/`reason` (`block` is an alias of `deny`) | payload `session_id`, else `GEMINI_SESSION_ID` | [Hooks reference](https://geminicli.com/docs/hooks/reference/) |
 | Qwen Code | `Stop` in the user `settings.json`, timeout 2 (seconds) | same `decision`/`reason` | payload `session_id`, else `QWEN_CODE_SESSION_ID` | [Qwen Code hooks](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) |
 | Grok CLI | `Stop` in `$GROK_HOME/hooks/sdf-session.json`, timeout 2 | same `decision`/`reason` | `GROK_SESSION_ID`, else `sessionId` | [Grok hooks](https://grokbook.dev/chapter/10-hooks) (`stopHookActive`, gate only `reason: end_turn`, cap 8) |
-| Pi | `agent_before_settle` in the sdf session extension | `{"continue":true,"entries":[{"type":"custom_message",...}]}` | payload `session_id` (`getSessionId()`), else `PI_SESSION_ID` | [Extensions](https://docs.pi.dev/latest/extensions) |
+| Pi | `agent_before_settle` in the sdf session extension | `{"continue":true,"entries":[{"type":"custom_message",...}]}`, appended after the entries earlier handlers proposed | payload `session_id` (`getSessionId()`), else `PI_SESSION_ID` | [Extensions](https://docs.pi.dev/latest/extensions) |
 | Copilot CLI | not installed (hook files live under `~/.copilot/hooks/` or `$COPILOT_HOME/hooks/`, which `sdf init` does not write) | same `decision`/`reason` | payload `sessionId` | [Copilot hooks](https://docs.github.com/en/copilot/reference/hooks-reference) (`agentStop`, cap 8) |
 | Cursor | not installed (no `sdf init` target; hooks are `~/.cursor/hooks.json` or `.cursor/hooks.json`) | `{"followup_message":"..."}` | payload `conversation_id` | [Cursor hooks](https://cursor.com/docs/hooks) (`stop`, `loop_count`, default cap 5) |
 | OpenCode | nothing (no Stop gate) | — | — | [Plugins](https://opencode.ai/docs/plugins/) |
@@ -128,7 +128,10 @@ Copilot, by hand, in `~/.copilot/hooks/sdf-stop.json`:
 ```
 
 Cursor, by hand, in `~/.cursor/hooks.json` (the `stop` value is an array of
-command objects, not Claude's matcher groups):
+command objects, not Claude's matcher groups). Grok also runs the hooks in
+that file, so the command exits first when `GROK_HOOK_EVENT` is set, as the
+Claude Code hook does; otherwise a Grok stop could spend the session's one
+reminder on Cursor's `followup_message`, which Grok does not read:
 
 ```json
 {
@@ -136,7 +139,7 @@ command objects, not Claude's matcher groups):
   "hooks": {
     "stop": [
       {
-        "command": "command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent cursor || exit 0"
+        "command": "[ -z \"${GROK_HOOK_EVENT:-}\" ] || exit 0; command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent cursor || exit 0"
       }
     ]
   }
