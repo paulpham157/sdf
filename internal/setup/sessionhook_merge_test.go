@@ -66,7 +66,9 @@ func eventCommands(t *testing.T, path, event string) []string {
 	for _, g := range root.Hooks[event] {
 		for _, h := range g.Hooks {
 			cmd := h.Command
-			if isSdfSessionHook(map[string]any{"type": "command", "command": cmd}, "claude-code") || isSdfSessionHook(map[string]any{"type": "command", "command": cmd}, "codex") {
+			if isSdfDecisionBriefHook(map[string]any{"type": "command", "command": cmd}) {
+				cmd = "sdf-brief"
+			} else if isSdfSessionHook(map[string]any{"type": "command", "command": cmd}, "claude-code") || isSdfSessionHook(map[string]any{"type": "command", "command": cmd}, "codex") {
 				cmd = "sdf"
 				if i := strings.Index(h.Command, "http://"); i >= 0 {
 					cmd += " " + strings.TrimRight(strings.Fields(h.Command[i:])[0], `'"`)
@@ -93,7 +95,7 @@ func TestClaudeInitKeepsUserHooksAndOrder(t *testing.T) {
 		t.Fatal(res.Text)
 	}
 	sameList(t, "SessionStart", eventCommands(t, path, "SessionStart"), []string{
-		"startup|echo user-start-1", "|echo user-start-2", "|sdf http://127.0.0.1:4318/v1/sessions",
+		"startup|echo user-start-1", "|echo user-start-2", "|sdf http://127.0.0.1:4318/v1/sessions", "|sdf-brief",
 	})
 	sameList(t, "SessionEnd", eventCommands(t, path, "SessionEnd"), []string{
 		"logout|echo user-end", "|sdf http://127.0.0.1:4318/v1/sessions",
@@ -114,7 +116,7 @@ func TestClaudeInitRerunIsANoOp(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("second run changed settings.json")
 	}
-	if n := len(eventCommands(t, path, "SessionStart")); n != 3 {
+	if n := len(eventCommands(t, path, "SessionStart")); n != 4 {
 		t.Fatalf("SessionStart has %d hooks after a rerun", n)
 	}
 }
@@ -147,7 +149,7 @@ func TestClaudeInitUpdatesAnOldSdfHookInPlace(t *testing.T) {
 		t.Fatal(res.Text)
 	}
 	sameList(t, "SessionStart", eventCommands(t, path, "SessionStart"), []string{
-		"startup|echo user-start", "startup|sdf http://127.0.0.1:4318/v1/sessions", "resume|echo resume",
+		"startup|echo user-start", "startup|sdf http://127.0.0.1:4318/v1/sessions", "resume|echo resume", "|sdf-brief",
 	})
 	sameList(t, "SessionEnd", eventCommands(t, path, "SessionEnd"), []string{
 		"|sdf http://127.0.0.1:4318/v1/sessions", "clear|echo clear",
@@ -203,7 +205,7 @@ func TestCodexInitKeepsUserHooks(t *testing.T) {
 		}
 	}
 	run()
-	sameList(t, "SessionStart", eventCommands(t, path, "SessionStart"), []string{"startup|echo mine", "|sdf http://127.0.0.1:4318/v1/sessions"})
+	sameList(t, "SessionStart", eventCommands(t, path, "SessionStart"), []string{"startup|echo mine", "|sdf http://127.0.0.1:4318/v1/sessions", "|sdf-brief"})
 	sameList(t, "SessionEnd", eventCommands(t, path, "SessionEnd"), []string{"|sdf http://127.0.0.1:4318/v1/sessions", "|echo bye"})
 	sameList(t, "Stop", eventCommands(t, path, "Stop"), []string{"|echo stop"})
 	got, _ := os.ReadFile(path)

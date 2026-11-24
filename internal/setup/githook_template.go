@@ -20,6 +20,7 @@ type TemplateOptions struct {
 	Home        string
 	SetConfig   bool
 	UnsetConfig bool
+	Hook        HookOptions
 }
 
 // InstallGitTemplate installs the sdf hooks into the git template directory
@@ -29,6 +30,10 @@ type TemplateOptions struct {
 // and init.templateDir is unset, and the change is included in the result text.
 func InstallGitTemplate(opts TemplateOptions, ep Endpoint) (Result, error) {
 	url, err := hookLogsURL(ep)
+	if err != nil {
+		return Result{}, err
+	}
+	cfg, err := newHookConfig(url, opts.Hook)
 	if err != nil {
 		return Result{}, err
 	}
@@ -81,7 +86,7 @@ func InstallGitTemplate(opts TemplateOptions, ep Endpoint) (Result, error) {
 		}
 		b.WriteString(note)
 	}
-	changed, err := installHookFiles(filepath.Join(dir, "hooks"), url)
+	changed, err := installHookFiles(filepath.Join(dir, "hooks"), cfg)
 	if err != nil {
 		return Result{Text: b.String()}, err
 	}

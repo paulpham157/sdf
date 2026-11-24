@@ -97,7 +97,7 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 			}
 			format = v
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -105,7 +105,11 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 	// Same default as the other sdf decision commands: a path relative to the
 	// process working directory, no environment variable. Stat before open
 	// so a missing file is not created and a FIFO, directory, or device is
-	// never opened.
+	// never opened. A path whose parent is a file, such as
+	// existing-file/x.sqlite, fails Stat with ENOTDIR and prints the
+	// unavailable line. A 0-byte or non-sdf file that cannot be opened does
+	// too. A file that opens and has no decision rows prints nothing: there
+	// are no rules to apply.
 	asJSON := format == "json"
 	info, err := os.Stat(dbPath)
 	if err != nil {

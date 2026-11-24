@@ -39,9 +39,11 @@ func cmdAudit(args []string, stdout, stderr io.Writer) int {
 		return cmdAuditHead(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, auditUsage)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, auditHelp)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(args[0]))
+		unrecognizedArgs(stderr, args[0])
 		return 2
 	}
 }
@@ -72,7 +74,7 @@ func parseAuditFlags(name, usage string, args []string, stdout, stderr io.Writer
 				return "", false, 2, true
 			}
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(arg))
+			unrecognizedArgs(stderr, arg)
 			return "", false, 2, true
 		}
 	}
@@ -265,7 +267,7 @@ func cmdAuditVerify(args []string, stdout, stderr io.Writer) int {
 			}
 			prefixFile, prefixFileSet = v, true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", ledger.Safe(arg))
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}

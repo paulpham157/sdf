@@ -47,7 +47,7 @@ func TestDecisionRetract(t *testing.T) {
 	if help.code != 0 || help.stdout != "usage: sdf decision retract --id ID [--reason TEXT] [--retracted-by user|agent] [--db PATH]\n" {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
-	if top := run(t, "decision", "--help"); !strings.Contains(top.stdout, "<add|link|list|retract|audit|brief>") {
+	if top := run(t, "decision", "--help"); !strings.Contains(top.stdout, "<add|link|list|graph|brief|check|retract|audit|pre-push>") {
 		t.Fatalf("%q", top.stdout)
 	}
 

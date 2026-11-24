@@ -1,0 +1,11 @@
+# Decision-brief SessionStart hook commands every sdf on this branch has written.
+# Format: tool<TAB>command. The Claude form includes the GROK_HOOK_EVENT guard;
+# detection strips that guard before comparing, so both rows of a pair share one body.
+# Current pair first, then earlier unreleased forms so re-init upgrades them in place.
+# hooks/session-start-decision-brief
+claude-code	[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0
+codex	command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0
+claude-code	[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; command -v sdf >/dev/null 2>&1 || exit 0; exec sdf decision brief 2>/dev/null
+codex	command -v sdf >/dev/null 2>&1 || exit 0; exec sdf decision brief 2>/dev/null
+claude-code	[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0
+codex	command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0

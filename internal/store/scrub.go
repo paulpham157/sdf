@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/paulpham157/sdf/internal/dbfile"
 	"github.com/paulpham157/sdf/internal/record"
 )
 
@@ -28,6 +29,8 @@ func OpenForScrub(path string, readOnly bool) (*Store, error) {
 	if readOnly {
 		mode = "ro"
 	}
+	// Owner-only, as Open makes it; a failure only warns.
+	dbfile.Tighten(abs)
 	// mode=rw and mode=ro never create the file.
 	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String() + "?mode=" + mode
 	db, err := sql.Open("sqlite", dsn)

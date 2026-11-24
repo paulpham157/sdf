@@ -27,18 +27,26 @@ close to `POST /v1/sessions` (see [One-step setup](receiver.md#one-step-setup)).
 For Claude Code and Codex it also adds a second SessionStart hook that runs
 `sdf decision brief` with no flags, so the agent receives the text brief on
 stdout at the start of a session. The command is
-`command -v sdf >/dev/null 2>&1 || exit 0; sdf decision brief 2>/dev/null || exit 0`,
-with a 2 second hook timeout. The hook is fail-open and never blocks a
-session. If `sdf` is not on `PATH`, the store is missing, nothing matched,
-or the command fails, the hook exits 0 and injects nothing. When the store
-exists but cannot be read, `sdf decision brief` prints
+`command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0`,
+with a 2 second hook timeout. The hook captures stdout so a non-zero `sdf`
+(an old binary, a usage error, or a crash) cannot leak text or a non-zero
+hook status. The hook is fail-open and never blocks a session. If `sdf` is
+not on `PATH`, the store is missing, nothing matched, or the command fails,
+the hook exits 0 and injects nothing. When the store exists but cannot be
+read, `sdf decision brief` prints
 `sdf decision brief unavailable: run sdf decision list` on stdout and exits
-0; that is the line Claude Code and Codex inject. Claude Code's command is
-prefixed with
+0; that is the line Claude Code and Codex inject. The hook reads
+`sdf-telemetry.sqlite` in the session working directory, the same default
+as `sdf serve` and the other `sdf decision` commands (there is no
+environment variable, and the installed command does not pass `--db`).
+Start the session from the directory that holds the store, or the hook
+injects nothing. Claude Code's command is prefixed with
 `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0` so a Grok session that also reads
 `~/.claude/settings.json` does not inject a Claude brief. `sdf init` keeps
-your other hooks; only the exact command text an sdf build has written is
-updated in place.
+your other hooks; only the exact command text an sdf build has written,
+including an earlier unreleased form, is updated in place. A user-tuned
+positive hook timeout is kept; the default 2 second timeout is added only
+when it is missing or not a positive number.
 
 Other agents do not get that hook. At the start of a session, run
 `sdf decision brief` yourself (the same `--db` as `sdf serve`, default
@@ -277,9 +285,12 @@ The bundled exporter posts traces to `${endpoint}/v1/traces` and logs to
 exporter. `service.name` is `opencode`.
 
 Session spans (`SessionRunner.drain`, `SessionRunner.runStep`,
-`SessionStep.attempt`, `Tool.execute`) carry `session.id`. Startup spans and
-the process logs do not, so the summary leaves them unattributed instead of
-attaching them because the timestamps overlap. `SessionStep.attempt` carries
+`SessionStep.attempt`, `Tool.execute`) carry `session.id`. Session error
+logs such as `Failed to drain Session` carry camelCase `sessionID`, which
+the collector treats as an alias of `session.id`, so those logs are
+attributed to the session. Startup spans and process, CLI, and watcher
+logs that have no session id stay unattributed instead of being attached
+because the timestamps overlap. `SessionStep.attempt` carries
 `gen_ai.request.model` and `gen_ai.usage.*`. One attempt span is one provider
 request: OpenCode annotates it with the finish usage of that single
 `llm.stream` call (`packages/core/src/session/runner/step.ts`), not a

@@ -65,11 +65,14 @@ type Item struct {
 	Locked    bool   `json:"locked"`
 }
 
-// Result is the ranked brief after caps. Items is the prefix that was kept
-// and is never nil. Omitted is how many ranked items were left off.
+// Result is the ranked brief after caps. Items is never nil. Omitted is
+// how many ranked items were left off. OmittedLocked is how many of those
+// were locked user rules; it is present even when zero. Locked rules are
+// dropped only when they cannot fit at the statement floor.
 type Result struct {
-	Items   []Item `json:"items"`
-	Omitted int    `json:"omitted"`
+	Items         []Item `json:"items"`
+	Omitted       int    `json:"omitted"`
+	OmittedLocked int    `json:"omitted_locked"`
 }
 
 // Classify ranks the active constraints, blocked decisions, and conflicting
@@ -107,7 +110,7 @@ func Classify(g decision.Graph) []Item {
 	for _, d := range order {
 		item := Item{
 			ID:        d.ID,
-			Statement: limitStatement(d.Statement),
+			Statement: fitStatement(d.Statement, statementBudget),
 			Status:    d.Status,
 			DecidedBy: d.DecidedBy,
 		}
@@ -143,23 +146,44 @@ func reverseItems(items []Item) {
 	}
 }
 
-// limitStatement cuts s to statementBudget bytes. The cut is on a rune
-// boundary and the result ends with "…". A short statement is unchanged.
-func limitStatement(s string) string {
-	if len(s) <= statementBudget {
+// statementFloor is the shortest rendered statement budget used while
+// trying to keep every locked user rule. Only a pathological count drops
+// a locked rule, and then the oldest ones go first.
+const statementFloor = 40
+
+// fitStatement cuts s so its rendered field (quoted, when quoting applies)
+// is at most budget bytes. The cut is on a rune boundary and, when s is
+// shortened, the statement ends with "…".
+func fitStatement(s string, budget int) string {
+	if budget < len(ellipsis) {
+		budget = len(ellipsis)
+	}
+	if renderedLen(s) <= budget {
 		return s
 	}
-	const ellipsis = "…"
-	budget := statementBudget - len(ellipsis)
-	if budget < 0 {
-		return ellipsis
+	rs := []rune(s)
+	lo, hi := 0, len(rs)
+	best := -1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		cand := string(rs[:mid]) + ellipsis
+		if renderedLen(cand) <= budget {
+			best = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
 	}
-	i := budget
-	for i > 0 && !utf8.RuneStart(s[i]) {
-		i--
+	if best < 0 {
+		if renderedLen(ellipsis) <= budget {
+			return ellipsis
+		}
+		return ""
 	}
-	return s[:i] + ellipsis
+	return string(rs[:best]) + ellipsis
 }
+
+const ellipsis = "…"
 
 // Select classifies g and applies the caps. maxItems or maxBytes below zero
 // means that cap is off. The byte cap is the length of render's result.
@@ -168,52 +192,213 @@ func Select(g decision.Graph, maxItems, maxBytes int, render func(Result) []byte
 	return Trim(Classify(g), maxItems, maxBytes, render)
 }
 
-// Trim keeps items in the order given, which is Classify's priority order.
-// maxItems or maxBytes below zero means that cap is off. It fills greedily:
-// an item that does not fit is skipped and counted in Omitted, and a later
-// smaller item can still be kept. The byte check is one pass. It adds each
-// item's rendered size to a fixed envelope and footer reserve, and does not
-// render the whole document again for every skip. When items are skipped,
-// the omitted line (or the JSON omitted field) is part of that reserve. If
-// the note alone is still over maxBytes, it is kept: the count has to stay
-// visible. render is only used to tell text from JSON. Nil means no byte cap.
+// Trim keeps items in Classify's priority order. maxItems or maxBytes below
+// zero means that cap is off. Locked user rules are exempt from maxItems:
+// every one is kept, newest first. Other tiers fill the item slots and the
+// bytes left after the locked tier. maxBytes is a hard bound. When the
+// locked tier does not fit at statementBudget, every locked statement is
+// shortened to the same smaller budget, down to statementFloor, before any
+// locked rule is dropped. Only when the floor still does not fit are the
+// oldest locked rules dropped. A non-locked item that does not fit is
+// skipped, and a later smaller one can still be kept. The byte check is one
+// pass over each tier plus a binary search on the locked budget. render is
+// only used to tell text from JSON. Nil means no byte cap.
 func Trim(items []Item, maxItems, maxBytes int, render func(Result) []byte) Result {
-	if maxItems < 0 || maxItems > len(items) {
-		maxItems = len(items)
-	}
+	locked, rest := splitLocked(items)
 	jsonOut := maxBytes >= 0 && jsonRender(render)
-	reserve := 0
-	if maxBytes >= 0 {
-		reserve = envelopeReserve(len(items), jsonOut)
+	if maxBytes < 0 {
+		keptRestN := keptRest(maxItems, len(locked), len(rest))
+		kept := append(append([]Item{}, locked...), takeRest(rest, keptRestN)...)
+		return resultOf(kept, len(rest)-keptRestN, 0)
 	}
-	kept := make([]Item, 0, maxItems)
-	used := reserve
-	omitted := 0
-	for _, item := range items {
-		if len(kept) >= maxItems {
-			omitted++
+	keptLocked, dropped := fitLocked(locked, len(rest), maxBytes, jsonOut)
+	slots := slotsLeft(maxItems, len(keptLocked))
+	frame := frameSize(len(items), dropped, jsonOut)
+	used := itemsCost(keptLocked, jsonOut) + frame
+	kept := append([]Item{}, keptLocked...)
+	omittedRest := 0
+	keptRestN := 0
+	for _, item := range rest {
+		if keptRestN >= slots {
+			omittedRest++
 			continue
 		}
 		cost := itemBytes(item, len(kept) > 0, jsonOut)
-		if maxBytes >= 0 && used+cost > maxBytes {
-			omitted++
+		if used+cost > maxBytes {
+			omittedRest++
 			continue
 		}
 		kept = append(kept, item)
 		used += cost
+		keptRestN++
 	}
-	return resultOf(kept, omitted)
+	return resultOf(kept, dropped+omittedRest, dropped)
 }
 
-// envelopeReserve is the fixed bytes that are not an item: the JSON
-// document around the array, or the text footer at its widest for n items.
-func envelopeReserve(n int, jsonOut bool) int {
-	digits := len(strconv.Itoa(n))
-	if !jsonOut {
-		return digits + len(" more: run sdf decision list\n")
+// slotsLeft is how many non-locked items maxItems still allows after
+// keptLocked locked rules. A negative maxItems means no item cap.
+func slotsLeft(maxItems, keptLocked int) int {
+	if maxItems < 0 {
+		return int(^uint(0) >> 1)
 	}
-	// {\n  "items": [\n ... \n  ],\n  "omitted": N\n}\n
-	return len("{\n  \"items\": [\n") + len("\n  ],\n  \"omitted\": ") + digits + len("\n}\n")
+	n := maxItems - keptLocked
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func keptRest(maxItems, keptLocked, nRest int) int {
+	slots := slotsLeft(maxItems, keptLocked)
+	if slots > nRest {
+		return nRest
+	}
+	return slots
+}
+
+func takeRest(rest []Item, slots int) []Item {
+	if slots > len(rest) {
+		slots = len(rest)
+	}
+	if slots < 0 {
+		slots = 0
+	}
+	return rest[:slots]
+}
+
+// fitLocked keeps every locked item when it can. It first shortens every
+// locked statement to one shared budget, from statementBudget down to
+// statementFloor. Past the floor it drops the oldest items, which are last
+// because the tier is newest-first. restN is how many non-locked items may
+// still be omitted, so the footer reserved beside the locked tier is wide
+// enough for them.
+func fitLocked(locked []Item, restN, maxBytes int, jsonOut bool) ([]Item, int) {
+	if len(locked) == 0 {
+		return nil, 0
+	}
+	tryAll := func(budget int) ([]Item, bool) {
+		fitted := refit(locked, budget)
+		size := outputSize(fitted, restN, 0, jsonOut)
+		return fitted, size <= maxBytes
+	}
+	if fitted, ok := tryAll(statementBudget); ok {
+		return fitted, 0
+	}
+	best := -1
+	var bestItems []Item
+	lo, hi := statementFloor, statementBudget-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if fitted, ok := tryAll(mid); ok {
+			best = mid
+			bestItems = fitted
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best >= 0 {
+		return bestItems, 0
+	}
+	floorItems := refit(locked, statementFloor)
+	bestN := 0
+	lo, hi = 0, len(floorItems)
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		dropped := len(locked) - mid
+		size := outputSize(floorItems[:mid], dropped+restN, dropped, jsonOut)
+		if size <= maxBytes {
+			bestN = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return floorItems[:bestN], len(locked) - bestN
+}
+
+func refit(items []Item, budget int) []Item {
+	out := make([]Item, len(items))
+	for i, item := range items {
+		item.Statement = fitStatement(item.Statement, budget)
+		out[i] = item
+	}
+	return out
+}
+
+func splitLocked(items []Item) (locked, rest []Item) {
+	for _, item := range items {
+		if item.Locked {
+			locked = append(locked, item)
+		} else {
+			rest = append(rest, item)
+		}
+	}
+	return locked, rest
+}
+
+// outputSize is the rendered size of kept with this omitted count. It
+// matches FormatText and JSONBytes, including the footer only when
+// omitted is greater than zero.
+func outputSize(kept []Item, omitted, omittedLocked int, jsonOut bool) int {
+	if jsonOut {
+		return sizeJSON(kept, omitted, omittedLocked)
+	}
+	n := 0
+	for _, item := range kept {
+		n += len(textLine(item))
+	}
+	n += len(footerText(omitted, omittedLocked))
+	return n
+}
+
+func footerText(omitted, omittedLocked int) string {
+	if omitted <= 0 {
+		return ""
+	}
+	if omittedLocked > 0 {
+		return strconv.Itoa(omitted) + " more (" + strconv.Itoa(omittedLocked) + " locked): run sdf decision list\n"
+	}
+	return strconv.Itoa(omitted) + " more: run sdf decision list\n"
+}
+
+func sizeJSON(items []Item, omitted, omittedLocked int) int {
+	if len(items) == 0 {
+		return len("{\n  \"items\": [],\n  \"omitted\": ") + len(strconv.Itoa(omitted)) +
+			len(",\n  \"omitted_locked\": ") + len(strconv.Itoa(omittedLocked)) + len("\n}\n")
+	}
+	n := len("{\n  \"items\": [\n")
+	for i, item := range items {
+		if i > 0 {
+			n += len(",\n")
+		}
+		n += len(jsonItem(item))
+	}
+	n += len("\n  ],\n  \"omitted\": ") + len(strconv.Itoa(omitted)) +
+		len(",\n  \"omitted_locked\": ") + len(strconv.Itoa(omittedLocked)) + len("\n}\n")
+	return n
+}
+
+func itemsCost(items []Item, jsonOut bool) int {
+	n := 0
+	for i, item := range items {
+		n += itemBytes(item, i > 0, jsonOut)
+	}
+	return n
+}
+
+// frameSize is the non-item bytes reserved for the widest footer or JSON
+// envelope this brief might need. Digit width uses nItems so a later,
+// smaller omitted count still fits in the reserve.
+func frameSize(nItems, omittedLocked int, jsonOut bool) int {
+	if nItems < 1 {
+		nItems = 1
+	}
+	if !jsonOut {
+		return len(footerText(nItems, omittedLocked))
+	}
+	return len("{\n  \"items\": [\n") + len("\n  ],\n  \"omitted\": ") + len(strconv.Itoa(nItems)) +
+		len(",\n  \"omitted_locked\": ") + len(strconv.Itoa(omittedLocked)) + len("\n}\n")
 }
 
 // itemBytes is the rendered size of one item. A later JSON item also pays
@@ -266,27 +451,25 @@ func jsonRender(render func(Result) []byte) bool {
 	return len(b) > 0 && b[0] == '{'
 }
 
-func resultOf(items []Item, omitted int) Result {
+func resultOf(items []Item, omitted, omittedLocked int) Result {
 	kept := append([]Item(nil), items...)
 	if kept == nil {
 		kept = []Item{}
 	}
-	return Result{Items: kept, Omitted: omitted}
+	return Result{Items: kept, Omitted: omitted, OmittedLocked: omittedLocked}
 }
 
-// FormatText renders r as one line per item, then, when items were cut,
-// "N more: run sdf decision list". An empty brief with nothing omitted is
-// the empty string. A field that could break the line is Go-quoted.
+// FormatText renders r as one line per item. When items were cut it ends
+// with "N more: run sdf decision list", or "N more (K locked): run sdf
+// decision list" when K locked rules were dropped. An empty brief with
+// nothing omitted is the empty string.
 func FormatText(r Result) string {
 	r = ready(r)
 	var b strings.Builder
 	for _, item := range r.Items {
 		b.WriteString(textLine(item))
 	}
-	if r.Omitted > 0 {
-		b.WriteString(strconv.Itoa(r.Omitted))
-		b.WriteString(" more: run sdf decision list\n")
-	}
+	b.WriteString(footerText(r.Omitted, r.OmittedLocked))
 	return b.String()
 }
 
@@ -317,10 +500,26 @@ func ready(r Result) Result {
 }
 
 func quoteField(s string) string {
-	if !strings.HasPrefix(s, `"`) && utf8.ValidString(s) && strings.IndexFunc(s, func(r rune) bool {
-		return r == '\t' || !unicode.IsPrint(r)
-	}) < 0 {
+	if !needsQuote(s) {
 		return s
 	}
 	return strconv.Quote(s)
+}
+
+// needsQuote reports whether s must be Go-quoted so the text columns stay
+// intact. Format characters such as ZWJ (U+200D) are left as written.
+// Quoting is for a leading '"', invalid UTF-8, or a C0/C1 control
+// (which includes tab, newline, and ESC).
+func needsQuote(s string) bool {
+	if strings.HasPrefix(s, `"`) || !utf8.ValidString(s) {
+		return true
+	}
+	return strings.IndexFunc(s, unicode.IsControl) >= 0
+}
+
+func renderedLen(s string) int {
+	if needsQuote(s) {
+		return len(strconv.Quote(s))
+	}
+	return len(s)
 }

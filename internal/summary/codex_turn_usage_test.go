@@ -63,7 +63,7 @@ func TestCodexTurnUsageAloneStaysUnknownAtThreshold(t *testing.T) {
 	if in, _ := got.Tokens.Get("input"); in != 300000 {
 		t.Fatalf("tokens %v", got.Tokens.Vals)
 	}
-	if requests := sessionRequests(records, deref(got.TokensSource), got.Tokens); requests != nil {
+	if requests, _ := sessionRequests(records, deref(got.TokensSource), got.Tokens); requests != nil {
 		t.Fatalf("metric-only session has per-request items %v", requests)
 	}
 	cost := got.ComputedCost
@@ -183,7 +183,7 @@ func TestCodexTurnUsageWithLogsThatDoNotAddUpStaysUnknown(t *testing.T) {
 		if in, _ := got.Tokens.Get("input"); in != 300000 || deref(got.TokensSource) != "metrics codex.turn.token_usage" {
 			t.Fatalf("%s: %q %v", name, deref(got.TokensSource), got.Tokens.Vals)
 		}
-		if requests := sessionRequests(records, deref(got.TokensSource), got.Tokens); requests != nil {
+		if requests, _ := sessionRequests(records, deref(got.TokensSource), got.Tokens); requests != nil {
 			t.Fatalf("%s: requests %v", name, requests)
 		}
 		cost := got.ComputedCost

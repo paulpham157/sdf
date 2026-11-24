@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/dbfile"
 )
 
 // SQLite extended result codes OpenReadOnly handles.
@@ -85,6 +87,10 @@ func openReadOnly(path string, busyMS int) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Owner-only, as Open makes it (Tighten skips a directory). On a file
+	// this process cannot chmod (a read-only mount) it only warns, and the
+	// read goes on.
+	dbfile.Tighten(path)
 	if info.IsDir() {
 		return nil, fmt.Errorf("store: %q is a directory, not a database file", path)
 	}

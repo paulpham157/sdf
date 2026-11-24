@@ -740,11 +740,7 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 			add(conflicts, seenC, e.From.Ref, e.To.Ref)
 		case countsAs(e, stored, RelRefines):
 			add(refinedBy, seenR, e.To.Ref, e.From.Ref)
-		case (e.Relation == RelValidates || e.Relation == RelContradicts) &&
-			e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To:
-			if e.From.Kind == KindDecision && !active(e.From.Ref) {
-				continue
-			}
+		case countsAsEvidence(e, stored, active):
 			challenged[e.To.Ref] = e.Relation == RelContradicts
 		}
 	}
@@ -789,6 +785,53 @@ func resolveRelations(g *Graph, stored map[string]bool, supersededBy map[string]
 		d.RefinedBy = refinedBy[d.ID]
 		d.Challenged = isActive && challenged[d.ID]
 	}
+}
+
+// countsAsEvidence is the one rule, shared by resolveRelations and
+// LatestEvidence, for whether a stored validates or contradicts edge counts
+// toward Challenged: it points to a stored decision from another endpoint,
+// and a decision source is active. A session or commit source always counts.
+func countsAsEvidence(e Edge, stored map[string]bool, active func(string) bool) bool {
+	return (e.Relation == RelValidates || e.Relation == RelContradicts) &&
+		e.To.Kind == KindDecision && stored[e.To.Ref] && e.From != e.To &&
+		(e.From.Kind != KindDecision || active(e.From.Ref))
+}
+
+// LatestEvidence returns the last validates or contradicts edge to the
+// decision id, in edge order, that counts toward Challenged, and false when
+// none does. g must come from Load, so EffectiveStatus is resolved. A
+// record's Challenged is true exactly when it is active and this edge is
+// contradicts. To ask for many decisions, use LatestEvidenceByDecision,
+// which reads the edges once.
+func LatestEvidence(g Graph, id string) (Edge, bool) {
+	e, ok := latestEvidence(g, func(ref string) bool { return ref == id })[id]
+	return e, ok
+}
+
+// LatestEvidenceByDecision is LatestEvidence for every decision at once: a
+// map from decision id to its latest counted validates or contradicts
+// edge, built in one pass over g.Edges. A decision with none is absent.
+func LatestEvidenceByDecision(g Graph) map[string]Edge {
+	return latestEvidence(g, func(string) bool { return true })
+}
+
+func latestEvidence(g Graph, want func(id string) bool) map[string]Edge {
+	stored := make(map[string]bool, len(g.Decisions))
+	isActive := make(map[string]bool, len(g.Decisions))
+	for _, d := range g.Decisions {
+		if !stored[d.ID] {
+			stored[d.ID] = true
+			isActive[d.ID] = d.EffectiveStatus == EffectiveActive
+		}
+	}
+	active := func(ref string) bool { return isActive[ref] }
+	out := map[string]Edge{}
+	for _, e := range g.Edges {
+		if e.To.Kind == KindDecision && want(e.To.Ref) && countsAsEvidence(e, stored, active) {
+			out[e.To.Ref] = e
+		}
+	}
+	return out
 }
 
 // headInfo is what following supersedes from one decision resolves to.

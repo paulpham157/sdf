@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/pricing"
+	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/summary"
 )
 
@@ -27,6 +29,16 @@ type Options struct {
 	Lookup Lookup
 	// GitHubNote is recorded when the user asked for GitHub and Lookup is nil.
 	GitHubNote string
+}
+
+// Summarize is the report sdf serve's JSON routes and sdf decision graph
+// read: summary.SummarizeWith over records with the default span view and
+// cat, then Attach with opt. It applies no budget; a caller that reports
+// one adds it to its own copy.
+func Summarize(records []record.Record, cat *pricing.Catalog, opt Options) summary.Report {
+	report := summary.SummarizeWith(records, false, cat)
+	Attach(&report, opt)
+	return report
 }
 
 // Attach fills Outcome on each session and CostPerAccepted on the report.

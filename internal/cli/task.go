@@ -44,9 +44,11 @@ func cmdTask(args []string, stdout, stderr io.Writer) int {
 		return cmdTaskShow(args[1:], stdout, stderr)
 	case "--help", "-h":
 		fmt.Fprintln(stdout, taskUsage)
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, taskHelp)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
+		unrecognizedArgs(stderr, args[0])
 		return 2
 	}
 }
@@ -140,7 +142,7 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 		if !matched {
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -213,7 +215,7 @@ func cmdTaskDeclare(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	root, err := task.RepoRoot(ctx, repo)
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: --repo %s is not in a git work tree: %v\n", prefix, repo, err)
+		fmt.Fprintf(stderr, "%s: --repo %s is not in a git work tree: %s\n", prefix, displayPath(repo), displayErr(err))
 		return 1
 	}
 	st, err := taskStore(root, dataDir, noDataDir)
@@ -330,7 +332,7 @@ func cmdTaskShow(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if strings.HasPrefix(arg, "-") || id != "" {
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 		id = arg

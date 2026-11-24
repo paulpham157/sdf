@@ -87,11 +87,11 @@ func TestDecisionBriefMaxItemsZeroStillReportsAMatch(t *testing.T) {
 	seedBrief(t, dbPath)
 
 	text := run(t, "decision", "brief", "--db", dbPath, "--max-items", "0")
-	if text.code != 0 || text.stderr != "" || text.stdout != "4 more: run sdf decision list\n" {
+	if text.code != 0 || text.stderr != "" || !strings.Contains(text.stdout, "\tdont-push\t") || !strings.HasSuffix(text.stdout, "3 more: run sdf decision list\n") || strings.Contains(text.stdout, "ship-it") {
 		t.Fatalf("%d %q %q", text.code, text.stdout, text.stderr)
 	}
 	js := run(t, "decision", "brief", "--db", dbPath, "--max-items=0", "--format", "json")
-	if js.code != 0 || js.stderr != "" || js.stdout != "{\n  \"items\": [],\n  \"omitted\": 4\n}\n" {
+	if js.code != 0 || js.stderr != "" || !strings.Contains(js.stdout, `"id": "dont-push"`) || !strings.Contains(js.stdout, `"omitted": 3`) || !strings.Contains(js.stdout, `"omitted_locked": 0`) {
 		t.Fatalf("%d %q %q", js.code, js.stdout, js.stderr)
 	}
 }

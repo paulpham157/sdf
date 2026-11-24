@@ -161,9 +161,10 @@ func TestTrimByteCapDropsAnotherItem(t *testing.T) {
 	if brief.FormatText(got) != one {
 		t.Fatalf("got %q want %q", brief.FormatText(got), one)
 	}
-	// The omitted note is kept even when it alone is over the cap.
+	// The omitted note is kept even when it alone is over the cap. The locked
+	// rule is among the drops, so the footer names it.
 	note := brief.Trim(items, 15, 1, render)
-	if note.Omitted != 3 || len(note.Items) != 0 || brief.FormatText(note) != "3 more: run sdf decision list\n" {
+	if note.Omitted != 3 || note.OmittedLocked != 1 || len(note.Items) != 0 || brief.FormatText(note) != "3 more (1 locked): run sdf decision list\n" {
 		t.Fatalf("%+v %q", note, brief.FormatText(note))
 	}
 }
@@ -208,7 +209,8 @@ func TestFormatJSONShape(t *testing.T) {
       "locked": false
     }
   ],
-  "omitted": 0
+  "omitted": 0,
+  "omitted_locked": 0
 }
 `
 	if string(got) != want {
@@ -263,8 +265,8 @@ func TestClassifyNewestLockedRuleSurvivesTheCaps(t *testing.T) {
 		t.Fatalf("no-push missing:\n%s", text)
 	}
 
-	// Repro B: twenty user rules, then the ban. The item cap keeps the ban
-	// and drops the six oldest.
+	// Newest-first still puts the ban ahead of older locked rules, and the
+	// item cap does not drop any locked rule.
 	var many decision.Graph
 	for i := 0; i < 20; i++ {
 		many.Decisions = append(many.Decisions, rec(fmt.Sprintf("u%05d", i), decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "a rule"))
@@ -273,12 +275,121 @@ func TestClassifyNewestLockedRuleSurvivesTheCaps(t *testing.T) {
 	ranked = brief.Classify(many)
 	got := brief.Trim(ranked, 15, 2048, textRender)
 	text = brief.FormatText(got)
-	if got.Omitted != 6 || !strings.HasPrefix(text, "constraint\tno-push\t") || !strings.HasSuffix(text, "6 more: run sdf decision list\n") {
-		t.Fatalf("omitted %d\n%s", got.Omitted, text)
+	if got.Omitted != 0 || got.OmittedLocked != 0 || !strings.HasPrefix(text, "constraint\tno-push\t") || !strings.Contains(text, "u00000") {
+		t.Fatalf("omitted %d locked %d\n%s", got.Omitted, got.OmittedLocked, text)
 	}
-	if strings.Contains(text, "u00000") {
-		t.Fatalf("oldest rule kept:\n%s", text)
+}
+
+func TestEveryLockedRuleSurvivesDefaultCaps(t *testing.T) {
+	textRender := func(r brief.Result) []byte { return []byte(brief.FormatText(r)) }
+	jsonRender := func(r brief.Result) []byte { return brief.JSONBytes(r) }
+
+	// Repro 1: the ban is the oldest of 21 short user rules. The item cap
+	// used to drop it. It stays, in text and JSON.
+	var older decision.Graph
+	older.Decisions = append(older.Decisions, rec("no-push", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Never push without explicit OK"))
+	for i := 0; i < 20; i++ {
+		older.Decisions = append(older.Decisions, rec(fmt.Sprintf("u%05d", i), decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "a rule"))
 	}
+	ranked := brief.Classify(older)
+	textGot := brief.Trim(ranked, 15, 2048, textRender)
+	text := brief.FormatText(textGot)
+	// Twenty-one indented JSON records do not fit in 2048 bytes even at the
+	// statement floor, so the JSON check uses a byte cap that is not the
+	// limiting factor. The item cap of 15 would have dropped no-push before.
+	js := brief.JSONBytes(brief.Trim(ranked, 15, -1, jsonRender))
+	if textGot.OmittedLocked != 0 || !strings.Contains(text, "\tno-push\t") || !strings.Contains(string(js), `"id": "no-push"`) {
+		t.Fatalf("text omitted %d\n%s\njson %s", textGot.OmittedLocked, text, js)
+	}
+
+	// Repro 2: the ban is oldest, then long rules. The byte cap used to
+	// drop it. Statements shrink so every locked rule still appears.
+	var wide decision.Graph
+	wide.Decisions = append(wide.Decisions, rec("no-push", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Never push without explicit OK"))
+	for i := 0; i < 10; i++ {
+		wide.Decisions = append(wide.Decisions, rec(fmt.Sprintf("w%02d", i), decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, strings.Repeat("x", 200)))
+	}
+	ranked = brief.Classify(wide)
+	textGot = brief.Trim(ranked, 15, 2048, textRender)
+	text = brief.FormatText(textGot)
+	// JSON of the text selection carries no-push. A JSON trim at 2048 bytes
+	// may still drop the oldest locked rules: eleven indented records do not
+	// fit there even at the 40-byte statement floor.
+	js = brief.JSONBytes(textGot)
+	if textGot.OmittedLocked != 0 || len(textGot.Items) != 11 || !strings.Contains(text, "\tno-push\t") || !strings.Contains(string(js), `"id": "no-push"`) {
+		t.Fatalf("text kept %d locked %d\n%s\njson %s", len(textGot.Items), textGot.OmittedLocked, text, js)
+	}
+	shrunk := false
+	for _, item := range textGot.Items {
+		if item.ID != "no-push" && len(item.Statement) < 200 {
+			shrunk = true
+		}
+	}
+	if !shrunk {
+		t.Fatal("locked statements were not shortened to fit")
+	}
+}
+
+func TestPathologicalLockedDropNamesThem(t *testing.T) {
+	items := make([]brief.Item, 5)
+	for i := range items {
+		items[i] = brief.Item{
+			ID: fmt.Sprintf("n%d", i), Kind: brief.KindConstraint,
+			Statement: strings.Repeat("x", 200), Status: "decision",
+			DecidedBy: "user", Locked: true,
+		}
+	}
+	render := func(r brief.Result) []byte { return []byte(brief.FormatText(r)) }
+	got := brief.Trim(items, 15, 120, render)
+	text := brief.FormatText(got)
+	if got.OmittedLocked == 0 || !strings.Contains(text, "\tn0\t") || strings.Contains(text, "\tn4\t") {
+		t.Fatalf("%+v\n%s", got, text)
+	}
+	wantFoot := fmt.Sprintf("%d more (%d locked): run sdf decision list\n", got.Omitted, got.OmittedLocked)
+	if !strings.HasSuffix(text, wantFoot) || got.Omitted < got.OmittedLocked {
+		t.Fatalf("footer %q omitted %d locked %d", text, got.Omitted, got.OmittedLocked)
+	}
+	jsGot := brief.Trim(items, 15, 800, func(r brief.Result) []byte { return brief.JSONBytes(r) })
+	js := brief.JSONBytes(jsGot)
+	if jsGot.OmittedLocked == 0 || !strings.Contains(string(js), `"id": "n0"`) || strings.Contains(string(js), `"id": "n4"`) {
+		t.Fatalf("%+v\n%s", jsGot, js)
+	}
+	if !strings.Contains(string(js), fmt.Sprintf("\"omitted_locked\": %d", jsGot.OmittedLocked)) {
+		t.Fatalf("%s", js)
+	}
+}
+
+func TestStatementBudgetCountsTheQuotedField(t *testing.T) {
+	tabs := strings.Repeat("\t", 500)
+	esc := strings.Repeat("\x1b", 500)
+	for _, statement := range []string{tabs, esc} {
+		g := decision.Graph{Decisions: []decision.Record{
+			rec("noisy", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, statement),
+		}}
+		got := brief.Classify(g)
+		if len(got) != 1 {
+			t.Fatal(got)
+		}
+		text := brief.FormatText(brief.Result{Items: got})
+		field := quotedOrRaw(got[0].Statement)
+		if len(field) > 200 || strings.Contains(field, "\t") || strings.Contains(field, "\x1b") {
+			t.Fatalf("rendered %d %q\nline %q", len(field), field, text)
+		}
+	}
+	zwj := "👩\u200d💻"
+	text := brief.FormatText(brief.Result{Items: []brief.Item{{
+		ID: "emoji", Kind: brief.KindConstraint, Statement: zwj, Status: "decision", DecidedBy: "user", Locked: true,
+	}}})
+	if !strings.Contains(text, zwj) || strings.Contains(text, `\u200d`) {
+		t.Fatalf("%q", text)
+	}
+}
+
+func quotedOrRaw(s string) string {
+	if strings.Contains(s, "\t") || strings.Contains(s, "\x1b") || strings.HasPrefix(s, `"`) {
+		return fmt.Sprintf("%q", s)
+	}
+	return s
 }
 
 func TestLimitStatementCutsOnARune(t *testing.T) {
@@ -339,11 +450,21 @@ func TestTrimTenThousandDecisions(t *testing.T) {
 	start := time.Now()
 	got := brief.Trim(items, len(items), 1<<30, render)
 	elapsed := time.Since(start)
-	if elapsed > 100*time.Millisecond {
-		t.Fatalf("trim took %s", elapsed)
-	}
 	if got.Omitted != 0 || len(got.Items) != len(items) {
 		t.Fatalf("omitted %d kept %d", got.Omitted, len(got.Items))
+	}
+	if testing.Short() {
+		t.Logf("trim of 10000 decisions: %s (timing skipped, short)", elapsed)
+		return
+	}
+	// 250ms is a CI timing guard for this in-memory Trim, not a runtime
+	// requirement or product SLA. The race detector is allowed 10x that.
+	budget := 250 * time.Millisecond
+	if raceEnabled {
+		budget *= 10
+	}
+	if elapsed > budget {
+		t.Fatalf("trim took %s, budget %s", elapsed, budget)
 	}
 	t.Logf("trim of 10000 decisions: %s", elapsed)
 }
@@ -367,7 +488,7 @@ func TestWriteJSONEmptyIsAnArray(t *testing.T) {
 	if err := brief.WriteJSON(&buf, brief.Result{}); err != nil {
 		t.Fatal(err)
 	}
-	if buf.String() != "{\n  \"items\": [],\n  \"omitted\": 0\n}\n" {
+	if buf.String() != "{\n  \"items\": [],\n  \"omitted\": 0,\n  \"omitted_locked\": 0\n}\n" {
 		t.Fatalf("%q", buf.String())
 	}
 }

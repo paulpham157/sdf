@@ -225,6 +225,16 @@ does not require the token, so `sdf init --check` still works. A valid token
 does not bypass the media-type, `Origin`, or loopback `Host` checks above.
 Those still return 415 or 403 and write nothing.
 
+`sdf init --check` also posts an empty body with no `Content-Type` to
+`/v1/logs`, sending the token the hooks would send (`SDF_OTLP_TOKEN`, else
+the file named by `SDF_OTLP_TOKEN_FILE`; nothing when both are set, and,
+as with the hooks, nothing to a host that is not loopback). The
+token is checked before the media type, so a write that would pass gets 415
+and nothing is stored. A 401 is reported as `token required` (no token set
+here) or `token refused` (a different token), and `--check` exits 1. Any
+other answer, including a redirect (which is not followed, so the token is
+never sent on), is reported as `unexpected answer` and also exits 1.
+
 Point an OpenTelemetry exporter at the receiver with:
 
 ```bash
@@ -538,8 +548,11 @@ posts both edges and reads `GROK_SESSION_ID`, then `sessionId`.
 
 For Claude Code and Codex, `--write` also appends a SessionStart hook that
 runs `sdf decision brief` with no flags, a 2 second timeout, and fail-open
-exit, so the agent can read the brief on stdout at session start. Other
-agents do not get that hook; run the command or use the skill. See
+exit, so the agent can read the brief on stdout at session start. The hook
+reads `sdf-telemetry.sqlite` in the session working directory (there is no
+environment variable); start the session from the directory that holds the
+store, or the hook injects nothing. Other agents do not get that hook; run
+the command or use the skill. See
 [Decisions at session start](agents.md#decisions-at-session-start).
 
 GitHub Copilot CLI is configured by environment only (see
@@ -724,7 +737,8 @@ trusted folder.
 
 Pi, OpenCode, Codex, Grok CLI, and Qwen Code do not export a commit SHA, and
 Claude Code exports one only with `OTEL_LOG_TOOL_DETAILS=1`. `sdf init --git-hooks`
-installs `post-commit`, `post-rewrite`, and `prepare-commit-msg` into the
+installs `post-commit`, `post-rewrite`, `prepare-commit-msg`, and `pre-push`
+(the [pre-push decision check](#pre-push-decision-check)) into the
 hooks directory Git actually runs (`git rev-parse --git-path hooks`). On
 Git 2.43 that directory is shared by linked worktrees, so one install covers
 them. The event records the toplevel of the worktree that committed.
@@ -732,10 +746,11 @@ them. The event records the toplevel of the worktree that committed.
 Run `sdf serve` first. In the checkout the agent will commit in:
 
 ```bash
-sdf init --git-hooks
+sdf init --git-hooks --db /path/to/sdf-telemetry.sqlite
 ```
 
-`--host`, `--port` match `sdf serve`. The hook posts only to
+`--host`, `--port` match `sdf serve`. `--db` is the store `sdf serve`
+writes (the path it prints after `db=`); only the pre-push check reads it. The hook posts only to
 `http://127.0.0.1:<port>/v1/logs` (or `[::1]`). Any other host is rejected.
 `http_proxy` is ignored. Re-running with the same port leaves an existing
 install in place. `sdf init --uninstall-git-hooks` removes the sdf scripts
@@ -754,6 +769,8 @@ lines to add. It does not edit those tools' files.
 sh /path/to/.git/sdf-hooks/post-commit
 # and to .husky/prepare-commit-msg
 sh /path/to/.git/sdf-hooks/prepare-commit-msg "$@"
+# and to .husky/pre-push (the script reads git's ref lines on stdin)
+sh /path/to/.git/sdf-hooks/pre-push "$@"
 ```
 
 Put each line before any `exit 0`, or at the top of the file. Lines after
@@ -906,3 +923,74 @@ then adds a blank line and `Co-authored-by`. Summary still matches the
 `SDF-Session` line. When the hook SHA is gone and the line is still in a
 local commit, summary links that commit with match `trailer`. A trailer for
 one session is not given to another session by the time-window heuristic.
+
+### Pre-push decision check
+
+`pre-push` is the gate for decision records ([#286](https://github.com/paulpham157/sdf/issues/286)):
+when you push, it warns about pushed commits that implement no decision. It
+runs `sdf decision pre-push` with the hook's stdin and sends nothing to the
+receiver.
+
+```text
+sdf: pre-push: 1 of 2 pushed commits recorded in SDF implement no decision:
+  commit:a97b77f8b46b4338b03aebd2ae367acf23dee561
+    session: grok-7f3c2a9e
+    its session is linked to: decision:store-columns
+    link it: sdf decision link --db /path/to/sdf-telemetry.sqlite --relation implements --from commit:a97b77f8b46b4338b03aebd2ae367acf23dee561 --to decision:store-columns
+No decision yet? Record one first: sdf decision add --id ID --statement TEXT --status decision
+A commit can also name its decision with an "SDF-Decision: ID" trailer.
+The push continues (warn mode). Skip the check with git push --no-verify or SDF_PRE_PUSH=off.
+```
+
+**Which commits.** Git gives the hook one line per ref
+(`local_ref local_sha remote_ref remote_sha`). For each, the check lists the
+non-merge commits the push sends: `local_sha ^remote_sha` for an update; for
+a new branch (`remote_sha` all zeros), or a `remote_sha` this clone does not
+have, the commits not on any `refs/remotes/<remote>/*` branch (all
+remote-tracking branches when the remote is a URL). A delete (`local_sha`
+all zeros) sends nothing and is not checked. At most the newest 1000
+commits are checked.
+
+**What counts as "has a decision".** Only commits SDF recorded are judged:
+the SHA is named by a stored event (the same rows `sdf decision audit` and
+`sdf decision link` accept: an `sdf.git.commit` hook event or a Claude Code
+tool result), or the commit has an `SDF-Decision: <id>` trailer. A commit
+SDF never saw, such as one made outside an agent, is not judged. A judged
+commit has a decision when an `implements` edge runs from `commit:SHA` to a
+recorded decision, or its `SDF-Decision` trailer names one, and that
+decision is not retracted (a superseded one still counts). A link from the
+commit's session alone does not count, but the warning names the session's
+active decisions as the likely `--to`. A trailer that names no recorded
+decision, or a retracted one, is reported.
+
+**Modes.** `warn` (default) prints and exits 0. `block` makes the push fail
+when a judged commit has no decision. `off` skips the check. Set the mode
+per repository with `git config sdf.prePush block`, or per command with
+`SDF_PRE_PUSH=block|warn|off`, which wins over git config. `git push
+--no-verify` skips every pre-push hook.
+
+**Fail open.** A push never fails because SDF is unavailable, in any mode.
+The check prints one line and the push continues when: no `sdf` binary is
+found (the hook runs the binary that installed it, else `sdf` on `PATH`), an
+older `sdf` lacks the command, no store is configured, the store file is
+missing or unreadable, git cannot list the range, or the check takes more
+than 5 seconds. `sdf serve` itself does not need to be running: the check
+opens the store read-only (`OpenReadOnly`, like `sdf decision audit`), so it
+never writes, migrates, or creates it. `SDF_PRE_PUSH_DB` overrides the store
+the hook was installed with. Without `--db` and without that variable, the
+hook prints a one-line note on each push that has commits.
+
+**Chaining.** An existing `pre-push` is chained like the other hooks: it is
+renamed to `pre-push.sdf-previous` and runs first with the same arguments
+and stdin. When it exits non-zero, the hook exits with that status and the
+sdf check does not run. Re-running `sdf init --git-hooks` with the same
+options changes nothing; `sdf init --uninstall-git-hooks` puts the previous
+hook back.
+
+**Privacy.** The other hooks never read the commit message. The pre-push
+check reads exactly one thing from it: the values of `SDF-Decision`
+trailers, with `git log --format=%(trailers:key=SDF-Decision,valueonly)`. It
+does not read the subject, the body, other trailers, or the diff, and it
+sends nothing anywhere. Nothing writes an `SDF-Decision` trailer for you
+yet, and a trailer is public once pushed; reading it on the server side is
+[#281](https://github.com/paulpham157/sdf/issues/281).
