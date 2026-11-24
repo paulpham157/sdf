@@ -23,8 +23,8 @@ connection.
   tokens or duration. A model with no published price is `unknown`, not
   zero
 - Decision records you write down (`sdf decision add`, `link`, `list`,
-  `graph`, `retract`, `audit`, `check`): who decided, alternatives, links to
-  sessions and commits, and a read-only graph in the UI
+  `graph`, `brief`, `retract`, `audit`, `check`): who decided, alternatives,
+  links to sessions and commits, and a read-only graph in the UI
 - Prompt, response, tool, and error text is dropped before storing, for
   every agent, unless you opt in with `--store-content`
 - Optional git hooks, commit and pull-request outcomes, and a local
@@ -101,7 +101,7 @@ Every command prints its flags with `--help` (or `sdf help <command>`).
 | `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
 | `sdf init` | Print or write the settings that point an agent at the receiver |
 | `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, graph, retract, audit, or check decisions (`add`, `link`, `list`, `graph`, `retract`, `audit`, `check`) |
+| `sdf decision` | Record, link, list, graph, retract, audit, brief, or check decisions (`add`, `link`, `list`, `graph`, `retract`, `audit`, `brief`, `check`) |
 | `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
 | `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
 | `sdf verify` | Run a declared task's checks against a commit |
@@ -114,12 +114,17 @@ Every command prints its flags with `--help` (or `sdf help <command>`).
 `conflicts_with`, `constrains`, `implements`, `validates`, and
 `contradicts`. `list` and the UI show blocked and conflicted records;
 `graph` (also `GET /api/decisions/graph` and the UI's Decisions tab)
-shows chapters, endings, and explored %; `audit` reports unlinked
-decisions and commits (exit 1 on findings); `check` exits 1 when an
-in-force decision forbids `push`, `merge`, `release`, `deploy`, or an
-architecture change. The `pre-push` git hook
-from `sdf init --git-hooks --db PATH` warns about pushed commits that
-implement no decision
+shows chapters, endings, and explored %; `brief` prints a ranked,
+size-capped list of active constraints, blocked, and conflicting
+decisions; `audit` reports unlinked decisions and commits (exit 1 on
+findings); `check` exits 1 when an in-force decision forbids `push`,
+`merge`, `release`, `deploy`, or an architecture change. `sdf init
+--write` for Claude Code and Codex also installs a SessionStart hook
+that runs `sdf decision brief` (no flags, 2s timeout, fail-open); other
+agents run the command or use the `sdf-decisions` skill
+([Decisions at session start](docs/agents.md#decisions-at-session-start)).
+The `pre-push` git hook from `sdf init --git-hooks --db PATH` warns
+about pushed commits that implement no decision
 ([pre-push decision check](docs/receiver.md#pre-push-decision-check)).
 Details are in [docs/outcomes.md](docs/outcomes.md).
 
@@ -182,7 +187,7 @@ and the ledger are optional and sit beside collection, not in its path.
 
 | Document | What it covers |
 | --- | --- |
-| [docs/agents.md](docs/agents.md) | What each tool exports, and the settings that point it at the receiver |
+| [docs/agents.md](docs/agents.md) | What each tool exports, the settings that point it at the receiver, and how an agent gets the decision brief |
 | [docs/receiver.md](docs/receiver.md) | The receiver, content storage, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |

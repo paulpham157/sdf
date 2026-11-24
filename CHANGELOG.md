@@ -14,6 +14,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 
 ### Features
 
+- `sdf init --write` for Claude Code and Codex also installs a SessionStart hook that runs `sdf decision brief` (no flags, 2s timeout, fail-open) and injects its stdout, including `sdf decision brief unavailable: run sdf decision list` when the store cannot be read. The hook captures stdout and exits 0 even if `sdf` fails; Claude Code's command is prefixed so a Grok session that also reads `~/.claude/settings.json` does not inject a Claude brief. Other agents run the command via the `sdf-decisions` skill or manually ([#293](https://github.com/paulpham157/sdf/pull/293)).
 - Add `sdf decision check <action>`: exit 1 when an in-force decision's statement forbids `push`, `merge`, `release`, `deploy`, or an architecture change. The agent skill requires this check before those actions ([#292](https://github.com/paulpham157/sdf/pull/292)).
 - Replace the previous product with an OTLP receiver for Codex and Claude Code; store traces, metrics, and logs in SQLite and summarize sessions ([#157](https://github.com/paulpham157/sdf/pull/157)).
 - Accept chunked OTLP and summarize OpenCode and Pi sessions ([#158](https://github.com/paulpham157/sdf/pull/158)).
@@ -114,6 +115,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Add a Decisions page screenshot to the README ([#266](https://github.com/paulpham157/sdf/pull/266)).
 - Document the OpenCode camelCase `sessionID` alias (already implemented in #182) and stop saying OpenCode does not export per-session logs ([#230](https://github.com/paulpham157/sdf/pull/230)).
 - Rewrite the README (features, quick start, usage, configuration, documentation, contributing, security, and license). Add `SECURITY.md` asking that vulnerabilities be reported privately through GitHub advisories. In `docs/summary.md`, say `sdf prices refresh` writes `openrouter-models.json` under `os.UserCacheDir()` (or `--out` / `SDF_PRICE_CACHE`), does not change the bundled table, and that `--prices bundled` forces the bundled table ([#308](https://github.com/paulpham157/sdf/pull/308)).
+- Document `sdf decision brief`, `sdf decision check`, and the SessionStart brief hook in the README, `docs/outcomes.md`, `docs/agents.md`, and `docs/receiver.md` ([#297](https://github.com/paulpham157/sdf/pull/297)).
 
 ### CI/Build
 

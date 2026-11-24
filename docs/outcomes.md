@@ -111,8 +111,12 @@ store returns empty lists. `sdf decision add` writes one record. It needs an id,
 a statement, and a status of `hypothesis` or `decision`. `--decided-by`,
 `--alternatives`, `--reason`, and `--source` are optional. `sdf decision link`
 writes one edge. It needs a relation and two `KIND:REF` endpoints, where
-`KIND` is `decision`, `session`, or `commit`. No route writes a record. An
-agent skill that uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
+`KIND` is `decision`, `session`, or `commit`. No route writes a record.
+`sdf decision brief` prints a ranked, size-capped prefix of the active
+constraints, blocked records, and conflicting records
+(see Decision brief). `sdf decision check` reports whether an in-force
+decision forbids an action (see Checking an action). An agent skill that
+uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.md).
 
 ### Link rules
 
@@ -351,6 +355,7 @@ sdf decision link --relation implements --from session:SESSION_ID \
 sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
+sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]
 sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
 sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
 sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
@@ -428,9 +433,10 @@ migration. It only adds a table: no column or table changes, and running it
 again does nothing. A database written before this, including the Python
 receiver's, gains the empty table on its first open by a command that writes
 (`sdf decision add`, `link`, `retract`, or the receiver). `sdf summary`,
-`sdf decision list`, and `sdf decision audit` open read-only and do not add it. An older sdf binary reads
-a newer database as before. It does not know the table, so it shows a retracted
-decision by its stored status and edges, without the retraction. A file that
+`sdf decision list`, `sdf decision brief`, and `sdf decision audit` open
+read-only and do not add it. An older sdf binary reads a newer database as
+before. It does not know the table, so it shows a retracted decision by its
+stored status and edges, without the retraction. A file that
 cannot be written, such as a read-only copy, is opened without the table and
 reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
@@ -541,14 +547,114 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   shaped supersedes chains. If a step fails, playback stops and the tab is
   drawn again from scratch.
 
+### Decision brief
+
+`sdf decision brief` prints a short, ranked list of the constraints, blocked
+records, and conflicting records that are still active. It is read-only:
+it does not write a record, and it does not infer a decision from telemetry.
+
+```bash
+sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]
+```
+
+`--max-items` defaults to 15, `--max-bytes` to 2048, and `--format` to `text`.
+`--max-items` and `--max-bytes` are non-negative decimals with no sign and no
+leading zero. Like `sdf decision list`, it reads `sdf-telemetry.sqlite` in the
+working directory unless `--db` names another file, and it opens the file
+read-only (`busy_timeout` 200ms, query deadline 500ms). It never writes, never
+migrates, and never creates a file. There is no environment variable for the
+path.
+
+The list is built from the same graph `sdf decision list` and
+`GET /api/decisions` load, then narrowed to records whose
+`effective_status` is `active`. Retracted and superseded records are
+omitted. Constraints are still only in-force settled decisions (`status`
+`decision`). The blocked and conflicting groups also include an active
+hypothesis that Load marked blocked or conflicted. `decision.Active` is
+unchanged (settled only); `sdf decision check` still reads that set, not
+this list. A record appears in at most one group, in this order:
+
+1. **Constraints.** An in-force settled decision that the user made, or that
+   is the source of a `constrains` edge. A locked constraint is a settled
+   user decision (`status` `decision`, `--decided-by user`); a user
+   hypothesis never counts. Locked constraints come first, newest first.
+   Other constraints, then blocked items, then conflicting items, stay in
+   insertion order inside each of those tiers. A locked user decision stays
+   in this group even when it is also blocked or conflicted. Each statement
+   is capped at 200 bytes, cut on a rune boundary, and ends in `…` when it
+   is cut.
+2. **Blocked.** An active record that is not a constraint, and that Load
+   marked `blocked`. This includes an active hypothesis. A record is
+   blocked only while it has at least one open blocker. A blocker is open
+   while any of its current heads is still a `hypothesis`, or when it
+   reaches no head and a path of its `supersedes` chain hits a cycle
+   (rows an older sdf could store). A `blocks` edge from a settled
+   blocker — a record whose current head is a `decision`, including a
+   blocker that was recorded as a `decision` — does not block the
+   target. See Blocked, conflicted, refined, and challenged at read
+   time.
+3. **Conflicting.** An active record that is in neither group above, and
+   that Load marked `conflicted`: it has a `conflicts_with` edge to another
+   active decision. This includes an active hypothesis. `challenged` (the
+   latest evidence edge is `contradicts`) is not a group.
+
+A record that is none of these does not appear.
+
+Locked user rules are exempt from `--max-items`: every one is kept, newest
+first, even when `--max-items` is 0. Other items then fill the remaining
+item slots and the bytes left after the locked tier. `--max-bytes` is a
+hard bound. When the locked tier does not fit at the 200-byte statement
+cap, every locked statement is shortened to the same smaller budget, down
+to 40 bytes, before any locked rule is dropped. Only when that floor still
+does not fit are the oldest locked rules dropped. A non-locked item that
+does not fit is skipped, and a later shorter one can still be kept.
+
+Text is one tab-separated line per item: `kind`, `id`, `decided_by`, and
+`statement`. `kind` is `constraint`, `blocked`, or `conflicting`. An empty
+`decided_by` prints as `-`. A field that holds a tab or a control character,
+starts with `"`, or is invalid UTF-8 is quoted with `strconv.Quote`. Unicode
+is kept; this is not the `strconv.QuoteToASCII` form `sdf decision list`
+uses.
+
+Output appears whenever at least one decision matched. When nothing matched,
+nothing is printed, including under `--format json`. When any item is
+omitted, the text ends with `N more: run sdf decision list`, or
+`N more (K locked): run sdf decision list` when one or more locked rules
+were dropped. With `--max-items 0` and at least one locked rule that fits,
+the text still lists those locked rules, then the footer for the omitted
+items; JSON still includes those locked items. The omitted note counts
+toward `--max-bytes`; if the note alone still exceeds the cap, it is kept
+(the text may then be only the footer). At the default 2048 bytes, JSON
+fits about 9-10 typical items; statements near the 200-byte cap fit fewer.
+
+`--format json` prints indented JSON with an `items` array, an `omitted`
+count, and an `omitted_locked` count, all always present in that object
+when anything matched. Each item has `id`, `kind`, `statement`, `status`,
+`decided_by`, and `locked`. `locked` is true only for a constraint the
+user made. `--json` is not a flag.
+
+A path that does not exist (a missing file or a missing parent directory)
+prints nothing and exits 0. A path that exists but cannot be read — not a
+regular file, a permissions error, a corrupt database, a lock wait past
+200ms, or a query past the 500ms deadline — prints `sdf decision brief
+unavailable: run sdf decision list` (`{"unavailable":true}` in JSON), each
+followed by a newline, and exits 0. A brief in which nothing matched also
+prints nothing and exits 0. A stdout write error exits 0 with nothing on
+stderr. Only a usage error, such as a missing flag or a `--format` other
+than `text` or `json`, exits 2 with one `sdf decision brief: ...` line on
+stderr.
+
 ### Checking an action
 
 `sdf decision check <action>` answers whether an in-force decision forbids
 an action. An agent runs it before a push, merge, release, deploy, or an
-architecture change, and stops when it exits non-zero. It reads the same
-graph as `sdf decision list` and does not write: a missing file in an
-existing directory is an empty store (allowed, exit 0) and is not created.
-A missing directory exits 3.
+architecture change, and stops when it exits non-zero. The `sdf-decisions`
+skill makes this check a mandatory step; a non-zero exit is what blocks
+those actions. It reads the same graph as `sdf decision list` and does not
+write: a missing file in an existing directory is an empty store (allowed,
+exit 0) and is not created. A missing directory exits 3. It opens the store
+read-only with the same 200ms `busy_timeout` as `sdf decision brief`. The
+500ms load deadline brief uses is not applied here.
 
 `<action>` is one argument. `push`, `merge`, `release`, and `deploy` are
 named actions, compared case-insensitively after trimming. Any other text,
@@ -610,11 +716,11 @@ is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
 or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
 exit code is still 1 when it is forbidden.
 
-The rows are in insertion order. The command opens the store with the same
-read-only path as `sdf decision brief` and keeps the records `decision.Active`
-returns: `status` `decision` and `effective_status` `active`. `sdf decision
-brief` ranks a narrower set (a user decision, or the source of a `constrains`
-edge), so a brief is not the forbid list.
+The rows are in insertion order. The command keeps the records
+`decision.Active` returns: `status` `decision` and `effective_status`
+`active`. `sdf decision brief` is not the forbid list: its constraints are
+a ranked subset of that set, and it can also include an active blocked or
+conflicting hypothesis, which this command does not read.
 
 ### Auditing the graph
 
