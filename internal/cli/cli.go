@@ -983,6 +983,22 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 
 const decisionCheckUsage = "usage: sdf decision check <action> [--db PATH] [--json]"
 
+const decisionCheckHelp = `Reports whether an in-force decision forbids an action. The sdf-decisions
+skill requires this check before a push, merge, release, deploy, or
+architecture change; a non-zero exit is what blocks those actions.
+
+<action> is one argument: push, merge, release, or deploy, or any other
+text, which is an architecture change.
+
+Exit 0 is allowed (a line starting with "allowed"). Exit 1 is forbidden
+(a line starting with "forbidden", then a row per blocking decision).
+Exit 2 is a usage error. Exit 3 is a store or write error. A missing
+store file in an existing directory is an empty store: exit 0, and the
+file is not created. A missing directory exits 3.
+
+The store is opened read-only with a 200ms busy timeout. --json prints
+action, kind, allowed, and blocking (id, decided_by, statement, match).`
+
 // cmdDecisionCheck reports whether an in-force decision forbids an action.
 // Exit 0 is allowed, 1 is forbidden (the blocking decisions are on stdout),
 // 2 is a usage error, and 3 is a store or write error. A missing store file
@@ -1000,6 +1016,8 @@ func cmdDecisionCheck(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, decisionCheckUsage)
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, decisionCheckHelp)
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)

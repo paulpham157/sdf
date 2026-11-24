@@ -52,8 +52,9 @@ Other agents do not get that hook. At the start of a session, run
 `sdf decision brief` yourself (the same `--db` as `sdf serve`, default
 `sdf-telemetry.sqlite` in the working directory), or install the
 `sdf-decisions` skill where the agent will load it. `sdf` must be on
-`PATH`. Before a push, merge, release, deploy, or architecture change, that
-skill requires `sdf decision check`. See [Decision brief](outcomes.md#decision-brief)
+`PATH`. That skill requires `sdf decision brief` at session start. Before a
+push, merge, release, deploy, or architecture change, that skill requires
+`sdf decision check`. See [Decision brief](outcomes.md#decision-brief)
 and [Checking an action](outcomes.md#checking-an-action).
 
 | Agent | Session hook today | Decision brief at session start | Fallback |

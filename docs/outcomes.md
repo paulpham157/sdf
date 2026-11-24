@@ -355,10 +355,12 @@ sdf decision link --relation implements --from session:SESSION_ID \
 sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
 sdf decision list [--db PATH] [--json]
+sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]
 sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]
-sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
 sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
+sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
 sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
+sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-push lines
 ```
 
 ```text

@@ -4,7 +4,7 @@ Agent skills that ship with sdf. They are not loaded from this folder automatica
 
 ## sdf-decisions
 
-Instructs an agent to write important choices down with `sdf decision add` and `sdf decision link`. That includes decisions the user makes (an approval, a rejection, a choice between options, a constraint) and decisions the agent makes. Each record names who decided, what was decided, the alternatives, a reason only when one was given, and is linked to the session when the store already has it. Before a push, merge, release, deploy, or architecture change, the skill requires `sdf decision check <action>`, and the agent stops to ask the user when that command exits non-zero.
+Instructs an agent to write important choices down with `sdf decision add` and `sdf decision link`. That includes decisions the user makes (an approval, a rejection, a choice between options, a constraint) and decisions the agent makes. Each record names who decided, what was decided, the alternatives, a reason only when one was given, and is linked to the session when the store already has it. At session start, the skill requires `sdf decision brief`. Before a push, merge, release, deploy, or architecture change, the skill requires `sdf decision check <action>`, and the agent stops to ask the user when that command exits non-zero.
 
 The skill lives at [`sdf-decisions/SKILL.md`](sdf-decisions/SKILL.md). The commands and fields it uses are those of the `sdf` CLI; see [docs/outcomes.md](../docs/outcomes.md).
 
