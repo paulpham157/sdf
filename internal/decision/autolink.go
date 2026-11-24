@@ -19,9 +19,9 @@ const AttrGitDecision = "sdf.git.decision"
 const gitHookCommitEvent = "sdf.git.commit"
 
 // WithoutGitDecisionAttributes returns a copy of records with
-// AttrGitDecision removed from sdf.git.commit events, so the store holds
-// the hook event without trailer values. The input slice and its attribute
-// maps are not modified.
+// AttrGitDecision removed from every record, so a hook event or any other
+// payload cannot persist a trailer value in the store. The input slice and
+// its attribute maps are not modified.
 func WithoutGitDecisionAttributes(records []record.Record) []record.Record {
 	if records == nil {
 		return nil
@@ -29,7 +29,7 @@ func WithoutGitDecisionAttributes(records []record.Record) []record.Record {
 	out := make([]record.Record, len(records))
 	copy(out, records)
 	for i, rec := range out {
-		if !isGitHookCommit(rec) || rec.Attributes == nil {
+		if rec.Attributes == nil {
 			continue
 		}
 		if _, ok := rec.Attributes[AttrGitDecision]; !ok {
@@ -62,8 +62,10 @@ func WithoutGitDecisionAttributes(records []record.Record) []record.Record {
 // implements target. Option B, when any id was sent, does not also apply
 // Option A.
 //
-// log receives rejection lines that name only the commit SHA and decision
-// or session id, never a commit message. A nil log is discarded.
+// log receives rejection lines that name only the commit SHA and, when the
+// id is a valid decision id, that id or a session id. An id that fails
+// idPattern is logged as "invalid id" with the SHA only; the raw value is
+// never written. A nil log is discarded.
 func AutoLinkGitCommits(s *store.Store, records []record.Record, log io.Writer) error {
 	if log == nil {
 		log = io.Discard
@@ -87,7 +89,9 @@ func autoLinkOne(s *store.Store, rec record.Record, sha string, ids []string, lo
 	if len(ids) > 0 {
 		for _, id := range ids {
 			if !idPattern.MatchString(id) {
-				fmt.Fprintf(log, "sdf: git.commit: rejected auto-link of commit:%s to decision:%s: invalid id\n", sha, id)
+				// Do not log the raw value: it may contain a newline, a
+				// commit message, or a secret.
+				fmt.Fprintf(log, "sdf: git.commit: rejected auto-link of commit:%s: invalid id\n", sha)
 				continue
 			}
 			if err := linkCommit(s, sha, id, log); err != nil {

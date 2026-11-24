@@ -22,6 +22,7 @@ const (
 	autoLinkSHA3 = "cccccccccccccccccccccccccccccccccccccccc"
 	autoLinkSHA4 = "dddddddddddddddddddddddddddddddddddddddd"
 	autoLinkSHA5 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	autoLinkSHA6 = "ffffffffffffffffffffffffffffffffffffffff"
 	autoLinkSess = "grok-autolink-7f3c"
 	autoLinkTwo  = "grok-autolink-multi"
 )
@@ -95,8 +96,11 @@ func TestGitCommitLinksEachSDFDecisionTrailerAndRejectsUnknownOrRetracted(t *tes
 	if !strings.Contains(got, autoLinkSHA3) || !strings.Contains(got, "no-such-decision") || !strings.Contains(got, "drop-cgo") {
 		t.Fatalf("rejections were not logged with sha and id: %s", got)
 	}
-	if strings.Contains(got, `bad"quote`) && strings.Count(got, "\n"+`bad"`) > 0 {
-		t.Fatalf("logs looked like a raw parse dump: %s", got)
+	if strings.Contains(got, `bad"quote`) {
+		t.Fatalf("malformed id was echoed in the log: %s", got)
+	}
+	if !strings.Contains(got, "invalid id") {
+		t.Fatalf("invalid id was not logged: %s", got)
 	}
 	// Unknown or retracted ids must not appear as ghost edges; the valid one stays.
 	assertImplementsCount(t, db, autoLinkSHA3, "use-sqlite", 1)
@@ -130,6 +134,51 @@ func TestGitCommitDoesNotAutoLinkFromValidatesOrContradicts(t *testing.T) {
 		t.Fatalf("status %d %s", resp.status, resp.body)
 	}
 	assertNoCommitImplements(t, db, autoLinkSHA5)
+}
+
+func TestGitCommitDoesNotLogAMalformedDecisionID(t *testing.T) {
+	base, db, logs := startAutoLink(t)
+	const raw = "bad-id\nSubject: leak the commit message\nSigned-off-by: Eve Example <eve@example.com>"
+	resp := postBytes(t, base+"/v1/logs", "application/json", gitCommitPayload("", autoLinkSHA6, []string{raw}))
+	if resp.status != 200 {
+		t.Fatalf("status %d %s", resp.status, resp.body)
+	}
+	assertNoCommitImplements(t, db, autoLinkSHA6)
+	got := logs.String()
+	if !strings.Contains(got, autoLinkSHA6) || !strings.Contains(got, "invalid id") {
+		t.Fatalf("invalid id was not logged with the sha: %s", got)
+	}
+	for _, secret := range []string{raw, "leak the commit message", "Signed-off-by", "eve@example.com", "Subject:"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("malformed id leaked %q into the log: %s", secret, got)
+		}
+	}
+}
+
+func TestInsertStripsGitDecisionFromANonHookRecord(t *testing.T) {
+	base, db, _ := startAutoLink(t)
+	payload := []byte(`{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"grok-cli"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1","body":{"stringValue":"agent.note"},"attributes":[{"key":"event.name","value":{"stringValue":"agent.note"}},{"key":"sdf.git.decision","value":{"stringValue":"use-sqlite"}}]}]}]}]}`)
+	resp := postBytes(t, base+"/v1/logs", "application/json", payload)
+	if resp.status != 200 {
+		t.Fatalf("status %d %s", resp.status, resp.body)
+	}
+	recs, err := db.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, rec := range recs {
+		if rec.Name == nil || *rec.Name != "agent.note" {
+			continue
+		}
+		found = true
+		if _, ok := rec.Attributes["sdf.git.decision"]; ok {
+			t.Fatalf("stored non-hook record kept sdf.git.decision: %v", rec.Attributes)
+		}
+	}
+	if !found {
+		t.Fatal("no stored agent.note record")
+	}
 }
 
 func startAutoLink(t *testing.T) (string, *store.Store, *bytes.Buffer) {
