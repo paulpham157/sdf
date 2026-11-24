@@ -1,11 +1,16 @@
 # Security
 
-This repository does not publish a security contact email, and GitHub
-private vulnerability reporting is not enabled on it.
+## Reporting a vulnerability
 
-Please do not open a public issue that includes exploit details for an
-unreleased vulnerability. This file will be updated when a private
-reporting channel is published.
+Please report vulnerabilities privately through GitHub:
+[Report a vulnerability](https://github.com/paulpham157/sdf/security/advisories/new)
+(the **Security** tab of this repository, then **Report a vulnerability**).
+
+Please do not open a public issue, pull request, or discussion that
+includes exploit details for an unreleased vulnerability. Include the
+sdf version (`sdf --version`), how you run it, and steps to reproduce.
+
+## Security behavior
 
 Product security behavior (what sdf stores, file permissions, the
 optional receiver token, and the `sdf verify` threat model) is
