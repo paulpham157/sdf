@@ -514,6 +514,7 @@ var decisionCommands = []struct {
 	{"link", cmdDecisionLink},
 	{"list", cmdDecisionList},
 	{"graph", cmdDecisionGraph},
+	{"brief", cmdDecisionBrief},
 	{"retract", cmdDecisionRetract},
 	{"audit", cmdDecisionAudit},
 	{"pre-push", cmdDecisionPrePush},
