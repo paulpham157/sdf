@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/images/logo.svg" width="320" alt="Software Decision Fabric">
+
 # Software Decision Fabric
 
 [![PR CI](https://github.com/paulpham157/sdf/actions/workflows/pr.yml/badge.svg)](https://github.com/paulpham157/sdf/actions/workflows/pr.yml)
