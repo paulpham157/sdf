@@ -62,6 +62,8 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdAudit(args[1:], stdout, stderr)
 	case "redact":
 		return cmdRedact(args[1:], stdout, stderr)
+	case "hook":
+		return cmdHook(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
 	case "-h", "--help":
@@ -75,7 +77,7 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const usageLine = "usage: sdf <serve|summary|check|init|prices|decision|audit|task|verify|redact|version> [flags]"
+const usageLine = "usage: sdf <serve|summary|check|init|prices|decision|audit|task|verify|redact|hook|version> [flags]"
 
 func cmdVersion(args []string, stdout, stderr io.Writer) int {
 	for _, arg := range args {
@@ -762,7 +764,7 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionListUsage = "usage: sdf decision list [--db PATH] [--json]"
+const decisionListUsage = "usage: sdf decision list [--db PATH] [--json] [--session ID]"
 
 // cmdDecisionList prints every decision and edge. It reads through
 // decision.Load, the same path GET /api/decisions uses, and --json is that
@@ -774,6 +776,8 @@ const decisionListUsage = "usage: sdf decision list [--db PATH] [--json]"
 func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
 	asJSON := false
+	session := ""
+	sessionSet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -789,6 +793,19 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 			dbPath = v
 		case strings.HasPrefix(arg, "--db="):
 			dbPath = strings.TrimPrefix(arg, "--db=")
+		case arg == "--session":
+			v, ok := take(&i, args)
+			if !ok || v == "" {
+				fmt.Fprintln(stderr, "sdf decision list: --session requires a value")
+				return 2
+			}
+			session, sessionSet = v, true
+		case strings.HasPrefix(arg, "--session="):
+			session, sessionSet = strings.TrimPrefix(arg, "--session="), true
+			if session == "" {
+				fmt.Fprintln(stderr, "sdf decision list: --session requires a value")
+				return 2
+			}
 		case arg == "--json":
 			asJSON = true
 		default:
@@ -806,6 +823,9 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
 		return 1
+	}
+	if sessionSet {
+		graph = decision.FilterBySession(graph, session)
 	}
 	write := decision.WriteText
 	if asJSON {

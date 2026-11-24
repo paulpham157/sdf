@@ -22,6 +22,7 @@ var commands = []command{
 	{"task", "Declare a task's acceptance checks, or show a declared task"},
 	{"verify", "Run a declared task's checks against a commit and print the verdict"},
 	{"redact", "Drop stored prompt, response, tool, and error text from a database"},
+	{"hook", "On agent stop, remind once per session to record an unrecorded decision"},
 	{"version", "Print the version, commit, build date, Go version, and platform"},
 }
 
@@ -132,7 +133,7 @@ pull requests in the same SQLite file as sdf serve.
 
   add      sdf decision add --id ID --statement TEXT --status hypothesis|decision
   link     sdf decision link --relation REL --from KIND:REF --to KIND:REF
-  list     sdf decision list [--json]
+  list     sdf decision list [--json] [--session ID]
   graph    sdf decision graph [--json]
   brief    sdf decision brief [--format text|json] [--max-items N] [--max-bytes N]
   check    sdf decision check <action> [--json]
