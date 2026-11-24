@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -359,8 +360,13 @@ func TestSyncAnnotatedReleaseUsesCommit(t *testing.T) {
 	if body["sha"] != strings.Repeat("b", 40) {
 		t.Fatalf("blob sha %v", body["sha"])
 	}
-	if body["branch"] != "main" {
+	if body["branch"] != "citation/v0.2.0" {
 		t.Fatalf("branch %v", body["branch"])
+	}
+	for _, put := range gh.puts {
+		if put["branch"] == "main" {
+			t.Fatal("contents update targeted the default branch")
+		}
 	}
 	msg, _ := body["message"].(string)
 	if !strings.Contains(msg, "docs: update CITATION.cff for 0.2.0") || !strings.Contains(msg, "The tag is not moved.") || strings.Contains(msg, "force") {
@@ -375,6 +381,32 @@ func TestSyncAnnotatedReleaseUsesCommit(t *testing.T) {
 	}
 	if !bytes.Contains(decoded, []byte("family-names: Pham\n")) || !bytes.Contains(decoded, []byte("license: Apache-2.0\n")) {
 		t.Fatalf("citation identity changed:\n%s", decoded)
+	}
+	if result.HeadBranch != "citation/v0.2.0" || result.PullRequest != 7 || result.AutoMerge != "enabled" {
+		t.Fatalf("%+v", result)
+	}
+	if len(gh.refs) != 1 || len(gh.pulls) != 1 || len(gh.graphql) != 1 {
+		t.Fatalf("refs %d pulls %d graphql %d", len(gh.refs), len(gh.pulls), len(gh.graphql))
+	}
+	if gh.refs[0]["ref"] != "refs/heads/citation/v0.2.0" || gh.refs[0]["sha"] != strings.Repeat("e", 40) {
+		t.Fatalf("ref create %#v", gh.refs[0])
+	}
+	if _, ok := gh.refs[0]["force"]; ok || len(gh.refs[0]) != 2 {
+		t.Fatalf("ref create %#v", gh.refs[0])
+	}
+	if !strings.Contains(gh.pulls[0], citationMarker) || !strings.Contains(gh.pulls[0], otherCommit) {
+		t.Fatalf("pull body %s", gh.pulls[0])
+	}
+	if !strings.Contains(gh.graphql[0], "mergeMethod:MERGE") || strings.Contains(gh.graphql[0], "SQUASH") || strings.Contains(gh.graphql[0], "REBASE") {
+		t.Fatalf("graphql %s", gh.graphql[0])
+	}
+	gh.puts = nil
+	again, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T01:02:03Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Status != StatusUpdated || again.PullRequest != 7 || len(gh.puts) != 0 || len(gh.pulls) != 1 || len(gh.refs) != 1 {
+		t.Fatalf("reuse %+v puts %d pulls %d refs %d", again, len(gh.puts), len(gh.pulls), len(gh.refs))
 	}
 	for _, path := range gh.paths {
 		if strings.Contains(path, "/commits/") {
@@ -554,6 +586,267 @@ func TestSyncRefusesRedirect(t *testing.T) {
 	}
 }
 
+func TestSyncAutoMergeUnavailable(t *testing.T) {
+	gh := &fakeGitHub{
+		tagName:      "v0.2.0",
+		refType:      "commit",
+		refSHA:       otherCommit,
+		commit:       otherCommit,
+		file:         []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n"),
+		blob:         strings.Repeat("b", 40),
+		autoMergeOff: true,
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusUpdated || result.AutoMerge != "unavailable" || result.PullRequest != 7 || result.HeadBranch != "citation/v0.2.0" {
+		t.Fatalf("%+v", result)
+	}
+	gh.autoMergeOff = false
+	gh.autoMergeError = "token does not have permission"
+	if _, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z")); err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestMergeOnlyCitationPR(t *testing.T) {
+	sha := otherCommit
+	older := "2026-11-01T00:00:00Z"
+	newer := "2026-11-24T00:00:00Z"
+	type want struct {
+		status   Status
+		reason   string
+		err      string
+		method   string
+		mergeSHA string
+	}
+	cases := []struct {
+		name    string
+		head    string
+		sha     string
+		body    string
+		files   []map[string]string
+		checks  []map[string]string
+		merge   int
+		merged  bool
+		httpOff bool
+		want    want
+	}{
+		{
+			name:    "wrong branch",
+			head:    "citation/vuln",
+			sha:     sha,
+			httpOff: true,
+			want:    want{status: StatusSkipped, reason: "not a citation branch"},
+		},
+		{
+			name:    "prerelease branch",
+			head:    "citation/v0.2.0-rc.1",
+			sha:     sha,
+			httpOff: true,
+			want:    want{status: StatusSkipped, reason: "not a citation branch"},
+		},
+		{
+			name: "missing marker",
+			head: "citation/v0.2.0",
+			sha:  sha,
+			body: "please merge",
+			want: want{status: StatusSkipped, reason: "not opened by the citation updater"},
+		},
+		{
+			name:  "extra file",
+			head:  "citation/v0.2.0",
+			sha:   sha,
+			body:  citationMarker,
+			files: []map[string]string{{"filename": "CITATION.cff", "status": "modified"}, {"filename": "README.md", "status": "modified"}},
+			want:  want{err: "does not change only CITATION.cff"},
+		},
+		{
+			name:  "removed citation",
+			head:  "citation/v0.2.0",
+			sha:   sha,
+			body:  citationMarker,
+			files: []map[string]string{{"filename": "CITATION.cff", "status": "removed"}},
+			want:  want{err: "does not change only CITATION.cff"},
+		},
+		{
+			name:    "bad sha",
+			head:    "citation/v0.2.0",
+			sha:     "HEAD",
+			httpOff: true,
+			want:    want{err: "not 40 lowercase hex"},
+		},
+		{
+			name:   "gitleaks failed",
+			head:   "citation/v0.2.0",
+			sha:    sha,
+			body:   citationMarker,
+			files:  []map[string]string{{"filename": "CITATION.cff", "status": "modified"}},
+			checks: []map[string]string{{"name": gitleaksCheck, "status": "completed", "conclusion": "failure", "started_at": newer}},
+			want:   want{status: StatusSkipped, reason: "has not passed"},
+		},
+		{
+			name:   "gitleaks missing",
+			head:   "citation/v0.2.0",
+			sha:    sha,
+			body:   citationMarker,
+			files:  []map[string]string{{"filename": "CITATION.cff", "status": "modified"}},
+			checks: nil,
+			want:   want{status: StatusSkipped, reason: "has not passed"},
+		},
+		{
+			name:   "older success does not beat a newer failure",
+			head:   "citation/v0.2.0",
+			sha:    sha,
+			body:   citationMarker,
+			files:  []map[string]string{{"filename": "CITATION.cff", "status": "modified"}},
+			checks: []map[string]string{{"name": gitleaksCheck, "status": "completed", "conclusion": "success", "started_at": older}, {"name": gitleaksCheck, "status": "completed", "conclusion": "failure", "started_at": newer}},
+			want:   want{status: StatusSkipped, reason: "has not passed"},
+		},
+		{
+			name:   "merge after the latest check succeeds",
+			head:   "citation/v0.2.0",
+			sha:    sha,
+			body:   citationMarker + "\n",
+			files:  []map[string]string{{"filename": "CITATION.cff", "status": "modified"}},
+			checks: []map[string]string{{"name": "other", "status": "completed", "conclusion": "failure", "started_at": newer}, {"name": gitleaksCheck, "status": "completed", "conclusion": "failure", "started_at": older}, {"name": gitleaksCheck, "status": "completed", "conclusion": "success", "started_at": newer}},
+			want:   want{status: StatusMerged, method: "merge", mergeSHA: sha},
+		},
+		{
+			name:   "already merged",
+			head:   "citation/v0.2.0",
+			sha:    sha,
+			body:   citationMarker,
+			files:  []map[string]string{{"filename": "CITATION.cff", "status": "modified"}},
+			checks: []map[string]string{{"name": gitleaksCheck, "status": "completed", "conclusion": "success", "started_at": newer}},
+			merge:  http.StatusMethodNotAllowed,
+			merged: true,
+			want:   want{status: StatusMerged, method: "merge", mergeSHA: sha},
+		},
+		{
+			name:   "refuses an unmerged conflict",
+			head:   "citation/v0.2.0",
+			sha:    sha,
+			body:   citationMarker,
+			files:  []map[string]string{{"filename": "CITATION.cff", "status": "modified"}},
+			checks: []map[string]string{{"name": gitleaksCheck, "status": "completed", "conclusion": "success", "started_at": newer}},
+			merge:  http.StatusConflict,
+			want:   want{err: "merge citation pull request"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var merges []map[string]any
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if tc.httpOff {
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/pulls":
+					writeJSON(t, w, []map[string]any{{
+						"number":  7,
+						"node_id": "PR_node_citation",
+						"state":   "open",
+						"body":    tc.body,
+						"head":    map[string]string{"ref": tc.head, "sha": tc.sha},
+						"base":    map[string]string{"ref": "main"},
+					}})
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/pulls/7/files":
+					writeJSON(t, w, tc.files)
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/commits/"+tc.sha+"/check-runs":
+					if r.URL.Query().Get("check_name") != gitleaksCheck {
+						t.Errorf("check_name %q", r.URL.Query().Get("check_name"))
+					}
+					writeJSON(t, w, map[string]any{"check_runs": tc.checks})
+				case r.Method == http.MethodPut && r.URL.Path == "/repos/paulpham157/sdf/pulls/7/merge":
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("merge body: %v", err)
+					}
+					merges = append(merges, body)
+					if tc.merge != 0 {
+						w.WriteHeader(tc.merge)
+						_, _ = w.Write([]byte(`{"message":"not merged"}`))
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"merged":true}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/pulls/7":
+					writeJSON(t, w, map[string]any{"number": 7, "merged": tc.merged})
+				default:
+					t.Errorf("unexpected %s %s", r.Method, r.URL.RequestURI())
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			result, err := Merge(context.Background(), MergeConfig{
+				Token:      "test-token",
+				Repo:       "paulpham157/sdf",
+				APIBase:    srv.URL,
+				BaseBranch: "main",
+				HeadBranch: tc.head,
+				HeadSHA:    tc.sha,
+				Client:     srv.Client(),
+			})
+			if tc.want.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
+					t.Fatalf("err %v", err)
+				}
+				if len(merges) != 0 && tc.name == "extra file" {
+					t.Fatal("merged a pull request that changes more than CITATION.cff")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != tc.want.status || !strings.Contains(result.Reason, tc.want.reason) {
+				t.Fatalf("%+v", result)
+			}
+			if tc.httpOff && calls != 0 {
+				t.Fatalf("calls %d", calls)
+			}
+			if tc.want.method != "" {
+				if len(merges) != 1 || merges[0]["merge_method"] != tc.want.method || merges[0]["sha"] != tc.want.mergeSHA {
+					t.Fatalf("merge %#v", merges)
+				}
+				if _, ok := merges[0]["force"]; ok || len(merges[0]) != 2 {
+					t.Fatalf("merge %#v", merges)
+				}
+			} else if len(merges) != 0 {
+				t.Fatalf("merged unexpectedly %#v", merges)
+			}
+		})
+	}
+
+	noPR := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/paulpham157/sdf/pulls" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		writeJSON(t, w, []any{})
+	}))
+	defer noPR.Close()
+	result, err := Merge(context.Background(), MergeConfig{
+		Token:      "test-token",
+		Repo:       "paulpham157/sdf",
+		APIBase:    noPR.URL,
+		BaseBranch: "main",
+		HeadBranch: "citation/v0.2.0",
+		HeadSHA:    sha,
+		Client:     noPR.Client(),
+	})
+	if err != nil || result.Status != StatusSkipped || !strings.Contains(result.Reason, "no open") {
+		t.Fatalf("%+v err %v", result, err)
+	}
+}
+
 func TestConfigFromEnv(t *testing.T) {
 	env := map[string]string{
 		"GITHUB_TOKEN":          "test-token",
@@ -604,6 +897,7 @@ func TestWorkflowFiles(t *testing.T) {
 		"github.event.release.prerelease == false",
 		"persist-credentials: false",
 		"contents: write",
+		"pull-requests: write",
 		"permissions: {}",
 		"github.event.repository.default_branch",
 		"go run ./internal/citeupdate",
@@ -617,6 +911,29 @@ func TestWorkflowFiles(t *testing.T) {
 	for _, banned := range []string{"git push", "--force", "force:", "workflow_dispatch", "pull_request:"} {
 		if strings.Contains(citation, banned) {
 			t.Fatalf("citation.yml contains %q", banned)
+		}
+	}
+	mergeWF := string(readRepoFile(t, ".github/workflows/citation-merge.yml"))
+	for _, want := range []string{
+		`workflows: ["PR CI"]`,
+		"types: [completed]",
+		"permissions: {}",
+		"contents: write",
+		"pull-requests: write",
+		"checks: read",
+		"persist-credentials: false",
+		"CITATION_COMMAND: merge",
+		"startsWith(github.event.workflow_run.head_branch, 'citation/v')",
+		"github.event.workflow_run.head_sha",
+		"go run ./internal/citeupdate",
+	} {
+		if !strings.Contains(mergeWF, want) {
+			t.Fatalf("citation-merge.yml missing %q", want)
+		}
+	}
+	for _, banned := range []string{"git push", "--force", "force:", "workflow_dispatch"} {
+		if strings.Contains(mergeWF, banned) {
+			t.Fatalf("citation-merge.yml contains %q", banned)
 		}
 	}
 	release := string(readRepoFile(t, ".github/workflows/release.yml"))
@@ -633,18 +950,28 @@ func TestWorkflowFiles(t *testing.T) {
 }
 
 type fakeGitHub struct {
-	tagName       string
-	refType       string
-	refSHA        string
-	commit        string
-	file          []byte
-	blob          string
-	puts          []map[string]any
-	paths         []string
-	conflictsLeft int
-	putStatus     int
-	missingFile   bool
-	redirectRef   bool
+	tagName        string
+	refType        string
+	refSHA         string
+	commit         string
+	file           []byte
+	blob           string
+	puts           []map[string]any
+	paths          []string
+	refs           []map[string]any
+	pulls          []string
+	graphql        []string
+	conflictsLeft  int
+	putStatus      int
+	missingFile    bool
+	redirectRef    bool
+	autoMergeOff   bool
+	autoMergeError string
+
+	citationExists bool
+	citationFile   []byte
+	citationBlob   string
+	mainSHA        string
 }
 
 func (f *fakeGitHub) config(srv *httptest.Server, tag, published string) Config {
@@ -661,6 +988,9 @@ func (f *fakeGitHub) config(srv *httptest.Server, tag, published string) Config 
 
 func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 	t.Helper()
+	if f.mainSHA == "" {
+		f.mainSHA = strings.Repeat("e", 40)
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("authorization %q", r.Header.Get("Authorization"))
@@ -686,19 +1016,54 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 				return
 			}
 			writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": f.commit}})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/contents/CITATION.cff":
-			if r.URL.Query().Get("ref") != "main" {
-				t.Errorf("contents ref %q", r.URL.Query().Get("ref"))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/git/ref/heads/main":
+			writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": f.mainSHA}})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/git/ref/heads/citation/"):
+			if !f.citationExists {
+				http.NotFound(w, r)
+				return
 			}
-			if f.missingFile {
+			writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": f.mainSHA}})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/paulpham157/sdf/git/refs":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("ref body: %v", err)
+				http.Error(w, `{"message":"bad json"}`, http.StatusBadRequest)
+				return
+			}
+			f.refs = append(f.refs, body)
+			if _, ok := body["force"]; ok {
+				t.Errorf("ref create set force")
+			}
+			f.citationExists = true
+			f.citationFile = append([]byte(nil), f.file...)
+			f.citationBlob = f.blob
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ref":"ok"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/contents/CITATION.cff":
+			ref := r.URL.Query().Get("ref")
+			if ref == "main" {
+				if f.missingFile {
+					http.NotFound(w, r)
+					return
+				}
+				writeJSON(t, w, map[string]any{
+					"sha":      f.blob,
+					"encoding": "base64",
+					"type":     "file",
+					"content":  wrapBase64(f.file),
+				})
+				return
+			}
+			if !strings.HasPrefix(ref, "citation/") || !f.citationExists {
 				http.NotFound(w, r)
 				return
 			}
 			writeJSON(t, w, map[string]any{
-				"sha":      f.blob,
+				"sha":      f.citationBlob,
 				"encoding": "base64",
 				"type":     "file",
-				"content":  wrapBase64(f.file),
+				"content":  wrapBase64(f.citationFile),
 			})
 		case r.Method == http.MethodPut && r.URL.Path == "/repos/paulpham157/sdf/contents/CITATION.cff":
 			var body map[string]any
@@ -708,9 +1073,15 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 				return
 			}
 			f.puts = append(f.puts, body)
+			if body["branch"] == "main" || !strings.HasPrefix(fmt.Sprint(body["branch"]), "citation/") {
+				t.Errorf("contents update targeted %v", body["branch"])
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"refusing default branch"}`))
+				return
+			}
 			if f.conflictsLeft > 0 {
 				f.conflictsLeft--
-				f.blob = strings.Repeat("c", 40)
+				f.citationBlob = strings.Repeat("c", 40)
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"message":"sha mismatch"}`))
 				return
@@ -720,8 +1091,63 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 				_, _ = w.Write([]byte(`{"message":"refused by ruleset"}`))
 				return
 			}
+			decoded := decodePut(t, body["content"])
+			f.citationFile = decoded
+			f.citationBlob = strings.Repeat("d", 40)
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"content":{"sha":"dddddddddddddddddddddddddddddddddddddddd"}}`))
+			_, _ = w.Write([]byte(`{"content":{"sha":"` + f.citationBlob + `"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/pulls":
+			if len(f.pulls) == 0 {
+				writeJSON(t, w, []any{})
+				return
+			}
+			writeJSON(t, w, []map[string]any{{
+				"number":  7,
+				"node_id": "PR_node_citation",
+				"state":   "open",
+				"body":    f.pulls[0],
+				"head":    map[string]string{"ref": "citation/" + f.tagName, "sha": f.mainSHA},
+				"base":    map[string]string{"ref": "main"},
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/paulpham157/sdf/pulls":
+			var body struct {
+				Title string `json:"title"`
+				Head  string `json:"head"`
+				Base  string `json:"base"`
+				Body  string `json:"body"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("pull body: %v", err)
+				http.Error(w, `{"message":"bad json"}`, http.StatusBadRequest)
+				return
+			}
+			if len(f.pulls) != 0 {
+				t.Errorf("opened a duplicate pull request")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"A pull request already exists"}`))
+				return
+			}
+			f.pulls = append(f.pulls, body.Body)
+			writeJSON(t, w, map[string]any{"number": 7, "node_id": "PR_node_citation"})
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("graphql body: %v", err)
+			}
+			f.graphql = append(f.graphql, string(raw))
+			if f.autoMergeOff || f.autoMergeError != "" {
+				msg := f.autoMergeError
+				if msg == "" {
+					msg = "Pull request auto-merge is not enabled for this repository"
+				}
+				writeJSON(t, w, map[string]any{
+					"errors": []map[string]string{{"message": msg}},
+				})
+				return
+			}
+			writeJSON(t, w, map[string]any{
+				"data": map[string]any{"enablePullRequestAutoMerge": map[string]any{"pullRequest": map[string]any{"number": 7}}},
+			})
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.RequestURI())
 			http.NotFound(w, r)

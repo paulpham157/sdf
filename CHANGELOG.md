@@ -18,7 +18,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### CI/Build
 
-- Update `CITATION.cff` on the default branch when a stable GitHub Release is published, setting `version`, `date-released`, and the release tag's commit. Drafts, prereleases, and tags other than `vMAJOR.MINOR.PATCH` are skipped, and the tag is not moved (`.github/workflows/citation.yml`).
+- When a stable GitHub Release is published, open a pull request that sets `version`, `date-released`, and the release tag's commit in `CITATION.cff`, and merge that pull request after `gitleaks (full history)` passes. Drafts, prereleases, and tags other than `vMAJOR.MINOR.PATCH` are skipped. The release tag is not moved. Cite this repository stays stale until the pull request merges ([#324](https://github.com/paulpham157/sdf/pull/324)).
 
 ## [0.1.0] — 2026-11-24
 

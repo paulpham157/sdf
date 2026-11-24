@@ -23,14 +23,17 @@ const (
 	citationPath     = "CITATION.cff"
 )
 
-// Result is what Sync did with one published release.
+// Result is what Sync or Merge did with one citation update.
 type Result struct {
-	Status    Status
-	Version   string
-	Date      string
-	Commit    string
-	TagObject string
-	Reason    string
+	Status      Status
+	Version     string
+	Date        string
+	Commit      string
+	TagObject   string
+	Reason      string
+	HeadBranch  string
+	PullRequest int
+	AutoMerge   string
 }
 
 func (r Result) String() string {
@@ -53,6 +56,17 @@ func (r Result) String() string {
 		b.WriteString(" tag-object=")
 		b.WriteString(r.TagObject)
 	}
+	if r.HeadBranch != "" {
+		b.WriteString(" head=")
+		b.WriteString(r.HeadBranch)
+	}
+	if r.PullRequest != 0 {
+		fmt.Fprintf(&b, " pr=%d", r.PullRequest)
+	}
+	if r.AutoMerge != "" {
+		b.WriteString(" auto-merge=")
+		b.WriteString(r.AutoMerge)
+	}
 	if r.Reason != "" {
 		b.WriteString(" reason=")
 		b.WriteString(r.Reason)
@@ -73,10 +87,11 @@ type Config struct {
 	Client      *http.Client
 }
 
-// Sync reads the release tag, peels it to a commit, and updates CITATION.cff
-// on Branch through the contents API. A matching file is left uncommitted.
-// The tag ref is not updated. There is no force flag: a stale blob SHA is a
-// conflict, and the write is retried against the new file.
+// Sync reads the release tag, peels it to a commit, and opens or updates a
+// pull request that changes CITATION.cff. The pull request branch is
+// citation/<tag>, cut from Branch (the default branch). The contents API is
+// never pointed at Branch. A matching file does not open a pull request. The
+// release tag is not updated. There is no force flag.
 func Sync(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.Draft {
 		return Result{Status: StatusSkipped, Reason: "draft release"}, nil
@@ -113,37 +128,69 @@ func Sync(ctx context.Context, cfg Config) (Result, error) {
 	if tagObject != "" && commit == tagObject {
 		return Result{}, fmt.Errorf("refusing to record annotated tag object %s as the commit", commit)
 	}
+	file, _, err := getCitation(ctx, client, cfg, owner, repo, cfg.Branch)
+	if err != nil {
+		return Result{}, err
+	}
+	updated, err := Update(file, version, date, commit)
+	if err != nil {
+		return Result{}, err
+	}
+	result := Result{
+		Status:    updated.Status,
+		Version:   version,
+		Date:      date,
+		Commit:    commit,
+		TagObject: tagObject,
+		Reason:    updated.Reason,
+	}
+	if updated.Status != StatusUpdated {
+		return result, nil
+	}
+	head, err := citationHead(cfg.Tag)
+	if err != nil {
+		return Result{}, err
+	}
+	result.HeadBranch = head
+	if err := ensureCitationBranch(ctx, client, cfg, owner, repo, head); err != nil {
+		return Result{}, err
+	}
 	message := commitMessage(version, cfg.Tag, date, commit)
+	committed := false
 	for attempt := 1; attempt <= contentAttempts; attempt++ {
-		file, blob, err := getCitation(ctx, client, cfg, owner, repo)
+		branchFile, blob, err := getCitation(ctx, client, cfg, owner, repo, head)
 		if err != nil {
 			return Result{}, err
 		}
-		updated, err := Update(file, version, date, commit)
-		if err != nil {
-			return Result{}, err
+		if bytes.Equal(branchFile, updated.Content) {
+			committed = true
+			break
 		}
-		result := Result{
-			Status:    updated.Status,
-			Version:   version,
-			Date:      date,
-			Commit:    commit,
-			TagObject: tagObject,
-			Reason:    updated.Reason,
-		}
-		if updated.Status != StatusUpdated {
-			return result, nil
-		}
-		err = putCitation(ctx, client, cfg, owner, repo, updated.Content, blob, message)
+		err = putCitation(ctx, client, cfg, owner, repo, head, updated.Content, blob, message)
 		if err == nil {
-			return result, nil
+			committed = true
+			break
 		}
 		var conflict *conflictError
 		if !errors.As(err, &conflict) || attempt == contentAttempts {
 			return Result{}, err
 		}
 	}
-	return Result{}, errors.New("CITATION.cff update did not finish")
+	if !committed {
+		return Result{}, errors.New("CITATION.cff update did not finish")
+	}
+	pr, err := ensureCitationPR(ctx, client, cfg, owner, repo, head, result)
+	if err != nil {
+		return Result{}, err
+	}
+	result.PullRequest = pr.Number
+	auto, err := enableAutoMerge(ctx, client, cfg, pr.NodeID)
+	if err != nil {
+		return Result{}, err
+	}
+	result.AutoMerge = auto
+	result.Reason = "pull request updates CITATION.cff on the default branch after gitleaks (full history) passes"
+	return result, nil
 }
 
 func commitMessage(version, tag, date, commit string) string {
@@ -281,7 +328,7 @@ func peelTag(ctx context.Context, client *http.Client, cfg Config, owner, repo s
 	})
 }
 
-func getCitation(ctx context.Context, client *http.Client, cfg Config, owner, repo string) (content []byte, blob string, err error) {
+func getCitation(ctx context.Context, client *http.Client, cfg Config, owner, repo, ref string) (content []byte, blob string, err error) {
 	raw, err := apiURL(cfg.APIBase, owner, repo, "contents", citationPath)
 	if err != nil {
 		return nil, "", err
@@ -291,14 +338,14 @@ func getCitation(ctx context.Context, client *http.Client, cfg Config, owner, re
 		return nil, "", err
 	}
 	q := u.Query()
-	q.Set("ref", cfg.Branch)
+	q.Set("ref", ref)
 	u.RawQuery = q.Encode()
 	status, data, err := doJSON(ctx, client, http.MethodGet, u.String(), cfg.Token, nil)
 	if err != nil {
 		return nil, "", err
 	}
 	if status == http.StatusNotFound {
-		return nil, "", fmt.Errorf("CITATION.cff is not on %s; refusing to create it", cfg.Branch)
+		return nil, "", fmt.Errorf("CITATION.cff is not on %s; refusing to create it", ref)
 	}
 	if status != http.StatusOK {
 		return nil, "", fmt.Errorf("read CITATION.cff: %s", apiMessage(status, data))
@@ -332,7 +379,10 @@ func getCitation(ctx context.Context, client *http.Client, cfg Config, owner, re
 	return content, blob, nil
 }
 
-func putCitation(ctx context.Context, client *http.Client, cfg Config, owner, repo string, content []byte, blob, message string) error {
+func putCitation(ctx context.Context, client *http.Client, cfg Config, owner, repo, branch string, content []byte, blob, message string) error {
+	if branch == "" || branch == cfg.Branch || !strings.HasPrefix(branch, "citation/") {
+		return fmt.Errorf("refusing to write CITATION.cff on %s", branch)
+	}
 	raw, err := apiURL(cfg.APIBase, owner, repo, "contents", citationPath)
 	if err != nil {
 		return err
@@ -341,7 +391,7 @@ func putCitation(ctx context.Context, client *http.Client, cfg Config, owner, re
 		Message: message,
 		Content: base64.StdEncoding.EncodeToString(content),
 		SHA:     blob,
-		Branch:  cfg.Branch,
+		Branch:  branch,
 	}
 	status, data, err := doJSON(ctx, client, http.MethodPut, raw, cfg.Token, payload)
 	if err != nil {
@@ -351,7 +401,7 @@ func putCitation(ctx context.Context, client *http.Client, cfg Config, owner, re
 		return &conflictError{msg: apiMessage(status, data)}
 	}
 	if status != http.StatusOK && status != http.StatusCreated {
-		return fmt.Errorf("write CITATION.cff on %s: %s", cfg.Branch, apiMessage(status, data))
+		return fmt.Errorf("write CITATION.cff on %s: %s", branch, apiMessage(status, data))
 	}
 	return nil
 }

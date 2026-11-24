@@ -1,7 +1,11 @@
 # After a maintainer publishes the draft release created by release.yml,
-# write version, date-released, and commit into CITATION.cff on the default
-# branch. GitHub's Cite this repository widget reads that file there. This
-# workflow does not create the release and does not move the tag.
+# open a pull request that sets version, date-released, and commit in
+# CITATION.cff. The default-branch ruleset requires the check
+# "gitleaks (full history)" before that branch updates, and GitHub Actions
+# cannot bypass it, so this workflow does not write the default branch.
+# citation-merge.yml merges the pull request after that check passes.
+# GitHub's Cite this repository widget reads the default branch, so the
+# citation stays stale until the pull request merges.
 #
 # Creating the draft does not emit `published`. Publishing a prerelease does
 # (`published` fires for pre-releases, including ones published from a draft),
@@ -11,7 +15,8 @@
 #
 # commit is the peeled commit of the release tag. An annotated tag's object
 # id is not written into the file. When the tag is annotated, the log line
-# includes tag-object so the two ids can be compared.
+# includes tag-object so the two ids can be compared. The release tag is
+# not moved.
 name: Citation
 
 on:
@@ -28,21 +33,23 @@ concurrency:
 
 jobs:
   citation:
-    name: update CITATION.cff
+    name: open CITATION.cff pull request
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: "${{ github.event.action == 'published' && github.event.release.draft == false && github.event.release.prerelease == false }}"
     permissions:
-      # One contents-API commit of CITATION.cff on the default branch.
-      # contents: write also covers checkout of this public repo.
+      # Create the citation branch and open the pull request. This token
+      # does not write the default branch. contents: write also covers
+      # checkout of this public repo.
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The release event's SHA is the tagged commit. Run the updater
-          # from the default branch, which is the branch the widget reads.
-          # The token is not left in .git/config. The commit is a contents
-          # API update of CITATION.cff.
+          # from the default branch. The token is not left in .git/config.
+          # The citation commit is a contents API update of the
+          # citation/vMAJOR.MINOR.PATCH branch.
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 1
           persist-credentials: false
@@ -50,11 +57,10 @@ jobs:
         with:
           # Same go.mod toolchain as release.yml.
           go-version-file: go.mod
-          # This job can write to the default branch, so it does not use
-          # the shared module cache. The updater imports only the standard
-          # library.
+          # This job can open a pull request, so it does not use the shared
+          # module cache. The updater imports only the standard library.
           cache: false
-      - name: Update CITATION.cff
+      - name: Open CITATION.cff pull request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CITATION_TAG: ${{ github.event.release.tag_name }}
