@@ -4,9 +4,15 @@ All notable changes to SDF will be documented in this file.
 
 This file covers the first public release of the current product: a vendor-neutral OpenTelemetry (OTLP) collector for AI coding-agent telemetry, written in Go and stored in SQLite. It does not list the pre-rebuild Python/Herdr history. That tree is snapshotted at tag `legacy-v1` (commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3`, 2026-11-08 13:23 America/New_York).
 
-## [0.1.0] — UNRELEASED
+## [Unreleased]
 
-This will be the first tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` (after the tag exists) or with the prebuilt archives on GitHub Releases once published.
+### Docs
+
+- Point the README Quickstart at the published v0.1.0 release: `@latest` installs the v0.1.0 tag, `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` is a pin, and the prebuilt archives are on the [v0.1.0 release page](https://github.com/paulpham157/sdf/releases/tag/v0.1.0) ([#317](https://github.com/paulpham157/sdf/pull/317)).
+
+## [0.1.0] — 2026-11-24
+
+The first tagged release. Requires Go 1.26 or newer to build from source. Install with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` or with the prebuilt archives on [GitHub Releases](https://github.com/paulpham157/sdf/releases/tag/v0.1.0).
 
 ### Breaking changes
 
@@ -139,4 +145,5 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 
 - Remove the `sdf demo` command and non-test mock data. `sdf demo` now exits 2 with `unrecognized command "demo"`. The supported first-run path is `sdf version`, `sdf serve`, and `sdf init <agent> --write` ([#233](https://github.com/paulpham157/sdf/pull/233), fixes [#228](https://github.com/paulpham157/sdf/issues/228)).
 
+[Unreleased]: https://github.com/paulpham157/sdf/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/paulpham157/sdf/releases/tag/v0.1.0
