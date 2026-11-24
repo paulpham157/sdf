@@ -36,7 +36,7 @@ func TestUIRefusesReboundHost(t *testing.T) {
 	db := openDB(t)
 	srv := startUI(t, db)
 	_, port := splitUI(t, srv.URL())
-	paths := []string{"api/summary", "api/snapshot", "api/decisions", "api/overview-charts", "", "app.js", "app.css"}
+	paths := []string{"api/summary", "api/snapshot", "api/decisions", "api/overview-charts", "", "app.js", "app.css", "tokens.css"}
 	hosts := []string{
 		"attacker.example",
 		net.JoinHostPort("attacker.example", port),

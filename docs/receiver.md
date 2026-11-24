@@ -306,8 +306,9 @@ on localhost unless you trust the network.
 The process prints `UI listening on http://127.0.0.1:4320/` (the default).
 Open that URL on the same machine.
 
-The UI checks `Host` before every route, including the HTML, CSS, and
-script. `localhost`, `127.0.0.1`, and `[::1]` are allowed. A non-loopback
+The UI checks `Host` before every route, including the HTML, the
+stylesheets (`/tokens.css` and `/app.css`), the script, and the favicons.
+`localhost`, `127.0.0.1`, and `[::1]` are allowed. A non-loopback
 `--ui-addr` also allows that configured host. The port may be omitted; if
 it is present it has to be the bound port. Anything else is HTTP 403 and
 the handler does not run, so a rebound name cannot read `/api/summary` or
