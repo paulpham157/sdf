@@ -81,7 +81,7 @@ func cmdDecisionPrePush(args []string, stdout, stderr io.Writer) int {
 				mode = value
 			}
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -93,7 +93,7 @@ func cmdDecisionPrePush(args []string, stdout, stderr io.Writer) int {
 	}
 	input, err := io.ReadAll(io.LimitReader(prePushStdin, 1<<20))
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf: pre-push decision check skipped: reading the hook input: %v\n", err)
+		fmt.Fprintf(stderr, "sdf: pre-push decision check skipped: reading the hook input: %s\n", displayErr(err))
 		return 0
 	}
 	if strings.TrimSpace(dbPath) == "" {
@@ -160,7 +160,7 @@ func runPrePush(ctx context.Context, input, dbPath, remote string, block bool, w
 	}
 	commits, truncated, err := pushedCommits(ctx, input, remote)
 	if err != nil {
-		return skip("%v.", err)
+		return skip("%s.", displayErr(err))
 	}
 	if len(commits) == 0 {
 		return 0
@@ -170,21 +170,21 @@ func runPrePush(ctx context.Context, input, dbPath, remote string, block bool, w
 	}
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return skip("no SDF store at %s.", store.AbsPath(dbPath))
+			return skip("no SDF store at %s.", displayPath(store.AbsPath(dbPath)))
 		}
-		return skip("%v.", err)
+		return skip("%s.", displayErr(err))
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		return skip("%v.", err)
+		return skip("%s.", displayErr(err))
 	}
 	report, err := decision.CheckPush(db, commits)
 	_ = db.Close()
 	if err != nil {
-		return skip("%v.", err)
+		return skip("%s.", displayErr(err))
 	}
 	blocked := block && len(report.Missing) > 0
-	if err := decision.WritePushText(w, report, " --db "+shellWord(store.AbsPath(dbPath)), blocked); err != nil {
+	if err := decision.WritePushText(w, report, " --db "+shellWord(displayPath(store.AbsPath(dbPath))), blocked); err != nil {
 		return 0
 	}
 	if truncated {

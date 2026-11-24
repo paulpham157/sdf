@@ -90,6 +90,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 - Count a re-sent Qwen Code log or span once ([#262](https://github.com/paulpham157/sdf/pull/262), fixes [#261](https://github.com/paulpham157/sdf/issues/261)).
 - Price Grok and Claude metrics sessions from matching `api_request` logs: when de-duplicated logs match the metric totals, each request is priced on its own ([#231](https://github.com/paulpham157/sdf/pull/231)).
 - Cap span-tree nesting at 32 (`MaxSpanDepth`) and return HTTP 500 when the UI cannot encode a response ([#270](https://github.com/paulpham157/sdf/pull/270), fixes [#267](https://github.com/paulpham157/sdf/issues/267)).
+- Quote unrecognized CLI arguments and flags that contain control characters, so a typo cannot write a terminal escape to stderr (idea from [#229](https://github.com/paulpham157/sdf/pull/229)). Secret-bearing flags (`--*token*=`, `--*secret*=`, and the same for `password`, `passwd`, and `key`) have their values redacted; long arguments are truncated after quoting. File paths echoed in errors for `--db`, `--budget`, `--prices`, `--cases`, `--otlp-token-file`, `--repo`, and `--out` are passed through `ledger.Safe` ([#299](https://github.com/paulpham157/sdf/pull/299)).
 
 ### Security
 
