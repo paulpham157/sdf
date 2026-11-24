@@ -32,7 +32,7 @@ connection.
 - Optional hash-chained ledger, `sdf task declare` / `sdf verify`, and a
   fork-safe GitHub Action
 
-## Quick start
+## Quickstart
 
 You need a supported coding agent already installed, and Go 1.26 or
 newer.
