@@ -18,7 +18,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### CI/Build
 
-- When a stable GitHub Release is published, open a pull request that sets `version`, `date-released`, and the release tag's commit in `CITATION.cff`, and merge that pull request after `gitleaks (full history)` passes. Drafts, prereleases, and tags other than `vMAJOR.MINOR.PATCH` are skipped. The release tag is not moved. Cite this repository stays stale until the pull request merges ([#324](https://github.com/paulpham157/sdf/pull/324)).
+- When a stable GitHub Release is published, open a pull request that sets `version`, `date-released`, and the release tag's commit in `CITATION.cff`. A `GITHUB_TOKEN` pull request does not start PR CI, so the job dispatches the same base..head gitleaks scan on `citation/vMAJOR.MINOR.PATCH` and, after that run succeeds, posts a commit status named `gitleaks (full history)` on the head SHA and merges the pull request. A `workflow_dispatch` job check does not satisfy the ruleset. Drafts, prereleases, and tags other than `vMAJOR.MINOR.PATCH` are skipped. The release tag is not moved. Cite this repository stays stale until the pull request merges ([#324](https://github.com/paulpham157/sdf/pull/324)).
 
 ## [0.1.0] — 2026-11-24
 

@@ -1,9 +1,11 @@
 # After a maintainer publishes the draft release created by release.yml,
 # open a pull request that sets version, date-released, and commit in
-# CITATION.cff. The default-branch ruleset requires the check
-# "gitleaks (full history)" before that branch updates, and GitHub Actions
-# cannot bypass it, so this workflow does not write the default branch.
-# citation-merge.yml merges the pull request after that check passes.
+# CITATION.cff. A pull request opened with GITHUB_TOKEN does not start PR
+# CI, so this job dispatches Citation gitleaks on the citation branch, waits
+# for that run to succeed, and posts a commit status named
+# "gitleaks (full history)" on the head SHA. That status is the ruleset
+# check. The job then merges the pull request. It does not write the
+# default branch itself.
 # GitHub's Cite this repository widget reads the default branch, so the
 # citation stays stale until the pull request merges.
 #
@@ -35,14 +37,16 @@ jobs:
   citation:
     name: open CITATION.cff pull request
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     if: "${{ github.event.action == 'published' && github.event.release.draft == false && github.event.release.prerelease == false }}"
     permissions:
-      # Create the citation branch and open the pull request. This token
-      # does not write the default branch. contents: write also covers
-      # checkout of this public repo.
+      # Create the citation branch, open the pull request, and merge it.
+      # actions: write starts Citation gitleaks. statuses: write posts the
+      # required commit status. This token does not write the default branch.
       contents: write
       pull-requests: write
+      actions: write
+      statuses: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

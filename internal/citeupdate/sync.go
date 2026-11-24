@@ -32,8 +32,8 @@ type Result struct {
 	TagObject   string
 	Reason      string
 	HeadBranch  string
+	HeadSHA     string
 	PullRequest int
-	AutoMerge   string
 }
 
 func (r Result) String() string {
@@ -60,12 +60,12 @@ func (r Result) String() string {
 		b.WriteString(" head=")
 		b.WriteString(r.HeadBranch)
 	}
+	if r.HeadSHA != "" {
+		b.WriteString(" head-sha=")
+		b.WriteString(r.HeadSHA)
+	}
 	if r.PullRequest != 0 {
 		fmt.Fprintf(&b, " pr=%d", r.PullRequest)
-	}
-	if r.AutoMerge != "" {
-		b.WriteString(" auto-merge=")
-		b.WriteString(r.AutoMerge)
 	}
 	if r.Reason != "" {
 		b.WriteString(" reason=")
@@ -76,15 +76,17 @@ func (r Result) String() string {
 
 // Config is the published release to apply and the repository to write.
 type Config struct {
-	Token       string
-	Repo        string
-	APIBase     string
-	Tag         string
-	PublishedAt string
-	Branch      string
-	Draft       bool
-	Prerelease  bool
-	Client      *http.Client
+	Token        string
+	Repo         string
+	APIBase      string
+	Tag          string
+	PublishedAt  string
+	Branch       string
+	Draft        bool
+	Prerelease   bool
+	Client       *http.Client
+	PollInterval time.Duration
+	PollAttempts int
 }
 
 // Sync reads the release tag, peels it to a commit, and opens or updates a
@@ -183,13 +185,46 @@ func Sync(ctx context.Context, cfg Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	result.PullRequest = pr.Number
-	auto, err := enableAutoMerge(ctx, client, cfg, pr.NodeID)
+	pr, err = getPull(ctx, client, cfg, owner, repo, pr.Number)
 	if err != nil {
 		return Result{}, err
 	}
-	result.AutoMerge = auto
-	result.Reason = "pull request updates CITATION.cff on the default branch after gitleaks (full history) passes"
+	headSHA, err := branchCommit(ctx, client, cfg, owner, repo, head)
+	if err != nil {
+		return Result{}, err
+	}
+	if pr.Head.SHA != headSHA {
+		return Result{}, fmt.Errorf("citation pull request head is %s, not %s", pr.Head.SHA, headSHA)
+	}
+	if pr.Base.Ref != cfg.Branch || pr.Base.SHA == "" {
+		return Result{}, fmt.Errorf("citation pull request base is %s@%s", pr.Base.Ref, pr.Base.SHA)
+	}
+	run, err := ensureScan(ctx, client, cfg, owner, repo, head, headSHA, pr.Base.SHA)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := postScanStatus(ctx, client, cfg, owner, repo, headSHA, run.HTMLURL); err != nil {
+		return Result{}, err
+	}
+	merged, err := Merge(ctx, MergeConfig{
+		Token:      cfg.Token,
+		Repo:       cfg.Repo,
+		APIBase:    cfg.APIBase,
+		BaseBranch: cfg.Branch,
+		HeadBranch: head,
+		HeadSHA:    headSHA,
+		Client:     client,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	if merged.Status != StatusMerged {
+		return Result{}, fmt.Errorf("citation pull request was not merged: %s", merged.Reason)
+	}
+	result.Status = StatusMerged
+	result.PullRequest = pr.Number
+	result.HeadSHA = headSHA
+	result.Reason = merged.Reason
 	return result, nil
 }
 

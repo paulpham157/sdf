@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -49,8 +50,11 @@ type pullRequest struct {
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 }
+
+const citationWorkflow = "citation-gitleaks.yml"
 
 // ensureCitationBranch creates head from the current default-branch commit
 // when the branch is missing. An existing branch is left where it is.
@@ -221,56 +225,200 @@ func pullBody(result Result) string {
 	return b.String()
 }
 
-func enableAutoMerge(ctx context.Context, client *http.Client, cfg Config, nodeID string) (string, error) {
-	if nodeID == "" {
-		return "", errors.New("pull request node id is empty")
-	}
-	raw := strings.TrimRight(cfg.APIBase, "/") + "/graphql"
-	query := `mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:MERGE}){pullRequest{number}}}`
-	payload := struct {
-		Query     string         `json:"query"`
-		Variables map[string]any `json:"variables"`
-	}{
-		Query:     query,
-		Variables: map[string]any{"id": nodeID},
-	}
-	status, data, err := doJSON(ctx, client, http.MethodPost, raw, cfg.Token, payload)
-	if err != nil {
-		return "", err
-	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("enable auto-merge: %s", apiMessage(status, data))
-	}
-	var resp struct {
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return "", err
-	}
-	if len(resp.Errors) == 0 {
-		return "enabled", nil
-	}
-	msg := resp.Errors[0].Message
-	for _, e := range resp.Errors[1:] {
-		msg += "; " + e.Message
-	}
-	if autoMergeUnavailable(msg) {
-		return "unavailable", nil
-	}
-	if strings.Contains(strings.ToLower(msg), "already") {
-		return "enabled", nil
-	}
-	return "", fmt.Errorf("enable auto-merge: %s", msg)
+type workflowRun struct {
+	ID         int64  `json:"id"`
+	HeadSHA    string `json:"head_sha"`
+	Event      string `json:"event"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+	CreatedAt  string `json:"created_at"`
 }
 
-func autoMergeUnavailable(msg string) bool {
-	m := strings.ToLower(msg)
-	if !strings.Contains(m, "auto") {
-		return false
+// ensureScan dispatches the citation gitleaks workflow on head and waits
+// until a run for headSHA completes successfully. A run that already
+// succeeded is reused. The workflow's own job check is not the ruleset
+// check: workflow_dispatch jobs are not evaluated for a ruleset.
+func ensureScan(ctx context.Context, client *http.Client, cfg Config, owner, repo, head, headSHA, baseSHA string) (workflowRun, error) {
+	if err := validateCommit(headSHA); err != nil {
+		return workflowRun{}, err
 	}
-	return strings.Contains(m, "not enabled") || strings.Contains(m, "not allowed") || strings.Contains(m, "disabled")
+	if err := validateCommit(baseSHA); err != nil {
+		return workflowRun{}, err
+	}
+	runs, err := listScanRuns(ctx, client, cfg, owner, repo, headSHA)
+	if err != nil {
+		return workflowRun{}, err
+	}
+	// minID is the newest run already known. inclusive means that run is
+	// still in progress and its own completion counts. A new dispatch only
+	// counts a run with a greater id, so an older failure cannot pass.
+	minID := latestScanID(runs)
+	inclusive := false
+	if newest, ok := newestScan(runs); ok && newest.Status == "completed" && newest.Conclusion == "success" {
+		return newest, nil
+	} else if ok && newest.Status != "completed" {
+		inclusive = true
+	} else if err := dispatchScan(ctx, client, cfg, owner, repo, head, headSHA, baseSHA); err != nil {
+		return workflowRun{}, err
+	}
+	attempts := cfg.PollAttempts
+	if attempts <= 0 {
+		attempts = 90
+	}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			if err := waitPoll(ctx, cfg); err != nil {
+				return workflowRun{}, err
+			}
+		}
+		runs, err = listScanRuns(ctx, client, cfg, owner, repo, headSHA)
+		if err != nil {
+			return workflowRun{}, err
+		}
+		newest, ok := newestScan(runs)
+		if !ok || newest.Status != "completed" {
+			continue
+		}
+		if inclusive && newest.ID < minID {
+			continue
+		}
+		if !inclusive && newest.ID <= minID {
+			continue
+		}
+		if newest.Conclusion == "success" {
+			return newest, nil
+		}
+		return workflowRun{}, fmt.Errorf("citation gitleaks run %d finished with %s", newest.ID, newest.Conclusion)
+	}
+	return workflowRun{}, errors.New("citation gitleaks did not pass before the wait ended")
+}
+
+func waitPoll(ctx context.Context, cfg Config) error {
+	d := cfg.PollInterval
+	if d <= 0 {
+		d = 10 * time.Second
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func dispatchScan(ctx context.Context, client *http.Client, cfg Config, owner, repo, head, headSHA, baseSHA string) error {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "actions", "workflows", citationWorkflow, "dispatches")
+	if err != nil {
+		return err
+	}
+	body := struct {
+		Ref    string            `json:"ref"`
+		Inputs map[string]string `json:"inputs"`
+	}{
+		Ref: head,
+		Inputs: map[string]string{
+			"base_sha": baseSHA,
+			"head_sha": headSHA,
+		},
+	}
+	status, data, err := doJSON(ctx, client, http.MethodPost, raw, cfg.Token, body)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusNoContent && status != http.StatusOK && status != http.StatusCreated {
+		return fmt.Errorf("dispatch citation gitleaks: %s", apiMessage(status, data))
+	}
+	return nil
+}
+
+func listScanRuns(ctx context.Context, client *http.Client, cfg Config, owner, repo, headSHA string) ([]workflowRun, error) {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "actions", "workflows", citationWorkflow, "runs")
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("head_sha", headSHA)
+	q.Set("event", "workflow_dispatch")
+	q.Set("per_page", "20")
+	u.RawQuery = q.Encode()
+	status, data, err := doJSON(ctx, client, http.MethodGet, u.String(), cfg.Token, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("list citation gitleaks runs: %s", apiMessage(status, data))
+	}
+	var body struct {
+		WorkflowRuns []workflowRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	var matched []workflowRun
+	for _, run := range body.WorkflowRuns {
+		if strings.EqualFold(run.HeadSHA, headSHA) && run.Event == "workflow_dispatch" {
+			matched = append(matched, run)
+		}
+	}
+	return matched, nil
+}
+
+func newestScan(runs []workflowRun) (workflowRun, bool) {
+	var found workflowRun
+	ok := false
+	for _, run := range runs {
+		if !ok || run.CreatedAt >= found.CreatedAt {
+			found = run
+			ok = true
+		}
+	}
+	return found, ok
+}
+
+func latestScanID(runs []workflowRun) int64 {
+	var id int64
+	for _, run := range runs {
+		if run.ID > id {
+			id = run.ID
+		}
+	}
+	return id
+}
+
+func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha, target string) error {
+	if target == "" {
+		return errors.New("citation gitleaks run has no URL")
+	}
+	raw, err := apiURL(cfg.APIBase, owner, repo, "statuses", sha)
+	if err != nil {
+		return err
+	}
+	body := struct {
+		State       string `json:"state"`
+		Context     string `json:"context"`
+		Description string `json:"description"`
+		TargetURL   string `json:"target_url"`
+	}{
+		State:       "success",
+		Context:     gitleaksCheck,
+		Description: "gitleaks scan of the citation pull request range passed",
+		TargetURL:   target,
+	}
+	status, data, err := doJSON(ctx, client, http.MethodPost, raw, cfg.Token, body)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return fmt.Errorf("post gitleaks status: %s", apiMessage(status, data))
+	}
+	return nil
 }
 
 // MergeConfig selects the citation pull request a completed pull-request
@@ -334,10 +482,13 @@ func Merge(ctx context.Context, cfg MergeConfig) (Result, error) {
 		result.Reason = "pull request was not opened by the citation updater"
 		return result, nil
 	}
+	if pr.Head.SHA != "" && pr.Head.SHA != cfg.HeadSHA {
+		return Result{}, fmt.Errorf("citation pull request head is %s, not %s", pr.Head.SHA, cfg.HeadSHA)
+	}
 	if err := citationPRFiles(ctx, client, syncCfg, owner, repo, pr.Number); err != nil {
 		return Result{}, err
 	}
-	passed, err := gitleaksPassed(ctx, client, syncCfg, owner, repo, cfg.HeadSHA)
+	passed, err := gitleaksStatusPassed(ctx, client, syncCfg, owner, repo, cfg.HeadSHA)
 	if err != nil {
 		return Result{}, err
 	}
@@ -388,8 +539,8 @@ func citationPRFiles(ctx context.Context, client *http.Client, cfg Config, owner
 	return nil
 }
 
-func gitleaksPassed(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha string) (bool, error) {
-	raw, err := apiURL(cfg.APIBase, owner, repo, "commits", sha, "check-runs")
+func gitleaksStatusPassed(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha string) (bool, error) {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "commits", sha, "statuses")
 	if err != nil {
 		return false, err
 	}
@@ -398,7 +549,6 @@ func gitleaksPassed(ctx context.Context, client *http.Client, cfg Config, owner,
 		return false, err
 	}
 	q := u.Query()
-	q.Set("check_name", gitleaksCheck)
 	q.Set("per_page", "100")
 	u.RawQuery = q.Encode()
 	status, data, err := doJSON(ctx, client, http.MethodGet, u.String(), cfg.Token, nil)
@@ -406,41 +556,30 @@ func gitleaksPassed(ctx context.Context, client *http.Client, cfg Config, owner,
 		return false, err
 	}
 	if status != http.StatusOK {
-		return false, fmt.Errorf("list check runs: %s", apiMessage(status, data))
+		return false, fmt.Errorf("list commit statuses: %s", apiMessage(status, data))
 	}
-	var body struct {
-		CheckRuns []struct {
-			Name       string `json:"name"`
-			Status     string `json:"status"`
-			Conclusion string `json:"conclusion"`
-			StartedAt  string `json:"started_at"`
-		} `json:"check_runs"`
+	var statuses []struct {
+		Context   string `json:"context"`
+		State     string `json:"state"`
+		CreatedAt string `json:"created_at"`
 	}
-	if err := json.Unmarshal(data, &body); err != nil {
+	if err := json.Unmarshal(data, &statuses); err != nil {
 		return false, err
 	}
+	found := false
 	latest := ""
-	conclusion := ""
-	statusText := ""
-	for _, run := range body.CheckRuns {
-		if run.Name != gitleaksCheck {
+	state := ""
+	for _, st := range statuses {
+		if st.Context != gitleaksCheck {
 			continue
 		}
-		if latest == "" || run.StartedAt >= latest {
-			latest = run.StartedAt
-			conclusion = run.Conclusion
-			statusText = run.Status
+		if !found || st.CreatedAt >= latest {
+			found = true
+			latest = st.CreatedAt
+			state = st.State
 		}
 	}
-	if latest == "" && len(body.CheckRuns) > 0 {
-		// A response with no started_at still counts if it is the only run.
-		for _, run := range body.CheckRuns {
-			if run.Name == gitleaksCheck && run.Status == "completed" && run.Conclusion == "success" {
-				return true, nil
-			}
-		}
-	}
-	return statusText == "completed" && conclusion == "success", nil
+	return found && state == "success", nil
 }
 
 func mergePullRequest(ctx context.Context, client *http.Client, cfg Config, owner, repo string, number int, sha string) error {
@@ -475,20 +614,31 @@ func mergePullRequest(ctx context.Context, client *http.Client, cfg Config, owne
 }
 
 func pullMerged(ctx context.Context, client *http.Client, cfg Config, owner, repo string, number int) (bool, error) {
-	raw, err := apiURL(cfg.APIBase, owner, repo, "pulls", fmt.Sprint(number))
+	pr, err := getPull(ctx, client, cfg, owner, repo, number)
 	if err != nil {
-		return false, err
-	}
-	status, data, err := doJSON(ctx, client, http.MethodGet, raw, cfg.Token, nil)
-	if err != nil {
-		return false, err
-	}
-	if status != http.StatusOK {
-		return false, fmt.Errorf("read pull request #%d: %s", number, apiMessage(status, data))
-	}
-	var pr pullRequest
-	if err := json.Unmarshal(data, &pr); err != nil {
 		return false, err
 	}
 	return pr.Merged, nil
+}
+
+func getPull(ctx context.Context, client *http.Client, cfg Config, owner, repo string, number int) (pullRequest, error) {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "pulls", fmt.Sprint(number))
+	if err != nil {
+		return pullRequest{}, err
+	}
+	status, data, err := doJSON(ctx, client, http.MethodGet, raw, cfg.Token, nil)
+	if err != nil {
+		return pullRequest{}, err
+	}
+	if status != http.StatusOK {
+		return pullRequest{}, fmt.Errorf("read pull request #%d: %s", number, apiMessage(status, data))
+	}
+	var pr pullRequest
+	if err := json.Unmarshal(data, &pr); err != nil {
+		return pullRequest{}, err
+	}
+	if pr.Number == 0 {
+		pr.Number = number
+	}
+	return pr, nil
 }

@@ -5,8 +5,9 @@
 # this workflow: pull requests and pushes to main only run the snapshot build
 # in main.yml, which never creates a release. Publishing the draft does not
 # run this workflow again. citation.yml opens a pull request that updates
-# CITATION.cff, and that pull request merges only after the secret-scan
-# check passes. This workflow does not edit CITATION.cff or move a tag.
+# CITATION.cff, dispatches the citation gitleaks scan, and merges that pull
+# request only after the required commit status passes. This workflow does
+# not edit CITATION.cff or move a tag.
 name: Release
 
 on:
