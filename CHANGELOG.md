@@ -8,6 +8,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Features
 
+- Auto-link a recorded git commit to a decision when `sdf.git.commit` arrives: if the commit's session already implements exactly one active decision, or if the commit carries one or more `SDF-Decision: <id>` trailers, append a `commit implements decision` edge. Unknown or retracted ids are rejected and logged (SHA and id only) and never create a ghost edge; a repeated event is idempotent. The post-commit hook reads and sends only `SDF-Decision` values, with `git log --format=%(trailers:key=SDF-Decision,valueonly)`, never the subject, body, other trailers, or the diff, and never `git interpret-trailers --parse`. A malformed id is dropped and does not fail the commit. The hook still does not write an `SDF-Decision` trailer. Re-run `sdf init --git-hooks` to replace a hook installed by an older sdf ([#281](https://github.com/paulpham157/sdf/issues/281)).
 - Serve the Software Decision Fabric mark as the UI favicon at `/favicon.svg` and `/favicon.ico` ([#321](https://github.com/paulpham157/sdf/pull/321)).
 
 ### Docs
