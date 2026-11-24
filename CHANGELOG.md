@@ -8,6 +8,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Features
 
+- `sdf hook stop --agent` reminds an agent once per session to record decisions that are not written down, and only when that session has an `sdf.git.commit` with no decision linked to the session or no `implements` edge. `sdf init --write` installs the Stop hook for Claude Code, Codex, Gemini (`AfterAgent`), Qwen, Grok, and Pi (`agent_before_settle`). The store is read-only; a missing or unreadable store lets the agent stop. `sdf decision list --session ID` filters to that session. Copilot and Cursor are spoken by the command and not installed (their hook files are not what `sdf init` writes). OpenCode has no Stop gate ([#285](https://github.com/paulpham157/sdf/issues/285)).
 - Serve the Software Decision Fabric mark as the UI favicon at `/favicon.svg` and `/favicon.ico` ([#321](https://github.com/paulpham157/sdf/pull/321)).
 
 ### Docs

@@ -72,6 +72,77 @@ and [Checking an action](outcomes.md#checking-an-action).
 | GitHub Copilot CLI | None. Environment only | Not injected | Run `sdf decision brief` |
 | Cursor | No `sdf init` target and no session hook to install | Not injected | Run `sdf decision brief` in the session, or install the skill if the agent will load it |
 
+## Decision reminder when a session stops
+
+SessionEnd cannot talk to the model. The Stop hook can. `sdf hook stop --agent AGENT`
+reads that event's JSON on stdin and, at most once per session, may refuse the
+stop with the reason `phiên này có quyết định nào chưa ghi không?`. It does
+that only when the session has an `sdf.git.commit` and either no stored
+decision is linked to the session or no `implements` edge runs from the
+session or from one of those commits. A `claude_code.tool_result` commit
+does not count. The store is opened read-only (`store.OpenReadOnlyBusy`,
+200ms). A missing session id, a missing or unreadable store, a payload that
+is not JSON, or a stop the agent already continued (`stop_hook_active`,
+Grok's `stopHookActive`, a Grok `reason` other than `end_turn`, Cursor's
+`loop_count` above 0 or a status of `aborted` or `error`) prints nothing and
+exits 0. The once-per-session marker is `<db>.stop-reminded`, mode 0600,
+next to the store file (default `sdf-telemetry.sqlite` in the working
+directory). The hook never creates the store.
+
+`sdf init --write` installs that command for the agents whose config it
+already writes. A second run does not add a second copy, and the existing
+SessionStart and SessionEnd hooks stay. OpenCode has no Stop gate, so its
+plugin is unchanged and the reminder there is the skill or `sdf decision
+list`. Copilot and Cursor have a Stop gate, and `sdf hook stop` speaks it,
+but `sdf init` does not write their hook files (Copilot's env snippet is
+not a hook file, and Cursor is not an `sdf init` agent). The command for
+those two is below so it can be installed by hand.
+
+| Agent | Event `sdf init` installs | Block JSON | Session id | Doc checked |
+| --- | --- | --- | --- | --- |
+| Claude Code | `Stop` in `~/.claude/settings.json`, 2s timeout, guarded so a Grok process that also reads that file exits | `{"decision":"block","reason":"..."}` | payload `session_id`, else `CLAUDE_CODE_SESSION_ID` | [Hooks reference](https://code.claude.com/docs/en/hooks) (Stop decision, `stop_hook_active`; cap 8) |
+| Codex CLI | `Stop` in `$CODEX_HOME/hooks.json`, 2s timeout | same `decision`/`reason` (the reason is the next prompt) | `CODEX_THREAD_ID`, else payload `session_id` | [codex-rs Stop input/output](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/schema.rs) (`stop_hook_active`, `decision: block`) |
+| Gemini CLI | `AfterAgent` in `~/.gemini/settings.json`, matcher `*`, timeout 2000 (milliseconds) | same `decision`/`reason` (`block` is an alias of `deny`) | payload `session_id`, else `GEMINI_SESSION_ID` | [Hooks reference](https://geminicli.com/docs/hooks/reference/) |
+| Qwen Code | `Stop` in the user `settings.json`, timeout 2 (seconds) | same `decision`/`reason` | payload `session_id`, else `QWEN_CODE_SESSION_ID` | [Qwen Code hooks](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) |
+| Grok CLI | `Stop` in `$GROK_HOME/hooks/sdf-session.json`, timeout 2 | same `decision`/`reason` | `GROK_SESSION_ID`, else `sessionId` | [Grok hooks](https://grokbook.dev/chapter/10-hooks) (`stopHookActive`, gate only `reason: end_turn`, cap 8) |
+| Pi | `agent_before_settle` in the sdf session extension | `{"continue":true,"entries":[{"type":"custom_message",...}]}` | payload `session_id` (`getSessionId()`), else `PI_SESSION_ID` | [Extensions](https://docs.pi.dev/latest/extensions) |
+| Copilot CLI | not installed (hook files live under `~/.copilot/hooks/` or `$COPILOT_HOME/hooks/`, which `sdf init` does not write) | same `decision`/`reason` | payload `sessionId` | [Copilot hooks](https://docs.github.com/en/copilot/reference/hooks-reference) (`agentStop`, cap 8) |
+| Cursor | not installed (no `sdf init` target; hooks are `~/.cursor/hooks.json` or `.cursor/hooks.json`) | `{"followup_message":"..."}` | payload `conversation_id` | [Cursor hooks](https://cursor.com/docs/hooks) (`stop`, `loop_count`, default cap 5) |
+| OpenCode | nothing (no Stop gate) | — | — | [Plugins](https://opencode.ai/docs/plugins/) |
+
+Copilot, by hand, in `~/.copilot/hooks/sdf-stop.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "agentStop": [
+      {
+        "type": "command",
+        "command": "command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent copilot || exit 0",
+        "timeoutSec": 2
+      }
+    ]
+  }
+}
+```
+
+Cursor, by hand, in `~/.cursor/hooks.json` (the `stop` value is an array of
+command objects, not Claude's matcher groups):
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent cursor || exit 0"
+      }
+    ]
+  }
+}
+```
+
 The skill is not loaded from this repository automatically. Copy or symlink
 the whole `skills/sdf-decisions` folder (including `scripts/`) into the
 location your agent reads. Install paths are documented for
