@@ -17,7 +17,7 @@ var commands = []command{
 	{"check", "Run the case set embedded in the binary against the summary"},
 	{"init", "Print or write an agent's telemetry settings; --check probes the receiver"},
 	{"prices", "Refresh the cached OpenRouter price table (the only network call for prices)"},
-	{"decision", "Record, link, list, or retract decisions (add, link, list, retract)"},
+	{"decision", "Record, link, list, or retract decisions (" + strings.Join(decisionSubcommands(), ", ") + ")"},
 	{"audit", "Verify the hash-chained ledger, or print its head"},
 	{"task", "Declare a task's acceptance checks, or show a declared task"},
 	{"verify", "Run a declared task's checks against a commit and print the verdict"},

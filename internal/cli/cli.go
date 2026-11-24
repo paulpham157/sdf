@@ -503,30 +503,47 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|graph|retract|audit|pre-push> [flags]"
+// decisionCommands is every sdf decision subcommand, in the order help lists them.
+// cmdDecision and the top-level sdf --help line both use this table, so a new
+// subcommand cannot be added to the dispatch without appearing in that help.
+var decisionCommands = []struct {
+	name string
+	run  func(args []string, stdout, stderr io.Writer) int
+}{
+	{"add", cmdDecisionAdd},
+	{"link", cmdDecisionLink},
+	{"list", cmdDecisionList},
+	{"graph", cmdDecisionGraph},
+	{"retract", cmdDecisionRetract},
+	{"audit", cmdDecisionAudit},
+	{"pre-push", cmdDecisionPrePush},
+}
+
+func decisionSubcommands() []string {
+	names := make([]string, len(decisionCommands))
+	for i, c := range decisionCommands {
+		names[i] = c.name
+	}
+	return names
+}
+
+func decisionUsage() string {
+	return "usage: sdf decision <" + strings.Join(decisionSubcommands(), "|") + "> [flags]"
+}
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, decisionUsage)
+		fmt.Fprintln(stderr, decisionUsage())
 		return 2
 	}
+	for _, c := range decisionCommands {
+		if c.name == args[0] {
+			return c.run(args[1:], stdout, stderr)
+		}
+	}
 	switch args[0] {
-	case "add":
-		return cmdDecisionAdd(args[1:], stdout, stderr)
-	case "link":
-		return cmdDecisionLink(args[1:], stdout, stderr)
-	case "list":
-		return cmdDecisionList(args[1:], stdout, stderr)
-	case "graph":
-		return cmdDecisionGraph(args[1:], stdout, stderr)
-	case "retract":
-		return cmdDecisionRetract(args[1:], stdout, stderr)
-	case "audit":
-		return cmdDecisionAudit(args[1:], stdout, stderr)
-	case "pre-push":
-		return cmdDecisionPrePush(args[1:], stdout, stderr)
 	case "--help", "-h":
-		fmt.Fprintln(stdout, decisionUsage)
+		fmt.Fprintln(stdout, decisionUsage())
 		fmt.Fprintln(stdout, "")
 		fmt.Fprintln(stdout, decisionHelp)
 		return 0
