@@ -1,11 +1,34 @@
 ---
 name: sdf-decisions
-description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. Before a push, merge, release, deploy, or architecture change, run `sdf decision check` and stop if it fails.
+description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. At session start, run `sdf decision brief`. Before a push, merge, release, deploy, or architecture change, run `sdf decision check` and stop if it fails.
 ---
 
 # sdf decision records
 
 Write important choices down with the `sdf` CLI. Record both decisions the agent makes and decisions the user makes. sdf never infers a decision from prompts or telemetry. `sdf summary` does not show them; they appear in `sdf decision list`, in the UI, and at `GET /api/decisions`. The web UI and API are read-only, so do not try to POST one. `sdf decision add` and `sdf decision retract` print nothing on success. `sdf decision link` prints nothing on success either, except when the new link leaves the same two endpoints with both a `validates` and a `contradicts` edge: the link is still stored and the command exits 0, but it writes one `sdf decision link: warning: …` line on stderr (see Link rules). So check stderr, not only the exit code, and tell the user what you recorded.
+
+## At session start
+
+This step is mandatory. At the start of a session, run `sdf decision brief` and treat any constraints it prints as in force. Claude Code and Codex may already receive this text from a SessionStart hook after `sdf init --write`; if that brief is not already in the session, run the command yourself. Other agents do not get that hook.
+
+```bash
+sdf decision brief
+```
+
+The command takes no flags by default. It reads `sdf-telemetry.sqlite` in the current working directory, the same default as `sdf serve` and the other `sdf decision` commands. There is no environment variable for the path, and you should not pass `--db` unless the store is not at that default. Start the session from the directory that holds the store, or pass the same `--db` as `sdf serve`.
+
+The SessionStart hook is fail-open, has a 2 second timeout, and runs:
+
+```bash
+command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0
+```
+
+Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0` so a Grok session that also reads `~/.claude/settings.json` does not inject a Claude brief. `sdf init` updates only the exact command text an sdf build has written, including an earlier unreleased form. A user-tuned positive hook timeout is kept; the default 2 second timeout is added only when it is missing or not a positive number.
+
+- A missing store, or no matching decisions: the command prints nothing and exits 0. Continue; do not invent constraints.
+- When the store exists but cannot be read: stdout is `sdf decision brief unavailable: run sdf decision list`, and the command exits 0. Tell the user, and run `sdf decision list` if you need the records.
+- `sdf` missing from `PATH`, or the command cannot be run: continue without a brief; do not invent constraints. Unlike `sdf decision check`, a missing brief is not a reason to stop the session.
+- Locked user decisions come first. When items are cut, the text ends with `N more: run sdf decision list`, or `N more (K locked): run sdf decision list` when locked rules were dropped. Run `sdf decision list` to see the rest.
 
 ## Before a push, merge, release, deploy, or architecture change
 

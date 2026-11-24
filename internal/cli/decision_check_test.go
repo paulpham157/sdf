@@ -145,8 +145,11 @@ func TestDecisionCheckUsageAndStoreError(t *testing.T) {
 		}
 	}
 	help := run(t, "decision", "check", "--help")
-	if help.code != 0 || help.stdout != "usage: sdf decision check <action> [--db PATH] [--json]\n" {
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision check <action> [--db PATH] [--json]") || !strings.Contains(help.stdout, "Exit 0 is allowed") || !strings.Contains(help.stdout, "Exit 1 is forbidden") || !strings.Contains(help.stdout, "Exit 2 is a usage error") || !strings.Contains(help.stdout, "Exit 3 is a store or write error") || !strings.Contains(help.stdout, "200ms busy timeout") || !strings.Contains(help.stdout, "sdf-decisions") {
 		t.Fatalf("%d %q", help.code, help.stdout)
+	}
+	if strings.Contains(help.stdout, "500ms") {
+		t.Fatalf("check --help should not mention brief's 500ms load deadline: %q", help.stdout)
 	}
 	missing := filepath.Join(t.TempDir(), "missing", "telemetry.sqlite")
 	out := run(t, "decision", "check", "--db", missing, "push")
