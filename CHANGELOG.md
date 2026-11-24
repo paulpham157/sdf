@@ -6,6 +6,10 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ## [Unreleased]
 
+### Features
+
+- The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316)).
+
 ### Docs
 
 - Point the README Quickstart at the published v0.1.0 release: `@latest` installs the v0.1.0 tag, `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` is a pin, and the prebuilt archives are on the [v0.1.0 release page](https://github.com/paulpham157/sdf/releases/tag/v0.1.0) ([#317](https://github.com/paulpham157/sdf/pull/317)).
@@ -20,7 +24,6 @@ The first tagged release. Requires Go 1.26 or newer to build from source. Instal
 
 ### Features
 
-- The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316)).
 - Ship `scripts/brief` and `scripts/check` with the `sdf-decisions` skill. The skill's mandatory steps point at those helpers (they run `sdf decision brief` and `sdf decision check`); the SessionStart hook stays the inline command from `sdf init --write` ([#312](https://github.com/paulpham157/sdf/pull/312)).
 - `sdf init --write` for Claude Code and Codex also installs a SessionStart hook that runs `sdf decision brief` (no flags, 2s timeout, fail-open) and injects its stdout, including `sdf decision brief unavailable: run sdf decision list` when the store cannot be read. The hook captures stdout and exits 0 even if `sdf` fails; Claude Code's command is prefixed so a Grok session that also reads `~/.claude/settings.json` does not inject a Claude brief. Other agents run the command via the `sdf-decisions` skill or manually ([#293](https://github.com/paulpham157/sdf/pull/293)).
 - Add `sdf decision check <action>`: exit 1 when an in-force decision's statement forbids `push`, `merge`, `release`, `deploy`, or an architecture change. The agent skill requires this check before those actions ([#292](https://github.com/paulpham157/sdf/pull/292)).
