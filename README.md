@@ -1,10 +1,14 @@
-# SDF
+<div align="center">
+
+# Software Decision Fabric
 
 [![PR CI](https://github.com/paulpham157/sdf/actions/workflows/pr.yml/badge.svg)](https://github.com/paulpham157/sdf/actions/workflows/pr.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/paulpham157/sdf?logo=go)](go.mod)
 [![License](https://img.shields.io/github/license/paulpham157/sdf)](LICENSE)
 
 A local OpenTelemetry collector and decision ledger for coding agents.
+
+</div>
 
 The distinctive figure is cost per accepted outcome. SDF links each
 agent's OTLP traces to commits and pull requests, and with `--github` to
