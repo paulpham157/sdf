@@ -11,10 +11,11 @@ A local OpenTelemetry collector and decision ledger for coding agents.
 </div>
 
 The distinctive figure is cost per accepted outcome. SDF links each
-agent's OTLP traces to commits and pull requests, and with `--github` to
-whether those pull requests merged or were closed without merging, so you
-can see the cost of merged work and of work that was not accepted, not
-only token or session counts.
+agent's OTLP traces to commits, and with `--github` to the pull
+requests for those commits and whether they merged or were closed
+without merging. Without `--github`, accepted stays unknown. That
+figure is the computed cost of merged sessions, divided by how many
+there are — not only token or session counts.
 
 The decision layer records who decided (user or agent), why, and which
 alternatives were considered, and links each decision to the sessions and
