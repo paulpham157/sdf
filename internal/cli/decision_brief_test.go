@@ -171,7 +171,7 @@ func TestDecisionBriefEmptyStoreJSON(t *testing.T) {
 
 func TestDecisionBriefUsage(t *testing.T) {
 	help := run(t, "decision", "brief", "--help")
-	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]") || !strings.Contains(help.stdout, "when any decision matched") || !strings.Contains(help.stdout, `N more (K locked): run sdf decision list`) || !strings.Contains(help.stdout, "omitted_locked") {
+	if help.code != 0 || !strings.Contains(help.stdout, "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]") || !strings.Contains(help.stdout, "when any decision matched") || !strings.Contains(help.stdout, `N more (K locked): run sdf decision list`) || !strings.Contains(help.stdout, "omitted_locked") || !strings.Contains(help.stdout, "scripts/brief") {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	bad := run(t, "decision", "brief", "--format", "yaml")

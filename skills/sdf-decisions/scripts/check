@@ -5,6 +5,10 @@
 # 2 usage, 3 store or write error. Do not swallow a non-zero exit; the skill
 # requires the agent to stop on failure. ACTION and flags (--db, --json) are
 # passed through as arguments (no eval).
+#
+# When sdf is not on PATH this exits 127, the shell's command-not-found
+# code, not 3: the check did not run, but it was not a store or write error.
+# Any non-zero exit, 127 included, means stop and ask the user.
 
 if ! command -v sdf >/dev/null 2>&1; then
 	printf '%s\n' "sdf decision check: sdf not found on PATH" >&2

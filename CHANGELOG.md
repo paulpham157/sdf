@@ -14,7 +14,7 @@ This will be the first tagged release. Requires Go 1.26 or newer to build from s
 
 ### Features
 
-- Ship `scripts/brief` and `scripts/check` with the `sdf-decisions` skill. The skill's mandatory steps point at those helpers (they run `sdf decision brief` and `sdf decision check`); the SessionStart hook stays the inline command from `sdf init --write`.
+- Ship `scripts/brief` and `scripts/check` with the `sdf-decisions` skill. The skill's mandatory steps point at those helpers (they run `sdf decision brief` and `sdf decision check`); the SessionStart hook stays the inline command from `sdf init --write` ([#312](https://github.com/paulpham157/sdf/pull/312)).
 - `sdf init --write` for Claude Code and Codex also installs a SessionStart hook that runs `sdf decision brief` (no flags, 2s timeout, fail-open) and injects its stdout, including `sdf decision brief unavailable: run sdf decision list` when the store cannot be read. The hook captures stdout and exits 0 even if `sdf` fails; Claude Code's command is prefixed so a Grok session that also reads `~/.claude/settings.json` does not inject a Claude brief. Other agents run the command via the `sdf-decisions` skill or manually ([#293](https://github.com/paulpham157/sdf/pull/293)).
 - Add `sdf decision check <action>`: exit 1 when an in-force decision's statement forbids `push`, `merge`, `release`, `deploy`, or an architecture change. The agent skill requires this check before those actions ([#292](https://github.com/paulpham157/sdf/pull/292)).
 - Replace the previous product with an OTLP receiver for Codex and Claude Code; store traces, metrics, and logs in SQLite and summarize sessions ([#157](https://github.com/paulpham157/sdf/pull/157)).
