@@ -7,6 +7,7 @@
 package decision
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -516,17 +517,42 @@ func relationPath(edges []Edge, stored map[string]bool, rel, start, goal string)
 
 func endpointText(e Endpoint) string { return e.Kind + ":" + e.Ref }
 
+// Active returns every in-force settled decision in g, in insertion order.
+// A record qualifies when EffectiveStatus is active and Status is decision.
+// Decisions the user made and decisions an agent made both qualify, including
+// ones Load marked blocked or conflicted. Hypotheses, retracted records, and
+// superseded records do not. Edges are not consulted. The result is never
+// nil. Active does not read the store.
+func Active(g Graph) []Record {
+	out := make([]Record, 0)
+	for _, d := range g.Decisions {
+		if d.EffectiveStatus == EffectiveActive && d.Status == StatusDecision {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // Load reads the graph back. An empty store returns empty lists, not nil.
 func Load(s *store.Store) (Graph, error) {
-	decisions, err := s.LoadDecisions()
+	return LoadContext(context.Background(), s)
+}
+
+// LoadContext is Load bound to ctx. A cancelled ctx stops the read and
+// returns ctx.Err(). An empty store returns empty lists, not nil.
+func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	decisions, err := s.LoadDecisionsContext(ctx)
 	if err != nil {
 		return Graph{}, err
 	}
-	edges, err := s.LoadDecisionEdges()
+	edges, err := s.LoadDecisionEdgesContext(ctx)
 	if err != nil {
 		return Graph{}, err
 	}
-	retractions, err := s.LoadDecisionRetractions()
+	retractions, err := s.LoadDecisionRetractionsContext(ctx)
 	if err != nil {
 		return Graph{}, err
 	}
