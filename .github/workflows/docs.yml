@@ -10,6 +10,8 @@ on:
     paths:
       - "docs/**"
       - "skills/**"
+      - "design/tokens.css"
+      - "design/tokens.json"
       - "mkdocs.yml"
       - "mkdocs_hooks.py"
       - "requirements-docs.txt"
@@ -19,6 +21,8 @@ on:
     paths:
       - "docs/**"
       - "skills/**"
+      - "design/tokens.css"
+      - "design/tokens.json"
       - "mkdocs.yml"
       - "mkdocs_hooks.py"
       - "requirements-docs.txt"

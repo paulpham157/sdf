@@ -47,7 +47,8 @@ Plain `go test ./...` does not build that package.
 The Markdown under `docs/` is built with [MkDocs](https://www.mkdocs.org/)
 and the [Material](https://squidfunk.github.io/mkdocs-material/) theme.
 Pages render the existing files with no rewrite of their body text.
-Mermaid fences, search, dark mode, and an Edit on GitHub link are enabled.
+Mermaid fences, search, and an Edit on GitHub link are enabled. The theme
+is light only and follows `design/tokens.css` (see `docs/design/tokens.md`).
 Skill files under `skills/` are included at build time so the relative
 links already in the docs keep working.
 

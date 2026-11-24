@@ -2,6 +2,8 @@
 
 The Markdown under docs/ is left unchanged. At build time this hook:
 
+- copies design/tokens.css to docs/stylesheets/tokens.css and checks the
+  copy is byte-identical (that path is gitignored; do not edit it)
 - adds skills/README.md, skills/sdf-decisions/SKILL.md, and the skill
   scripts to the MkDocs file set
 - writes a small index page for the scripts directory
@@ -23,6 +25,8 @@ from mkdocs.structure.pages import Page
 
 REPO = Path(__file__).resolve().parent
 GEN = REPO / ".mkdocs-gen"
+TOKENS_SRC = REPO / "design" / "tokens.css"
+TOKENS_DEST = REPO / "docs" / "stylesheets" / "tokens.css"
 
 SKILL_PAGES = (
     "skills/README.md",
@@ -85,7 +89,19 @@ the whole skill folder takes these files with it.
 """
 
 
+def _copy_tokens() -> None:
+    """Publish the generated token sheet without a second hand-kept copy."""
+    data = TOKENS_SRC.read_bytes()
+    TOKENS_DEST.parent.mkdir(parents=True, exist_ok=True)
+    TOKENS_DEST.write_bytes(data)
+    if TOKENS_DEST.read_bytes() != data:
+        raise RuntimeError(
+            "docs/stylesheets/tokens.css is not byte-identical to design/tokens.css"
+        )
+
+
 def on_pre_build(config: MkDocsConfig) -> None:
+    _copy_tokens()
     dest = GEN / SCRIPTS_INDEX
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(SCRIPTS_INDEX_MARKDOWN, encoding="utf-8")

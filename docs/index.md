@@ -54,6 +54,12 @@ The full install notes, feature list, and command reference live in the
 ## How it works
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {
+  "primaryColor": "#FBF7F1", "primaryTextColor": "#2F3640",
+  "primaryBorderColor": "#2F3640", "lineColor": "#7A828C",
+  "clusterBkg": "#EBE3D6", "clusterBorder": "#6B7480", "titleColor": "#2F3640",
+  "edgeLabelBackground": "#F6F1E8",
+  "fontFamily": "ui-sans-serif, system-ui, sans-serif"}}}%%
 flowchart TB
   subgraph telemetry["Telemetry"]
     direction TB
@@ -69,6 +75,7 @@ flowchart TB
     GHA["GitHub Action sdf-verify"] -.-> V
   end
   telemetry ~~~ optional
+  classDef chosen stroke:#C65A2E,stroke-width:3px;
 ```
 
 Agents export OTLP to the local receiver. sdf stores what it needs for
@@ -94,6 +101,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Verify](verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [GitHub Action](action.md) | The `sdf verify` GitHub Action, and its threat model |
 | [Gaps](gaps.md) | Known limits of the collector and the summary |
+| [Design tokens](design/tokens.md) | Shared cream, charcoal, and rust tokens, and how the UI, the docs site, and the landing page use them |
 | [Session boundaries](research/session-boundary.md) | How each agent marks session open and close |
 
 The product site is [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/).

@@ -401,11 +401,13 @@ redefine `--sdf-font-serif` in terms of itself:
 }
 ```
 
-Web pairing: the landing page already self-hosts Fraunces (display serif),
-Source Sans 3 (body) and IBM Plex Mono through Fontsource, under
-`font-src 'self'`. Keep that pair for the landing page and any future docs
-site. It echoes the Georgia/Palatino display of the UI. The GitHub social
-preview was set in Libre Baskerville and Source Sans; see open questions.
+Web pairing: the landing page and the docs site both self-host Fraunces
+(display serif), Source Sans 3 (body) and IBM Plex Mono, under the SIL Open
+Font License. The landing page loads them through Fontsource with
+`font-src 'self'`. The docs site vendors the latin woff2 files in
+`docs/fonts/` (licenses beside them) and does not call the Google Fonts CDN.
+It echoes the Georgia/Palatino display of the UI. The GitHub social preview
+was set in Libre Baskerville and Source Sans; see open questions.
 
 Size scale (`--sdf-font-size-*`), weights (`--sdf-font-weight-*`:
 400/500/600/700) and line heights (`--sdf-line-height-*`: tight 1.1, snug
@@ -507,14 +509,71 @@ surface as CSS. The brand shows up through images and structure only.
     already shows a Connections tab, zoom and a session filter that are not on
     `main`, and it uses the old green palette.
   - `docs/images/logo.svg`: keep. It is byte-identical to the canonical mark.
-  - README "How it works" Mermaid: add the theme block above in a small docs
-    PR. It can go before the restyle because it does not depend on the UI.
+  - README "How it works" Mermaid: still without the theme block. Whether
+    GitHub keeps honoring `init` is an open question, so the README is
+    unchanged. The docs site homepage (`docs/index.md`) includes the block.
 - Tone: direct and specific. Second person and imperative ("Run `sdf serve`").
   State limits plainly. No marketing claims in the docs.
-- Docs site: none exists today. If one is added, it consumes `tokens.css` the
-  same way as the landing page, uses the landing webfonts, a left TOC, a
-  65–75 character measure, `base` body at `relaxed` line height, and code
-  blocks on `surface-sunken` with `md` radius.
+
+### Docs site (MkDocs Material)
+
+Published from this repo (`make docs`, `mkdocs build --strict`) to
+`https://docs.softwaredecisionfabric.tech/` when `docs/`, `skills/`, or the
+site config changes on `main`. The workflow also rebuilds when
+`design/tokens.css` or `design/tokens.json` changes.
+
+It is light only. Dark tokens are still deferred, so `mkdocs.yml` sets a
+single `scheme: default` palette with `primary: custom` and `accent: custom`
+(no slate scheme, no palette toggle). The page sets `color-scheme: light`.
+`primary: custom` is required: a palette entry without it ships
+`data-md-color-primary="indigo"`.
+
+How it consumes `tokens.css`:
+
+- `mkdocs_hooks.py` copies `design/tokens.css` to
+  `docs/stylesheets/tokens.css` in `on_pre_build` and fails the build if the
+  copy is not byte-identical. That path is gitignored. Do not edit it, and do
+  not commit a second copy of the values.
+- `mkdocs.yml` lists `stylesheets/tokens.css` in `extra_css` ahead of
+  `docs/stylesheets/extra.css`.
+- `extra.css` maps Material variables onto semantic tokens and does not
+  repeat hex values. Page, header, and footer use `--sdf-color-bg` or
+  `--sdf-color-surface-sunken`. Text is `--sdf-color-text`. The accent is
+  `--sdf-color-accent` (rust-500). Links and active nav text are
+  `--sdf-color-link` (rust-700). Rust is a mark (active-nav bar, the short
+  rule under the page title, focus), not a panel.
+- The header is cream with charcoal text. The logo stays the cream-tile
+  mark (`docs/overrides/partials/logo.html` sets its `alt` to the site name).
+
+Material sets `html { font-size: 125% }`, so `1rem` is 20px inside the theme.
+Token `rem` sizes assume 16px. `extra.css` multiplies those lengths by
+`--docs-rem` (`0.8`) so body copy is `--sdf-font-size-base` (16px) at
+`--sdf-line-height-relaxed` (1.65). The typeset column is `72ch` (inside the
+65–75ch range). Headings use Fraunces, body and nav use Source Sans 3, and
+code uses IBM Plex Mono, from `docs/fonts/`. Code blocks use
+`--sdf-color-surface-sunken` and `--sdf-radius-md`. Syntax colors are
+semantic tokens that pass 4.5:1 on that surface (Material's default hues do
+not): keywords `--sdf-color-accent-text`, strings `--sdf-color-success`,
+numbers `--sdf-color-error`, constants `--sdf-color-info`, functions
+`--sdf-graph-refinement`, comments and punctuation `--sdf-color-text-muted`.
+Tables use the default table tokens (padding, font size, line height).
+Admonitions use the state colors and their soft fills.
+
+The homepage "How it works" diagram carries the Mermaid `themeVariables`
+block from the GitHub section above, for GitHub's renderer. On the built
+site, Material renders that fence itself: its script loads Mermaid 11 from
+unpkg and injects `themeCSS` into a closed shadow root, which overrides the
+diagram's own fills. `extra.css` sets the variables that stylesheet reads so
+the picture matches the block: node fill `--sdf-color-surface-raised`, node
+stroke and title `--sdf-color-text`, edges `--sdf-color-charcoal-400` (the
+documented `lineColor`), cluster fill `--sdf-color-surface-sunken` (Material
+uses `--md-default-fg-color--lightest` for that rect), cluster stroke
+`--sdf-color-border-strong`, edge-label background `--sdf-color-bg`. Labels
+use Source Sans 3. Self-hosting that Mermaid script is open: the URL is
+inside Material's bundle.
+
+Layout stays Material's: a left navigation, a right table of contents, and
+the typeset column between them.
 
 ### Landing (`sdf-landingpage`): airy, message-led
 
@@ -534,7 +593,7 @@ surface as CSS. The brand shows up through images and structure only.
 | --- | --- | --- |
 | UI | A byte-identical copy at `internal/ui/assets/tokens.css`, served by the existing handler and linked before `app.css`. `app.css` uses the `--sdf-` variables. `//go:embed` cannot reach `../../design`, so a copy is needed. | A Go test compares the two files byte for byte (added with the restyle, not in this PR). `tokens.css` holds no URLs, `@import` or `url()`, so the UI's no-URL rule and CSP hold. |
 | Docs (GitHub) | Not as CSS. The palette is applied by hand to images and the Mermaid theme block above. | Review. |
-| Docs site (if added) | Same as landing. | Same as landing. |
+| Docs site | `mkdocs_hooks.py` copies `design/tokens.css` to `docs/stylesheets/tokens.css` at build time and checks the bytes match. `extra.css` maps Material onto the semantic tokens and prepends the self-hosted webfonts. | `make docs` (`mkdocs build --strict`). The hook fails if the copy is not byte-identical. `python3 design/tokens.py --check` still checks the generator output. |
 | Landing | Vendor a byte-identical copy (recommended path `src/styles/tokens.css`), imported first in `global.css`. Its own variables become aliases (`--paper: var(--sdf-color-bg)`), and webfonts are prepended as above. | A small Node script (for example `npm run check:tokens`) compares the vendored file's SHA-256 with a recorded `{commit, sha256}` from this repo, offline, in the existing build workflow. A separate scheduled job, or a manual run, fetches `design/tokens.css` at `main` and reports drift. |
 
 Why vendoring for the landing page:
@@ -575,6 +634,8 @@ Landing variable mapping:
 3. Update this spec if a meaning changes.
 4. Copy `design/tokens.css` to `internal/ui/assets/tokens.css` (once that copy
    exists) and to the landing repo, and update its recorded commit and hash.
+   The docs site does not need a committed copy: the next `make docs` copies
+   the file itself.
 
 ## Open questions
 
