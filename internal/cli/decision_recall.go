@@ -13,10 +13,12 @@ import (
 const decisionRecallUsage = "usage: sdf decision recall [--db PATH] [--json] [--since DURATION|RFC3339] [--until RFC3339]"
 
 // cmdDecisionRecall reports link recall by proxy: commits in a session
-// that has a decision but no implements edge, divided into the commits
-// in those sessions. It opens the store read-only and writes nothing.
-// Exit 0 is a written report, including a ratio of zero. Exit 2 is a
-// usage error. Exit 3 is a store that could not be opened or read.
+// that has a decision but no implements edge from the commit itself,
+// over the commits in those sessions. A session-only implements edge
+// does not count the commit as linked. It opens the store read-only
+// and writes nothing. Exit 0 is a written report, including a ratio of
+// zero or a non-empty miss list. Exit 2 is a usage error. Exit 3 is a
+// store that could not be opened or read.
 func cmdDecisionRecall(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
 	asJSON := false

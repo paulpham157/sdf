@@ -11,7 +11,8 @@ Two measurements share the names and stay separate:
   synthetic fixtures. It needs ground truth.
 - **Link recall by proxy** is `sdf decision recall`. It needs no labels.
   A commit counts as a miss when its session has a decision and the commit
-  has no `implements` edge. The ratio is
+  itself has no `implements` edge. An `implements` edge from the session
+  only does not count that commit as linked. The ratio is
   `commits_linked / commits_in_decision_sessions`, the same totals
   `sdf decision audit` already computes. The overview chart's recall is a
   different share: every recorded commit that has an `implements` edge,
@@ -124,8 +125,11 @@ The store is opened read-only and is not created. A missing file in an
 existing directory is an empty store and exits 0. JSON uses schema
 `sdf.decision.recall/v1`. `link_recall_by_proxy` and `wilson95` are null
 when no commit in the window sits in a session that has a decision.
-`missed_commits` lists those misses. `--since 24h` is the last 24 hours
-before the command runs. Exit 0 means the report was written.
+`missed_commits` lists those misses. A session-only `implements` edge
+does not count the commit as linked; only `implements` from the commit
+itself does. `--since 24h` is the last 24 hours before the command runs.
+Exit 0 means the report was written, including when there are misses
+(unlike `sdf decision audit`, which exits 1 on findings).
 
 ## Out of scope
 

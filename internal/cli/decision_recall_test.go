@@ -28,6 +28,9 @@ func TestDecisionRecallProxyAndFlags(t *testing.T) {
 	})
 	mustRun(t, "decision", "add", "--db", dbPath, "--id", "use-wal",
 		"--statement", "Use WAL mode for the store.", "--status", "decision", "--decided-by", "user")
+	// A session-only implements edge makes SessionHasDecision true, but
+	// does not count miss as linked. Only the commit implements edge on
+	// linked does.
 	mustRun(t, "decision", "link", "--db", dbPath, "--relation", "implements",
 		"--from", "session:"+sess, "--to", "decision:use-wal")
 	mustRun(t, "decision", "link", "--db", dbPath, "--relation", "implements",

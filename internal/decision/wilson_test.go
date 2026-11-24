@@ -1,6 +1,9 @@
 package decision
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestWilson95Bounds(t *testing.T) {
 	if _, ok := Wilson95(0, 0); ok {
@@ -24,5 +27,26 @@ func TestWilson95Bounds(t *testing.T) {
 	// 1/2 is the classic check that the interval is not the Wald interval.
 	if half.Low > 0.1 || half.High < 0.9 {
 		t.Fatalf("1/2 interval too narrow: %+v", half)
+	}
+}
+
+func TestWilson95DocumentedBaseline(t *testing.T) {
+	// High bounds quoted in docs/recall.md and the PR body for the
+	// skill-only snapshot (0 hits).
+	cases := []struct {
+		k, n int
+		high string
+	}{
+		{0, 1, "0.793451"},
+		{0, 2, "0.657620"},
+		{0, 4, "0.489891"},
+		{0, 6, "0.390334"},
+		{0, 7, "0.354330"},
+	}
+	for _, tc := range cases {
+		w, ok := Wilson95(tc.k, tc.n)
+		if !ok || w.Low != 0 || strconv.FormatFloat(w.High, 'f', 6, 64) != tc.high {
+			t.Fatalf("%d/%d: %+v want high %s", tc.k, tc.n, w, tc.high)
+		}
 	}
 }
