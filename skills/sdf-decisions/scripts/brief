@@ -1,0 +1,22 @@
+#!/bin/sh
+# Session-start helper for the sdf-decisions skill. Runs `sdf decision brief`.
+#
+# Fail-open: a missing sdf or a failed brief must not abort the session.
+# A missing store or no matches already prints nothing and exits 0; when the
+# store exists but cannot be read, the CLI prints
+# `sdf decision brief unavailable: run sdf decision list` and exits 0.
+#
+# The default store is sdf-telemetry.sqlite in the current working directory
+# (no environment variable for the path). Pass --db only when the store is
+# not at that default. Extra arguments are forwarded as arguments (no eval).
+#
+# This is not the SessionStart hook. That hook stays the inline command
+# installed by `sdf init --write`, so init works even when this skill folder
+# is not on disk. The hook's 2s timeout and Claude's GROK_HOOK_EVENT guard
+# are not applied here; an agent can just run the command. Brief's 500ms
+# load deadline is CLI-internal.
+
+command -v sdf >/dev/null 2>&1 || exit 0
+sdf_out=$(sdf decision brief "$@" </dev/null 2>/dev/null) || exit 0
+[ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"
+exit 0

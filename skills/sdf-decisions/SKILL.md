@@ -1,6 +1,6 @@
 ---
 name: sdf-decisions
-description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. At session start, run `sdf decision brief`. Before a push, merge, release, deploy, or architecture change, run `sdf decision check` and stop if it fails.
+description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. At session start, run `scripts/brief` (or `sdf decision brief`). Before a push, merge, release, deploy, or architecture change, run `scripts/check` (or `sdf decision check`) and stop if it fails.
 ---
 
 # sdf decision records
@@ -9,13 +9,23 @@ Write important choices down with the `sdf` CLI. Record both decisions the agent
 
 ## At session start
 
-This step is mandatory. At the start of a session, run `sdf decision brief` and treat any constraints it prints as in force. Claude Code and Codex may already receive this text from a SessionStart hook after `sdf init --write`; if that brief is not already in the session, run the command yourself. Other agents do not get that hook.
+This step is mandatory. At the start of a session, run this skill's `scripts/brief` helper and treat any constraints it prints as in force. The helper runs `sdf decision brief`. Claude Code and Codex may already receive this text from a SessionStart hook after `sdf init --write`; if that brief is not already in the session, run the helper yourself. Other agents do not get that hook.
+
+The helpers live in `scripts/` next to this file. After a `cp -R skills/sdf-decisions …` install, that is `…/sdf-decisions/scripts/brief` and `…/sdf-decisions/scripts/check`. Run them with `sh` or as executables from the session working directory; they use the process current working directory for the default store, not the skill folder.
 
 ```bash
-sdf decision brief
+# Relative to this skill folder
+sh scripts/brief
+# Underlying command: sdf decision brief
 ```
 
-The command takes no flags by default. It reads `sdf-telemetry.sqlite` in the current working directory, the same default as `sdf serve` and the other `sdf decision` commands. There is no environment variable for the path, and you should not pass `--db` unless the store is not at that default. Start the session from the directory that holds the store, or pass the same `--db` as `sdf serve`.
+The helper takes no flags by default. It reads `sdf-telemetry.sqlite` in the current working directory, the same default as `sdf serve` and the other `sdf decision` commands. There is no environment variable for the path, and you should not pass `--db` unless the store is not at that default. Start the session from the directory that holds the store, or pass the same `--db` as `sdf serve`:
+
+```bash
+sh scripts/brief --db PATH
+```
+
+You can also run `sdf decision brief` directly.
 
 The SessionStart hook is fail-open, has a 2 second timeout, and runs:
 
@@ -23,7 +33,7 @@ The SessionStart hook is fail-open, has a 2 second timeout, and runs:
 command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0
 ```
 
-Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0` so a Grok session that also reads `~/.claude/settings.json` does not inject a Claude brief. `sdf init` updates only the exact command text an sdf build has written, including an earlier unreleased form. A user-tuned positive hook timeout is kept; the default 2 second timeout is added only when it is missing or not a positive number.
+Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0` so a Grok session that also reads `~/.claude/settings.json` does not inject a Claude brief. `sdf init` updates only the exact command text an sdf build has written, including an earlier unreleased form. A user-tuned positive hook timeout is kept; the default 2 second timeout is added only when it is missing or not a positive number. The hook stays this inline command; `sdf init` must work even when the skill folder is not installed at a known path. `scripts/brief` is fail-open in the same spirit (missing `sdf` or a failed brief exits 0), but it is not the hook: it has no 2 second timeout and no `GROK_HOOK_EVENT` guard. Brief's 500ms load deadline is CLI-internal, not a script timeout.
 
 - A missing store, or no matching decisions: the command prints nothing and exits 0. Continue; do not invent constraints.
 - When the store exists but cannot be read: stdout is `sdf decision brief unavailable: run sdf decision list`, and the command exits 0. Tell the user, and run `sdf decision list` if you need the records.
@@ -32,13 +42,15 @@ Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0`
 
 ## Before a push, merge, release, deploy, or architecture change
 
-This step is mandatory. Run it before any of those actions, including a second attempt after a failure. Do not push, merge, release, deploy, or change the architecture until it exits 0.
+This step is mandatory. Run this skill's `scripts/check` helper before any of those actions, including a second attempt after a failure. The helper runs `sdf decision check` and forwards its exit code. Do not push, merge, release, deploy, or change the architecture until it exits 0.
 
 ```bash
-sdf decision check ACTION [--db PATH] [--json]
+# Relative to this skill folder
+sh scripts/check ACTION [--db PATH] [--json]
+# Underlying command: sdf decision check ACTION [--db PATH] [--json]
 ```
 
-`ACTION` is one argument: exactly `push`, `merge`, `release`, or `deploy`, or one free-text architecture change such as `replace sqlite`. `git push` is not the named action `push`; pass `push`. Use the same `--db` as the other `sdf decision` commands. `--json` prints `action`, `kind`, `allowed`, and `blocking` (`id`, `decided_by`, `statement`, `match`).
+`ACTION` is one argument: exactly `push`, `merge`, `release`, or `deploy`, or one free-text architecture change such as `replace sqlite`. `git push` is not the named action `push`; pass `push`. Use the same `--db` as the other `sdf decision` commands. `--json` prints `action`, `kind`, `allowed`, and `blocking` (`id`, `decided_by`, `statement`, `match`). The helper passes `ACTION` and those flags through as arguments (no eval). You can also run `sdf decision check` directly.
 
 - Exit 0, and a line starting with `allowed`: nothing in force forbids it. You may proceed.
 - Exit 1, and a line starting with `forbidden`: stop. Do not do the action. Show the user every blocking id, who set it (`decided_by`), and the statement, and ask how to proceed. Do not retract, supersede, or reword a decision to get past this check unless the user tells you to.
