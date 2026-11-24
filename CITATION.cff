@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Software Decision Fabric"
+abstract: "A local OpenTelemetry collector and decision ledger for coding agents."
+authors:
+  - family-names: Pham
+    given-names: Paul
+    alias: paulpham157
+    email: paulpham157@gmail.com
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-11-24
+url: "https://github.com/paulpham157/sdf"
+repository-code: "https://github.com/paulpham157/sdf"
+commit: 0fd24b622bf4f6e7a0db29d144e739a7c45a0d67
