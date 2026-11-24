@@ -482,8 +482,8 @@ footer p { margin: 0; }
 .dg-canvas {
   position: relative;
   overflow: auto;
-  max-height: calc(100vh - 220px);
-  min-height: 360px;
+  max-height: calc(100vh - 340px); /* leaves room for the replay scrubber below */
+  min-height: 300px;
   border-top: 1px solid var(--line);
   outline: none;
 }
@@ -657,10 +657,76 @@ g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
 .dg-command { display: block; font-size: 11px; background: var(--paper); padding: 4px 6px; overflow-wrap: anywhere; margin-bottom: 6px; }
 .dg-whatif button { border: 1px solid var(--ink); background: none; border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
 
+/* Replay scrubber. Ticks are SVG with percentage x, so nothing needs an
+   inline style (the CSP allows none). */
+.dg-replay { border-top: 1px solid var(--line); padding: 8px 2px 0; }
+.dg-replay-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dg-play, .dg-now {
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  flex: none;
+}
+.dg-now { background: var(--paper-raised); color: var(--ink); margin-left: auto; }
+.dg-now[hidden] { display: none; }
+.dg-play[aria-pressed="true"] { background: var(--paper-raised); color: var(--ink); }
+.dg-readout {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--paper);
+  background: var(--green);
+  border-radius: 6px;
+  padding: 3px 9px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.dg-slider {
+  margin: 6px 0 0;
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.dg-slider:focus-visible { outline: 2.5px solid var(--green); outline-offset: 3px; }
+.dg-track { display: block; overflow: visible; }
+.dg-track-base { stroke: #b9b0a0; stroke-width: 2; }
+.dg-track-done { stroke: var(--ink); stroke-width: 3; }
+.dg-tick { stroke: var(--ink); stroke-width: 1.5; }
+.dg-tick-user { fill: var(--ink); }
+.dg-tick-agent { fill: var(--paper); }
+.dg-tick-edge { fill: #5e584e; stroke: none; }
+.dg-tick-retraction { fill: var(--paper); stroke: var(--error); }
+.dg-tick-future { stroke: #a39a8a; }
+.dg-tick-future.dg-tick-user, .dg-tick-future.dg-tick-edge { fill: #c9c1b2; }
+.dg-tick-future.dg-tick-edge { stroke: none; }
+.dg-playhead { stroke: var(--green); stroke-width: 2; }
+.dg-thumb { fill: var(--paper); stroke: var(--green); stroke-width: 3; }
+.dg-slider:focus-visible .dg-thumb { stroke-width: 4; }
+.dg-axis { font: 11px ui-sans-serif, system-ui, sans-serif; fill: var(--ink-soft); }
+.dg-replay-hint { margin: 2px 0 0; font-size: 11.5px; color: var(--ink-soft); }
+.dg-replay-note { margin: 4px 0 8px; padding: 6px 8px; border-radius: 6px; background: var(--green-soft); color: #0a4f39; font-size: 12.5px; }
+
+/* Nodes the playhead has not reached: an outline in place, no text. */
+.dg-node.dg-future { cursor: default; opacity: 0.55; }
+.dg-node.dg-future .dg-shape { fill: none; stroke: #b9b0a0; stroke-width: 1.2; stroke-dasharray: 3 3; }
+.dg-node.dg-future .dg-inner, .dg-node.dg-future text, .dg-node.dg-future .dg-chip, .dg-node.dg-future .dg-badge,
+.dg-node.dg-future .dg-lock-ring, .dg-node.dg-future g { display: none; }
+/* Replay fades in what the last step recorded; opacity only, never position. */
+.dg-enter { animation: dg-fade-in 450ms ease-out; }
+@keyframes dg-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
 @media (max-width: 1100px) {
   .dg { grid-template-columns: minmax(0, 1fr); }
   .dg-rail ul { display: flex; flex-wrap: wrap; gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .dg * { transition: none !important; animation: none !important; }
+  .dg-enter { animation: none; }
 }

@@ -20,8 +20,8 @@ func summaryMissingHint(path string, explicit bool, stderr io.Writer) {
 	}
 	abs := store.AbsPath(path)
 	if explicit {
-		fmt.Fprintf(stderr, "sdf summary: no database at %s yet (from --db); nothing was created. Pass the path sdf serve printed after db=.\n", abs)
+		fmt.Fprintf(stderr, "sdf summary: no database at %s yet (from --db); nothing was created. Pass the path sdf serve printed after db=.\n", displayPath(abs))
 		return
 	}
-	fmt.Fprintf(stderr, "sdf summary: no database at %s yet; nothing was created. sdf serve writes sdf-telemetry.sqlite in the directory it was started from and prints the path after db=. Run sdf summary there, or pass --db PATH.\n", abs)
+	fmt.Fprintf(stderr, "sdf summary: no database at %s yet; nothing was created. sdf serve writes sdf-telemetry.sqlite in the directory it was started from and prints the path after db=. Run sdf summary there, or pass --db PATH.\n", displayPath(abs))
 }

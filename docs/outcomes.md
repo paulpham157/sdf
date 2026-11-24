@@ -498,6 +498,46 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   runs it. The new id is `PARENT-alt-N`; a parent longer than 110 characters
   is cut to 100 and followed by `-` and 8 hex digits of its SHA-256, so the
   id stays within 128 characters and two long parents do not collide.
+- **Replay.** A scrubber under the canvas replays the chapter. Its timeline
+  has one event per decision (`recorded_at`), per stored edge that touches
+  one of the chapter's decisions (`links[].recorded_at`), and per retraction
+  (`retraction.retracted_at`), ordered by the full stored time (to the
+  microsecond the store writes, not only the millisecond), then decision,
+  edge, retraction, then the order the API lists them. A time with no zone
+  is read as UTC, the zone the store writes; a time that cannot be read
+  sorts last and is labelled "time unknown". It needs no other endpoint.
+  Ticks are spaced by event order; filled is a user decision, hollow an
+  agent one, a small dot an edge. The label at the playhead reads, for
+  example, `Nov 22 · 09:14 GMT+7 · agent-status · 10 of 13`: the time is in
+  the browser's time zone with its label, as every other time on the page.
+  The slider is `role="slider"` with `aria-valuemin`, `aria-valuemax`,
+  `aria-valuenow`, and `aria-valuetext`: ←/→ or `[`/`]` step one event
+  (`[`/`]` work anywhere on the tab outside a text field), PageUp/PageDown
+  step a tenth, Home/End jump, Space plays or pauses, and dragging scrubs.
+  `#/decisions/<chapter>[/<node>]?at=N` opens the chapter at event N; a
+  link to a chapter that no longer exists opens the newest chapter at now
+  and ignores `at`. The `?` sheet lists the replay keys.
+
+  As of the playhead, the derived fields are **recomputed, not
+  approximated**: the page re-runs the read-time rules above (superseded,
+  retracted, blocked with open blockers, conflicted, challenged) over only
+  the decisions and edges recorded so far, then rebuilds roles, facts,
+  needs attention, and explored the way the graph does. At the last event
+  the page shows the server's chapter unchanged. Layout is not recomputed:
+  every node keeps its final lane and row, and a node not recorded yet is a
+  faint outline with no text, out of the tab order; its panel (reached by
+  link) says it is not recorded yet and shows no status chips. Two things are
+  approximated because nothing stores their time: an ending appears once
+  every decision it came from is recorded and linked to a session or commit,
+  and a pull request's merged state is today's. With
+  `prefers-reduced-motion`, replay steps without the fade and at a slower
+  pace (1.6 s instead of 0.9 s). The live region announces when playback
+  starts, pauses, and finishes; each step is in the slider's
+  `aria-valuetext`. Open blockers are resolved with the same memoized
+  supersedes-head walk as the server (linear in the decisions and edges,
+  cycles detected by component), so a step stays fast on long or diamond
+  shaped supersedes chains. If a step fails, playback stops and the tab is
+  drawn again from scratch.
 
 ### Auditing the graph
 
@@ -641,6 +681,13 @@ a change that removes or renames one gets a new `schema` value. Every list is
 | `active_without_implements[]` | `id`, `status` (as stored), `recorded_at`, `statement` |
 | `unlinked_session_commits[]` | `sha` (lowercase), `session_id`, `timestamp` (record time of the event that named the session, UTC), `source` (`event` or `trailer`), `event` (`sdf.git.commit` or `claude_code.tool_result`), and `repo` and `branch` when the hook sent them |
 | `stale_edges[]` | `relation`, `from`, `to`, `recorded_at`, and `stale[]`: each decision end that is stale, with `end` (`from` or `to`), `id`, `effective_status`, and `superseded_by` when superseded |
+
+`sdf decision pre-push`, which the `pre-push` git hook runs, applies the
+same rules to the commits a push sends and warns (or, with
+`sdf.prePush=block`, blocks) when one SDF recorded has no `implements` edge
+to a decision that is not retracted. Unlike audit, a session link does not
+satisfy it, and it also accepts an `SDF-Decision: <id>` trailer. See
+[Pre-push decision check](receiver.md#pre-push-decision-check).
 
 The totals are denominators, counted over the same window as `commits[]`:
 `decisions_active - decisions_active_with_implements` is the number of

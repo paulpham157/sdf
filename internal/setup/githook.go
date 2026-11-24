@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/paulpham157/sdf/internal/ledger"
 )
 
 const hookMarker = "# sdf-git-hook:v1"
@@ -19,14 +21,59 @@ const hookMarker = "# sdf-git-hook:v1"
 // core.hooksPath is not changed.
 var ErrHooksNotActivated = errors.New("git hooks were not installed into the active hooks directory")
 
-var hookNames = []string{"post-commit", "post-rewrite", "prepare-commit-msg"}
+var hookNames = []string{"post-commit", "post-rewrite", "prepare-commit-msg", "pre-push"}
 
-// InstallGitHooks writes post-commit, post-rewrite, and prepare-commit-msg
-// into the hooks directory Git will run for this checkout. An existing hook
-// is chained, not overwritten. A symlink is left untouched. A second run
-// with the same endpoint rewrites only the sdf script.
+// HookOptions configure the pre-push hook. Bin is the sdf binary it runs;
+// when empty, or when that file is gone at push time, the hook uses sdf
+// from PATH. DB is the store sdf serve writes; when empty the hook reads
+// SDF_PRE_PUSH_DB at push time and otherwise skips the check with a note.
+// The other hooks ignore both.
+type HookOptions struct {
+	Bin string
+	DB  string
+}
+
+// hookConfig is what is substituted into every hook script.
+type hookConfig struct {
+	url string
+	bin string
+	db  string
+}
+
+func newHookConfig(url string, opt HookOptions) (hookConfig, error) {
+	cfg := hookConfig{url: url}
+	if bin := strings.TrimSpace(opt.Bin); bin != "" && filepath.IsAbs(bin) && !strings.ContainsAny(bin, "\n\r\x00") {
+		cfg.bin = filepath.Clean(bin)
+	}
+	if db := strings.TrimSpace(opt.DB); db != "" {
+		if strings.ContainsAny(db, "\n\r\x00") {
+			return hookConfig{}, fmt.Errorf("refusing store path %q", db)
+		}
+		abs, err := filepath.Abs(db)
+		if err != nil {
+			return hookConfig{}, err
+		}
+		cfg.db = abs
+	}
+	return cfg, nil
+}
+
+// InstallGitHooks is InstallGitHooksWith with no pre-push options: the
+// pre-push hook runs sdf from PATH and reads SDF_PRE_PUSH_DB.
 func InstallGitHooks(dir string, ep Endpoint) (Result, error) {
+	return InstallGitHooksWith(dir, ep, HookOptions{})
+}
+
+// InstallGitHooksWith writes post-commit, post-rewrite, prepare-commit-msg,
+// and pre-push into the hooks directory Git will run for this checkout. An
+// existing hook is chained, not overwritten. A symlink is left untouched. A
+// second run with the same endpoint and options changes nothing.
+func InstallGitHooksWith(dir string, ep Endpoint, opt HookOptions) (Result, error) {
 	url, err := hookLogsURL(ep)
+	if err != nil {
+		return Result{}, err
+	}
+	cfg, err := newHookConfig(url, opt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -44,14 +91,14 @@ func InstallGitHooks(dir string, ep Endpoint) (Result, error) {
 		b.WriteString(note)
 	}
 	if manager := hookManager(configPath, hooksDir); manager != "" {
-		chain, err := writeChainScripts(top, url)
+		chain, err := writeChainScripts(top, cfg)
 		if err != nil {
 			return Result{Text: b.String()}, err
 		}
 		b.WriteString(managerInstructions(manager, configPath, chain))
 		return Result{Text: b.String()}, ErrHooksNotActivated
 	}
-	changed, err := installHookFiles(hooksDir, url)
+	changed, err := installHookFiles(hooksDir, cfg)
 	if err != nil {
 		return Result{Text: b.String()}, err
 	}
@@ -62,6 +109,7 @@ func InstallGitHooks(dir string, ep Endpoint) (Result, error) {
 	}
 	fmt.Fprintf(&b, "Events go to %s and nowhere else. The body is the commit SHA, checkout path, branch, and agent session id. The diff and the commit message are not sent.\n", url)
 	fmt.Fprintf(&b, "A commit still succeeds when that receiver is down. prepare-commit-msg adds an SDF-Session trailer only when a session id is present.\n")
+	b.WriteString(prePushNote(cfg))
 	b.WriteString("If sdf serve requires a token, the hooks send it when SDF_OTLP_TOKEN or SDF_OTLP_TOKEN_FILE is set where git runs; the token is not written to the hooks.\n")
 	if hint := idleToolHint(top, configPath); hint != "" {
 		b.WriteString(hint)
@@ -207,13 +255,13 @@ func uninstallOne(path string) (string, error) {
 	return "removed " + path + "\n", nil
 }
 
-func installHookFiles(dir, url string) (bool, error) {
+func installHookFiles(dir string, cfg hookConfig) (bool, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
 	}
 	changed := false
 	for _, name := range hookNames {
-		did, err := installOne(filepath.Join(dir, name), hookScript(url, name))
+		did, err := installOne(filepath.Join(dir, name), hookScript(cfg, name))
 		if err != nil {
 			return changed, err
 		}
@@ -224,13 +272,13 @@ func installHookFiles(dir, url string) (bool, error) {
 	return changed, nil
 }
 
-func writeChainScripts(top, url string) (string, error) {
+func writeChainScripts(top string, cfg hookConfig) (string, error) {
 	dir := chainDir(top)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	for _, name := range hookNames {
-		if err := writeExec(filepath.Join(dir, name), hookScript(url, name)); err != nil {
+		if err := writeExec(filepath.Join(dir, name), hookScript(cfg, name)); err != nil {
 			return "", err
 		}
 	}
@@ -271,7 +319,7 @@ func managerInstructions(manager, configPath, chain string) string {
 	fmt.Fprintf(&b, "Chain scripts were written to %s. Append these lines yourself:\n", chain)
 	for _, name := range hookNames {
 		script := filepath.Join(chain, name)
-		if name == "prepare-commit-msg" {
+		if name == "prepare-commit-msg" || name == "pre-push" {
 			fmt.Fprintf(&b, "  sh %s \"$@\"\n", script)
 			continue
 		}
@@ -280,13 +328,14 @@ func managerInstructions(manager, configPath, chain string) string {
 	b.WriteString("Put each line before any exit 0, or at the top of the file. Lines after exit 0 never run, and the commit still succeeds.\n")
 	switch manager {
 	case "husky":
-		b.WriteString("Put them in the husky files you edit (.husky/post-commit, .husky/post-rewrite, and .husky/prepare-commit-msg), not in the generated .husky/_ copies.\n")
+		b.WriteString("Put them in the husky files you edit (.husky/post-commit, .husky/post-rewrite, .husky/prepare-commit-msg, and .husky/pre-push), not in the generated .husky/_ copies.\n")
 	case "lefthook":
 		b.WriteString("Point the matching lefthook.yml commands at those scripts. A shell script those commands call has the same exit 0 rule. Re-run lefthook install if it rewrites the active hooks.\n")
 	case "pre-commit":
 		b.WriteString("pre-commit does not run post-commit unless you add a hook. Call the scripts from the hook files pre-commit installed, or from a local hook entry. A shell script that calls them has the same exit 0 rule.\n")
 	}
 	b.WriteString("The scripts post only to loopback. They send the commit SHA, checkout path, branch, and agent session id, not the diff or the commit message.\n")
+	b.WriteString("The pre-push script sends nothing. It warns about pushed commits that implement no decision and never fails a push because SDF is unavailable.\n")
 	return b.String()
 }
 
@@ -403,4 +452,16 @@ func gitOutput(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git: %s", msg)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// prePushNote is the install text about the pre-push decision check.
+func prePushNote(cfg hookConfig) string {
+	var b strings.Builder
+	b.WriteString("pre-push warns about pushed commits SDF recorded that implement no decision. It sends nothing and only reads the SDF-Decision trailer of the pushed commits, never the diff. The push still succeeds (warn mode), including when SDF is unavailable. Skip it with git push --no-verify or SDF_PRE_PUSH=off; git config sdf.prePush block makes it block.\n")
+	if cfg.db != "" {
+		fmt.Fprintf(&b, "pre-push reads the store %s.\n", ledger.Safe(cfg.db))
+	} else {
+		b.WriteString("pre-push has no store to read: re-run with --db PATH (the db= path sdf serve prints), or set SDF_PRE_PUSH_DB. Until then it skips the check with a one-line note.\n")
+	}
+	return b.String()
 }

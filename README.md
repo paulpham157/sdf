@@ -115,8 +115,11 @@ Every command prints its flags with `--help` (or `sdf help <command>`).
 `contradicts`. `list` and the UI show blocked and conflicted records;
 `graph` (also `GET /api/decisions/graph` and the UI's Decisions tab)
 shows chapters, endings, and explored %; `audit` reports unlinked
-decisions and commits (exit 1 on findings). Details are in
-[docs/outcomes.md](docs/outcomes.md).
+decisions and commits (exit 1 on findings). The `pre-push` git hook
+from `sdf init --git-hooks --db PATH` warns about pushed commits that
+implement no decision
+([pre-push decision check](docs/receiver.md#pre-push-decision-check)).
+Details are in [docs/outcomes.md](docs/outcomes.md).
 
 Authentication is off by default; keep the binds on localhost.
 

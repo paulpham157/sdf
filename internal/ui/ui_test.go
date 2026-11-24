@@ -1387,6 +1387,7 @@ func writeBudget(t *testing.T, ceiling string) string {
 //	                  <key> may carry ctrl+, meta+, alt+ or shift+ prefixes
 //	hash=<hash>       set location.hash and fire hashchange
 //	input=<text>      set the focused element's value and fire input
+//	wait=<ms>         let timers run for ms milliseconds (replay playback)
 const pageRunner = `"use strict";
 const { createInterface } = require("node:readline");
 
@@ -1397,10 +1398,14 @@ function textOf(node) {
 
 class Node {
   constructor() { this.children = []; this.parentNode = null; }
+  // As ParentNode.append and replaceChildren do: a kid that is not a node
+  // (null, undefined, a string, a number) becomes a text node of its
+  // String(), so a stray null draws "null" here as it does in a browser.
   append() {
-    for (const kid of arguments) {
-      if (kid && kid.parentNode) kid.parentNode.removeChild(kid);
-      if (kid) kid.parentNode = this;
+    for (let kid of arguments) {
+      if (!(kid instanceof Node)) kid = new Text(String(kid));
+      if (kid.parentNode) kid.parentNode.removeChild(kid);
+      kid.parentNode = this;
       this.children.push(kid);
     }
   }
@@ -1413,6 +1418,7 @@ class Node {
   replaceWith(next) {
     const parent = this.parentNode;
     if (!parent) return;
+    if (!(next instanceof Node)) next = new Text(String(next));
     const at = parent.children.indexOf(this);
     if (next.parentNode) next.parentNode.removeChild(next);
     next.parentNode = parent;
@@ -1715,6 +1721,7 @@ lines.on("close", async () => {
     if (verb === "click") dispatch(find(arg), "click");
     else if (verb === "focus") find(arg).focus();
     else if (verb === "hash") location.hash = arg;
+    else if (verb === "wait") await new Promise((resolve) => setTimeout(resolve, parseInt(arg, 10)));
     else if (verb === "input") {
       const el = document.activeElement;
       el.value = arg;
@@ -1735,7 +1742,9 @@ lines.on("close", async () => {
   const active = document.activeElement === body ? "" : openTag(document.activeElement);
   const outside = body.children.filter(function (kid) { return kid !== app; }).map(markup).join("");
   process.stdout.write(app.textContent + "\n/*SDF_PAGE_RESULT*/\n" + markup(app) +
-    "\n/*SDF_PAGE_EXTRA*/\n" + JSON.stringify({ active: active, outside: outside, hash: location.hash }));
+    "\n/*SDF_PAGE_EXTRA*/\n" + JSON.stringify({ active: active, outside: outside, hash: location.hash }),
+    // A playing replay leaves an interval running: exit once written.
+    () => process.exit(0));
 });
 `
 
