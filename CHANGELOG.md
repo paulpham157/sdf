@@ -8,11 +8,14 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Features
 
-- The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316)).
+- Serve the Software Decision Fabric mark as the UI favicon at `/favicon.svg` and `/favicon.ico` ([#321](https://github.com/paulpham157/sdf/pull/321)).
+- The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316), [#318](https://github.com/paulpham157/sdf/pull/318)).
 
 ### Docs
 
 - Point the README Quickstart at the published v0.1.0 release: `@latest` installs the v0.1.0 tag, `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` is a pin, and the prebuilt archives are on the [v0.1.0 release page](https://github.com/paulpham157/sdf/releases/tag/v0.1.0) ([#317](https://github.com/paulpham157/sdf/pull/317)).
+- Center the README opening, title it Software Decision Fabric, and describe cost per accepted outcome, the decision layer, and that SDF runs locally without sending telemetry to an outside SaaS ([#319](https://github.com/paulpham157/sdf/pull/319)).
+- Add the Software Decision Fabric logo to the centered README opening ([#320](https://github.com/paulpham157/sdf/pull/320)).
 
 ## [0.1.0] — 2026-11-24
 

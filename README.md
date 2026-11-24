@@ -1,4 +1,8 @@
-# SDF
+<div align="center">
+
+<img src="docs/images/logo.svg" width="320" alt="Software Decision Fabric">
+
+# Software Decision Fabric
 
 [![PR CI](https://github.com/paulpham157/sdf/actions/workflows/pr.yml/badge.svg)](https://github.com/paulpham157/sdf/actions/workflows/pr.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/paulpham157/sdf?logo=go)](go.mod)
@@ -6,10 +10,27 @@
 
 A local OpenTelemetry collector and decision ledger for coding agents.
 
-SDF records tokens, cost, tool use, sessions, and decisions on your
-machine, and summarizes them. It does not launch, route, or sandbox the
-agents; it only listens. The receiver needs no API key or network
-connection.
+</div>
+
+The distinctive figure is cost per accepted outcome. SDF links each
+agent's OTLP traces to commits, and with `--github` to the pull
+requests for those commits and whether they merged or were closed
+without merging. Without `--github`, accepted stays unknown. That
+figure is the computed cost of merged sessions, divided by how many
+there are — not only token or session counts.
+
+The decision layer records who decided (user or agent), why, and which
+alternatives were considered, and links each decision to the sessions and
+commits that implemented it. The Decisions graph shows the path taken,
+paths not taken, blocked or conflicting points, and the cost of that
+chapter's sessions.
+
+SDF runs entirely on your machine: it listens on `127.0.0.1` and stores
+data in SQLite. Prompt, response, tool, and error text is dropped before
+storing unless you opt in with `--store-content`. You can collect this
+information without sending telemetry to an outside SaaS. It does not
+launch, route, or sandbox the agents; it only listens. The receiver needs
+no API key or network connection.
 
 ![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)
 
