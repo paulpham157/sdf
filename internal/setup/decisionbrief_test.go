@@ -541,14 +541,23 @@ func TestDecisionBriefHookStdoutClosesIfShellIsKilled(t *testing.T) {
 	ready := filepath.Join(dir, "ready")
 	pidFile := filepath.Join(dir, "sdf.pid")
 	bin := filepath.Join(dir, "sdf")
-	script := "#!/bin/sh\nprintf '%s\\n' $$ > " + shQuote(pidFile) + "\ntouch " + shQuote(ready) + "\nsleep 30\necho leaked\n"
+	// Signal start with a shell redirect, not touch(1). PATH keeps the
+	// temp dir first so this fake sdf wins, then the process PATH so
+	// sleep(1) still resolves. A PATH of only the temp dir left the
+	// start marker unwritten and failed the test with "fake sdf did
+	// not start".
+	script := "#!/bin/sh\nprintf '%s\\n' $$ > " + shQuote(pidFile) + "\n: > " + shQuote(ready) + "\nsleep 30\necho leaked\n"
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 
 	cmd := exec.Command("sh", "-c", decisionBriefCommand)
 	cmd.Dir = dir
-	cmd.Env = append(envWithout("PATH"), "PATH="+dir)
+	sysPath := os.Getenv("PATH")
+	if sysPath == "" {
+		sysPath = "/bin:/usr/bin"
+	}
+	cmd.Env = append(envWithout("PATH"), "PATH="+dir+string(os.PathListSeparator)+sysPath)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
