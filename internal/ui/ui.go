@@ -2,7 +2,7 @@
 //
 // It listens on its own address, 127.0.0.1:4320 by default, and does not
 // follow the OTLP bind address. sdf serve --host 0.0.0.0 therefore exposes
-// the receivers without exposing this page. The HTML, CSS, and script are
+// the receivers without exposing this page. The HTML, CSS, script, and favicons are
 // embedded in the binary. Nothing on the page is loaded from the network.
 //
 // Every route checks Host before the handler runs. localhost, 127.0.0.1,
@@ -66,7 +66,7 @@ const (
 	uiIdleTimeout       = 90 * time.Second
 )
 
-//go:embed assets/index.html assets/app.css assets/app.js
+//go:embed assets/index.html assets/app.css assets/app.js assets/favicon.svg assets/favicon.ico
 var assetFS embed.FS
 
 // Config is the read-only view over one store.
@@ -230,6 +230,8 @@ func (h *handler) routes() {
 	h.mux.HandleFunc("GET /{$}", h.page)
 	h.mux.HandleFunc("GET /app.css", h.asset("assets/app.css", "text/css; charset=utf-8"))
 	h.mux.HandleFunc("GET /app.js", h.asset("assets/app.js", "text/javascript; charset=utf-8"))
+	h.mux.HandleFunc("GET /favicon.ico", h.asset("assets/favicon.ico", "image/x-icon"))
+	h.mux.HandleFunc("GET /favicon.svg", h.asset("assets/favicon.svg", "image/svg+xml; charset=utf-8"))
 	h.mux.HandleFunc("GET /api/summary", h.summary)
 	h.mux.HandleFunc("GET /api/snapshot", h.snapshot)
 	h.mux.HandleFunc("GET /api/decisions", h.decisions)

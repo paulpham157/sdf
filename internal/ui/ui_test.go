@@ -992,12 +992,63 @@ func TestReadOnlyAndLoopback(t *testing.T) {
 	if wide.BindWarning() == "" || !strings.Contains(wide.BindWarning(), "prompts and paths") {
 		t.Fatal(wide.BindWarning())
 	}
-	for _, name := range []string{"index.html", "app.css", "app.js"} {
+	for _, name := range []string{"index.html", "app.css", "app.js", "favicon.svg", "favicon.ico"} {
 		body := readAsset(t, name)
+		if body == "" {
+			t.Fatalf("%s is empty", name)
+		}
+		check := body
+		if name == "favicon.svg" {
+			// The SVG namespace URI is not a network load.
+			check = strings.ReplaceAll(check, `xmlns="http://www.w3.org/2000/svg"`, "")
+		}
+		if name == "favicon.ico" {
+			continue
+		}
 		for _, banned := range []string{"http://", "https://", "cdn.", "fonts.google", "analytics"} {
-			if strings.Contains(body, banned) {
+			if strings.Contains(check, banned) {
 				t.Fatalf("%s contains %s", name, banned)
 			}
+		}
+	}
+}
+
+func TestFaviconRoutes(t *testing.T) {
+	db := openDB(t)
+	srv := startUI(t, db)
+	pageStatus, _, page := get(t, srv.URL())
+	if pageStatus != 200 {
+		t.Fatalf("page %d", pageStatus)
+	}
+	if !strings.Contains(page, `rel="icon" href="/favicon.svg" type="image/svg+xml"`) {
+		t.Fatalf("missing svg icon link: %q", page)
+	}
+	if !strings.Contains(page, `rel="icon" href="/favicon.ico"`) {
+		t.Fatalf("missing ico icon link: %q", page)
+	}
+	if strings.Contains(page, "http://") || strings.Contains(page, "https://") {
+		t.Fatalf("page loads a remote URL: %q", page)
+	}
+
+	cases := []struct {
+		path        string
+		contentType string
+		file        string
+	}{
+		{"favicon.svg", "image/svg+xml; charset=utf-8", "favicon.svg"},
+		{"favicon.ico", "image/x-icon", "favicon.ico"},
+	}
+	for _, tc := range cases {
+		status, hdr, body := get(t, srv.URL()+tc.path)
+		if status != 200 {
+			t.Fatalf("GET /%s status %d", tc.path, status)
+		}
+		if got := hdr.Get("Content-Type"); got != tc.contentType {
+			t.Fatalf("GET /%s Content-Type %q, want %q", tc.path, got, tc.contentType)
+		}
+		want := readAsset(t, tc.file)
+		if body == "" || body != want {
+			t.Fatalf("GET /%s body did not match assets/%s (got %d bytes, want %d)", tc.path, tc.file, len(body), len(want))
 		}
 	}
 }
