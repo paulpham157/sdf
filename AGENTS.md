@@ -33,3 +33,6 @@ and computed cost, outcomes, decision records and the local budget, `sdf
 check`, tasks and `sdf verify`, the ledger and `sdf audit`, and known
 gaps). When behavior changes, update the doc that describes it rather than
 growing the README.
+
+`CONTRIBUTING.md` holds the command list, how to build from a clone, and
+which of these to read first.

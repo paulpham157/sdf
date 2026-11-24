@@ -84,11 +84,8 @@ with `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0`. Prebuilt
 archives for Linux, macOS, and Windows (amd64 and arm64) are on
 [GitHub Releases](https://github.com/paulpham157/sdf/releases/tag/v0.1.0).
 
-Or build from source (no C compiler needed):
-
-```bash
-git clone https://github.com/paulpham157/sdf && cd sdf && make build
-```
+Or build from source (no C compiler needed): see
+[Development setup](CONTRIBUTING.md#development-setup).
 
 Without `--write`, `sdf init` only prints the exporter settings.
 
@@ -114,40 +111,11 @@ What each tool exports, and how to point it at the receiver, is in
 
 ## Usage
 
-Every command prints its flags with `--help` (or `sdf help <command>`).
-
-| Command | What it does |
-| --- | --- |
-| `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
-| `sdf init` | Print or write the settings that point an agent at the receiver |
-| `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, graph, retract, audit, brief, or check decisions (`add`, `link`, `list`, `graph`, `retract`, `audit`, `brief`, `check`) |
-| `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
-| `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
-| `sdf verify` | Run a declared task's checks against a commit |
-| `sdf redact` | Drop stored prompt, response, tool, and error text from a database |
-| `sdf check` | Run the embedded local cases against the summary |
-| `sdf prices refresh` | Fetch the OpenRouter catalog into the local price cache (the only command that uses the network for prices) |
-| `sdf version` | Print version, commit, build date, Go version, and platform (`sdf --version` and `sdf -v` are the same) |
-
-`sdf decision` relations include `supersedes`, `refines`, `blocks`,
-`conflicts_with`, `constrains`, `implements`, `validates`, and
-`contradicts`. `list` and the UI show blocked and conflicted records;
-`graph` (also `GET /api/decisions/graph` and the UI's Decisions tab)
-shows chapters, endings, and explored %; `brief` prints a ranked,
-size-capped list of active constraints, blocked, and conflicting
-decisions; `audit` reports unlinked decisions and commits (exit 1 on
-findings); `check` exits 1 when an in-force decision forbids `push`,
-`merge`, `release`, `deploy`, or an architecture change. `sdf init
---write` for Claude Code and Codex also installs a SessionStart hook
-that runs `sdf decision brief` (no flags, 2s timeout, fail-open); other
-agents run the command or use the `sdf-decisions` skill
-([Decisions at session start](docs/agents.md#decisions-at-session-start)).
-The `pre-push` git hook from `sdf init --git-hooks --db PATH` warns
-about pushed commits that implement no decision
-([pre-push decision check](docs/receiver.md#pre-push-decision-check)).
-Details are in [docs/outcomes.md](docs/outcomes.md).
-
+`sdf serve`, `sdf init`, `sdf summary`, `sdf decision`, `sdf audit`,
+`sdf task`, `sdf verify`, `sdf redact`, `sdf check`,
+`sdf prices refresh`, and `sdf version`. What each one does, and the
+decision relations, are in [Usage](CONTRIBUTING.md#usage). Every
+command prints its flags with `--help` (or `sdf help <command>`).
 Authentication is off by default; keep the binds on localhost.
 
 ## Configuration
@@ -220,6 +188,7 @@ and the ledger are optional and sit beside collection, not in its path.
 | [docs/action.md](docs/action.md) | The `sdf verify` GitHub Action, and its threat model |
 | [docs/gaps.md](docs/gaps.md) | Known limits of the collector and the summary |
 | [docs/research/session-boundary.md](docs/research/session-boundary.md) | How each agent marks session open and close |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Agent guidance, building from source, the command list, and pull-request and post-merge checks |
 
 Repository history from before this collector is preserved at the git
 tag `legacy-v1` (commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3`).
@@ -227,14 +196,9 @@ tag `legacy-v1` (commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3`).
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for pull-request and post-merge
-checks. The short path:
-
-```bash
-make fmt-check
-make staticcheck
-make vet
-make test
-```
+checks. The short path: [Checks](CONTRIBUTING.md#checks). The command
+list, building from source, and what an agent should read first are in
+that file too.
 
 ## Security
 
