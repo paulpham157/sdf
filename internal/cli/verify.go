@@ -144,7 +144,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if strings.HasPrefix(arg, "-") || opt.SHA != "" {
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 		opt.SHA = arg

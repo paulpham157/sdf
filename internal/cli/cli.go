@@ -18,6 +18,7 @@ import (
 
 	"github.com/paulpham157/sdf/internal/check"
 	"github.com/paulpham157/sdf/internal/decision"
+	"github.com/paulpham157/sdf/internal/decisiongraph"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/server"
@@ -37,6 +38,7 @@ func Main(args []string) int {
 func mainWith(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, usageLine)
+		fmt.Fprintln(stderr, "Run sdf --help for what each command does. New here? Start with sdf serve, then sdf init <agent> --write.")
 		return 2
 	}
 	switch args[0] {
@@ -62,11 +64,13 @@ func mainWith(args []string, stdout, stderr io.Writer) int {
 		return cmdRedact(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(args[1:], stdout, stderr)
-	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, usageLine)
+	case "-h", "--help":
+		writeTopHelp(stdout)
 		return 0
+	case "help":
+		return cmdHelp(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "unrecognized command %q\n", args[0])
+		fmt.Fprintf(stderr, "unrecognized command %q; run sdf --help for the list\n", args[0])
 		return 2
 	}
 }
@@ -81,7 +85,7 @@ func cmdVersion(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "Prints the version, commit, build date, Go version, and platform. sdf --version and sdf -v are the same.")
 			return 0
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -114,6 +118,8 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "UI default: "+ui.DefaultAddr+" (localhost only; --host does not change it)")
 			fmt.Fprintln(stdout, "Prompt, response, tool, and error text is dropped before storing, for every agent. --store-content (or SDF_STORE_CONTENT=1) keeps it; --store-content=qwen,claude-code (or SDF_STORE_CONTENT=qwen,claude-code) keeps it for those agents only.")
 			fmt.Fprintln(stdout, "Optional OTLP token: --otlp-token TOKEN, --otlp-token-file PATH, SDF_OTLP_TOKEN, or SDF_OTLP_TOKEN_FILE. Unset leaves the receiver open.")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, serveHelp)
 			return 0
 		case arg == "--host":
 			v, ok := take(&i, args)
@@ -244,7 +250,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -265,16 +271,16 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	}
 	content, err := parseStoreContent(contentFlag)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %s: %v\n", contentSource, err)
+		fmt.Fprintf(stderr, "sdf serve: %s: %s\n", contentSource, displayErr(err))
 		return 2
 	}
 	if _, err := summary.LoadBudget(budgetPath); err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintf(stderr, "sdf serve: %s\n", displayErr(err))
 		return 1
 	}
 	if uiOn {
 		if _, err := pricing.ResolveCatalog(pricesSpec); err != nil {
-			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			fmt.Fprintf(stderr, "sdf serve: %s\n", displayErr(err))
 			return 1
 		}
 	}
@@ -282,16 +288,16 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 	// file under it, and serve refuses to start while redact runs.
 	lock, err := store.LockForServe(dbPath)
 	if errors.Is(err, store.ErrLocked) {
-		fmt.Fprintf(stderr, "sdf serve: sdf redact%s is rewriting %s; start sdf serve again when it finishes\n", store.LockHolder(dbPath), dbPath)
+		fmt.Fprintf(stderr, "sdf serve: sdf redact%s is rewriting %s; start sdf serve again when it finishes\n", store.LockHolder(dbPath), displayPath(dbPath))
 		return 1
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: cannot take the lock file %s (%v); sdf redact will not see this serve\n", store.LockPath(dbPath), err)
+		fmt.Fprintf(stderr, "warning: cannot take the lock file %s (%s); sdf redact will not see this serve\n", displayPath(store.LockPath(dbPath)), displayErr(err))
 	}
 	defer lock.Release()
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintf(stderr, "sdf serve: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
@@ -308,7 +314,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		Token:    token,
 	}
 	if err := srv.Start(); err != nil {
-		fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+		fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 		return 1
 	}
 	defer srv.Shutdown()
@@ -323,7 +329,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			Budget: budgetPath,
 		})
 		if err != nil {
-			fmt.Fprintf(stderr, "sdf serve: %v\n", err)
+			fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 			return 1
 		}
 		defer func() {
@@ -335,7 +341,7 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "warning: "+warning)
 		}
 	}
-	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), dbPath)
+	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), store.AbsPath(dbPath))
 	fmt.Fprintf(stdout, "OTLP/gRPC listening on %s\n", srv.GRPCAddress())
 	if uiSrv != nil {
 		fmt.Fprintf(stdout, "UI listening on %s\n", uiSrv.URL())
@@ -365,6 +371,7 @@ func parseUIAddr(v string) (string, error) {
 
 func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
+	dbPathSet := false
 	var session *string
 	asJSON := false
 	allSpans := false
@@ -377,6 +384,8 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, "usage: sdf summary [--db PATH] [--session ID] [--json] [--all-spans] [--prices bundled|PATH] [--repo PATH] [--github] [--budget PATH]")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, summaryHelp)
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -384,9 +393,9 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "sdf summary: --db requires a value")
 				return 2
 			}
-			dbPath = v
+			dbPath, dbPathSet = v, true
 		case strings.HasPrefix(arg, "--db="):
-			dbPath = strings.TrimPrefix(arg, "--db=")
+			dbPath, dbPathSet = strings.TrimPrefix(arg, "--db="), true
 		case arg == "--session":
 			v, ok := take(&i, args)
 			if !ok {
@@ -431,29 +440,30 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--budget="):
 			budgetPath = strings.TrimPrefix(arg, "--budget=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
 	budget, err := summary.LoadBudget(budgetPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	prices, err := pricing.ResolveCatalog(pricesSpec)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
+	summaryMissingHint(dbPath, dbPathSet, stderr)
 	records, err := db.Load()
 	_ = db.Close()
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+		fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		return 1
 	}
 	report := summary.SummarizeWith(records, allSpans, prices)
@@ -462,7 +472,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 		lookup, err := outcome.NewGitHub()
 		if err != nil {
 			gitOpt.GitHubNote = err.Error()
-			fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+			fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 		} else {
 			gitOpt.Lookup = lookup
 		}
@@ -484,7 +494,7 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	summary.ApplyBudget(&report, budget)
 	if asJSON {
 		if err := summary.WriteJSON(stdout, report); err != nil {
-			fmt.Fprintf(stderr, "sdf summary: %v\n", err)
+			fmt.Fprintf(stderr, "sdf summary: %s\n", displayErr(err))
 			return 1
 		}
 		return 0
@@ -493,33 +503,54 @@ func cmdSummary(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionUsage = "usage: sdf decision <add|link|list|retract|audit|brief|check> [flags]"
+// decisionCommands is every sdf decision subcommand, in the order help lists them.
+// cmdDecision and the top-level sdf --help line both use this table, so a new
+// subcommand cannot be added to the dispatch without appearing in that help.
+var decisionCommands = []struct {
+	name string
+	run  func(args []string, stdout, stderr io.Writer) int
+}{
+	{"add", cmdDecisionAdd},
+	{"link", cmdDecisionLink},
+	{"list", cmdDecisionList},
+	{"graph", cmdDecisionGraph},
+	{"brief", cmdDecisionBrief},
+	{"check", cmdDecisionCheck},
+	{"retract", cmdDecisionRetract},
+	{"audit", cmdDecisionAudit},
+	{"pre-push", cmdDecisionPrePush},
+}
+
+func decisionSubcommands() []string {
+	names := make([]string, len(decisionCommands))
+	for i, c := range decisionCommands {
+		names[i] = c.name
+	}
+	return names
+}
+
+func decisionUsage() string {
+	return "usage: sdf decision <" + strings.Join(decisionSubcommands(), "|") + "> [flags]"
+}
 
 func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, decisionUsage)
+		fmt.Fprintln(stderr, decisionUsage())
 		return 2
 	}
+	for _, c := range decisionCommands {
+		if c.name == args[0] {
+			return c.run(args[1:], stdout, stderr)
+		}
+	}
 	switch args[0] {
-	case "add":
-		return cmdDecisionAdd(args[1:], stdout, stderr)
-	case "link":
-		return cmdDecisionLink(args[1:], stdout, stderr)
-	case "list":
-		return cmdDecisionList(args[1:], stdout, stderr)
-	case "brief":
-		return cmdDecisionBrief(args[1:], stdout, stderr)
-	case "retract":
-		return cmdDecisionRetract(args[1:], stdout, stderr)
-	case "audit":
-		return cmdDecisionAudit(args[1:], stdout, stderr)
-	case "check":
-		return cmdDecisionCheck(args[1:], stdout, stderr)
 	case "--help", "-h":
-		fmt.Fprintln(stdout, decisionUsage)
+		fmt.Fprintln(stdout, decisionUsage())
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, decisionHelp)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unrecognized arguments: %s\n", args[0])
+		unrecognizedArgs(stderr, args[0])
 		return 2
 	}
 }
@@ -613,7 +644,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--reason="):
 			reason = strings.TrimPrefix(arg, "--reason=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -623,7 +654,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
@@ -636,7 +667,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		Alternatives: alternatives,
 		Reason:       reason,
 	}); err != nil {
-		fmt.Fprintf(stderr, "sdf decision add: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -691,7 +722,7 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--to="):
 			to, toSet = strings.TrimPrefix(arg, "--to="), true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -701,17 +732,17 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 	}
 	fromEnd, err := parseEndpoint(from)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: --from %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: --from %s\n", displayErr(err))
 		return 2
 	}
 	toEnd, err := parseEndpoint(to)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: --to %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: --to %s\n", displayErr(err))
 		return 2
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
@@ -721,7 +752,7 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 		To:       toEnd,
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision link: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision link: %s\n", displayErr(err))
 		return 1
 	}
 	for _, w := range warnings {
@@ -760,19 +791,19 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 		case arg == "--json":
 			asJSON = true
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
 		return 1
 	}
 	graph, err := decision.Load(db)
 	_ = db.Close()
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
 		return 1
 	}
 	write := decision.WriteText
@@ -780,7 +811,98 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 		write = decision.WriteJSON
 	}
 	if err := write(stdout, graph); err != nil {
-		fmt.Fprintf(stderr, "sdf decision list: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision list: %s\n", displayErr(err))
+		return 1
+	}
+	return 0
+}
+
+const decisionGraphUsage = "usage: sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]"
+
+// cmdDecisionGraph prints the Decisions tab document. With --json it is the
+// same bytes as GET /api/decisions/graph on a sdf serve started with the
+// same --db, --prices, --repo, and --github; without it, one headline line
+// per chapter. It opens the store read-only.
+func cmdDecisionGraph(args []string, stdout, stderr io.Writer) int {
+	dbPath := "sdf-telemetry.sqlite"
+	asJSON := false
+	pricesSpec := ""
+	repoPath := ""
+	github := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--help" || arg == "-h":
+			fmt.Fprintln(stdout, decisionGraphUsage)
+			return 0
+		case arg == "--db", arg == "--prices", arg == "--repo":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintf(stderr, "sdf decision graph: %s requires a value\n", arg)
+				return 2
+			}
+			switch arg {
+			case "--db":
+				dbPath = v
+			case "--prices":
+				pricesSpec = v
+			default:
+				repoPath = v
+			}
+		case strings.HasPrefix(arg, "--db="):
+			dbPath = strings.TrimPrefix(arg, "--db=")
+		case strings.HasPrefix(arg, "--prices="):
+			pricesSpec = strings.TrimPrefix(arg, "--prices=")
+		case strings.HasPrefix(arg, "--repo="):
+			repoPath = strings.TrimPrefix(arg, "--repo=")
+		case arg == "--github":
+			github = true
+		case arg == "--json":
+			asJSON = true
+		default:
+			unrecognizedArgs(stderr, arg)
+			return 2
+		}
+	}
+	prices, err := pricing.ResolveCatalog(pricesSpec)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
+		return 1
+	}
+	db, err := store.OpenReadOnly(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
+		return 1
+	}
+	defer func() { _ = db.Close() }()
+	records, err := db.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
+		return 1
+	}
+	gitOpt := outcome.Options{Repo: repoPath}
+	if github {
+		lookup, err := outcome.NewGitHub()
+		if err != nil {
+			gitOpt.GitHubNote = err.Error()
+			fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
+		} else {
+			gitOpt.Lookup = lookup
+		}
+	}
+	// The same report GET /api/decisions/graph reads: no budget.
+	report := outcome.Summarize(records, prices, gitOpt)
+	view, err := decisiongraph.FromStore(db, report)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
+		return 1
+	}
+	write := decisiongraph.WriteText
+	if asJSON {
+		write = decisiongraph.WriteJSON
+	}
+	if err := write(stdout, view); err != nil {
+		fmt.Fprintf(stderr, "sdf decision graph: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -838,7 +960,7 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--retracted-by="):
 			by = strings.TrimPrefix(arg, "--retracted-by=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -848,12 +970,12 @@ func cmdDecisionRetract(args []string, stdout, stderr io.Writer) int {
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision retract: %s\n", displayErr(err))
 		return 1
 	}
 	defer db.Close()
 	if _, err := decision.Retract(db, decision.RetractInput{ID: id, Reason: reason, RetractedBy: by}); err != nil {
-		fmt.Fprintf(stderr, "sdf decision retract: %v\n", err)
+		fmt.Fprintf(stderr, "sdf decision retract: %s\n", displayErr(err))
 		return 1
 	}
 	return 0
@@ -968,6 +1090,8 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, "usage: sdf check [--cases DIR]")
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, checkHelp)
 			return 0
 		case arg == "--cases":
 			v, ok := take(&i, args)
@@ -979,7 +1103,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--cases="):
 			dir = strings.TrimPrefix(arg, "--cases=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -993,7 +1117,7 @@ func cmdCheck(args []string, stdout, stderr io.Writer) int {
 		cases, err = check.Load(dir)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf check: %v\n", err)
+		fmt.Fprintf(stderr, "sdf check: %s\n", displayErr(err))
 		return 1
 	}
 	report := check.Run(cases)
@@ -1009,8 +1133,10 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: sdf prices refresh [--url URL] [--out PATH]")
 		return 2
 	}
-	if args[0] == "--help" || args[0] == "-h" {
+	if args[0] == "--help" || args[0] == "-h" || (len(args) > 1 && (args[1] == "--help" || args[1] == "-h")) {
 		fmt.Fprintln(stdout, "usage: sdf prices refresh [--url URL] [--out PATH]")
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, pricesHelp)
 		return 0
 	}
 	pageURL := ""
@@ -1037,14 +1163,14 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 		case strings.HasPrefix(arg, "--out="):
 			outPath = strings.TrimPrefix(arg, "--out=")
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
 	if outPath == "" {
 		path, err := pricing.CachePath()
 		if err != nil {
-			fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+			fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 			return 1
 		}
 		outPath = path
@@ -1054,22 +1180,22 @@ func cmdPrices(args []string, stdout, stderr io.Writer) int {
 	client := &http.Client{Timeout: 30 * time.Second}
 	snap, err := pricing.Fetch(ctx, client, pageURL)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 		return 1
 	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 		return 1
 	}
 	if err := os.WriteFile(outPath, snap.Body, 0o644); err != nil {
-		fmt.Fprintf(stderr, "sdf prices refresh: %v\n", err)
+		fmt.Fprintf(stderr, "sdf prices refresh: %s\n", displayErr(err))
 		return 1
 	}
 	fmt.Fprintf(stdout, "wrote %d models from %s retrieved %s to %s\n", len(snap.Catalog.Models), snap.Catalog.Source, snap.Catalog.RetrievedAtRaw, outPath)
 	return 0
 }
 
-const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok|gemini|copilot] [--write] [--global] [--install]"
+const initUsage = "usage: sdf init [--check] [--host HOST] [--port PORT] [--grpc-port PORT] [--git-hooks | --uninstall-git-hooks] [--db PATH] [--git-template [--set-template-dir] | --uninstall-git-template [--unset-template-dir]] [claude-code|codex|opencode|pi|qwen|grok|gemini|copilot] [--write] [--global] [--install]"
 
 func cmdInit(args []string, stdout, stderr io.Writer) int {
 	host := "127.0.0.1"
@@ -1085,12 +1211,15 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	uninstallTemplate := false
 	setTemplateDir := false
 	unsetTemplateDir := false
+	hookDB := ""
 	agent := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, initUsage)
+			fmt.Fprintln(stdout, "")
+			fmt.Fprintln(stdout, initHelp)
 			return 0
 		case arg == "--write":
 			write = true
@@ -1112,6 +1241,19 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 			setTemplateDir = true
 		case arg == "--unset-template-dir":
 			unsetTemplateDir = true
+		case arg == "--db":
+			v, ok := take(&i, args)
+			if !ok || strings.TrimSpace(v) == "" {
+				fmt.Fprintln(stderr, "sdf init: --db requires a path")
+				return 2
+			}
+			hookDB = v
+		case strings.HasPrefix(arg, "--db="):
+			hookDB = strings.TrimPrefix(arg, "--db=")
+			if strings.TrimSpace(hookDB) == "" {
+				fmt.Fprintln(stderr, "sdf init: --db requires a path")
+				return 2
+			}
 		case arg == "--host":
 			v, ok := take(&i, args)
 			if !ok {
@@ -1157,8 +1299,11 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			agent = arg
+		case !strings.HasPrefix(arg, "-"):
+			fmt.Fprintln(stderr, unknownAgentMessage(arg))
+			return 2
 		default:
-			fmt.Fprintf(stderr, "unrecognized arguments: %s\n", arg)
+			unrecognizedArgs(stderr, arg)
 			return 2
 		}
 	}
@@ -1176,6 +1321,10 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 	}
 	if unsetTemplateDir && !uninstallTemplate {
 		fmt.Fprintln(stderr, "sdf init: --unset-template-dir requires --uninstall-git-template")
+		return 2
+	}
+	if hookDB != "" && !gitHooks && !gitTemplate {
+		fmt.Fprintln(stderr, "sdf init: --db applies to --git-hooks and --git-template (the store the pre-push hook reads)")
 		return 2
 	}
 	if global && agent != "pi" {
@@ -1209,6 +1358,16 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		if !probed.Reachable {
 			code = 1
 		}
+		token, source, note := hookToken(os.Getenv)
+		if note != "" {
+			fmt.Fprint(stdout, note)
+		}
+		if auth := setup.ProbeAuth(ep, token, source); auth.Text != "" {
+			fmt.Fprint(stdout, auth.Text)
+			if auth.Failed {
+				code = 1
+			}
+		}
 	}
 	if agent != "" {
 		res, err := setup.Run(setup.Request{Agent: agent, Endpoint: ep, Write: write, Install: install, Global: global})
@@ -1231,7 +1390,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if gitHooks {
-		res, err := setup.InstallGitHooks("", ep)
+		res, err := setup.InstallGitHooksWith("", ep, hookOptions(hookDB))
 		if res.Text != "" {
 			fmt.Fprint(stdout, res.Text)
 		}
@@ -1251,7 +1410,7 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if gitTemplate {
-		res, err := setup.InstallGitTemplate(setup.TemplateOptions{SetConfig: setTemplateDir}, ep)
+		res, err := setup.InstallGitTemplate(setup.TemplateOptions{SetConfig: setTemplateDir, Hook: hookOptions(hookDB)}, ep)
 		if res.Text != "" {
 			fmt.Fprint(stdout, res.Text)
 		}
@@ -1261,6 +1420,17 @@ func cmdInit(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return code
+}
+
+// hookOptions names this sdf binary for the pre-push hook, so it does not
+// depend on PATH, and the store it reads. A binary path that cannot be
+// found is left empty and the hook uses sdf from PATH.
+func hookOptions(db string) setup.HookOptions {
+	opt := setup.HookOptions{DB: db}
+	if exe, err := os.Executable(); err == nil {
+		opt.Bin = exe
+	}
+	return opt
 }
 
 // parsePort reads a port written as plain decimal: no sign, no leading

@@ -58,6 +58,8 @@ import (
 	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/paulpham157/sdf/internal/dbfile"
 )
 
 // Kind is a payload schema name, for example "sdf.task/v1".
@@ -454,6 +456,7 @@ func (s *Store) readDB(ctx context.Context) (*sql.DB, error) {
 		}
 		return nil, err
 	}
+	dbfile.Tighten(s.path) // owner-only; a failure only warns
 	db, err := openProbe(ctx, dsn(s.path, "mode=ro&_pragma=busy_timeout(5000)"))
 	if sqliteCode(err) == sqliteReadonlyCantInit {
 		if _, werr := os.Stat(s.path + "-wal"); errors.Is(werr, os.ErrNotExist) {
@@ -497,17 +500,10 @@ func (s *Store) writeDB() (*sql.DB, error) {
 		_ = s.db.Close()
 		s.db = nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	// A new ledger is created 0600 in a 0700 directory; an existing one
+	// that group or others can access is tightened (see dbfile).
+	if err := dbfile.Create(s.path); err != nil {
 		return nil, err
-	}
-	if _, err := os.Stat(s.path); errors.Is(err, os.ErrNotExist) {
-		f, err := os.OpenFile(s.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err != nil && !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		if f != nil {
-			_ = f.Close()
-		}
 	}
 	// synchronous(FULL) keeps a committed append durable across power loss.
 	// WAL is set by Append (setWAL), not here: a journal_mode pragma run while
