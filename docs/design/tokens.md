@@ -751,9 +751,12 @@ surface as CSS. The brand shows up through images and structure only.
     page, no browser chrome. The UI still uses its own paper and green
     palette. Recapture again after the UI restyle.
   - `docs/images/logo.svg`: keep. It is byte-identical to the canonical mark.
-  - README "How it works" Mermaid: still without the theme block. Whether
-    GitHub keeps honoring `init` is an open question, so the README is
-    unchanged. The docs site homepage (`docs/index.md`) includes the block.
+  - Architecture figure: the README and the docs homepage
+    (`docs/index.md`) use `docs/diagrams/01-architecture.png`, not a
+    mermaid diagram of the same picture. The PNG is cream `#F6F1E8`,
+    charcoal text, and one rust accent. The mermaid theme block above
+    is the recipe when a mermaid diagram is added. GitHub may ignore
+    `init`, so the README does not keep a second copy.
 - Tone: direct and specific. Second person and imperative ("Run `sdf serve`").
   State limits plainly. No marketing claims in the docs.
 

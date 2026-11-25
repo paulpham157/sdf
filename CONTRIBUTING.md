@@ -4,15 +4,20 @@ Pull request checks and the post-merge checks are different workflows. A push
 to `main` does not repeat the pull request matrix. Main CI does not deploy or
 publish a release. The Docs workflow deploys the documentation site when `docs/`
 or the site config changes on `main`. Only the Release workflow creates a
-release, as a draft, when a `v*` tag is pushed.
+release, as a draft, when a version tag matching `v[0-9]+.[0-9]+.[0-9]+*`
+(for example `v0.1.0` or `v0.1.0-rc.1`, not `v1`) is pushed.
 
 | Workflow | When | Why |
 | --- | --- | --- |
-| PR CI (`.github/workflows/pr.yml`) | `pull_request` opened, new commits (`synchronize`), or reopened | Fast feedback before merge: `gofmt` and staticcheck on the stable Go toolchain, `go vet` and `go test` on oldstable and stable, and a gitleaks scan of the commits in the pull request. |
+| PR CI (`.github/workflows/pr.yml`) | `pull_request` opened, new commits (`synchronize`), or reopened | Fast feedback before merge: `gofmt` and staticcheck on the stable Go toolchain, `go vet` and `go test` on oldstable and stable, a `release toolchain (go.mod)` job that checks the `toolchain` line against the Go binary goreleaser would use, and a gitleaks scan of the commits in the pull request. |
 | Main CI (`.github/workflows/main.yml`) | `push` to `main` | Fuller check of the merged tree: one stable `go test` (a squash of a stale branch can fail even when each side passed), `go test -race`, build `sdf` with `CGO_ENABLED=0` and run `tests/samples` through `sdf serve` over HTTP and gRPC then `sdf summary`, a Goreleaser snapshot uploaded as a workflow artifact, CodeQL, and gitleaks over main's history. |
-| Release (`.github/workflows/release.yml`) | `push` of a `v*` tag, nothing else | `go test`, then `goreleaser release --clean`: archives for linux, darwin, and windows on amd64 and arm64 plus `checksums.txt`, uploaded to a draft GitHub Release that a maintainer publishes by hand. Only this job has `contents: write`. |
+| Release (`.github/workflows/release.yml`) | `push` of a tag matching `v[0-9]+.[0-9]+.[0-9]+*`, nothing else | `go test`, then `goreleaser release --clean`: archives for linux, darwin, and windows on amd64 and arm64 plus `checksums.txt`, uploaded to a draft GitHub Release that a maintainer publishes by hand. Only this job has `contents: write`. |
 | Scheduled (`.github/workflows/schedule.yml`) | Mondays 03:17 UTC | Depends on time, not on a new commit: `govulncheck` (new advisories) and a gitleaks scan of every branch. |
 | Docs (`.github/workflows/docs.yml`) | `pull_request` or `push` to `main` when `docs/`, `skills/`, or the site config changes; also `workflow_dispatch` | On a pull request, `mkdocs build --strict` only. On `main`, that same build is uploaded and deployed to GitHub Pages. The intended URL is `https://docs.softwaredecisionfabric.tech/` after the one-time setup below. Until then the site is at `https://paulpham157.github.io/sdf/`. |
+
+[![Repository workflows: PR CI, Main CI, Docs (site build and Pages deploy), Release (version-tag draft), and the Monday scheduled scan.](docs/diagrams/09-ci-workflows.png)](docs/diagrams/09-ci-workflows.png)
+
+Source: [09-ci-workflows.tldr](docs/diagrams/09-ci-workflows.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 The branch ruleset requires the check name `gitleaks (full history)`. That job
 is the pull request scan. The name is the ruleset context. The scan is the

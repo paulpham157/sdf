@@ -6,7 +6,7 @@ const path = require('path');
 const OUT = path.join(__dirname, 'output');
 
 const PAGES = [
-  { name: 'home', path: '/', mermaid: true, image: true },
+  { name: 'home', path: '/', image: true },
   { name: 'ledger', path: '/ledger/', table: true, code: true },
   { name: 'action', path: '/action/', code: true },
   { name: 'security', path: '/security/', admonition: true },
@@ -116,14 +116,6 @@ for (const scheme of [LIGHT, DARK]) {
         if (item.image && scheme.name === 'light') {
           await expect(page.locator('.md-typeset img').first()).toHaveCSS('padding-top', '0px');
         }
-        if (item.mermaid) {
-          const diagram = page.locator('.md-typeset div.mermaid');
-          await expect(diagram).toBeVisible();
-          await expect.poll(async () => {
-            const size = await diagram.boundingBox();
-            return size ? size.height : 0;
-          }).toBeGreaterThan(80);
-        }
         const active = page.locator('.md-sidebar--primary a.md-nav__link--active').first();
         await expect(active).toBeVisible();
         if (scheme.name === 'dark') {
@@ -170,20 +162,28 @@ test('dark drawer at 390', async ({ context, page }) => {
   await shot(page, 'dark-home-390-drawer.png');
 });
 
-test('home diagram in both schemes', async ({ browser }) => {
+test('diagrams page in both schemes', async ({ browser }) => {
   for (const scheme of [LIGHT, DARK]) {
     const context = await browser.newContext();
     await installScheme(context, scheme.palette);
     const page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 900 });
-    await open(page, '/');
-    const diagram = page.locator('.md-typeset div.mermaid');
-    await diagram.scrollIntoViewIfNeeded();
+    await open(page, '/diagrams/');
+    expect(await page.evaluate(() => window.__schemeAtPaint)).toBe(scheme.attribute);
+    const figure = page.locator('.md-typeset a:has(> img)').first();
+    await figure.scrollIntoViewIfNeeded();
+    await expect(figure).toHaveCSS('border-bottom-style', 'none');
+    const img = figure.locator('img');
     await expect.poll(async () => {
-      const size = await diagram.boundingBox();
+      const size = await img.boundingBox();
       return size ? size.height : 0;
     }).toBeGreaterThan(80);
-    await shot(page, scheme.name + '-home-diagram-1440.png');
+    if (scheme.name === 'dark') {
+      await expect(img).toHaveCSS('background-color', 'rgb(246, 241, 232)');
+      await expect(img).toHaveCSS('padding-top', '12px');
+    }
+    await contrast(page);
+    await shot(page, scheme.name + '-diagrams-1440.png');
     await context.close();
   }
 });

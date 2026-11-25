@@ -527,6 +527,19 @@ body {
   }
 }
 
+/* A figure is the link. Don't underline the picture, and don't break
+   tokens in the diagrams index the way a wide table does. */
+.md-typeset a:has(> img) {
+  border-bottom: none;
+}
+
+.md-typeset h3 + ul code,
+.md-typeset h3 ~ ul code,
+.md-typeset h3 ~ p code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .md-typeset .admonition,
 .md-typeset details {
   font-size: calc(var(--sdf-font-size-md) * var(--docs-rem));
