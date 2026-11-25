@@ -28,28 +28,19 @@ use_directory_urls: true
 
 theme:
   name: material
+  custom_dir: docs/overrides
   logo: images/logo.svg
   favicon: images/logo.svg
+  # Webfonts are self-hosted in docs/stylesheets/extra.css. font: false
+  # keeps Material from requesting fonts.googleapis.com.
   font: false
+  # One light scheme. primary and accent are custom so the body does not
+  # fall back to data-md-color-primary="indigo". No slate scheme, no toggle:
+  # dark tokens are deferred (docs/design/tokens.md).
   palette:
-    - media: "(prefers-color-scheme)"
-      toggle:
-        icon: material/brightness-auto
-        name: Switch to light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: custom
-      accent: custom
-      toggle:
-        icon: material/brightness-4
-        name: Switch to system preference
+    scheme: default
+    primary: custom
+    accent: custom
   features:
     - navigation.sections
     - navigation.expand
@@ -68,6 +59,8 @@ plugins:
   - search
 
 extra_css:
+  # Copied from design/tokens.css by mkdocs_hooks.py. Not committed.
+  - stylesheets/tokens.css
   - stylesheets/extra.css
 
 extra:
