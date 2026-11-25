@@ -8,7 +8,7 @@ the bind address on localhost. Override with `--host`, `--port` (HTTP),
 `--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
 `SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
-[![sdf serve: agents and git hooks post OTLP to HTTP :4318 or gRPC :4317; guards and record.Redact run before the row is written to local SQLite; the UI and read-only commands read that store.](diagrams/02-receiver.png)](diagrams/02-receiver.png)
+[![sdf serve: agents post OTLP to HTTP :4318 or gRPC :4317; git hooks POST /v1/logs on the HTTP port only; guards and record.Redact run before the row is written to local SQLite; the UI and read-only commands read that store.](diagrams/02-receiver.png)](diagrams/02-receiver.png)
 
 Source: [02-receiver.tldr](diagrams/02-receiver.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
