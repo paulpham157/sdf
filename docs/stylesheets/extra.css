@@ -230,11 +230,12 @@ body {
 
 /* The href hover above is as specific as the current-page color lock, and
    it would replace the raised chip with the sunken hover fill. Keep the
-   chip and the hairline on the open page. */
+   chip. box-shadow stays none: an inset edge is not part of the cue, and
+   a border would shift the label by a pixel. */
 .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover {
   background-color: var(--sdf-color-surface-raised);
-  box-shadow: inset var(--sdf-border-width-hairline) 0 0 var(--sdf-color-accent);
+  box-shadow: none;
 }
 
 .md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus {
@@ -256,7 +257,7 @@ body {
   color: var(--sdf-color-accent-text);
   font-weight: var(--sdf-font-weight-medium);
   background-color: var(--sdf-color-surface-raised);
-  box-shadow: inset var(--sdf-border-width-hairline) 0 0 var(--sdf-color-accent);
+  box-shadow: none;
 }
 
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
@@ -264,6 +265,8 @@ body {
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
   color: var(--sdf-color-accent-text);
+  background-color: var(--sdf-color-surface-raised);
+  box-shadow: none;
 }
 
 .md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active) {
