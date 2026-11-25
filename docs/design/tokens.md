@@ -561,7 +561,9 @@ How it consumes `tokens.css`:
   `mkdocs.yml` `extra.website`) links to https://softwaredecisionfabric.tech/.
   It is in the header bar at desktop and phone widths. On wide screens it sits
   beside the GitHub source button. Material hides `.md-header__source` below
-  60em and shows that GitHub button in the drawer.
+  60em and shows that GitHub button in the drawer. `header.html` is a copy of
+  mkdocs-material 9.8.2 `partials/header.html` plus that link. Re-sync the
+  copy when Material is upgraded.
 - The content action at the top right of the page is a view link, not an
   edit link (`mkdocs.yml` `content.action.view`, `edit_uri: blob/main/docs/`).
   It uses the same GitHub mark as the header (`fontawesome/brands/github`).
