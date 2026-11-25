@@ -547,10 +547,13 @@ How it consumes `tokens.css`:
   `--sdf-color-surface-sunken`. Text is `--sdf-color-text`. The accent is
   `--sdf-color-accent` (rust-500). Links in the page are
   `--sdf-color-link` (rust-700). In the primary sidebar, only the current
-  page uses that accent text, at regular or medium weight, on a
-  surface-raised background with a hairline accent edge. Ancestor and
-  expanded section titles stay `--sdf-color-text` and do not take that
-  edge. Rust is a mark (that hairline, the short rule under the page
+  page uses that accent text (`--sdf-color-accent-text`) at medium weight,
+  on a surface-raised background (`--sdf-color-surface-raised`). That pair
+  is 6.89:1. The cue is that fill and weight. The item has no inset accent
+  edge at rest, hover, or focus, so the label does not shift. Hover keeps
+  the same raised background. Keyboard focus keeps the focus outline.
+  Ancestor and expanded section titles stay `--sdf-color-text` on a
+  transparent background. Rust is a mark (the short rule under the page
   title, focus), not a panel.
 - The header is cream with charcoal text. The logo stays the cream-tile
   mark (`docs/overrides/partials/logo.html` sets its `alt` to the site name).
@@ -559,6 +562,32 @@ How it consumes `tokens.css`:
   It is in the header bar at desktop and phone widths. On wide screens it sits
   beside the GitHub source button. Material hides `.md-header__source` below
   60em and shows that GitHub button in the drawer.
+- The content action at the top right of the page is a view link, not an
+  edit link (`mkdocs.yml` `content.action.view`, `edit_uri: blob/main/docs/`).
+  It uses the same GitHub mark as the header (`fontawesome/brands/github`).
+  Its accessible name is "View on GitHub". Resting color is
+  `--sdf-color-text-muted`; hover and keyboard focus use
+  `--sdf-color-accent-text`, with a `--sdf-color-focus` outline. The mark
+  stays `--sdf-space-6` scaled by `--docs-rem` (24px). The link box is
+  `(--sdf-space-10 + --sdf-space-1)` scaled the same way (44px), and a
+  negative margin gives that box back so the title line does not move.
+  A docs page
+  opens `https://github.com/paulpham157/sdf/blob/main/docs/<path>.md`. Skill
+  pages open `blob/main/skills/…`. The generated scripts index has no source
+  link: that page is not a file in the repository. Material 9.8.2's stock
+  view partial rewrites `blob` to `raw`, so
+  `docs/overrides/partials/actions.html` keeps the blob URL.
+- The footer is one row on wide screens
+  (`docs/overrides/partials/footer.html`, layout in `extra.css`): Previous,
+  then a centered meta block, then Next. The block groups the license and
+  site link, the Material credit, and the GitHub icon, and those lines are
+  centered inside it. Equal side columns keep that block on the page center
+  when a page has no Previous or no Next. Below 60em the same three slots
+  stack, and the meta stays centered. Previous and Next are in a footer
+  navigation landmark. At 30em the row keeps end and bottom padding so Next
+  stays clear of the back-to-top control. Footer fill is
+  `--sdf-color-surface-sunken`. Footer links use `--sdf-color-link`, and
+  focus uses `--sdf-color-focus`.
 
 Material sets `html { font-size: 125% }`, so `1rem` is 20px inside the theme.
 Token `rem` sizes assume 16px. `extra.css` multiplies those lengths by
