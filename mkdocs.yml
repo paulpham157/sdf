@@ -64,6 +64,8 @@ extra_css:
   - stylesheets/extra.css
 
 extra:
+  # URL for the header "Website" control. The logo keeps linking to the docs home.
+  website: https://softwaredecisionfabric.tech/
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/paulpham157/sdf

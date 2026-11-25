@@ -547,6 +547,11 @@ How it consumes `tokens.css`:
   rule under the page title, focus), not a panel.
 - The header is cream with charcoal text. The logo stays the cream-tile
   mark (`docs/overrides/partials/logo.html` sets its `alt` to the site name).
+  A control labeled Website (`docs/overrides/partials/header.html`, URL in
+  `mkdocs.yml` `extra.website`) links to https://softwaredecisionfabric.tech/.
+  It is in the header bar at desktop and phone widths. On wide screens it sits
+  beside the GitHub source button. Material hides `.md-header__source` below
+  60em and shows that GitHub button in the drawer.
 
 Material sets `html { font-size: 125% }`, so `1rem` is 20px inside the theme.
 Token `rem` sizes assume 16px. `extra.css` multiplies those lengths by

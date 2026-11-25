@@ -159,6 +159,22 @@ body {
   letter-spacing: -0.02em;
 }
 
+/* Product-site control. Same size as the GitHub source label (13px after
+   --docs-rem). flex-shrink keeps the word visible when the title ellipsizes. */
+.md-header__website {
+  flex-shrink: 0;
+  font-family: var(--docs-font-sans);
+  font-size: calc(var(--sdf-font-size-sm) * var(--docs-rem));
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--sdf-color-text);
+  text-decoration: none;
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-header__website {
+  display: none;
+}
+
 @media screen and (min-width: 60em) {
   .md-search__form {
     color: var(--sdf-color-text);
