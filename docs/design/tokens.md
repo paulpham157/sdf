@@ -542,11 +542,20 @@ How it consumes `tokens.css`:
 - `extra.css` maps Material variables onto semantic tokens and does not
   repeat hex values. Page, header, and footer use `--sdf-color-bg` or
   `--sdf-color-surface-sunken`. Text is `--sdf-color-text`. The accent is
-  `--sdf-color-accent` (rust-500). Links and active nav text are
-  `--sdf-color-link` (rust-700). Rust is a mark (active-nav bar, the short
-  rule under the page title, focus), not a panel.
+  `--sdf-color-accent` (rust-500). Links in the page are
+  `--sdf-color-link` (rust-700). In the primary sidebar, only the current
+  page uses that accent text, at regular or medium weight, on a
+  surface-raised background with a hairline accent edge. Ancestor and
+  expanded section titles stay `--sdf-color-text` and do not take that
+  edge. Rust is a mark (that hairline, the short rule under the page
+  title, focus), not a panel.
 - The header is cream with charcoal text. The logo stays the cream-tile
   mark (`docs/overrides/partials/logo.html` sets its `alt` to the site name).
+  A control labeled Website (`docs/overrides/partials/header.html`, URL in
+  `mkdocs.yml` `extra.website`) links to https://softwaredecisionfabric.tech/.
+  It is in the header bar at desktop and phone widths. On wide screens it sits
+  beside the GitHub source button. Material hides `.md-header__source` below
+  60em and shows that GitHub button in the drawer.
 
 Material sets `html { font-size: 125% }`, so `1rem` is 20px inside the theme.
 Token `rem` sizes assume 16px. `extra.css` multiplies those lengths by
