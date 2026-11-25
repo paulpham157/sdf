@@ -289,6 +289,42 @@ body {
   color: var(--sdf-color-text-muted);
 }
 
+/* Material zeroes padding, so the GitHub mark's hit area was the 24px glyph.
+   The box is 44px. Negative margin returns the extra space to the float so
+   the title still wraps as it did around the glyph. Lengths are space tokens
+   scaled by --docs-rem (Material's root is 20px; tokens assume 16px). */
+.md-content__button.md-icon {
+  --docs-content-action-outset: calc((var(--sdf-space-2) + var(--sdf-space-half)) * var(--docs-rem));
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+  height: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+  margin-top: calc(var(--sdf-space-2) * var(--docs-rem) - var(--docs-content-action-outset));
+  margin-right: calc(var(--docs-content-action-outset) * -1);
+  margin-bottom: calc(var(--sdf-space-2) * var(--docs-rem) - var(--docs-content-action-outset));
+  margin-left: calc(var(--sdf-space-2) * var(--docs-rem) - var(--docs-content-action-outset));
+  padding: 0;
+}
+
+.md-content__button.md-icon svg {
+  display: block;
+  flex: none;
+  width: calc(var(--sdf-space-6) * var(--docs-rem));
+  height: calc(var(--sdf-space-6) * var(--docs-rem));
+}
+
+.md-content__button.md-icon:hover,
+.md-content__button.md-icon:focus-visible {
+  color: var(--sdf-color-accent-text);
+}
+
+.md-content__button.md-icon:focus-visible {
+  outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
+  outline-offset: 2px;
+}
+
 .md-typeset {
   max-width: 72ch;
   font-size: calc(var(--sdf-font-size-base) * var(--docs-rem));

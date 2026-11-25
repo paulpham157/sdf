@@ -11,7 +11,7 @@ The Markdown under docs/ is left unchanged. At build time this hook:
   site layout (docs pages pointing at ../skills/..., skill pages
   pointing at ../docs/..., and docs/diagrams/README.md pointing at
   ../../README.md and ../../CONTRIBUTING.md)
-- points the Edit button on skill pages at the real source path
+- points the view-on-GitHub link on skill pages at the real source path
 - marks the File/Role table and lets table code wrap after a hyphen or "/"
 """
 
@@ -235,9 +235,9 @@ def on_pre_page(page: Page, config: MkDocsConfig, files: Files) -> Page:
     src = page.file.src_uri.replace("\\", "/")
     repo_url = (config.repo_url or "").rstrip("/")
     if src.startswith("skills/") and src != str(SCRIPTS_INDEX).replace("\\", "/"):
-        page.edit_url = f"{repo_url}/edit/main/{src}"
+        page.edit_url = f"{repo_url}/blob/main/{src}"
     elif src == str(SCRIPTS_INDEX).replace("\\", "/"):
-        # Generated page; do not offer a misleading docs/ edit link.
+        # Generated page; it is not a file in the repository.
         page.edit_url = None
     return page
 

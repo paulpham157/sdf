@@ -559,6 +559,21 @@ How it consumes `tokens.css`:
   It is in the header bar at desktop and phone widths. On wide screens it sits
   beside the GitHub source button. Material hides `.md-header__source` below
   60em and shows that GitHub button in the drawer.
+- The content action at the top right of the page is a view link, not an
+  edit link (`mkdocs.yml` `content.action.view`, `edit_uri: blob/main/docs/`).
+  It uses the same GitHub mark as the header (`fontawesome/brands/github`).
+  Its accessible name is "View on GitHub". Resting color is
+  `--sdf-color-text-muted`; hover and keyboard focus use
+  `--sdf-color-accent-text`, with a `--sdf-color-focus` outline. The mark
+  stays `--sdf-space-6` scaled by `--docs-rem` (24px). The link box is
+  `(--sdf-space-10 + --sdf-space-1)` scaled the same way (44px), and a
+  negative margin gives that box back so the title line does not move.
+  A docs page
+  opens `https://github.com/paulpham157/sdf/blob/main/docs/<path>.md`. Skill
+  pages open `blob/main/skills/…`. The generated scripts index has no source
+  link: that page is not a file in the repository. Material 9.8.2's stock
+  view partial rewrites `blob` to `raw`, so
+  `docs/overrides/partials/actions.html` keeps the blob URL.
 - The footer is one row on wide screens
   (`docs/overrides/partials/footer.html`, layout in `extra.css`): Previous,
   then a centered meta block, then Next. The block groups the license and
