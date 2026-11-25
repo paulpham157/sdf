@@ -394,8 +394,12 @@ writes `var(--sdf-...)`. A token with no `$dark` of its own still changes
 when the token it aliases changes, and the generator declares that alias
 again inside the dark block. The second declaration is required: a `var()`
 inside a custom property is computed where the property is set, so an alias
-left only on `:root` would keep the light color. `$dark` is not valid on a
-primitive or on a non-color token.
+left only on `:root` would keep the light color. `$dark` is valid on a
+semantic color and on `shadow.sm` and `shadow.md`. It is not valid on a
+primitive. The dark hexes are primitive ramps (`charcoal-950` and the
+rest). Semantic `$dark` values reference those ramps, and
+`graph.hatch-bg` references `color.warning-soft`, so the resolved hex is
+unchanged.
 
 Light values are unchanged. Fenced code in light is still surface-sunken
 (`#EBE3D6`), via `--sdf-color-code-bg`. Inline code uses
@@ -407,7 +411,7 @@ refinement, text, and text-muted. Each clears 4.5:1 on the dark surfaces.
 The fenced-code background is darker than sunken, so those ratios are higher
 there, not lower.
 
-Focus is `#F3C7B6` (rust-200): a 2px outline with a 2px offset. Rust fills
+Focus uses `--sdf-color-focus`: rust-200 `#F3C7B6` in dark, rust-500 in light. On the docs site that is a 2px outline with a 2px offset on `:focus-visible`. Admonitions use the same token as a 2px box-shadow with no offset. Rust fills
 are `#E0764A`. Text on a rust fill is `--sdf-color-text-inverse`
 (`#1B1F25`). That pair is 5.40:1. The checker lists it as info only, the
 same slot as cream-on-rust in light, which does not pass. Links are
@@ -772,12 +776,16 @@ site config changes on `main`. The workflow also rebuilds when
 (`scheme: slate`). Each sets `primary: custom` and `accent: custom`. An
 entry without that ships `data-md-color-primary="indigo"`. The header
 toggle shows Material's icons and the label of the mode it switches to.
-Material stores the choice and applies it from
-`partials/javascripts/palette.html` before the rest of the page paints.
-System follows the reader's preference. Light sets `color-scheme: light`.
-Slate sets `color-scheme: dark` and matches the opt-in selector, so the
-dark semantic tokens apply. `extra.css` maps Material's `--md-*` variables
-onto those tokens for both schemes.
+`docs/overrides/partials/javascripts/palette.html` applies the choice
+before the rest of the page paints. With nothing stored, and when the
+stored choice is the system entry, that script resolves
+`matchMedia("(prefers-color-scheme: dark)")` and sets slate or default on
+`body` before first paint. An explicit light or dark choice comes from
+storage. `docs/overrides/main.html` sets `color-scheme` on `html` from the
+same decision, so an explicit Light choice on a dark OS does not paint a
+dark canvas. Slate matches the opt-in selector, so the dark semantic
+tokens apply. `extra.css` maps Material's `--md-*` variables onto those
+tokens for both schemes.
 
 How it consumes `tokens.css`:
 
@@ -788,8 +796,11 @@ How it consumes `tokens.css`:
 - `mkdocs.yml` lists `stylesheets/tokens.css` in `extra_css` ahead of
   `docs/stylesheets/extra.css`.
 - `extra.css` maps Material variables onto semantic tokens and does not
-  repeat hex values. `python3 design/tokens.py --check` fails if a hex or
-  `rgb()` color appears there. Page, header, and footer use
+  repeat hex values. `python3 design/tokens.py --check` strips `/* */`
+  comments, then fails on a hex, `rgb()`, `hsl()`, `hwb()`, `lab()`,
+  `lch()`, `oklab()`, `oklch()`, or `color()` value, on a named color
+  other than `transparent`, `currentColor`, or `inherit`, and on
+  `color-mix()` when it contains one of those. Page, header, and footer use
   `--sdf-color-bg` or `--sdf-color-surface-sunken`. Text is
   `--sdf-color-text`. The accent is `--sdf-color-accent`. Links in the page
   are `--sdf-color-link`. In the primary sidebar, only the current page is
@@ -799,8 +810,10 @@ How it consumes `tokens.css`:
   and weight. The item has no inset accent edge at rest, hover, or focus,
   so the label does not shift. Hover keeps the same raised background.
   Keyboard focus keeps the focus outline. In dark the current page is an
-  inverse pill: background `--sdf-color-text`, label `--sdf-color-bg`, and
-  no edge. Ancestor and expanded section titles stay `--sdf-color-text` on
+  inverse pill: background `--sdf-color-surface-inverse`, label
+  `--sdf-color-text-inverse`, and no edge. At the desktop sidebar width
+  the pill adds 4px of block padding and 8px of inline padding, with the
+  same negative margin so the label stays aligned with the other items. Ancestor and expanded section titles stay `--sdf-color-text` on
   a transparent background. Rust is a mark (the short rule under the page
   title, focus), not a panel.
 - The header uses the page background and text color. The logo stays the
@@ -863,26 +876,16 @@ first column, so those paths stay on one line. Other first columns size to
 the text. A wide table still scrolls sideways.
 Admonitions use the state colors and their soft fills.
 
-The homepage "How it works" diagram carries the Mermaid `themeVariables`
-block from the GitHub section above, for GitHub's renderer. On the built
-site, Material renders that fence itself: its script loads Mermaid 11 from
-unpkg and injects `themeCSS` into a closed shadow root, which overrides the
-diagram's own fills. `extra.css` sets the variables that stylesheet reads so
-the picture follows the scheme. The variables are semantic tokens, and
-custom properties inherit into the shadow root, so a scheme change updates
-the diagram without a second render. Node fill is
-`--sdf-color-surface-raised`, node stroke and title `--sdf-color-text`,
-cluster fill `--sdf-color-surface-sunken` (Material uses
-`--md-default-fg-color--lightest` for that rect), cluster stroke
-`--sdf-color-border-strong`, edge-label background `--sdf-color-bg`. Edges
-are `--sdf-color-charcoal-400` in light (the documented `lineColor`). In
-dark, edge labels share that variable and `#7A828C` is only 4.25:1 on the
-page, so `extra.css` sets the edge color to `--sdf-color-text-muted`
-(`#B3ACA1`, 7.35:1). Labels use Source Sans 3. PNG diagrams under
-`docs/images/` keep their light drawing: in dark they sit on a cream plate
-(`--sdf-color-cream`, radius `--sdf-radius-md`, padding 12px). They are not
-CSS-inverted. Self-hosting the Mermaid script is open: the URL is inside
-Material's bundle.
+The homepage "How it works" figure is the PNG
+`docs/diagrams/01-architecture.png`, not a Mermaid fence. Diagram PNGs are
+drawn for a light page. In dark, images whose URL contains `diagrams/`,
+and images with the class `sdf-diagram` on the diagrams index, sit on
+`--sdf-color-diagram-plate` (cream `#F6F1E8`, radius `--sdf-radius-md`,
+padding 12px). They are not inverted. Screenshots under `docs/images/`,
+including `decisions-ui.png`, are not plated. `--md-mermaid-*` in
+`extra.css` is the mapping for a future Mermaid fence. A future fence's
+edge labels use `--sdf-color-text-muted` in both schemes, because
+charcoal-400 (`#7A828C`) is 3.46:1 on cream.
 
 Layout stays Material's: a left navigation, a right table of contents, and
 the typeset column between them.

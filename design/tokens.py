@@ -19,9 +19,71 @@ EXTRA = HERE.parent / "docs" / "stylesheets" / "extra.css"
 REF = re.compile(r"^\{([^}]+)\}$")
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 # extra.css may only name tokens. A raw color would drift from tokens.json.
-RAW_COLOR = re.compile(
-    r"#[0-9A-Fa-f]{3,8}\b|(?<![\w-])rgba?\(|(?<![\w-])hsla?\(",
+# Comments are removed before the scan. color-mix is allowed when its
+# arguments are tokens, transparent, currentColor, or inherit.
+RAW_FUNC = re.compile(
+    r"#[0-9A-Fa-f]{3,8}\b"
+    r"|(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\("
+    r"|(?<![\w-])color\(",
     re.IGNORECASE,
+)
+NAMED_COLORS = {
+    "aliceblue", "antiquewhite", "aqua", "aquamarine", "azure", "beige", "bisque",
+    "black", "blanchedalmond", "blue", "blueviolet", "brown", "burlywood",
+    "cadetblue", "chartreuse", "chocolate", "coral", "cornflowerblue", "cornsilk",
+    "crimson", "cyan", "darkblue", "darkcyan", "darkgoldenrod", "darkgray",
+    "darkgreen", "darkgrey", "darkkhaki", "darkmagenta", "darkolivegreen",
+    "darkorange", "darkorchid", "darkred", "darksalmon", "darkseagreen",
+    "darkslateblue", "darkslategray", "darkslategrey", "darkturquoise",
+    "darkviolet", "deeppink", "deepskyblue", "dimgray", "dimgrey", "dodgerblue",
+    "firebrick", "floralwhite", "forestgreen", "fuchsia", "gainsboro",
+    "ghostwhite", "gold", "goldenrod", "gray", "green", "greenyellow", "grey",
+    "honeydew", "hotpink", "indianred", "indigo", "ivory", "khaki", "lavender",
+    "lavenderblush", "lawngreen", "lemonchiffon", "lightblue", "lightcoral",
+    "lightcyan", "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey",
+    "lightpink", "lightsalmon", "lightseagreen", "lightskyblue", "lightslategray",
+    "lightslategrey", "lightsteelblue", "lightyellow", "lime", "limegreen",
+    "linen", "magenta", "maroon", "mediumaquamarine", "mediumblue",
+    "mediumorchid", "mediumpurple", "mediumseagreen", "mediumslateblue",
+    "mediumspringgreen", "mediumturquoise", "mediumvioletred", "midnightblue",
+    "mintcream", "mistyrose", "moccasin", "navajowhite", "navy", "oldlace",
+    "olive", "olivedrab", "orange", "orangered", "orchid", "palegoldenrod",
+    "palegreen", "paleturquoise", "palevioletred", "papayawhip", "peachpuff",
+    "peru", "pink", "plum", "powderblue", "purple", "rebeccapurple", "red",
+    "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen",
+    "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray",
+    "slategrey", "snow", "springgreen", "steelblue", "tan", "teal", "thistle",
+    "tomato", "turquoise", "violet", "wheat", "white", "whitesmoke", "yellow",
+    "yellowgreen",
+}
+NAMED_COLOR = re.compile(
+    r"(?<![\w-])(?:" + "|".join(sorted(NAMED_COLORS, key=len, reverse=True)) + r")(?![\w-])",
+    re.IGNORECASE,
+)
+ALLOWED_KEYWORDS = {"transparent", "currentcolor", "inherit"}
+# Strings the scanner must accept or reject. Kept next to the patterns so a
+# change to the ban has to update both.
+COLOR_SCAN_SAMPLES = (
+    ("color: #abc;", True),
+    ("color: #aabbcc;", True),
+    ("color: rgb(1, 2, 3);", True),
+    ("color: rgba(1, 2, 3, 0.5);", True),
+    ("color: hsl(20 10% 10%);", True),
+    ("color: hwb(20 10% 10%);", True),
+    ("color: lab(50% 20 -10);", True),
+    ("color: lch(50% 20 40);", True),
+    ("color: oklab(0.5 0.1 -0.1);", True),
+    ("color: oklch(0.5 0.1 40);", True),
+    ("color: color(srgb 1 0 0);", True),
+    ("color: red;", True),
+    ("color: color-mix(in srgb, red 50%, blue);", True),
+    ("color: transparent;", False),
+    ("color: currentColor;", False),
+    ("color: inherit;", False),
+    ("color: var(--sdf-color-text);", False),
+    ("white-space: nowrap;", False),
+    ("color: color-mix(in srgb, var(--sdf-color-accent) 12%, transparent);", False),
+    ("/* #fff and red */\ncolor: var(--sdf-color-bg);", False),
 )
 # Opt-in. A prefers-color-scheme block would flip the UI and the landing page,
 # which load this file and do not set either attribute.
@@ -45,11 +107,15 @@ def load():
     for path, (layer, node) in tokens.items():
         if "$dark" not in node:
             continue
-        if layer != "semantic" or node.get("$type") != "color":
-            raise SystemExit("$dark is only valid on a semantic color: " + path)
+        kind = node.get("$type")
+        if layer != "semantic" or kind not in ("color", "shadow"):
+            raise SystemExit("$dark is only valid on a semantic color or shadow: " + path)
         dark = node["$dark"]
-        if not isinstance(dark, str) or not (REF.match(dark) or HEX.match(dark)):
-            raise SystemExit("$dark must be a #RRGGBB or {alias}: " + path)
+        if kind == "color":
+            if not isinstance(dark, str) or not (REF.match(dark) or HEX.match(dark)):
+                raise SystemExit("$dark must be a #RRGGBB or {alias}: " + path)
+        elif not isinstance(dark, str) or not dark.strip():
+            raise SystemExit("$dark shadow must be a CSS shadow: " + path)
     return tokens
 
 
@@ -102,7 +168,13 @@ def render(tokens):
     # every semantic color whose dark hex differs is declared again here.
     dark = []
     for path, (lyr, node) in tokens.items():
-        if lyr != "semantic" or node.get("$type") != "color":
+        if lyr != "semantic":
+            continue
+        if node.get("$type") == "shadow":
+            if "$dark" in node:
+                dark.append((path, css_value(node["$dark"])))
+            continue
+        if node.get("$type") != "color":
             continue
         light = str(resolve_mode(tokens, path, False))
         dark_hex = str(resolve_mode(tokens, path, True))
@@ -115,7 +187,7 @@ def render(tokens):
         dark.append((path, value))
     if dark:
         lines.append("")
-        lines.append("/* Dark semantic colors. Applied only when a surface opts in. */")
+        lines.append("/* Dark semantic colors and shadows. Applied only when a surface opts in. */")
         lines.append(DARK_SELECTOR + " {")
         for path, value in dark:
             lines.append("  " + css_name(path) + ": " + value + ";")
@@ -177,10 +249,11 @@ PAIRS += [
     ("color.border", SURFACES, DECOR),
     ("chart.grid", SURFACES, DECOR),
 ]
-# Syntax colors are these tokens. Fenced code is darker than sunken in the dark
-# scheme, so a pair that passes on the surfaces also passes on color.code-bg.
-# Inline code uses color.code-inline-bg, which is surface-sunken in light and
-# surface-raised in dark, both already in the pairs above.
+# Syntax colors are painted on the code surfaces themselves, not only on the page.
+CODE_SURFACES = ["color.code-bg", "color.code-inline-bg"]
+PAIRS += [(f, CODE_SURFACES, TEXT) for f in (
+    "color.text", "color.text-muted", "color.accent-text", "color.success",
+    "color.warning", "color.error", "color.info", "graph.refinement")]
 
 
 def check_contrast(tokens, dark=False):
@@ -196,17 +269,46 @@ def check_contrast(tokens, dark=False):
     return rows, failed
 
 
+def strip_comments(text):
+    """Drop /* */ comments and keep newlines so later line numbers still match."""
+    return re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+
+
+def has_raw_color(text):
+    """True when text contains a color that is not a token or an allowed keyword."""
+    stripped = strip_comments(text)
+    if RAW_FUNC.search(stripped):
+        return True
+    for match in NAMED_COLOR.finditer(stripped):
+        if match.group(0).lower() not in ALLOWED_KEYWORDS:
+            return True
+    return False
+
+
+def self_test_colors():
+    failed = False
+    for sample, expect in COLOR_SCAN_SAMPLES:
+        got = has_raw_color(sample)
+        if got != expect:
+            print(f"color scan self-test failed: {sample!r} -> {got}, want {expect}", file=sys.stderr)
+            failed = True
+    return failed
+
+
 def check_extra_css():
     """Fail if the docs theme hard-codes a color instead of a token."""
+    if self_test_colors():
+        return True
     if not EXTRA.exists():
         print("missing " + str(EXTRA), file=sys.stderr)
         return True
+    text = strip_comments(EXTRA.read_text(encoding="utf-8"))
     bad = []
-    for i, line in enumerate(EXTRA.read_text(encoding="utf-8").splitlines(), 1):
-        if RAW_COLOR.search(line):
+    for i, line in enumerate(text.splitlines(), 1):
+        if has_raw_color(line):
             bad.append(f"docs/stylesheets/extra.css:{i}: {line.strip()}")
     if bad:
-        print("extra.css must use tokens, not raw hex or rgb():", file=sys.stderr)
+        print("extra.css must use tokens, not a raw color:", file=sys.stderr)
         for item in bad:
             print(item, file=sys.stderr)
     return bool(bad)

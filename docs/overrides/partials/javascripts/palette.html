@@ -1,0 +1,53 @@
+{#
+  Material 9.8.2 partials/javascripts/palette.html.
+  A stored choice is applied before first paint, as in the stock script.
+  With nothing stored, or with the system entry stored, matchMedia
+  "(prefers-color-scheme: dark)" picks the light or slate input and sets
+  that scheme on body. The html color-scheme follows, including when the
+  reader later switches the radios, so an explicit light choice does not
+  leave a dark canvas.
+#}
+<script>
+(function () {
+  function systemInput() {
+    var dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    var media = dark ? "(prefers-color-scheme: dark)" : "(prefers-color-scheme: light)";
+    return document.querySelector("[data-md-color-media='" + media + "']");
+  }
+
+  function paint(input) {
+    ["media", "scheme", "primary", "accent"].forEach(function (key) {
+      var value = input.getAttribute("data-md-color-" + key);
+      if (value) document.body.setAttribute("data-md-color-" + key, value);
+    });
+    document.documentElement.style.colorScheme =
+      input.getAttribute("data-md-color-scheme") === "slate" ? "dark" : "light";
+  }
+
+  var palette = __md_get("__palette");
+  if (palette && palette.color && palette.color.media !== "(prefers-color-scheme)") {
+    Object.entries(palette.color).forEach(function (entry) {
+      if (entry[1]) document.body.setAttribute("data-md-color-" + entry[0], entry[1]);
+    });
+    document.documentElement.style.colorScheme =
+      palette.color.scheme === "slate" ? "dark" : "light";
+  } else {
+    var input = systemInput();
+    if (input) paint(input);
+  }
+
+  var form = document.querySelector("[data-md-component=palette]");
+  if (form) {
+    form.addEventListener("change", function (event) {
+      var target = event.target;
+      if (!target || target.name !== "__palette") return;
+      if (target.getAttribute("data-md-color-media") === "(prefers-color-scheme)") {
+        var next = systemInput();
+        if (next) paint(next);
+        return;
+      }
+      paint(target);
+    });
+  }
+})();
+</script>

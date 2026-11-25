@@ -110,18 +110,24 @@ for (const scheme of [LIGHT, DARK]) {
           await expect(page.locator('.admonition.warning')).toBeVisible();
         }
         if (item.image && scheme.name === 'dark') {
-          await expect(page.locator('.md-typeset img').first()).toHaveCSS('padding-top', '12px');
-          await expect(page.locator('.md-typeset img').first()).toHaveCSS('background-color', 'rgb(246, 241, 232)');
+          const shot = page.locator('.md-typeset img[src*="images/"]');
+          const diagram = page.locator('.md-typeset img[src*="diagrams/"]');
+          await expect(shot).toHaveCSS('padding-top', '0px');
+          await expect(diagram).toHaveCSS('padding-top', '12px');
+          await expect(diagram).toHaveCSS('background-color', 'rgb(246, 241, 232)');
         }
         if (item.image && scheme.name === 'light') {
           await expect(page.locator('.md-typeset img').first()).toHaveCSS('padding-top', '0px');
         }
         const active = page.locator('.md-sidebar--primary a.md-nav__link--active').first();
         await expect(active).toBeVisible();
+        await expect(active).toHaveAttribute('aria-current', 'page');
         if (scheme.name === 'dark') {
           await expect(active).toHaveCSS('background-color', 'rgb(237, 230, 218)');
           await expect(active).toHaveCSS('color', 'rgb(27, 31, 37)');
           await expect(active).toHaveCSS('box-shadow', 'none');
+          await expect(active).toHaveCSS('padding-left', '8px');
+          await expect(active).toHaveCSS('padding-right', '8px');
         }
         await contrast(page);
         await shot(page, scheme.name + '-' + item.name + '-1440.png');
@@ -162,6 +168,43 @@ test('dark drawer at 390', async ({ context, page }) => {
   await shot(page, 'dark-home-390-drawer.png');
 });
 
+test('dark OS with no stored palette is slate before first paint', async ({ browser }) => {
+  const context = await browser.newContext({ colorScheme: 'dark' });
+  await context.addInitScript(() => {
+    localStorage.clear();
+    window.__schemeAtPaint = null;
+    try {
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (window.__schemeAtPaint == null && document.body) {
+            window.__schemeAtPaint = document.body.getAttribute('data-md-color-scheme');
+          }
+        }
+      }).observe({ type: 'paint', buffered: true });
+    } catch (err) {
+      window.__schemeAtPaint = 'observer-failed';
+    }
+  });
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, '/');
+  expect(await page.evaluate(() => window.__schemeAtPaint)).toBe('slate');
+  await expect(page.locator('body')).toHaveAttribute('data-md-color-scheme', 'slate');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+  await context.close();
+});
+
+test('explicit light on a dark OS keeps a light canvas', async ({ browser }) => {
+  const context = await browser.newContext({ colorScheme: 'dark' });
+  await installScheme(context, LIGHT.palette);
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, '/');
+  expect(await page.evaluate(() => window.__schemeAtPaint)).toBe('default');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
+  await context.close();
+});
+
 test('diagrams page in both schemes', async ({ browser }) => {
   for (const scheme of [LIGHT, DARK]) {
     const context = await browser.newContext();
@@ -170,7 +213,7 @@ test('diagrams page in both schemes', async ({ browser }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, '/diagrams/');
     expect(await page.evaluate(() => window.__schemeAtPaint)).toBe(scheme.attribute);
-    const figure = page.locator('.md-typeset a:has(> img)').first();
+    const figure = page.locator('.md-typeset a:has(> img.sdf-diagram)').first();
     await figure.scrollIntoViewIfNeeded();
     await expect(figure).toHaveCSS('border-bottom-style', 'none');
     const img = figure.locator('img');
