@@ -212,7 +212,7 @@ func TestDecisionListReadsWithoutWriting(t *testing.T) {
 
 func TestDecisionListUsage(t *testing.T) {
 	help := run(t, "decision", "list", "--help")
-	if help.code != 0 || help.stdout != "usage: sdf decision list [--db PATH] [--json]\n" {
+	if help.code != 0 || help.stdout != "usage: sdf decision list [--db PATH] [--json] [--session ID]\n" {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	top := run(t, "decision", "--help")
@@ -223,8 +223,8 @@ func TestDecisionListUsage(t *testing.T) {
 	if bad.code != 2 || bad.stderr != "sdf decision list: --db requires a value\n" {
 		t.Fatalf("%d %q", bad.code, bad.stderr)
 	}
-	unknown := run(t, "decision", "list", "--session", "x")
-	if unknown.code != 2 || !strings.Contains(unknown.stderr, "unrecognized arguments: --session") {
+	unknown := run(t, "decision", "list", "--nope")
+	if unknown.code != 2 || !strings.Contains(unknown.stderr, "unrecognized arguments: --nope") {
 		t.Fatalf("%d %q", unknown.code, unknown.stderr)
 	}
 }

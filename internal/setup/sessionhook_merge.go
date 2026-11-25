@@ -105,7 +105,108 @@ func mergeInitHooks(root map[string]any, tool string, commands map[string]string
 	if err != nil {
 		return false, err
 	}
-	return edge || brief, nil
+	stop, err := mergeStopHook(root, "Stop", stopHookCommand(tool), stopHookTimeout, "", "")
+	if err != nil {
+		return false, err
+	}
+	return edge || brief || stop, nil
+}
+
+// mergeStopHook adds sdf's decision-reminder command to one hook event
+// (Claude/Codex/Qwen Stop, Gemini AfterAgent) without touching the user's
+// own entries or the session-edge hooks. An existing sdf stop command is
+// updated in place. A user-tuned positive timeout is kept. A second run
+// with the same command changes nothing. matcher and name are set only on
+// a group this call appends; Gemini's AfterAgent examples use both.
+func mergeStopHook(root map[string]any, event, command string, timeout int, matcher, name string) (bool, error) {
+	raw, present := root["hooks"]
+	hooks, ok := raw.(map[string]any)
+	if present && !ok {
+		return false, fmt.Errorf("hooks is not an object (%s); it was not changed", jsonKind(raw))
+	}
+	if hooks == nil {
+		hooks = map[string]any{}
+		root["hooks"] = hooks
+	}
+	raw, present = hooks[event]
+	groups, ok := raw.([]any)
+	if present && !ok {
+		return false, fmt.Errorf("hooks.%s is not an array (%s); it was not changed", event, jsonKind(raw))
+	}
+	merged, changed := mergeStopEventHooks(groups, command, timeout, matcher, name)
+	if changed {
+		hooks[event] = merged
+	}
+	return changed, nil
+}
+
+func mergeStopEventHooks(groups []any, command string, timeout int, matcher, name string) ([]any, bool) {
+	found, changed := false, false
+	out := make([]any, 0, len(groups)+1)
+	for _, g := range groups {
+		group, ok := g.(map[string]any)
+		list, listOK := group["hooks"].([]any)
+		if !ok || !listOK {
+			out = append(out, g)
+			continue
+		}
+		kept := make([]any, 0, len(list))
+		for _, h := range list {
+			hook, ok := h.(map[string]any)
+			if !ok || !isSdfStopHook(hook) {
+				kept = append(kept, h)
+				continue
+			}
+			if found {
+				changed = true
+				continue
+			}
+			found = true
+			if hook["command"] != command {
+				hook["command"] = command
+				changed = true
+			}
+			if !positiveHookTimeout(hook["timeout"]) {
+				hook["timeout"] = timeout
+				changed = true
+			}
+			kept = append(kept, hook)
+		}
+		if len(kept) == 0 && len(list) > 0 {
+			continue
+		}
+		if len(kept) != len(list) {
+			group["hooks"] = kept
+		}
+		out = append(out, group)
+	}
+	if !found {
+		hook := map[string]any{"type": "command", "command": command, "timeout": timeout}
+		if name != "" {
+			hook["name"] = name
+		}
+		group := map[string]any{"hooks": []any{hook}}
+		if matcher != "" {
+			group["matcher"] = matcher
+		}
+		out = append(out, group)
+		changed = true
+	}
+	return out, changed
+}
+
+func isSdfStopHook(hook map[string]any) bool {
+	if t, _ := hook["type"].(string); t != "command" {
+		return false
+	}
+	command, _ := hook["command"].(string)
+	command = strings.TrimPrefix(command, claudeGuard)
+	for _, agent := range []string{"claude-code", "codex", "gemini", "qwen", "grok", "pi", "copilot", "cursor"} {
+		if command == strings.TrimPrefix(stopHookCommand(agent), claudeGuard) {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeDecisionBriefHooks adds sdf's decision-brief command to hooks.SessionStart
@@ -386,10 +487,10 @@ func codexHookPreview(path, url string) string {
 	case err != nil:
 		return fmt.Sprintf("hooks: --write will not change %s: %v\n", path, err)
 	case !changed:
-		return "hooks: " + path + " already has sdf's SessionStart and SessionEnd hooks and the decision brief hook\n"
+		return "hooks: " + path + " already has sdf's SessionStart and SessionEnd hooks, the decision brief hook, and the Stop hook\n"
 	default:
 		return "hooks: --write also merges sdf's SessionStart and SessionEnd hooks into " + path +
-			" (including the decision brief SessionStart hook; your own hooks there are kept; an existing file is copied to a .sdf-bak sibling first)\n" +
+			" (including the decision brief SessionStart hook and the Stop hook; your own hooks there are kept; an existing file is copied to a .sdf-bak sibling first)\n" +
 			codexHooksTrustNote
 	}
 }

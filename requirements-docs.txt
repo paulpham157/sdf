@@ -1,0 +1,5 @@
+# Pinned documentation site dependencies. Install into a venv:
+#   python3 -m venv .venv-docs
+#   .venv-docs/bin/pip install -r requirements-docs.txt
+mkdocs==1.6.1
+mkdocs-material==9.8.2

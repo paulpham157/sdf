@@ -8,14 +8,22 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Features
 
+- `sdf hook stop --agent` reminds an agent once per session to record decisions that are not written down, and only when that session has an `sdf.git.commit` with no decision linked to the session or no `implements` edge. `sdf init --write` installs the Stop hook for Claude Code, Codex, Gemini (`AfterAgent`), Qwen, Grok, and Pi (`agent_before_settle`). The store is read-only; a missing or unreadable store lets the agent stop. `sdf decision list --session ID` filters to that session. Copilot and Cursor are spoken by the command and not installed (their hook files are not what `sdf init` writes). OpenCode has no Stop gate ([#285](https://github.com/paulpham157/sdf/issues/285)).
 - Serve the Software Decision Fabric mark as the UI favicon at `/favicon.svg` and `/favicon.ico` ([#321](https://github.com/paulpham157/sdf/pull/321)).
+- The overview page plots decision-link recall over time, counts of unlinked commits and unlinked decisions (the same gaps `sdf decision audit` reports), and sessions plus computed cost by UTC day. `GET /api/overview-charts` builds the recall and gap series through `store.OpenReadOnly`, so it does not hold the writer's mutex. Session and cost series are `activity_by_day` on `GET /api/snapshot`. Charts are inline SVG with a data table; nothing is loaded from the network ([#316](https://github.com/paulpham157/sdf/issues/316), [#318](https://github.com/paulpham157/sdf/pull/318)).
 
 ### Docs
 
 - Add tldraw diagrams under `docs/diagrams/` (`.tldr` sources and PNG renders), embed them in the matching documents, and fix several doc/code mismatches: the README mermaid and Usage table, CONTRIBUTING workflow descriptions, the `sdf verify` step list and `--expect-prefix` wording, and the `sdf init` unknown-agent error, which now lists `copilot` ([#325](https://github.com/paulpham157/sdf/pull/325)).
+- Add a MkDocs Material documentation site, built in CI and deployed to GitHub Pages when `docs/` or the site config changes on `main`. The intended URL is `https://docs.softwaredecisionfabric.tech/` after a one-time Pages and DNS setup (see CONTRIBUTING.md).
+- The docs site follows the shared design tokens: cream page and header, charcoal text, rust only as an accent, self-hosted Fraunces, Source Sans 3, and IBM Plex Mono, and a light scheme only. `mkdocs_hooks.py` copies `design/tokens.css` at build time ([#334](https://github.com/paulpham157/sdf/pull/334)).
 - Point the README Quickstart at the published v0.1.0 release: `@latest` installs the v0.1.0 tag, `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` is a pin, and the prebuilt archives are on the [v0.1.0 release page](https://github.com/paulpham157/sdf/releases/tag/v0.1.0) ([#317](https://github.com/paulpham157/sdf/pull/317)).
 - Center the README opening, title it Software Decision Fabric, and describe cost per accepted outcome, the decision layer, and that SDF runs locally without sending telemetry to an outside SaaS ([#319](https://github.com/paulpham157/sdf/pull/319)).
 - Add the Software Decision Fabric logo to the centered README opening ([#320](https://github.com/paulpham157/sdf/pull/320)).
+
+### Fixes
+
+- `GET /api/summary`, `GET /api/snapshot`, and the report behind `GET /api/decisions/graph` on the UI port read the records table through a separate read-only connection (`store.OpenReadOnly`) instead of the receiver's writer connection, so a long UI read no longer holds the writer's mutex and blocks OTLP ingest. The JSON is unchanged; an in-memory store is still read through the writer ([#272](https://github.com/paulpham157/sdf/issues/272), [#328](https://github.com/paulpham157/sdf/pull/328)).
 
 ## [0.1.0] — 2026-11-24
 

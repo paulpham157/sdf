@@ -13,12 +13,16 @@
 //
 // GET /api/summary is the sdf summary JSON document: summary.SummarizeWith
 // with the default span view, then outcome.Attach (outcome.Summarize). GET
-// /api/snapshot is that same report arranged for the page. GET
+// /api/snapshot is that same report arranged for the page, including
+// activity_by_day (sessions and computed cost by UTC day). GET
 // /api/decisions reads the append-only decision records; it is empty when
 // none have been recorded, and it is not part of the summary. GET
 // /api/decisions/graph arranges those records into chapters for the
 // Decisions tab (see package decisiongraph), over the same report without
-// the budget, as sdf decision graph builds it. Requests that arrive while a
+// the budget, as sdf decision graph builds it. GET /api/overview-charts
+// is the decision-recall and unlinked-gap series for the overview,
+// built with store.OpenReadOnly so it does not hold the writer mutex
+// (issue #272). Requests that arrive while a
 // report is being built share it, so one page load makes one round of
 // GitHub calls, not one per route. Computed cost the summary marks unknown
 // is returned without a USD value. A budget file, when one is configured,
@@ -46,6 +50,7 @@ import (
 	"github.com/paulpham157/sdf/internal/httphost"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
+	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
 )
@@ -236,6 +241,7 @@ func (h *handler) routes() {
 	h.mux.HandleFunc("GET /api/snapshot", h.snapshot)
 	h.mux.HandleFunc("GET /api/decisions", h.decisions)
 	h.mux.HandleFunc("GET /api/decisions/graph", h.decisionGraph)
+	h.mux.HandleFunc("GET /api/overview-charts", h.overviewCharts)
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -346,6 +352,33 @@ func (h *handler) decisionGraph(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, r, func(buf io.Writer) error { return decisiongraph.WriteJSON(buf, view) })
 }
 
+// overviewCharts is GET /api/overview-charts: decision-link recall and
+// the unlinked commit/decision counts sdf decision audit reports, bucketed
+// by UTC day. It opens a separate read-only connection to the same file
+// (store.OpenReadOnly) and never calls Store.Load or holds the writer's
+// mutex, so a long chart read does not block ingest (issue #272). Cost and
+// session counts by day live on GET /api/snapshot as activity_by_day,
+// computed from the report that handler already built.
+func (h *handler) overviewCharts(w http.ResponseWriter, r *http.Request) {
+	ro, err := store.OpenReadOnly(h.store.Path())
+	if err != nil {
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer ro.Close()
+	doc, err := decision.Charts(ro, decision.AuditOptions{})
+	if err != nil {
+		writeText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	h.writeJSON(w, r, func(buf io.Writer) error { return summary.EncodeJSON(buf, doc) })
+}
+
 // load is the report with the budget applied, for /api/summary and
 // /api/snapshot.
 func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
@@ -401,7 +434,7 @@ func (h *handler) buildReport() (summary.Report, *pricing.Catalog, error) {
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
-	records, err := h.store.Load()
+	records, err := h.readRecords()
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
@@ -415,6 +448,25 @@ func (h *handler) buildReport() (summary.Report, *pricing.Catalog, error) {
 		}
 	}
 	return outcome.Summarize(records, cat, opt), cat, nil
+}
+
+// readRecords reads every record for a report through a separate
+// read-only connection to the same file (store.OpenReadOnly), not the
+// receiver's writer connection, so a long read does not hold the writer's
+// mutex and block OTLP Insert (issue #272). In WAL mode the read sees the
+// last committed state and does not wait for the writer. An in-memory
+// store has no file another connection could open, so it is read through
+// the writer as before.
+func (h *handler) readRecords() ([]record.Record, error) {
+	if h.store.InMemory() {
+		return h.store.Load()
+	}
+	ro, err := store.OpenReadOnly(h.store.Path())
+	if err != nil {
+		return nil, err
+	}
+	defer ro.Close()
+	return ro.Load()
 }
 
 // writeJSON runs encode into memory first, then sends the result with

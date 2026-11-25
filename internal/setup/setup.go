@@ -698,7 +698,11 @@ func gemini(req Request) (Result, error) {
 			telemetry["logPrompts"] = false
 			changed = true
 		}
-		return changed, nil
+		stopChanged, err := mergeStopHook(root, "AfterAgent", stopHookCommand("gemini"), stopHookTimeoutMS, "*", "sdf-decision-reminder")
+		if err != nil {
+			return false, err
+		}
+		return changed || stopChanged, nil
 	}
 	var warnings strings.Builder
 	if root, err := readJSON(path); err == nil {
@@ -724,7 +728,7 @@ func gemini(req Request) (Result, error) {
 			return Result{}, err
 		}
 	} else {
-		shape := map[string]any{"telemetry": map[string]any{"logPrompts": false}}
+		shape := map[string]any{"telemetry": map[string]any{"logPrompts": false}, "hooks": true}
 		for key, value := range want {
 			shape["telemetry"].(map[string]any)[key] = value
 		}

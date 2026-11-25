@@ -344,7 +344,11 @@ leaves DEL and RTL characters raw in the JSON strings, exactly as
 `GET /api/decisions` does, so a reader that prints JSON values to a terminal
 has to escape them itself.
 `sdf decision list --json` prints exactly what `GET /api/decisions` returns,
-because both read the store through the same code. Like `sdf summary`, it reads
+because both read the store through the same code. `--session ID` is not
+that response: it keeps only the edges that touch `session:ID` and the
+decisions those edges name, in the same insertion order, and drops the
+rest. With no such edge the text is `No decisions in the store.` and
+`--json` is the empty lists. Like `sdf summary`, it reads
 `sdf-telemetry.sqlite` unless `--db` names another file, and it opens the file
 read-only: it never writes, never migrates, and never creates a file. With no
 records and no edges it prints `No decisions in the store.`, and `--json`
@@ -363,7 +367,7 @@ sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
 sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
-sdf decision list [--db PATH] [--json]
+sdf decision list [--db PATH] [--json] [--session ID]
 sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]
 sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]
 sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
@@ -748,6 +752,15 @@ decision, and it never writes. Like `list`, it opens the store with
 `OpenReadOnly`: a missing file in an existing directory audits as an empty
 store and is not created, a missing directory is an error, and an older file
 is read without being migrated.
+
+The overview page in the UI plots these gaps as charts (recall over time,
+unlinked commit and decision counts, plus sessions and computed cost by
+UTC day) without listing every finding. `GET /api/overview-charts` reuses
+this audit logic on a read-only connection. Recall is the share of
+SDF-recorded commits that have an `implements` edge to a stored decision;
+`SDF-Decision` trailers are not stored, so they are not counted yet
+(issue #281). The charts do not cover constraint-touch metrics (issue #305)
+or the hash-ledger `sdf audit` command.
 
 ```bash
 sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]

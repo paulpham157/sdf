@@ -1,0 +1,118 @@
+# Documentation site for https://docs.softwaredecisionfabric.tech/
+# Build: pip install -r requirements-docs.txt && mkdocs build --strict
+site_name: Software Decision Fabric
+site_url: https://docs.softwaredecisionfabric.tech/
+site_description: >-
+  A local OpenTelemetry collector and decision ledger for coding agents.
+site_author: paulpham157
+
+repo_name: paulpham157/sdf
+repo_url: https://github.com/paulpham157/sdf
+edit_uri: edit/main/docs/
+
+copyright: >
+  Apache License 2.0 ·
+  <a href="https://softwaredecisionfabric.tech/">softwaredecisionfabric.tech</a>
+
+strict: true
+
+# Built when present (PR #325) but not required in nav on this branch.
+# Hook rewrites the README's ../../README.md and ../../CONTRIBUTING.md
+# links so --strict still passes after that PR lands.
+not_in_nav: |
+  diagrams/README.md
+
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  logo: images/logo.svg
+  favicon: images/logo.svg
+  # Webfonts are self-hosted in docs/stylesheets/extra.css. font: false
+  # keeps Material from requesting fonts.googleapis.com.
+  font: false
+  # One light scheme. primary and accent are custom so the body does not
+  # fall back to data-md-color-primary="indigo". No slate scheme, no toggle:
+  # dark tokens are deferred (docs/design/tokens.md).
+  palette:
+    scheme: default
+    primary: custom
+    accent: custom
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.suggest
+    - content.action.edit
+    - content.code.copy
+    - toc.follow
+
+hooks:
+  - mkdocs_hooks.py
+
+plugins:
+  - search
+
+extra_css:
+  # Copied from design/tokens.css by mkdocs_hooks.py. Not committed.
+  - stylesheets/tokens.css
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/paulpham157/sdf
+      name: sdf on GitHub
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  omitted_files: warn
+  absolute_links: info
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Collect:
+    - Receiver: receiver.md
+    - Agents: agents.md
+    - Summary: summary.md
+    - Check the summary: check.md
+  - Decide:
+    - Outcomes: outcomes.md
+    - File permissions: security.md
+  - Verify:
+    - Tasks: tasks.md
+    - Verify: verify.md
+    - GitHub Action: action.md
+    - Ledger: ledger.md
+  - Reference:
+    - Gaps: gaps.md
+    - Session boundaries: research/session-boundary.md
+    - Design tokens: design/tokens.md
+    - Agent skills: skills/README.md
+    - sdf-decisions skill: skills/sdf-decisions/SKILL.md
+    - sdf-decisions scripts: skills/sdf-decisions/scripts/index.md

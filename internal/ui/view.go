@@ -39,6 +39,20 @@ type Snapshot struct {
 	PriceTable      string                  `json:"price_table,omitempty"`
 	PriceSource     string                  `json:"price_source,omitempty"`
 	PriceDate       string                  `json:"price_date,omitempty"`
+	// ActivityByDay is sessions and computed cost by UTC day of the
+	// session start. Quiet days between the first and last dated
+	// session are included with zero sessions and a known 0 cost.
+	// Sessions with no start time are counted in UndatedSessions, not
+	// on a day.
+	ActivityByDay   []ActivityDay `json:"activity_by_day"`
+	UndatedSessions int           `json:"undated_sessions"`
+}
+
+// ActivityDay is one UTC calendar day of session counts and computed cost.
+type ActivityDay struct {
+	Day             string `json:"day"`
+	Sessions        int    `json:"sessions"`
+	ComputedCostUSD Amount `json:"computed_cost_usd"`
 }
 
 // Totals are sums of summary fields. A missing piece makes the amount
@@ -149,6 +163,7 @@ func BuildSnapshot(report summary.Report, meta SnapshotMeta) Snapshot {
 		unattributed = []summary.Unattributed{}
 	}
 	agents := rollups(report.Sessions)
+	activity, undated := activityByDay(report.Sessions)
 	snap := Snapshot{
 		Sessions:        views,
 		Unattributed:    unattributed,
@@ -158,6 +173,8 @@ func BuildSnapshot(report summary.Report, meta SnapshotMeta) Snapshot {
 		Agents:          agents,
 		GitHub:          meta.GitHub,
 		PriceTable:      meta.PriceTable,
+		ActivityByDay:   activity,
+		UndatedSessions: undated,
 	}
 	for _, session := range report.Sessions {
 		if session.ComputedCost == nil {
@@ -622,4 +639,57 @@ func formatRat(r *big.Rat) (string, bool) {
 		return "", false
 	}
 	return text, true
+}
+
+// activityByDay groups sessions by the UTC date of Repository.StartUnixNano.
+// The series is empty when no session has a start time. Quiet days between
+// the first and last dated session have Sessions 0 and a known 0 cost.
+func activityByDay(sessions []summary.SessionSummary) ([]ActivityDay, int) {
+	by := map[string][]summary.SessionSummary{}
+	undated := 0
+	var first, last string
+	for _, session := range sessions {
+		if session.Repository.StartUnixNano == nil {
+			undated++
+			continue
+		}
+		day := time.Unix(0, *session.Repository.StartUnixNano).UTC().Format("2006-01-02")
+		if first == "" || day < first {
+			first = day
+		}
+		if last == "" || day > last {
+			last = day
+		}
+		by[day] = append(by[day], session)
+	}
+	if first == "" {
+		return []ActivityDay{}, undated
+	}
+	days := activityDaysInclusive(first, last)
+	out := make([]ActivityDay, 0, len(days))
+	for _, day := range days {
+		group := by[day]
+		item := ActivityDay{Day: day, Sessions: len(group)}
+		if len(group) == 0 {
+			item.ComputedCostUSD = Amount{Status: "known", Value: "0"}
+		} else {
+			item.ComputedCostUSD = sumComputed(group)
+		}
+		out = append(out, item)
+	}
+	return out, undated
+}
+
+func activityDaysInclusive(from, to string) []string {
+	start, err1 := time.Parse("2006-01-02", from)
+	end, err2 := time.Parse("2006-01-02", to)
+	if err1 != nil || err2 != nil || start.After(end) {
+		return nil
+	}
+	out := make([]string, 0, int(end.Sub(start).Hours()/24)+1)
+	for !start.After(end) {
+		out = append(out, start.Format("2006-01-02"))
+		start = start.AddDate(0, 0, 1)
+	}
+	return out
 }

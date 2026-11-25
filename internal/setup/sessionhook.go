@@ -140,6 +140,14 @@ const claudeGuard = `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0; `
 // hung. The agent kills the hook at this budget; the command also fail-opens.
 const decisionBriefTimeout = 2
 
+// stopHookTimeout is the Stop hook budget in seconds for agents that count
+// timeout in seconds (Claude Code, Codex, Qwen, Grok). The command itself
+// fails open well inside it. Gemini counts timeout in milliseconds and uses
+// stopHookTimeoutMS.
+const stopHookTimeout = 2
+
+const stopHookTimeoutMS = 2000
+
 // decisionBriefCommandV1 is the first unreleased command this branch wrote
 // (no capture, with `|| exit 0`). The recognizer still matches it so re-init
 // upgrades it in place.
@@ -167,6 +175,17 @@ const decisionBriefCommandV2 = `command -v sdf >/dev/null 2>&1 || exit 0; exec s
 // 2048-byte cap that ends in \n). `command -v`, `|| exit 0`, and the hook
 // timeout are belt-and-braces; brief's own bounds are well under 2s.
 const decisionBriefCommand = `command -v sdf >/dev/null 2>&1 || exit 0; sdf_out=$(sdf decision brief </dev/null 2>/dev/null) || exit 0; [ -n "$sdf_out" ] && printf '%s\n' "$sdf_out"; exit 0`
+
+// stopHookCommand is the Stop command sdf installs. It exits 0 when sdf is
+// missing or the command fails, and it leaves stdin and stdout alone so the
+// agent's payload reaches sdf and the block JSON reaches the agent.
+func stopHookCommand(agent string) string {
+	cmd := "command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent " + agent + " || exit 0"
+	if agent == "claude-code" {
+		return claudeGuard + cmd
+	}
+	return cmd
+}
 
 func decisionBriefCommandFor(tool string) string {
 	if tool == "claude-code" {
@@ -205,10 +224,13 @@ func codexHooks(url string) string {
     ],
     "SessionEnd": [
       {"hooks": [{"type": "command", "command": %q}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": %q, "timeout": %d}]}
     ]
   }
 }
-`, commands["SessionStart"], decisionBriefCommand, decisionBriefTimeout, commands["SessionEnd"])
+`, commands["SessionStart"], decisionBriefCommand, decisionBriefTimeout, commands["SessionEnd"], stopHookCommand("codex"), stopHookTimeout)
 }
 
 // codexHookCommands is the command for each event in hooks.json, used to
@@ -278,10 +300,13 @@ func grokHooks(url string) string {
     ],
     "SessionEnd": [
       {"hooks": [{"type": "command", "command": %q}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": %q, "timeout": %d}]}
     ]
   }
 }
-`, grokSessionHookCommand("open", url), grokSessionHookCommand("close", url))
+`, grokSessionHookCommand("open", url), grokSessionHookCommand("close", url), stopHookCommand("grok"), stopHookTimeout)
 }
 
 // grokSessionHookCommand posts one edge. GROK_SESSION_ID is the id Grok puts
@@ -341,6 +366,8 @@ func jsonStringExpr(name string) string {
 func piExtension(url string) string {
 	return fmt.Sprintf(`// Reports a session opening and closing to the local sdf collector.
 %s
+import { spawnSync } from "node:child_process"
+
 export default function sdfSession(pi) {
   const post = (edge, reason) => {
     let id = ""
@@ -357,6 +384,29 @@ export default function sdfSession(pi) {
     const reason = event && event.reason
     if (reason === "reload" || reason === "new" || reason === "resume" || reason === "fork") return
     post("close", reason)
+  })
+  // One more turn, at most, when this session committed and did not record
+  // the decision. spawnSync throws nothing on a missing sdf; a non-zero
+  // status or a body that does not ask to continue lets the session settle.
+  pi.on("agent_before_settle", (event) => {
+    let id = ""
+    try { id = pi.sessionManager.getSessionId() } catch (e) { return }
+    if (!id) return
+    let parsed
+    try {
+      const res = spawnSync("sh", ["-c", "sdf hook stop --agent pi"], {
+        input: JSON.stringify({ session_id: id }),
+        encoding: "utf8",
+        timeout: 2000,
+      })
+      if (!res || res.status !== 0 || !res.stdout) return
+      parsed = JSON.parse(res.stdout)
+    } catch (e) { return }
+    if (!parsed || parsed.continue !== true || !Array.isArray(parsed.entries)) return
+    // A returned entries list replaces the proposal so far; keep what
+    // earlier handlers proposed.
+    const prior = event && Array.isArray(event.entries) ? event.entries : []
+    return { continue: true, entries: [...prior, ...parsed.entries] }
   })
 }
 `, jsHeaders(url), url)

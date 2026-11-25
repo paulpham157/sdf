@@ -2,6 +2,7 @@ package setup
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -186,6 +187,9 @@ func qwenMerge(existing []byte, exists bool, ep Endpoint) ([]byte, *qwenObject, 
 	if _, ok := root.get("telemetry"); !ok {
 		root.set("telemetry", tel)
 	}
+	stopChanged, stopWarnings := qwenInstallStop(root)
+	warnings = append(warnings, stopWarnings...)
+	changed = changed || stopChanged
 	out, err := qwenWriteJSON(root, indent)
 	if err != nil {
 		return nil, nil, nil, false, err
@@ -197,6 +201,91 @@ func qwenMerge(existing []byte, exists bool, ep Endpoint) ([]byte, *qwenObject, 
 		out = append(append([]byte{}, utf8BOM...), out...)
 	}
 	return out, tel, warnings, changed, nil
+}
+
+// qwenInstallStop adds the Stop decision reminder to settings.json hooks.
+// A hooks value that is not an object, or a Stop value that is not an
+// array, is left alone and named in a warning so telemetry still writes.
+func qwenInstallStop(root *qwenObject) (bool, []string) {
+	cmd := stopHookCommand("qwen")
+	raw, ok := root.get("hooks")
+	var hooks *qwenObject
+	if !ok {
+		hooks = newQwenObject()
+		root.set("hooks", hooks)
+	} else {
+		obj, is := raw.(*qwenObject)
+		if !is {
+			return false, []string{`"hooks" is not an object; the Stop hook was not added`}
+		}
+		hooks = obj
+	}
+	raw, ok = hooks.get("Stop")
+	var groups []any
+	if !ok {
+		groups = []any{}
+	} else {
+		arr, is := raw.([]any)
+		if !is {
+			return false, []string{`"hooks.Stop" is not an array; the Stop hook was not added`}
+		}
+		groups = arr
+	}
+	changed := false
+	found := false
+	for _, g := range groups {
+		group, is := g.(*qwenObject)
+		if !is {
+			continue
+		}
+		list, is := group.vals["hooks"].([]any)
+		if !is {
+			continue
+		}
+		for _, h := range list {
+			hook, is := h.(*qwenObject)
+			if !is {
+				continue
+			}
+			command, _ := hook.vals["command"].(string)
+			if strings.TrimPrefix(command, claudeGuard) != strings.TrimPrefix(cmd, claudeGuard) {
+				continue
+			}
+			found = true
+			if !qwenPositiveTimeout(hook.vals["timeout"]) {
+				hook.set("timeout", 2)
+				changed = true
+			}
+		}
+	}
+	if found {
+		return changed, nil
+	}
+	hook := newQwenObject()
+	hook.set("type", "command")
+	hook.set("command", cmd)
+	hook.set("timeout", 2)
+	group := newQwenObject()
+	group.set("hooks", []any{hook})
+	groups = append(groups, group)
+	hooks.set("Stop", groups)
+	return true, nil
+}
+
+func qwenPositiveTimeout(v any) bool {
+	switch n := v.(type) {
+	case json.Number:
+		i, err := n.Int64()
+		return err == nil && i > 0
+	case int:
+		return n > 0
+	case int64:
+		return n > 0
+	case float64:
+		return n > 0 && n == float64(int64(n))
+	default:
+		return false
+	}
 }
 
 func qwenShow(v any) string {

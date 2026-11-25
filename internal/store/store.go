@@ -236,6 +236,10 @@ func setWAL(db *sql.DB) error {
 // Path is the SQLite file path.
 func (s *Store) Path() string { return s.path }
 
+// InMemory reports whether s is an in-memory (":memory:") or temporary ("")
+// database, which no other connection can open by its path.
+func (s *Store) InMemory() bool { return private(s.path) }
+
 func (s *Store) migrate() error {
 	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
 		return err
