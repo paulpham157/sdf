@@ -560,6 +560,10 @@ not): keywords `--sdf-color-accent-text`, strings `--sdf-color-success`,
 numbers `--sdf-color-error`, constants `--sdf-color-info`, functions
 `--sdf-graph-refinement`, comments and punctuation `--sdf-color-text-muted`.
 Tables use the default table tokens (padding, font size, line height).
+Inline code in a table wraps after a hyphen or a `/`, not in the middle of
+a token. The File/Role table is the only one with a 13.5rem minimum on the
+first column, so those paths stay on one line. Other first columns size to
+the text. A wide table still scrolls sideways.
 Admonitions use the state colors and their soft fills.
 
 The homepage "How it works" diagram carries the Mermaid `themeVariables`

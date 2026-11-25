@@ -325,13 +325,50 @@ body {
   border-bottom: var(--sdf-border-width-strong) solid var(--sdf-color-text);
 }
 
-.md-typeset table:not([class]) td:first-child {
+/* Paths in the File/Role table (mkdocs_hooks marks that table). A global
+   13.5rem floor is 270px under Material's 20px rem and leaves the next
+   column about 100px at 390px. */
+.md-typeset table:not([class])[data-sdf-table="paths"] td:first-child {
   min-width: 13.5rem;
 }
 
 .md-typeset table:not([class]) :is(td, th) code {
   white-space: normal;
-  overflow-wrap: anywhere;
+  /* Break after a hyphen (the line breaker) or a slash (<wbr> from
+     mkdocs_hooks). anywhere, and Material's word-break:break-word which
+     computes to it, splits entry_hash and shrinks min-content, so a
+     column that sits past the fold wraps into a tall empty row. */
+  word-break: normal;
+  overflow-wrap: normal;
+}
+
+/* Back to top is fixed at the viewport center, just under the header.
+   At 390px that center covers first-column token names. Park an icon at
+   the bottom end instead. Media-query em is the initial 16px, so 30em
+   is 480px. The label stays in the button for assistive tech. */
+@media screen and (max-width: 30em) {
+  [dir="ltr"] .md-top {
+    margin-left: 0;
+    right: 0.6rem;
+    left: auto;
+    /* Material's header script writes an inline top. */
+    top: auto !important;
+    bottom: 0.8rem;
+    height: auto;
+    transform: none;
+    font-size: 0;
+    line-height: 0;
+    padding: 0.45rem;
+  }
+
+  [dir="ltr"] .md-top[hidden] {
+    transform: translateY(0.2rem);
+  }
+
+  .md-top svg {
+    font-size: 1.2rem;
+    vertical-align: middle;
+  }
 }
 
 .md-typeset .admonition,
