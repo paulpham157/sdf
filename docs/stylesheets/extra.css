@@ -286,6 +286,16 @@ body {
   color: var(--sdf-color-text-muted);
 }
 
+.md-content__button.md-icon:hover,
+.md-content__button.md-icon:focus-visible {
+  color: var(--sdf-color-accent-text);
+}
+
+.md-content__button.md-icon:focus-visible {
+  outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
+  outline-offset: 2px;
+}
+
 .md-typeset {
   max-width: 72ch;
   font-size: calc(var(--sdf-font-size-base) * var(--docs-rem));

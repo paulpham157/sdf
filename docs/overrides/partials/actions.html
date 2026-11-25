@@ -1,0 +1,19 @@
+{#
+  View this page on GitHub. Material 9.8.2's stock actions partial
+  rewrites a blob edit_uri to a raw URL. This override keeps
+  page.edit_url, which mkdocs.yml sets to blob/main/docs/ and
+  mkdocs_hooks.py rewrites for skill pages. There is no edit action.
+#}
+{% if page.edit_url %}
+  {% if "content.action.view" in features %}
+    <a
+      href="{{ page.edit_url }}"
+      title="View on GitHub"
+      aria-label="View on GitHub"
+      class="md-content__button md-icon"
+    >
+      {% set icon = config.theme.icon.view or "fontawesome/brands/github" %}
+      {% include ".icons/" ~ icon ~ ".svg" %}
+    </a>
+  {% endif %}
+{% endif %}
