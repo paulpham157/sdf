@@ -22,7 +22,7 @@ information without sending telemetry to an outside SaaS. It does not
 launch, route, or sandbox the agents; it only listens. The receiver needs
 no API key or network connection.
 
-![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](images/decisions-ui.png)
+[![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](images/decisions-ui.png)](images/decisions-ui.png)
 
 ## Quickstart
 
@@ -53,30 +53,9 @@ The full install notes, feature list, and command reference live in the
 
 ## How it works
 
-```mermaid
-%%{init: {"theme": "base", "themeVariables": {
-  "primaryColor": "#FBF7F1", "primaryTextColor": "#2F3640",
-  "primaryBorderColor": "#2F3640", "lineColor": "#7A828C",
-  "clusterBkg": "#EBE3D6", "clusterBorder": "#6B7480", "titleColor": "#2F3640",
-  "edgeLabelBackground": "#F6F1E8",
-  "fontFamily": "ui-sans-serif, system-ui, sans-serif"}}}%%
-flowchart TB
-  subgraph telemetry["Telemetry"]
-    direction TB
-    A["Coding agents<br/>Claude Code, Codex, Gemini,<br/>Qwen, Grok, Copilot, OpenCode, Pi"] -->|OTLP| S["sdf serve<br/>local receiver<br/>drops prompt/tool content by default"]
-    S --> DB[(local SQLite)]
-    DB --> UI["UI at 127.0.0.1:4320"]
-    DB --> OUT["sdf summary / sdf decision"]
-  end
-  subgraph optional["Optional (beside collection)"]
-    T["sdf task declare"] --> V["sdf verify"]
-    T -.-> L["optional ledger"]
-    V -.-> L
-    GHA["GitHub Action sdf-verify"] -.-> V
-  end
-  telemetry ~~~ optional
-  classDef chosen stroke:#C65A2E,stroke-width:3px;
-```
+[![Overall architecture: coding agents export OTLP to sdf serve, which redacts content by default and writes local SQLite; the UI and sdf summary / sdf decision read that store. Optional task declare, sdf verify, the ledger, and the GitHub Action sit beside collection. The Action invokes verify and does not open a ledger.](diagrams/01-architecture.png)](diagrams/01-architecture.png)
+
+Source: [01-architecture.tldr](diagrams/01-architecture.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 Agents export OTLP to the local receiver. sdf stores what it needs for
 summaries and outcomes, and (by default) drops prompt and tool text
@@ -100,6 +79,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Tasks](tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [Verify](verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [GitHub Action](action.md) | The `sdf verify` GitHub Action, and its threat model |
+| [Diagrams](diagrams/README.md) | Architecture, receiver, decision, verify, ledger, CI, and agent-span drawings (tldraw `.tldr` sources and PNG renders) |
 | [Gaps](gaps.md) | Known limits of the collector and the summary |
 | [Design tokens](design/tokens.md) | Shared cream, charcoal, and rust tokens, and how the UI, the docs site, and the landing page use them |
 | [Session boundaries](research/session-boundary.md) | How each agent marks session open and close |
