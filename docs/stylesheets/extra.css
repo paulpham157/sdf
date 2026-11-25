@@ -644,6 +644,12 @@ html .md-footer-meta.md-typeset a,
   overflow: visible;
 }
 
+/* The nav box is not a grid item. Its links join this grid so the meta
+   block can sit between them and keep the footer landmark. */
+.md-footer .sdf-footer > .md-footer__inner {
+  display: contents;
+}
+
 .md-footer .sdf-footer__prev,
 .md-footer .sdf-footer__next {
   min-width: 0;
@@ -653,6 +659,8 @@ html .md-footer-meta.md-typeset a,
 .md-footer .sdf-footer__prev {
   grid-column: 1;
   grid-row: 1;
+  justify-self: start;
+  order: 1;
 }
 
 .md-footer .sdf-footer__meta {
@@ -660,6 +668,7 @@ html .md-footer-meta.md-typeset a,
   grid-row: 1;
   justify-self: center;
   align-self: center;
+  order: 2;
   min-width: 0;
   max-width: 100%;
   background-color: transparent;
@@ -668,6 +677,8 @@ html .md-footer-meta.md-typeset a,
 .md-footer .sdf-footer__next {
   grid-column: 3;
   grid-row: 1;
+  justify-self: end;
+  order: 3;
 }
 
 .md-footer .sdf-footer__meta-inner {
@@ -711,15 +722,6 @@ html .md-footer-meta.md-typeset a,
   margin-bottom: 0;
 }
 
-.md-footer .sdf-footer__prev .md-footer__link {
-  justify-self: start;
-}
-
-.md-footer .sdf-footer__next .md-footer__link {
-  justify-self: end;
-  margin-inline-start: 0;
-}
-
 .md-footer .sdf-footer .md-footer__title,
 .md-footer .sdf-footer .md-ellipsis {
   min-width: 0;
@@ -756,6 +758,28 @@ html .md-footer-meta.md-typeset a,
   /* Material hides the previous title below its mobile breakpoint. */
   .md-footer .sdf-footer__prev .md-footer__title {
     display: block;
+  }
+}
+
+/* The back-to-top control is a 42px icon at the viewport's end and bottom
+   (the 30em rule above). Clear that corner so Next never sits under it.
+   30em is 480px; media-query em is the initial 16px. */
+@media screen and (max-width: 30em) {
+  .md-footer .sdf-footer {
+    padding-block-end: calc((var(--sdf-space-16) + var(--sdf-space-2)) * var(--docs-rem));
+  }
+
+  .md-footer .sdf-footer__next {
+    padding-inline-end: calc((var(--sdf-space-16) + var(--sdf-space-2)) * var(--docs-rem));
+  }
+
+  /* 2.75rem times --docs-rem is 44px at Material's 20px root. */
+  .md-footer .sdf-footer .md-social__link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+    height: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
   }
 }
 

@@ -565,7 +565,9 @@ How it consumes `tokens.css`:
   site link, the Material credit, and the GitHub icon, and those lines are
   centered inside it. Equal side columns keep that block on the page center
   when a page has no Previous or no Next. Below 60em the same three slots
-  stack, and the meta stays centered. Footer fill is
+  stack, and the meta stays centered. Previous and Next are in a footer
+  navigation landmark. At 30em the row keeps end and bottom padding so Next
+  stays clear of the back-to-top control. Footer fill is
   `--sdf-color-surface-sunken`. Footer links use `--sdf-color-link`, and
   focus uses `--sdf-color-focus`.
 
