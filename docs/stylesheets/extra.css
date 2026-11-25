@@ -212,6 +212,15 @@ body {
   background-color: var(--sdf-color-surface-sunken);
 }
 
+/* The href hover above is as specific as the current-page color lock, and
+   it would replace the raised chip with the sunken hover fill. Keep the
+   chip and the hairline on the open page. */
+.md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
+.md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover {
+  background-color: var(--sdf-color-surface-raised);
+  box-shadow: inset var(--sdf-border-width-hairline) 0 0 var(--sdf-color-accent);
+}
+
 .md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus {
   color: var(--sdf-color-text);
 }
