@@ -186,17 +186,74 @@ body {
   border-right: var(--sdf-border-width-hairline) solid var(--sdf-color-border);
 }
 
-.md-nav__link--active,
-.md-nav__item--active > .md-nav__link,
-.md-nav__link:hover,
-.md-nav__link:focus,
-.md-nav--primary .md-nav__item--active > .md-nav__link:hover,
-.md-nav--primary .md-nav__item--active > .md-nav__link:focus {
+/* Primary sidebar. Material marks the current page and every ancestor
+   with .md-nav__item--active, so that selector must not carry the page
+   treatment. Only .md-nav__link--active is the open page. Section titles
+   stay charcoal. The in-drawer table of contents (.md-nav--secondary)
+   is left to the theme. */
+
+.md-nav--primary .md-nav__link:not(.md-nav--secondary .md-nav__link) {
+  color: var(--sdf-color-text);
+  font-weight: var(--sdf-font-weight-regular);
+  background-color: transparent;
+  box-shadow: none;
+  border-radius: var(--sdf-radius-sm);
+}
+
+.md-nav--primary .md-nav__item--section > .md-nav__link:not(.md-nav__link--active) {
+  color: var(--sdf-color-text);
+  font-weight: var(--sdf-font-weight-medium);
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):hover {
+  color: var(--sdf-color-accent-text);
+  background-color: var(--sdf-color-surface-sunken);
+}
+
+.md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus {
+  color: var(--sdf-color-text);
+}
+
+.md-nav--primary .md-nav__link:not(.md-nav--secondary .md-nav__link):focus-visible,
+.md-nav--primary .md-nav__link.focus-visible:not(.md-nav--secondary .md-nav__link) {
+  outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
+  outline-offset: 2px;
+}
+
+.md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus-visible,
+.md-nav--primary .md-nav__link[href].focus-visible:not(.md-nav--secondary .md-nav__link) {
   color: var(--sdf-color-accent-text);
 }
 
-.md-nav--primary .md-nav__item--active > .md-nav__link {
-  box-shadow: inset var(--sdf-border-width-heavy) 0 0 var(--sdf-color-accent);
+.md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link) {
+  color: var(--sdf-color-accent-text);
+  font-weight: var(--sdf-font-weight-medium);
+  background-color: var(--sdf-color-surface-raised);
+  box-shadow: inset var(--sdf-border-width-hairline) 0 0 var(--sdf-color-accent);
+}
+
+.md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+.md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
+.md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
+.md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
+  color: var(--sdf-color-accent-text);
+}
+
+.md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active) {
+  color: var(--sdf-color-text);
+  font-weight: var(--sdf-font-weight-medium);
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active):hover,
+.md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active):focus,
+.md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active):focus-visible {
+  color: var(--sdf-color-text);
+  background-color: transparent;
+  box-shadow: none;
 }
 
 .md-typeset .headerlink,
