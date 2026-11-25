@@ -14,7 +14,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Docs
 
-- The docs site no longer shows an edit button. The icon at the top right of a page is a GitHub mark labeled "View on GitHub" and opens that file for viewing (`https://github.com/paulpham157/sdf/blob/main/docs/<path>.md`). Skill pages point at `blob/main/skills/…`. The generated scripts index has no source link.
+- The docs site no longer shows an edit button. The icon at the top right of a page is a GitHub mark labeled "View on GitHub" and opens that file for viewing (`https://github.com/paulpham157/sdf/blob/main/docs/<path>.md`). Skill pages point at `blob/main/skills/…`. The generated scripts index has no source link ([#340](https://github.com/paulpham157/sdf/pull/340)).
 - Add a MkDocs Material documentation site, built in CI and deployed to GitHub Pages when `docs/` or the site config changes on `main`. The intended URL is `https://docs.softwaredecisionfabric.tech/` after a one-time Pages and DNS setup (see CONTRIBUTING.md).
 - The docs site follows the shared design tokens: cream page and header, charcoal text, rust only as an accent, self-hosted Fraunces, Source Sans 3, and IBM Plex Mono, and a light scheme only. `mkdocs_hooks.py` copies `design/tokens.css` at build time ([#334](https://github.com/paulpham157/sdf/pull/334)).
 - Docs tables no longer give every first column a 13.5rem minimum. That floor stays on the File/Role table. Table code wraps after a hyphen or `/`, so a ledger cell keeps `entry_hash` in one piece, and on a phone the Back to top control is an icon at the bottom end so it does not cover token names ([#335](https://github.com/paulpham157/sdf/pull/335)).

@@ -564,7 +564,11 @@ How it consumes `tokens.css`:
   It uses the same GitHub mark as the header (`fontawesome/brands/github`).
   Its accessible name is "View on GitHub". Resting color is
   `--sdf-color-text-muted`; hover and keyboard focus use
-  `--sdf-color-accent-text`, with a `--sdf-color-focus` outline. A docs page
+  `--sdf-color-accent-text`, with a `--sdf-color-focus` outline. The mark
+  stays `--sdf-space-6` scaled by `--docs-rem` (24px). The link box is
+  `(--sdf-space-10 + --sdf-space-1)` scaled the same way (44px), and a
+  negative margin gives that box back so the title line does not move.
+  A docs page
   opens `https://github.com/paulpham157/sdf/blob/main/docs/<path>.md`. Skill
   pages open `blob/main/skills/…`. The generated scripts index has no source
   link: that page is not a file in the repository. Material 9.8.2's stock
