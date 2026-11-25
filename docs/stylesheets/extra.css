@@ -286,10 +286,21 @@ body {
   border-bottom-color: var(--sdf-color-border);
 }
 
+.md-typeset pre {
+  position: relative;
+}
+
 .md-typeset pre > code {
   font-size: calc(var(--sdf-font-size-md) * var(--docs-rem));
   background-color: transparent;
   border-radius: 0;
+  box-sizing: border-box;
+  /* Leave a gutter for the copy button. The scroller stops before the
+     button, so a long line never runs underneath it. */
+  width: calc(100% - 2.75rem);
+  max-width: calc(100% - 2.75rem);
+  padding-right: 0.6em;
+  overflow-x: auto;
 }
 
 .md-typeset table:not([class]) {
@@ -312,6 +323,15 @@ body {
   font-weight: var(--sdf-font-weight-semibold);
   background-color: var(--sdf-color-surface-sunken);
   border-bottom: var(--sdf-border-width-strong) solid var(--sdf-color-text);
+}
+
+.md-typeset table:not([class]) td:first-child {
+  min-width: 13.5rem;
+}
+
+.md-typeset table:not([class]) :is(td, th) code {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .md-typeset .admonition,

@@ -505,9 +505,12 @@ surface as CSS. The brand shows up through images and structure only.
 - Static SVG diagrams: the same palette, a cream background rectangle in the
   file, and text as paths or system fonts only.
 - Redo or keep:
-  - `docs/images/decisions-ui.png`: recapture after the UI restyle. It
-    already shows a Connections tab, zoom and a session filter that are not on
-    `main`, and it uses the old green palette.
+  - `docs/images/decisions-ui.png`: the Decisions page as the UI ships
+    today. Overview, Sessions, and Decisions; a chosen node, a not-taken
+    alternative, a locked ending, a conflict, and the replay scrubber. No
+    Connections tab. Captured from a synthetic store at 2x, cropped to the
+    page, no browser chrome. The UI still uses its own paper and green
+    palette. Recapture again after the UI restyle.
   - `docs/images/logo.svg`: keep. It is byte-identical to the canonical mark.
   - README "How it works" Mermaid: still without the theme block. Whether
     GitHub keeps honoring `init` is an open question, so the README is
