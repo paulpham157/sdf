@@ -12,6 +12,8 @@ on:
       - "skills/**"
       - "design/tokens.css"
       - "design/tokens.json"
+      - "design/tokens.py"
+      - "tests/docs-a11y/**"
       - "mkdocs.yml"
       - "mkdocs_hooks.py"
       - "requirements-docs.txt"
@@ -23,6 +25,8 @@ on:
       - "skills/**"
       - "design/tokens.css"
       - "design/tokens.json"
+      - "design/tokens.py"
+      - "tests/docs-a11y/**"
       - "mkdocs.yml"
       - "mkdocs_hooks.py"
       - "requirements-docs.txt"
@@ -52,6 +56,8 @@ jobs:
           cache-dependency-path: requirements-docs.txt
       - name: Install documentation dependencies
         run: pip install -r requirements-docs.txt
+      - name: Check design tokens
+        run: python3 design/tokens.py --check
       - name: Build
         env:
           # Material prints an EOL notice for MkDocs 2; it is not a build error.
@@ -67,6 +73,52 @@ jobs:
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
+
+  contrast:
+    name: docs contrast
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-docs.txt
+      - name: Install documentation dependencies
+        run: pip install -r requirements-docs.txt
+      - name: Check design tokens
+        run: python3 design/tokens.py --check
+      - name: Build
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+        run: mkdocs build --strict
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/docs-a11y/package-lock.json
+      - name: Install Playwright
+        working-directory: tests/docs-a11y
+        run: npm ci
+      - name: Install Chromium
+        working-directory: tests/docs-a11y
+        run: npx playwright install --with-deps chromium
+      - name: Contrast
+        working-directory: tests/docs-a11y
+        run: npx playwright test
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docs-contrast-screenshots
+          path: tests/docs-a11y/output
+          if-no-files-found: error
 
   deploy:
     name: deploy docs

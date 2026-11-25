@@ -14,8 +14,9 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Docs
 
+- The docs site follows the system color scheme, and the header toggle switches among system, light, and dark. Dark uses Material's slate scheme and the opt-in semantic tokens. The app UI and the landing page stay light.
 - Add a MkDocs Material documentation site, built in CI and deployed to GitHub Pages when `docs/` or the site config changes on `main`. The intended URL is `https://docs.softwaredecisionfabric.tech/` after a one-time Pages and DNS setup (see CONTRIBUTING.md).
-- The docs site follows the shared design tokens: cream page and header, charcoal text, rust only as an accent, self-hosted Fraunces, Source Sans 3, and IBM Plex Mono, and a light scheme only. `mkdocs_hooks.py` copies `design/tokens.css` at build time ([#334](https://github.com/paulpham157/sdf/pull/334)).
+- The docs site follows the shared design tokens: cream page and header, charcoal text, rust only as an accent, self-hosted Fraunces, Source Sans 3, and IBM Plex Mono. `mkdocs_hooks.py` copies `design/tokens.css` at build time ([#334](https://github.com/paulpham157/sdf/pull/334)).
 - Docs tables no longer give every first column a 13.5rem minimum. That floor stays on the File/Role table. Table code wraps after a hyphen or `/`, so a ledger cell keeps `entry_hash` in one piece, and on a phone the Back to top control is an icon at the bottom end so it does not cover token names ([#335](https://github.com/paulpham157/sdf/pull/335)).
 - The docs site header has a control labeled Website that links to https://softwaredecisionfabric.tech/. It stays in the header bar on desktop and on a phone, next to the GitHub source button on wide screens.
 - Point the README Quickstart at the published v0.1.0 release: `@latest` installs the v0.1.0 tag, `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` is a pin, and the prebuilt archives are on the [v0.1.0 release page](https://github.com/paulpham157/sdf/releases/tag/v0.1.0) ([#317](https://github.com/paulpham157/sdf/pull/317)).

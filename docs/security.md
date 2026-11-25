@@ -6,6 +6,11 @@ kept readable by their owner only. This covers the telemetry store
 (`sdf-telemetry.sqlite`, or `--db`) and the ledger (see
 [ledger.md](ledger.md)).
 
+!!! warning "Owner-only"
+    sdf creates the store and the ledger at mode 0600 and strips group
+    and other access from an existing file. When the mode cannot be
+    changed, it warns and continues, so a read-only command still runs.
+
 - **New files.** sdf creates the database file with mode 0600 before SQLite
   opens it. On unix SQLite creates the `-wal`, `-shm` and `-journal` files
   beside it with the main file's mode, whatever the umask, so they are 0600

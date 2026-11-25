@@ -49,7 +49,8 @@ and the [Material](https://squidfunk.github.io/mkdocs-material/) theme.
 Pages render the existing files with no rewrite of their body text.
 Mermaid fences, search, and an Edit on GitHub link are enabled. The header
 has a Website link to the product site, on desktop and on a phone. The theme
-is light only and follows `design/tokens.css` (see `docs/design/tokens.md`).
+follows `design/tokens.css` (see `docs/design/tokens.md`), including a dark
+scheme the reader can select. The app UI stays light.
 Skill files under `skills/` are included at build time so the relative
 links already in the docs keep working.
 

@@ -81,6 +81,13 @@
 
 [data-md-color-scheme="default"] {
   color-scheme: light;
+}
+
+/* Material's slate scheme ships its own hues, and primary: custom defines
+   none. Map both schemes onto semantic tokens. Slate then follows the
+   opt-in dark block in tokens.css; default keeps the light values. */
+[data-md-color-scheme="default"],
+[data-md-color-scheme="slate"] {
   --md-default-fg-color: var(--sdf-color-text);
   --md-default-fg-color--light: var(--sdf-color-text-muted);
   --md-default-fg-color--lighter: var(--sdf-color-border-strong);
@@ -110,12 +117,13 @@
   --md-typeset-table-color: var(--sdf-color-border);
   --md-typeset-table-color--light: var(--sdf-color-surface-sunken);
   --md-code-fg-color: var(--sdf-color-text);
-  --md-code-bg-color: var(--sdf-color-surface-sunken);
-  --md-code-bg-color--light: var(--sdf-color-surface-sunken);
+  --md-code-bg-color: var(--sdf-color-code-bg);
+  --md-code-bg-color--light: var(--sdf-color-code-bg);
   --md-code-bg-color--lighter: var(--sdf-color-surface-raised);
   --md-code-hl-color: var(--sdf-color-accent-soft);
-  /* Material's default syntax hues are under 4.5:1 on surface-sunken.
-     These semantic colors all clear text contrast on that surface. */
+  /* Material's default syntax hues are under 4.5:1 on the code surface.
+     These semantic colors clear text contrast on surface-sunken (light
+     code) and, in dark, on code-bg, which is deeper than sunken. */
   --md-code-hl-keyword-color: var(--sdf-color-accent-text);
   --md-code-hl-string-color: var(--sdf-color-success);
   --md-code-hl-number-color: var(--sdf-color-error);
@@ -137,6 +145,20 @@
   --md-footer-bg-color--dark: var(--sdf-color-surface-sunken);
   --md-shadow-z1: var(--sdf-shadow-sm);
   --md-shadow-z2: var(--sdf-shadow-sm);
+}
+
+/* Edge labels use the same variable as strokes. charcoal-400 is 4.25:1 on
+   the dark page, short of 4.5 for that label. text-muted clears 4.5 and
+   still clears 3:1 as a stroke. Light mode keeps charcoal-400. */
+[data-md-color-scheme="slate"] {
+  color-scheme: dark;
+  --md-mermaid-edge-color: var(--sdf-color-text-muted);
+}
+
+/* The scheme attribute sits on body. color-scheme has to reach html so
+   scrollbars and native controls follow. The page background is body's. */
+html:has(body[data-md-color-scheme="slate"]) {
+  color-scheme: dark;
 }
 
 body {
@@ -266,6 +288,19 @@ body {
   color: var(--sdf-color-accent-text);
 }
 
+/* Dark active item is an inverse pill: text color as the fill, page
+   background as the label. Background only. No vertical edge. */
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
+  color: var(--sdf-color-bg);
+  background-color: var(--sdf-color-text);
+  box-shadow: none;
+}
+
 .md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active) {
   color: var(--sdf-color-text);
   font-weight: var(--sdf-font-weight-medium);
@@ -345,13 +380,13 @@ body {
 
 .md-typeset code {
   font-size: calc(var(--sdf-font-size-md) * var(--docs-rem));
-  background-color: var(--sdf-color-surface-sunken);
+  background-color: var(--sdf-color-code-inline-bg);
   border-radius: var(--sdf-radius-sm);
 }
 
 .md-typeset pre,
 .md-typeset .highlight {
-  background-color: var(--sdf-color-surface-sunken);
+  background-color: var(--sdf-color-code-bg);
   border-radius: var(--sdf-radius-md);
 }
 
@@ -628,6 +663,22 @@ html .md-footer-meta.md-typeset a,
   color: var(--sdf-color-link);
 }
 
+/* Material draws "Previous" and "Next" at 70% opacity. On the sunken footer
+   that blended gray is 4.27:1. text-muted clears 4.5 in both schemes. */
+.md-footer__direction {
+  opacity: 1;
+  color: var(--sdf-color-text-muted);
+}
+
+/* Diagrams are drawn for a light page. Sit them on a cream plate in dark.
+   Do not invert. radius-md is 6px. space-3 times --docs-rem is 12px when
+   Material's root is 20px. */
+[data-md-color-scheme="slate"] .md-typeset img {
+  background-color: var(--sdf-color-cream);
+  border-radius: var(--sdf-radius-md);
+  padding: calc(var(--sdf-space-3) * var(--docs-rem));
+}
+
 ::selection {
   background: var(--sdf-color-text);
   color: var(--sdf-color-text-inverse);
@@ -635,4 +686,9 @@ html .md-footer-meta.md-typeset a,
 
 :focus-visible {
   outline-color: var(--sdf-color-focus);
+}
+
+[data-md-color-scheme="slate"] :focus-visible {
+  outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
+  outline-offset: 2px;
 }

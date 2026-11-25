@@ -19,3 +19,9 @@ dist/
 # Python bytecode from mkdocs_hooks.py.
 __pycache__/
 *.py[cod]
+
+# Docs contrast job. Screenshots are CI artifacts, not source.
+/tests/docs-a11y/node_modules/
+/tests/docs-a11y/output/
+/tests/docs-a11y/test-results/
+/tests/docs-a11y/playwright-report/

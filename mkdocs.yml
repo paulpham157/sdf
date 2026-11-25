@@ -34,13 +34,31 @@ theme:
   # Webfonts are self-hosted in docs/stylesheets/extra.css. font: false
   # keeps Material from requesting fonts.googleapis.com.
   font: false
-  # One light scheme. primary and accent are custom so the body does not
-  # fall back to data-md-color-primary="indigo". No slate scheme, no toggle:
-  # dark tokens are deferred (docs/design/tokens.md).
+  # System, then light, then dark. primary and accent stay custom on
+  # every entry so the body does not fall back to indigo. Material stores
+  # the choice and applies it in partials/javascripts/palette.html before
+  # the rest of the page paints. Slate opts into the dark semantic tokens.
   palette:
-    scheme: default
-    primary: custom
-    accent: custom
+    - media: "(prefers-color-scheme)"
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
   features:
     - navigation.sections
     - navigation.expand
