@@ -12,6 +12,7 @@ The Markdown under docs/ is left unchanged. At build time this hook:
   pointing at ../docs/..., and docs/diagrams/README.md pointing at
   ../../README.md and ../../CONTRIBUTING.md)
 - points the Edit button on skill pages at the real source path
+- marks the File/Role table and lets table code wrap after a hyphen or "/"
 """
 
 from __future__ import annotations
@@ -144,6 +145,90 @@ def on_page_markdown(
         for pattern, repl in DOCS_SKILL_REWRITES:
             markdown = pattern.sub(repl, markdown)
     return markdown
+
+
+# A hyphen or slash between word characters is a wrap point. A leading
+# "--" stays together, and so does a double hyphen. <wbr> is not copied.
+_TABLE_RE = re.compile(r"(<table\b[^>]*>)(.*?)(</table>)", re.DOTALL | re.IGNORECASE)
+_PRE_RE = re.compile(r"(<pre\b[^>]*>.*?</pre>)", re.DOTALL | re.IGNORECASE)
+_CODE_RE = re.compile(r"(<code\b[^>]*>)(.*?)(</code>)", re.DOTALL | re.IGNORECASE)
+_FILE_ROLE_RE = re.compile(
+    r"<th[^>]*>\s*File\s*</th>\s*<th[^>]*>\s*Role\s*</th>",
+    re.IGNORECASE,
+)
+_WORD = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+
+def _soft_breaks(fragment: str) -> str:
+    """Wrap opportunities after a word hyphen or a slash. Not mid-token."""
+    out: list[str] = []
+    prev = ""
+    i = 0
+    n = len(fragment)
+    while i < n:
+        if fragment.startswith("<wbr>", i):
+            out.append("<wbr>")
+            i += 5
+            continue
+        if fragment[i] == "&":
+            semi = fragment.find(";", i + 1, i + 32)
+            if semi != -1 and "<" not in fragment[i:semi]:
+                out.append(fragment[i : semi + 1])
+                prev = ";"
+                i = semi + 1
+                continue
+        if fragment[i] == "<":
+            end = fragment.find(">", i + 1)
+            if end == -1:
+                out.append(fragment[i:])
+                break
+            out.append(fragment[i : end + 1])
+            i = end + 1
+            continue
+        ch = fragment[i]
+        out.append(ch)
+        nxt = fragment[i + 1] if i + 1 < n else ""
+        already = fragment.startswith("<wbr>", i + 1)
+        if not already and ch == "/" and prev in _WORD | {"."}:
+            out.append("<wbr>")
+        elif not already and ch == "-" and prev in _WORD and nxt in _WORD:
+            out.append("<wbr>")
+        prev = ch
+        i += 1
+    return "".join(out)
+
+
+def _break_inline_code(inner: str) -> str:
+    parts = _PRE_RE.split(inner)
+    for i, part in enumerate(parts):
+        if part.lower().startswith("<pre"):
+            continue
+        parts[i] = _CODE_RE.sub(
+            lambda m: m.group(1) + _soft_breaks(m.group(2)) + m.group(3),
+            part,
+        )
+    return "".join(parts)
+
+
+def _mark_file_role(open_tag: str, inner: str) -> str:
+    if not _FILE_ROLE_RE.search(inner) or "data-sdf-table=" in open_tag:
+        return open_tag
+    return open_tag[:-1] + ' data-sdf-table="paths">'
+
+
+def _table_code_breaks(html: str) -> str:
+    def repl(m: re.Match[str]) -> str:
+        open_tag, inner, close = m.group(1), m.group(2), m.group(3)
+        open_tag = _mark_file_role(open_tag, inner)
+        return open_tag + _break_inline_code(inner) + close
+
+    return _TABLE_RE.sub(repl, html)
+
+
+def on_page_content(
+    html: str, page: Page, config: MkDocsConfig, files: Files
+) -> str:
+    return _table_code_breaks(html)
 
 
 def on_pre_page(page: Page, config: MkDocsConfig, files: Files) -> Page:
