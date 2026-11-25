@@ -223,7 +223,7 @@ claude_code.interaction
     └── claude_code.tool.execution
 ```
 
-![Claude Code default beta span tree: claude_code.interaction with llm_request and tool children; hook is not in this tree.](diagrams/12-claude-code-spans.png)
+[![Claude Code default beta span tree: claude_code.interaction with llm_request and tool children; hook is not in this tree.](diagrams/12-claude-code-spans.png)](diagrams/12-claude-code-spans.png)
 
 Source: [12-claude-code-spans.tldr](diagrams/12-claude-code-spans.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
@@ -602,7 +602,7 @@ Claude Code and OpenCode use `session.id`. Pi logs set only `pi.session.id`.
 
 ## Qwen Code
 
-![Qwen Code span types: qwen-code.interaction with llm_request and tool (blocked_on_user and execution children). subagent and hook are listed as span types; the docs do not specify their parent, so they are drawn as siblings.](diagrams/14-qwen-spans.png)
+[![Qwen Code span types: qwen-code.interaction with llm_request and tool (blocked_on_user and execution children). subagent and hook are listed as span types; the docs do not specify their parent, so they are drawn as siblings.](diagrams/14-qwen-spans.png)](diagrams/14-qwen-spans.png)
 
 Source: [14-qwen-spans.tldr](diagrams/14-qwen-spans.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
@@ -1068,7 +1068,7 @@ agent.prompt                                session_id
 Startup (`startup.*`, `session.new_session`, `session.spawn`) is a separate
 trace, and teardown (`session_end.*`) hangs off a `session` span.
 
-![Grok CLI internal spans that sdf summary keeps by default: agent.prompt, session.process_conversation_turn, turn.sampling, http.create_response_stream, tools.execute, permission.wait, and tool.execution.](diagrams/13-grok-spans.png)
+[![Grok CLI internal spans that sdf summary keeps by default: agent.prompt, session.process_conversation_turn, turn.sampling, http.create_response_stream, tools.execute, permission.wait, and tool.execution.](diagrams/13-grok-spans.png)](diagrams/13-grok-spans.png)
 
 Source: [13-grok-spans.tldr](diagrams/13-grok-spans.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 

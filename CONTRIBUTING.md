@@ -15,7 +15,7 @@ release, as a draft, when a version tag matching `v[0-9]+.[0-9]+.[0-9]+*`
 | Scheduled (`.github/workflows/schedule.yml`) | Mondays 03:17 UTC | Depends on time, not on a new commit: `govulncheck` (new advisories) and a gitleaks scan of every branch. |
 | Docs (`.github/workflows/docs.yml`) | `pull_request` or `push` to `main` when `docs/`, `skills/`, or the site config changes; also `workflow_dispatch` | On a pull request, `mkdocs build --strict` only. On `main`, that same build is uploaded and deployed to GitHub Pages. The intended URL is `https://docs.softwaredecisionfabric.tech/` after the one-time setup below. Until then the site is at `https://paulpham157.github.io/sdf/`. |
 
-![Repository workflows: PR CI, Main CI, Release (version-tag draft), and the Monday scheduled scan.](docs/diagrams/09-ci-workflows.png)
+[![Repository workflows: PR CI, Main CI, Docs (site build and Pages deploy), Release (version-tag draft), and the Monday scheduled scan.](docs/diagrams/09-ci-workflows.png)](docs/diagrams/09-ci-workflows.png)
 
 Source: [09-ci-workflows.tldr](docs/diagrams/09-ci-workflows.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 

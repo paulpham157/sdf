@@ -94,12 +94,12 @@ type Result struct {
 	Wrote bool
 }
 
-// Run prints the agent setup. It writes files only when Request.Write is set,
-// and it copies an existing file to a sibling .sdf-bak before replacing bytes.
-// knownAgentsHint is the parenthetical list on unknown-agent errors from
-// Run and Configured. Keep it in the same order as CLI help (initAgents).
+// knownAgentsHint is the parenthetical list on unknown-agent errors.
+// Keep it in the same order as CLI help (initAgents).
 const knownAgentsHint = "claude-code, codex, opencode, pi, qwen, grok, gemini, copilot"
 
+// Run prints the agent setup. It writes files only when Request.Write is set,
+// and it copies an existing file to a sibling .sdf-bak before replacing bytes.
 func Run(req Request) (Result, error) {
 	if err := normalize(&req); err != nil {
 		return Result{}, err

@@ -59,7 +59,7 @@ verify as a chain.
 
 ## What runs, in order
 
-![sdf verify pipeline: loadTask, prepareCheckout, checkRevision, checkIntegrity, scanSecrets, prepareChecks, runCriterion, then finish.](diagrams/06-verify-pipeline.png)
+[![sdf verify pipeline: loadTask, prepareCheckout, checkRevision, checkIntegrity, scanSecrets, prepareChecks, runCriterion, then finish.](diagrams/06-verify-pipeline.png)](diagrams/06-verify-pipeline.png)
 
 Source: [06-verify-pipeline.tldr](diagrams/06-verify-pipeline.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 

@@ -4,7 +4,7 @@
 the agent starts. It runs nothing. [`sdf verify`](verify.md) reads the
 declared task and runs its checks against a submitted revision.
 
-![sdf task declare writes a canonical sdf.task/v1 hash to .sdf/tasks, the data dir, and an optional ledger; sdf verify reads the task from a protected --task-ref.](diagrams/11-task-declare.png)
+[![sdf task declare writes a canonical sdf.task/v1 hash to .sdf/tasks, the data dir, and an optional ledger; sdf verify reads the task from a protected --task-ref.](diagrams/11-task-declare.png)](diagrams/11-task-declare.png)
 
 Source: [11-task-declare.tldr](diagrams/11-task-declare.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 

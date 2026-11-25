@@ -32,7 +32,7 @@ information without sending telemetry to an outside SaaS. It does not
 launch, route, or sandbox the agents; it only listens. The receiver needs
 no API key or network connection.
 
-![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)
+[![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)](docs/images/decisions-ui.png)
 
 ## Features
 
@@ -46,7 +46,7 @@ no API key or network connection.
   tokens or duration. A model with no published price is `unknown`, not
   zero
 - Decision records you write down (`sdf decision add`, `link`, `list`,
-  `graph`, `brief`, `retract`, `audit`, `check`): who decided, alternatives,
+  `graph`, `brief`, `check`, `retract`, `audit`, `pre-push`): who decided, alternatives,
   links to sessions and commits, and a read-only graph in the UI
 - Prompt, response, tool, and error text is dropped before storing, for
   every agent, unless you opt in with `--store-content`
@@ -186,23 +186,7 @@ A database written by an older sdf can still hold content until you run
 
 ## How it works
 
-```mermaid
-flowchart TB
-  subgraph telemetry["Telemetry"]
-    A["Coding agents<br/>Claude Code, Codex, Gemini,<br/>Qwen, Grok, Copilot, OpenCode, Pi"] -->|OTLP| S["sdf serve<br/>local receiver<br/>drops prompt/tool content by default"]
-    S --> DB[(local SQLite)]
-    DB --> UI["UI at 127.0.0.1:4320"]
-    DB --> OUT["sdf summary / sdf decision"]
-  end
-  subgraph optional["Optional (beside collection)"]
-    T["sdf task declare"] --> V["sdf verify"]
-    T -.-> L["optional ledger"]
-    V -.-> L
-    GHA["GitHub Action sdf-verify"] -.-> V
-  end
-```
-
-![Overall architecture: coding agents export OTLP to sdf serve, which redacts content by default and writes local SQLite; the UI and sdf summary / sdf decision read that store. Optional task declare, sdf verify, the ledger, and the GitHub Action sit beside collection.](docs/diagrams/01-architecture.png)
+[![Overall architecture: coding agents export OTLP to sdf serve, which redacts content by default and writes local SQLite; the UI and sdf summary / sdf decision read that store. Optional task declare, sdf verify, the ledger, and the GitHub Action sit beside collection. The Action invokes verify and does not open a ledger.](docs/diagrams/01-architecture.png)](docs/diagrams/01-architecture.png)
 
 Source: [01-architecture.tldr](docs/diagrams/01-architecture.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 

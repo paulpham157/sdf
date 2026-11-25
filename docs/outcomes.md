@@ -7,7 +7,7 @@ pass `--github`.
 
 ## Linking a session to a commit
 
-![How a session is linked to a commit, a pull request, a decision, and cost per accepted outcome.](diagrams/16-session-outcomes.png)
+[![How a session is linked to a commit, a pull request, a decision, and cost per accepted outcome.](diagrams/16-session-outcomes.png)](diagrams/16-session-outcomes.png)
 
 Source: [16-session-outcomes.tldr](diagrams/16-session-outcomes.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
@@ -125,7 +125,7 @@ with helpers in [`scripts/`](../skills/sdf-decisions/scripts/).
 
 ### Link rules
 
-![Stored decision relations and their allowed endpoint kinds: supersedes, blocks, conflicts_with, refines, implements, validates, contradicts, and constrains.](diagrams/03-decision-relations.png)
+[![Stored decision relations and their allowed endpoint kinds: supersedes, blocks, conflicts_with, refines, implements, validates, contradicts, and constrains.](diagrams/03-decision-relations.png)](diagrams/03-decision-relations.png)
 
 Source: [03-decision-relations.tldr](diagrams/03-decision-relations.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
@@ -458,7 +458,7 @@ before a writing command has added the table. `retract` then fails on it.
 
 ### The decision graph (Decisions tab)
 
-![Anatomy of one Decisions-tab chapter: start, spine, left and right lanes, node roles, and derived edges.](diagrams/05-decision-graph.png)
+[![Anatomy of one Decisions-tab chapter: start, spine, left and right lanes, node roles, and derived edges.](diagrams/05-decision-graph.png)](diagrams/05-decision-graph.png)
 
 Source: [05-decision-graph.tldr](diagrams/05-decision-graph.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 

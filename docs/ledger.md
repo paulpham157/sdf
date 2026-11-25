@@ -4,7 +4,7 @@ The ledger is an append-only, hash-chained record of canonical payloads:
 tasks, attempts, evidence, verdicts. A verifier writes to it through
 `internal/ledger`. `sdf audit verify` and `sdf audit head` read it.
 
-![Optional hash-chained ledger: genesis, task, evidence, and verdict entries, plus the difference between sdf audit VerifyPrefix pins and sdf verify's exact-head pin.](diagrams/08-ledger-chain.png)
+[![Optional hash-chained ledger: genesis, task, evidence, and verdict entries, plus the difference between sdf audit VerifyPrefix pins and sdf verify's exact-head pin.](diagrams/08-ledger-chain.png)](diagrams/08-ledger-chain.png)
 
 Source: [08-ledger-chain.tldr](diagrams/08-ledger-chain.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
