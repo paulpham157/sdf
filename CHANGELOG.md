@@ -22,6 +22,7 @@ This file covers the first public release of the current product: a vendor-neutr
 - Point the README Quickstart at the published v0.1.0 release: `@latest` installs the v0.1.0 tag, `go install github.com/paulpham157/sdf/cmd/sdf@v0.1.0` is a pin, and the prebuilt archives are on the [v0.1.0 release page](https://github.com/paulpham157/sdf/releases/tag/v0.1.0) ([#317](https://github.com/paulpham157/sdf/pull/317)).
 - Center the README opening, title it Software Decision Fabric, and describe cost per accepted outcome, the decision layer, and that SDF runs locally without sending telemetry to an outside SaaS ([#319](https://github.com/paulpham157/sdf/pull/319)).
 - Add the Software Decision Fabric logo to the centered README opening ([#320](https://github.com/paulpham157/sdf/pull/320)).
+- The current page in the docs sidebar is the surface-raised chip and accent text at medium weight. The rust inset edge on that item is gone at rest, on hover, on focus, and in the phone drawer, and the label does not shift. Ancestor and section titles stay plain. The site is still light only.
 
 ### Fixes
 
