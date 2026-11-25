@@ -667,6 +667,158 @@ html .md-footer-meta.md-typeset a,
   color: var(--sdf-color-link);
 }
 
+/* One row: Previous | centered meta | Next. Equal side columns keep the
+   meta on the page center when a side link is missing. Below 60em the
+   same slots stack. Lengths use token sizes times --docs-rem. */
+.md-footer .sdf-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, max-content) minmax(0, 1fr);
+  align-items: center;
+  column-gap: calc(var(--sdf-space-6) * var(--docs-rem));
+  row-gap: calc(var(--sdf-space-3) * var(--docs-rem));
+  padding-block: calc(var(--sdf-space-3) * var(--docs-rem));
+  overflow: visible;
+}
+
+/* The nav box is not a grid item. Its links join this grid so the meta
+   block can sit between them and keep the footer landmark. */
+.md-footer .sdf-footer > .md-footer__inner {
+  display: contents;
+}
+
+.md-footer .sdf-footer__prev,
+.md-footer .sdf-footer__next {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.md-footer .sdf-footer__prev {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  order: 1;
+}
+
+.md-footer .sdf-footer__meta {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  align-self: center;
+  order: 2;
+  min-width: 0;
+  max-width: 100%;
+  background-color: transparent;
+}
+
+.md-footer .sdf-footer__next {
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  order: 3;
+}
+
+.md-footer .sdf-footer__meta-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--sdf-space-1) * var(--docs-rem));
+  width: max-content;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.md-footer .sdf-footer .md-copyright {
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.md-footer .sdf-footer .md-social {
+  display: flex;
+  justify-content: center;
+  width: auto;
+  margin: 0;
+  padding: 0;
+}
+
+.md-footer .sdf-footer .md-footer__link {
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  margin-block: 0;
+  overflow: visible;
+}
+
+.md-footer .sdf-footer .md-footer__title {
+  margin-bottom: 0;
+}
+
+.md-footer .sdf-footer .md-footer__title,
+.md-footer .sdf-footer .md-ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.md-footer .sdf-footer a:focus-visible {
+  outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+@media screen and (max-width: 60em) {
+  .md-footer .sdf-footer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .md-footer .sdf-footer__prev,
+  .md-footer .sdf-footer__meta,
+  .md-footer .sdf-footer__next {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .md-footer .sdf-footer__meta {
+    width: 100%;
+  }
+
+  .md-footer .sdf-footer__meta-inner {
+    width: 100%;
+  }
+
+  /* Material hides the previous title below its mobile breakpoint. */
+  .md-footer .sdf-footer__prev .md-footer__title {
+    display: block;
+  }
+}
+
+/* The back-to-top control is a 42px icon at the viewport's end and bottom
+   (the 30em rule above). Clear that corner so Next never sits under it.
+   30em is 480px; media-query em is the initial 16px. */
+@media screen and (max-width: 30em) {
+  .md-footer .sdf-footer {
+    padding-block-end: calc((var(--sdf-space-16) + var(--sdf-space-2)) * var(--docs-rem));
+  }
+
+  .md-footer .sdf-footer__next {
+    padding-inline-end: calc((var(--sdf-space-16) + var(--sdf-space-2)) * var(--docs-rem));
+  }
+
+  /* 2.75rem times --docs-rem is 44px at Material's 20px root. */
+  .md-footer .sdf-footer .md-social__link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+    height: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+  }
+}
+
 ::selection {
   background: var(--sdf-color-text);
   color: var(--sdf-color-text-inverse);

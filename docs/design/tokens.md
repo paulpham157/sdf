@@ -559,7 +559,7 @@ How it consumes `tokens.css`:
   It is in the header bar at desktop and phone widths. On wide screens it sits
   beside the GitHub source button. Material hides `.md-header__source` below
   60em and shows that GitHub button in the drawer.
-  The content action at the top right of the page is a view link, not an
+- The content action at the top right of the page is a view link, not an
   edit link (`mkdocs.yml` `content.action.view`, `edit_uri: blob/main/docs/`).
   It uses the same GitHub mark as the header (`fontawesome/brands/github`).
   Its accessible name is "View on GitHub". Resting color is
@@ -574,6 +574,17 @@ How it consumes `tokens.css`:
   link: that page is not a file in the repository. Material 9.8.2's stock
   view partial rewrites `blob` to `raw`, so
   `docs/overrides/partials/actions.html` keeps the blob URL.
+- The footer is one row on wide screens
+  (`docs/overrides/partials/footer.html`, layout in `extra.css`): Previous,
+  then a centered meta block, then Next. The block groups the license and
+  site link, the Material credit, and the GitHub icon, and those lines are
+  centered inside it. Equal side columns keep that block on the page center
+  when a page has no Previous or no Next. Below 60em the same three slots
+  stack, and the meta stays centered. Previous and Next are in a footer
+  navigation landmark. At 30em the row keeps end and bottom padding so Next
+  stays clear of the back-to-top control. Footer fill is
+  `--sdf-color-surface-sunken`. Footer links use `--sdf-color-link`, and
+  focus uses `--sdf-color-focus`.
 
 Material sets `html { font-size: 125% }`, so `1rem` is 20px inside the theme.
 Token `rem` sizes assume 16px. `extra.css` multiplies those lengths by
