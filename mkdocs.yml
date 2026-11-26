@@ -19,12 +19,6 @@ copyright: >
 
 strict: true
 
-# Built when present (PR #325) but not required in nav on this branch.
-# Hook rewrites the README's ../../README.md and ../../CONTRIBUTING.md
-# links so --strict still passes after that PR lands.
-not_in_nav: |
-  diagrams/README.md
-
 docs_dir: docs
 site_dir: site
 use_directory_urls: true
@@ -142,9 +136,10 @@ nav:
     - GitHub Action: action.md
     - Ledger: ledger.md
   - Reference:
-    - Gaps: gaps.md
-    - Session boundaries: research/session-boundary.md
-    - Design tokens: design/tokens.md
+    - Decision categories: design/decision-category.md
+    - Architecture decisions:
+      - Index: adr/README.md
+      - Diagram tool: adr/0001-diagram-tool-excalidraw-vs-tldraw.md
     - Agent skills: skills/README.md
     - sdf-decisions skill: skills/sdf-decisions/SKILL.md
     - sdf-decisions scripts: skills/sdf-decisions/scripts/index.md

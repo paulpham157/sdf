@@ -259,7 +259,7 @@ after it is 1500, not 500.
 - Points of one group with the same timestamp are one point: the one stored
   last wins (1000 then 900 at the same time is 900, not 1900).
 
-The limits are in [docs/gaps.md](gaps.md). A Codex model id that contains `:` leaves the
+The limits are in the [known gaps](https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md). A Codex model id that contains `:` leaves the
 turn metrics missing; the summary quotes the exporter error and uses the log
 and span fallbacks above.
 

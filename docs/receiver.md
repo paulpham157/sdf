@@ -148,7 +148,7 @@ is the same as before. The size of each dropped text value is recorded as
 in `sdf.redacted`. A `git_commit_id` inside Claude Code's `tool_parameters`
 is copied to `sdf.git_commit_id` first, so commit links still work. Span
 events and metric exemplars are never stored. Content under a key sdf does
-not know is stored; see [gaps](gaps.md).
+not know is stored; see [known gaps](https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md).
 
 To keep the text, opt in when starting the receiver:
 
@@ -765,6 +765,10 @@ current directory's `.gemini/settings.json` does, noting it applies only in a
 trusted folder.
 
 ## Git hooks
+
+[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](diagrams/10-git-hooks.png)](diagrams/10-git-hooks.png)
+
+Source: [10-git-hooks.tldr](diagrams/10-git-hooks.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 Pi, OpenCode, Codex, Grok CLI, and Qwen Code do not export a commit SHA, and
 Claude Code exports one only with `OTEL_LOG_TOOL_DETAILS=1`. `sdf init --git-hooks`

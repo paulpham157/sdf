@@ -5,7 +5,7 @@
   Chunked HTTP and `Content-Length` are both accepted, and gRPC is a
   separate listener on port 4317. gRPC gzip uses the standard compressor.
 - Codex's published config reference does not catalog events or metrics. The
-  Codex lists in [docs/agents.md](agents.md) can drift from a newer CLI. The Claude list follows
+  Codex lists in [docs/agents.md](../docs/agents.md) can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places
   (several attributes require a stated minimum version).
 - Codex has no documented product span schema. The default tree is an
@@ -46,7 +46,7 @@
   the docs and `copilot help monitoring` (1.0.114), not a live session.
 - Retried delta exports can be double-counted. Cumulative series use the
   latest point of each process run and add the runs up (see
-  [docs/summary.md](summary.md)). That is still wrong in these cases:
+  [docs/summary.md](../docs/summary.md)). That is still wrong in these cases:
   - Two processes exporting the same series at once with the same start
     time are read as one run, so the total is whichever reported last
     instead of the sum. The resource does not separate them, because runs
@@ -61,7 +61,7 @@
     a reset.
 - Codex `response.completed` and OpenCode `SessionStep.attempt` counts are
   per request and are summed (issues #204 and #200), as described in
-  [docs/summary.md](summary.md).
+  [docs/summary.md](../docs/summary.md).
   Claude Code and Grok CLI `api_request` logs stored twice count once
   (issue #214). The key is every id and timestamp the log carries plus its
   counts and cost; no real duplicated capture has been checked. A
@@ -119,7 +119,7 @@
   stored, whatever those settings say, and keeps it only under
   `sdf serve --store-content`. The rules, what is kept, and how to scrub a
   database written by an older sdf are in
-  [content storage](receiver.md#content-storage). Limits: the rules are by
+  [content storage](../docs/receiver.md#content-storage). Limits: the rules are by
   key name, so content under a key they do not know (an agent's own
   attribute name) is stored; span events and metric exemplars are not
   stored at all.
@@ -216,7 +216,7 @@
   [#323](https://github.com/paulpham157/sdf/pull/323)); the harness does
   not call it, so the measured baseline stays skill-only. Runs with k=5 on a
   cheap model, and A/B tests, are periodic and are not in this tree. See
-  [docs/recall.md](recall.md). `sdf decision recall` reports the unlabeled
+  [docs/recall.md](../docs/recall.md). `sdf decision recall` reports the unlabeled
   proxy (`commits_linked / commits_in_decision_sessions`) from the local
   store.
 - With a receiver token, a hook authenticates only when `SDF_OTLP_TOKEN` or
@@ -243,12 +243,12 @@
   mapping follows grok 1.0.92 and can break on a newer release. Spans need a
   signed-in Grok with telemetry not disabled, still send `x-userid` and
   `x-teamid` headers, and put `user.id` / `team.id` on the resource, which
-  sdf stores. Sources are in [docs/agents.md](agents.md#grok-cli).
+  sdf stores. Sources are in [docs/agents.md](../docs/agents.md#grok-cli).
 - A span tree deeper than 32 levels below a root is flattened from that
   depth on: deeper spans are leaves of the span at depth 32, in depth-first
   order, so their own parent links below that point are not shown as
   nesting (`flattened_descendants` counts them; see
-  [docs/summary.md](summary.md#deep-span-trees)). The response stays linear
+  [docs/summary.md](../docs/summary.md#deep-span-trees)). The response stays linear
   in span count but is still large for a very deep session: about 16 MB of
   indented JSON for a 5500-level chain. A large report is encoded in memory
   before it is sent.
