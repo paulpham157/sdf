@@ -34,6 +34,7 @@ This file covers the first public release of the current product: a vendor-neutr
 
 ### Fixes
 
+- `GET /api/summary`, `GET /api/snapshot`, and the report behind `GET /api/decisions/graph` reuse the summary computed for the current records snapshot and price catalog instead of reading and summarizing every row on each request. The snapshot is a `records_revision` generation, bumped once per insert and once per content scrub that rewrites a row, together with the greatest record id. The next request after an insert or a scrub matches a full recompute, including cumulative series. Git and GitHub outcomes are still attached on each request. The cache holds one report ([#273](https://github.com/paulpham157/sdf/issues/273)).
 - `GET /api/summary`, `GET /api/snapshot`, and the report behind `GET /api/decisions/graph` on the UI port read the records table through a separate read-only connection (`store.OpenReadOnly`) instead of the receiver's writer connection, so a long UI read no longer holds the writer's mutex and blocks OTLP ingest. The JSON is unchanged; an in-memory store is still read through the writer ([#272](https://github.com/paulpham157/sdf/issues/272), [#328](https://github.com/paulpham157/sdf/pull/328)).
 
 ### CI/Build
