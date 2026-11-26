@@ -899,20 +899,72 @@ func TestPartialGRPCKeepsTheReservationPastHeaderTimeout(t *testing.T) {
 	}
 }
 
-func TestUnauthenticatedGRPCFramesCreateNoStreamState(t *testing.T) {
+func TestRejectedGRPCStreamsLeaveNoPerStreamState(t *testing.T) {
+	const body int64 = 4096
+	long := netlimit.Limits{
+		MaxBodyBytes:      int(body),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
+	t.Run("bad token", func(t *testing.T) {
+		lim := long
+		lim.MaxInFlightBytes = 8 << 20
+		srv := startRejected(t, "t", lim)
+		sent := floodRejectedStreams(t, srv, "", 0, 0)
+		if sent < 64 {
+			t.Fatalf("sent %d streams before the connection closed", sent)
+		}
+		if got := srv.ReadingRPCs(); got != 0 {
+			t.Fatalf("bad-token streams left %d tracked RPCs", got)
+		}
+		if got := srv.BudgetUsed(); got != 0 {
+			t.Fatalf("bad-token streams reserved %d bytes", got)
+		}
+	})
+	t.Run("too many waiting", func(t *testing.T) {
+		lim := long
+		lim.MaxInFlightBytes = body * 8
+		lim.MaxConnsPerToken = 1
+		srv := startRejected(t, "t", lim)
+		sent := floodRejectedStreams(t, srv, "Bearer t", 1, body)
+		if sent < 32 {
+			t.Fatalf("sent %d streams before the connection closed", sent)
+		}
+		if got := srv.ReadingRPCs(); got != 1 {
+			t.Fatalf("token cap left %d tracked RPCs", got)
+		}
+		if got := srv.BudgetUsed(); got != body {
+			t.Fatalf("token cap budget %d, want %d", got, body)
+		}
+	})
+	t.Run("inflight limit", func(t *testing.T) {
+		lim := long
+		lim.MaxInFlightBytes = body
+		lim.MaxConnsPerToken = 64
+		srv := startRejected(t, "t", lim)
+		sent := floodRejectedStreams(t, srv, "Bearer t", 1, body)
+		if sent < 32 {
+			t.Fatalf("sent %d streams before the connection closed", sent)
+		}
+		if got := srv.ReadingRPCs(); got != 1 {
+			t.Fatalf("inflight limit left %d tracked RPCs", got)
+		}
+		if got := srv.BudgetUsed(); got != body {
+			t.Fatalf("inflight budget %d, want %d", got, body)
+		}
+	})
+}
+
+func startRejected(t *testing.T, token string, lim netlimit.Limits) *server.Server {
+	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	srv := &server.Server{
 		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true,
-		Token: "t",
-		Limits: netlimit.Limits{
-			MaxBodyBytes:      4096,
-			MaxInFlightBytes:  8 << 20,
-			ReadHeaderTimeout: 5 * time.Second,
-			ReadTimeout:       30 * time.Second,
-		},
+		Token:  token,
+		Limits: lim,
 	}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
@@ -921,16 +973,7 @@ func TestUnauthenticatedGRPCFramesCreateNoStreamState(t *testing.T) {
 		srv.Shutdown()
 		_ = db.Close()
 	})
-	sent := floodUnauthenticatedFrames(t, srv)
-	if sent < 64 {
-		t.Fatalf("sent %d frames before the connection closed", sent)
-	}
-	if got := srv.ReadingRPCs(); got != 0 {
-		t.Fatalf("unauthenticated frames left %d tracked RPCs", got)
-	}
-	if got := srv.BudgetUsed(); got != 0 {
-		t.Fatalf("unauthenticated frames reserved %d bytes", got)
-	}
+	return srv
 }
 
 func TestShutdownWritesGRPCStatusAfterCommit(t *testing.T) {
@@ -1110,11 +1153,14 @@ func readUntilSettings(fr *http2.Framer) (*http2.SettingsFrame, error) {
 	}
 }
 
-// floodUnauthenticatedFrames writes many Export HEADERS and 1-byte DATA
-// frames, with no bearer token, and returns how many streams were sent
-// before the connection stopped accepting them. It checks, while the
-// connection is still open, that the server has not admitted an RPC.
-func floodUnauthenticatedFrames(t *testing.T, srv *server.Server) int {
+// floodRejectedStreams writes Export streams on one connection.
+// authorization is sent on every stream; an empty value omits it.
+// The first admit streams send headers only and are expected to stay
+// open, holding budgetCap between them. Every stream after that, and a
+// trailing run of DATA frames on ids that never sent headers, must not
+// raise the tracked-RPC count or the budget. The returned count is how
+// many of those later streams were written.
+func floodRejectedStreams(t *testing.T, srv *server.Server, authorization string, admit int, budgetCap int64) int {
 	t.Helper()
 	c, err := net.DialTimeout("tcp", srv.GRPCAddress(), time.Second)
 	if err != nil {
@@ -1135,13 +1181,28 @@ func floodUnauthenticatedFrames(t *testing.T, srv *server.Server) int {
 	if err := fr.WriteSettingsAck(); err != nil {
 		t.Fatal(err)
 	}
+	var id uint32 = 1
+	for i := 0; i < admit; i++ {
+		if err := writeExportHeaders(fr, id, srv.GRPCAddress(), authorization); err != nil {
+			t.Fatal(err)
+		}
+		id += 2
+	}
+	if admit > 0 {
+		deadline := time.Now().Add(2 * time.Second)
+		for srv.ReadingRPCs() != admit || srv.BudgetUsed() != budgetCap {
+			if time.Now().After(deadline) {
+				t.Fatalf("admitted %d budget %d, want %d and %d", srv.ReadingRPCs(), srv.BudgetUsed(), admit, budgetCap)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	runtime.GC()
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
 	sent := 0
-	var id uint32 = 1
 	for i := 0; i < 4000; i++ {
-		if err := writeExportHeaders(fr, id, srv.GRPCAddress()); err != nil {
+		if err := writeExportHeaders(fr, id, srv.GRPCAddress(), authorization); err != nil {
 			break
 		}
 		if err := fr.WriteData(id, false, []byte{0}); err != nil {
@@ -1149,8 +1210,11 @@ func floodUnauthenticatedFrames(t *testing.T, srv *server.Server) int {
 		}
 		sent++
 		id += 2
-		if srv.ReadingRPCs() != 0 || srv.BudgetUsed() != 0 {
-			t.Fatalf("after %d streams: tracked %d budget %d", sent, srv.ReadingRPCs(), srv.BudgetUsed())
+		if got := srv.ReadingRPCs(); got > admit {
+			t.Fatalf("after %d rejected streams: tracked %d, want at most %d", sent, got, admit)
+		}
+		if got := srv.BudgetUsed(); got > budgetCap {
+			t.Fatalf("after %d rejected streams: budget %d, cap %d", sent, got, budgetCap)
 		}
 		if sent%32 == 0 {
 			drainFrames(c, fr)
@@ -1165,8 +1229,11 @@ func floodUnauthenticatedFrames(t *testing.T, srv *server.Server) int {
 		id += 2
 	}
 	drainFrames(c, fr)
-	if srv.ReadingRPCs() != 0 || srv.BudgetUsed() != 0 {
-		t.Fatalf("after the flood: tracked %d budget %d", srv.ReadingRPCs(), srv.BudgetUsed())
+	if got := srv.ReadingRPCs(); got > admit {
+		t.Fatalf("after the flood: tracked %d, want at most %d", got, admit)
+	}
+	if got := srv.BudgetUsed(); got > budgetCap {
+		t.Fatalf("after the flood: budget %d, cap %d", got, budgetCap)
 	}
 	runtime.GC()
 	var after runtime.MemStats
@@ -1177,17 +1244,21 @@ func floodUnauthenticatedFrames(t *testing.T, srv *server.Server) int {
 	return sent
 }
 
-func writeExportHeaders(fr *http2.Framer, id uint32, addr string) error {
+func writeExportHeaders(fr *http2.Framer, id uint32, addr, authorization string) error {
 	var block bytes.Buffer
 	enc := hpack.NewEncoder(&block)
-	for _, hf := range []hpack.HeaderField{
+	fields := []hpack.HeaderField{
 		{Name: ":method", Value: "POST"},
 		{Name: ":scheme", Value: "http"},
 		{Name: ":path", Value: "/opentelemetry.proto.collector.trace.v1.TraceService/Export"},
 		{Name: ":authority", Value: addr},
 		{Name: "content-type", Value: "application/grpc"},
 		{Name: "te", Value: "trailers"},
-	} {
+	}
+	if authorization != "" {
+		fields = append(fields, hpack.HeaderField{Name: "authorization", Value: authorization})
+	}
+	for _, hf := range fields {
 		if err := enc.WriteField(hf); err != nil {
 			return err
 		}

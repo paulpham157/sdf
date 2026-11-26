@@ -172,8 +172,8 @@ func (s *Server) noteGRPCBody(ctx context.Context, n int64) error {
 }
 
 // enterGRPCCommit counts a handler that is about to commit. The stats
-// End event drops the count after the status is written, so Shutdown can
-// wait for that response before it closes the connection.
+// End event is the only thing that drops the count, after gRPC has
+// accepted the status for writing. Shutdown waits on that count.
 func (s *Server) enterGRPCCommit(ctx context.Context) {
 	if s == nil || s.commits == nil {
 		return
@@ -352,49 +352,52 @@ func retryExhausted(msg string) error {
 
 // commitGate counts gRPC handlers that have passed beforeInsert and have
 // not yet had their status handed to the transport. Shutdown waits for
-// it, bounded, before Stop closes connections.
+// it, bounded, before Stop closes connections. idle is closed while n
+// is zero and is replaced on the next add, so wait can select on it
+// and return when the timeout fires. No goroutine is left behind.
 type commitGate struct {
 	mu   sync.Mutex
-	cond *sync.Cond
 	n    int
+	idle chan struct{}
 }
 
 func newCommitGate() *commitGate {
-	g := &commitGate{}
-	g.cond = sync.NewCond(&g.mu)
-	return g
+	idle := make(chan struct{})
+	close(idle)
+	return &commitGate{idle: idle}
 }
 
 func (g *commitGate) add() {
 	g.mu.Lock()
+	if g.n == 0 {
+		g.idle = make(chan struct{})
+	}
 	g.n++
 	g.mu.Unlock()
 }
 
 func (g *commitGate) done() {
 	g.mu.Lock()
-	if g.n > 0 {
-		g.n--
-	}
 	if g.n == 0 {
-		g.cond.Broadcast()
+		g.mu.Unlock()
+		return
+	}
+	g.n--
+	if g.n == 0 {
+		close(g.idle)
 	}
 	g.mu.Unlock()
 }
 
 func (g *commitGate) wait(d time.Duration) {
-	done := make(chan struct{})
-	go func() {
-		g.mu.Lock()
-		for g.n > 0 {
-			g.cond.Wait()
-		}
-		g.mu.Unlock()
-		close(done)
-	}()
+	g.mu.Lock()
+	idle := g.idle
+	g.mu.Unlock()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
-	case <-done:
-	case <-time.After(d):
+	case <-idle:
+	case <-timer.C:
 	}
 }
 
@@ -404,7 +407,7 @@ func (s *Server) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Contex
 }
 
 // HandleRPC releases the commit count after gRPC has accepted the status
-// for writing. That is the signal Shutdown waits on.
+// for writing. That is the only release. Shutdown waits on the count.
 func (s *Server) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 	if _, ok := rs.(*stats.End); ok {
 		releaseGRPCCommit(ctx)
