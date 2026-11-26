@@ -82,6 +82,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Diagrams](diagrams/README.md) | Architecture, receiver, decision, verify, ledger, CI, and agent-span drawings (tldraw `.tldr` sources and PNG renders) |
 | [Gaps](gaps.md) | Known limits of the collector and the summary |
 | [Design tokens](design/tokens.md) | Shared cream, charcoal, and rust tokens, and how the UI, the docs site, and the landing page use them |
+| [Decision categories](design/decision-category.md) | Phase 0 spec for an optional `category` on a decision record. Not implemented yet |
 | [Session boundaries](research/session-boundary.md) | How each agent marks session open and close |
 
 The product site is [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/).
