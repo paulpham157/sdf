@@ -3,6 +3,10 @@
 `.github/actions/sdf-verify` runs [`sdf verify`](verify.md) on a pull
 request's head commit and fails the job unless the verdict is PASS.
 
+[![The sdf-verify GitHub Action: build the verifier from the action's source, prepare the runner, check out the pull request head, run sdf verify against the protected base task, upload the verdict, and fail the job unless PASS.](diagrams/07-github-action-verify.png)](diagrams/07-github-action-verify.png)
+
+Source: [07-github-action-verify.tldr](diagrams/07-github-action-verify.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 ```yaml
 on:
   pull_request:

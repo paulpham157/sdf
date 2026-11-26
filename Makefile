@@ -5,7 +5,7 @@ BINARY ?= sdf
 # this target runs the same release as a module.
 STATICCHECK_MODULE := honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
-.PHONY: build test vet vuln clean fmt-check staticcheck race e2e
+.PHONY: build test vet vuln clean fmt-check staticcheck race e2e docs docs-serve
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BINARY) ./cmd/sdf
@@ -39,3 +39,15 @@ vuln:
 
 clean:
 	rm -f $(BINARY)
+	rm -rf site .mkdocs-gen
+
+# Documentation site (MkDocs Material). Requires:
+#   python3 -m venv .venv-docs && .venv-docs/bin/pip install -r requirements-docs.txt
+MKDOCS ?= $(shell if [ -x .venv-docs/bin/mkdocs ]; then echo .venv-docs/bin/mkdocs; else echo mkdocs; fi)
+
+docs:
+	NO_MKDOCS_2_WARNING=1 $(MKDOCS) build --strict
+
+docs-serve:
+	NO_MKDOCS_2_WARNING=1 $(MKDOCS) serve
+

@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-var topCommands = []string{"serve", "summary", "check", "init", "prices", "decision", "audit", "task", "verify", "redact", "version"}
+var topCommands = []string{"serve", "summary", "check", "init", "prices", "decision", "audit", "task", "verify", "redact", "hook", "version"}
 
 // Every command in the usage line has a help line, so a new command (as
 // redact was) cannot be added to the dispatch without one.

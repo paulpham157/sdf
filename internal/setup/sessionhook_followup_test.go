@@ -184,7 +184,7 @@ func TestCodexInitMergesHooksWhenOtelTableExists(t *testing.T) {
 	}
 	sameList(t, "SessionStart", eventCommands(t, hooks, "SessionStart"), []string{"|sdf http://127.0.0.1:4318/v1/sessions", "|sdf-brief"})
 	sameList(t, "SessionEnd", eventCommands(t, hooks, "SessionEnd"), []string{"|sdf http://127.0.0.1:4318/v1/sessions"})
-	sameList(t, "Stop", eventCommands(t, hooks, "Stop"), []string{"|echo stop"})
+	sameList(t, "Stop", eventCommands(t, hooks, "Stop"), []string{"|echo stop", "|sdf-stop"})
 	if again, err := Run(req); err != nil || again.Wrote || !strings.Contains(again.Text, "already has these values") {
 		t.Fatal(err, again.Text)
 	}

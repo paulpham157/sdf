@@ -7,6 +7,10 @@ pass `--github`.
 
 ## Linking a session to a commit
 
+[![How a session is linked to a commit, a pull request, a decision, and cost per accepted outcome.](diagrams/16-session-outcomes.png)](diagrams/16-session-outcomes.png)
+
+Source: [16-session-outcomes.tldr](diagrams/16-session-outcomes.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 A link is **exact** when `claude_code.tool_result` carries
 `vcs.ref.head.revision` or a full 40-character `git_commit_id` (including one
 inside `tool_parameters`). Claude Code adds those only when
@@ -120,6 +124,10 @@ uses these commands is in [skills/sdf-decisions](../skills/sdf-decisions/SKILL.m
 with helpers in [`scripts/`](../skills/sdf-decisions/scripts/).
 
 ### Link rules
+
+[![Stored decision relations and their allowed endpoint kinds: supersedes, blocks, conflicts_with, refines, implements, validates, contradicts, and constrains.](diagrams/03-decision-relations.png)](diagrams/03-decision-relations.png)
+
+Source: [03-decision-relations.tldr](diagrams/03-decision-relations.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 `sdf decision link` checks an edge before storing it, and stores nothing when a
 check fails. It exits 1 with one `sdf decision link: ...` line on stderr, the
@@ -336,7 +344,11 @@ leaves DEL and RTL characters raw in the JSON strings, exactly as
 `GET /api/decisions` does, so a reader that prints JSON values to a terminal
 has to escape them itself.
 `sdf decision list --json` prints exactly what `GET /api/decisions` returns,
-because both read the store through the same code. Like `sdf summary`, it reads
+because both read the store through the same code. `--session ID` is not
+that response: it keeps only the edges that touch `session:ID` and the
+decisions those edges name, in the same insertion order, and drops the
+rest. With no such edge the text is `No decisions in the store.` and
+`--json` is the empty lists. Like `sdf summary`, it reads
 `sdf-telemetry.sqlite` unless `--db` names another file, and it opens the file
 read-only: it never writes, never migrates, and never creates a file. With no
 records and no edges it prints `No decisions in the store.`, and `--json`
@@ -355,7 +367,7 @@ sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
 sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
-sdf decision list [--db PATH] [--json]
+sdf decision list [--db PATH] [--json] [--session ID]
 sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]
 sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]
 sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
@@ -445,6 +457,10 @@ reads as having no retractions, as does any file `sdf decision list` reads
 before a writing command has added the table. `retract` then fails on it.
 
 ### The decision graph (Decisions tab)
+
+[![Anatomy of one Decisions-tab chapter: start, spine, left and right lanes, node roles, and derived edges.](diagrams/05-decision-graph.png)](diagrams/05-decision-graph.png)
+
+Source: [05-decision-graph.tldr](diagrams/05-decision-graph.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 `GET /api/decisions/graph` arranges the decision records into chapters for the
 UI's Decisions tab. `sdf decision graph --json` prints the same bytes for the

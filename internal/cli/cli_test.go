@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -846,12 +847,19 @@ func run(t *testing.T, args ...string) result {
 		t.Fatal(err)
 	}
 	os.Stdout, os.Stderr = outW, errW
+	// Drain while Main runs. Leftover goroutines from an earlier test may
+	// still write to the current os.Stdout, and a large Main write would
+	// otherwise fill the pipe and deadlock because this helper used to
+	// read only after Main returned.
+	var stdout, stderr bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _, _ = io.Copy(&stdout, outR) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(&stderr, errR) }()
 	code := cli.Main(args)
 	_ = outW.Close()
 	_ = errW.Close()
 	os.Stdout, os.Stderr = oldOut, oldErr
-	var stdout, stderr bytes.Buffer
-	_, _ = io.Copy(&stdout, outR)
-	_, _ = io.Copy(&stderr, errR)
+	wg.Wait()
 	return result{code, stdout.String(), stderr.String()}
 }

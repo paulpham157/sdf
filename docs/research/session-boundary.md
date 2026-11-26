@@ -130,6 +130,15 @@ and `session_shutdown` run only when the process shuts down on its own, and
 OpenCode has no end event to lose. The collector is left with an open session
 and has to keep inferring the close from the last record.
 
+`SessionEnd` also cannot talk to the model. The reminder to record a
+decision uses the Stop gate instead (`sdf hook stop`, installed by
+`sdf init` where that agent already has a config writer): Claude Code and
+Codex and Qwen and Grok `Stop`, Gemini `AfterAgent`, Pi
+`agent_before_settle`. It runs at most once per session, and only when the
+session has an `sdf.git.commit` that is not tied to a recorded decision.
+OpenCode has no such gate, so it still depends on the skill. A crash or a
+kill still skips the reminder, because the Stop hook never runs.
+
 A hook the user declines to trust never runs. Codex stores that decision as a
 hash and skips the hook until it matches, and a Claude Code cloud session
 never reads `~/.claude/settings.json`. The boundary is then as absent as it

@@ -34,7 +34,7 @@ information without sending telemetry to an outside SaaS. It does not
 launch, route, or sandbox the agents; it only listens. The receiver needs
 no API key or network connection.
 
-![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)
+[![SDF UI: the Decisions page, showing a chapter's decisions as a graph with chosen, not-taken, locked and conflicting paths, plus a timeline replay](docs/images/decisions-ui.png)](docs/images/decisions-ui.png)
 
 ## Features
 
@@ -48,7 +48,7 @@ no API key or network connection.
   tokens or duration. A model with no published price is `unknown`, not
   zero
 - Decision records you write down (`sdf decision add`, `link`, `list`,
-  `graph`, `brief`, `retract`, `audit`, `check`): who decided, alternatives,
+  `graph`, `brief`, `check`, `retract`, `audit`, `pre-push`): who decided, alternatives,
   links to sessions and commits, and a read-only graph in the UI
 - Prompt, response, tool, and error text is dropped before storing, for
   every agent, unless you opt in with `--store-content`
@@ -125,7 +125,7 @@ Every command prints its flags with `--help` (or `sdf help <command>`).
 | `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
 | `sdf init` | Print or write the settings that point an agent at the receiver |
 | `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, graph, retract, audit, brief, or check decisions (`add`, `link`, `list`, `graph`, `retract`, `audit`, `brief`, `check`) |
+| `sdf decision` | Record, link, list, graph, brief, check, retract, audit, or pre-push decisions (`add`, `link`, `list`, `graph`, `brief`, `check`, `retract`, `audit`, `pre-push`) |
 | `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
 | `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
 | `sdf verify` | Run a declared task's checks against a commit |
@@ -188,24 +188,17 @@ A database written by an older sdf can still hold content until you run
 
 ## How it works
 
-```mermaid
-flowchart TB
-  subgraph telemetry["Telemetry"]
-    A["Coding agents<br/>Claude Code, Codex, Gemini,<br/>Qwen, Grok, Copilot, OpenCode..."] -->|OTLP| S["sdf serve<br/>local receiver<br/>drops prompt/tool content by default"]
-    S --> DB[(local SQLite)]
-    DB --> UI["UI at 127.0.0.1:4320"]
-    DB --> OUT["sdf summary / sdf decision"]
-  end
-  subgraph optional["Optional"]
-    T["sdf task declare"] --> V["sdf verify"] --> L["ledger / GitHub Action"]
-  end
-```
+[![Overall architecture: coding agents export OTLP to sdf serve, which redacts content by default and writes local SQLite; the UI and sdf summary / sdf decision read that store. Optional task declare, sdf verify, the ledger, and the GitHub Action sit beside collection. The Action invokes verify and does not open a ledger.](docs/diagrams/01-architecture.png)](docs/diagrams/01-architecture.png)
+
+Source: [01-architecture.tldr](docs/diagrams/01-architecture.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 Agents export OTLP to the local receiver. sdf stores what it needs for
 summaries and outcomes, and (by default) drops prompt and tool text
 before the row is written. Decisions are recorded separately; the
 summary does not infer them from telemetry. Task declaration, verify,
 and the ledger are optional and sit beside collection, not in its path.
+The GitHub Action runs `sdf verify`; it does not open a ledger today.
+A fuller set of diagrams is in [docs/diagrams](docs/diagrams/README.md).
 
 ## Documentation
 
@@ -222,6 +215,7 @@ and the ledger are optional and sit beside collection, not in its path.
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [docs/verify.md](docs/verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [docs/action.md](docs/action.md) | The `sdf verify` GitHub Action, and its threat model |
+| [docs/diagrams/README.md](docs/diagrams/README.md) | Architecture, receiver, decision, verify, ledger, CI, and agent-span diagrams (tldraw `.tldr` sources and PNG renders) |
 | [docs/gaps.md](docs/gaps.md) | Known limits of the collector and the summary |
 | [docs/research/session-boundary.md](docs/research/session-boundary.md) | How each agent marks session open and close |
 
