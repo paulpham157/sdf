@@ -81,6 +81,13 @@
 
 [data-md-color-scheme="default"] {
   color-scheme: light;
+}
+
+/* Material's slate scheme ships its own hues, and primary: custom defines
+   none. Map both schemes onto semantic tokens. Slate then follows the
+   opt-in dark block in tokens.css; default keeps the light values. */
+[data-md-color-scheme="default"],
+[data-md-color-scheme="slate"] {
   --md-default-fg-color: var(--sdf-color-text);
   --md-default-fg-color--light: var(--sdf-color-text-muted);
   --md-default-fg-color--lighter: var(--sdf-color-border-strong);
@@ -91,7 +98,9 @@
   --md-mermaid-node-fg-color: var(--sdf-color-text);
   --md-mermaid-label-fg-color: var(--sdf-color-text);
   --md-mermaid-label-bg-color: var(--sdf-color-bg);
-  --md-mermaid-edge-color: var(--sdf-color-charcoal-400);
+  /* Edge labels are text. charcoal-400 is 3.46:1 on cream, short of 4.5.
+     text-muted clears 4.5 in both schemes and still clears 3:1 as a stroke. */
+  --md-mermaid-edge-color: var(--sdf-color-text-muted);
   --md-default-bg-color: var(--sdf-color-bg);
   --md-default-bg-color--light: var(--sdf-color-surface-raised);
   --md-default-bg-color--lighter: var(--sdf-color-surface-sunken);
@@ -110,12 +119,13 @@
   --md-typeset-table-color: var(--sdf-color-border);
   --md-typeset-table-color--light: var(--sdf-color-surface-sunken);
   --md-code-fg-color: var(--sdf-color-text);
-  --md-code-bg-color: var(--sdf-color-surface-sunken);
-  --md-code-bg-color--light: var(--sdf-color-surface-sunken);
+  --md-code-bg-color: var(--sdf-color-code-bg);
+  --md-code-bg-color--light: var(--sdf-color-code-bg);
   --md-code-bg-color--lighter: var(--sdf-color-surface-raised);
   --md-code-hl-color: var(--sdf-color-accent-soft);
-  /* Material's default syntax hues are under 4.5:1 on surface-sunken.
-     These semantic colors all clear text contrast on that surface. */
+  /* Material's default syntax hues are under 4.5:1 on the code surface.
+     These semantic colors clear text contrast on surface-sunken (light
+     code) and, in dark, on code-bg, which is deeper than sunken. */
   --md-code-hl-keyword-color: var(--sdf-color-accent-text);
   --md-code-hl-string-color: var(--sdf-color-success);
   --md-code-hl-number-color: var(--sdf-color-error);
@@ -139,6 +149,25 @@
   --md-shadow-z2: var(--sdf-shadow-sm);
 }
 
+/* Material's slate stylesheet sets its own mark and line highlight.
+   accent-soft clears text contrast for both. */
+[data-md-color-scheme="slate"] {
+  color-scheme: dark;
+  --md-typeset-mark-color: var(--sdf-color-accent-soft);
+  --md-code-hl-color: var(--sdf-color-accent-soft);
+}
+
+/* The scheme attribute sits on body. color-scheme has to reach html so
+   scrollbars and native controls follow. The page background is body's.
+   An explicit light choice sets color-scheme light even when the OS is dark. */
+html:has(body[data-md-color-scheme="default"]) {
+  color-scheme: light;
+}
+
+html:has(body[data-md-color-scheme="slate"]) {
+  color-scheme: dark;
+}
+
 body {
   background-color: var(--sdf-color-bg);
   color: var(--sdf-color-text);
@@ -157,6 +186,19 @@ body {
   font-family: var(--docs-font-serif);
   font-weight: 560;
   letter-spacing: -0.02em;
+}
+
+/* Same 44px box as the View on GitHub control. Material's padding and
+   1.2rem icon were about 40px. */
+.md-header__option > .md-header__button.md-icon:not([hidden]) {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+  height: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+  margin: 0;
+  padding: 0;
 }
 
 /* Product-site control. Same size as the GitHub source label (13px after
@@ -267,6 +309,37 @@ body {
   color: var(--sdf-color-accent-text);
   background-color: var(--sdf-color-surface-raised);
   box-shadow: none;
+}
+
+/* Dark active item is an inverse pill: surface-inverse fill, text-inverse
+   label. Background only. No vertical edge. The pair is the one --check tests. */
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
+[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
+  color: var(--sdf-color-text-inverse);
+  background-color: var(--sdf-color-surface-inverse);
+  box-shadow: none;
+}
+
+/* Desktop sidebar links have no padding, so the pill was flush with the
+   label. 4px block and 8px inline, pulled back by the same margin, keeps
+   the label aligned with its neighbors. 76.25em is Material's sidebar
+   breakpoint (media em is 16px). Below that the drawer keeps its own padding. */
+@media screen and (min-width: 76.25em) {
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
+    padding-block: calc(var(--sdf-space-1) * var(--docs-rem));
+    padding-inline: calc(var(--sdf-space-2) * var(--docs-rem));
+    margin-block: calc(var(--sdf-space-1) * var(--docs-rem) * -1);
+    margin-inline: calc(var(--sdf-space-2) * var(--docs-rem) * -1);
+  }
 }
 
 .md-nav--primary .md-nav__item--active > .md-nav__link:not(.md-nav__link--active) {
@@ -384,13 +457,13 @@ body {
 
 .md-typeset code {
   font-size: calc(var(--sdf-font-size-md) * var(--docs-rem));
-  background-color: var(--sdf-color-surface-sunken);
+  background-color: var(--sdf-color-code-inline-bg);
   border-radius: var(--sdf-radius-sm);
 }
 
 .md-typeset pre,
 .md-typeset .highlight {
-  background-color: var(--sdf-color-surface-sunken);
+  background-color: var(--sdf-color-code-bg);
   border-radius: var(--sdf-radius-md);
 }
 
@@ -680,6 +753,25 @@ html .md-footer-meta.md-typeset a,
   color: var(--sdf-color-link);
 }
 
+/* Material draws "Previous" and "Next" at 70% opacity. On the sunken footer
+   that blended gray is 4.27:1. text-muted clears 4.5 in both schemes.
+   The centered footer still uses this class for those labels. */
+.md-footer__direction {
+  opacity: 1;
+  color: var(--sdf-color-text-muted);
+}
+
+/* Diagram PNGs are drawn for a light page. Plate those, not screenshots
+   such as decisions-ui.png. The index page's images have no diagrams/
+   segment in the src, so they carry .sdf-diagram. radius-md is 6px.
+   space-3 times --docs-rem is 12px when Material's root is 20px. */
+[data-md-color-scheme="slate"] .md-typeset img[src*="diagrams/"],
+[data-md-color-scheme="slate"] .md-typeset img.sdf-diagram {
+  background-color: var(--sdf-color-diagram-plate);
+  border-radius: var(--sdf-radius-md);
+  padding: calc(var(--sdf-space-3) * var(--docs-rem));
+}
+
 /* One row: Previous | centered meta | Next. Equal side columns keep the
    meta on the page center when a side link is missing. Below 60em the
    same slots stack. Lengths use token sizes times --docs-rem. */
@@ -839,4 +931,9 @@ html .md-footer-meta.md-typeset a,
 
 :focus-visible {
   outline-color: var(--sdf-color-focus);
+}
+
+[data-md-color-scheme="slate"] :focus-visible {
+  outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
+  outline-offset: 2px;
 }
