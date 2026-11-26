@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -153,6 +154,128 @@ func TestInitCheckReachesTheHTTPReceiver(t *testing.T) {
 	if closed.code != 1 || !strings.Contains(closed.stdout, "not reachable") {
 		t.Fatalf("%d %s", closed.code, closed.stdout)
 	}
+}
+
+func TestServeResourceLimits(t *testing.T) {
+	help := run(t, "serve", "--help")
+	for _, s := range []string{
+		"--max-conns", "--max-conns-per-ip", "--max-conns-per-token",
+		"--max-body-bytes", "--max-inflight-bytes",
+		"--read-header-timeout", "--read-timeout", "--idle-timeout",
+		"SDF_MAX_CONNS", "SDF_MAX_INFLIGHT_BYTES", "SDF_READ_HEADER_TIMEOUT", "SDF_IDLE_TIMEOUT",
+		"90s",
+	} {
+		if help.code != 0 || !strings.Contains(help.stdout, s) {
+			t.Fatalf("help missing %s\n%d %s", s, help.code, help.stdout)
+		}
+	}
+	clearLimitEnv(t)
+	t.Setenv("SDF_MAX_CONNS", "4")
+	cases := [][]string{
+		{"serve", "--max-conns", "0", "--no-ui"},
+		{"serve", "--max-conns=-1", "--no-ui"},
+		{"serve", "--max-conns=08", "--no-ui"},
+		{"serve", "--read-timeout=0s", "--no-ui"},
+		{"serve", "--max-body-bytes", "1000", "--max-inflight-bytes", "10", "--no-ui"},
+		{"serve", "--max-conns"},
+	}
+	for _, args := range cases {
+		out := run(t, args...)
+		if out.code != 2 || !strings.Contains(out.stderr, "sdf serve:") {
+			t.Fatalf("%v -> %d %s", args, out.code, out.stderr)
+		}
+	}
+}
+
+func TestServeMaxConnsFromEnv(t *testing.T) {
+	clearLimitEnv(t)
+	t.Setenv("SDF_MAX_CONNS", "1")
+	base, done := startServeArgs(t)
+	defer stopServe(t, done)
+	if got, body := readRejected(t, strings.TrimPrefix(base, "http://")); got != http.StatusServiceUnavailable || body != "too many connections" {
+		t.Fatalf("second connection %d %q", got, body)
+	}
+}
+
+func TestServeMaxConnsFlagOverridesEnv(t *testing.T) {
+	clearLimitEnv(t)
+	t.Setenv("SDF_MAX_CONNS", "1")
+	base, done := startServeArgs(t, "--max-conns", "4")
+	defer stopServe(t, done)
+	if got := getFresh(t, base+"/health"); got != http.StatusOK {
+		t.Fatalf("flag override %d, want 200", got)
+	}
+}
+
+func clearLimitEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"SDF_MAX_CONNS", "SDF_MAX_CONNS_PER_IP", "SDF_MAX_CONNS_PER_TOKEN",
+		"SDF_MAX_BODY_BYTES", "SDF_MAX_INFLIGHT_BYTES",
+		"SDF_READ_HEADER_TIMEOUT", "SDF_READ_TIMEOUT", "SDF_IDLE_TIMEOUT",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func startServeArgs(t *testing.T, extra ...string) (string, <-chan int) {
+	t.Helper()
+	httpAddr := freeLoopback(t)
+	grpcAddr := freeLoopback(t)
+	_, httpPort, err := net.SplitHostPort(httpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, grpcPort, err := net.SplitHostPort(grpcAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	args := []string{"serve", "--no-ui", "--db", dbPath, "--port", httpPort, "--grpc-port", grpcPort}
+	args = append(args, extra...)
+	done := make(chan int, 1)
+	go func() {
+		done <- cli.Main(args)
+	}()
+	registerServeStop(done)
+	t.Cleanup(func() { stopServe(t, done) })
+	base := "http://" + httpAddr
+	if err := waitForServe(base+"/health", done); err != nil {
+		t.Fatal(err)
+	}
+	return base, done
+}
+
+func readRejected(t *testing.T, addr string) (int, string) {
+	t.Helper()
+	c, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
+}
+
+func getFresh(t *testing.T, url string) int {
+	t.Helper()
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
 }
 
 func TestServeHelpMentionsTheLocalUI(t *testing.T) {

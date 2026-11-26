@@ -45,9 +45,82 @@ returns `{"status":"ok"}`. The UI port does not serve it. HTTP exports are
 `Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
 are chunked and omit `Content-Length`. When both headers are present, chunked
 encoding wins. `Content-Encoding: gzip` is inflated after the body is
-framed, and the decompressed size is capped at 8,000,000 bytes. Any other
+framed, and the decompressed size is capped at the per-request body limit
+(8,000,000 bytes unless `--max-body-bytes` says otherwise). Any other
 content encoding gets HTTP 415. gRPC clients call the OTLP `TraceService`,
 `MetricsService`, and `LogsService` `Export` RPCs, and may gzip the message.
+
+### Resource limits
+
+Each listener (OTLP/HTTP, OTLP/gRPC, and the UI) has its own connection
+cap. The numbers below are the defaults. They are large enough for several
+local agents and small enough that a client cannot open connections, or
+hold request bytes, without bound. A flag overrides the matching
+environment variable. Leaving both unset uses the default. `0` and a
+negative value are rejected at startup; they do not turn the limit off.
+A per-address or per-token cap higher than the connection cap is lowered
+to the connection cap. The in-flight budget must be at least one maximum
+body, so one accepted request always fits when nothing else is in flight.
+
+| Limit | Flag | Environment | Default |
+| --- | --- | --- | --- |
+| Connections on one listener | `--max-conns` | `SDF_MAX_CONNS` | 128 |
+| Connections from one address | `--max-conns-per-ip` | `SDF_MAX_CONNS_PER_IP` | 64 |
+| Authenticated requests in flight | `--max-conns-per-token` | `SDF_MAX_CONNS_PER_TOKEN` | 64 |
+| One request body, including after gzip | `--max-body-bytes` | `SDF_MAX_BODY_BYTES` | 8000000 |
+| Bytes buffered at once | `--max-inflight-bytes` | `SDF_MAX_INFLIGHT_BYTES` | 67108864 |
+| Time to send headers | `--read-header-timeout` | `SDF_READ_HEADER_TIMEOUT` | 5s |
+| Time to send the body | `--read-timeout` | `SDF_READ_TIMEOUT` | 30s |
+| Keep-alive idle time | `--idle-timeout` | `SDF_IDLE_TIMEOUT` | 90s |
+
+Durations use Go's notation (`5s`, `1m30s`). The same connection numbers
+and the three timeouts apply to the UI. The UI's write timeout stays 3
+minutes so a `--github` refresh can finish. The byte caps apply to OTLP
+bodies only.
+
+An idle keep-alive connection counts toward the connection cap until it
+closes or the idle timeout fires. The per-token cap counts authenticated
+requests that have not finished yet, and only when a token is configured.
+It does not count idle connections. `GET /health` does not take a token
+slot.
+
+What is rejected, and with which status:
+
+- A body larger than `--max-body-bytes`, including after gzip, is HTTP
+  **413** with no `Retry-After`. The same payload will not succeed if it
+  is retried. gRPC reports `RESOURCE_EXHAUSTED` with no retry hint, which
+  OTLP treats as not retryable.
+- The listener connection cap is HTTP **503** with `Retry-After: 1`.
+  One address over its own cap is HTTP **429** with `Retry-After: 1`.
+  Both are retryable. A gRPC connection past the cap is closed before the
+  HTTP/2 handshake; the client sees a broken connection and retries.
+- The in-flight byte cap, and the per-token request cap, are HTTP **503**
+  (`inflight limit`) or **429** (`too many requests`), each with
+  `Retry-After: 1`. On gRPC both are `RESOURCE_EXHAUSTED` with `RetryInfo`
+  of one second, which is the retryable form of that code.
+- Headers that do not finish in time, or a connection that sends nothing,
+  are closed with no response. OTLP says a client retries when the server
+  disconnects. A body that stalls after the headers is HTTP **503** with
+  `Retry-After: 1`. A gRPC message that stalls is `DEADLINE_EXCEEDED`,
+  which is retryable. The first byte of a later request starts the header
+  timer; until that byte, the idle timeout applies.
+
+gRPC also caps streams on one connection (32), header metadata (1 MiB),
+the HTTP/2 handshake (`--read-header-timeout`), and how long a connection
+may live (idle from `--idle-timeout`, and 30 minutes even if it stays
+busy). A client that pings more often than every 10 seconds is
+disconnected. Pings with no active RPC are allowed. An admitted gRPC call
+reserves `--max-body-bytes` until it finishes. The size is not known until
+the length prefix arrives, and the transport may buffer up to that
+maximum. Eight calls at the default body cap fit in the in-flight budget;
+a ninth does not.
+HTTP reserves the `Content-Length` (or each chunk, and both the compressed
+and the inflated bytes while gzip is expanding).
+
+None of these responses is a partial success. A stored export is answered
+only after the SQLite commit, with HTTP 200 and `partial_success` left
+unset (JSON `{}`, or an empty protobuf). A request that does not fit is
+not queued and is not acknowledged early.
 
 Rows are one span, one metric point, or one log record. A span also stores
 `status_code` (`UNSET`, `OK`, or `ERROR`) and `status_message`. Databases

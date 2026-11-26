@@ -1,7 +1,8 @@
 # Gaps
 
 - Content encodings other than `identity` and `gzip` are rejected with
-  HTTP 415. Gzip is inflated only up to 8,000,000 decompressed bytes.
+  HTTP 415. Gzip is inflated only up to the per-request body cap
+  (8,000,000 bytes by default).
   Chunked HTTP and `Content-Length` are both accepted, and gRPC is a
   separate listener on port 4317. gRPC gzip uses the standard compressor.
 - Codex's published config reference does not catalog events or metrics. The

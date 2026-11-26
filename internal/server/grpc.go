@@ -50,14 +50,21 @@ func (l logsService) Export(_ context.Context, req *collogspb.ExportLogsServiceR
 }
 
 func ingest(srv *Server, signal string, msg proto.Message) error {
+	// The byte reservation was taken before this message was read. Do not
+	// commit if shutdown has started. A successful return is a full
+	// success: partial_success stays unset.
+	if err := srv.beforeInsert(); err != nil {
+		return retryExhausted(msgStopping)
+	}
 	body, err := proto.Marshal(msg)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "could not parse OTLP payload")
 	}
-	if len(body) > otlp.MaxBodyBytes {
-		return status.Error(codes.ResourceExhausted, "payload too large")
+	if srv.lim.MaxBodyBytes < 1 || len(body) > srv.lim.MaxBodyBytes {
+		// No RetryInfo: the same payload will not fit on a retry.
+		return status.Error(codes.ResourceExhausted, msgTooLarge)
 	}
-	records, err := otlp.Decode(signal, body, "application/x-protobuf")
+	records, err := otlp.DecodeLimited(signal, body, "application/x-protobuf", srv.lim.MaxBodyBytes)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "could not parse OTLP payload")
 	}

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
+
+	"github.com/paulpham157/sdf/internal/netlimit"
 )
 
 // command is one top-level subcommand and the line sdf --help shows for it.
@@ -87,6 +90,32 @@ while an agent works; stop it with Ctrl-C.
   --otlp-token TOKEN     require Authorization: Bearer TOKEN on OTLP writes
   --otlp-token-file PATH read that token from a file
   --prices, --repo, --github, --budget   as for sdf summary, applied to the UI`
+
+func limitsHelp() string {
+	return fmt.Sprintf(`Resource limits apply to OTLP/HTTP, OTLP/gRPC, and the UI. Each flag overrides the matching environment variable. Omitting both uses the default. 0 is rejected; it does not disable the limit.
+
+  --max-conns N              concurrent connections on each listener (default %d; SDF_MAX_CONNS)
+  --max-conns-per-ip N       of those, from one remote address (default %d; SDF_MAX_CONNS_PER_IP)
+  --max-conns-per-token N    concurrent authenticated requests (default %d; SDF_MAX_CONNS_PER_TOKEN)
+  --max-body-bytes N         one request body, including after gzip (default %d; SDF_MAX_BODY_BYTES)
+  --max-inflight-bytes N     bytes buffered at once (default %d; SDF_MAX_INFLIGHT_BYTES)
+  --read-header-timeout DUR  time to send headers (default %s; SDF_READ_HEADER_TIMEOUT)
+  --read-timeout DUR         time to send the body (default %s; SDF_READ_TIMEOUT)
+  --idle-timeout DUR         keep-alive idle time (default %s; SDF_IDLE_TIMEOUT)`,
+		netlimit.DefaultMaxConns,
+		netlimit.DefaultMaxConnsPerIP,
+		netlimit.DefaultMaxConnsPerToken,
+		netlimit.DefaultMaxBodyBytes,
+		netlimit.DefaultMaxInFlightBytes,
+		secondsLabel(netlimit.DefaultReadHeaderTimeout),
+		secondsLabel(netlimit.DefaultReadTimeout),
+		secondsLabel(netlimit.DefaultIdleTimeout),
+	)
+}
+
+func secondsLabel(d time.Duration) string {
+	return fmt.Sprintf("%ds", int64(d/time.Second))
+}
 
 const summaryHelp = `Prints one block per stored session, then the unattributed records.
 

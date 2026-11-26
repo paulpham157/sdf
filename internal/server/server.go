@@ -20,21 +20,29 @@
 // /v1/sessions require Authorization: Bearer <token>, and gRPC Export
 // RPCs require the same value in the authorization metadata. GET /health
 // stays unauthenticated. An unset Token leaves the receiver open.
+//
+// Limits bound connections, header and body time, and bytes buffered at
+// once. Zero fields use defaults. A request is acknowledged only after
+// the SQLite commit. A cap or a timeout is a failure response, not a
+// partial success, so the client retries it.
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"sync"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/keepalive"
 
-	"github.com/paulpham157/sdf/internal/otlp"
+	"github.com/paulpham157/sdf/internal/netlimit"
 	"github.com/paulpham157/sdf/internal/store"
 )
 
@@ -50,19 +58,38 @@ type Server struct {
 	Token string
 	// Log receives request lines when Quiet is false. When nil, stderr is used.
 	Log io.Writer
+	// Limits configures the connection, timeout, and byte caps. Zero
+	// fields use defaults. It is read once in Start; later changes are
+	// ignored.
+	Limits netlimit.Limits
 
 	httpLn   net.Listener
 	grpcLn   net.Listener
+	httpLim  *netlimit.Listener
+	grpcLim  *netlimit.Listener
 	grpcSrv  *grpc.Server
 	log      io.Writer
 	httpHost string
 	httpPort string
+
+	lim         netlimit.Limits
+	budget      *netlimit.Budget
+	tokens      *netlimit.Gate
+	ctx         context.Context
+	cancel      context.CancelFunc
+	httpWG      sync.WaitGroup
+	stopOnce    sync.Once
+	blockInsert func(context.Context) error
 }
 
 // Start binds both listeners and serves until Shutdown.
 func (s *Server) Start() error {
 	if s.Store == nil {
 		return fmt.Errorf("store is required")
+	}
+	lim, err := netlimit.Resolve(s.Limits)
+	if err != nil {
+		return err
 	}
 	if s.log == nil {
 		if s.Log != nil {
@@ -71,43 +98,71 @@ func (s *Server) Start() error {
 			s.log = os.Stderr
 		}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.lim = lim
+	s.budget = netlimit.NewBudget(lim.MaxInFlightBytes)
+	s.tokens = netlimit.NewGate(lim.MaxConnsPerToken)
+	s.ctx = ctx
+	s.cancel = cancel
 	host := s.Host
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	httpLn, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(s.HTTPPort)))
 	if err != nil {
+		cancel()
 		return err
 	}
 	grpcLn, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(s.GRPCPort)))
 	if err != nil {
 		_ = httpLn.Close()
+		cancel()
 		return err
 	}
 	httpHost, httpPort, err := net.SplitHostPort(httpLn.Addr().String())
 	if err != nil {
 		_ = httpLn.Close()
 		_ = grpcLn.Close()
+		cancel()
 		return err
 	}
-	s.httpLn = httpLn
-	s.grpcLn = grpcLn
+	s.httpLim = netlimit.Wrap(httpLn, lim.MaxConns, lim.MaxConnsPerIP)
+	s.grpcLim = netlimit.Wrap(grpcLn, lim.MaxConns, lim.MaxConnsPerIP)
+	s.httpLn = s.httpLim
+	s.grpcLn = s.grpcLim
 	s.httpHost = httpHost
 	s.httpPort = httpPort
 	// OTLP Export RPCs are unary. The stream interceptor is defense in depth
-	// if a streaming method is added later.
+	// if a streaming method is added later. admitRPC runs before the body
+	// is read.
 	s.grpcSrv = grpc.NewServer(
-		grpc.MaxRecvMsgSize(otlp.MaxBodyBytes),
-		grpc.MaxSendMsgSize(otlp.MaxBodyBytes),
+		grpc.MaxRecvMsgSize(lim.MaxBodyBytes),
+		grpc.MaxSendMsgSize(lim.MaxBodyBytes),
+		grpc.MaxConcurrentStreams(maxConcurrentStreams),
+		grpc.MaxHeaderListSize(maxHeaderListSize),
+		grpc.ConnectionTimeout(lim.ReadHeaderTimeout),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle:     lim.IdleTimeout,
+			MaxConnectionAge:      maxConnectionAge,
+			MaxConnectionAgeGrace: maxConnectionAgeGrace,
+			Time:                  keepaliveTime,
+			Timeout:               keepaliveTimeout,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             minPingInterval,
+			PermitWithoutStream: true,
+		}),
 		grpc.UnaryInterceptor(s.authInterceptor),
 		grpc.StreamInterceptor(s.streamAuthInterceptor),
+		grpc.InTapHandle(s.admitRPC),
 	)
 	coltracepb.RegisterTraceServiceServer(s.grpcSrv, traceService{srv: s})
 	colmetricspb.RegisterMetricsServiceServer(s.grpcSrv, metricsService{srv: s})
 	collogspb.RegisterLogsServiceServer(s.grpcSrv, logsService{srv: s})
-	go s.serveHTTP(httpLn)
+	s.httpWG.Add(1)
+	go s.serveHTTP(s.httpLim)
 	go func() {
-		_ = s.grpcSrv.Serve(grpcLn)
+		_ = s.grpcSrv.Serve(s.grpcLim)
 	}()
 	return nil
 }
@@ -128,15 +183,27 @@ func (s *Server) GRPCAddress() string {
 	return s.grpcLn.Addr().String()
 }
 
-// Shutdown stops both listeners.
+// Shutdown stops both listeners. It cancels the server context, closes
+// HTTP connections that are still reading, waits for those handlers to
+// return, then gracefully stops gRPC so an in-flight commit can finish.
+// A second call does nothing.
 func (s *Server) Shutdown() {
-	if s.httpLn != nil {
-		_ = s.httpLn.Close()
-	}
-	if s.grpcSrv != nil {
-		s.grpcSrv.GracefulStop()
-	}
-	if s.grpcLn != nil {
-		_ = s.grpcLn.Close()
-	}
+	s.stopOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.httpLn != nil {
+			_ = s.httpLn.Close()
+		}
+		if s.httpLim != nil {
+			s.httpLim.CloseActive()
+		}
+		s.httpWG.Wait()
+		if s.grpcSrv != nil {
+			s.grpcSrv.GracefulStop()
+		}
+		if s.grpcLn != nil {
+			_ = s.grpcLn.Close()
+		}
+	})
 }

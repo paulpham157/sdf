@@ -31,3 +31,12 @@ kept readable by their owner only. This covers the telemetry store
 
 The `<db>.lock` file `sdf serve` and `sdf redact` take is created 0600. sdf
 makes no backup copies of a database.
+
+## Receiver limits
+
+`sdf serve` caps connections, header and body time, and bytes buffered
+for a request on the OTLP/HTTP port, the OTLP/gRPC port, and the UI.
+Past a cap, the receiver refuses the work instead of reading it into
+memory. The numbers, the flags, and which status a client should retry
+are in [receiver.md](receiver.md#resource-limits). A bad value refuses
+to start; it does not leave the listener open without the cap.

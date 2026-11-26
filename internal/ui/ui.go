@@ -49,6 +49,7 @@ import (
 	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/decisiongraph"
 	"github.com/paulpham157/sdf/internal/httphost"
+	"github.com/paulpham157/sdf/internal/netlimit"
 	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/record"
@@ -62,15 +63,11 @@ const DefaultAddr = "127.0.0.1:4320"
 
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-// Timeouts bound a slow or idle client. WriteTimeout includes handler time,
-// and a --github refresh calls the GitHub API inside the handler, so the
-// write budget is long enough for a few of those calls.
-const (
-	uiReadHeaderTimeout = 5 * time.Second
-	uiReadTimeout       = 30 * time.Second
-	uiWriteTimeout      = 3 * time.Minute
-	uiIdleTimeout       = 90 * time.Second
-)
+// uiWriteTimeout includes handler time, and a --github refresh calls the
+// GitHub API inside the handler, so the write budget is long enough for
+// a few of those calls. Header, read, and idle timeouts come from
+// netlimit so they match the OTLP receiver.
+const uiWriteTimeout = 3 * time.Minute
 
 //go:embed assets/index.html assets/tokens.css assets/app.css assets/app.js assets/favicon.svg assets/favicon.ico
 var assetFS embed.FS
@@ -90,11 +87,20 @@ type Config struct {
 	// Log receives a line when a response cannot be encoded. Nil is
 	// os.Stderr.
 	Log io.Writer
+	// MaxConns, MaxConnsPerIP, and the timeouts match the OTLP receiver.
+	// Zero uses the same defaults. The write timeout stays long enough
+	// for a --github refresh and is not taken from ReadTimeout.
+	MaxConns          int
+	MaxConnsPerIP     int
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	IdleTimeout       time.Duration
 }
 
 // Server is the UI listener.
 type Server struct {
 	ln      net.Listener
+	lim     *netlimit.Listener
 	http    *http.Server
 	warning string
 }
@@ -135,15 +141,55 @@ func Start(cfg Config) (*Server, error) {
 		mux:    http.NewServeMux(),
 	}
 	h.routes()
+	hdr, read, idle, maxConns, maxPerIP, err := cfg.listenerLimits()
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	wrapped := netlimit.Wrap(ln, maxConns, maxPerIP)
 	httpSrv := &http.Server{
 		Handler:           h,
-		ReadHeaderTimeout: uiReadHeaderTimeout,
-		ReadTimeout:       uiReadTimeout,
+		ReadHeaderTimeout: hdr,
+		ReadTimeout:       read,
 		WriteTimeout:      uiWriteTimeout,
-		IdleTimeout:       uiIdleTimeout,
+		IdleTimeout:       idle,
+		MaxHeaderBytes:    1 << 20,
 	}
-	go func() { _ = httpSrv.Serve(ln) }()
-	return &Server{ln: ln, http: httpSrv, warning: bindWarning(host)}, nil
+	go func() { _ = httpSrv.Serve(wrapped) }()
+	return &Server{ln: ln, lim: wrapped, http: httpSrv, warning: bindWarning(host)}, nil
+}
+
+// listenerLimits fills the same defaults the OTLP receiver uses. A
+// negative value is rejected. The per-address cap is never above the
+// total cap.
+func (cfg Config) listenerLimits() (hdr, read, idle time.Duration, maxConns, maxPerIP int, err error) {
+	hdr = cfg.ReadHeaderTimeout
+	if hdr == 0 {
+		hdr = netlimit.DefaultReadHeaderTimeout
+	}
+	read = cfg.ReadTimeout
+	if read == 0 {
+		read = netlimit.DefaultReadTimeout
+	}
+	idle = cfg.IdleTimeout
+	if idle == 0 {
+		idle = netlimit.DefaultIdleTimeout
+	}
+	maxConns = cfg.MaxConns
+	if maxConns == 0 {
+		maxConns = netlimit.DefaultMaxConns
+	}
+	maxPerIP = cfg.MaxConnsPerIP
+	if maxPerIP == 0 {
+		maxPerIP = netlimit.DefaultMaxConnsPerIP
+	}
+	if hdr < 0 || read < 0 || idle < 0 || maxConns < 1 || maxPerIP < 1 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("ui limits must be positive")
+	}
+	if maxPerIP > maxConns {
+		maxPerIP = maxConns
+	}
+	return hdr, read, idle, maxConns, maxPerIP, nil
 }
 
 // URL is the browser address, including the trailing slash.
@@ -163,10 +209,15 @@ func (s *Server) BindWarning() string {
 	return s.warning
 }
 
-// Shutdown stops the listener. A nil server is a no-op.
+// Shutdown stops the listener. Admitted connections are closed first so
+// a stalled client cannot hold the process for the header timeout. A nil
+// server is a no-op.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.http == nil {
 		return nil
+	}
+	if s.lim != nil {
+		s.lim.CloseActive()
 	}
 	return s.http.Shutdown(ctx)
 }
