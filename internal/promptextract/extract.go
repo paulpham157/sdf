@@ -7,23 +7,55 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 )
 
-// MaxLineBytes is the largest raw line Extract will parse, including the
-// trailing newline. bufio.Scanner stops at 64 KiB by default, and a Claude
-// Code session line can be larger than that, so Extract reads with
-// bufio.Reader instead. A longer line is skipped and reported as
-// ErrLineTooLong. The limit is the memory bound for one line.
+// MaxLineBytes is the largest raw line Extract will read, including the
+// trailing newline. It caps that input line only. Decoding one line of
+// that size keeps several copies (the raw buffer, the JSON value, and the
+// extracted string), so peak memory for one max-sized line is several
+// times higher, about 3-5x MaxLineBytes. bufio.Scanner stops at 64 KiB by
+// default, so Extract uses bufio.Reader instead. A longer line is skipped
+// and reported as ErrLineTooLong.
 const MaxLineBytes = 32 << 20
+
+// MaxInputBytes is the most Extract will read from the stream. A further
+// byte fails closed with ErrInputTooLarge.
+const MaxInputBytes = 256 << 20
+
+// MaxPrompts is the most prompts Extract will return. One more fails
+// closed with ErrTooManyPrompts.
+const MaxPrompts = 10000
+
+// MaxOutputBytes is the most extracted prompt text, in bytes, Extract will
+// return. One more byte fails closed with ErrOutputTooLarge.
+const MaxOutputBytes = 32 << 20
+
+// MaxErrors is the most line errors Extract will return. One more fails
+// closed with ErrTooManyErrors.
+const MaxErrors = 1000
 
 // ErrLineTooLong is the error inside a LineError when a line is longer
 // than the maximum (MaxLineBytes for Extract).
 var ErrLineTooLong = errors.New("line exceeds the maximum line size")
 
+// ErrInputTooLarge, ErrTooManyPrompts, ErrOutputTooLarge, and
+// ErrTooManyErrors are returned by Extract when a stream cap is hit.
+// The Result is empty: a capped extract is not a partial success.
+var (
+	ErrInputTooLarge  = errors.New("stream exceeds the maximum input size")
+	ErrTooManyPrompts = errors.New("too many prompts")
+	ErrOutputTooLarge = errors.New("extracted text exceeds the maximum output size")
+	ErrTooManyErrors  = errors.New("too many line errors")
+)
+
+// ErrTagDepth is the line error when one harness tag is nested deeper
+// than MaxTagDepth.
+var ErrTagDepth = errors.New("harness tag nested too deeply")
+
 // Prompt is one user-typed prompt. UUID, SessionID, and Timestamp are
 // empty when the record omits them. Line is 1-based in the stream.
+// Text is raw: it is not redacted.
 type Prompt struct {
 	Line      int
 	UUID      string
@@ -33,7 +65,7 @@ type Prompt struct {
 }
 
 // LineError is a bad line that was skipped. The rest of the stream is
-// still read. Line is 1-based.
+// still read, until a stream cap fails the extract. Line is 1-based.
 type LineError struct {
 	Line int
 	Err  error
@@ -46,43 +78,77 @@ func (e LineError) Error() string {
 func (e LineError) Unwrap() error { return e.Err }
 
 // Result is every prompt Extract kept and every line it skipped because
-// the line was malformed or too long.
+// the line was malformed, too long, or nested a harness tag too deeply.
+// A stream cap does not return a partial Result.
 type Result struct {
 	Prompts []Prompt
 	Errors  []LineError
 }
 
+type bound struct {
+	maxLine    int
+	maxInput   int
+	maxPrompts int
+	maxOutput  int
+	maxErrors  int
+}
+
+func defaultBounds() bound {
+	return bound{
+		maxLine:    MaxLineBytes,
+		maxInput:   MaxInputBytes,
+		maxPrompts: MaxPrompts,
+		maxOutput:  MaxOutputBytes,
+		maxErrors:  MaxErrors,
+	}
+}
+
 // Extract reads a Claude Code session JSONL stream and returns the
 // user-typed prompts it recognizes.
 //
-// A malformed line or a line longer than MaxLineBytes is recorded in
-// Result.Errors and skipped. A read error from r, other than the end of
-// the stream, is returned. Prompts and line errors collected before that
-// read error are still in the Result. A nil reader is an error.
+// A malformed line, a line longer than MaxLineBytes, or a line whose
+// harness tags nest deeper than MaxTagDepth is recorded in Result.Errors
+// and skipped. A read error from r, other than the end of the stream, is
+// returned with the prompts and line errors collected before it. Hitting
+// MaxInputBytes, MaxPrompts, MaxOutputBytes, or MaxErrors returns that
+// sentinel and an empty Result. A nil reader is an error.
 func Extract(r io.Reader) (Result, error) {
-	return extractLimited(r, MaxLineBytes)
+	return extractBounded(r, defaultBounds())
 }
 
 func extractLimited(r io.Reader, maxLine int) (Result, error) {
+	b := defaultBounds()
+	b.maxLine = maxLine
+	return extractBounded(r, b)
+}
+
+func extractBounded(r io.Reader, b bound) (Result, error) {
 	if r == nil {
 		return Result{}, errors.New("promptextract: nil reader")
 	}
-	if maxLine < 1 {
-		return Result{}, errors.New("promptextract: max line must be positive")
+	if b.maxLine < 1 || b.maxInput < 1 || b.maxPrompts < 1 || b.maxOutput < 1 || b.maxErrors < 1 {
+		return Result{}, errors.New("promptextract: limits must be positive")
 	}
-	br := bufio.NewReader(r)
+	br := bufio.NewReader(&countingReader{r: r, max: b.maxInput})
 	var res Result
+	outBytes := 0
 	n := 0
 	for {
-		line, tooLong, err := readLine(br, maxLine)
+		line, tooLong, err := readLine(br, b.maxLine)
 		if err != nil && err != io.EOF {
+			if errors.Is(err, ErrInputTooLarge) {
+				return Result{}, ErrInputTooLarge
+			}
 			return res, fmt.Errorf("promptextract: read: %w", err)
 		}
 		if tooLong {
 			n++
+			if len(res.Errors) >= b.maxErrors {
+				return Result{}, ErrTooManyErrors
+			}
 			res.Errors = append(res.Errors, LineError{
 				Line: n,
-				Err:  fmt.Errorf("%w (%d bytes)", ErrLineTooLong, maxLine),
+				Err:  fmt.Errorf("%w (%d bytes)", ErrLineTooLong, b.maxLine),
 			})
 			if err == io.EOF {
 				return res, nil
@@ -96,8 +162,18 @@ func extractLimited(r io.Reader, maxLine int) (Result, error) {
 		if len(bytes.TrimSpace(line)) > 0 {
 			p, ok, perr := promptFromLine(n, line)
 			if perr != nil {
+				if len(res.Errors) >= b.maxErrors {
+					return Result{}, ErrTooManyErrors
+				}
 				res.Errors = append(res.Errors, LineError{Line: n, Err: perr})
 			} else if ok {
+				if len(res.Prompts) >= b.maxPrompts {
+					return Result{}, ErrTooManyPrompts
+				}
+				if len(p.Text) > b.maxOutput || outBytes > b.maxOutput-len(p.Text) {
+					return Result{}, ErrOutputTooLarge
+				}
+				outBytes += len(p.Text)
 				res.Prompts = append(res.Prompts, p)
 			}
 		}
@@ -105,6 +181,33 @@ func extractLimited(r io.Reader, maxLine int) (Result, error) {
 			return res, nil
 		}
 	}
+}
+
+// countingReader stops a stream after max bytes. The next read that would
+// pass that cap returns ErrInputTooLarge. A stream that ends on the cap
+// is not an error.
+type countingReader struct {
+	r   io.Reader
+	n   int
+	max int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.n >= c.max {
+		var probe [1]byte
+		n, err := c.r.Read(probe[:])
+		if n > 0 {
+			return 0, ErrInputTooLarge
+		}
+		return 0, err
+	}
+	remain := c.max - c.n
+	if len(p) > remain {
+		p = p[:remain]
+	}
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
 }
 
 // readLine reads one newline-delimited line. The returned line does not
@@ -159,11 +262,22 @@ func promptFromLine(lineNo int, line []byte) (Prompt, bool, error) {
 	if !ok || typ != "user" {
 		return Prompt{}, false, nil
 	}
-	meta, err := jsonBool(fields["isMeta"])
+	meta, err := jsonBool(fields, "isMeta")
 	if err != nil {
 		return Prompt{}, false, fmt.Errorf("malformed json: %w", err)
 	}
-	if meta {
+	side, err := jsonBool(fields, "isSidechain")
+	if err != nil {
+		return Prompt{}, false, fmt.Errorf("malformed json: %w", err)
+	}
+	compact, err := jsonBool(fields, "isCompactSummary")
+	if err != nil {
+		return Prompt{}, false, fmt.Errorf("malformed json: %w", err)
+	}
+	// isMeta, isSidechain, and isCompactSummary skip the record when JSON
+	// true. Whether a live file sets them on skills, subagent prompts, or
+	// compaction summaries is needs verification.
+	if meta || side || compact {
 		return Prompt{}, false, nil
 	}
 	uuid, err := optionalString(fields, "uuid")
@@ -183,7 +297,7 @@ func promptFromLine(lineNo int, line []byte) (Prompt, bool, error) {
 		return Prompt{}, false, err
 	}
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" || isInterrupt(text) {
 		return Prompt{}, false, nil
 	}
 	return Prompt{
@@ -196,8 +310,8 @@ func promptFromLine(lineNo int, line []byte) (Prompt, bool, error) {
 }
 
 // jsonObject parses one JSON object. A JSON null is a nil map and no
-// error. Map keys keep the spelling in the file; encoding/json's
-// case-insensitive struct match is not used.
+// error, and the caller skips that line. Map keys keep the spelling in
+// the file; encoding/json's case-insensitive struct match is not used.
 func jsonObject(line []byte) (map[string]json.RawMessage, error) {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	var fields map[string]json.RawMessage
@@ -230,14 +344,18 @@ func jsonStringOrSkip(raw json.RawMessage) (string, bool) {
 	return s, true
 }
 
-func jsonBool(raw json.RawMessage) (bool, error) {
+func jsonBool(fields map[string]json.RawMessage, key string) (bool, error) {
+	raw, ok := fields[key]
+	if !ok {
+		return false, nil
+	}
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		return false, nil
 	}
 	var v bool
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return false, errors.New("isMeta must be a boolean")
+		return false, fmt.Errorf("%s must be a boolean", key)
 	}
 	return v, nil
 }
@@ -284,7 +402,7 @@ func textFromContent(raw json.RawMessage) (string, error) {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return "", fmt.Errorf("message.content: %w", err)
 		}
-		return stripReminders(s), nil
+		return stripHarness(s)
 	case '[':
 		var blocks []json.RawMessage
 		if err := json.Unmarshal(raw, &blocks); err != nil {
@@ -308,7 +426,7 @@ func textFromContent(raw json.RawMessage) (string, error) {
 
 // textBlock returns the trimmed user text of a type "text" block.
 // tool_result blocks and any other type are dropped. keep is false when
-// the block contributes no text.
+// the block contributes no text. A non-object element is an error.
 func textBlock(raw json.RawMessage) (string, bool, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
@@ -333,28 +451,13 @@ func textBlock(raw json.RawMessage) (string, bool, error) {
 	if err := json.Unmarshal(textRaw, &text); err != nil {
 		return "", false, errors.New("text block's text must be a string")
 	}
-	text = strings.TrimSpace(stripReminders(text))
-	if text == "" {
+	text, err := stripHarness(text)
+	if err != nil {
+		return "", false, err
+	}
+	text = strings.TrimSpace(text)
+	if text == "" || isInterrupt(text) {
 		return "", false, nil
 	}
 	return text, true, nil
-}
-
-// systemReminder matches a well-formed <system-reminder> region, including
-// one that spans lines. Go's regexp is RE2: the (?s) flag lets . match a
-// newline, and the match is non-greedy so two regions on one line stay
-// separate.
-var systemReminder = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
-
-// stripReminders removes well-formed <system-reminder> regions. An opener
-// with no closer drops the opener and everything after it in that string,
-// which is the rest of the block. A closer with no opener is left in
-// place. Nested regions are not matched as a tree: the first closer ends
-// the first opener.
-func stripReminders(s string) string {
-	s = systemReminder.ReplaceAllString(s, "")
-	if i := strings.Index(s, "<system-reminder>"); i >= 0 {
-		s = s[:i]
-	}
-	return s
 }

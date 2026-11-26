@@ -64,7 +64,7 @@ func TestExtractUserTypedPrompts(t *testing.T) {
 			body: []any{userText("sửa bug ở hàm login"), userText("và thêm test")},
 			want: "sửa bug ở hàm login\nvà thêm test",
 		},
-		{name: "unclosed reminder", body: "sửa bug ở hàm login <system-reminder>still hidden", want: "sửa bug ở hàm login"},
+		{name: "unclosed reminder", body: "sửa bug ở hàm login <system-reminder>still hidden", want: "sửa bug ở hàm login <system-reminder>still hidden"},
 		{
 			name: "two reminders",
 			body: "a <system-reminder>1</system-reminder> b <system-reminder>2</system-reminder> c",
@@ -78,16 +78,8 @@ func TestExtractUserTypedPrompts(t *testing.T) {
 		{name: "empty string", body: "", skip: true},
 		{name: "whitespace", body: " \n\t ", skip: true},
 		{name: "whitespace array block", body: []any{userText(" \n\t ")}, skip: true},
-		{
-			name: "command-name kept",
-			body: "<command-name>/compact</command-name>",
-			want: "<command-name>/compact</command-name>",
-		},
-		{
-			name: "local-command-stdout kept",
-			body: "<local-command-stdout>total 0</local-command-stdout>",
-			want: "<local-command-stdout>total 0</local-command-stdout>",
-		},
+		{name: "command-name stripped", body: "<command-name>/compact</command-name>", skip: true},
+		{name: "local-command-stdout stripped", body: "<local-command-stdout>total 0</local-command-stdout>", skip: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -269,10 +261,14 @@ func TestExtractUnicodeEscapeReminder(t *testing.T) {
 	}
 }
 
-func TestStripRemindersNestedOpener(t *testing.T) {
+func TestStripHarnessNestedOpener(t *testing.T) {
 	in := "<system-reminder>outer <system-reminder>inner</system-reminder> tail</system-reminder>sửa bug"
-	got := strings.TrimSpace(stripReminders(in))
-	want := "tail</system-reminder>sửa bug"
+	got, err := stripHarness(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = strings.TrimSpace(got)
+	want := "sửa bug"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -381,6 +377,10 @@ func (e errReader) Read([]byte) (int, error) { return 0, e.err }
 func TestQuickFilterMatchesExtract(t *testing.T) {
 	jq, err := exec.LookPath("jq")
 	if err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("jq is required when CI=true; quick-filter parity cannot be skipped")
+		}
+		t.Log("jq is not installed; skipping quick-filter parity locally. CI=true makes this a failure.")
 		t.Skip("jq not installed")
 	}
 	_, file, _, ok := runtime.Caller(0)
@@ -420,6 +420,10 @@ func TestQuickFilterMatchesExtract(t *testing.T) {
 		"a <system-reminder>1</system-reminder> b <system-reminder>2</system-reminder> c",
 		"<command-name>/compact</command-name>",
 		"<system-reminder>outer <system-reminder>inner</system-reminder> tail</system-reminder>sửa bug",
+		"<SYSTEM-REMINDER>secret</SYSTEM-REMINDER>sửa bug",
+		"sửa bug <bash-stdout>SECRET=1</bash-stdout>",
+		"[Request interrupted by user]",
+		"how do I close <system-reminder> tags? also fix login",
 		"",
 		" \n\t ",
 	}
@@ -440,6 +444,16 @@ func TestQuickFilterMatchesExtract(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw.Write(line)
+		raw.WriteByte('\n')
+	}
+	for _, extra := range []string{
+		`{"type":"user","isSidechain":true,"message":{"content":"subagent"}}`,
+		`{"type":"user","isCompactSummary":true,"message":{"content":"compacted"}}`,
+		`{"type":"user","message":{"content":[{"type":"text","text":"how do I close <system-reminder> tags? also fix login"}]}}`,
+		`{"type":1,"message":{"content":"not a user record"}}`,
+		`null`,
+	} {
+		raw.WriteString(extra)
 		raw.WriteByte('\n')
 	}
 	// Non-user records are part of the quick filter's contract too.
@@ -473,6 +487,195 @@ func TestQuickFilterMatchesExtract(t *testing.T) {
 	}
 	if !bytes.Equal(out, want.Bytes()) {
 		t.Fatalf("jq:\n%s\ngo:\n%s", out, want.Bytes())
+	}
+}
+
+func TestExtractHarnessSidechainAndInterrupts(t *testing.T) {
+	mixed := "sửa bug <command-name>/compact</command-name> <command-message>m</command-message> <command-args>a</command-args> <local-command-stdout>out</local-command-stdout> <local-command-stderr>err</local-command-stderr> <local-command-caveat>caveat</local-command-caveat> <bash-input>ls</bash-input> <bash-stdout>SECRET=1</bash-stdout> <bash-stderr>no</bash-stderr>"
+	cases := []struct {
+		name string
+		line string
+		want string
+		skip bool
+		err  string
+	}{
+		{
+			name: "isSidechain",
+			line: `{"type":"user","isSidechain":true,"message":{"content":"subagent prompt"}}`,
+			skip: true,
+		},
+		{
+			name: "isSidechain false",
+			line: `{"type":"user","isSidechain":false,"message":{"content":"sửa bug"}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "isSidechain null",
+			line: `{"type":"user","isSidechain":null,"message":{"content":"sửa bug"}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "isSidechain string",
+			line: `{"type":"user","isSidechain":"true","message":{"content":"sửa bug"}}`,
+			err:  "isSidechain must be a boolean",
+		},
+		{
+			name: "isCompactSummary",
+			line: `{"type":"user","isCompactSummary":true,"message":{"content":"auto summary"}}`,
+			skip: true,
+		},
+		{
+			name: "isCompactSummary false",
+			line: `{"type":"user","isCompactSummary":false,"message":{"content":"sửa bug"}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "interrupt exact",
+			line: `{"type":"user","message":{"content":"[Request interrupted by user]"}}`,
+			skip: true,
+		},
+		{
+			name: "interrupt tool use",
+			line: `{"type":"user","message":{"content":"  [Request interrupted by user for tool use]  "}}`,
+			skip: true,
+		},
+		{
+			name: "interrupt beside user text",
+			line: `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"},{"type":"text","text":"sửa bug"}]}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "interrupt inside a larger sentence",
+			line: `{"type":"user","message":{"content":"please keep [Request interrupted by user] in the note"}}`,
+			want: "please keep [Request interrupted by user] in the note",
+		},
+		{
+			name: "harness tags stripped",
+			line: `{"type":"user","message":{"content":` + jsonString(mixed) + `}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "unclosed reminder in array",
+			line: `{"type":"user","message":{"content":[{"type":"text","text":"how do I close <system-reminder> tags? also fix login"}]}}`,
+			want: "how do I close <system-reminder> tags? also fix login",
+		},
+		{
+			name: "case and attributes",
+			line: `{"type":"user","message":{"content":"<SYSTEM-REMINDER>secret</SYSTEM-REMINDER>sửa bug <system-reminder attr=\"x\">secret</system-reminder>"}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "attribute quote holds a bracket",
+			line: `{"type":"user","message":{"content":"<system-reminder attr=\"a>b\">secret</system-reminder>sửa bug"}}`,
+			want: "sửa bug",
+		},
+		{
+			name: "non-string type",
+			line: `{"type":1,"message":{"content":"sửa bug"}}`,
+			skip: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := Extract(strings.NewReader(tc.line + "\n" + `{"type":"user","message":{"content":"kept"}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.err != "" {
+				if len(res.Errors) != 1 || !strings.Contains(res.Errors[0].Error(), tc.err) {
+					t.Fatalf("errors %v", res.Errors)
+				}
+				if len(res.Prompts) != 1 || res.Prompts[0].Text != "kept" {
+					t.Fatalf("prompts %#v", res.Prompts)
+				}
+				return
+			}
+			if len(res.Errors) != 0 {
+				t.Fatalf("errors %v", res.Errors)
+			}
+			if tc.skip {
+				if len(res.Prompts) != 1 || res.Prompts[0].Text != "kept" {
+					t.Fatalf("prompts %#v", res.Prompts)
+				}
+				return
+			}
+			if len(res.Prompts) != 2 || res.Prompts[0].Text != tc.want || res.Prompts[1].Text != "kept" {
+				t.Fatalf("prompts %#v", res.Prompts)
+			}
+		})
+	}
+}
+
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func TestExtractTagDepth(t *testing.T) {
+	deep := nestReminders(MaxTagDepth)
+	over := nestReminders(MaxTagDepth + 1)
+	stream := `{"type":"user","message":{"content":` + jsonString(over) + "}}\n" +
+		`{"type":"user","message":{"content":` + jsonString(deep+"sửa bug") + "}}\n" +
+		`{"type":"user","message":{"content":"after"}}` + "\n"
+	res, err := Extract(strings.NewReader(stream))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 1 || res.Errors[0].Line != 1 || !errors.Is(res.Errors[0], ErrTagDepth) {
+		t.Fatalf("errors %v", res.Errors)
+	}
+	// A nest of MaxTagDepth is stripped. The user text after the outer
+	// closer remains. The following line is still read.
+	if len(res.Prompts) != 2 || res.Prompts[0].Text != "sửa bug" || res.Prompts[1].Line != 3 || res.Prompts[1].Text != "after" {
+		t.Fatalf("prompts %#v", res.Prompts)
+	}
+}
+
+func nestReminders(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString("<system-reminder>")
+	}
+	b.WriteString("inner")
+	for i := 0; i < n; i++ {
+		b.WriteString("</system-reminder>")
+	}
+	return b.String()
+}
+
+func TestExtractStreamCaps(t *testing.T) {
+	limits := bound{maxLine: 1024, maxInput: 1 << 20, maxPrompts: 2, maxOutput: 1 << 20, maxErrors: 1}
+	var many bytes.Buffer
+	for i := 0; i < 3; i++ {
+		many.WriteString(`{"type":"user","message":{"content":"p"}}` + "\n")
+	}
+	res, err := extractBounded(&many, limits)
+	if !errors.Is(err, ErrTooManyPrompts) || res.Prompts != nil || res.Errors != nil {
+		t.Fatalf("prompts cap: %v %#v", err, res)
+	}
+
+	wide := bound{maxLine: 1024, maxInput: 1 << 20, maxPrompts: 10, maxOutput: 6, maxErrors: 10}
+	res, err = extractBounded(strings.NewReader(`{"type":"user","message":{"content":"abcd"}}`+"\n"+`{"type":"user","message":{"content":"abcd"}}`+"\n"), wide)
+	if !errors.Is(err, ErrOutputTooLarge) || res.Prompts != nil || res.Errors != nil {
+		t.Fatalf("output cap: %v %#v", err, res)
+	}
+
+	res, err = extractBounded(strings.NewReader("{\n{\n"), bound{maxLine: 1024, maxInput: 1 << 20, maxPrompts: 10, maxOutput: 100, maxErrors: 1})
+	if !errors.Is(err, ErrTooManyErrors) || res.Prompts != nil || res.Errors != nil {
+		t.Fatalf("errors cap: %v %#v", err, res)
+	}
+
+	prefix := `{"type":"user","message":{"content":"one"}}` + "\n"
+	res, err = extractBounded(strings.NewReader(prefix), bound{maxLine: 1024, maxInput: len(prefix), maxPrompts: 10, maxOutput: 100, maxErrors: 10})
+	if err != nil || len(res.Prompts) != 1 || res.Prompts[0].Text != "one" {
+		t.Fatalf("exact input: %v %#v", err, res)
+	}
+	res, err = extractBounded(strings.NewReader(prefix+strings.Repeat("x", 8)), bound{maxLine: 1024, maxInput: len(prefix), maxPrompts: 10, maxOutput: 100, maxErrors: 10})
+	if !errors.Is(err, ErrInputTooLarge) || res.Prompts != nil || res.Errors != nil {
+		t.Fatalf("input cap: %v %#v", err, res)
 	}
 }
 
