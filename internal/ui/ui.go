@@ -97,12 +97,19 @@ type Config struct {
 	IdleTimeout       time.Duration
 }
 
+type uiConnKey struct{}
+
 // Server is the UI listener.
 type Server struct {
 	ln      net.Listener
-	lim     *netlimit.Listener
 	http    *http.Server
 	warning string
+
+	phaseMu sync.Mutex
+	// conns maps an admitted connection to whether it is still reading.
+	// Shutdown closes the ones that are. A handler that has started is left
+	// to finish so http.Shutdown can write its response.
+	conns map[net.Conn]bool
 }
 
 // Start listens and serves until Shutdown. A non-loopback address returns a
@@ -147,16 +154,36 @@ func Start(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	wrapped := netlimit.Wrap(ln, maxConns, maxPerIP)
+	srv := &Server{ln: ln, warning: bindWarning(host)}
 	httpSrv := &http.Server{
-		Handler:           h,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The handler has the request. Leave the connection out of the
+			// set Shutdown closes, so an in-flight response can finish.
+			if c, ok := r.Context().Value(uiConnKey{}).(net.Conn); ok {
+				srv.noteConn(c, false)
+			}
+			h.ServeHTTP(w, r)
+		}),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, uiConnKey{}, c)
+		},
+		ConnState: func(c net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew, http.StateActive, http.StateIdle:
+				srv.noteConn(c, true)
+			case http.StateClosed, http.StateHijacked:
+				srv.dropConn(c)
+			}
+		},
 		ReadHeaderTimeout: hdr,
 		ReadTimeout:       read,
 		WriteTimeout:      uiWriteTimeout,
 		IdleTimeout:       idle,
 		MaxHeaderBytes:    1 << 20,
 	}
+	srv.http = httpSrv
 	go func() { _ = httpSrv.Serve(wrapped) }()
-	return &Server{ln: ln, lim: wrapped, http: httpSrv, warning: bindWarning(host)}, nil
+	return srv, nil
 }
 
 // listenerLimits fills the same defaults the OTLP receiver uses. A
@@ -209,17 +236,45 @@ func (s *Server) BindWarning() string {
 	return s.warning
 }
 
-// Shutdown stops the listener. Admitted connections are closed first so
-// a stalled client cannot hold the process for the header timeout. A nil
-// server is a no-op.
+// Shutdown stops the listener. Connections that are still reading are
+// closed so a stalled client cannot hold the process for the header
+// timeout. A request whose handler has started is left to finish, and
+// http.Shutdown waits for it. A nil server is a no-op.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.http == nil {
 		return nil
 	}
-	if s.lim != nil {
-		s.lim.CloseActive()
-	}
+	s.closeReading()
 	return s.http.Shutdown(ctx)
+}
+
+func (s *Server) noteConn(c net.Conn, reading bool) {
+	s.phaseMu.Lock()
+	if s.conns == nil {
+		s.conns = map[net.Conn]bool{}
+	}
+	s.conns[c] = reading
+	s.phaseMu.Unlock()
+}
+
+func (s *Server) dropConn(c net.Conn) {
+	s.phaseMu.Lock()
+	delete(s.conns, c)
+	s.phaseMu.Unlock()
+}
+
+func (s *Server) closeReading() {
+	s.phaseMu.Lock()
+	var reading []net.Conn
+	for c, still := range s.conns {
+		if still {
+			reading = append(reading, c)
+		}
+	}
+	s.phaseMu.Unlock()
+	for _, c := range reading {
+		_ = c.Close()
+	}
 }
 
 func normalizeAddr(addr string) (string, string, error) {

@@ -18,8 +18,8 @@ type traceService struct {
 	srv *Server
 }
 
-func (t traceService) Export(_ context.Context, req *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
-	if err := ingest(t.srv, "traces", req); err != nil {
+func (t traceService) Export(ctx context.Context, req *coltracepb.ExportTraceServiceRequest) (*coltracepb.ExportTraceServiceResponse, error) {
+	if err := ingest(ctx, t.srv, "traces", req); err != nil {
 		return nil, err
 	}
 	return &coltracepb.ExportTraceServiceResponse{}, nil
@@ -30,8 +30,8 @@ type metricsService struct {
 	srv *Server
 }
 
-func (m metricsService) Export(_ context.Context, req *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
-	if err := ingest(m.srv, "metrics", req); err != nil {
+func (m metricsService) Export(ctx context.Context, req *colmetricspb.ExportMetricsServiceRequest) (*colmetricspb.ExportMetricsServiceResponse, error) {
+	if err := ingest(ctx, m.srv, "metrics", req); err != nil {
 		return nil, err
 	}
 	return &colmetricspb.ExportMetricsServiceResponse{}, nil
@@ -42,24 +42,41 @@ type logsService struct {
 	srv *Server
 }
 
-func (l logsService) Export(_ context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
-	if err := ingest(l.srv, "logs", req); err != nil {
+func (l logsService) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+	if err := ingest(ctx, l.srv, "logs", req); err != nil {
 		return nil, err
 	}
 	return &collogspb.ExportLogsServiceResponse{}, nil
 }
 
-func ingest(srv *Server, signal string, msg proto.Message) error {
+func ingest(ctx context.Context, srv *Server, signal string, msg proto.Message) error {
+	// The gRPC server has already decoded the request. Size is the encoded
+	// length. Zero means the server was not started and the package default
+	// applies, which is what a direct call and the benchmark use.
+	limit := srv.lim.MaxBodyBytes
+	if limit < 1 {
+		limit = otlp.MaxBodyBytes
+	}
+	n := proto.Size(msg)
+	if n > limit {
+		// Drop the pessimistic reservation. No RetryInfo: the same
+		// payload will not fit on a retry.
+		_ = srv.noteGRPCBody(ctx, 0)
+		return status.Error(codes.ResourceExhausted, msgTooLarge)
+	}
+	// Shrink to the encoded size and stop the read timer before the
+	// commit, so the header timeout does not cover SQLite and a small
+	// message does not keep holding the per-request maximum.
+	if err := srv.noteGRPCBody(ctx, int64(n)); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
 	// Do not commit if shutdown has started. A successful return is a full
 	// success: partial_success stays unset.
 	if err := srv.beforeInsert(); err != nil {
 		return retryExhausted(msgStopping)
-	}
-	// The gRPC server has already decoded the request. Size is the encoded
-	// length, the same limit the HTTP body uses. No RetryInfo: the same
-	// payload will not fit on a retry.
-	if srv.lim.MaxBodyBytes < 1 || proto.Size(msg) > srv.lim.MaxBodyBytes {
-		return status.Error(codes.ResourceExhausted, msgTooLarge)
 	}
 	records, err := otlp.DecodeRequest(signal, msg)
 	if err != nil {

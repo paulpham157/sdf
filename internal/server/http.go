@@ -50,17 +50,33 @@ func (s *Server) serveHTTP(ln net.Listener) {
 	}
 }
 
+// maxRequestsPerConn and maxConnAge bound a keep-alive connection.
+// A client that sends another request just inside the idle timeout would
+// otherwise hold a slot for as long as it wants. On loopback the
+// per-address cap is the whole listener, so that slot is the global cap.
+const (
+	maxRequestsPerConn = 1000
+	maxConnAge         = 10 * time.Minute
+)
+
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
+	defer s.untrack(conn)
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
+	started := time.Now()
 	first := true
+	var n int
 	for {
+		if err := s.trackReading(conn); err != nil {
+			return
+		}
 		if err := s.armHeaderRead(conn, reader, first); err != nil {
 			return
 		}
 		first = false
-		closeAfter, err := s.handleRequest(conn, reader, writer)
+		n++
+		closeAfter, err := s.handleRequest(conn, reader, writer, n, started)
 		if err != nil {
 			return
 		}
@@ -102,7 +118,7 @@ func (s *Server) armHeaderRead(conn net.Conn, reader *bufio.Reader, first bool) 
 	return conn.SetReadDeadline(time.Now().Add(headerWait))
 }
 
-func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufio.Writer) (bool, error) {
+func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, requests int, started time.Time) (bool, error) {
 	method, path, headers, err := readHeaders(reader)
 	if err != nil {
 		return true, err
@@ -115,21 +131,31 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		return true, err
 	}
 	closeAfter := connectionClose(headers)
-	path = strings.SplitN(path, "?", 2)[0]
-	hold := s.budget.Hold()
-	defer hold.Release()
-	// Host and Origin are checked before the bearer token. A matching token
-	// does not make a browser post or a rebound Host acceptable.
-	if status, msg, refuse := s.refusal(headers); refuse {
-		return s.refuse(conn, reader, writer, method, path, headers, status, msg, closeAfter, hold)
+	if requests >= maxRequestsPerConn || time.Since(started) >= maxConnAge {
+		closeAfter = true
 	}
-	if s.requiresAuth(method, path) && !s.authorizedBearer(headerGet(headers, "Authorization")) {
+	path = strings.SplitN(path, "?", 2)[0]
+	needsAuth := s.requiresAuth(method, path)
+	authed := needsAuth && s.authorizedBearer(headerGet(headers, "Authorization"))
+	// With a token set, an unauthenticated response does not stay open.
+	// Health checks and 404s would otherwise hold a connection up to the
+	// idle timeout, and on loopback that is the whole listener.
+	if s.Token != "" && !authed {
+		closeAfter = true
+	}
+	// Host and Origin are checked before the bearer token. A matching token
+	// does not make a browser post or a rebound Host acceptable. Neither
+	// refusal reads the body or reserves budget.
+	if status, msg, refuse := s.refusal(headers); refuse {
+		return s.refuse(conn, reader, writer, method, path, status, msg)
+	}
+	if needsAuth && !authed {
 		s.reply(conn, writer, 401, "text/plain", []byte("unauthorized"), true)
 		s.logRequest(method, path, 401)
 		return true, nil
 	}
 	var releaseToken func()
-	if s.requiresAuth(method, path) {
+	if needsAuth {
 		rel, ok := s.tokens.Acquire()
 		if !ok {
 			s.reply(conn, writer, 429, "text/plain", []byte(msgTooManyToken), true)
@@ -141,6 +167,8 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 	if releaseToken != nil {
 		defer releaseToken()
 	}
+	hold := s.budget.Hold()
+	defer hold.Release()
 	switch method {
 	case "GET":
 		if path != "/health" {
@@ -201,7 +229,7 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 		// Commit before the 200. The body is "{}" or empty protobuf with
 		// partial_success unset, which is full success. A cap is a 4xx or
 		// 5xx above, never a 200, so the client retries it.
-		if err := s.beforeInsert(); err != nil {
+		if err := s.beginHTTPCommit(conn); err != nil {
 			s.reply(conn, writer, 503, "text/plain", []byte(msgStopping), true)
 			s.logRequest(method, path, 503)
 			return true, nil
@@ -210,6 +238,9 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 			s.reply(conn, writer, 500, "text/plain", []byte("store error"), true)
 			s.logRequest(method, path, 500)
 			return true, nil
+		}
+		if s.blockAfterInsert != nil {
+			s.blockAfterInsert(s.ctx)
 		}
 		if media == "application/json" {
 			s.reply(conn, writer, 200, "application/json", []byte("{}"), closeAfter)
@@ -238,27 +269,22 @@ func (s *Server) refusal(headers []header) (int, string, bool) {
 	return 0, "", false
 }
 
-// refuse answers without decoding or storing. A POST body is discarded so a
-// keep-alive client can send the next request. Expect: 100-continue is closed
-// instead: the body may still be unsent, and reading it would wait.
-func (s *Server) refuse(conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, method, path string, headers []header, status int, msg string, closeAfter bool, hold *netlimit.Hold) (bool, error) {
-	if method == "POST" || method == "PUT" || method == "PATCH" {
-		if expect100(headers) {
-			s.reply(conn, writer, status, "text/plain", []byte(msg), true)
-			s.logRequest(method, path, status)
-			return true, nil
-		}
-		var plan bodyPlan
-		if err := s.acceptBody(headers, hold, &plan); err != nil {
-			return s.writeBodyError(conn, writer, method, path, err, closeAfter)
-		}
-		if _, err := s.readBody(reader, &plan, hold); err != nil {
-			return s.writeBodyError(conn, writer, method, path, err, closeAfter)
-		}
-	}
-	s.reply(conn, writer, status, "text/plain", []byte(msg), closeAfter)
+// refuseDrain is how much of an unread body a refusal may drop.
+// It is not charged to the byte budget and it is not allocated from
+// Content-Length. A larger body is left unread and the connection closes.
+const refuseDrain = 64 << 10
+
+// refuse answers a forbidden Host or Origin. It does not reserve budget
+// and does not allocate the body: a large Content-Length with no body
+// would otherwise hold the in-flight cap until the read timeout. A small
+// amount already in the buffer is discarded so a client that sent a short
+// body can still read the response. The connection is then closed.
+func (s *Server) refuse(conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, method, path string, status int, msg string) (bool, error) {
+	s.reply(conn, writer, status, "text/plain", []byte(msg), true)
 	s.logRequest(method, path, status)
-	return closeAfter, nil
+	_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	_, _ = io.CopyN(io.Discard, reader, refuseDrain)
+	return true, nil
 }
 
 func (s *Server) writeBodyError(conn net.Conn, writer *bufio.Writer, method, path string, err error, closeAfter bool) (bool, error) {
@@ -301,6 +327,18 @@ func (s *Server) decodeContentEncoding(body []byte, headers []header, hold *netl
 				codings = append(codings, part)
 			}
 		}
+	}
+	// One gzip layer is the encoding exporters send. More than one
+	// non-identity coding is rejected so a stack of gzip members cannot
+	// expand on the way in. identity is ignored.
+	var compressed int
+	for _, coding := range codings {
+		if coding != "identity" {
+			compressed++
+		}
+	}
+	if compressed > 1 {
+		return nil, &bodyStatus{415, "unsupported content encoding"}
 	}
 	// Content-Encoding lists codings in the order they were applied.
 	for i := len(codings) - 1; i >= 0; i-- {
@@ -361,7 +399,7 @@ func (s *Server) logRequest(method, path string, status int) {
 	if s.Quiet {
 		return
 	}
-	fmt.Fprintf(s.log, "%s %s %d\n", method, path, status)
+	fmt.Fprintf(s.log, "%s %q %d\n", method, path, status)
 }
 
 func readHeaders(r *bufio.Reader) (method, target string, headers []header, err error) {

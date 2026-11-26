@@ -46,8 +46,10 @@ returns `{"status":"ok"}`. The UI port does not serve it. HTTP exports are
 are chunked and omit `Content-Length`. When both headers are present, chunked
 encoding wins. `Content-Encoding: gzip` is inflated after the body is
 framed, and the decompressed size is capped at the per-request body limit
-(8,000,000 bytes unless `--max-body-bytes` says otherwise). Any other
-content encoding gets HTTP 415. gRPC clients call the OTLP `TraceService`,
+(8,000,000 bytes unless `--max-body-bytes` says otherwise). At most one
+non-identity coding is accepted. `identity, gzip` and `gzip, identity`
+are that one gzip layer. A second gzip, or any other coding, is HTTP 415.
+gRPC clients call the OTLP `TraceService`,
 `MetricsService`, and `LogsService` `Export` RPCs, and may gzip the message.
 
 ### Resource limits
@@ -79,10 +81,21 @@ minutes so a `--github` refresh can finish. The byte caps apply to OTLP
 bodies only.
 
 An idle keep-alive connection counts toward the connection cap until it
-closes or the idle timeout fires. The per-token cap counts authenticated
-requests that have not finished yet, and only when a token is configured.
-It does not count idle connections. `GET /health` does not take a token
-slot.
+closes or the idle timeout fires. The same connection also closes after
+1000 requests or 10 minutes, whichever comes first. The per-token cap
+counts authenticated requests that have not finished yet, and only when a
+token is configured. `--max-conns-per-token` is that in-flight request
+cap. It does not count idle connections. `GET /health` does not take a
+token slot. When a token is set, a response that is not an authenticated
+write (`GET /health`, a 404, a 401, a 403) sends `Connection: close`, so
+an unauthenticated client cannot hold a slot by polling inside the idle
+timeout. On loopback every connection is the same address, so the
+per-address cap is the limit a local client can reach.
+
+The per-address key is the full remote IP. An IPv6 client that changes
+address inside one /64 is counted as a new address. The receiver does
+not read `X-Forwarded-For`. Behind a reverse proxy every connection is
+the proxy's address.
 
 What is rejected, and with which status:
 
@@ -92,8 +105,11 @@ What is rejected, and with which status:
   OTLP treats as not retryable.
 - The listener connection cap is HTTP **503** with `Retry-After: 1`.
   One address over its own cap is HTTP **429** with `Retry-After: 1`.
-  Both are retryable. A gRPC connection past the cap is closed before the
-  HTTP/2 handshake; the client sees a broken connection and retries.
+  Both are retryable. A gRPC connection past the cap is closed with no
+  bytes written. The client sees a broken connection and retries.
+- A forbidden Host or Origin (403) and a missing or wrong bearer token
+  (401) are answered without reserving in-flight bytes and without
+  allocating the `Content-Length`. The connection is closed.
 - The in-flight byte cap, and the per-token request cap, are HTTP **503**
   (`inflight limit`) or **429** (`too many requests`), each with
   `Retry-After: 1`. On gRPC both are `RESOURCE_EXHAUSTED` with `RetryInfo`
@@ -110,12 +126,21 @@ the HTTP/2 handshake (`--read-header-timeout`), and how long a connection
 may live (idle from `--idle-timeout`, and 30 minutes even if it stays
 busy). A client that pings more often than every 10 seconds is
 disconnected. Pings with no active RPC are allowed. An admitted gRPC call
-reserves `--max-body-bytes` until it finishes. The size is not known until
-the length prefix arrives, and the transport may buffer up to that
-maximum. Eight calls at the default body cap fit in the in-flight budget;
-a ninth does not.
+reserves `--max-body-bytes` from a gRPC share of the in-flight budget.
+That share is half the budget, and always enough for one maximum body, so
+a burst of streams cannot take the whole budget from HTTP. The
+reservation lasts until the message arrives or `--read-header-timeout`
+fires, whichever is first. A stream that sends no message stops holding
+the maximum at that timeout. The call itself is not cancelled by that
+timer. Once the message is in hand the reservation shrinks to the encoded
+size (or is taken then, if the timer already released it), and that timer
+is stopped before the SQLite commit. A message larger than the body cap is `RESOURCE_EXHAUSTED` with
+no retry hint.
 HTTP reserves the `Content-Length` (or each chunk, and both the compressed
 and the inflated bytes while gzip is expanding).
+
+Bytes used after a payload has been decoded into records are outside this
+budget. That limit is recorded in `dev-docs/gaps.md`.
 
 None of these responses is a partial success. A stored export is answered
 only after the SQLite commit, with HTTP 200 and `partial_success` left

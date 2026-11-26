@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -68,7 +69,10 @@ func isTimeout(err error) bool {
 // commit. The optional test hook can hold the request open; it must not
 // be set in production.
 func (s *Server) beforeInsert() error {
-	if s.ctx == nil || s.ctx.Err() != nil {
+	// A nil context means the server has not been started. Shutdown is
+	// a cancelled context, not a nil one. The direct ingest tests and
+	// the benchmark call in without Start.
+	if s.ctx != nil && s.ctx.Err() != nil {
 		return errStopping
 	}
 	if s.blockInsert != nil {
@@ -76,7 +80,7 @@ func (s *Server) beforeInsert() error {
 			return errStopping
 		}
 	}
-	if s.ctx == nil || s.ctx.Err() != nil {
+	if s.ctx != nil && s.ctx.Err() != nil {
 		return errStopping
 	}
 	return nil
@@ -84,15 +88,18 @@ func (s *Server) beforeInsert() error {
 
 // admitRPC runs before gRPC reads the message body. It rejects a bad
 // token, a token cap, or an in-flight byte cap without buffering the
-// payload. An admitted RPC reserves the per-request maximum until the
-// RPC's context ends, because the size is not known until the length
-// prefix arrives and the transport may buffer up to the maximum.
+// payload. An admitted RPC reserves the per-request maximum, from the
+// gRPC share of the budget, until the message has arrived or the header
+// timeout fires. The timer releases the bytes and does not cancel the
+// RPC. The handler then keeps only the encoded size, and the SQLite
+// commit is not on that timer.
 //
-// The reservation is released when that context ends, including when the
-// RPC is rejected after the tap (unknown method, oversized length prefix,
-// handler error). Oversized messages are still RESOURCE_EXHAUSTED from
-// the transport and carry no RetryInfo, so a client must not retry them.
-// A cap rejection carries RetryInfo, so it is retryable.
+// The reservation is released when the returned context ends, including
+// when the RPC is rejected after the tap (unknown method, oversized
+// length prefix, handler error). Oversized messages are still
+// RESOURCE_EXHAUSTED from the transport and carry no RetryInfo, so a
+// client must not retry them. A cap rejection carries RetryInfo, so it
+// is retryable.
 func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, error) {
 	if err := s.checkGRPCAuth(ctx); err != nil {
 		return nil, err
@@ -105,26 +112,118 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		}
 		releaseToken = rel
 	}
-	hold, ok := s.budget.Reserve(int64(s.lim.MaxBodyBytes))
+	hold, ok := s.budget.ReserveGrpc(int64(s.lim.MaxBodyBytes))
 	if !ok {
 		if releaseToken != nil {
 			releaseToken()
 		}
 		return nil, retryExhausted(msgInFlight)
 	}
-	timeout := s.lim.ReadTimeout
-	if timeout <= 0 {
-		timeout = netlimit.DefaultReadTimeout
+	// The pessimistic reservation lasts until the message arrives or the
+	// header timeout fires. The timer releases the bytes. It does not
+	// cancel the RPC, so a body that is still arriving can finish, and
+	// the SQLite commit is not on this timer. The handler then keeps
+	// only the encoded size.
+	wait := s.lim.ReadHeaderTimeout
+	if wait <= 0 {
+		wait = netlimit.DefaultReadHeaderTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	rh := &rpcHold{budget: s.budget, hold: hold}
+	rh.timer = time.AfterFunc(wait, rh.expire)
 	context.AfterFunc(ctx, func() {
-		cancel()
+		rh.release()
 		if releaseToken != nil {
 			releaseToken()
 		}
-		hold.Release()
 	})
-	return ctx, nil
+	return context.WithValue(ctx, rpcHoldKey{}, rh), nil
+}
+
+// rpcHold is the pessimistic gRPC reservation for one RPC.
+type rpcHold struct {
+	mu      sync.Mutex
+	budget  *netlimit.Budget
+	hold    *netlimit.Hold
+	timer   *time.Timer
+	settled bool
+}
+
+type rpcHoldKey struct{}
+
+// expire drops the pessimistic reservation when the message has not
+// arrived. A later finish reserves the encoded size instead.
+func (rh *rpcHold) expire() {
+	rh.mu.Lock()
+	if rh.settled {
+		rh.mu.Unlock()
+		return
+	}
+	h := rh.hold
+	rh.hold = nil
+	rh.mu.Unlock()
+	if h != nil {
+		h.Release()
+	}
+}
+
+// release drops whatever this RPC still holds. It runs when the RPC
+// ends and makes a later finish a no-op, so a reservation cannot be
+// taken after the handler has returned.
+func (rh *rpcHold) release() {
+	rh.mu.Lock()
+	rh.settled = true
+	if rh.timer != nil {
+		rh.timer.Stop()
+	}
+	h := rh.hold
+	rh.hold = nil
+	rh.mu.Unlock()
+	if h != nil {
+		h.Release()
+	}
+}
+
+// finish keeps n bytes reserved for the rest of the RPC. n is the
+// encoded size, or 0 when the message will not be stored. A missing
+// hold means the header timer already released the pessimistic
+// reservation; the encoded size is reserved then. false means that
+// reservation did not fit.
+func (rh *rpcHold) finish(n int64) bool {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
+	if rh.settled {
+		return true
+	}
+	rh.settled = true
+	if rh.timer != nil {
+		rh.timer.Stop()
+	}
+	if rh.hold != nil {
+		rh.hold.Shrink(n)
+		return true
+	}
+	if n == 0 {
+		return true
+	}
+	h, ok := rh.budget.ReserveGrpc(n)
+	if !ok {
+		return false
+	}
+	rh.hold = h
+	return true
+}
+
+// noteGRPCBody stops the read timer and shrinks the reservation to n
+// bytes. A missing hold (ingest called without the tap) does nothing.
+func (s *Server) noteGRPCBody(ctx context.Context, n int64) error {
+	rh, _ := ctx.Value(rpcHoldKey{}).(*rpcHold)
+	if rh == nil {
+		return nil
+	}
+	if !rh.finish(n) {
+		return retryExhausted(msgInFlight)
+	}
+	return nil
 }
 
 // retryExhausted is RESOURCE_EXHAUSTED with RetryInfo. OTLP treats that

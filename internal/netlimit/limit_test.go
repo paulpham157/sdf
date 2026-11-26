@@ -101,6 +101,36 @@ func TestBudgetStaysWithinCapAndReleases(t *testing.T) {
 	}
 }
 
+func TestGrpcShareShrinksAndLeavesRoom(t *testing.T) {
+	b := NewBudget(6000)
+	b.SetGrpcMax(3000)
+	first, ok := b.ReserveGrpc(2000)
+	if !ok {
+		t.Fatal("first reservation")
+	}
+	if _, ok := b.ReserveGrpc(2000); ok {
+		t.Fatal("two full reservations fit in a 3000 share")
+	}
+	first.Shrink(400)
+	second, ok := b.ReserveGrpc(2000)
+	if !ok {
+		t.Fatal("after shrink, 400+2000 should fit in 3000")
+	}
+	httpHold, ok := b.Reserve(3600)
+	if !ok {
+		t.Fatal("http should use the budget the gRPC share left free")
+	}
+	if _, ok := b.Reserve(1); ok {
+		t.Fatal("shared budget admitted a byte past 6000")
+	}
+	second.Release()
+	first.Release()
+	httpHold.Release()
+	if b.Used() != 0 {
+		t.Fatalf("used %d", b.Used())
+	}
+}
+
 func TestRemoteIPCanonicalizesMappedAddresses(t *testing.T) {
 	mapped := &net.TCPAddr{IP: net.ParseIP("::ffff:127.0.0.1"), Port: 80}
 	plain := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9}

@@ -228,10 +228,14 @@ func (g *Gate) Acquire() (func(), bool) {
 }
 
 // Budget is a byte ceiling shared by every in-flight body.
+// grpcMax, when set, is the most of that ceiling gRPC may hold at once,
+// so a burst of gRPC streams cannot take the whole budget from HTTP.
 type Budget struct {
-	mu   sync.Mutex
-	max  int64
-	used int64
+	mu       sync.Mutex
+	max      int64
+	used     int64
+	grpcMax  int64
+	grpcUsed int64
 }
 
 // NewBudget returns a budget of max bytes. A negative max is treated as
@@ -258,7 +262,22 @@ func (b *Budget) Used() int64 {
 type Hold struct {
 	b    *Budget
 	n    int64
+	grpc bool
 	once sync.Once
+}
+
+// SetGrpcMax caps how much of the budget gRPC may hold at once.
+// A non-positive cap makes ReserveGrpc refuse every reservation.
+func (b *Budget) SetGrpcMax(n int64) {
+	if b == nil {
+		return
+	}
+	if n < 0 {
+		n = 0
+	}
+	b.mu.Lock()
+	b.grpcMax = n
+	b.mu.Unlock()
 }
 
 // Hold starts an empty reservation. A nil budget yields a hold that
@@ -279,6 +298,19 @@ func (b *Budget) Reserve(n int64) (*Hold, bool) {
 	return h, true
 }
 
+// ReserveGrpc holds n bytes and counts them against the gRPC share.
+// It fails when the share or the shared budget cannot hold n.
+func (b *Budget) ReserveGrpc(n int64) (*Hold, bool) {
+	if b == nil {
+		return nil, false
+	}
+	h := &Hold{b: b, grpc: true}
+	if !h.Add(n) {
+		return nil, false
+	}
+	return h, true
+}
+
 // Add reserves n more bytes on this hold. Zero succeeds. A negative n
 // fails and changes nothing.
 func (h *Hold) Add(n int64) bool {
@@ -293,8 +325,14 @@ func (h *Hold) Add(n int64) bool {
 	if h.n > h.b.max-n || h.b.used > h.b.max-n {
 		return false
 	}
+	if h.grpc && (h.b.grpcMax < n || h.b.grpcUsed > h.b.grpcMax-n || h.n > h.b.grpcMax-n) {
+		return false
+	}
 	h.n += n
 	h.b.used += n
+	if h.grpc {
+		h.b.grpcUsed += n
+	}
 	return true
 }
 
@@ -313,9 +351,43 @@ func (h *Hold) Sub(n int64) {
 	h.n -= n
 	if n > h.b.used {
 		h.b.used = 0
+	} else {
+		h.b.used -= n
+	}
+	if h.grpc {
+		if n > h.b.grpcUsed {
+			h.b.grpcUsed = 0
+		} else {
+			h.b.grpcUsed -= n
+		}
+	}
+}
+
+// Shrink reduces this hold to to bytes. A to at or above the current
+// hold, or a hold that Release already cleared, changes nothing.
+func (h *Hold) Shrink(to int64) {
+	if h == nil || h.b == nil || to < 0 {
 		return
 	}
-	h.b.used -= n
+	h.b.mu.Lock()
+	defer h.b.mu.Unlock()
+	if h.n <= to {
+		return
+	}
+	drop := h.n - to
+	h.n = to
+	if drop > h.b.used {
+		h.b.used = 0
+	} else {
+		h.b.used -= drop
+	}
+	if h.grpc {
+		if drop > h.b.grpcUsed {
+			h.b.grpcUsed = 0
+		} else {
+			h.b.grpcUsed -= drop
+		}
+	}
 }
 
 // Release returns the rest of the hold. A second call does nothing.
@@ -332,13 +404,24 @@ func (h *Hold) Release() {
 		} else {
 			h.b.used -= n
 		}
+		if h.grpc {
+			if n > h.b.grpcUsed {
+				h.b.grpcUsed = 0
+			} else {
+				h.b.grpcUsed -= n
+			}
+		}
 		h.b.mu.Unlock()
 	})
 }
 
 // RemoteIP is the canonical remote address used as a connection key.
-// An address that cannot be parsed still gets its own key, so it counts
-// toward the total cap and does not share a bucket with anyone else.
+// The key is the full IP, not an IPv6 /64, so a client that rotates
+// addresses inside one prefix gets a fresh bucket. An address that
+// cannot be parsed still gets its own key, so it counts toward the
+// total cap and does not share a bucket with anyone else. The function
+// does not read X-Forwarded-For. Behind a proxy every connection counts
+// as the proxy.
 func RemoteIP(addr net.Addr) string {
 	if addr == nil {
 		return "unknown"
@@ -364,6 +447,10 @@ type Listener struct {
 	conns  *Conns
 	mu     sync.Mutex
 	active map[net.Conn]struct{}
+	// Silent closes an over-limit connection without writing. The gRPC
+	// listener uses it so Accept does not write an HTTP response, and
+	// does not wait on that write, on a connection that will not speak HTTP.
+	Silent bool
 }
 
 // Wrap limits ln. maxConns and maxPerIP are the caps Try enforces.
@@ -398,9 +485,9 @@ func (l *Listener) Accept() (net.Conn, error) {
 			l.mu.Unlock()
 			return tc, nil
 		case RejectIP:
-			rejectConn(c, 429, MsgTooManyIP)
+			l.reject(c, 429, MsgTooManyIP)
 		default:
-			rejectConn(c, 503, MsgTooManyConns)
+			l.reject(c, 503, MsgTooManyConns)
 		}
 	}
 }
@@ -437,6 +524,14 @@ func (t *tracked) Close() error {
 		}
 	})
 	return err
+}
+
+func (l *Listener) reject(c net.Conn, status int, msg string) {
+	if l != nil && l.Silent {
+		_ = c.Close()
+		return
+	}
+	rejectConn(c, status, msg)
 }
 
 func rejectConn(c net.Conn, status int, msg string) {

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/paulpham157/sdf/internal/netlimit"
 	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/summary"
@@ -100,6 +102,39 @@ func TestGzipDecompressedSizeIsLimited(t *testing.T) {
 	}
 }
 
+func TestGzipPastALoweredCapIs413AndReleases(t *testing.T) {
+	const cap = 1000
+	srv, db := startLimited(t, netlimit.Limits{MaxBodyBytes: cap, MaxInFlightBytes: cap})
+	fat := gzipBytes(t, bytes.Repeat([]byte("x"), cap+1))
+	if len(fat) >= cap {
+		t.Fatalf("compressed %d, want under %d", len(fat), cap)
+	}
+	addr := srv.HTTPAddress()
+	resp := exchange(t, addr, rawRequest("/v1/traces", addr, map[string]string{
+		"Content-Type":     "application/json",
+		"Content-Encoding": "gzip",
+		"Content-Length":   strconv.Itoa(len(fat)),
+	}, string(fat)))
+	if resp.StatusCode != 413 || resp.body != "payload too large" {
+		t.Fatalf("%d %q", resp.StatusCode, resp.body)
+	}
+	// A body the size of the whole budget fits only after the gzip
+	// reservation has been released.
+	again := exchange(t, addr, rawRequest("/v1/traces", addr, map[string]string{
+		"Content-Type":   "application/json",
+		"Content-Length": strconv.Itoa(cap),
+	}, strings.Repeat("x", cap)))
+	if again.StatusCode == 503 {
+		t.Fatalf("budget still held: %d %q", again.StatusCode, again.body)
+	}
+	if again.StatusCode != 400 {
+		t.Fatalf("after release %d %q", again.StatusCode, again.body)
+	}
+	if rows := mustLoad(t, db); len(rows) != 0 {
+		t.Fatalf("stored %d", len(rows))
+	}
+}
+
 func TestUnsupportedAndInvalidContentEncoding(t *testing.T) {
 	base, db := start(t)
 	resp := postEncoded(t, base+"/v1/metrics", "application/json", []byte(`{"resourceMetrics":[]}`), "br")
@@ -113,6 +148,18 @@ func TestUnsupportedAndInvalidContentEncoding(t *testing.T) {
 	resp = postEncoded(t, base+"/v1/traces", "application/json", []byte(`{"resourceSpans":[]}`), "identity")
 	if resp.status != 200 {
 		t.Fatalf("identity %+v", resp)
+	}
+	resp = postEncoded(t, base+"/v1/traces", "application/json", gzipBytes(t, []byte(`{"resourceSpans":[]}`)), "gzip, identity")
+	if resp.status != 200 {
+		t.Fatalf("gzip, identity %+v", resp)
+	}
+	resp = postEncoded(t, base+"/v1/traces", "application/json", gzipBytes(t, []byte(`{"resourceSpans":[]}`)), "identity, gzip")
+	if resp.status != 200 {
+		t.Fatalf("identity, gzip %+v", resp)
+	}
+	resp = postEncoded(t, base+"/v1/traces", "application/json", gzipBytes(t, []byte(`{"resourceSpans":[]}`)), "gzip, gzip")
+	if resp.status != 415 || resp.body != "unsupported content encoding" {
+		t.Fatalf("two gzip layers %+v", resp)
 	}
 	if rows := mustLoad(t, db); len(rows) != 0 {
 		t.Fatalf("%d rows", len(rows))

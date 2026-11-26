@@ -50,7 +50,7 @@ func (s *Server) handleSession(conn net.Conn, reader *bufio.Reader, writer *bufi
 	if err != nil {
 		return s.writeBodyError(conn, writer, method, path, err, closeAfter)
 	}
-	if err := s.beforeInsert(); err != nil {
+	if err := s.beginHTTPCommit(conn); err != nil {
 		s.reply(conn, writer, 503, "text/plain", []byte(msgStopping), true)
 		s.logRequest(method, path, 503)
 		return true, nil

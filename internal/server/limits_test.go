@@ -376,7 +376,7 @@ func TestGRPCSlowPrefaceIsClosed(t *testing.T) {
 	}
 }
 
-func TestGRPCTooManyConnectionsIs503(t *testing.T) {
+func TestGRPCTooManyConnectionsIsClosed(t *testing.T) {
 	srv, _ := startLimited(t, netlimit.Limits{
 		MaxConns:          1,
 		MaxConnsPerIP:     1,
@@ -384,10 +384,273 @@ func TestGRPCTooManyConnectionsIs503(t *testing.T) {
 	})
 	first := dial(t, srv.GRPCAddress(), 3*time.Second)
 	defer first.Close()
-	second := dial(t, srv.GRPCAddress(), 3*time.Second)
-	resp := readOne(t, second)
-	if resp.StatusCode != 503 || resp.body != "too many connections" || resp.Header.Get("Retry-After") != "1" {
-		t.Fatalf("%d %q retry %q", resp.StatusCode, resp.body, resp.Header.Get("Retry-After"))
+	second := dial(t, srv.GRPCAddress(), time.Second)
+	buf := make([]byte, 64)
+	start := time.Now()
+	n, err := second.Read(buf)
+	if time.Since(start) > time.Second {
+		t.Fatalf("over-limit gRPC connection held for %s", time.Since(start))
+	}
+	if err == nil || n > 0 {
+		t.Fatalf("over-limit gRPC connection wrote %q (%v)", buf[:n], err)
+	}
+}
+
+func TestGRPCShrinksTheReservationBeforeCommit(t *testing.T) {
+	const body = 2000
+	const inflight = 6000
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true,
+		Limits: netlimit.Limits{MaxBodyBytes: body, MaxInFlightBytes: inflight, ReadTimeout: 5 * time.Second},
+	}
+	release := make(chan struct{})
+	var once sync.Once
+	entered := make(chan struct{})
+	srv.SetBlockInsert(func(ctx context.Context) error {
+		var first bool
+		once.Do(func() {
+			first = true
+			close(entered)
+		})
+		if !first {
+			return nil
+		}
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	small := spanReq(0)
+	n := proto.Size(small)
+	// The gRPC share is half the budget (3000). A reservation that stays
+	// at the body cap (2000) leaves no room for a second one. Shrinking
+	// to the encoded size does.
+	if int64(n)+int64(body) > inflight/2 {
+		t.Fatalf("fixture %d leaves no room to tell shrink from a full hold", n)
+	}
+	client := traceClient(t, srv.GRPCAddress())
+	errc := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := client.Export(ctx, small)
+		errc <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-errc:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first export did not reach the commit")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := client.Export(ctx, small); err != nil {
+		t.Fatalf("second export while the first is committing: %v", err)
+	}
+	close(release)
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefusedRequestDoesNotHoldTheByteBudget(t *testing.T) {
+	const cap = 1000
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true, Token: "t",
+		Limits: netlimit.Limits{
+			MaxConns:         16,
+			MaxConnsPerIP:    16,
+			MaxBodyBytes:     cap,
+			MaxInFlightBytes: cap,
+			ReadTimeout:      5 * time.Second,
+		},
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	addr := srv.HTTPAddress()
+	cases := []struct {
+		name    string
+		headers string
+	}{
+		{name: "origin", headers: "Host: " + addr + "\r\nOrigin: http://evil.example\r\n"},
+		{name: "host", headers: "Host: evil.example\r\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := dial(t, addr, 2*time.Second)
+			req := "POST /v1/traces HTTP/1.1\r\n" + tc.headers +
+				"Content-Type: application/json\r\nContent-Length: " + itoa(cap) + "\r\n\r\n"
+			if _, err := bad.Write([]byte(req)); err != nil {
+				t.Fatal(err)
+			}
+			goodc := make(chan rawResponse, 1)
+			errc := make(chan error, 1)
+			go func() {
+				c, err := net.DialTimeout("tcp", addr, time.Second)
+				if err != nil {
+					errc <- err
+					return
+				}
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+				if _, err := c.Write([]byte(rawRequest("/v1/traces", addr, map[string]string{
+					"Content-Type":  "application/json",
+					"Authorization": "Bearer t",
+				}, `{"resourceSpans":[]}`))); err != nil {
+					errc <- err
+					return
+				}
+				got, err := readRaw(c)
+				if err != nil {
+					errc <- err
+					return
+				}
+				goodc <- got
+			}()
+			resp := readOne(t, bad)
+			if resp.StatusCode != 403 || resp.body != "forbidden" || !resp.Close {
+				t.Fatalf("refused %d %q close %v", resp.StatusCode, resp.body, resp.Close)
+			}
+			select {
+			case err := <-errc:
+				t.Fatal(err)
+			case good := <-goodc:
+				if good.StatusCode != 200 || good.body != "{}" {
+					t.Fatalf("authenticated export %d %q", good.StatusCode, good.body)
+				}
+			}
+		})
+	}
+}
+
+func TestTokenClosesUnauthenticatedResponses(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true, Token: "t",
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	addr := srv.HTTPAddress()
+	health := exchange(t, addr, rawRequest("/health", addr, nil, ""))
+	if health.StatusCode != 200 || !health.Close {
+		t.Fatalf("health %d close %v", health.StatusCode, health.Close)
+	}
+	missing := exchange(t, addr, rawRequest("/nope", addr, nil, ""))
+	if missing.StatusCode != 404 || !missing.Close {
+		t.Fatalf("404 %d close %v", missing.StatusCode, missing.Close)
+	}
+	ok := exchange(t, addr, rawRequest("/v1/traces", addr, map[string]string{
+		"Content-Type":  "application/json",
+		"Authorization": "Bearer t",
+	}, `{"resourceSpans":[]}`))
+	if ok.StatusCode != 200 || ok.Close {
+		t.Fatalf("authenticated %d close %v body %q", ok.StatusCode, ok.Close, ok.body)
+	}
+}
+
+func TestShutdownWrites200AfterCommit(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true,
+	}
+	entered := make(chan struct{})
+	srv.SetBlockAfterInsert(func(ctx context.Context) {
+		close(entered)
+		if ctx != nil {
+			<-ctx.Done()
+		}
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	addr := srv.HTTPAddress()
+	body := `{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"pi"}},{"key":"sdf.fixture","value":{"stringValue":"sample"}}]},"scopeSpans":[{"spans":[{"name":"n","traceId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","spanId":"bbbbbbbbbbbbbbbb","startTimeUnixNano":"10","endTimeUnixNano":"20"}]}]}]}`
+	errc := make(chan error, 1)
+	resc := make(chan rawResponse, 1)
+	go func() {
+		c, err := net.DialTimeout("tcp", addr, time.Second)
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer c.Close()
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := c.Write([]byte(rawRequest("/v1/traces", addr, map[string]string{
+			"Content-Type": "application/json",
+		}, body))); err != nil {
+			errc <- err
+			return
+		}
+		got, err := readRaw(c)
+		if err != nil {
+			errc <- err
+			return
+		}
+		resc <- got
+	}()
+	select {
+	case <-entered:
+	case err := <-errc:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("export did not commit")
+	}
+	srv.Shutdown()
+	select {
+	case err := <-errc:
+		t.Fatal(err)
+	case resp := <-resc:
+		if resp.StatusCode != 200 || resp.body != "{}" {
+			t.Fatalf("%d %q", resp.StatusCode, resp.body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no response after shutdown")
+	}
+	if rows := mustLoad(t, db); len(rows) != 1 {
+		t.Fatalf("stored %d", len(rows))
 	}
 }
 
@@ -509,16 +772,24 @@ func exchange(t *testing.T, addr, req string) rawResponse {
 
 func readOne(t *testing.T, c net.Conn) rawResponse {
 	t.Helper()
-	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	resp, err := readRaw(c)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return resp
+}
+
+func readRaw(c net.Conn) (rawResponse, error) {
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		return rawResponse{}, err
 	}
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
-		t.Fatal(err)
+		return rawResponse{}, err
 	}
-	return rawResponse{StatusCode: resp.StatusCode, Header: resp.Header, Close: resp.Close, body: string(body)}
+	return rawResponse{StatusCode: resp.StatusCode, Header: resp.Header, Close: resp.Close, body: string(body)}, nil
 }
 
 func dial(t *testing.T, addr string, wait time.Duration) net.Conn {

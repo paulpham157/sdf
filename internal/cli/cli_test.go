@@ -187,6 +187,17 @@ func TestServeResourceLimits(t *testing.T) {
 	}
 }
 
+func TestServeInvalidLimitEnvRefusesToStart(t *testing.T) {
+	clearLimitEnv(t)
+	for _, v := range []string{"0", "-1"} {
+		t.Setenv("SDF_MAX_CONNS", v)
+		out := run(t, "serve", "--no-ui")
+		if out.code != 2 || !strings.Contains(out.stderr, "SDF_MAX_CONNS") {
+			t.Fatalf("SDF_MAX_CONNS=%s -> %d %s", v, out.code, out.stderr)
+		}
+	}
+}
+
 func TestServeMaxConnsFromEnv(t *testing.T) {
 	clearLimitEnv(t)
 	t.Setenv("SDF_MAX_CONNS", "1")

@@ -1,8 +1,15 @@
 # Gaps
 
 - Content encodings other than `identity` and `gzip` are rejected with
-  HTTP 415. Gzip is inflated only up to the per-request body cap
+  HTTP 415. At most one non-identity coding is accepted, so `gzip, gzip`
+  is 415. Gzip is inflated only up to the per-request body cap
   (8,000,000 bytes by default).
+  The in-flight byte budget counts the body while it is buffered. Memory
+  used after that body has been decoded into records is not part of the
+  budget.
+  The per-address connection key is the full remote IP. Rotating inside
+  an IPv6 /64 gets a new bucket. `X-Forwarded-For` is not read, so behind
+  a proxy the key is the proxy.
   Chunked HTTP and `Content-Length` are both accepted, and gRPC is a
   separate listener on port 4317. gRPC gzip uses the standard compressor.
 - Codex's published config reference does not catalog events or metrics. The
