@@ -1,8 +1,10 @@
 package record
 
 import (
+	"math/rand"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestIsContentKey(t *testing.T) {
@@ -53,6 +55,86 @@ func TestIsContentKeyMatchesPrefixScan(t *testing.T) {
 			t.Errorf("IsContentKey(%q) = %v, slow scan %v", key, got, want)
 		}
 	}
+}
+
+// TestIsContentKeyRandomMatchesPrefixScan draws keys, including mixed case
+// and Unicode, and checks IsContentKey against the old
+// k == p || strings.HasPrefix(k, p+".") scan. The seed is fixed so a
+// mismatch names the same key next time.
+func TestIsContentKeyRandomMatchesPrefixScan(t *testing.T) {
+	const seed = 276
+	rng := rand.New(rand.NewSource(seed))
+	forced := []string{
+		"PROMPT", "PrOmPt", "İnput", "ıNPUT", "gen_ai.PROMPT.0.Content",
+		"GEN_AI.TOOL.CALL.ARGUMENTS", "AI.prompt", "Ａi.prompt", "prompt字",
+		"字", "Σ", "σ", "ς", "ñ", "Ñ", "é", "🔑", "gen_ai.prompt_tokens",
+		"tool.input.x", "tool.inputs", "", "ai.", ".ai", "İ.prompt",
+	}
+	check := func(key string) {
+		t.Helper()
+		if !utf8.ValidString(key) {
+			t.Fatalf("seed %d produced an invalid UTF-8 key %q", seed, key)
+		}
+		if got, want := IsContentKey(key), contentKeySlow(key); got != want {
+			t.Fatalf("seed %d key %q IsContentKey=%v scan=%v", seed, key, got, want)
+		}
+	}
+	for _, key := range forced {
+		check(key)
+	}
+	for i := 0; i < 2000; i++ {
+		check(randomContentKey(rng))
+	}
+}
+
+func randomContentKey(rng *rand.Rand) string {
+	switch rng.Intn(5) {
+	case 0:
+		return flipCase(rng, contentPrefixes[rng.Intn(len(contentPrefixes))])
+	case 1:
+		base := contentPrefixes[rng.Intn(len(contentPrefixes))]
+		return flipCase(rng, base) + "." + randomRunes(rng, 1+rng.Intn(8))
+	case 2:
+		base := contentPrefixes[rng.Intn(len(contentPrefixes))]
+		return flipCase(rng, base) + "_" + randomRunes(rng, 1+rng.Intn(6))
+	case 3:
+		keys := make([]string, 0, len(contentKeys))
+		for k := range contentKeys {
+			keys = append(keys, k)
+		}
+		return flipCase(rng, keys[rng.Intn(len(keys))])
+	default:
+		return randomRunes(rng, rng.Intn(24))
+	}
+}
+
+// contentKeyRunes mixes ASCII, mixed-case letters, and Unicode that
+// strings.ToLower treats specially (dotted I, final sigma, fullwidth).
+var contentKeyRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-İıñÑéΣσς字Ａ🔑")
+
+func randomRunes(rng *rand.Rand, n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = contentKeyRunes[rng.Intn(len(contentKeyRunes))]
+	}
+	return string(b)
+}
+
+func flipCase(rng *rand.Rand, s string) string {
+	b := []rune(s)
+	for i, r := range b {
+		switch rng.Intn(3) {
+		case 0:
+			b[i] = r
+		default:
+			if r >= 'a' && r <= 'z' {
+				b[i] = r - 'a' + 'A'
+			} else if r >= 'A' && r <= 'Z' {
+				b[i] = r - 'A' + 'a'
+			}
+		}
+	}
+	return string(b)
 }
 
 func contentKeySlow(key string) bool {
