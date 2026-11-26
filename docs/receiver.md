@@ -468,6 +468,16 @@ directory or commit, merge status not requested).
 Those numbers are the `sdf summary` report. The decision records and the budget are drawn on every view, the overview, the session list, and the session detail, and both are drawn even when the store has no sessions. The page does not price tokens
 again. `GET /api/summary` on the UI port is the same document as
 `sdf summary --json` for that database, including `--prices` and `--repo`.
+The process keeps that summary for the current records snapshot and price
+catalog. A repeat request does not read the records table again. The
+snapshot is a generation counter, bumped once per insert and once per
+content scrub that rewrites a row, together with the greatest record id.
+The next request after an insert or a scrub reads the table and computes
+the summary again. The bytes match that full computation. Git outcomes
+and GitHub merge status are attached on every request, so a new commit
+or a changed pull request shows up without a new telemetry row. One
+report is kept, and it is replaced when the snapshot or the catalog
+changes.
 `GET /api/snapshot` is that report newest-first, plus the per-agent totals
 and `activity_by_day` (session counts and computed cost by the UTC day
 the session started; sessions with no start time are `undated_sessions`,

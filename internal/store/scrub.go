@@ -196,6 +196,14 @@ func (s *Store) Scrub(dryRun bool) (ScrubResult, error) {
 	if dryRun {
 		return res, nil
 	}
+	// A scrub that rewrites a row changes the summary input without
+	// changing the greatest id. Bump the generation in this transaction
+	// so a cached summary is not reused.
+	if res.Changed > 0 {
+		if err := bumpRecordGeneration(tx); err != nil {
+			return res, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return res, err
 	}
