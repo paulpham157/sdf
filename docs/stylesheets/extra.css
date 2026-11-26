@@ -213,6 +213,51 @@ body {
   text-decoration: none;
 }
 
+/* Phone header. 30em is 480px (media-query em is the initial 16px), so
+   this covers 320–390px. The title is a flex item whose topic is
+   absolutely positioned; without a zero min-width the site name paints
+   across the search and Website buttons. Clip it so the ellipsis stays
+   inside the title. The Website control's box is 44px
+   ((--sdf-space-10 + --sdf-space-1) * --docs-rem at Material's 20px
+   root). Vertical margin fits that box in Material's 2.4rem title row
+   so the desktop header, which is above this breakpoint, is unchanged. */
+@media screen and (max-width: 30em) {
+  .md-header__title {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .md-header__title > .md-header__ellipsis,
+  .md-header__topic {
+    overflow: hidden;
+  }
+
+  .md-header__topic {
+    width: 100%;
+  }
+
+  .md-header__topic > .md-ellipsis {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .md-header__button.md-header__website {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    min-width: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+    height: calc((var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem));
+    margin-block: calc((2.4rem - (var(--sdf-space-10) + var(--sdf-space-1)) * var(--docs-rem)) / 2);
+    padding-block: 0;
+    padding-inline: calc(var(--sdf-space-2) * var(--docs-rem));
+  }
+}
+
 [data-md-toggle="search"]:checked ~ .md-header .md-header__website {
   display: none;
 }
