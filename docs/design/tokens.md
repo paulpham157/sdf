@@ -57,34 +57,54 @@ for states, the decision graph and charts.
 | `--sdf-color-rust` | `#C65A2E` | 3.81 | 2.85 |
 | `--sdf-color-cream-50` | `#FBF7F1` | 1.05 | 11.42 |
 | `--sdf-color-cream-100` | `#F6F1E8` | 1.00 | 10.84 |
+| `--sdf-color-cream-150` | `#EDE6DA` | 1.10 | 9.83 |
 | `--sdf-color-cream-200` | `#EBE3D6` | 1.13 | 9.57 |
 | `--sdf-color-cream-300` | `#E2D9CA` | 1.24 | 8.71 |
 | `--sdf-color-cream-400` | `#D9CFC0` | 1.37 | 7.92 |
+| `--sdf-color-cream-500` | `#B3ACA1` | 2.00 | 5.42 |
 | `--sdf-color-charcoal-200` | `#C9CED4` | 1.41 | 7.70 |
 | `--sdf-color-charcoal-300` | `#A3AAB3` | 2.08 | 5.20 |
 | `--sdf-color-charcoal-400` | `#7A828C` | 3.46 | 3.13 |
 | `--sdf-color-charcoal-500` | `#6B7480` | 4.21 | 2.57 |
 | `--sdf-color-charcoal-600` | `#5A636E` | 5.42 | 2.00 |
 | `--sdf-color-charcoal-700` | `#4E5864` | 6.43 | 1.69 |
+| `--sdf-color-charcoal-800` | `#3A414B` | 9.16 | 1.18 |
+| `--sdf-color-charcoal-850` | `#242A32` | 12.85 | 1.19 |
 | `--sdf-color-charcoal-900` | `#2F3640` | 10.84 | 1.00 |
+| `--sdf-color-charcoal-925` | `#1B1F25` | 14.71 | 1.36 |
+| `--sdf-color-charcoal-950` | `#14171C` | 15.97 | 1.47 |
+| `--sdf-color-charcoal-980` | `#0F1216` | 16.69 | 1.54 |
 | `--sdf-color-rust-50` | `#FBEFE9` | 1.00 | 10.81 |
 | `--sdf-color-rust-100` | `#F3E4D8` | 1.10 | 9.81 |
 | `--sdf-color-rust-200` | `#F3C7B6` | 1.37 | 7.93 |
+| `--sdf-color-rust-300` | `#F0A27E` | 1.83 | 5.91 |
+| `--sdf-color-rust-400` | `#E0764A` | 2.72 | 3.98 |
 | `--sdf-color-rust-500` | `#C65A2E` | 3.81 | 2.85 |
 | `--sdf-color-rust-600` | `#A94A23` | 5.06 | 2.14 |
 | `--sdf-color-rust-700` | `#8E3E1C` | 6.54 | 1.66 |
 | `--sdf-color-rust-800` | `#6F3016` | 8.85 | 1.23 |
+| `--sdf-color-rust-950` | `#2C1E18` | 14.29 | 1.32 |
 | `--sdf-color-green-50` | `#E6F1EA` | 1.03 | 10.53 |
+| `--sdf-color-green-300` | `#7CCB9C` | 1.72 | 6.32 |
 | `--sdf-color-green-700` | `#145C38` | 7.13 | 1.52 |
+| `--sdf-color-green-950` | `#163528` | 11.86 | 1.09 |
 | `--sdf-color-amber-50` | `#F8ECD8` | 1.04 | 10.44 |
 | `--sdf-color-amber-200` | `#ECD2A6` | 1.30 | 8.32 |
+| `--sdf-color-amber-400` | `#E6B566` | 1.67 | 6.48 |
 | `--sdf-color-amber-700` | `#8A4B08` | 6.04 | 1.79 |
+| `--sdf-color-amber-950` | `#3A2E18` | 11.78 | 1.09 |
 | `--sdf-color-red-50` | `#F8E3E5` | 1.09 | 9.93 |
+| `--sdf-color-red-300` | `#F28B97` | 2.09 | 5.18 |
 | `--sdf-color-red-700` | `#9B2335` | 6.95 | 1.56 |
+| `--sdf-color-red-950` | `#3A1C22` | 13.63 | 1.26 |
 | `--sdf-color-blue-50` | `#E5EDF5` | 1.05 | 10.31 |
+| `--sdf-color-blue-300` | `#8EB4D6` | 1.93 | 5.60 |
 | `--sdf-color-blue-700` | `#2B5A86` | 6.42 | 1.69 |
+| `--sdf-color-blue-950` | `#1A2838` | 13.29 | 1.23 |
 | `--sdf-color-violet-50` | `#ECE9F6` | 1.06 | 10.19 |
+| `--sdf-color-violet-300` | `#C4B6F0` | 1.65 | 6.56 |
 | `--sdf-color-violet-700` | `#5B4A9E` | 6.40 | 1.69 |
+| `--sdf-color-violet-950` | `#2A2438` | 13.26 | 1.22 |
 
 Notes:
 
@@ -130,6 +150,7 @@ Notes:
 | `--sdf-color-info-soft` | `{color.blue-50}` | `#E5EDF5` |
 | `--sdf-color-code-bg` | `{color.surface-sunken}` | `#EBE3D6` |
 | `--sdf-color-code-inline-bg` | `{color.surface-sunken}` | `#EBE3D6` |
+| `--sdf-color-diagram-plate` | `{color.cream}` | `#F6F1E8` |
 | `--sdf-graph-node-fill` | `{color.surface-raised}` | `#FBF7F1` |
 | `--sdf-graph-node-stroke` | `{color.text}` | `#2F3640` |
 | `--sdf-graph-node-text` | `{color.text}` | `#2F3640` |
@@ -362,6 +383,22 @@ light table or the [dark table](#dark-contrast), and if
 | `--sdf-chart-grid` | `#D9CFC0` | `--sdf-color-bg` | `#F6F1E8` | 1.37:1 | info only | n/a |
 | `--sdf-chart-grid` | `#D9CFC0` | `--sdf-color-surface-raised` | `#FBF7F1` | 1.44:1 | info only | n/a |
 | `--sdf-chart-grid` | `#D9CFC0` | `--sdf-color-surface-sunken` | `#EBE3D6` | 1.21:1 | info only | n/a |
+| `--sdf-color-text` | `#2F3640` | `--sdf-color-code-bg` | `#EBE3D6` | 9.57:1 | text 4.5 | pass |
+| `--sdf-color-text` | `#2F3640` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 9.57:1 | text 4.5 | pass |
+| `--sdf-color-text-muted` | `#4E5864` | `--sdf-color-code-bg` | `#EBE3D6` | 5.68:1 | text 4.5 | pass |
+| `--sdf-color-text-muted` | `#4E5864` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 5.68:1 | text 4.5 | pass |
+| `--sdf-color-accent-text` | `#8E3E1C` | `--sdf-color-code-bg` | `#EBE3D6` | 5.77:1 | text 4.5 | pass |
+| `--sdf-color-accent-text` | `#8E3E1C` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 5.77:1 | text 4.5 | pass |
+| `--sdf-color-success` | `#145C38` | `--sdf-color-code-bg` | `#EBE3D6` | 6.30:1 | text 4.5 | pass |
+| `--sdf-color-success` | `#145C38` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 6.30:1 | text 4.5 | pass |
+| `--sdf-color-warning` | `#8A4B08` | `--sdf-color-code-bg` | `#EBE3D6` | 5.34:1 | text 4.5 | pass |
+| `--sdf-color-warning` | `#8A4B08` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 5.34:1 | text 4.5 | pass |
+| `--sdf-color-error` | `#9B2335` | `--sdf-color-code-bg` | `#EBE3D6` | 6.14:1 | text 4.5 | pass |
+| `--sdf-color-error` | `#9B2335` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 6.14:1 | text 4.5 | pass |
+| `--sdf-color-info` | `#2B5A86` | `--sdf-color-code-bg` | `#EBE3D6` | 5.67:1 | text 4.5 | pass |
+| `--sdf-color-info` | `#2B5A86` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 5.67:1 | text 4.5 | pass |
+| `--sdf-graph-refinement` | `#5B4A9E` | `--sdf-color-code-bg` | `#EBE3D6` | 5.65:1 | text 4.5 | pass |
+| `--sdf-graph-refinement` | `#5B4A9E` | `--sdf-color-code-inline-bg` | `#EBE3D6` | 5.65:1 | text 4.5 | pass |
 
 Pairings that do not pass and are therefore not allowed:
 
@@ -466,6 +503,7 @@ text-inverse `#1B1F25`. The rust outline is the accent, drawn on the page
 | `--sdf-color-info-soft` | `#E5EDF5` | `#1A2838` |
 | `--sdf-color-code-bg` | `#EBE3D6` | `#0F1216` |
 | `--sdf-color-code-inline-bg` | `#EBE3D6` | `#242A32` |
+| `--sdf-color-diagram-plate` | `#F6F1E8` | `#F6F1E8` |
 | `--sdf-graph-node-fill` | `#FBF7F1` | `#242A32` |
 | `--sdf-graph-node-stroke` | `#2F3640` | `#EDE6DA` |
 | `--sdf-graph-node-text` | `#2F3640` | `#EDE6DA` |
@@ -605,6 +643,22 @@ rule as a light row.
 | `--sdf-chart-grid` | `#3A414B` | `--sdf-color-bg` | `#1B1F25` | 1.61:1 | info only | n/a |
 | `--sdf-chart-grid` | `#3A414B` | `--sdf-color-surface-raised` | `#242A32` | 1.40:1 | info only | n/a |
 | `--sdf-chart-grid` | `#3A414B` | `--sdf-color-surface-sunken` | `#14171C` | 1.74:1 | info only | n/a |
+| `--sdf-color-text` | `#EDE6DA` | `--sdf-color-code-bg` | `#0F1216` | 15.14:1 | text 4.5 | pass |
+| `--sdf-color-text` | `#EDE6DA` | `--sdf-color-code-inline-bg` | `#242A32` | 11.66:1 | text 4.5 | pass |
+| `--sdf-color-text-muted` | `#B3ACA1` | `--sdf-color-code-bg` | `#0F1216` | 8.34:1 | text 4.5 | pass |
+| `--sdf-color-text-muted` | `#B3ACA1` | `--sdf-color-code-inline-bg` | `#242A32` | 6.43:1 | text 4.5 | pass |
+| `--sdf-color-accent-text` | `#F0A27E` | `--sdf-color-code-bg` | `#0F1216` | 9.10:1 | text 4.5 | pass |
+| `--sdf-color-accent-text` | `#F0A27E` | `--sdf-color-code-inline-bg` | `#242A32` | 7.01:1 | text 4.5 | pass |
+| `--sdf-color-success` | `#7CCB9C` | `--sdf-color-code-bg` | `#0F1216` | 9.73:1 | text 4.5 | pass |
+| `--sdf-color-success` | `#7CCB9C` | `--sdf-color-code-inline-bg` | `#242A32` | 7.49:1 | text 4.5 | pass |
+| `--sdf-color-warning` | `#E6B566` | `--sdf-color-code-bg` | `#0F1216` | 9.98:1 | text 4.5 | pass |
+| `--sdf-color-warning` | `#E6B566` | `--sdf-color-code-inline-bg` | `#242A32` | 7.69:1 | text 4.5 | pass |
+| `--sdf-color-error` | `#F28B97` | `--sdf-color-code-bg` | `#0F1216` | 7.97:1 | text 4.5 | pass |
+| `--sdf-color-error` | `#F28B97` | `--sdf-color-code-inline-bg` | `#242A32` | 6.14:1 | text 4.5 | pass |
+| `--sdf-color-info` | `#8EB4D6` | `--sdf-color-code-bg` | `#0F1216` | 8.63:1 | text 4.5 | pass |
+| `--sdf-color-info` | `#8EB4D6` | `--sdf-color-code-inline-bg` | `#242A32` | 6.64:1 | text 4.5 | pass |
+| `--sdf-graph-refinement` | `#C4B6F0` | `--sdf-color-code-bg` | `#0F1216` | 10.10:1 | text 4.5 | pass |
+| `--sdf-graph-refinement` | `#C4B6F0` | `--sdf-color-code-inline-bg` | `#242A32` | 7.78:1 | text 4.5 | pass |
 
 Recorded limits (info only in the checker):
 
@@ -783,7 +837,11 @@ stored choice is the system entry, that script resolves
 `body` before first paint. An explicit light or dark choice comes from
 storage. `docs/overrides/main.html` sets `color-scheme` on `html` from the
 same decision, so an explicit Light choice on a dark OS does not paint a
-dark canvas. Slate matches the opt-in selector, so the dark semantic
+dark canvas. Once `body` has `data-md-color-scheme`, the palette script
+removes that inline style. The `html:has(...)` rules in `extra.css` then
+own `color-scheme`. In system mode, Material updates the body attribute
+when the OS theme changes, and scrollbars and native controls follow.
+Slate matches the opt-in selector, so the dark semantic
 tokens apply. `extra.css` maps Material's `--md-*` variables onto those
 tokens for both schemes.
 

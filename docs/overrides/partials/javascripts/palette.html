@@ -3,9 +3,12 @@
   A stored choice is applied before first paint, as in the stock script.
   With nothing stored, or with the system entry stored, matchMedia
   "(prefers-color-scheme: dark)" picks the light or slate input and sets
-  that scheme on body. The html color-scheme follows, including when the
-  reader later switches the radios, so an explicit light choice does not
-  leave a dark canvas.
+  that scheme on body. main.html has already set an inline color-scheme
+  for that first paint. Once body has data-md-color-scheme, this script
+  removes the inline style so the html:has(...) rules in extra.css own
+  color-scheme. Material then updates the body attribute when the OS
+  theme changes in system mode, and those rules follow. An explicit
+  light or dark choice stays on the scheme the reader picked.
 #}
 <script>
 (function () {
@@ -15,13 +18,20 @@
     return document.querySelector("[data-md-color-media='" + media + "']");
   }
 
-  function paint(input) {
+  function applyInput(input) {
     ["media", "scheme", "primary", "accent"].forEach(function (key) {
       var value = input.getAttribute("data-md-color-" + key);
       if (value) document.body.setAttribute("data-md-color-" + key, value);
     });
-    document.documentElement.style.colorScheme =
-      input.getAttribute("data-md-color-scheme") === "slate" ? "dark" : "light";
+  }
+
+  /* Drop the head script's inline color-scheme. An inline style beats
+     html:has(...), so leaving it would freeze scrollbars and native
+     controls on the scheme from the first paint. */
+  function handoff() {
+    if (document.body.getAttribute("data-md-color-scheme")) {
+      document.documentElement.style.removeProperty("color-scheme");
+    }
   }
 
   var palette = __md_get("__palette");
@@ -29,12 +39,11 @@
     Object.entries(palette.color).forEach(function (entry) {
       if (entry[1]) document.body.setAttribute("data-md-color-" + entry[0], entry[1]);
     });
-    document.documentElement.style.colorScheme =
-      palette.color.scheme === "slate" ? "dark" : "light";
   } else {
     var input = systemInput();
-    if (input) paint(input);
+    if (input) applyInput(input);
   }
+  handoff();
 
   var form = document.querySelector("[data-md-component=palette]");
   if (form) {
@@ -43,10 +52,11 @@
       if (!target || target.name !== "__palette") return;
       if (target.getAttribute("data-md-color-media") === "(prefers-color-scheme)") {
         var next = systemInput();
-        if (next) paint(next);
-        return;
+        if (next) applyInput(next);
+      } else {
+        applyInput(target);
       }
-      paint(target);
+      handoff();
     });
   }
 })();

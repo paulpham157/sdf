@@ -7,7 +7,9 @@
     "light dark" would follow the OS, so an explicit Light choice on a
     dark OS paints a dark canvas until the body scheme wins. Nothing
     stored follows matchMedia. A stored system entry does too. An
-    explicit light or dark entry wins over the OS.
+    explicit light or dark entry wins over the OS. palette.html removes
+    this inline style once body has data-md-color-scheme, so a later OS
+    change in system mode is not stuck on the first value.
   #}
   <script>
     (function () {

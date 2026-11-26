@@ -194,6 +194,33 @@ test('dark OS with no stored palette is slate before first paint', async ({ brow
   await context.close();
 });
 
+test('system mode follows an OS theme change', async ({ browser }) => {
+  const context = await browser.newContext({ colorScheme: 'dark' });
+  await installScheme(context, {
+    index: 0,
+    color: {
+      media: '(prefers-color-scheme)',
+      scheme: 'default',
+      primary: 'custom',
+      accent: 'custom',
+    },
+  });
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page, '/');
+  await expect(page.locator('body')).toHaveAttribute('data-md-color-scheme', 'slate');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('body')).toHaveAttribute('data-md-color-scheme', 'default');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
+
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('body')).toHaveAttribute('data-md-color-scheme', 'slate');
+  await expect(page.locator('html')).toHaveCSS('color-scheme', 'dark');
+  await context.close();
+});
+
 test('explicit light on a dark OS keeps a light canvas', async ({ browser }) => {
   const context = await browser.newContext({ colorScheme: 'dark' });
   await installScheme(context, LIGHT.palette);
