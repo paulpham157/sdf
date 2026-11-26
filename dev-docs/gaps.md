@@ -190,10 +190,28 @@
   [#281](https://github.com/paulpham157/sdf/issues/281)), and do not plot
   constraint-touch metrics
   ([#305](https://github.com/paulpham157/sdf/issues/305)).
-  `GET /api/overview-charts` opens a read-only connection so it does not
-  hold the writer's mutex; `GET /api/snapshot` and `GET /api/summary` still
-  call `store.Load()` under that mutex
-  ([#272](https://github.com/paulpham157/sdf/issues/272)).
+  `GET /api/overview-charts`, `GET /api/summary`, and `GET /api/snapshot`
+  read through a separate read-only connection and do not hold the
+  writer's mutex
+  ([#272](https://github.com/paulpham157/sdf/issues/272)). An in-memory
+  store is still read through the writer. Summary and snapshot reuse one
+  computed report while the records snapshot and the price catalog are
+  unchanged
+  ([#273](https://github.com/paulpham157/sdf/issues/273)). The snapshot
+  is the `records_revision` generation, bumped once per insert and once
+  per content scrub that rewrites a row, plus the greatest record id.
+  The next request after either change reads the table again. The JSON
+  is the full summary: the cumulative and reset limits in this document
+  are unchanged. A write that does not go through `Store.Insert` or
+  `Store.Scrub` and does not change the greatest record id (a raw
+  `UPDATE` from outside sdf) is not a new snapshot, so a running server
+  can keep the previous summary until the next insert or scrub. An older
+  sdf binary's scrub has the same hole: it rewrites rows and leaves the
+  greatest id unchanged, and it does not bump `records_revision`. A
+  delete or prune of records has to bump that generation. Within one
+  generation the cache treats the greater record id as the newer
+  snapshot, so a lower max id after a delete looks older and does not
+  replace the cached report.
 - Decision and link recall against a live agent is not run in CI. The
   deterministic gate is the skill-only baseline on synthetic fixtures
   (`internal/decision/recall/fixtures`): decision recall 0/7, link recall

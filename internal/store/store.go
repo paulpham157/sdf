@@ -390,7 +390,10 @@ func (s *Store) migrate() error {
 	if err := s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"}); err != nil {
 		return err
 	}
-	return s.migrateRetractions()
+	if err := s.migrateRetractions(); err != nil {
+		return err
+	}
+	return s.migrateRecordRevision()
 }
 
 func (s *Store) addMissingColumns(table string, cols []string) error {
@@ -590,6 +593,12 @@ func (s *Store) execInsert(received string, rows []insertRow) (int, error) {
 			return 0, err
 		}
 	}
+	// Same transaction as the rows, so a reader never sees the new records
+	// under the old generation.
+	if err := bumpRecordGeneration(tx); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -606,20 +615,23 @@ func (s *Store) boundInsert(tx *sql.Tx) (*sql.Stmt, error) {
 	return tx.Prepare(insertRecordSQL)
 }
 
+// loadRecordsSQL is the column order scanRecords expects. id order is
+// insertion order.
+const loadRecordsSQL = `
+SELECT id, signal, service_name, session_id, name,
+       start_unix_nano, end_unix_nano, time_unix_nano, value,
+       metric_unit, metric_temporality, metric_kind,
+       attributes_json, resource_json, body,
+       trace_id, span_id, parent_span_id,
+       status_code, status_message
+FROM records
+ORDER BY id`
+
 // Load returns every record in insertion order.
 func (s *Store) Load() ([]record.Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`
-		SELECT id, signal, service_name, session_id, name,
-		       start_unix_nano, end_unix_nano, time_unix_nano, value,
-		       metric_unit, metric_temporality, metric_kind,
-		       attributes_json, resource_json, body,
-		       trace_id, span_id, parent_span_id,
-		       status_code, status_message
-		FROM records
-		ORDER BY id
-	`)
+	rows, err := s.db.Query(loadRecordsSQL)
 	if err != nil {
 		return nil, err
 	}

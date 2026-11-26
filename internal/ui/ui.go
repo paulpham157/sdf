@@ -15,20 +15,25 @@
 // GET /api/summary is the sdf summary JSON document: summary.SummarizeWith
 // with the default span view, then outcome.Attach (outcome.Summarize). GET
 // /api/snapshot is that same report arranged for the page, including
-// activity_by_day (sessions and computed cost by UTC day). GET
-// /api/decisions reads the append-only decision records; it is empty when
-// none have been recorded, and it is not part of the summary. GET
-// /api/decisions/graph arranges those records into chapters for the
-// Decisions tab (see package decisiongraph), over the same report without
-// the budget, as sdf decision graph builds it. GET /api/overview-charts
-// is the decision-recall and unlinked-gap series for the overview,
-// built with store.OpenReadOnly so it does not hold the writer mutex
-// (issue #272). Requests that arrive while a
-// report is being built share it, so one page load makes one round of
-// GitHub calls, not one per route. Computed cost the summary marks unknown
-// is returned without a USD value. A budget file, when one is configured,
-// adds a comparison of computed session cost with one local ceiling. The
-// comparison is reported only. There is no route that writes the store.
+// activity_by_day (sessions and computed cost by UTC day). The summary is
+// cached for the current records snapshot and price catalog, so a repeat
+// request does not read every record again. An insert or a content scrub
+// advances that snapshot and the next request recomputes. Outcomes are
+// attached on every request. GET /api/decisions reads the append-only
+// decision records; it is empty when none have been recorded, and it is
+// not part of the summary. GET /api/decisions/graph arranges those records
+// into chapters for the Decisions tab (see package decisiongraph), over
+// the same report without the budget, as sdf decision graph builds it.
+// GET /api/overview-charts is the decision-recall and unlinked-gap series
+// for the overview, built with store.OpenReadOnly so it does not hold the
+// writer mutex (issue #272). The summary and the snapshot use their own
+// read-only connection too. Requests that arrive while a report is being
+// built share it when it covers the snapshot they observed, so one page
+// load makes one round of GitHub calls, not one per route. Computed cost
+// the summary marks unknown is returned without a USD value. A budget
+// file, when one is configured, adds a comparison of computed session cost
+// with one local ceiling. The comparison is reported only. There is no
+// route that writes the store.
 package ui
 
 import (
@@ -49,9 +54,7 @@ import (
 	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/decisiongraph"
 	"github.com/paulpham157/sdf/internal/httphost"
-	"github.com/paulpham157/sdf/internal/outcome"
 	"github.com/paulpham157/sdf/internal/pricing"
-	"github.com/paulpham157/sdf/internal/record"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
 )
@@ -97,6 +100,7 @@ type Server struct {
 	ln      net.Listener
 	http    *http.Server
 	warning string
+	h       *handler
 }
 
 // Start listens and serves until Shutdown. A non-loopback address returns a
@@ -143,7 +147,7 @@ func Start(cfg Config) (*Server, error) {
 		IdleTimeout:       uiIdleTimeout,
 	}
 	go func() { _ = httpSrv.Serve(ln) }()
-	return &Server{ln: ln, http: httpSrv, warning: bindWarning(host)}, nil
+	return &Server{ln: ln, http: httpSrv, warning: bindWarning(host), h: h}, nil
 }
 
 // URL is the browser address, including the trailing slash.
@@ -168,7 +172,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.http == nil {
 		return nil
 	}
-	return s.http.Shutdown(ctx)
+	err := s.http.Shutdown(ctx)
+	if s.h != nil {
+		s.h.closeReadOnly()
+	}
+	return err
 }
 
 func normalizeAddr(addr string) (string, string, error) {
@@ -215,21 +223,34 @@ type handler struct {
 	flightMu sync.Mutex
 	flight   *reportFlight // the report being built now, if any
 	hooks    *reportHooks  // set by tests only; nil in production
+
+	roMu  sync.Mutex
+	ro    *store.Store // long-lived read-only connection; nil for an in-memory store
+	cache summaryCache
 }
 
-// reportHooks lets a test see report sharing: beforeBuild runs at the start
-// of a build, joined when a request waits for a build already running.
+// reportHooks lets a test see report sharing. beforeBuild runs when a
+// build will read the records table, not when the cached summary is
+// reused. joined runs when a request waits for a build already running.
+// loadedRecords runs as that read starts. afterLoad runs after the rows
+// are in memory and before the summary is cached.
 type reportHooks struct {
-	beforeBuild func()
-	joined      func()
+	beforeBuild   func()
+	joined        func()
+	loadedRecords func()
+	afterLoad     func()
 }
 
 // reportFlight is one report build that concurrent requests share.
+// snap is the records snapshot the report was computed from. haveSnap is
+// false when the file has no generation row.
 type reportFlight struct {
-	done   chan struct{}
-	report summary.Report
-	cat    *pricing.Catalog
-	err    error
+	done     chan struct{}
+	report   summary.Report
+	cat      *pricing.Catalog
+	snap     store.RecordSnapshot
+	haveSnap bool
+	err      error
 }
 
 func (h *handler) routes() {
@@ -392,83 +413,64 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
-	// report is shared with concurrent requests; ApplyBudget only sets
-	// report.Budget, on this copy.
+	// report is this caller's copy. ApplyBudget only sets report.Budget.
 	summary.ApplyBudget(&report, budget)
 	return report, cat, nil
 }
 
-// report is outcome.Summarize over the store, without the budget. A
-// request that arrives while another is building it waits for that build
-// and shares the result, so the page's parallel requests for the summary,
-// the snapshot, and the graph make one round of git and GitHub lookups.
-// Nothing is kept once the build finishes: the next request reads the
-// store again. Callers must treat the shared report as read-only, apart
-// from top-level fields of their own copy.
+// report is outcome.Summarize over the store, without the budget. The
+// summary itself is reused while the records snapshot and the price
+// catalog are unchanged, so a repeat request does not read every record.
+// Outcomes are attached for each build, including a cache hit, so git and
+// GitHub stay current. A request that arrives during a build shares that
+// build when the build's snapshot covers the one this request observed,
+// so one page load makes one round of git and GitHub lookups. A request
+// that already observed a newer insert does not take an older build.
+// The returned report is a deep copy of the cached value. A caller may
+// write its slices and maps. The catalog pointer is shared and not written.
 func (h *handler) report() (summary.Report, *pricing.Catalog, error) {
-	h.flightMu.Lock()
-	if f := h.flight; f != nil {
-		h.flightMu.Unlock()
-		if h.hooks != nil {
-			h.hooks.joined()
-		}
-		<-f.done
-		return f.report, f.cat, f.err
+	floor, floorOK, err := h.probeSnapshot()
+	if err != nil {
+		return summary.Report{}, nil, err
 	}
-	f := &reportFlight{done: make(chan struct{})}
-	h.flight = f
-	h.flightMu.Unlock()
+	// A build that started before this request's snapshot is discarded.
+	// Eight attempts is the cap. Past that, the last report can be older
+	// than the snapshot this request already observed, so it is not returned.
+	for n := 0; n < 8; n++ {
+		h.flightMu.Lock()
+		if f := h.flight; f != nil {
+			h.flightMu.Unlock()
+			if h.hooks != nil {
+				h.hooks.joined()
+			}
+			<-f.done
+			if f.err != nil || !floorOK || !f.haveSnap || snapshotCovers(f.snap, floor) {
+				return f.report, f.cat, f.err
+			}
+			continue
+		}
+		f := &reportFlight{done: make(chan struct{})}
+		h.flight = f
+		h.flightMu.Unlock()
+		h.finishFlight(f, floor, floorOK)
+		if f.err != nil || !floorOK || !f.haveSnap || snapshotCovers(f.snap, floor) {
+			return f.report, f.cat, f.err
+		}
+	}
+	return summary.Report{}, nil, fmt.Errorf("summary is stale: records snapshot %d (max id %d) was not read after 8 attempts", floor.Generation, floor.MaxID)
+}
+
+// finishFlight fills f and clears the in-flight slot even if the build
+// panics, so a waiter is not left blocked on the done channel. The caller
+// publishes f under h.flightMu before calling.
+func (h *handler) finishFlight(f *reportFlight, floor store.RecordSnapshot, floorOK bool) {
 	defer func() {
 		h.flightMu.Lock()
 		h.flight = nil
 		h.flightMu.Unlock()
 		close(f.done)
 	}()
-	f.report, f.cat, f.err = h.buildReport()
-	return f.report, f.cat, f.err
-}
-
-func (h *handler) buildReport() (summary.Report, *pricing.Catalog, error) {
-	if h.hooks != nil {
-		h.hooks.beforeBuild()
-	}
-	cat, err := pricing.ResolveCatalog(h.prices)
-	if err != nil {
-		return summary.Report{}, nil, err
-	}
-	records, err := h.readRecords()
-	if err != nil {
-		return summary.Report{}, nil, err
-	}
-	opt := outcome.Options{Repo: h.repo}
-	if h.github {
-		lookup, gerr := outcome.NewGitHub()
-		if gerr != nil {
-			opt.GitHubNote = gerr.Error()
-		} else {
-			opt.Lookup = lookup
-		}
-	}
-	return outcome.Summarize(records, cat, opt), cat, nil
-}
-
-// readRecords reads every record for a report through a separate
-// read-only connection to the same file (store.OpenReadOnly), not the
-// receiver's writer connection, so a long read does not hold the writer's
-// mutex and block OTLP Insert (issue #272). In WAL mode the read sees the
-// last committed state and does not wait for the writer. An in-memory
-// store has no file another connection could open, so it is read through
-// the writer as before.
-func (h *handler) readRecords() ([]record.Record, error) {
-	if h.store.InMemory() {
-		return h.store.Load()
-	}
-	ro, err := store.OpenReadOnly(h.store.Path())
-	if err != nil {
-		return nil, err
-	}
-	defer ro.Close()
-	return ro.Load()
+	f.report, f.cat, f.snap, f.haveSnap, f.err = h.summarizeCached(floor, floorOK)
 }
 
 // writeJSON runs encode into memory first, then sends the result with
