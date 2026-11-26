@@ -32,7 +32,9 @@ publishes (what each agent exports, the receiver, content storage and
 `sdf redact`, the summary and computed cost, outcomes, decision records
 and the local budget, `sdf check`, tasks and `sdf verify`, the ledger and
 `sdf audit`). Known gaps (`dev-docs/gaps.md`), session-boundary research
-(`dev-docs/research/session-boundary.md`), design tokens
+(`dev-docs/research/session-boundary.md`), user-prompt extraction
+(`dev-docs/research/user-prompt-extraction.md`, with the experimental
+filter in `internal/promptextract`), design tokens
 (`design/tokens.md`), and diagram authoring (`dev-docs/diagrams.md`) stay
 in the repository. The index is in `CONTRIBUTING.md`. Skill pages live
 in `skills/` and are published under Reference. Record user-visible
