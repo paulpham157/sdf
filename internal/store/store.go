@@ -11,17 +11,20 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 
 	"github.com/paulpham157/sdf/internal/dbfile"
 	"github.com/paulpham157/sdf/internal/record"
@@ -78,10 +81,11 @@ CREATE TABLE IF NOT EXISTS decision_edges (
 // Store is one SQLite file. A mutex serializes use of the single connection,
 // matching the Python store's lock around check_same_thread=False.
 type Store struct {
-	path string
-	mu   sync.Mutex
-	db   *sql.DB
-	keep func(record.Record) bool
+	path   string
+	mu     sync.Mutex
+	db     *sql.DB
+	insert *sql.Stmt
+	keep   func(record.Record) bool
 }
 
 // KeepContent sets which records Insert stores with their prompt, tool, and
@@ -111,6 +115,17 @@ const busyTimeoutMS = 5000
 // is a property of the file and persists, so it is set once after opening
 // (not as a DSN pragma, which can fail with SQLITE_BUSY while a connection
 // opens, before the busy timeout applies).
+//
+// When the file is in WAL mode, the writer connection sets
+// PRAGMA synchronous=NORMAL. The pool is one connection. When database/sql
+// replaces it, the new connection sets NORMAL again if it is in WAL mode.
+// The pragma is per connection and is not stored in the file, so a reader
+// keeps SQLite's default FULL. Under WAL, NORMAL
+// does not corrupt the database: an application crash is safe, and a power
+// loss or operating-system crash can lose only the most recently committed
+// transactions. The ledger stays at synchronous=FULL. An in-memory store and
+// a file that is not in WAL mode keep the default FULL, because NORMAL
+// outside WAL can leave a rollback-journal database inconsistent.
 //
 // An error names a file database by its absolute path.
 func Open(path string) (*Store, error) {
@@ -147,17 +162,27 @@ func open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", name)
+	db, err := openWriterDB(name)
 	if err != nil {
 		return nil, err
 	}
+	// One connection. synchronous=NORMAL and the prepared insert belong to
+	// it. Idle is capped at one so that connection stays checked in. A
+	// replacement is a new physical connection: the writer's connector sets
+	// NORMAL again when that connection is in WAL mode, and database/sql
+	// re-prepares the insert on it.
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	s := &Store{path: path, db: db}
 	if !private(path) {
 		if err := setWAL(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
+	}
+	if err := setWriterSynchronous(db); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
@@ -168,6 +193,10 @@ func open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.markNewDatabase(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.prepareInsert(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -233,6 +262,120 @@ func setWAL(db *sql.DB) error {
 	return nil
 }
 
+// synchronousNormal is the integer PRAGMA synchronous returns for NORMAL.
+// FULL, the SQLite default, is 2.
+const synchronousNormal = 1
+
+// openWriterDB opens dsn on a driver whose connections belong to this
+// writer. The package driver ("sqlite") is left alone, so a reader and the
+// ledger do not run this hook.
+//
+// database/sql calls Connect again when it discards the single connection.
+// The hook then sets synchronous=NORMAL only if that new connection is in
+// WAL mode. A new file is not in WAL yet on the first connect; setWAL and
+// setWriterSynchronous run after this returns, on that first connection.
+func openWriterDB(dsn string) (*sql.DB, error) {
+	drv := &sqlite.Driver{}
+	drv.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
+		return writerSynchronousHook(conn)
+	})
+	return sql.OpenDB(&writerConnector{drv: drv, dsn: dsn}), nil
+}
+
+type writerConnector struct {
+	drv *sqlite.Driver
+	dsn string
+}
+
+func (c *writerConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.drv.Open(c.dsn)
+}
+
+func (c *writerConnector) Driver() driver.Driver { return c.drv }
+
+func writerSynchronousHook(conn sqlite.ExecQuerierContext) error {
+	mode, err := pragmaText(conn, `PRAGMA journal_mode`)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA synchronous = NORMAL`, nil); err != nil {
+		return err
+	}
+	got, err := pragmaText(conn, `PRAGMA synchronous`)
+	if err != nil {
+		return err
+	}
+	if got != strconv.Itoa(synchronousNormal) {
+		return fmt.Errorf("store: synchronous=%s after setting NORMAL under WAL, want %d", got, synchronousNormal)
+	}
+	return nil
+}
+
+func pragmaText(conn sqlite.ExecQuerierContext, query string) (string, error) {
+	rows, err := conn.QueryContext(context.Background(), query, nil)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	dest := make([]driver.Value, len(rows.Columns()))
+	if err := rows.Next(dest); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("store: %s returned no row", query)
+		}
+		return "", err
+	}
+	return driverValueString(dest[0]), nil
+}
+
+func driverValueString(v driver.Value) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+// setWriterSynchronous sets PRAGMA synchronous=NORMAL on db's connection
+// when the file is in WAL mode. It does nothing otherwise. The first
+// connection of a new file reaches WAL only after setWAL, which is after
+// the connector hook has already run, so this covers that connection. A
+// later connection is covered by the hook. The setting is not written to
+// the file: a connection opened separately (sdf summary) still reads FULL,
+// and the ledger's own connection is unchanged.
+func setWriterSynchronous(db *sql.DB) error {
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if _, err := db.Exec(`PRAGMA synchronous = NORMAL`); err != nil {
+		return err
+	}
+	var level int
+	if err := db.QueryRow(`PRAGMA synchronous`).Scan(&level); err != nil {
+		return err
+	}
+	if level != synchronousNormal {
+		return fmt.Errorf("store: synchronous=%d after setting NORMAL under WAL, want %d", level, synchronousNormal)
+	}
+	return nil
+}
+
 // Path is the SQLite file path.
 func (s *Store) Path() string { return s.path }
 
@@ -294,7 +437,39 @@ func (s *Store) tableColumns(table string) (map[string]bool, error) {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Close()
+	var err error
+	if s.insert != nil {
+		err = s.insert.Close()
+	}
+	if cerr := s.db.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+const insertRecordSQL = `
+	INSERT INTO records (
+		received_at, signal, service_name, session_id, name,
+		start_unix_nano, end_unix_nano, time_unix_nano, value,
+		metric_unit, metric_temporality, metric_kind,
+		attributes_json, resource_json, body,
+		trace_id, span_id, parent_span_id,
+		status_code, status_message
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+// prepareInsert compiles the insert once on the writer connection. A
+// read-only file cannot prepare a write; Insert reports that when it runs.
+func (s *Store) prepareInsert() error {
+	stmt, err := s.db.Prepare(insertRecordSQL)
+	if err != nil {
+		if sqliteCode(err)&0xff == sqliteReadonly {
+			return nil
+		}
+		return err
+	}
+	s.insert = stmt
+	return nil
 }
 
 // Insert appends records. An empty batch is a no-op. Every row in the batch
@@ -307,60 +482,109 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 	keep := s.keep
 	s.mu.Unlock()
 	records = record.RedactWith(records, keep)
-	received := time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
+	// JSON encoding does not touch the database. Doing it before the lock
+	// keeps the writer mutex off the CPU path of a large export.
+	rows, err := rowsForInsert(records)
+	if err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	received := time.Now().UTC().Format("2006-01-02T15:04:05.000000-07:00")
+	return s.execInsert(received, rows)
+}
+
+type insertRow struct {
+	signal        string
+	service       any
+	session       any
+	name          any
+	start         any
+	end           any
+	when          any
+	value         any
+	unit          any
+	temp          any
+	kind          any
+	attrs         string
+	res           string
+	body          any
+	trace         any
+	span          any
+	parent        any
+	statusCode    any
+	statusMessage any
+}
+
+func rowsForInsert(records []record.Record) ([]insertRow, error) {
+	rows := make([]insertRow, len(records))
+	for i, rec := range records {
+		attrs, err := marshalSorted(rec.Attributes)
+		if err != nil {
+			return nil, err
+		}
+		res, err := marshalSorted(rec.Resource)
+		if err != nil {
+			return nil, err
+		}
+		rows[i] = insertRow{
+			signal:        rec.Signal,
+			service:       nullString(rec.ServiceName),
+			session:       nullString(rec.SessionID),
+			name:          nullString(rec.Name),
+			start:         nullInt(rec.StartUnixNano),
+			end:           nullInt(rec.EndUnixNano),
+			when:          nullInt(rec.TimeUnixNano),
+			value:         nullFloat(rec.Value),
+			unit:          nullString(rec.MetricUnit),
+			temp:          nullString(rec.MetricTemporality),
+			kind:          nullString(rec.MetricKind),
+			attrs:         string(attrs),
+			res:           string(res),
+			body:          nullString(rec.Body),
+			trace:         nullString(rec.TraceID),
+			span:          nullString(rec.SpanID),
+			parent:        nullString(rec.ParentSpanID),
+			statusCode:    statusCodeValue(rec),
+			statusMessage: statusMessageValue(rec),
+		}
+	}
+	return rows, nil
+}
+
+func (s *Store) execInsert(received string, rows []insertRow) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	stmt, err := tx.Prepare(`
-		INSERT INTO records (
-			received_at, signal, service_name, session_id, name,
-			start_unix_nano, end_unix_nano, time_unix_nano, value,
-			metric_unit, metric_temporality, metric_kind,
-			attributes_json, resource_json, body,
-			trace_id, span_id, parent_span_id,
-			status_code, status_message
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
+	stmt, err := s.boundInsert(tx)
 	if err != nil {
 		_ = tx.Rollback()
 		return 0, err
 	}
 	defer stmt.Close()
-	for _, rec := range records {
-		attrs, err := marshalSorted(rec.Attributes)
-		if err != nil {
-			_ = tx.Rollback()
-			return 0, err
-		}
-		res, err := marshalSorted(rec.Resource)
-		if err != nil {
-			_ = tx.Rollback()
-			return 0, err
-		}
+	for _, row := range rows {
 		if _, err := stmt.Exec(
 			received,
-			rec.Signal,
-			nullString(rec.ServiceName),
-			nullString(rec.SessionID),
-			nullString(rec.Name),
-			nullInt(rec.StartUnixNano),
-			nullInt(rec.EndUnixNano),
-			nullInt(rec.TimeUnixNano),
-			nullFloat(rec.Value),
-			nullString(rec.MetricUnit),
-			nullString(rec.MetricTemporality),
-			nullString(rec.MetricKind),
-			string(attrs),
-			string(res),
-			nullString(rec.Body),
-			nullString(rec.TraceID),
-			nullString(rec.SpanID),
-			nullString(rec.ParentSpanID),
-			statusCodeValue(rec),
-			statusMessageValue(rec),
+			row.signal,
+			row.service,
+			row.session,
+			row.name,
+			row.start,
+			row.end,
+			row.when,
+			row.value,
+			row.unit,
+			row.temp,
+			row.kind,
+			row.attrs,
+			row.res,
+			row.body,
+			row.trace,
+			row.span,
+			row.parent,
+			row.statusCode,
+			row.statusMessage,
 		); err != nil {
 			_ = tx.Rollback()
 			return 0, err
@@ -369,7 +593,17 @@ func (s *Store) Insert(records []record.Record) (int, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return len(records), nil
+	return len(rows), nil
+}
+
+// boundInsert is the insert compiled at Open, attached to tx. A store that
+// could not prepare (a read-only file) compiles it on tx, which fails the
+// write there.
+func (s *Store) boundInsert(tx *sql.Tx) (*sql.Stmt, error) {
+	if s.insert != nil {
+		return tx.Stmt(s.insert), nil
+	}
+	return tx.Prepare(insertRecordSQL)
 }
 
 // Load returns every record in insertion order.
