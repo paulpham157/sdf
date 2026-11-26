@@ -49,10 +49,6 @@ var (
 	ErrTooManyErrors  = errors.New("too many line errors")
 )
 
-// ErrTagDepth is the line error when one harness tag is nested deeper
-// than MaxTagDepth.
-var ErrTagDepth = errors.New("harness tag nested too deeply")
-
 // Prompt is one user-typed prompt. UUID, SessionID, and Timestamp are
 // empty when the record omits them. Line is 1-based in the stream.
 // Text is raw: it is not redacted.
@@ -78,8 +74,8 @@ func (e LineError) Error() string {
 func (e LineError) Unwrap() error { return e.Err }
 
 // Result is every prompt Extract kept and every line it skipped because
-// the line was malformed, too long, or nested a harness tag too deeply.
-// A stream cap does not return a partial Result.
+// the line was malformed or too long. A stream cap does not return a
+// partial Result.
 type Result struct {
 	Prompts []Prompt
 	Errors  []LineError
@@ -106,12 +102,13 @@ func defaultBounds() bound {
 // Extract reads a Claude Code session JSONL stream and returns the
 // user-typed prompts it recognizes.
 //
-// A malformed line, a line longer than MaxLineBytes, or a line whose
-// harness tags nest deeper than MaxTagDepth is recorded in Result.Errors
-// and skipped. A read error from r, other than the end of the stream, is
-// returned with the prompts and line errors collected before it. Hitting
-// MaxInputBytes, MaxPrompts, MaxOutputBytes, or MaxErrors returns that
-// sentinel and an empty Result. A nil reader is an error.
+// A malformed line or a line longer than MaxLineBytes is recorded in
+// Result.Errors and skipped. A read error from r, other than the end of
+// the stream, is returned with the prompts and line errors collected
+// before it. Hitting MaxInputBytes, MaxPrompts, MaxOutputBytes, or
+// MaxErrors returns that sentinel and an empty Result: the cap applies to
+// the whole stream, not to the prompts already collected. A nil reader is
+// an error.
 func Extract(r io.Reader) (Result, error) {
 	return extractBounded(r, defaultBounds())
 }
@@ -402,7 +399,7 @@ func textFromContent(raw json.RawMessage) (string, error) {
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return "", fmt.Errorf("message.content: %w", err)
 		}
-		return stripHarness(s)
+		return stripHarness(s), nil
 	case '[':
 		var blocks []json.RawMessage
 		if err := json.Unmarshal(raw, &blocks); err != nil {
@@ -451,11 +448,7 @@ func textBlock(raw json.RawMessage) (string, bool, error) {
 	if err := json.Unmarshal(textRaw, &text); err != nil {
 		return "", false, errors.New("text block's text must be a string")
 	}
-	text, err := stripHarness(text)
-	if err != nil {
-		return "", false, err
-	}
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(stripHarness(text))
 	if text == "" || isInterrupt(text) {
 		return "", false, nil
 	}

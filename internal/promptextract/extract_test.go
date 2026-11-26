@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Fixtures in this file are synthetic. They are not a capture from a live
@@ -263,11 +264,7 @@ func TestExtractUnicodeEscapeReminder(t *testing.T) {
 
 func TestStripHarnessNestedOpener(t *testing.T) {
 	in := "<system-reminder>outer <system-reminder>inner</system-reminder> tail</system-reminder>sửa bug"
-	got, err := stripHarness(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got = strings.TrimSpace(got)
+	got := strings.TrimSpace(stripHarness(in))
 	want := "sửa bug"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -490,6 +487,65 @@ func TestQuickFilterMatchesExtract(t *testing.T) {
 	}
 }
 
+func TestQuickFilterNonObjectMessageAndCrossedTags(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("jq is required when CI=true; quick-filter parity cannot be skipped")
+		}
+		t.Log("jq is not installed; skipping quick-filter difference checks locally. CI=true makes this a failure.")
+		t.Skip("jq not installed")
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	doc, err := os.ReadFile(filepath.Join(filepath.Dir(file), "..", "..", "dev-docs", "research", "user-prompt-extraction.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const fence = "```jq\n"
+	i := bytes.Index(doc, []byte(fence))
+	if i < 0 {
+		t.Fatal("jq fence missing")
+	}
+	rest := doc[i+len(fence):]
+	j := bytes.Index(rest, []byte("\n```"))
+	if j < 0 {
+		t.Fatal("jq fence not closed")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "user-prompt.jq")
+	if err := os.WriteFile(script, rest[:j+1], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw := "{\"type\":\"user\",\"message\":[\"sửa bug\"]}\n" +
+		"{\"type\":\"user\",\"message\":{\"content\":\"kept\"}}\n" +
+		"{\"type\":\"user\",\"message\":{\"content\":\"<bash-stdout>a<command-name>b</bash-stdout>c</command-name>d\"}}\n"
+	cmd := exec.Command(jq, "-Rr", "-f", script)
+	cmd.Stdin = strings.NewReader(raw)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("jq: %v\n%s", err, out)
+	}
+	// A non-object message is skipped here. Go records a line error.
+	// The crossed line is not the same string in jq and in Go.
+	want := "kept\n<bash-stdout>ad\n"
+	if string(out) != want {
+		t.Fatalf("jq:\n%s", out)
+	}
+	res, err := Extract(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 1 || res.Errors[0].Line != 1 || !strings.Contains(res.Errors[0].Error(), "message must be an object") {
+		t.Fatalf("errors %v", res.Errors)
+	}
+	if len(res.Prompts) != 2 || res.Prompts[0].Text != "kept" || res.Prompts[1].Text != "c</command-name>d" {
+		t.Fatalf("prompts %#v", res.Prompts)
+	}
+}
+
 func TestExtractHarnessSidechainAndInterrupts(t *testing.T) {
 	mixed := "sửa bug <command-name>/compact</command-name> <command-message>m</command-message> <command-args>a</command-args> <local-command-stdout>out</local-command-stdout> <local-command-stderr>err</local-command-stderr> <local-command-caveat>caveat</local-command-caveat> <bash-input>ls</bash-input> <bash-stdout>SECRET=1</bash-stdout> <bash-stderr>no</bash-stderr>"
 	cases := []struct {
@@ -615,22 +671,102 @@ func jsonString(s string) string {
 }
 
 func TestExtractTagDepth(t *testing.T) {
-	deep := nestReminders(MaxTagDepth)
-	over := nestReminders(MaxTagDepth + 1)
-	stream := `{"type":"user","message":{"content":` + jsonString(over) + "}}\n" +
-		`{"type":"user","message":{"content":` + jsonString(deep+"sửa bug") + "}}\n" +
-		`{"type":"user","message":{"content":"after"}}` + "\n"
+	deep := nestReminders(MaxTagDepth) + "sửa bug"
+	// One opener past the cap is literal. The matching extra closer stays,
+	// and the user text after the nest stays. The line is not an error.
+	over := nestReminders(MaxTagDepth+1) + "sửa bug"
+	stream := `{"type":"user","message":{"content":` + jsonString(deep) + "}}\n" +
+		`{"type":"user","message":{"content":` + jsonString(over) + "}}\n"
 	res, err := Extract(strings.NewReader(stream))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Errors) != 1 || res.Errors[0].Line != 1 || !errors.Is(res.Errors[0], ErrTagDepth) {
+	if len(res.Errors) != 0 {
 		t.Fatalf("errors %v", res.Errors)
 	}
-	// A nest of MaxTagDepth is stripped. The user text after the outer
-	// closer remains. The following line is still read.
-	if len(res.Prompts) != 2 || res.Prompts[0].Text != "sửa bug" || res.Prompts[1].Line != 3 || res.Prompts[1].Text != "after" {
+	if len(res.Prompts) != 2 || res.Prompts[0].Text != "sửa bug" || res.Prompts[1].Text != "</system-reminder>sửa bug" {
 		t.Fatalf("prompts %#v", res.Prompts)
+	}
+}
+
+func TestUnclosedOpenersDoNotDropPrompt(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("<command-name>secret</command-name>")
+	for i := 0; i < MaxTagDepth+5; i++ {
+		b.WriteString("<command-name>")
+	}
+	b.WriteString("sửa bug")
+	for i := 0; i < MaxTagDepth+5; i++ {
+		b.WriteString("<bash-input>")
+	}
+	in := b.String()
+	if got := stripHarness(in); got != strings.TrimPrefix(in, "<command-name>secret</command-name>") {
+		t.Fatalf("strip %q", got)
+	}
+	res, err := Extract(strings.NewReader(`{"type":"user","message":{"content":` + jsonString(in) + "}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 0 || len(res.Prompts) != 1 {
+		t.Fatalf("%#v", res)
+	}
+	if strings.Contains(res.Prompts[0].Text, "secret") || !strings.Contains(res.Prompts[0].Text, "sửa bug") {
+		t.Fatalf("text %q", res.Prompts[0].Text)
+	}
+	if !strings.Contains(res.Prompts[0].Text, "<command-name>") || !strings.Contains(res.Prompts[0].Text, "<bash-input>") {
+		t.Fatalf("unclosed tags dropped: %q", res.Prompts[0].Text)
+	}
+}
+
+func TestSelfClosingReminderStays(t *testing.T) {
+	cases := []string{
+		"<system-reminder /> keep </system-reminder>",
+		"<system-reminder/> keep </system-reminder>",
+		`<system-reminder attr="x" /> keep </system-reminder>`,
+		"<system-reminder / > keep </system-reminder>",
+	}
+	for _, in := range cases {
+		if got := stripHarness(in); got != in {
+			t.Fatalf("got %q want %q", got, in)
+		}
+	}
+}
+
+func TestCrossedHarnessTags(t *testing.T) {
+	in := "<bash-stdout>a<command-name>b</bash-stdout>c</command-name>d"
+	if got := stripHarness(in); got != "c</command-name>d" {
+		t.Fatalf("got %q", got)
+	}
+	rev := "<command-name>a<bash-stdout>b</command-name>c</bash-stdout>d"
+	if got := stripHarness(rev); got != "c</bash-stdout>d" {
+		t.Fatalf("reverse got %q", got)
+	}
+}
+
+func TestUnclosedAttrScanIsLinear(t *testing.T) {
+	patterns := []string{"<system-reminder a", "<system-reminder a=\""}
+	for _, p := range patterns {
+		s := strings.Repeat(p, (1<<20)/len(p))
+		start := time.Now()
+		got := stripHarness(s)
+		if elapsed := time.Since(start); elapsed >= time.Second {
+			t.Fatalf("stripHarness %q took %s", p, elapsed)
+		}
+		if got != s {
+			t.Fatalf("stripHarness changed %q", p)
+		}
+		line := `{"type":"user","message":{"content":` + jsonString(s) + "}}\n"
+		start = time.Now()
+		res, err := Extract(strings.NewReader(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(start); elapsed >= time.Second {
+			t.Fatalf("Extract %q took %s", p, elapsed)
+		}
+		if len(res.Errors) != 0 || len(res.Prompts) != 1 || res.Prompts[0].Text != s {
+			t.Fatalf("extract %q: %#v", p, res)
+		}
 	}
 }
 
