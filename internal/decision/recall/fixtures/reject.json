@@ -1,0 +1,97 @@
+{
+  "name": "reject",
+  "notes": "The user rejects a move to PostgreSQL. The decision is to stay on SQLite. No commit.",
+  "logs": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "recall-fixture"
+                }
+              },
+              {
+                "key": "sdf.fixture",
+                "value": {
+                  "stringValue": "recall"
+                }
+              }
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1795183200000000000",
+                  "body": {
+                    "stringValue": "No. Do not switch to PostgreSQL. Keep the collector store in SQLite."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-reject"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "user"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183260000000000",
+                  "body": {
+                    "stringValue": "Staying on SQLite. Nothing to commit."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-reject"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "decisions": [
+      {
+        "id": "stay-on-sqlite",
+        "statement": "Keep the collector store in SQLite.",
+        "status": "decision",
+        "decided_by": "user"
+      }
+    ],
+    "links": []
+  }
+}

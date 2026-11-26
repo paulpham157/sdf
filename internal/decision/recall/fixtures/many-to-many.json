@@ -1,0 +1,270 @@
+{
+  "name": "many-to-many",
+  "notes": "Two decisions and three commits. The middle commit implements both. Each other commit implements one.",
+  "logs": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "recall-fixture"
+                }
+              },
+              {
+                "key": "sdf.fixture",
+                "value": {
+                  "stringValue": "recall"
+                }
+              }
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1795183200000000000",
+                  "body": {
+                    "stringValue": "Use WAL mode for the store. Keep the SQLite driver pure Go."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-many"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "user"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183260000000000",
+                  "body": {
+                    "stringValue": "Both choices are settled. Three commits follow."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-many"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183500000000000",
+                  "body": {
+                    "stringValue": "sdf.git.commit"
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "sdf.git.commit"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-many"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.agent",
+                      "value": {
+                        "stringValue": "recall"
+                      }
+                    },
+                    {
+                      "key": "vcs.ref.head.revision",
+                      "value": {
+                        "stringValue": "4444444444444444444444444444444444444444"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.repo",
+                      "value": {
+                        "stringValue": "/tmp/recall-fixture"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.branch",
+                      "value": {
+                        "stringValue": "main"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.hook",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183560000000000",
+                  "body": {
+                    "stringValue": "sdf.git.commit"
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "sdf.git.commit"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-many"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.agent",
+                      "value": {
+                        "stringValue": "recall"
+                      }
+                    },
+                    {
+                      "key": "vcs.ref.head.revision",
+                      "value": {
+                        "stringValue": "5555555555555555555555555555555555555555"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.repo",
+                      "value": {
+                        "stringValue": "/tmp/recall-fixture"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.branch",
+                      "value": {
+                        "stringValue": "main"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.hook",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183620000000000",
+                  "body": {
+                    "stringValue": "sdf.git.commit"
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "sdf.git.commit"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-many"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.agent",
+                      "value": {
+                        "stringValue": "recall"
+                      }
+                    },
+                    {
+                      "key": "vcs.ref.head.revision",
+                      "value": {
+                        "stringValue": "6666666666666666666666666666666666666666"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.repo",
+                      "value": {
+                        "stringValue": "/tmp/recall-fixture"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.branch",
+                      "value": {
+                        "stringValue": "main"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.hook",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "decisions": [
+      {
+        "id": "use-wal",
+        "statement": "Use WAL mode for the store.",
+        "status": "decision",
+        "decided_by": "user"
+      },
+      {
+        "id": "pure-go",
+        "statement": "Keep the SQLite driver pure Go.",
+        "status": "decision",
+        "decided_by": "user"
+      }
+    ],
+    "links": [
+      {
+        "commit": "4444444444444444444444444444444444444444",
+        "decision": "use-wal"
+      },
+      {
+        "commit": "5555555555555555555555555555555555555555",
+        "decision": "use-wal"
+      },
+      {
+        "commit": "5555555555555555555555555555555555555555",
+        "decision": "pure-go"
+      },
+      {
+        "commit": "6666666666666666666666666666666666666666",
+        "decision": "pure-go"
+      }
+    ]
+  }
+}

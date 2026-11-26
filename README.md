@@ -10,6 +10,8 @@
 
 A local OpenTelemetry collector and decision ledger for coding agents.
 
+[softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/)
+
 </div>
 
 The distinctive figure is cost per accepted outcome. SDF links each

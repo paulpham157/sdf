@@ -1,0 +1,90 @@
+{
+  "name": "plain-chat",
+  "notes": "A question and an answer. No decision and no commit. Recording a decision would be a false positive.",
+  "logs": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "recall-fixture"
+                }
+              },
+              {
+                "key": "sdf.fixture",
+                "value": {
+                  "stringValue": "recall"
+                }
+              }
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1795183200000000000",
+                  "body": {
+                    "stringValue": "What does sdf summary print?"
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-chat"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "user"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183260000000000",
+                  "body": {
+                    "stringValue": "One block per stored session."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-chat"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "decisions": [],
+    "links": []
+  }
+}

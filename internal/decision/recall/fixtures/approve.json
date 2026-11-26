@@ -1,0 +1,97 @@
+{
+  "name": "approve",
+  "notes": "The user approves WAL mode. No commit follows, so there is no implements link to score.",
+  "logs": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "recall-fixture"
+                }
+              },
+              {
+                "key": "sdf.fixture",
+                "value": {
+                  "stringValue": "recall"
+                }
+              }
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1795183200000000000",
+                  "body": {
+                    "stringValue": "Yes. Use WAL mode for the store."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-approve"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "user"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183260000000000",
+                  "body": {
+                    "stringValue": "Recorded. I will not commit yet."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-approve"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "decisions": [
+      {
+        "id": "approve-wal",
+        "statement": "Use WAL mode for the store.",
+        "status": "decision",
+        "decided_by": "user"
+      }
+    ],
+    "links": []
+  }
+}

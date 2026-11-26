@@ -1,3 +1,7 @@
+{#
+  Copy of mkdocs-material 9.8.2 partials/header.html plus the Website
+  link. Re-sync this file when Material is upgraded.
+#}
 <!--
   Copyright (c) 2016-2025 Martin Donath <martin.donath@squidfunk.com>
 
@@ -28,7 +32,6 @@
   {% set class = class ~ " md-header--shadow" %}
 {% endif %}
 
-<!-- Material 9.8.2 partials/header.html, plus the Website control. -->
 <!-- Header -->
 <header class="{{ class }}" data-md-component="header">
   <nav
@@ -106,11 +109,11 @@
       {% endif %}
     {% endif %}
 
-    <!-- Product site. Outside .md-header__source, which Material hides below 60em. -->
+    {# Product site. Outside .md-header__source, which Material hides below 60em. #}
     {% if config.extra.website %}
       <a
         class="md-header__button md-header__website"
-        href="{{ config.extra.website }}"
+        href="{{ config.extra.website | e }}"
       >
         Website
       </a>

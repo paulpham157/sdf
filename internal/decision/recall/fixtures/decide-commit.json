@@ -1,0 +1,152 @@
+{
+  "name": "decide-commit",
+  "notes": "A settled choice, then one commit that implements it.",
+  "logs": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "recall-fixture"
+                }
+              },
+              {
+                "key": "sdf.fixture",
+                "value": {
+                  "stringValue": "recall"
+                }
+              }
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1795183200000000000",
+                  "body": {
+                    "stringValue": "The driver stays pure Go."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-decide"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "user"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183260000000000",
+                  "body": {
+                    "stringValue": "Keep the SQLite driver pure Go. I will commit that."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-decide"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795183320000000000",
+                  "body": {
+                    "stringValue": "sdf.git.commit"
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "sdf.git.commit"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-decide"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.agent",
+                      "value": {
+                        "stringValue": "recall"
+                      }
+                    },
+                    {
+                      "key": "vcs.ref.head.revision",
+                      "value": {
+                        "stringValue": "1111111111111111111111111111111111111111"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.repo",
+                      "value": {
+                        "stringValue": "/tmp/recall-fixture"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.branch",
+                      "value": {
+                        "stringValue": "main"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.hook",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "decisions": [
+      {
+        "id": "pure-go",
+        "statement": "Keep the SQLite driver pure Go.",
+        "status": "decision",
+        "decided_by": "agent"
+      }
+    ],
+    "links": [
+      {
+        "commit": "1111111111111111111111111111111111111111",
+        "decision": "pure-go"
+      }
+    ]
+  }
+}
