@@ -45,6 +45,7 @@ func TestSummaryCacheMatchesFullRecompute(t *testing.T) {
 			if mem {
 				t.Cleanup(func() { _ = db.Close() })
 			}
+			db.KeepContent(func(record.Record) bool { return true })
 			srv := startUI(t, db)
 			for _, batch := range cumulativeBatches() {
 				if _, err := db.Insert(batch); err != nil {
@@ -57,6 +58,11 @@ func TestSummaryCacheMatchesFullRecompute(t *testing.T) {
 				for step := 0; step < 20; step++ {
 					if rng.Intn(5) != 0 {
 						if _, err := db.Insert(randomRecords(rng, seed, step)); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if step%7 == 6 {
+						if _, err := db.Scrub(false); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -324,7 +330,7 @@ func randomRecords(rng *rand.Rand, seed int64, step int) []record.Record {
 			})
 		default:
 			id := fmt.Sprintf("%d-%d-%d", seed, step, i)
-			out = append(out, record.Record{
+			rec := record.Record{
 				Signal:        "traces",
 				ServiceName:   record.Str("claude-code"),
 				SessionID:     record.Str(session),
@@ -335,7 +341,13 @@ func randomRecords(rng *rand.Rand, seed int64, step int) []record.Record {
 				SpanID:        record.Str(id),
 				Attributes:    map[string]any{"session.id": session},
 				Resource:      map[string]any{"service.name": "claude-code"},
-			})
+			}
+			if rng.Intn(2) == 0 {
+				msg := fmt.Sprintf("secret-status-%s", id)
+				rec.StatusCode = "ERROR"
+				rec.StatusMessage = &msg
+			}
+			out = append(out, rec)
 		}
 	}
 	return out

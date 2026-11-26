@@ -434,12 +434,9 @@ func (h *handler) report() (summary.Report, *pricing.Catalog, error) {
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
-	var last summary.Report
-	var lastCat *pricing.Catalog
-	var lastErr error
 	// A build that started before this request's snapshot is discarded.
-	// The cap stops a request that never observes its own snapshot; a
-	// later read still sees the committed rows.
+	// Eight attempts is the cap. Past that, the last report can be older
+	// than the snapshot this request already observed, so it is not returned.
 	for n := 0; n < 8; n++ {
 		h.flightMu.Lock()
 		if f := h.flight; f != nil {
@@ -448,7 +445,6 @@ func (h *handler) report() (summary.Report, *pricing.Catalog, error) {
 				h.hooks.joined()
 			}
 			<-f.done
-			last, lastCat, lastErr = f.report, f.cat, f.err
 			if f.err != nil || !floorOK || !f.haveSnap || snapshotCovers(f.snap, floor) {
 				return f.report, f.cat, f.err
 			}
@@ -458,12 +454,11 @@ func (h *handler) report() (summary.Report, *pricing.Catalog, error) {
 		h.flight = f
 		h.flightMu.Unlock()
 		h.finishFlight(f, floor, floorOK)
-		last, lastCat, lastErr = f.report, f.cat, f.err
 		if f.err != nil || !floorOK || !f.haveSnap || snapshotCovers(f.snap, floor) {
 			return f.report, f.cat, f.err
 		}
 	}
-	return last, lastCat, lastErr
+	return summary.Report{}, nil, fmt.Errorf("summary is stale: records snapshot %d (max id %d) was not read after 8 attempts", floor.Generation, floor.MaxID)
 }
 
 // finishFlight fills f and clears the in-flight slot even if the build

@@ -205,7 +205,13 @@
   are unchanged. A write that does not go through `Store.Insert` or
   `Store.Scrub` and does not change the greatest record id (a raw
   `UPDATE` from outside sdf) is not a new snapshot, so a running server
-  can keep the previous summary until the next insert or scrub.
+  can keep the previous summary until the next insert or scrub. An older
+  sdf binary's scrub has the same hole: it rewrites rows and leaves the
+  greatest id unchanged, and it does not bump `records_revision`. A
+  delete or prune of records has to bump that generation. Within one
+  generation the cache treats the greater record id as the newer
+  snapshot, so a lower max id after a delete looks older and does not
+  replace the cached report.
 - Decision and link recall against a live agent is not run in CI. The
   deterministic gate is the skill-only baseline on synthetic fixtures
   (`internal/decision/recall/fixtures`): decision recall 0/7, link recall

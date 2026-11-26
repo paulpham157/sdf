@@ -52,6 +52,11 @@ func (c *summaryCache) store(snap store.RecordSnapshot, priceID string, report s
 	c.cat = cat
 }
 
+// newerSnapshot reports whether a is strictly after b. Within one
+// generation the greater record id is the later snapshot, which is true
+// only while rows are append-only. A delete or a prune must bump the
+// generation. If it does not, a snapshot taken after the delete has a
+// lower max id, looks older, and is not stored.
 func newerSnapshot(a, b store.RecordSnapshot) bool {
 	if a.Generation != b.Generation {
 		return a.Generation > b.Generation
@@ -61,6 +66,8 @@ func newerSnapshot(a, b store.RecordSnapshot) bool {
 
 // snapshotCovers reports whether got is the floor snapshot or a later one.
 // A request that observed floor must not be answered with an older build.
+// The same append-only assumption as newerSnapshot applies: at one
+// generation, a lower max id is treated as older.
 func snapshotCovers(got, floor store.RecordSnapshot) bool {
 	if got.Generation != floor.Generation {
 		return got.Generation > floor.Generation

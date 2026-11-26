@@ -17,6 +17,10 @@ import (
 // The summary cache keys a report by this generation together with the
 // greatest record id. Inserts advance both. A scrub advances the generation
 // while the greatest id stays put, which a max-id check alone would miss.
+// A delete or a prune must bump the generation too. Within one generation
+// the cache treats the greater id as the newer snapshot, so a lower max
+// id after a delete would look older and would not replace the cached
+// report.
 const recordsRevisionTable = `
 CREATE TABLE IF NOT EXISTS records_revision (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -55,12 +59,23 @@ func (s *Store) migrateRecordRevision() error {
 	if n > 0 {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO records_revision (id, generation) VALUES (1, 0)`)
+	// Two writable opens can both see an empty table. OR IGNORE keeps the
+	// loser from failing the migration, and it does not reset a row the
+	// winner already inserted.
+	if recordRevisionInsertHook != nil {
+		recordRevisionInsertHook()
+	}
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO records_revision (id, generation) VALUES (1, 0)`)
 	if err != nil && sqliteCode(err)&0xff == sqliteReadonly {
 		return nil
 	}
 	return err
 }
+
+// recordRevisionInsertHook, when set, runs after the migration has seen no
+// generation row and before the insert. Tests use it to overlap two opens.
+// Nil in production.
+var recordRevisionInsertHook func()
 
 // RecordSnapshot is the generation and greatest id visible to this call.
 // cacheable is false when the file has no records_revision row.
