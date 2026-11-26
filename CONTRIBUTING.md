@@ -167,6 +167,7 @@ check decisions. Record user-visible changes in `CHANGELOG.md` under
 | [dev-docs/gaps.md](dev-docs/gaps.md) | Known limits of the collector and the summary |
 | [dev-docs/research/session-boundary.md](dev-docs/research/session-boundary.md) | How each agent marks session open and close |
 | [dev-docs/diagrams.md](dev-docs/diagrams.md) | How to open, edit, and re-export the tldraw diagrams. The `.tldr` sources and PNG renders stay in `docs/diagrams/` because the user guides embed them. |
+| [docs/adr/README.md](docs/adr/README.md) | Architecture decision records. [ADR 0001](docs/adr/0001-diagram-tool-excalidraw-vs-tldraw.md) proposes keeping tldraw for those diagrams. |
 
 When a limit or a session-boundary fact changes, update the matching file
 here and the user guide in `docs/` that describes the behavior.
