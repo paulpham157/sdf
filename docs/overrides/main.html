@@ -2,5 +2,24 @@
 
 {% block extrahead %}
   {{ super() }}
-  <meta name="color-scheme" content="light">
+  {#
+    Set color-scheme on html before first paint. A meta content of
+    "light dark" would follow the OS, so an explicit Light choice on a
+    dark OS paints a dark canvas until the body scheme wins. Nothing
+    stored follows matchMedia. A stored system entry does too. An
+    explicit light or dark entry wins over the OS. palette.html removes
+    this inline style once body has data-md-color-scheme, so a later OS
+    change in system mode is not stuck on the first value.
+  #}
+  <script>
+    (function () {
+      var palette = __md_get("__palette");
+      var dark = matchMedia("(prefers-color-scheme: dark)").matches;
+      var scheme = dark ? "dark" : "light";
+      if (palette && palette.color && palette.color.media !== "(prefers-color-scheme)") {
+        scheme = palette.color.scheme === "slate" ? "dark" : "light";
+      }
+      document.documentElement.style.colorScheme = scheme;
+    })();
+  </script>
 {% endblock %}

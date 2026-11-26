@@ -74,7 +74,7 @@ hooks that run brief or check.
 - Source: `internal/cli/cli.go` (`decisionCommands`); `docs/outcomes.md`; `docs/agents.md`; `skills/sdf-decisions/SKILL.md`
 - Files: [04-decision-commands.tldr](04-decision-commands.tldr), [04-decision-commands.png](04-decision-commands.png)
 
-[![sdf decision subcommands in help order, then the session-start brief and the check before an action.](04-decision-commands.png)](04-decision-commands.png)
+[![sdf decision subcommands in help order, then the session-start brief and the check before an action.](04-decision-commands.png){ .sdf-diagram }](04-decision-commands.png)
 
 ### 05 Decision graph
 
@@ -134,7 +134,7 @@ from `sdf init --git-hooks`.
 - Source: `docs/receiver.md` (Git hooks, Pre-push decision check); `internal/setup/githook.go`, `githook_script.go`
 - Files: [10-git-hooks.tldr](10-git-hooks.tldr), [10-git-hooks.png](10-git-hooks.png)
 
-[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](10-git-hooks.png)](10-git-hooks.png)
+[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](10-git-hooks.png){ .sdf-diagram }](10-git-hooks.png)
 
 ### 11 Task declare
 

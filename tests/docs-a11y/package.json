@@ -1,0 +1,12 @@
+{
+  "name": "sdf-docs-a11y",
+  "private": true,
+  "description": "Contrast checks for the MkDocs site. Not a runtime dependency.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.14.1",
+    "@playwright/test": "^1.65.1"
+  }
+}

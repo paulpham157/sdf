@@ -1,13 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="29 21 198 198" width="1024" height="1024">
-  <rect width="256" height="256" fill="#F6F1E8"/>
-  <g fill="none" stroke="#2F3640" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M113.7 33.7 L194.3 114.3"/>
-    <path d="M87.7 59.7 L168.3 140.3"/>
-    <path d="M61.7 85.7 L128.0 152.0"/>
-    <path d="M142.3 33.7 L61.7 114.3"/>
-    <path d="M168.3 59.7 L87.7 140.3"/>
-    <path d="M128.0 152.0 L98.0 206.0"/>
-  </g>
-  <!-- one rust thread runs through the weave and leaves as the chosen fork -->
-  <path d="M194.3 85.7 L128.0 152.0 L158.0 206.0" fill="none" stroke="#C65A2E" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="29 21 198 198"><rect width="256" height="256" fill="#F6F1E8"/><g fill="none" stroke="#2F3640" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"><path d="M113.7 33.7 L194.3 114.3"/><path d="M87.7 59.7 L168.3 140.3"/><path d="M61.7 85.7 L128.0 152.0"/><path d="M142.3 33.7 L61.7 114.3"/><path d="M168.3 59.7 L87.7 140.3"/><path d="M128.0 152.0 L98.0 206.0"/></g><path fill="none" stroke="#C65A2E" stroke-linecap="round" stroke-linejoin="round" stroke-width="12" d="M194.3 85.7 L128.0 152.0 L158.0 206.0"/></svg>

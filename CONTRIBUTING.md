@@ -56,8 +56,9 @@ Mermaid fences and search are enabled. Each page has a View on GitHub
 link to that page's source file. The header has a Website link to the
 product site, on desktop and on a phone. That control is
 `docs/overrides/partials/header.html`, a copy of the mkdocs-material 9.8.2
-header partial, and it has to be re-synced when Material is upgraded. The theme
-is light only and follows `design/tokens.css` (see `docs/design/tokens.md`).
+header partial, and it has to be re-synced when Material is upgraded. The
+theme follows `design/tokens.css` (see `docs/design/tokens.md`), including
+a dark scheme the reader can select. The app UI stays light.
 Skill files under `skills/` are included at build time so the relative
 links already in the docs keep working.
 

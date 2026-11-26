@@ -30,7 +30,7 @@ func TestGitHookInstallChainsAndUninstalls(t *testing.T) {
 	if err != nil || !res.Wrote || !strings.Contains(res.Text, "installed sdf git hooks") {
 		t.Fatalf("%v %s", err, res.Text)
 	}
-	if !strings.Contains(res.Text, "diff and the commit message are not sent") {
+	if !strings.Contains(res.Text, "subject, body, other trailers, and the diff are not sent") {
 		t.Fatal(res.Text)
 	}
 	again, err := InstallGitHooks(dir, endpointOf(t, srv))
@@ -524,6 +524,160 @@ func TestGitHookEscapesTheCheckoutPath(t *testing.T) {
 	}
 }
 
+func TestGitHookSendsOnlySDFDecisionTrailerValues(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	srv, got := recordingServer(t)
+	if _, err := InstallGitHooks(dir, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		secretSubject = "subject-secret-not-for-otlp"
+		secretBody    = "body-secret-not-for-otlp"
+		secretDiff    = "diff-secret-not-for-otlp"
+		signedOff     = "Eve Example <eve@example.com>"
+	)
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte(secretDiff+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	add := exec.Command("git", "-C", dir, "add", "note.txt")
+	add.Env = gitEnv()
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("add: %v %s", err, out)
+	}
+	msg := secretSubject + "\n\n" + secretBody + "\n"
+	cmd := exec.Command("git", "-C", dir, "commit", "-m", msg,
+		"--trailer", "SDF-Decision: use-sqlite",
+		"--trailer", "SDF-Decision: pure-go",
+		"--trailer", "Signed-off-by: "+signedOff,
+		"--trailer", `SDF-Decision: bad"quote`,
+		"--trailer", "SDF-Decision: -leading-hyphen",
+	)
+	cmd.Env = gitEnv("OPENCODE_SESSION_ID=ses_trailer")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v %s", err, out)
+	}
+	shaCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	shaCmd.Env = gitEnv()
+	shaOut, err := shaCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.TrimSpace(string(shaOut))
+	bodies := got.all()
+	if len(bodies) != 1 {
+		t.Fatalf("posts %d", len(bodies))
+	}
+	body := bodies[0]
+	if err := json.Unmarshal(body, new(any)); err != nil {
+		t.Fatalf("payload is not JSON: %v %s", err, body)
+	}
+	text := string(body)
+	for _, secret := range []string{secretSubject, secretBody, secretDiff, signedOff, "Signed-off-by", "eve@example.com", `bad"quote`, "-leading-hyphen"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("payload contained %q: %s", secret, body)
+		}
+	}
+	attrs := payloadAttrs(t, body)
+	if attrs["session.id"] != "ses_trailer" || attrs["vcs.ref.head.revision"] != sha {
+		t.Fatalf("%v", attrs)
+	}
+	ids := payloadDecisionIDs(t, body)
+	if strings.Join(ids, ",") != "use-sqlite,pure-go" {
+		t.Fatalf("decision ids %v", ids)
+	}
+}
+
+func TestGitHookPostsDecisionTrailerWithoutASession(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	srv, got := recordingServer(t)
+	if _, err := InstallGitHooks(dir, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "no session subject",
+		"--trailer", "SDF-Decision: store-columns")
+	cmd.Env = gitEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit: %v %s", err, out)
+	}
+	bodies := got.all()
+	if len(bodies) != 1 {
+		t.Fatalf("posts %d, want 1 (trailer only, no session)", len(bodies))
+	}
+	body := bodies[0]
+	if strings.Contains(string(body), "no session subject") {
+		t.Fatalf("payload contained the subject: %s", body)
+	}
+	attrs := payloadAttrs(t, body)
+	if attrs["session.id"] != "" || attrs["sdf.git.agent"] != "" {
+		t.Fatalf("unexpected session fields %v", attrs)
+	}
+	if ids := payloadDecisionIDs(t, body); strings.Join(ids, ",") != "store-columns" {
+		t.Fatalf("decision ids %v", ids)
+	}
+}
+
+func TestGitHookCommitWithDecisionTrailerSucceedsWhenTheReceiverIsDown(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	if _, err := InstallGitHooks(dir, Endpoint{Host: "127.0.0.1", HTTPPort: 1}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "offline trailer",
+		"--trailer", "SDF-Decision: store-columns")
+	cmd.Env = gitEnv("OPENCODE_SESSION_ID=ses_offline_trailer")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("commit failed while receiver is down: %v %s", err, out)
+	}
+}
+
+func TestGitHookScriptDoesNotParseEveryTrailer(t *testing.T) {
+	isolateGit(t)
+	dir := testRepo(t)
+	if _, err := InstallGitHooks(dir, Endpoint{Host: "127.0.0.1", HTTPPort: 9}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(hooksPath(t, dir), "post-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if strings.Contains(text, "interpret-trailers --parse") {
+		t.Fatal("post-commit uses git interpret-trailers --parse, which emits every trailer")
+	}
+	if !strings.Contains(text, "trailers:key=SDF-Decision,valueonly") {
+		t.Fatal("post-commit does not read SDF-Decision with git log %(trailers:key=SDF-Decision,valueonly)")
+	}
+}
+
+func TestGitHookSessionOnlyPostDoesNotReadTheCommitMessage(t *testing.T) {
+	// Option A is session match on the server. The hook still must not send
+	// the commit message when there is no SDF-Decision trailer.
+	isolateGit(t)
+	dir := testRepo(t)
+	srv, got := recordingServer(t)
+	if _, err := InstallGitHooks(dir, endpointOf(t, srv)); err != nil {
+		t.Fatal(err)
+	}
+	sha := commitIn(t, dir, "option-a-must-not-send-this-subject", "OPENCODE_SESSION_ID=ses_option_a")
+	bodies := got.all()
+	if len(bodies) != 1 {
+		t.Fatalf("posts %d", len(bodies))
+	}
+	body := bodies[0]
+	if strings.Contains(string(body), "option-a-must-not-send-this-subject") {
+		t.Fatalf("Option A path sent the commit message: %s", body)
+	}
+	attrs := payloadAttrs(t, body)
+	if attrs["session.id"] != "ses_option_a" || attrs["vcs.ref.head.revision"] != sha {
+		t.Fatalf("%v", attrs)
+	}
+	if ids := payloadDecisionIDs(t, body); len(ids) != 0 {
+		t.Fatalf("Option A path sent decision ids %v", ids)
+	}
+}
+
 type capture struct {
 	mu     sync.Mutex
 	bodies [][]byte
@@ -614,6 +768,50 @@ func payloadAttrs(t *testing.T, body []byte) map[string]string {
 		t.Fatalf("no service name %s", body)
 	}
 	return out
+}
+
+func payloadDecisionIDs(t *testing.T, body []byte) []string {
+	t.Helper()
+	var doc struct {
+		ResourceLogs []struct {
+			ScopeLogs []struct {
+				LogRecords []struct {
+					Attributes []struct {
+						Key   string `json:"key"`
+						Value struct {
+							StringValue string `json:"stringValue"`
+							ArrayValue  struct {
+								Values []struct {
+									StringValue string `json:"stringValue"`
+								} `json:"values"`
+							} `json:"arrayValue"`
+						} `json:"value"`
+					} `json:"attributes"`
+				} `json:"logRecords"`
+			} `json:"scopeLogs"`
+		} `json:"resourceLogs"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("payload is not JSON: %v %s", err, body)
+	}
+	if len(doc.ResourceLogs) != 1 || len(doc.ResourceLogs[0].ScopeLogs) != 1 || len(doc.ResourceLogs[0].ScopeLogs[0].LogRecords) != 1 {
+		t.Fatalf("shape %s", body)
+	}
+	var ids []string
+	for _, item := range doc.ResourceLogs[0].ScopeLogs[0].LogRecords[0].Attributes {
+		if item.Key != "sdf.git.decision" {
+			continue
+		}
+		if item.Value.StringValue != "" {
+			ids = append(ids, item.Value.StringValue)
+		}
+		for _, v := range item.Value.ArrayValue.Values {
+			if v.StringValue != "" {
+				ids = append(ids, v.StringValue)
+			}
+		}
+	}
+	return ids
 }
 
 func isolateGit(t *testing.T) {
