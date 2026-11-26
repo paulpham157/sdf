@@ -11,17 +11,20 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 
 	"github.com/paulpham157/sdf/internal/dbfile"
 	"github.com/paulpham157/sdf/internal/record"
@@ -114,8 +117,10 @@ const busyTimeoutMS = 5000
 // opens, before the busy timeout applies).
 //
 // When the file is in WAL mode, the writer connection sets
-// PRAGMA synchronous=NORMAL. That pragma is per connection and is not stored
-// in the file, so a reader keeps SQLite's default FULL. Under WAL, NORMAL
+// PRAGMA synchronous=NORMAL. The pool is one connection. When database/sql
+// replaces it, the new connection sets NORMAL again if it is in WAL mode.
+// The pragma is per connection and is not stored in the file, so a reader
+// keeps SQLite's default FULL. Under WAL, NORMAL
 // does not corrupt the database: an application crash is safe, and a power
 // loss or operating-system crash can lose only the most recently committed
 // transactions. The ledger stays at synchronous=FULL. An in-memory store and
@@ -157,14 +162,15 @@ func open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", name)
+	db, err := openWriterDB(name)
 	if err != nil {
 		return nil, err
 	}
 	// One connection. synchronous=NORMAL and the prepared insert belong to
-	// it. Idle is capped at one so that connection stays checked in. If the
-	// driver reports it broken, the replacement comes up at FULL, which is
-	// slower and still durable.
+	// it. Idle is capped at one so that connection stays checked in. A
+	// replacement is a new physical connection: the writer's connector sets
+	// NORMAL again when that connection is in WAL mode, and database/sql
+	// re-prepares the insert on it.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	s := &Store{path: path, db: db}
@@ -260,10 +266,95 @@ func setWAL(db *sql.DB) error {
 // FULL, the SQLite default, is 2.
 const synchronousNormal = 1
 
+// openWriterDB opens dsn on a driver whose connections belong to this
+// writer. The package driver ("sqlite") is left alone, so a reader and the
+// ledger do not run this hook.
+//
+// database/sql calls Connect again when it discards the single connection.
+// The hook then sets synchronous=NORMAL only if that new connection is in
+// WAL mode. A new file is not in WAL yet on the first connect; setWAL and
+// setWriterSynchronous run after this returns, on that first connection.
+func openWriterDB(dsn string) (*sql.DB, error) {
+	drv := &sqlite.Driver{}
+	drv.RegisterConnectionHook(func(conn sqlite.ExecQuerierContext, _ string) error {
+		return writerSynchronousHook(conn)
+	})
+	return sql.OpenDB(&writerConnector{drv: drv, dsn: dsn}), nil
+}
+
+type writerConnector struct {
+	drv *sqlite.Driver
+	dsn string
+}
+
+func (c *writerConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.drv.Open(c.dsn)
+}
+
+func (c *writerConnector) Driver() driver.Driver { return c.drv }
+
+func writerSynchronousHook(conn sqlite.ExecQuerierContext) error {
+	mode, err := pragmaText(conn, `PRAGMA journal_mode`)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return nil
+	}
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA synchronous = NORMAL`, nil); err != nil {
+		return err
+	}
+	got, err := pragmaText(conn, `PRAGMA synchronous`)
+	if err != nil {
+		return err
+	}
+	if got != strconv.Itoa(synchronousNormal) {
+		return fmt.Errorf("store: synchronous=%s after setting NORMAL under WAL, want %d", got, synchronousNormal)
+	}
+	return nil
+}
+
+func pragmaText(conn sqlite.ExecQuerierContext, query string) (string, error) {
+	rows, err := conn.QueryContext(context.Background(), query, nil)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	dest := make([]driver.Value, len(rows.Columns()))
+	if err := rows.Next(dest); err != nil {
+		if errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("store: %s returned no row", query)
+		}
+		return "", err
+	}
+	return driverValueString(dest[0]), nil
+}
+
+func driverValueString(v driver.Value) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case int:
+		return strconv.Itoa(t)
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
 // setWriterSynchronous sets PRAGMA synchronous=NORMAL on db's connection
-// when the file is in WAL mode. It does nothing otherwise. The setting is
-// not written to the file: a connection opened separately (sdf summary)
-// still reads FULL, and the ledger's own connection is unchanged.
+// when the file is in WAL mode. It does nothing otherwise. The first
+// connection of a new file reaches WAL only after setWAL, which is after
+// the connector hook has already run, so this covers that connection. A
+// later connection is covered by the hook. The setting is not written to
+// the file: a connection opened separately (sdf summary) still reads FULL,
+// and the ledger's own connection is unchanged.
 func setWriterSynchronous(db *sql.DB) error {
 	var mode string
 	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
