@@ -14,16 +14,6 @@ set -euo pipefail
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
-if [[ -z "${RUNNER_TEMP:-}" ]]; then
-  echo "::error::gitleaks: RUNNER_TEMP is not set; refusing to scan"
-  exit 1
-fi
-
-curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
-  "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
-tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
-
 is_sha() {
   [[ "$1" =~ ^[0-9a-fA-F]{40}$ || "$1" =~ ^[0-9a-fA-F]{64}$ ]]
 }
@@ -118,11 +108,7 @@ scan_gated() {
       ;;
   esac
   refuse_extra_refs
-
-  if [[ -z "${log_opts}" || "${range_count}" == "" ]]; then
-    echo "::error::gitleaks: empty scan range; refusing to scan"
-    exit 1
-  fi
+  refuse_empty_range
   case " ${log_opts} " in
     *" --all "*)
       echo "::error::gitleaks: gating scan must not pass --all"
@@ -158,15 +144,41 @@ scan_scheduled() {
     --log-opts="--full-history --all --diff-filter=tuxdb"
 }
 
-case "${GITLEAKS_EVENT:-}" in
-  pull_request|push)
-    scan_gated
-    ;;
-  schedule)
-    scan_scheduled
-    ;;
-  *)
-    echo "::error::gitleaks: GITLEAKS_EVENT must be pull_request, push, or schedule; refusing to scan"
+# An empty count and a count of 0 are both an empty range. Zero would let
+# gitleaks exit 0 without looking at a commit. Any other non-positive value
+# is refused the same way.
+refuse_empty_range() {
+  if [[ -z "${log_opts}" || ! "${range_count}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::gitleaks: empty scan range; refusing to scan"
     exit 1
-    ;;
-esac
+  fi
+}
+
+main() {
+  if [[ -z "${RUNNER_TEMP:-}" ]]; then
+    echo "::error::gitleaks: RUNNER_TEMP is not set; refusing to scan"
+    exit 1
+  fi
+
+  curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+    "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+  echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+  tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+
+  case "${GITLEAKS_EVENT:-}" in
+    pull_request|push)
+      scan_gated
+      ;;
+    schedule)
+      scan_scheduled
+      ;;
+    *)
+      echo "::error::gitleaks: GITLEAKS_EVENT must be pull_request, push, or schedule; refusing to scan"
+      exit 1
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

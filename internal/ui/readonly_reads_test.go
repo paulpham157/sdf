@@ -145,11 +145,19 @@ func TestUIReadsDoNotBlockInsert(t *testing.T) {
 		t.Fatal("no UI read completed")
 	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	median := latencies[len(latencies)/2]
 	p90 := latencies[len(latencies)*9/10]
 	t.Logf("full read %v; %d UI reads; insert latency median %v p90 %v max %v",
-		readTime, reads, latencies[len(latencies)/2], p90, latencies[len(latencies)-1])
-	if limit := readTime / 3; p90 > limit {
-		t.Fatalf("Insert p90 latency %v while the UI was reading exceeds %v (a full read takes %v): UI reads are blocking ingest", p90, limit, readTime)
+		readTime, reads, median, p90, latencies[len(latencies)-1])
+	// A blocked Insert waits out the rest of the UI read, so the median
+	// moves with readTime. p90 on a loaded runner jitters above readTime/3
+	// without the writer mutex being held (one oldstable run: median 6.6ms,
+	// p90 75ms, full read 184ms). p90 still has to finish inside one read.
+	if limit := readTime / 3; median > limit {
+		t.Fatalf("Insert median latency %v while the UI was reading exceeds %v (a full read takes %v): UI reads are blocking ingest", median, limit, readTime)
+	}
+	if p90 >= readTime {
+		t.Fatalf("Insert p90 latency %v is at least one full read (%v): UI reads are blocking ingest", p90, readTime)
 	}
 }
 
