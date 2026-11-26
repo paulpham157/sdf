@@ -91,6 +91,10 @@ accepted on two sessions, or when nothing was merged.
 
 ## Decision records
 
+[![sdf decision subcommands in help order, then the session-start brief and the check before an action.](diagrams/04-decision-commands.png)](diagrams/04-decision-commands.png)
+
+Source: [04-decision-commands.tldr](diagrams/04-decision-commands.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 A decision is something a caller writes down. The summary does not infer one
 from telemetry, and recording one changes nothing about collection or
 summarization.

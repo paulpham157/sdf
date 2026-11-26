@@ -79,10 +79,8 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Tasks](tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [Verify](verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [GitHub Action](action.md) | The `sdf verify` GitHub Action, and its threat model |
-| [Diagrams](diagrams/README.md) | Architecture, receiver, decision, verify, ledger, CI, and agent-span drawings (tldraw `.tldr` sources and PNG renders) |
-| [Gaps](gaps.md) | Known limits of the collector and the summary |
-| [Design tokens](design/tokens.md) | Shared cream, charcoal, and rust tokens, and how the UI, the docs site, and the landing page use them |
-| [Session boundaries](research/session-boundary.md) | How each agent marks session open and close |
+| [Decision categories](design/decision-category.md) | Phase 0 spec for an optional `category` on a decision record. Not implemented yet |
+| [Architecture decisions](adr/README.md) | Records of choices about the project. The first one, still proposed, recommends keeping tldraw for the documentation diagrams |
 
 The product site is [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/).
 Source, issues, and releases are on [GitHub](https://github.com/paulpham157/sdf).

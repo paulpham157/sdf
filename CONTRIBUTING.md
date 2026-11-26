@@ -105,7 +105,7 @@ link to that page's source file. The header has a Website link to the
 product site, on desktop and on a phone. That control is
 `docs/overrides/partials/header.html`, a copy of the mkdocs-material 9.8.2
 header partial, and it has to be re-synced when Material is upgraded. The
-theme follows `design/tokens.css` (see `docs/design/tokens.md`), including
+theme follows `design/tokens.css` (see [`design/tokens.md`](design/tokens.md)), including
 a dark scheme the reader can select. The app UI stays light.
 Skill files under `skills/` are included at build time so the relative
 links already in the docs keep working.
@@ -151,4 +151,24 @@ Docs workflow on `main` (`workflow_dispatch`).
 
 No extra token or Actions secret is required. The deploy job uses the
 default `GITHUB_TOKEN` with `pages: write` and `id-token: write`.
+
+## Developer and internal documentation
+
+The site at <https://docs.softwaredecisionfabric.tech/> is for people
+learning and using `sdf`. The notes below stay in this repository.
+`CONTRIBUTING.md` is their index. Skill pages live in `skills/` and are
+published under Reference, because they tell an agent how to record and
+check decisions. Record user-visible changes in `CHANGELOG.md` under
+`[Unreleased]`.
+
+| Document | What it covers |
+| --- | --- |
+| [design/tokens.md](design/tokens.md) | Shared cream, charcoal, and rust tokens, and how the UI, the docs site, and the landing page use them. Sits beside `design/tokens.json`, `design/tokens.py`, and `design/tokens.css`. |
+| [dev-docs/gaps.md](dev-docs/gaps.md) | Known limits of the collector and the summary |
+| [dev-docs/research/session-boundary.md](dev-docs/research/session-boundary.md) | How each agent marks session open and close |
+| [dev-docs/diagrams.md](dev-docs/diagrams.md) | How to open, edit, and re-export the tldraw diagrams. The `.tldr` sources and PNG renders stay in `docs/diagrams/` because the user guides embed them. |
+| [docs/adr/README.md](docs/adr/README.md) | Architecture decision records. [ADR 0001](docs/adr/0001-diagram-tool-excalidraw-vs-tldraw.md) proposes keeping tldraw for those diagrams. |
+
+When a limit or a session-boundary fact changes, update the matching file
+here and the user guide in `docs/` that describes the behavior.
 

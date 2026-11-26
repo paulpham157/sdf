@@ -8,15 +8,16 @@ The Markdown under docs/ is left unchanged. At build time this hook:
   scripts to the MkDocs file set
 - writes a small index page for the scripts directory
 - rewrites the few links whose repo-relative targets would miss the
-  site layout (docs pages pointing at ../skills/..., skill pages
-  pointing at ../docs/..., and docs/diagrams/README.md pointing at
-  ../../README.md and ../../CONTRIBUTING.md)
+  site layout (docs pages pointing at ../skills/..., and skill pages
+  pointing at ../docs/...)
 - points the view-on-GitHub link on skill pages at the real source path
 - marks the File/Role table and lets table code wrap after a hyphen or "/"
+- writes static redirect pages for the developer notes that left the site
 """
 
 from __future__ import annotations
 
+import html
 import re
 from pathlib import Path
 
@@ -49,19 +50,6 @@ PAGE_LINK_REWRITES = {
     ),
     "skills/sdf-decisions/SKILL.md": (
         (re.compile(r"\]\(\.\./\.\./docs/outcomes\.md\)"), "](../../outcomes.md)"),
-    ),
-    # PR #325: docs/diagrams/README.md links to repo-root files that are
-    # not part of the MkDocs docs_dir. Point those at GitHub so --strict
-    # still passes once that tree is merged.
-    "diagrams/README.md": (
-        (
-            re.compile(r"\]\(\.\./\.\./README\.md\)"),
-            "](https://github.com/paulpham157/sdf/blob/main/README.md)",
-        ),
-        (
-            re.compile(r"\]\(\.\./\.\./CONTRIBUTING\.md\)"),
-            "](https://github.com/paulpham157/sdf/blob/main/CONTRIBUTING.md)",
-        ),
     ),
 }
 
@@ -139,8 +127,8 @@ def on_page_markdown(
     src = page.file.src_uri.replace("\\", "/")
     for pattern, repl in PAGE_LINK_REWRITES.get(src, ()):
         markdown = pattern.sub(repl, markdown)
-    # docs/*.md and docs/research/*.md use ../skills/... ; the generated
-    # scripts index and skill pages do not.
+    # docs/*.md uses ../skills/... ; the generated scripts index and
+    # skill pages do not.
     if not src.startswith("skills/"):
         for pattern, repl in DOCS_SKILL_REWRITES:
             markdown = pattern.sub(repl, markdown)
@@ -229,6 +217,44 @@ def on_page_content(
     html: str, page: Page, config: MkDocsConfig, files: Files
 ) -> str:
     return _table_code_breaks(html)
+
+
+# Old public URLs. Each page is a canonical link, a refresh, and a fallback
+# anchor. The targets are files in this repository, not pages on the site.
+REDIRECTS = {
+    "gaps/index.html": "https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md",
+    "design/tokens/index.html": "https://github.com/paulpham157/sdf/blob/main/design/tokens.md",
+    "research/session-boundary/index.html": (
+        "https://github.com/paulpham157/sdf/blob/main/dev-docs/research/session-boundary.md"
+    ),
+    "diagrams/index.html": "https://github.com/paulpham157/sdf/blob/main/dev-docs/diagrams.md",
+}
+
+
+def _redirect_page(url: str) -> str:
+    safe = html.escape(url, quote=True)
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f'<link rel="canonical" href="{safe}">\n'
+        f'<meta http-equiv="refresh" content="0; url={safe}">\n'
+        "<title>Moved</title>\n"
+        "</head>\n"
+        "<body>\n"
+        f'<p><a href="{safe}">This page has moved.</a></p>\n'
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def on_post_build(config: MkDocsConfig) -> None:
+    site = Path(config.site_dir)
+    for rel, url in REDIRECTS.items():
+        dest = site / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(_redirect_page(url), encoding="utf-8")
 
 
 def on_pre_page(page: Page, config: MkDocsConfig, files: Files) -> Page:

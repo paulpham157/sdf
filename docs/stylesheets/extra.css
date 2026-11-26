@@ -610,8 +610,8 @@ body {
   }
 }
 
-/* A figure is the link. Don't underline the picture, and don't break
-   tokens in the diagrams index the way a wide table does. */
+/* A figure is the link. Leave the picture without an underline, and keep
+   code under an h3 unbroken, including path lists. */
 .md-typeset a:has(> img) {
   border-bottom: none;
 }
@@ -806,10 +806,11 @@ html .md-footer-meta.md-typeset a,
   color: var(--sdf-color-text-muted);
 }
 
-/* Diagram PNGs are drawn for a light page. Plate those, not screenshots
-   such as decisions-ui.png. The index page's images have no diagrams/
-   segment in the src, so they carry .sdf-diagram. radius-md is 6px.
-   space-3 times --docs-rem is 12px when Material's root is 20px. */
+/* Diagram PNGs are drawn for a light page. Plate images whose URL
+   contains diagrams/, and images with .sdf-diagram (used when the src
+   has no diagrams/ segment). Leave screenshots such as decisions-ui.png
+   alone. radius-md is 6px. space-3 times --docs-rem is 12px when
+   Material's root is 20px. The authoring index is dev-docs/diagrams.md. */
 [data-md-color-scheme="slate"] .md-typeset img[src*="diagrams/"],
 [data-md-color-scheme="slate"] .md-typeset img.sdf-diagram {
   background-color: var(--sdf-color-diagram-plate);

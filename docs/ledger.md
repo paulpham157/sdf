@@ -84,7 +84,10 @@ file read-only (`mode=ro`), and they never change the ledger file.
   `SQLITE_BUSY` or `SQLITE_LOCKED` has rolled back, and it is retried with
   backoff for up to 10 seconds. The handle's lock is released between
   attempts, so other calls on the same handle are not blocked while it waits.
-  Commits use `synchronous=FULL`.
+  Commits use `synchronous=FULL`, including under WAL, so a committed
+  append survives a power loss. The telemetry store's writer connection
+  uses `synchronous=NORMAL` once that file is in WAL mode (see
+  [Durability of ingested rows](receiver.md#durability-of-ingested-rows)).
 
 ## What is stored
 

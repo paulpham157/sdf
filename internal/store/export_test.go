@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"time"
 )
 
 // Schema is the store schema, for tests that build a database by hand.
@@ -20,6 +22,59 @@ func Pragmas(s *Store) (mode string, busyTimeout int, err error) {
 	}
 	err = s.db.QueryRow(`PRAGMA busy_timeout`).Scan(&busyTimeout)
 	return mode, busyTimeout, err
+}
+
+// SynchronousNormal is the integer PRAGMA synchronous returns for NORMAL.
+// SynchronousFull is SQLite's default, FULL.
+const (
+	SynchronousNormal = synchronousNormal
+	SynchronousFull   = 2
+)
+
+// ExpireWriterConn makes the next use of s discard the pooled writer
+// connection and open another. The replacement runs the writer's connection
+// hook.
+func ExpireWriterConn(s *Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db.SetConnMaxLifetime(time.Nanosecond)
+}
+
+// KeepWriterConn stops ExpireWriterConn from discarding further connections,
+// so the connection just opened stays in the pool.
+func KeepWriterConn(s *Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db.SetConnMaxLifetime(0)
+}
+
+// WriterConnID is the pooled connection's pointer, for tests that check a
+// replacement really happened.
+func WriterConnID(s *Store) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	conn, err := s.db.Conn(context.Background())
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	var id string
+	err = conn.Raw(func(driverConn any) error {
+		id = fmt.Sprintf("%p", driverConn)
+		return nil
+	})
+	return id, err
+}
+
+// Synchronous reports PRAGMA synchronous on s's connection. The value is
+// per connection: the writer pool is one connection, and a reader opened
+// on the same file has its own.
+func Synchronous(s *Store) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var level int
+	err := s.db.QueryRow(`PRAGMA synchronous`).Scan(&level)
+	return level, err
 }
 
 // DropRetractionsForTest removes decision_retractions from a file, to stand

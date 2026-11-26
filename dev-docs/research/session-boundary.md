@@ -3,7 +3,7 @@
 Checked 2026-11-14. None of the four agents exports both edges of a session as
 OTLP, so a collector that wants an explicit open and close has to get them
 from a hook or a plugin. The id the collector already keys on differs per
-agent ([docs/agents.md](../agents.md)): `session.id` for Claude Code and
+agent ([docs/agents.md](../../docs/agents.md)): `session.id` for Claude Code and
 OpenCode, `conversation.id` for Codex, `pi.session.id` for Pi.
 
 ## Claude Code
@@ -122,7 +122,7 @@ and `fork`, which replace the session rather than end it.
 ## What still gets missed
 
 A commit made outside the agent never passes through any of these events,
-which is why the git hook in [docs/receiver.md](../receiver.md) reads the
+which is why the git hook in [docs/receiver.md](../../docs/receiver.md) reads the
 session id from the environment instead of from telemetry.
 
 A session that crashes or is killed never emits its end event. `SessionEnd`

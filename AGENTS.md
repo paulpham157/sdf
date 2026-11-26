@@ -27,9 +27,14 @@ Details are in `CONTRIBUTING.md`.
 `tests/samples/` is hand-written OTLP marked `sdf.fixture=sample`. Do not
 replace it with a capture from a live agent.
 
-Docs: `README.md` is the short overview. `docs/` holds the detail (what each
-agent exports, the receiver, content storage and `sdf redact`, the summary
-and computed cost, outcomes, decision records and the local budget, `sdf
-check`, tasks and `sdf verify`, the ledger and `sdf audit`, and known
-gaps). When behavior changes, update the doc that describes it rather than
-growing the README.
+Docs: `README.md` is the short overview. `docs/` is what the public site
+publishes (what each agent exports, the receiver, content storage and
+`sdf redact`, the summary and computed cost, outcomes, decision records
+and the local budget, `sdf check`, tasks and `sdf verify`, the ledger and
+`sdf audit`). Known gaps (`dev-docs/gaps.md`), session-boundary research
+(`dev-docs/research/session-boundary.md`), design tokens
+(`design/tokens.md`), and diagram authoring (`dev-docs/diagrams.md`) stay
+in the repository. The index is in `CONTRIBUTING.md`. Skill pages live
+in `skills/` and are published under Reference. Record user-visible
+changes in `CHANGELOG.md` under `[Unreleased]`. When behavior changes,
+update the doc that describes it rather than growing the README.

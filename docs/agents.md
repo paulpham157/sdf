@@ -679,7 +679,7 @@ error type, and records `function_args_bytes`, `error_bytes`, and
   last log goes to the latest session of that process run), adds up process
   runs, and subtracts the run's last point before the session, which is what
   an earlier session in the same process had counted; when that cannot be
-  told apart the tokens are unknown (see [docs/gaps.md](gaps.md)). Input
+  told apart the tokens are unknown (see [known gaps](https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md)). Input
   includes cached tokens. With OpenAI-compatible providers (the default)
   output includes thoughts, which Qwen estimates from text when the provider
   does not report them; with Gemini-native responses it does not. The totals

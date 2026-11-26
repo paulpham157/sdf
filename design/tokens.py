@@ -149,7 +149,7 @@ def css_value(raw):
 def render(tokens):
     lines = [
         "/* SDF design tokens. Generated from design/tokens.json by design/tokens.py.",
-        "   Do not edit by hand. Spec: docs/design/tokens.md.",
+        "   Do not edit by hand. Spec: design/tokens.md.",
         "   Self-contained on purpose: no imports, no external references. The UI keeps",
         "   a byte-identical copy at internal/ui/assets/tokens.css.",
         "   Dark semantic colors are opt-in under the selector below. There is no",

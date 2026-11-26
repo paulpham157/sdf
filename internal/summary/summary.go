@@ -2213,7 +2213,7 @@ func later(a, b point) bool {
 // sends no start time. Points of one group with the same time are one point:
 // the one stored last wins.
 //
-// Known limits (docs/gaps.md): two concurrent processes with the same start
+// Known limits (dev-docs/gaps.md): two concurrent processes with the same start
 // time (or no start time and the same resource) are read as one run or as
 // resets; a restart without a start time whose first value is not lower than
 // the last one is not seen, which undercounts.

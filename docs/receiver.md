@@ -165,6 +165,31 @@ sqlite3 sdf-telemetry.sqlite ".backup sdf-telemetry.backup.sqlite"
 WAL needs shared memory between processes on one host, so keep the
 database on a local disk, not a network filesystem (NFS, SMB).
 
+### Durability of ingested rows
+
+The telemetry writer opened through `store.Open` sets `PRAGMA synchronous=NORMAL`
+on its connection after the file is in WAL mode. `sdf serve`, `sdf decision add`,
+`sdf decision link`, `sdf decision retract`, and the recall harness write
+through that open. The pool is one connection. When it is replaced, the new
+connection sets `NORMAL` again if that connection is in WAL mode. The pragma
+is per connection. It is not stored in the file, and a reader (`sdf summary`,
+any read-only open) keeps SQLite's default `FULL`. An in-memory store and a
+file that stays in rollback-journal mode also keep `FULL`: outside WAL,
+`NORMAL` can leave a database inconsistent after a power loss. The ledger is
+a different file and stays at `synchronous=FULL`; see
+[Journal mode](ledger.md#journal-mode-and-what-a-read-may-touch).
+
+Under WAL, `NORMAL` does not fsync the WAL on every commit. SQLite still
+syncs the WAL before a checkpoint and the database file after one. From
+SQLite's synchronous rules:
+
+- An application crash is safe. A transaction SQLite has committed is
+  durable across a crash of sdf, in WAL mode, at any synchronous setting.
+- A power loss or an operating-system crash can lose the most recently
+  committed transactions. Those transactions can roll back the next time
+  the file is opened. The database is not corrupted: WAL mode with
+  `synchronous=NORMAL` stays consistent.
+
 ## Content storage
 
 sdf drops content before anything is stored, for every agent, whatever the
@@ -221,7 +246,7 @@ is the same as before. The size of each dropped text value is recorded as
 in `sdf.redacted`. A `git_commit_id` inside Claude Code's `tool_parameters`
 is copied to `sdf.git_commit_id` first, so commit links still work. Span
 events and metric exemplars are never stored. Content under a key sdf does
-not know is stored; see [gaps](gaps.md).
+not know is stored; see [known gaps](https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md).
 
 To keep the text, opt in when starting the receiver:
 
@@ -828,6 +853,10 @@ current directory's `.gemini/settings.json` does, noting it applies only in a
 trusted folder.
 
 ## Git hooks
+
+[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](diagrams/10-git-hooks.png)](diagrams/10-git-hooks.png)
+
+Source: [10-git-hooks.tldr](diagrams/10-git-hooks.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 Pi, OpenCode, Codex, Grok CLI, and Qwen Code do not export a commit SHA, and
 Claude Code exports one only with `OTEL_LOG_TOOL_DETAILS=1`. `sdf init --git-hooks`

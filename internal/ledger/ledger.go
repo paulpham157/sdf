@@ -506,6 +506,7 @@ func (s *Store) writeDB() (*sql.DB, error) {
 		return nil, err
 	}
 	// synchronous(FULL) keeps a committed append durable across power loss.
+	// The telemetry store uses NORMAL under WAL; the ledger does not.
 	// WAL is set by Append (setWAL), not here: a journal_mode pragma run while
 	// a connection opens can fail with SQLITE_BUSY before the busy timeout
 	// applies.
