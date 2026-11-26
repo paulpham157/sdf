@@ -163,10 +163,39 @@
     return parts.join(", ") || String(totals.linked);
   }
 
+  // Path data is copied from docs/images/logo.svg. Colors are classes so the
+  // mark is not redrawn and the page carries no inline style attribute.
+  function markLogo() {
+    const weave = [
+      "M113.7 33.7 L194.3 114.3",
+      "M87.7 59.7 L168.3 140.3",
+      "M61.7 85.7 L128.0 152.0",
+      "M142.3 33.7 L61.7 114.3",
+      "M168.3 59.7 L87.7 140.3",
+      "M128.0 152.0 L98.0 206.0",
+    ];
+    return s("svg", {
+      class: "mark-logo",
+      viewBox: "0 0 256 256",
+      "aria-hidden": "true",
+    }, [
+      s("rect", { class: "mark-tile", width: "256", height: "256" }),
+      s("g", { class: "mark-weave" }, weave.map(function (d) { return s("path", { d: d }); })),
+      s("path", { class: "mark-thread", d: "M194.3 85.7 L128.0 152.0 L158.0 206.0" }),
+    ]);
+  }
+
+  function routeTitle(current) {
+    if (current && current.name === "sessions") return "Sessions · SDF";
+    if (current && current.name === "detail") return "Session · SDF";
+    if (current && current.name === "decisions") return "Decisions · SDF";
+    return "Overview · SDF";
+  }
+
   function header(active) {
     return h("header", { class: "top" }, [
       h("div", { class: "mark" }, [
-        h("div", { class: "mark-badge" }, ["SDF"]),
+        markLogo(),
         h("div", null, [
           h("h1", null, ["SDF"]),
           h("p", null, ["Cost per accepted outcome"]),
@@ -422,6 +451,9 @@
     return nice * pow;
   }
 
+  // Series 1 and 2 are close in luminance, so adjacent columns keep a 1px gap.
+  const CHART_COLUMN_GAP = 1;
+
   function lineChart(days, values, opts) {
     if (!days.length) return null;
     const box = chartLayout(days.length);
@@ -460,7 +492,7 @@
         const x = box.pad.l + i * groupW + (groupW - inner) / 2 + si * barW;
         const y = box.pad.t + box.ih - h;
         kids.push(s("rect", {
-          x: x, y: y, width: Math.max(barW - 1, 1), height: Math.max(h, v > 0 ? 1 : 0),
+          x: x, y: y, width: Math.max(barW - CHART_COLUMN_GAP, 1), height: Math.max(h, v > 0 ? 1 : 0),
           class: srow.cls || "chart-bar-a",
         }));
       });
@@ -743,7 +775,7 @@
       h("p", { class: "kicker" }, ["Sessions"]),
       filters,
       h("div", { class: "table-scroll" }, [
-        h("table", { class: "wide" }, [
+        h("table", { class: "wide dense" }, [
           h("thead", null, [h("tr", null, columns().map(function (col) {
             const active = sortKey === col.key;
             const aria = active ? (sortDir < 0 ? "descending" : "ascending") : "none";
@@ -1407,17 +1439,17 @@
     return { x: DG.laneX[node.lane] || DG.laneX.spine, y: DG.top + node.row * DG.rowH + DG.nodeH / 2 };
   }
 
-  function lockIcon(x, y, color) {
-    return s("g", { transform: "translate(" + x + "," + y + ")", "aria-hidden": "true" }, [
-      s("path", { d: "M-4 -1 v-3 a4 4 0 0 1 8 0 v3", fill: "none", stroke: color, "stroke-width": "1.7" }),
-      s("rect", { x: "-6", y: "-1", width: "12", height: "9", rx: "1.5", fill: color }),
+  function lockIcon(x, y, tone) {
+    return s("g", { transform: "translate(" + x + "," + y + ")", class: "dg-lock-" + tone, "aria-hidden": "true" }, [
+      s("path", { d: "M-4 -1 v-3 a4 4 0 0 1 8 0 v3", class: "dg-lock-shackle" }),
+      s("rect", { x: "-6", y: "-1", width: "12", height: "9", rx: "1.5", class: "dg-lock-body" }),
     ]);
   }
 
   function dgGlyph(type, x, y, label) {
     let shape;
     if (type.style === "lock") {
-      shape = [s("circle", { cx: x, cy: y, r: 11, class: "dg-glyph-lock" }), lockIcon(x, y - 1.5, "#8a4b08")];
+      shape = [s("circle", { cx: x, cy: y, r: 11, class: "dg-glyph-lock" }), lockIcon(x, y - 1.5, "locked")];
     } else if (type.style === "crack") {
       shape = [
         s("rect", { x: x - 9, y: y - 9, width: 18, height: 18, transform: "rotate(45 " + x + " " + y + ")", class: "dg-glyph-crack" }),
@@ -1621,7 +1653,7 @@
     });
     if (node.role === "locked" || node.role === "locked_ending") {
       kids.push(s("circle", { cx: l + w - 16, cy: p.y + 5, r: 10, class: "dg-lock-ring" }));
-      kids.push(lockIcon(l + w - 16, p.y + 4, node.role === "locked" ? "#8a4b08" : "#5e584e"));
+      kids.push(lockIcon(l + w - 16, p.y + 4, node.role === "locked" ? "locked" : "muted"));
     }
     return kids;
   }
@@ -3182,6 +3214,7 @@
     const kept = active && app.contains && app.contains(active) ? dgFocusKey(active) : "";
     try {
       current = route();
+      document.title = routeTitle(current);
       if (!snapshot && !loadError) {
         shell(current.name, h("p", { class: "detail" }, ["Reading the summary…"]));
         return;
@@ -3198,6 +3231,7 @@
       shell(current.name, body);
       dgRestoreFocus(current, kept);
     } catch (err) {
+      document.title = routeTitle(current);
       const message = err && err.message ? err.message : "The page could not be drawn.";
       shell(current.name, h("div", { class: "error" }, [h("p", null, [message])]));
     }

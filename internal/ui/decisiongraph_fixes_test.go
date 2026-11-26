@@ -64,7 +64,7 @@ func TestDecisionNodesCarryKeyboardRing(t *testing.T) {
 		}
 	}
 	css := readAsset(t, "app.css")
-	if !strings.Contains(css, ".dg-node:focus-visible .dg-kb-ring { stroke: var(--green); stroke-width: 2.5; }") {
+	if !strings.Contains(css, ".dg-node:focus-visible .dg-kb-ring { stroke: var(--sdf-color-focus); stroke-width: 2.5; }") {
 		t.Error("app.css has no keyboard ring rule")
 	}
 	for _, m := range regexp.MustCompile(`(?m)^[^{}\n]*dg-kb-ring[^{}\n]*\{`).FindAllString(css, -1) {
@@ -152,7 +152,7 @@ func TestDecisionFilterMutesWithoutOpacity(t *testing.T) {
 	if regexp.MustCompile(`dg-muted[^{]*\{[^}]*opacity`).MatchString(css) {
 		t.Error("muted nodes still fade with opacity")
 	}
-	if !strings.Contains(css, ".dg-node.dg-muted .dg-title, .dg-node.dg-muted .dg-detail { fill: #3a352e; }") {
+	if !strings.Contains(css, ".dg-node.dg-muted .dg-title, .dg-node.dg-muted .dg-detail { fill: var(--sdf-graph-muted-text); }") {
 		t.Error("muted node text is not recoloured with the dim palette")
 	}
 }

@@ -992,7 +992,7 @@ func TestReadOnlyAndLoopback(t *testing.T) {
 	if wide.BindWarning() == "" || !strings.Contains(wide.BindWarning(), "prompts and paths") {
 		t.Fatal(wide.BindWarning())
 	}
-	for _, name := range []string{"index.html", "app.css", "app.js", "favicon.svg", "favicon.ico"} {
+	for _, name := range []string{"index.html", "tokens.css", "app.css", "app.js", "favicon.svg", "favicon.ico"} {
 		body := readAsset(t, name)
 		if body == "" {
 			t.Fatalf("%s is empty", name)
@@ -1303,10 +1303,11 @@ type pageResult struct {
 	Markup string
 	// Active is the opening tag of document.activeElement after the run
 	// ("" when it is the body), Outside the markup of the body outside the
-	// app root, and Hash the final location.hash.
+	// app root, Hash the final location.hash, and Title document.title.
 	Active  string
 	Outside string
 	Hash    string
+	Title   string
 }
 
 func renderPage(t *testing.T, srv *ui.Server, hash, flags string) pageResult {
@@ -1348,11 +1349,12 @@ func runPage(t *testing.T, base, html, script, hash, flags string) pageResult {
 				Active  string `json:"active"`
 				Outside string `json:"outside"`
 				Hash    string `json:"hash"`
+				Title   string `json:"title"`
 			}
 			if err := json.Unmarshal([]byte(extra), &more); err != nil {
 				t.Fatalf("page extra: %v\n%s", err, extra)
 			}
-			res.Active, res.Outside, res.Hash = more.Active, more.Outside, more.Hash
+			res.Active, res.Outside, res.Hash, res.Title = more.Active, more.Outside, more.Hash, more.Title
 		}
 	}
 	return res
@@ -1794,7 +1796,7 @@ lines.on("close", async () => {
   const active = document.activeElement === body ? "" : openTag(document.activeElement);
   const outside = body.children.filter(function (kid) { return kid !== app; }).map(markup).join("");
   process.stdout.write(app.textContent + "\n/*SDF_PAGE_RESULT*/\n" + markup(app) +
-    "\n/*SDF_PAGE_EXTRA*/\n" + JSON.stringify({ active: active, outside: outside, hash: location.hash }),
+    "\n/*SDF_PAGE_EXTRA*/\n" + JSON.stringify({ active: active, outside: outside, hash: location.hash, title: document.title || "" }),
     // A playing replay leaves an interval running: exit once written.
     () => process.exit(0));
 });
