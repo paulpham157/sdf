@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -292,14 +293,39 @@ func startServeOTLP(t *testing.T, flagToken, tokenFile string) (string, <-chan i
 	go func() {
 		done <- cli.Main(args)
 	}()
-	select {
-	case code := <-done:
-		t.Fatalf("serve exited %d before /health", code)
-	case <-time.After(200 * time.Millisecond):
-	}
 	base := "http://" + httpAddr
-	waitForListener(t, base+"/health")
+	// Poll /health until the process is actually accepting, or until it
+	// exits. A fixed 5s cap expired on a loaded CI runner while this
+	// process was still starting: the listening line was logged after
+	// the waiter had already failed with connection refused.
+	if err := waitForServe(base+"/health", done); err != nil {
+		t.Fatal(err)
+	}
 	return base, done
+}
+
+func waitForServe(url string, done <-chan int) error {
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var last error
+	for {
+		resp, err := http.Get(url)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil
+		}
+		last = err
+		select {
+		case code := <-done:
+			return fmt.Errorf("serve exited %d before %s: %v", code, url, last)
+		case <-deadline.C:
+			return fmt.Errorf("%s not ready: %v", url, last)
+		case <-ticker.C:
+		}
+	}
 }
 
 func assertOTLPAuth(t *testing.T, base, token string) {
@@ -698,7 +724,9 @@ func freeLoopback(t *testing.T) string {
 
 func waitForListener(t *testing.T, url string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// 30s, not 5s. Package tests run beside other packages, and opening
+	// the store can take longer than 5s before the listener is up.
+	deadline := time.Now().Add(30 * time.Second)
 	var last error
 	for {
 		resp, err := http.Get(url)
