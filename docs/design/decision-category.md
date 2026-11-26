@@ -12,6 +12,11 @@ policy, a product choice, an implementation choice, and an operations choice.
 `status` stays `hypothesis` or `decision`. The brief's derived group stays
 named `constraint`. `sdf decision check` stays a match on the statement.
 
+This page also says what `decided_by` is for. It is the GitHub login of
+the team member responsible for the decision. The record does not
+distinguish that person from their agent. The CLI still stores only
+`user`, `agent`, or empty.
+
 ## Decisions
 
 These are decided:
@@ -25,30 +30,45 @@ These are decided:
    same word also names a brief item's group, a check verdict's class, and
    a graph node's box.
 2. The values are `architecture`, `policy`, `product`, `implementation`,
-   and `operations`. Unset is SQL `NULL`, which means uncategorised. There
-   is no `other`. Security, data, and UX do not get values: they cut across
-   the five. A security rule that forbids an action is a `policy`. A
-   security boundary in the design is `architecture`. Free tags that could
-   name those cross-cutting concerns are deferred to phase 4.
+   and `operations`. The field is optional. An agent is not required to set
+   it. When it is unset, the category is `implementation`. Unset is still
+   stored as SQL `NULL`: the column has no SQL default and no backfill.
+   How a reader shows that `NULL` is a proposal under Unset. There is no
+   `other`. Security, data, and UX do not get values: they cut across the
+   five. A security rule that forbids an action is a `policy`. A security
+   boundary in the design is `architecture`. Free tags that could name
+   those cross-cutting concerns are deferred to phase 4.
 3. The value is `policy`, not `constraint`. `constraint` is already the
    brief's derived group. `isConstraint` in
    `internal/decision/brief/brief.go` (the closure at line 102) selects an
-   active record whose `status` is `decision` and that the user made, or
-   that is the source of a `constrains` edge. `RelConstrains` (`constrains`)
-   is a stored relation. A category and that derived group answer different
-   questions, and a record can be one without being the other.
+   active record whose `status` is `decision` and whose stored
+   `decided_by` is the literal `user`, or that is the source of a
+   `constrains` edge. `RelConstrains` (`constrains`) is a stored relation.
+   A category and that derived group answer different questions, and a
+   record can be one without being the other. The literal `user` is the
+   vocabulary stored today. It is not a check that a person made the
+   decision. See Attribution.
 4. `policy` requires `status=decision`. `sdf decision add` rejects a
-   `policy` hypothesis and stores nothing. An agent may record a `policy`
-   with `status=decision`. That add succeeds, and phase 3 warns that the
-   brief does not lock an agent policy. The brief sets `Locked` only for a
-   constraint the user made (`Item.Locked` in the same file).
+   `policy` hypothesis and stores nothing. A `policy` with
+   `status=decision` is stored for whatever `decided_by` the caller
+   passed. There is no warning on that add. The brief sets `Locked` only
+   when `decided_by` is the literal `user` (`Item.Locked` in the same
+   file). This spec does not change `isConstraint`.
 5. `sdf decision check` never reads `category`. It stays statement-only
    (`CheckAction` in `internal/decision/check.go`). A forbid that was filed
    under the wrong category must still block. Gating the check on
    `category=policy` would make a miscategorised forbid fail open.
+6. `decided_by` records the GitHub login of the team member responsible
+   for the decision, for example `paulpham157`. An agent acting for a
+   person records that person's login. The decision record does not
+   distinguish a person from their agent. The purpose of the field is to
+   show who on the team decided. The CLI does not do this yet: `newRecord`
+   accepts only empty, `user`, or `agent`. Resolving the login, and how
+   rows already stored as `user` or `agent` are shown, are proposals under
+   Attribution.
 
-Who normally decides is advisory. `--decided-by` is whatever the caller
-declares. The only pair the CLI refuses is `policy` with `hypothesis`.
+The only pair the CLI refuses, once `category` exists, is `policy` with
+`hypothesis`. `decided_by` is not an access check.
 
 ## Categories
 
@@ -65,54 +85,51 @@ declares. The only pair the CLI refuses is `policy` with `hypothesis`.
 A structural choice. "Store telemetry in SQLite" is architecture. "Keep the
 driver pure Go" is implementation of that choice, and is a different record.
 
-Either the user or the agent normally records it. Both `hypothesis` and
-`decision` are allowed. Useful relations: `supersedes` and `refines` against
-another architecture record, `implements` from the session or commit that
-built it, and `constrains` when this choice limits a later record.
+Both `hypothesis` and `decision` are allowed. The category does not say
+whether a person or an agent wrote the row. Useful relations: `supersedes`
+and `refines` against another architecture record, `implements` from the
+session or commit that built it, and `constrains` when this choice limits
+a later record.
 
 ### policy
 
 A rule, not a topic. "Do not push until the user says so" is a policy.
 "Waiting for the user's OK to push" is a hypothesis and cannot be category
-`policy`; leave it uncategorised, or use `operations` if the open question
-is operational.
+`policy`. Use `operations` when the open question is operational. Omitting
+the category stores `NULL` and, under the Unset proposal, displays as
+`implementation`, so set `operations` when that is the category.
 
-`status` must be `decision`. The user normally records a policy. An agent
-may record one too. Phase 3 prints a warning on that agent add: the brief
-does not lock agent policies. `sdf decision check` still matches the
+`status` must be `decision`. `sdf decision check` still matches the
 statement, because check uses `decision.Active` (every in-force settled
-decision, user or agent), not the brief's locked set. See
-`activeForCheck` in `internal/cli/cli.go`.
+decision, whatever `decided_by` is), not the brief's locked set. See
+`activeForCheck` in `internal/cli/cli.go`. There is no warning when the
+caller records a policy.
 
 Useful relation: `constrains`, from this decision to whatever it limits.
 The relation name stays `constrains`. The category name stays `policy`.
 
-A user decision of any category can still land in the brief's `constraint`
-group, because that group follows who decided and the `constrains` edge,
-not this field. An agent `policy` is not locked unless a later change says
-so. This spec does not change `isConstraint`.
+A decision of any category can still land in the brief's `constraint`
+group, because that group follows the stored `decided_by` word `user` and
+the `constrains` edge, not this field. This spec does not change
+`isConstraint`, and it does not treat a GitHub login as proof of a person.
 
 ### product
 
 A choice about what a person can do or see. "Show agent status in the UI"
 is product. The library used to draw it is implementation.
 
-A settled product decision is the user's. `hypothesis` is allowed for the
-user or the agent. A phase 3 warning when an agent adds one with
-`status=decision` is a proposal, pending owner confirmation. Useful
-relations: `supersedes`, `refines`, and
-`implements` from the session that built the behavior. `blocks` fits while
-an open question still holds the work.
+Both `hypothesis` and `decision` are allowed. Useful relations:
+`supersedes`, `refines`, and `implements` from the session that built the
+behavior. `blocks` fits while an open question still holds the work.
 
 ### implementation
 
 A choice about how code is written inside an architecture that already
 holds. "The SQLite driver stays pure Go" is implementation.
 
-The agent normally records it. The user may record one as well. No warning
-either way: the guidance is who usually does the work, and `--decided-by`
-stays self-declared. Both statuses are allowed. Useful relations:
-`implements`, `refines`, and `supersedes`.
+Both `hypothesis` and `decision` are allowed. An omitted category is this
+one, by the default under Unset. Useful relations: `implements`,
+`refines`, and `supersedes`.
 
 ### operations
 
@@ -120,35 +137,107 @@ A choice about running the system. "Do not deploy on Friday" is operations.
 The same sentence is also a forbid for `sdf decision check deploy`, because
 the statement matches, whatever the category is.
 
-A settled operations decision is the user's. `hypothesis` is allowed.
-A phase 3 warning when an agent adds one with `status=decision` is a
-proposal, pending owner confirmation. Useful relations: `constrains` when
-the rule limits later work, and `supersedes` when the rule is replaced.
+Both `hypothesis` and `decision` are allowed. Useful relations:
+`constrains` when the rule limits later work, and `supersedes` when the
+rule is replaced.
 
 ### Unset
 
-Omitted means uncategorised. The column is `NULL`. JSON omits the field.
-The text list prints `-`, the same placeholder `source` and `decided_by`
-use when empty. Old rows stay in this state. Nothing in phase 1 guesses a
-category from the statement.
+Omitted means the default category, `implementation`. The column is still
+`NULL`. Nothing in phase 1 guesses a category from the statement. Old rows
+stay `NULL`. There is no backfill.
 
-## Guidance
+Proposal, not implemented: readers display `NULL` and an empty string as
+`implementation`, and they leave the stored `NULL` in place. JSON still
+omits the key (`json:"category,omitempty"`), and a missing key means
+`implementation`. A stored token is shown as itself. Explicit
+`--category implementation` stores the token `implementation`. Omitting
+the flag stores `NULL`. Both display as `implementation`. A reader sees
+one category either way, which is what a default is for when the caller
+is not required to set the flag.
 
-| Category | Who normally decides a settled record | Status | Warning in phase 3 |
-| --- | --- | --- | --- |
-| `architecture` | User or agent | `hypothesis` or `decision` | None |
-| `policy` | User. An agent may record one | `decision` only | Decided: agent add, the brief does not lock an agent policy |
-| `product` | User | `hypothesis` or `decision` | Proposal: agent add of a `decision` |
-| `implementation` | Agent | `hypothesis` or `decision` | None |
-| `operations` | User | `hypothesis` or `decision` | Proposal: agent add of a `decision` |
+Storing the token `implementation` whenever the flag is omitted was the
+other option, and it is not the one this proposal takes. That write would
+make an explicit choice and an omitted flag the same bytes, it would
+change the empty-is-unset rule in `newRecord`, and a file from before the
+column would need a backfill this spec already rejects. Display keeps the
+accepted storage rule (nullable, no SQL default, no backfill) and still
+gives every reader one category for an unset field.
 
-"Who normally decides" is advice. It is not an access check. A caller can
-pass `--decided-by user` or `--decided-by agent` on any category. An empty
-`--decided-by` stays legal, as it is today, including on `product` and
-`operations`. The decided phase 3 warning is the agent `policy` warning,
-and it fires only when `--decided-by` is `agent`. A warning when an agent
-records a settled `product` or `operations` decision is a proposal, pending
-owner confirmation. It is not a decided rule.
+Under that proposal the text list prints `implementation` for `NULL` and
+empty. `-` stays the placeholder `source` and `decided_by` use when empty.
+
+## Status
+
+| Category | Status |
+| --- | --- |
+| `architecture` | `hypothesis` or `decision` |
+| `policy` | `decision` only |
+| `product` | `hypothesis` or `decision` |
+| `implementation` | `hypothesis` or `decision`. This is the default when `category` is unset |
+| `operations` | `hypothesis` or `decision` |
+
+No category is tied to a person or an agent. There is no add-time warning
+that tries to tell them apart. See Attribution.
+
+## Attribution
+
+`decided_by` names who on the team is responsible for the decision. The
+value is that person's GitHub login, for example `paulpham157`. An agent
+acting for a person records that person's login. The decision record does
+not distinguish a person from their agent. The hash-chained ledger in
+[Ledger](../ledger.md) is a different file. It does not gain this field,
+and its format does not change. Decisions are not ledger entries.
+
+sdf cannot tell a decision a person made from one their agent made. The
+caller can pass `--decided-by user` or present a token, and an agent on
+the same machine can do each of those itself. A confirm control in the
+web UI is not a way to set the value: the UI and `GET /api/decisions` are
+read-only, and an agent on the same machine could drive a confirm anyway.
+A self-declared value is not evidence of a person. Signing every decision
+was considered and rejected: the cost of a signature on every record is
+too high for what this store is for. sdf does not warn when a record is
+added, and it does not treat `decided_by` as proof that a person, rather
+than an agent, settled the choice.
+
+The CLI today does not accept a login. `newRecord` in
+`internal/decision/decision.go` allows only empty, `user`, or `agent`, and
+any other `--decided-by` is rejected. The add stores nothing. This page
+does not change that code.
+
+Proposal, not implemented. How the login is chosen, in this order:
+
+1. An explicit `--decided-by`. The stored value is that string, trimmed.
+   sdf does not ask GitHub whether the account exists. An explicit empty
+   value stays empty and does not fall through to the next step.
+2. When the flag is omitted, a configured identity. First the `login`
+   field from `gh api user`. If that command is missing or fails, a login
+   the operator configured in git, read with `git config` (for example
+   `github.user`, or `user.name` when the operator already uses the login
+   there). The first value that is non-empty is stored. When none is, the
+   field stays empty, as an omitted flag does today.
+
+This change does not call `gh` or git, and it does not add a config key.
+The order above is the proposal, not a command the binary runs.
+
+Proposal, not implemented. The allow-list of only `user` and `agent` goes
+away when this is built. The value is one line, with the same
+500-character cap as `source`, and no newline. `user` and `agent` stay
+legal writes, so a caller that still passes them keeps working. They are
+not a check of who typed them.
+
+Proposal, not implemented. Rows already stored as `user` or `agent` are
+kept as those strings. Nothing rewrites them. List, brief, check, the
+graph, and the UI display that pair as legacy: the text form prints the
+stored word and a marker, for example `user (legacy)`, and JSON keeps the
+stored string and sets `decided_by_legacy` true for that pair only. The
+marker is omitted otherwise. A login displays as the login, with no
+marker. Empty stays empty and still prints as `-`. A new write of `user`
+or `agent`, after the allow-list is gone, uses the same legacy display.
+
+The brief's lock stays the literal `user` until a later change says
+otherwise. A login does not become locked, and a legacy `agent` does not
+become locked. This spec does not retarget `isConstraint`.
 
 ## Check stays on the statement
 
@@ -156,8 +245,9 @@ owner confirmation. It is not a decided rule.
 `CheckAction` in `internal/decision/check.go` says the id, the reason, and
 the source are not read, and edges are not read. `category` joins that
 list. `decision.Active` (`internal/decision/decision.go`) is the set that
-reaches the matcher: `status` `decision`, `effective_status` `active`, user
-or agent, blocked and conflicted included. A hypothesis never reaches it.
+reaches the matcher: `status` `decision`, `effective_status` `active`,
+whatever `decided_by` is, blocked and conflicted included. A hypothesis
+never reaches it.
 
 Tying a forbid to `category=policy` would drop a real forbid that was
 stored as `implementation` or left unset. The check would allow the action.
@@ -192,8 +282,9 @@ be allowed would bake the bug into the new tests.
 
 ## Phase 1
 
-Schema, domain, CLI, skill, docs, and tests. The brief, the graph, the UI,
-and audit counts wait for phase 2. Warnings wait for phase 3.
+Schema, domain, CLI, docs, and tests. The brief, the graph, the UI, and
+audit counts wait for phase 2. There is no add-time warning. Phase 3 is
+withdrawn. The skill does not gain a requirement to set `--category`.
 
 ### Schema
 
@@ -220,11 +311,11 @@ that schema string (`schemaColumns`). A column that exists only in
 `category` fails on a file no writer has migrated. Listing it in the schema
 string makes `sdf decision list`, `brief`, `check`, `graph`, and the UI
 read `NULL` until a command opens that file with `store.Open`, which runs
-`migrate`. The commands that do are `sdf serve` (`internal/cli/cli.go`
-line 300), `sdf decision add` (line 658), `sdf decision link` (line 746),
-and `sdf decision retract` (line 992). The recall harness also calls
-`store.Open`, on a temporary file it creates
-(`internal/decision/recall/recall.go` line 305), not on the user's store.
+`migrate`. The commands that do are `cmdServe`, `cmdDecisionAdd`,
+`cmdDecisionLink`, and `cmdDecisionRetract` in `internal/cli/cli.go`.
+Each calls `store.Open` on the user's store. The recall harness also
+calls `store.Open`, in `runOne` (`internal/decision/recall/recall.go`),
+on a temporary file it creates, not on the user's store.
 `sdf redact` does not call `store.Open`. A scrub that is not a dry run
 calls `migrate` from `OpenForScrub` (`internal/store/scrub.go`).
 
@@ -239,7 +330,8 @@ inference from the statement text.
 `json:"category,omitempty"`, next to `reason`. Unset is omitted.
 `newRecord` in `internal/decision/decision.go`:
 
-- Trim space. Empty after trim is unset.
+- Trim space. Empty after trim is unset (`NULL`). Readers display it as
+  `implementation` under the Unset proposal.
 - Any other value must be exactly one of the five lowercase tokens.
   `Architecture`, `none`, and a second token are rejected. Exact lowercase
   is consistent with `status`: `hypothesis` and `decision` are matched as
@@ -264,13 +356,22 @@ The flag is optional. `--category` with no value exits 2.
 value; on add it is an unknown category and exits 1.
 
 `sdf decision list` gains `--category`. The value is one of the five
-tokens, or `none`. `none` keeps records whose category is `NULL` or `""`.
-A token keeps records whose stored category is that token, including
-superseded and retracted rows. `effective_status` is not a filter.
-`none` is only this filter sentinel. It is not a stored category, so a
-row that somehow holds the text `none` does not match `--category none`
-and does not match any of the five tokens. Any other filter value exits
-2. A missing value exits 2.
+tokens, or `none`. A token other than `implementation` keeps records
+whose stored category is that token, including superseded and retracted
+rows. `effective_status` is not a filter. `none` is only this filter
+sentinel. It is not a stored category, so a row that somehow holds the
+text `none` does not match `--category none` and does not match any of
+the five tokens. Any other filter value exits 2. A missing value exits 2.
+
+Proposal, not implemented, the same display rule as Unset.
+`--category implementation` keeps a stored `implementation` and a `NULL`
+or empty category. A reader sees both as `implementation`.
+`--category none` is a filter sentinel, not a stored category and not
+that display default. It keeps a stored string outside the five tokens.
+It does not keep `NULL` or empty: those display as `implementation` and
+match `--category implementation` instead. A row that holds the text
+`none` matches neither the sentinel nor any of the five tokens.
+
 Update `decisionListUsage` and the list help test that compares that string
 exactly.
 
@@ -288,8 +389,9 @@ filter first, then the category filter.
 Text from `WriteText` gains a `CATEGORY` column after `STATUS`. The header
 in `internal/decision/decision.go` is today
 `ID, STATUS, EFFECTIVE, DECIDED BY, RECORDED AT, SOURCE, STATEMENT`.
-Empty category prints as `-` via `orDash`. Alternatives and reason stay on
-their own lines under `STATEMENT`.
+Proposal, not implemented: an empty category prints as `implementation`,
+not as `-` via `orDash`. Alternatives and reason stay on their own lines
+under `STATEMENT`.
 
 `--json` stays the graph `WriteJSON` already writes, which is the same
 document as `GET /api/decisions` when no filter is set. With a filter it is
@@ -301,20 +403,27 @@ every record, with the field present only when set.
 
 ### Skill and docs
 
-Proposal, pending owner confirmation: phase 1 would tell
-`skills/sdf-decisions/SKILL.md` to always set `--category` for new records,
-alongside the obligation it already states for `--decided-by`. That
-obligation is not a decided rule. If the owner confirms it, the flag stays
-optional on the CLI so an older record, and an older agent that does not
-send it, still adds. The skill would state the five values, the decided
-`policy` status rule, and who normally decides. It would say a settled
-product or operations decision is the user's, and that an agent policy is
-not a locked brief rule.
+The skill does not require `--category`. An agent may omit it. The earlier
+proposal that phase 1 would tell `skills/sdf-decisions/SKILL.md` to always
+set `--category` is withdrawn. The flag stays optional on the CLI so an
+older record, and an agent that does not send it, still adds. The skill
+states that the field is optional, that unset means `implementation`, that
+`policy` requires `status=decision`, and that `sdf decision check` does
+not read `category`. It does not say that a person, rather than an agent,
+must record a given category.
+
+The skill's working `--decided-by` values stay `user` and `agent` until
+`newRecord` accepts a login. A login passed today is rejected and the add
+stores nothing. The skill says that limit, and it says the login of the
+team member responsible is what the field is for once the CLI accepts it.
+An agent acting for a person records that person's login. sdf does not
+check the value.
 
 `docs/outcomes.md` gains the field on the decision-record description, the
-`add` and `list` usage lines, and the list columns. One sentence in
-Checking an action says the match ignores `category`. This page remains the
-design record.
+`add` and `list` usage lines, and the list columns, when the field is
+implemented. One sentence in Checking an action says the match ignores
+`category`. This page remains the design record. Until that
+implementation, `docs/outcomes.md` describes the CLI that ships.
 
 ## Phase 2
 
@@ -325,7 +434,8 @@ Brief JSON, the graph, the UI, and audit counts.
 `brief.Item` gains `Category` with `json:"category,omitempty"`.
 `Classify` copies it from the record and does not read it for grouping.
 `isConstraint` is unchanged, so a `policy` is not automatically a brief
-constraint, and a user decision of another category can still be one.
+constraint, and a decision stored as `user` of another category can still
+be one. A GitHub login is not treated as `user`.
 
 `textLine` stays `kind`, id, decided-by, statement. The session-start hook
 and the text byte budget must not grow a column. Status is already absent
@@ -345,11 +455,13 @@ field `Decision *decision.Record` with `json:"decision,omitempty"`
 Do not copy category onto a second node field. Do not add a graph role for
 it. Roles stay `path`, `locked`, `hypothesis`, and the rest.
 
-Each chapter gains a tally of decision nodes by category, plus a count of
-uncategorised decision nodes (NULL, empty, or any stored string outside
-the five). Alternatives and endings are not decision nodes and are not
-counted. `Facts` and `Explored` stay as they are. The text form of
-`sdf decision graph` prints the same counts the JSON carries.
+Each chapter gains a tally of decision nodes by category. Proposal, not
+implemented, the same display rule as Unset: `NULL` and empty count as
+`implementation`. A stored string outside the five counts on its own, not
+as `implementation` and not as a sixth category. Alternatives and endings
+are not decision nodes and are not counted. `Facts` and `Explored` stay as
+they are. The text form of `sdf decision graph` prints the same counts the
+JSON carries.
 
 The UI (`internal/ui/assets/app.js`) shows the category next to the
 decision's status in the list, and on the graph detail panel. The chapter
@@ -360,27 +472,23 @@ token.
 (`AuditSchema` in `internal/decision/audit.go`). That name changes when a
 field is removed or renamed. Phase 2 adds total fields and removes none.
 `AuditTotals` gains a count of active decisions for each of the five
-values, plus uncategorised, using the same bucket rule as the graph.
+values, plus a count of stored strings outside the five, using the same
+bucket rule as the graph. `NULL` and empty count as `implementation`.
 Finding lists stay as they are. A reader that ignores unknown JSON keys
 keeps working.
 
 ## Phase 3
 
-Warnings at add time. The record is stored. Exit 0. One line on stderr,
-the same shape as `sdf decision link: warning: …`:
-
-- Decided. `category=policy` and `--decided-by agent`: the brief does not
-  lock an agent policy. Locked brief rules are user decisions
-  (`Item.Locked` in `internal/decision/brief/brief.go`).
-- Proposal, pending owner confirmation. `category` is `product` or
-  `operations`, `status` is `decision`, and `--decided-by agent`: settled
-  product and operations decisions are normally the user's. This warning
-  is not a decided rule.
-
-No warning for `architecture`, for `implementation`, for a hypothesis
-(other than the phase 1 rejection of a `policy` hypothesis), or for an
-empty `--decided-by`. The warning does not change the stored row and is
-not itself a category.
+Withdrawn. There is no warning at add time, for any category, that tries
+to tell a person from an agent. The phase 3 warning for an agent `policy`,
+and the proposed warning when an agent settled a `product` or
+`operations` decision, are both dropped. The reason is Attribution: a
+self-declared `--decided-by` and a token can each be produced by an agent
+on the same machine. The web UI is not a confirm step: it and
+`GET /api/decisions` are read-only. Signing every decision was rejected
+as too costly. The phase 1 rejection of a `policy` hypothesis
+stays. It is a validation error, exit 1, and it stores nothing. It is not
+a warning, and it does not read `decided_by`.
 
 ## Phase 4
 
@@ -431,17 +539,15 @@ Phase 1:
   not write the file.
 - CLI: add with and without `--category`, bad value exits 1 and writes
   nothing, missing flag value exits 2, `list --category` for each value
-  and for `none`, combined with `--session`, text column `-` when unset,
-  `--json` omits the key when unset and matches `GET /api/decisions` when
-  unfiltered.
+  and for `none`, combined with `--session`, text column `implementation`
+  when unset (the display proposal), `--json` omits the key when unset and
+  matches `GET /api/decisions` when unfiltered.
 - Check regression described above, in `internal/decision/check_test.go`.
   It must fail if `CheckAction` starts reading `category`.
 
 Phase 2: brief JSON carries the field and `textLine` does not; the byte
 cap counts it; graph and audit totals; the UI list and the graph panel
-show the label. Phase 3: the decided agent-policy warning on stderr,
-exit 0, and the row stored as given. The product and operations warning
-is tested only if the owner confirms that proposal.
+show the label. Phase 3 has no tests. The warning is withdrawn.
 
 ## Prior art
 
@@ -481,7 +587,7 @@ the counts mean the same thing in every store.
 | Phase | What lands |
 | --- | --- |
 | 0 | This spec. |
-| 1 | Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`. `list --category` with a value or `none`. JSON `omitempty`. `docs/outcomes.md`. Tests, including the check regression. Skill text that always sets `--category` is a proposal, pending owner confirmation. |
-| 2 | Brief JSON field, brief text columns unchanged. Graph and UI labels and counts. Audit totals. |
-| 3 | Decided: a warning at add for an agent policy. Proposal, pending owner confirmation: a warning when an agent settles product or operations. |
+| 1 | Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (proposal: stored `NULL`, not rewritten). `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
+| 2 | Brief JSON field, brief text columns unchanged. Graph and UI labels and counts. Audit totals. `NULL` and empty count as `implementation`. |
+| 3 | Withdrawn. No add-time warning that tries to tell a person from an agent. |
 | 4 | Optional free tags, in their own field, if a later spec still wants them. |

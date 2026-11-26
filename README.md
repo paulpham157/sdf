@@ -21,7 +21,7 @@ without merging. Without `--github`, accepted stays unknown. That
 figure is the computed cost of merged sessions, divided by how many
 there are — not only token or session counts.
 
-The decision layer records who decided (user or agent), why, and which
+The decision layer records who decided (the caller sets `user` or `agent`), why, and which
 alternatives were considered, and links each decision to the sessions and
 commits that implemented it. The Decisions graph shows the path taken,
 paths not taken, blocked or conflicting points, and the cost of that
@@ -207,10 +207,10 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [docs/receiver.md](docs/receiver.md) | The receiver, content storage, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
-| [docs/design/decision-category.md](docs/design/decision-category.md) | Phase 0 spec for an optional `category` on a decision record. Not implemented yet |
+| [docs/design/decision-category.md](docs/design/decision-category.md) | Phase 0 spec. Optional `category`. Proposal: unset is stored as `NULL` and displayed as `implementation`. `decided_by` names a team member's GitHub login. Not implemented yet |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records for the project. [ADR 0001](docs/adr/0001-diagram-tool-excalidraw-vs-tldraw.md) proposes keeping tldraw for the documentation diagrams |
 | [docs/security.md](docs/security.md) | Permissions on the SQLite store and ledger files |
-| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record user and agent choices with `sdf decision`, run `scripts/brief` (or `sdf decision brief`) at session start, and run `scripts/check` (or `sdf decision check`) before a push, merge, release, deploy, or architecture change |
+| [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record choices with `sdf decision`, run `scripts/brief` (or `sdf decision brief`) at session start, and run `scripts/check` (or `sdf decision check`) before a push, merge, release, deploy, or architecture change |
 | [docs/check.md](docs/check.md) | `sdf check` and its cases |
 | [docs/ledger.md](docs/ledger.md) | The hash-chained ledger, its encoding, `sdf audit verify` and `sdf audit head`, and what it does not protect against |
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |

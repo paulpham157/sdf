@@ -1,6 +1,6 @@
 ---
 name: sdf-decisions
-description: Record important user and agent choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. At session start, run `scripts/brief` (or `sdf decision brief`). Before a push, merge, release, deploy, or architecture change, run `scripts/check` (or `sdf decision check`) and stop if it fails.
+description: Record important choices as sdf decision records. Use when the user or the agent makes, discusses, changes, or wants to write down a decision, approval, rejection, constraint, architectural choice, or working hypothesis, or asks to link a decision to a session or commit. At session start, run `scripts/brief` (or `sdf decision brief`). Before a push, merge, release, deploy, or architecture change, run `scripts/check` (or `sdf decision check`) and stop if it fails.
 ---
 
 # sdf decision records
@@ -38,7 +38,7 @@ Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0`
 - A missing store, or no matching decisions: the command prints nothing and exits 0. Continue; do not invent constraints.
 - When the store exists but cannot be read: stdout is `sdf decision brief unavailable: run sdf decision list`, and the command exits 0. Tell the user, and run `sdf decision list` if you need the records.
 - `sdf` missing from `PATH`, or the command cannot be run: continue without a brief; do not invent constraints. Unlike `sdf decision check`, a missing brief is not a reason to stop the session.
-- Locked user decisions come first. When items are cut, the text ends with `N more: run sdf decision list`, or `N more (K locked): run sdf decision list` when locked rules were dropped. Run `sdf decision list` to see the rest.
+- Locked decisions stored as `user` come first. The lock matches that stored word. sdf does not check that a person typed it. When items are cut, the text ends with `N more: run sdf decision list`, or `N more (K locked): run sdf decision list` when locked rules were dropped. Run `sdf decision list` to see the rest.
 
 ## Before a push, merge, release, deploy, or architecture change
 
@@ -68,14 +68,16 @@ A missing store file is an empty store: exit 0, and the file is not created. A h
 
 ## When to record
 
-Record a **user** decision when the user:
+Record a decision when the person you are working for:
 
 - approves or rejects a proposed action
 - chooses between options that were on the table
 - sets a constraint later work must follow (for example "don't push", "don't merge main")
 - settles, proposes, or revisits an important technical choice or an assumption later work depends on
 
-Record an **agent** decision when you settle an important technical choice or working hypothesis that later work depends on (storage, API shape, a library, a security posture, an approach).
+Also record a decision when you settle an important technical choice or working hypothesis that later work depends on (storage, API shape, a library, a security posture, an approach).
+
+Both kinds are decisions of that person. sdf does not distinguish a person from their agent, and it does not check which of you typed the record. See who decided below for the label the CLI accepts today.
 
 If a new choice replaces an earlier one, add a new record and link it with `supersedes`.
 
@@ -85,7 +87,8 @@ Do not record routine implementation details, typo fixes, or obvious next steps.
 
 Every record needs:
 
-- **who decided**: `user` or `agent`, always set with `--decided-by`
+- **who decided**: the GitHub login of the team member responsible, for example `paulpham157`. When you act for a person, that person's login is the value to record. sdf does not distinguish you from that person and does not check the flag. The CLI does not accept a login yet. Pass `user` or `agent` until it does (see `--decided-by` below). The design is [Decision categories](../../docs/design/decision-category.md).
+- **category**: optional. You are not required to set it. When it is unset, the category is `implementation`. The CLI has no `--category` flag yet. Do not invent one. `policy` is only a settled rule (`status` `decision`). `sdf decision check` does not read category.
 - **what was decided**: the choice itself, in `--statement`
 - **alternatives**: the options that were actually on the table, in `--alternatives`. Omit the flag if none were stated or discussed.
 - **reason**: only if one was given, in `--reason`. For a user decision, quote or paraphrase the user faithfully. If they gave no reason, omit `--reason`. Never invent a reason.
@@ -103,7 +106,7 @@ sdf decision add --id ID --statement TEXT --status hypothesis|decision \
 - `--id`: a stable slug, 1–128 characters, starting with a letter or digit, then letters, digits, `.`, `_`, or `-`. Prefer a short kebab-case name of the choice (`dont-push`, `use-sqlite`). Ids are append-only and cannot be reused; if the id is taken, pick a more specific unused one.
 - `--statement`: one non-empty line, at most 500 characters, no newlines. State the choice itself, not the discussion around it.
 - `--status`: `hypothesis` for an assumption that is not settled; `decision` for a settled choice. Approvals, rejections, chosen options, and constraints are `decision`.
-- `--decided-by`: `user` or `agent`. Always set it. The flag is optional on the CLI so older records can omit it, but new records from this skill must include it.
+- `--decided-by`: `user` or `agent` on the CLI that ships. Always set one of those two. The flag is optional on the CLI so older records can omit it, but new records from this skill must include it. `newRecord` accepts only empty, `user`, or `agent`, so those are the values that store. sdf does not treat the word as proof of who settled the choice. A GitHub login is rejected and the add stores nothing. Resolving a login (this flag, then a configured identity such as `gh api user` or git config), and showing stored `user` / `agent` as legacy, is proposed in [Decision categories](../../docs/design/decision-category.md) and is not implemented. When a login is accepted, pass the person's login.
 - `--alternatives`: optional one line, at most 500 characters. The options that were on the table and not chosen. Omit the flag when there were none.
 - `--reason`: optional one line, at most 500 characters. Omit it when no reason was given. Do not invent one.
 - `--source`: optional one-line pointer (issue, PR, doc, or conversation), at most 500 characters. Omit it when there is none.

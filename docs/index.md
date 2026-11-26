@@ -9,7 +9,7 @@ without merging. Without `--github`, accepted stays unknown. That
 figure is the computed cost of merged sessions, divided by how many
 there are — not only token or session counts.
 
-The decision layer records who decided (user or agent), why, and which
+The decision layer records who decided (the caller sets `user` or `agent`), why, and which
 alternatives were considered, and links each decision to the sessions and
 commits that implemented it. The Decisions graph shows the path taken,
 paths not taken, blocked or conflicting points, and the cost of that
@@ -79,7 +79,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Tasks](tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [Verify](verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [GitHub Action](action.md) | The `sdf verify` GitHub Action, and its threat model |
-| [Decision categories](design/decision-category.md) | Phase 0 spec for an optional `category` on a decision record. Not implemented yet |
+| [Decision categories](design/decision-category.md) | Phase 0 spec. Optional `category`. Proposal: unset is stored as `NULL` and displayed as `implementation`. `decided_by` names a team member's GitHub login. Not implemented yet |
 | [Architecture decisions](adr/README.md) | Records of choices about the project. The first one, still proposed, recommends keeping tldraw for the documentation diagrams |
 
 The product site is [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/).

@@ -46,10 +46,12 @@ SCRIPTS_INDEX = Path("skills/sdf-decisions/scripts/index.md")
 PAGE_LINK_REWRITES = {
     "skills/README.md": (
         (re.compile(r"\]\(\.\./docs/outcomes\.md\)"), "](../outcomes.md)"),
+        (re.compile(r"\]\(\.\./docs/design/decision-category\.md\)"), "](../design/decision-category.md)"),
         (re.compile(r"\]\(sdf-decisions/scripts/\)"), "](sdf-decisions/scripts/index.md)"),
     ),
     "skills/sdf-decisions/SKILL.md": (
         (re.compile(r"\]\(\.\./\.\./docs/outcomes\.md\)"), "](../../outcomes.md)"),
+        (re.compile(r"\]\(\.\./\.\./docs/design/decision-category\.md\)"), "](../../design/decision-category.md)"),
     ),
 }
 
