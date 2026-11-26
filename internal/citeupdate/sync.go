@@ -87,6 +87,11 @@ type Config struct {
 	Client       *http.Client
 	PollInterval time.Duration
 	PollAttempts int
+	// AutoMerge posts the ruleset status and merges the pull request.
+	// It is off unless the repository variable CITATION_AUTOMERGE is the
+	// exact string true. Off still opens the pull request and waits for
+	// the scan.
+	AutoMerge bool
 }
 
 // Sync reads the release tag, peels it to a commit, and opens or updates a
@@ -181,15 +186,15 @@ func Sync(ctx context.Context, cfg Config) (Result, error) {
 	if !committed {
 		return Result{}, errors.New("CITATION.cff update did not finish")
 	}
+	headSHA, err := requireCitationTip(ctx, client, cfg, owner, repo, head, updated.Content)
+	if err != nil {
+		return Result{}, err
+	}
 	pr, err := ensureCitationPR(ctx, client, cfg, owner, repo, head, result)
 	if err != nil {
 		return Result{}, err
 	}
 	pr, err = getPull(ctx, client, cfg, owner, repo, pr.Number)
-	if err != nil {
-		return Result{}, err
-	}
-	headSHA, err := branchCommit(ctx, client, cfg, owner, repo, head)
 	if err != nil {
 		return Result{}, err
 	}
@@ -203,17 +208,25 @@ func Sync(ctx context.Context, cfg Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := postScanStatus(ctx, client, cfg, owner, repo, headSHA, head, run); err != nil {
+	if !cfg.AutoMerge {
+		result.Status = StatusUpdated
+		result.PullRequest = pr.Number
+		result.HeadSHA = headSHA
+		result.Reason = "pull request left for review; CITATION_AUTOMERGE is not true"
+		return result, nil
+	}
+	if err := postScanStatus(ctx, client, cfg, owner, repo, headSHA, head, run, pr.Base.SHA, updated.Content); err != nil {
 		return Result{}, err
 	}
 	merged, err := Merge(ctx, MergeConfig{
-		Token:      cfg.Token,
-		Repo:       cfg.Repo,
-		APIBase:    cfg.APIBase,
-		BaseBranch: cfg.Branch,
-		HeadBranch: head,
-		HeadSHA:    headSHA,
-		Client:     client,
+		Token:           cfg.Token,
+		Repo:            cfg.Repo,
+		APIBase:         cfg.APIBase,
+		BaseBranch:      cfg.Branch,
+		HeadBranch:      head,
+		HeadSHA:         headSHA,
+		ExpectedContent: updated.Content,
+		Client:          client,
 	})
 	if err != nil {
 		return Result{}, err

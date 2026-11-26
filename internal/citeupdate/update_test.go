@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -415,6 +417,7 @@ func TestSyncAnnotatedReleaseUsesCommit(t *testing.T) {
 		t.Fatalf("merge %#v", gh.merges[0])
 	}
 	gh.puts = nil
+	before := len(gh.paths)
 	again, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T01:02:03Z"))
 	if err != nil {
 		t.Fatal(err)
@@ -422,7 +425,7 @@ func TestSyncAnnotatedReleaseUsesCommit(t *testing.T) {
 	if again.Status != StatusUnchanged || len(gh.puts) != 0 || len(gh.pulls) != 1 || len(gh.refs) != 1 || len(gh.dispatches) != 1 || len(gh.merges) != 1 {
 		t.Fatalf("republish %+v puts %d pulls %d refs %d dispatches %d merges %d", again, len(gh.puts), len(gh.pulls), len(gh.refs), len(gh.dispatches), len(gh.merges))
 	}
-	for _, path := range gh.paths {
+	for _, path := range gh.paths[before:] {
 		if strings.Contains(path, "/commits/") && !strings.Contains(path, "/statuses") {
 			t.Fatalf("used the commits API instead of peeling the tag: %s", path)
 		}
@@ -613,7 +616,7 @@ func TestSyncScanFailureDoesNotMerge(t *testing.T) {
 	srv := gh.server(t)
 	defer srv.Close()
 	_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
-	if err == nil || !strings.Contains(err.Error(), "finished with failure") {
+	if err == nil || !strings.Contains(err.Error(), "completed/failure") {
 		t.Fatalf("err %v", err)
 	}
 	if len(gh.dispatches) != 1 || len(gh.statuses) != 0 || len(gh.merges) != 0 || len(gh.pulls) != 1 {
@@ -679,6 +682,22 @@ func TestMergeOnlyCitationPR(t *testing.T) {
 			sha:   sha,
 			body:  citationMarker,
 			files: []map[string]string{{"filename": "CITATION.cff", "status": "removed"}},
+			want:  want{err: "does not change only CITATION.cff"},
+		},
+		{
+			name:  "added citation",
+			head:  "citation/v0.2.0",
+			sha:   sha,
+			body:  citationMarker,
+			files: []map[string]string{{"filename": "CITATION.cff", "status": "added"}},
+			want:  want{err: "does not change only CITATION.cff"},
+		},
+		{
+			name:  "renamed citation",
+			head:  "citation/v0.2.0",
+			sha:   sha,
+			body:  citationMarker,
+			files: []map[string]string{{"filename": "CITATION.cff", "status": "modified", "previous_filename": "CITATION.cff.old"}},
 			want:  want{err: "does not change only CITATION.cff"},
 		},
 		{
@@ -775,6 +794,17 @@ func TestMergeOnlyCitationPR(t *testing.T) {
 						return
 					}
 					writeJSON(t, w, tc.statuses)
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/git/ref/heads/"+tc.head:
+					writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": tc.sha}})
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/commits/"+tc.sha:
+					writeJSON(t, w, workflowCommitJSON(tc.sha, strings.Repeat("e", 40), true))
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/contents/CITATION.cff":
+					writeJSON(t, w, map[string]any{
+						"sha":      strings.Repeat("d", 40),
+						"encoding": "base64",
+						"type":     "file",
+						"content":  wrapBase64([]byte("version: 0.2.0\n")),
+					})
 				case r.Method == http.MethodPut && r.URL.Path == "/repos/paulpham157/sdf/pulls/7/merge":
 					var body map[string]any
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -797,13 +827,14 @@ func TestMergeOnlyCitationPR(t *testing.T) {
 			}))
 			defer srv.Close()
 			result, err := Merge(context.Background(), MergeConfig{
-				Token:      "test-token",
-				Repo:       "paulpham157/sdf",
-				APIBase:    srv.URL,
-				BaseBranch: "main",
-				HeadBranch: tc.head,
-				HeadSHA:    tc.sha,
-				Client:     srv.Client(),
+				Token:           "test-token",
+				Repo:            "paulpham157/sdf",
+				APIBase:         srv.URL,
+				BaseBranch:      "main",
+				HeadBranch:      tc.head,
+				HeadSHA:         tc.sha,
+				ExpectedContent: []byte("version: 0.2.0\n"),
+				Client:          srv.Client(),
 			})
 			if tc.want.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.want.err) {
@@ -1155,6 +1186,18 @@ func TestCitationPRFilesFollowsPagesOrFailsClosed(t *testing.T) {
 			calls: 2,
 		},
 		{
+			name:  "added file is not a modification",
+			pages: []page{{[]map[string]string{{"filename": "CITATION.cff", "status": "added"}}, ""}},
+			want:  "does not change only CITATION.cff",
+			calls: 1,
+		},
+		{
+			name:  "rename keeps a previous filename",
+			pages: []page{{[]map[string]string{{"filename": "CITATION.cff", "status": "modified", "previous_filename": "CITATION.cff.old"}}, ""}},
+			want:  "does not change only CITATION.cff",
+			calls: 1,
+		},
+		{
 			name:  "empty second page still counts the first",
 			pages: []page{{one, "next"}, {nil, ""}},
 			calls: 2,
@@ -1261,6 +1304,182 @@ func TestCitationPRFilesFollowsPagesOrFailsClosed(t *testing.T) {
 	})
 }
 
+func TestSyncLeavesPRWhenAutoMergeIsOff(t *testing.T) {
+	gh := &fakeGitHub{
+		tagName: "v0.2.0",
+		refType: "commit",
+		refSHA:  otherCommit,
+		commit:  otherCommit,
+		file:    []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n"),
+		blob:    strings.Repeat("b", 40),
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	cfg := gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z")
+	cfg.AutoMerge = false
+	result, err := Sync(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusUpdated || result.PullRequest != 7 || !strings.Contains(result.Reason, "CITATION_AUTOMERGE is not true") {
+		t.Fatalf("%+v", result)
+	}
+	if len(gh.pulls) != 1 || len(gh.dispatches) != 1 || len(gh.statuses) != 0 || len(gh.merges) != 0 {
+		t.Fatalf("pulls %d dispatches %d statuses %d merges %d", len(gh.pulls), len(gh.dispatches), len(gh.statuses), len(gh.merges))
+	}
+}
+
+func TestSyncRefusesUnverifiedOrMovedTip(t *testing.T) {
+	old := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	cases := []struct {
+		name string
+		set  func(*fakeGitHub)
+		want string
+		pull bool
+	}{
+		{
+			name: "file bytes drift after the write",
+			set:  func(gh *fakeGitHub) { gh.driftFile = true },
+			want: "does not match the citation update",
+		},
+		{
+			name: "tip commit is not verified",
+			set:  func(gh *fakeGitHub) { gh.unverifiedTip = true },
+			want: "not a verified GitHub commit",
+		},
+		{
+			name: "tip commit is not the workflow",
+			set:  func(gh *fakeGitHub) { gh.foreignTip = true },
+			want: "not authored by the citation workflow",
+		},
+		{
+			name: "tip moves after the scan",
+			set:  func(gh *fakeGitHub) { gh.slipAfterScan = true },
+			want: "not authored by the citation workflow",
+			pull: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gh := &fakeGitHub{
+				tagName: "v0.2.0",
+				refType: "commit",
+				refSHA:  otherCommit,
+				commit:  otherCommit,
+				file:    old,
+				blob:    strings.Repeat("b", 40),
+			}
+			tc.set(gh)
+			srv := gh.server(t)
+			defer srv.Close()
+			_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err %v", err)
+			}
+			if len(gh.statuses) != 0 || len(gh.merges) != 0 {
+				t.Fatalf("statuses %d merges %d", len(gh.statuses), len(gh.merges))
+			}
+			if tc.pull && len(gh.pulls) != 1 {
+				t.Fatalf("pulls %d", len(gh.pulls))
+			}
+			if !tc.pull && len(gh.pulls) != 0 {
+				t.Fatalf("opened a pull request on a bad tip: %d", len(gh.pulls))
+			}
+		})
+	}
+}
+
+func TestSyncDoesNotReuseScanForAnotherBase(t *testing.T) {
+	old := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	t.Run("old success is not the scan of this base", func(t *testing.T) {
+		gh := &fakeGitHub{
+			tagName:      "v0.2.0",
+			refType:      "commit",
+			refSHA:       otherCommit,
+			commit:       otherCommit,
+			file:         old,
+			blob:         strings.Repeat("b", 40),
+			priorSuccess: true,
+			runListPages: true,
+		}
+		srv := gh.server(t)
+		defer srv.Close()
+		result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != StatusMerged || len(gh.dispatches) != 1 {
+			t.Fatalf("%+v dispatches %d", result, len(gh.dispatches))
+		}
+		if len(gh.statuses) != 1 || gh.statuses[0]["target_url"] != "https://example.test/runs/2" {
+			t.Fatalf("status %#v gets %v", gh.statuses, gh.runGets)
+		}
+		for _, id := range gh.runGets {
+			if id == "1" {
+				t.Fatal("loaded the older run")
+			}
+		}
+	})
+	t.Run("new run for a different base fails closed", func(t *testing.T) {
+		gh := &fakeGitHub{
+			tagName:    "v0.2.0",
+			refType:    "commit",
+			refSHA:     otherCommit,
+			commit:     otherCommit,
+			file:       old,
+			blob:       strings.Repeat("b", 40),
+			runBaseSHA: strings.Repeat("1", 40),
+		}
+		srv := gh.server(t)
+		defer srv.Close()
+		cfg := gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z")
+		cfg.PollAttempts = 2
+		cfg.PollInterval = time.Millisecond
+		_, err := Sync(context.Background(), cfg)
+		if err == nil || !strings.Contains(err.Error(), "not the scan of") {
+			t.Fatalf("err %v", err)
+		}
+		if len(gh.dispatches) != 1 || len(gh.statuses) != 0 || len(gh.merges) != 0 {
+			t.Fatalf("dispatches %d statuses %d merges %d", len(gh.dispatches), len(gh.statuses), len(gh.merges))
+		}
+	})
+}
+
+func TestSyncPullCreateForbiddenExplainsTheSetting(t *testing.T) {
+	gh := &fakeGitHub{
+		tagName:       "v0.2.0",
+		refType:       "commit",
+		refSHA:        otherCommit,
+		commit:        otherCommit,
+		file:          []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n"),
+		blob:          strings.Repeat("b", 40),
+		pullForbidden: true,
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "Allow GitHub Actions to create and approve pull requests") {
+		t.Fatalf("err %v", err)
+	}
+	if len(gh.puts) != 1 || len(gh.pulls) != 0 || len(gh.statuses) != 0 || len(gh.merges) != 0 {
+		t.Fatalf("puts %d pulls %d statuses %d merges %d", len(gh.puts), len(gh.pulls), len(gh.statuses), len(gh.merges))
+	}
+}
+
+func TestGitleaksRejectsZeroRange(t *testing.T) {
+	script := filepath.Join(moduleRoot(t), ".github/scripts/gitleaks-scan.sh")
+	for _, count := range []string{"", "0", "00"} {
+		cmd := exec.Command("bash", "-c", `source "$1"; log_opts=--full-history; range_count="$2"; refuse_empty_range`, "bash", script, count)
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("range_count %q was accepted", count)
+		}
+	}
+	cmd := exec.Command("bash", "-c", `source "$1"; log_opts=--full-history; range_count=2; refuse_empty_range`, "bash", script)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func workflowCommitJSON(sha, parent string, verified bool) map[string]any {
 	reason := "valid"
 	if !verified {
@@ -1309,9 +1528,22 @@ func TestConfigFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIBase != "https://api.github.com" || cfg.Tag != "v0.2.0" || cfg.Prerelease || cfg.Draft {
+	if cfg.APIBase != "https://api.github.com" || cfg.Tag != "v0.2.0" || cfg.Prerelease || cfg.Draft || cfg.AutoMerge {
 		t.Fatalf("%+v", cfg)
 	}
+	env["CITATION_AUTOMERGE"] = "true"
+	cfg, err = configFromEnv(func(k string) string { return env[k] })
+	if err != nil || !cfg.AutoMerge {
+		t.Fatalf("true should enable auto-merge: %+v %v", cfg, err)
+	}
+	for _, v := range []string{"", "false", "TRUE", "1", " true"} {
+		env["CITATION_AUTOMERGE"] = v
+		cfg, err = configFromEnv(func(k string) string { return env[k] })
+		if err != nil || cfg.AutoMerge {
+			t.Fatalf("%q enabled auto-merge: %+v %v", v, cfg, err)
+		}
+	}
+	delete(env, "CITATION_AUTOMERGE")
 	env["GITHUB_API_URL"] = "http://169.254.169.254/"
 	if _, err := configFromEnv(func(k string) string { return env[k] }); err == nil {
 		t.Fatal("accepted an http API URL")
@@ -1353,6 +1585,9 @@ func TestWorkflowFiles(t *testing.T) {
 		"go run ./internal/citeupdate",
 		"actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
 		"actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0",
+		"CITATION_AUTOMERGE: ${{ vars.CITATION_AUTOMERGE }}",
+		"26272056",
+		"15368",
 	} {
 		if !strings.Contains(citation, want) {
 			t.Fatalf("citation.yml missing %q", want)
@@ -1377,6 +1612,7 @@ func TestWorkflowFiles(t *testing.T) {
 		"GITLEAKS_HEAD_SHA:",
 		"bash .github/scripts/gitleaks-scan.sh",
 		"name: scan citation range",
+		"run-name: scan ${{ inputs.base_sha }}..${{ inputs.head_sha }}",
 		`^refs/heads/citation/v[0-9]+\.[0-9]+\.[0-9]+$`,
 	} {
 		if !strings.Contains(scanWF, want) {
@@ -1457,6 +1693,16 @@ type fakeGitHub struct {
 	mainSHA        string
 	pullMerged     bool
 	dispatchCount  int
+	scannedSHA     string
+	priorSuccess   bool
+	runBaseSHA     string
+	runListPages   bool
+	slipAfterScan  bool
+	foreignTip     bool
+	unverifiedTip  bool
+	driftFile      bool
+	pullForbidden  bool
+	runGets        []string
 }
 
 func (f *fakeGitHub) config(srv *httptest.Server, tag, published string) Config {
@@ -1468,6 +1714,9 @@ func (f *fakeGitHub) config(srv *httptest.Server, tag, published string) Config 
 		PublishedAt: published,
 		Branch:      "main",
 		Client:      srv.Client(),
+		// Production defaults this off. These tests cover the on path
+		// unless a case clears it.
+		AutoMerge: true,
 	}
 }
 
@@ -1625,8 +1874,12 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 			}
 			decoded := decodePut(t, body["content"])
 			f.citationFile = decoded
+			if f.driftFile {
+				f.citationFile = []byte("drifted: true\n")
+			}
 			f.citationBlob = strings.Repeat("d", 40)
 			f.citationSHA = strings.Repeat("f", 40)
+			f.scannedSHA = f.citationSHA
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"content":{"sha":"` + f.citationBlob + `"}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/pulls":
@@ -1645,6 +1898,11 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("pull body: %v", err)
 				http.Error(w, `{"message":"bad json"}`, http.StatusBadRequest)
+				return
+			}
+			if f.pullForbidden {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
 				return
 			}
 			if len(f.pulls) != 0 {
@@ -1690,63 +1948,42 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 			f.dispatchCount++
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/actions/workflows/citation-gitleaks.yml/runs":
-			if f.dispatchCount == 0 {
-				writeJSON(t, w, map[string]any{"workflow_runs": []any{}})
+			head := r.URL.Query().Get("head_sha")
+			page := r.URL.Query().Get("page")
+			if f.runListPages && (page == "" || page == "1") {
+				q := r.URL.Query()
+				q.Set("page", "2")
+				q.Set("per_page", "100")
+				w.Header().Set("Link", `<http://`+r.Host+r.URL.Path+`?`+q.Encode()+`>; rel="next"`)
+				writeJSON(t, w, map[string]any{"workflow_runs": f.priorRuns(head)})
 				return
 			}
-			conclusion := "success"
-			if f.scanFail {
-				conclusion = "failure"
-			}
-			writeJSON(t, w, map[string]any{"workflow_runs": []map[string]any{{
-				"id":         2,
-				"head_sha":   r.URL.Query().Get("head_sha"),
-				"event":      "workflow_dispatch",
-				"status":     "completed",
-				"conclusion": conclusion,
-				"html_url":   "https://example.test/runs/2",
-				"created_at": "2026-11-24T00:00:01Z",
-			}}})
-		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/actions/runs/2":
-			if f.runMissing {
+			runs := f.priorRuns(head)
+			runs = append(runs, f.dispatchedRuns(head)...)
+			writeJSON(t, w, map[string]any{"workflow_runs": runs})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/actions/runs/"):
+			id := strings.TrimPrefix(r.URL.Path, "/repos/paulpham157/sdf/actions/runs/")
+			f.runGets = append(f.runGets, id)
+			if f.runMissing || id != "2" {
 				http.NotFound(w, r)
 				return
 			}
-			sha := f.citationSHA
-			if f.runHeadSHA != "" {
-				sha = f.runHeadSHA
+			if f.slipAfterScan {
+				f.citationSHA = strings.Repeat("9", 40)
+				f.foreignTip = true
+				f.slipAfterScan = false
 			}
-			conclusion := "success"
-			if f.runConclusion != "" {
-				conclusion = f.runConclusion
+			writeJSON(t, w, f.dispatchedRunJSON())
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/commits/") && !strings.HasSuffix(r.URL.Path, "/statuses"):
+			sha := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			verified := !f.unverifiedTip && !f.foreignTip && sha == f.citationSHA
+			var body map[string]any
+			if f.foreignTip || sha != f.citationSHA {
+				body = foreignCommitJSON(sha, f.mainSHA)
+			} else {
+				body = workflowCommitJSON(sha, f.mainSHA, verified)
 			}
-			headBranch := "citation/" + f.tagName
-			if f.runHeadBranch != "" {
-				headBranch = f.runHeadBranch
-			}
-			path := citationWorkflowPath
-			if f.runPath != "" {
-				path = f.runPath
-			}
-			event := "workflow_dispatch"
-			if f.runEvent != "" {
-				event = f.runEvent
-			}
-			runStatus := "completed"
-			if f.runStatus != "" {
-				runStatus = f.runStatus
-			}
-			writeJSON(t, w, map[string]any{
-				"id":          2,
-				"head_sha":    sha,
-				"head_branch": headBranch,
-				"event":       event,
-				"status":      runStatus,
-				"conclusion":  conclusion,
-				"html_url":    "https://example.test/runs/2",
-				"path":        path,
-				"created_at":  "2026-11-24T00:00:01Z",
-			})
+			writeJSON(t, w, body)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/statuses/"):
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1767,6 +2004,100 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 			http.NotFound(w, r)
 		}
 	}))
+}
+
+func (f *fakeGitHub) scannedHead() string {
+	if f.runHeadSHA != "" {
+		return f.runHeadSHA
+	}
+	if f.scannedSHA != "" {
+		return f.scannedSHA
+	}
+	return strings.Repeat("f", 40)
+}
+
+func (f *fakeGitHub) priorRuns(head string) []map[string]any {
+	if !f.priorSuccess {
+		return nil
+	}
+	return []map[string]any{f.runJSON(1, strings.Repeat("1", 40), head, "2026-11-23T00:00:00Z", "success", citationWorkflowPath, "workflow_dispatch", "completed", "citation/"+f.tagName)}
+}
+
+func (f *fakeGitHub) dispatchedRuns(head string) []map[string]any {
+	if f.dispatchCount == 0 {
+		return nil
+	}
+	base := f.mainSHA
+	if f.runBaseSHA != "" {
+		base = f.runBaseSHA
+	}
+	conclusion := "success"
+	if f.scanFail {
+		conclusion = "failure"
+	}
+	path := citationWorkflowPath
+	if f.runPath != "" {
+		path = f.runPath
+	}
+	event := "workflow_dispatch"
+	if f.runEvent != "" {
+		event = f.runEvent
+	}
+	runStatus := "completed"
+	if f.runStatus != "" {
+		runStatus = f.runStatus
+	}
+	branch := "citation/" + f.tagName
+	if f.runHeadBranch != "" {
+		branch = f.runHeadBranch
+	}
+	return []map[string]any{f.runJSON(2, base, head, "2026-11-24T00:00:01Z", conclusion, path, event, runStatus, branch)}
+}
+
+func (f *fakeGitHub) dispatchedRunJSON() map[string]any {
+	base := f.mainSHA
+	if f.runBaseSHA != "" {
+		base = f.runBaseSHA
+	}
+	conclusion := "success"
+	if f.scanFail {
+		conclusion = "failure"
+	}
+	if f.runConclusion != "" {
+		conclusion = f.runConclusion
+	}
+	path := citationWorkflowPath
+	if f.runPath != "" {
+		path = f.runPath
+	}
+	event := "workflow_dispatch"
+	if f.runEvent != "" {
+		event = f.runEvent
+	}
+	runStatus := "completed"
+	if f.runStatus != "" {
+		runStatus = f.runStatus
+	}
+	branch := "citation/" + f.tagName
+	if f.runHeadBranch != "" {
+		branch = f.runHeadBranch
+	}
+	return f.runJSON(2, base, f.scannedHead(), "2026-11-24T00:00:01Z", conclusion, path, event, runStatus, branch)
+}
+
+func (f *fakeGitHub) runJSON(id int64, base, head, created, conclusion, path, event, status, branch string) map[string]any {
+	return map[string]any{
+		"id":          id,
+		"name":        scanRunName(base, head),
+		"head_sha":    head,
+		"head_branch": branch,
+		"event":       event,
+		"status":      status,
+		"conclusion":  conclusion,
+		"html_url":    "https://example.test/runs/" + strconv.FormatInt(id, 10),
+		"path":        path,
+		"created_at":  created,
+	}
 }
 
 func (f *fakeGitHub) pullJSON() map[string]any {

@@ -293,6 +293,11 @@ func startServeOTLP(t *testing.T, flagToken, tokenFile string) (string, <-chan i
 	go func() {
 		done <- cli.Main(args)
 	}()
+	// If /health never answers, t.Fatal still runs this and signals the
+	// in-process server. stopServe shares the same once, so a later stop
+	// does not send a second SIGTERM after the handler is gone.
+	registerServeStop(done)
+	t.Cleanup(func() { stopServe(t, done) })
 	base := "http://" + httpAddr
 	// Poll /health until the process is actually accepting, or until it
 	// exits. A fixed 5s cap expired on a loaded CI runner while this
@@ -651,24 +656,46 @@ func TestServeBudgetReachesTheSummaryAPI(t *testing.T) {
 
 }
 
+var serveStops sync.Map
+
+func registerServeStop(done <-chan int) {
+	serveStops.LoadOrStore(done, &sync.Once{})
+}
+
 func stopServe(t *testing.T, done <-chan int) {
 	t.Helper()
-	proc, err := os.FindProcess(os.Getpid())
-	if err != nil {
-		t.Error(err)
+	stop := func() {
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Errorf("serve exited %d", code)
+			}
+			return
+		default:
+		}
+		proc, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := proc.Signal(syscall.SIGTERM); err != nil {
+			t.Error(err)
+			return
+		}
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Errorf("serve exited %d", code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("serve did not stop")
+		}
+	}
+	if v, ok := serveStops.Load(done); ok {
+		v.(*sync.Once).Do(stop)
 		return
 	}
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		t.Error(err)
-	}
-	select {
-	case code := <-done:
-		if code != 0 {
-			t.Errorf("serve exited %d", code)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("serve did not stop")
-	}
+	stop()
 }
 
 func loadPricedSession(t *testing.T, dbPath string) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,9 @@ const (
 	// page after this fails closed instead of treating a partial list as
 	// the whole diff.
 	maxCitationFilePages = 10
+	// maxScanRunPages bounds the workflow-run list the same way. A scan
+	// that only appears on a later page is not treated as absent.
+	maxScanRunPages = 10
 )
 
 var citationHeadRE = regexp.MustCompile(`^citation/v[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -393,6 +397,9 @@ func ensureCitationPR(ctx context.Context, client *http.Client, cfg Config, owne
 		}
 		return pr, nil
 	}
+	if status == http.StatusForbidden {
+		return pullRequest{}, errors.New("GitHub refused to open the citation pull request (403). The repository setting \"Allow GitHub Actions to create and approve pull requests\" is off, so the citation branch was written and the pull request was not. Turn that setting on (Settings, Actions, General, Workflow permissions), then re-run this workflow. The citation branch is left as it is")
+	}
 	if status == http.StatusUnprocessableEntity {
 		found, ok, err = findOpenCitationPR(ctx, client, cfg, owner, repo, head)
 		if err != nil {
@@ -465,6 +472,7 @@ func pullBody(result Result) string {
 
 type workflowRun struct {
 	ID         int64  `json:"id"`
+	Name       string `json:"name"`
 	HeadSHA    string `json:"head_sha"`
 	HeadBranch string `json:"head_branch"`
 	Event      string `json:"event"`
@@ -475,10 +483,19 @@ type workflowRun struct {
 	Path       string `json:"path"`
 }
 
-// ensureScan dispatches the citation gitleaks workflow on head and waits
-// until a run for headSHA completes successfully. A run that already
-// succeeded is reused. The workflow's own job check is not the ruleset
-// check: workflow_dispatch jobs are not evaluated for a ruleset.
+// scanRunName is the workflow run-name. The runs API does not return
+// dispatch inputs, so this is how a run is tied to the base SHA that was
+// scanned. The head SHA is also in the name and is checked on its own field.
+func scanRunName(baseSHA, headSHA string) string {
+	return "scan " + baseSHA + ".." + headSHA
+}
+
+// ensureScan always dispatches a fresh citation gitleaks run and waits for
+// that run. A successful run already on the head is not reused: it may have
+// scanned a different base. The new run is the one whose id is greater than
+// every run listed before the dispatch, whose head SHA and branch match, and
+// whose run name is scanRunName for this base and head. The list is followed
+// across pages. The workflow's own job check is not the ruleset check.
 func ensureScan(ctx context.Context, client *http.Client, cfg Config, owner, repo, head, headSHA, baseSHA string) (workflowRun, error) {
 	if err := validateCommit(headSHA); err != nil {
 		return workflowRun{}, err
@@ -486,52 +503,92 @@ func ensureScan(ctx context.Context, client *http.Client, cfg Config, owner, rep
 	if err := validateCommit(baseSHA); err != nil {
 		return workflowRun{}, err
 	}
-	runs, err := listScanRuns(ctx, client, cfg, owner, repo, headSHA)
+	prior, err := listScanRuns(ctx, client, cfg, owner, repo, headSHA)
 	if err != nil {
 		return workflowRun{}, err
 	}
-	// minID is the newest run already known. inclusive means that run is
-	// still in progress and its own completion counts. A new dispatch only
-	// counts a run with a greater id, so an older failure cannot pass.
-	minID := latestScanID(runs)
-	inclusive := false
-	if newest, ok := newestScan(runs); ok && newest.Status == "completed" && newest.Conclusion == "success" {
-		return newest, nil
-	} else if ok && newest.Status != "completed" {
-		inclusive = true
-	} else if err := dispatchScan(ctx, client, cfg, owner, repo, head, headSHA, baseSHA); err != nil {
+	priorMax := latestScanID(prior)
+	if err := dispatchScan(ctx, client, cfg, owner, repo, head, headSHA, baseSHA); err != nil {
 		return workflowRun{}, err
 	}
 	attempts := cfg.PollAttempts
 	if attempts <= 0 {
 		attempts = 90
 	}
+	var bound int64
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if attempt > 1 {
 			if err := waitPoll(ctx, cfg); err != nil {
 				return workflowRun{}, err
 			}
 		}
-		runs, err = listScanRuns(ctx, client, cfg, owner, repo, headSHA)
+		runs, err := listScanRuns(ctx, client, cfg, owner, repo, headSHA)
 		if err != nil {
 			return workflowRun{}, err
 		}
-		newest, ok := newestScan(runs)
-		if !ok || newest.Status != "completed" {
+		if bound == 0 {
+			if match, ok := dispatchedRun(runs, priorMax, headSHA, head, baseSHA); ok {
+				bound = match.ID
+			} else if rogue, ok := completedAfter(runs, priorMax, headSHA); ok {
+				if err := scanIdentity(rogue, headSHA, head, baseSHA); err != nil {
+					return workflowRun{}, fmt.Errorf("refusing citation gitleaks run %d: %w", rogue.ID, err)
+				}
+			}
+		}
+		if bound == 0 {
 			continue
 		}
-		if inclusive && newest.ID < minID {
+		confirmed, err := loadScanRun(ctx, client, cfg, owner, repo, bound)
+		if err != nil {
+			return workflowRun{}, err
+		}
+		if confirmed.Status != "completed" {
 			continue
 		}
-		if !inclusive && newest.ID <= minID {
-			continue
+		if err := scanReady(confirmed, headSHA, head, baseSHA); err != nil {
+			return workflowRun{}, err
 		}
-		if newest.Conclusion == "success" {
-			return newest, nil
-		}
-		return workflowRun{}, fmt.Errorf("citation gitleaks run %d finished with %s", newest.ID, newest.Conclusion)
+		return confirmed, nil
 	}
 	return workflowRun{}, errors.New("citation gitleaks did not pass before the wait ended")
+}
+
+// dispatchedRun is the newest run created after the dispatch that already
+// matches this head, branch, and base. An older success is not a candidate.
+func dispatchedRun(runs []workflowRun, priorMax int64, headSHA, branch, baseSHA string) (workflowRun, bool) {
+	var found workflowRun
+	ok := false
+	for _, run := range runs {
+		if run.ID <= priorMax {
+			continue
+		}
+		if scanIdentity(run, headSHA, branch, baseSHA) != nil {
+			continue
+		}
+		if !ok || run.ID > found.ID {
+			found = run
+			ok = true
+		}
+	}
+	return found, ok
+}
+
+// completedAfter is the newest completed run for headSHA that appeared
+// after the dispatch. It is used to fail closed when that run scanned a
+// different base instead of waiting for a run that will not arrive.
+func completedAfter(runs []workflowRun, priorMax int64, headSHA string) (workflowRun, bool) {
+	var found workflowRun
+	ok := false
+	for _, run := range runs {
+		if run.ID <= priorMax || !strings.EqualFold(run.HeadSHA, headSHA) || run.Status != "completed" {
+			continue
+		}
+		if !ok || run.ID > found.ID {
+			found = run
+			ok = true
+		}
+	}
+	return found, ok
 }
 
 func waitPoll(ctx context.Context, cfg Config) error {
@@ -586,40 +643,47 @@ func listScanRuns(ctx context.Context, client *http.Client, cfg Config, owner, r
 	q := u.Query()
 	q.Set("head_sha", headSHA)
 	q.Set("event", "workflow_dispatch")
-	q.Set("per_page", "20")
+	q.Set("per_page", "100")
 	u.RawQuery = q.Encode()
-	status, data, err := doJSON(ctx, client, http.MethodGet, u.String(), cfg.Token, nil)
-	if err != nil {
-		return nil, err
-	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("list citation gitleaks runs: %s", apiMessage(status, data))
-	}
-	var body struct {
-		WorkflowRuns []workflowRun `json:"workflow_runs"`
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return nil, err
-	}
+	next := u.String()
+	seen := map[string]struct{}{}
 	var matched []workflowRun
-	for _, run := range body.WorkflowRuns {
-		if strings.EqualFold(run.HeadSHA, headSHA) && run.Event == "workflow_dispatch" {
-			matched = append(matched, run)
+	for page := 1; page <= maxScanRunPages; page++ {
+		if _, ok := seen[next]; ok {
+			return nil, errors.New("citation gitleaks run list repeated a page")
 		}
-	}
-	return matched, nil
-}
-
-func newestScan(runs []workflowRun) (workflowRun, bool) {
-	var found workflowRun
-	ok := false
-	for _, run := range runs {
-		if !ok || run.CreatedAt >= found.CreatedAt {
-			found = run
-			ok = true
+		seen[next] = struct{}{}
+		if err := sameAPIHost(cfg.APIBase, next); err != nil {
+			return nil, err
 		}
+		status, data, hdr, err := doJSONHeader(ctx, client, http.MethodGet, next, cfg.Token, nil)
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("list citation gitleaks runs: %s", apiMessage(status, data))
+		}
+		var body struct {
+			WorkflowRuns []workflowRun `json:"workflow_runs"`
+		}
+		if err := json.Unmarshal(data, &body); err != nil {
+			return nil, err
+		}
+		for _, run := range body.WorkflowRuns {
+			if strings.EqualFold(run.HeadSHA, headSHA) && run.Event == "workflow_dispatch" {
+				matched = append(matched, run)
+			}
+		}
+		linkNext, err := nextPageURL(hdr)
+		if err != nil {
+			return nil, err
+		}
+		if linkNext == "" {
+			return matched, nil
+		}
+		next = linkNext
 	}
-	return found, ok
+	return nil, errors.New("citation gitleaks run list has too many pages")
 }
 
 func latestScanID(runs []workflowRun) int64 {
@@ -632,19 +696,28 @@ func latestScanID(runs []workflowRun) int64 {
 	return id
 }
 
-func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha, branch string, listed workflowRun) error {
+func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha, branch string, listed workflowRun, baseSHA string, want []byte) error {
 	if err := validateCommit(sha); err != nil {
 		return err
 	}
 	// The list result is not enough. Read this run again and refuse to
 	// post the ruleset status unless that response is a successful scan
-	// of this exact head.
+	// of this exact head and base. Then read the branch tip again: the
+	// status is posted only when that tip is still the verified citation
+	// commit whose CITATION.cff bytes are want.
 	confirmed, err := loadScanRun(ctx, client, cfg, owner, repo, listed.ID)
 	if err != nil {
 		return err
 	}
-	if err := scanReady(confirmed, sha, branch); err != nil {
+	if err := scanReady(confirmed, sha, branch, baseSHA); err != nil {
 		return err
+	}
+	tip, err := requireCitationTip(ctx, client, cfg, owner, repo, branch, want)
+	if err != nil {
+		return err
+	}
+	if tip != sha {
+		return fmt.Errorf("refusing to post the gitleaks status: %s moved from %s to %s", branch, sha, tip)
 	}
 	raw, err := apiURL(cfg.APIBase, owner, repo, "statuses", sha)
 	if err != nil {
@@ -686,10 +759,9 @@ func loadScanRun(ctx context.Context, client *http.Client, cfg Config, owner, re
 	return run, nil
 }
 
-// scanReady is the check that must pass before statuses: write is used.
-// The ruleset does not pin the check to GitHub Actions, so this is what
-// stops the job from posting a success for a run it did not just confirm.
-func scanReady(run workflowRun, headSHA, branch string) error {
+// scanIdentity ties a run to this head, branch, and base. The base comes
+// from the run name, because the runs API does not return dispatch inputs.
+func scanIdentity(run workflowRun, headSHA, branch, baseSHA string) error {
 	if run.ID <= 0 {
 		return errors.New("citation gitleaks run id is missing")
 	}
@@ -702,6 +774,20 @@ func scanReady(run workflowRun, headSHA, branch string) error {
 	}
 	if run.Event != "workflow_dispatch" {
 		return fmt.Errorf("citation gitleaks run %d is a %s event", run.ID, shortAPI(run.Event))
+	}
+	if run.Name != scanRunName(baseSHA, headSHA) {
+		return fmt.Errorf("citation gitleaks run %d is not the scan of %s..%s", run.ID, baseSHA, headSHA)
+	}
+	return nil
+}
+
+// scanReady is the check that must pass before statuses: write is used.
+// The ruleset does not pin the check to GitHub Actions, so this is what
+// stops the job from posting a success for a run it did not just confirm
+// for this head and this base.
+func scanReady(run workflowRun, headSHA, branch, baseSHA string) error {
+	if err := scanIdentity(run, headSHA, branch, baseSHA); err != nil {
+		return err
 	}
 	if run.Status != "completed" || run.Conclusion != "success" {
 		return fmt.Errorf("citation gitleaks run %d is %s/%s", run.ID, shortAPI(run.Status), shortAPI(run.Conclusion))
@@ -732,16 +818,19 @@ func shortAPI(s string) string {
 	return s
 }
 
-// MergeConfig selects the citation pull request a completed pull-request
-// workflow may merge.
+// MergeConfig selects the citation pull request Sync may merge.
+// ExpectedContent is the CITATION.cff bytes the updater wrote. The merge
+// reads the branch tip immediately before the merge call and refuses a tip
+// that is not a verified citation commit of those bytes.
 type MergeConfig struct {
-	Token      string
-	Repo       string
-	APIBase    string
-	BaseBranch string
-	HeadBranch string
-	HeadSHA    string
-	Client     *http.Client
+	Token           string
+	Repo            string
+	APIBase         string
+	BaseBranch      string
+	HeadBranch      string
+	HeadSHA         string
+	ExpectedContent []byte
+	Client          *http.Client
 }
 
 // Merge merges the open citation pull request for HeadBranch after gitleaks
@@ -807,6 +896,13 @@ func Merge(ctx context.Context, cfg MergeConfig) (Result, error) {
 		result.Reason = "gitleaks (full history) has not passed"
 		return result, nil
 	}
+	tip, err := requireCitationTip(ctx, client, syncCfg, owner, repo, cfg.HeadBranch, cfg.ExpectedContent)
+	if err != nil {
+		return Result{}, err
+	}
+	if tip != cfg.HeadSHA {
+		return Result{}, fmt.Errorf("refusing to merge: %s moved from %s to %s", cfg.HeadBranch, cfg.HeadSHA, tip)
+	}
 	if err := mergePullRequest(ctx, client, syncCfg, owner, repo, pr.Number, cfg.HeadSHA); err != nil {
 		return Result{}, err
 	}
@@ -819,8 +915,9 @@ func Merge(ctx context.Context, cfg MergeConfig) (Result, error) {
 const StatusMerged Status = "merged"
 
 type prFile struct {
-	Filename string `json:"filename"`
-	Status   string `json:"status"`
+	Filename         string `json:"filename"`
+	Status           string `json:"status"`
+	PreviousFilename string `json:"previous_filename"`
 }
 
 func citationPRFiles(ctx context.Context, client *http.Client, cfg Config, owner, repo string, number int) error {
@@ -828,10 +925,62 @@ func citationPRFiles(ctx context.Context, client *http.Client, cfg Config, owner
 	if err != nil {
 		return err
 	}
-	if len(files) != 1 || files[0].Filename != citationPath || files[0].Status == "removed" {
+	if len(files) != 1 || files[0].Filename != citationPath || files[0].Status != "modified" || files[0].PreviousFilename != "" {
 		return fmt.Errorf("citation pull request #%d does not change only CITATION.cff", number)
 	}
 	return nil
+}
+
+// requireCitationTip fails closed unless branch's tip is one verified
+// github-actions[bot] citation commit and CITATION.cff on that branch is
+// want. A tip that moves between the commit read and the second ref read
+// is refused. want is the bytes the updater just wrote, or the bytes it
+// still expects.
+func requireCitationTip(ctx context.Context, client *http.Client, cfg Config, owner, repo, branch string, want []byte) (string, error) {
+	if branch == "" || branch == cfg.Branch || !citationHeadRE.MatchString(branch) {
+		return "", fmt.Errorf("refusing to trust %s as a citation branch", branch)
+	}
+	sha, err := branchCommit(ctx, client, cfg, owner, repo, branch)
+	if err != nil {
+		return "", err
+	}
+	commit, err := getCitedCommit(ctx, client, cfg, owner, repo, sha)
+	if err != nil {
+		return "", err
+	}
+	if err := requireWorkflowCommit(commit); err != nil {
+		return "", fmt.Errorf("refusing to continue: %w", err)
+	}
+	content, _, err := getCitation(ctx, client, cfg, owner, repo, branch)
+	if err != nil {
+		return "", err
+	}
+	if !bytes.Equal(content, want) {
+		return "", fmt.Errorf("refusing to continue: CITATION.cff on %s does not match the citation update", branch)
+	}
+	again, err := branchCommit(ctx, client, cfg, owner, repo, branch)
+	if err != nil {
+		return "", err
+	}
+	if again != sha {
+		return "", fmt.Errorf("refusing to continue: %s moved from %s to %s", branch, sha, again)
+	}
+	return sha, nil
+}
+
+func getCitedCommit(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha string) (citedCommit, error) {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "commits", sha)
+	if err != nil {
+		return citedCommit{}, err
+	}
+	var commit citedCommit
+	if err := getJSON(ctx, client, cfg.Token, raw, &commit); err != nil {
+		return citedCommit{}, err
+	}
+	if commit.SHA == "" {
+		commit.SHA = sha
+	}
+	return commit, nil
 }
 
 // listCitationPRFiles follows Link rel=next on the same API host. A

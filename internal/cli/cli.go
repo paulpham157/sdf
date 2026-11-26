@@ -315,6 +315,12 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 		Store:    db,
 		Token:    token,
 	}
+	// Notify before listen so a SIGTERM that arrives while Start is still
+	// binding is buffered and stops the process, instead of using the
+	// default kill. Tests rely on that when /health does not come up.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
 	if err := srv.Start(); err != nil {
 		fmt.Fprintln(stderr, serveListenError(err, port, grpcPort, uiAddr))
 		return 1
@@ -343,14 +349,17 @@ func cmdServe(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "warning: "+warning)
 		}
 	}
+	select {
+	case <-sig:
+		fmt.Fprintln(stderr, "\nstopped")
+		return 0
+	default:
+	}
 	fmt.Fprintf(stdout, "OTLP/HTTP listening on http://%s db=%s\n", srv.HTTPAddress(), store.AbsPath(dbPath))
 	fmt.Fprintf(stdout, "OTLP/gRPC listening on %s\n", srv.GRPCAddress())
 	if uiSrv != nil {
 		fmt.Fprintf(stdout, "UI listening on %s\n", uiSrv.URL())
 	}
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sig)
 	<-sig
 	fmt.Fprintln(stderr, "\nstopped")
 	return 0

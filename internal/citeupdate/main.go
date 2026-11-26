@@ -1,7 +1,10 @@
 // Command citeupdate sets version, date-released, and commit in CITATION.cff
 // from a published GitHub Release. .github/workflows/citation.yml opens the
-// pull request, dispatches .github/workflows/citation-gitleaks.yml, posts the
-// required commit status, and merges. It is not an sdf subcommand.
+// pull request and dispatches .github/workflows/citation-gitleaks.yml on the
+// pull request's base..head range. It posts the ruleset status
+// "gitleaks (full history)" and merges only when CITATION_AUTOMERGE is the
+// exact string true. That status name is the ruleset check. The scan is not
+// a full-history scan. It is not an sdf subcommand.
 package main
 
 import (
@@ -62,6 +65,9 @@ func configFromEnv(getenv func(string) string) (Config, error) {
 		Branch:      getenv("CITATION_BRANCH"),
 		Draft:       draft,
 		Prerelease:  pre,
+		// Only the exact string enables the status post and the merge.
+		// Empty, false, and any other value leave the pull request open.
+		AutoMerge: getenv("CITATION_AUTOMERGE") == "true",
 	}, nil
 }
 
