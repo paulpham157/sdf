@@ -31,10 +31,25 @@ context. The scan is the pull request's commit range, not every branch. The
 ruleset requires that check before the default branch updates, and GitHub
 Actions cannot bypass it. The ruleset does not pin that check to the GitHub
 Actions app, so a commit status with that context satisfies it. Any token
-with `statuses: write` can post that status. The Citation workflow posts it
-on the citation head SHA after its dispatched scan succeeds, then merges.
-That merge is how `CITATION.cff` lands on the default branch.
+with `statuses: write` can post that status. The Citation workflow posts it on the citation head SHA only after
+`GET /repos/{owner}/{repo}/actions/runs/{id}` reports that dispatched run
+as `completed` / `success` for the exact head SHA, on that citation branch,
+for `.github/workflows/citation-gitleaks.yml`. It then merges. That merge
+is how `CITATION.cff` lands on the default branch. The merge also reads
+every page of the pull request file list and stops if a page is missing
+or the diff is not only `CITATION.cff`.
 
+An existing `citation/vMAJOR.MINOR.PATCH` branch is reused when its tip is
+the default branch, or when it is strictly behind that branch. A branch
+that is behind is fast-forwarded to the default branch. A branch that is
+ahead is reused only when every commit the default branch does not already
+contain is a verified single-parent commit authored and committed by
+`github-actions[bot]` with this updater's message. A diverged branch, a
+commit by anyone else, or a compare the API does not return in one page
+fails the job and leaves the ref in place. The ref is not force-pushed.
+
+The job's permissions are `contents: write`, `pull-requests: write`,
+`actions: write`, and `statuses: write`. The workflow grants nothing else.
 This workflow cannot change the ruleset. Pin the required check
 `gitleaks (full history)` to the GitHub Actions app, or turn this auto-merge
 off.

@@ -2,10 +2,19 @@
 # open a pull request that sets version, date-released, and commit in
 # CITATION.cff. A pull request opened with GITHUB_TOKEN does not start PR
 # CI, so this job dispatches Citation gitleaks on the citation branch, waits
-# for that run to succeed, and posts a commit status named
-# "gitleaks (full history)" on the head SHA. That status is the ruleset
-# check. The job then merges the pull request. It does not write the
-# default branch itself.
+# for that run to succeed, reads the run back from the API, and posts a
+# commit status named "gitleaks (full history)" only when that response is
+# conclusion success for the exact head SHA. That status is the ruleset
+# check. The ruleset does not pin the check to the GitHub Actions app, so
+# any token with statuses: write can post the same context. Pin the
+# required check to GitHub Actions, or turn this auto-merge off. This
+# workflow cannot change the ruleset. The job then merges the pull request.
+# It does not write the default branch itself. An existing
+# citation/vMAJOR.MINOR.PATCH branch is reused only when it matches the
+# default branch, when it is strictly behind that branch (the ref is
+# fast-forwarded), or when every commit the default branch does not
+# already contain was created by this workflow. Any other history fails
+# the job. The ref is not force-pushed.
 # GitHub's Cite this repository widget reads the default branch, so the
 # citation stays stale until the pull request merges.
 #
@@ -42,7 +51,9 @@ jobs:
     permissions:
       # Create the citation branch, open the pull request, and merge it.
       # actions: write starts Citation gitleaks. statuses: write posts the
-      # required commit status. This token does not write the default branch.
+      # required commit status, and only after the run lookup above.
+      # These four are the only permissions on this job. The workflow
+      # default above is empty. This token does not write the default branch.
       contents: write
       pull-requests: write
       actions: write

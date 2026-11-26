@@ -203,7 +203,7 @@ func Sync(ctx context.Context, cfg Config) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := postScanStatus(ctx, client, cfg, owner, repo, headSHA, run.HTMLURL); err != nil {
+	if err := postScanStatus(ctx, client, cfg, owner, repo, headSHA, head, run); err != nil {
 		return Result{}, err
 	}
 	merged, err := Merge(ctx, MergeConfig{
@@ -483,19 +483,24 @@ func getJSON(ctx context.Context, client *http.Client, token, rawURL string, des
 }
 
 func doJSON(ctx context.Context, client *http.Client, method, rawURL, token string, body any) (int, []byte, error) {
+	status, data, _, err := doJSONHeader(ctx, client, method, rawURL, token, body)
+	return status, data, err
+}
+
+func doJSONHeader(ctx context.Context, client *http.Client, method, rawURL, token string, body any) (int, []byte, http.Header, error) {
 	var r io.Reader
 	if body != nil {
 		var buf bytes.Buffer
 		enc := json.NewEncoder(&buf)
 		enc.SetEscapeHTML(false)
 		if err := enc.Encode(body); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		r = &buf
 	}
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, r)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -506,17 +511,18 @@ func doJSON(ctx context.Context, client *http.Client, method, rawURL, token stri
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
+	hdr := resp.Header.Clone()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		return resp.StatusCode, nil, fmt.Errorf("refusing redirect %d from the GitHub API", resp.StatusCode)
+		return resp.StatusCode, nil, hdr, fmt.Errorf("refusing redirect %d from the GitHub API", resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return resp.StatusCode, nil, err
+		return resp.StatusCode, nil, hdr, err
 	}
-	return resp.StatusCode, data, nil
+	return resp.StatusCode, data, hdr, nil
 }
 
 func apiMessage(status int, data []byte) string {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,6 +20,23 @@ const (
 	// gitleaksCheck is the ruleset's required status check. It is the job
 	// name in .github/workflows/pr.yml.
 	gitleaksCheck = "gitleaks (full history)"
+	// citationWorkflow is the workflow_dispatch scan. Its job check is not
+	// the ruleset check.
+	citationWorkflow = "citation-gitleaks.yml"
+	// citationWorkflowPath is the path the Actions API reports for that
+	// workflow. A run of any other file does not satisfy the status post.
+	citationWorkflowPath = ".github/workflows/" + citationWorkflow
+	// githubActionsBot is the GITHUB_TOKEN user that authors the contents
+	// API commit. A local commit can copy the noreply address, so the
+	// branch check also requires GitHub's verified signature.
+	githubActionsBot   = "github-actions[bot]"
+	githubActionsEmail = "41898282+github-actions[bot]@users.noreply.github.com"
+	// citationCommitPrefix is the subject commitMessage writes.
+	citationCommitPrefix = "docs: update CITATION.cff for "
+	// maxCitationFilePages bounds the pull-request files walk. One more
+	// page after this fails closed instead of treating a partial list as
+	// the whole diff.
+	maxCitationFilePages = 10
 )
 
 var citationHeadRE = regexp.MustCompile(`^citation/v[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -54,20 +72,49 @@ type pullRequest struct {
 	} `json:"base"`
 }
 
-const citationWorkflow = "citation-gitleaks.yml"
-
-// ensureCitationBranch creates head from the current default-branch commit
-// when the branch is missing. An existing branch is left where it is.
+// ensureCitationBranch creates head at the current default-branch commit
+// when the branch is missing. An existing branch is reused only when its
+// tip is that commit, when it is strictly behind that commit (then this
+// fast-forwards the ref, which is not a force-push), or when every commit
+// reachable from the tip but not from the default branch was created by
+// this workflow. A diverged history, a foreign commit, or a compare the
+// API does not return in one page fails the job and leaves the ref where
+// it is. There is no force update.
 func ensureCitationBranch(ctx context.Context, client *http.Client, cfg Config, owner, repo, head string) error {
-	if _, err := branchCommit(ctx, client, cfg, owner, repo, head); err == nil {
-		return nil
-	} else if !errors.As(err, new(*notFoundError)) {
-		return err
+	if head == cfg.Branch || !citationHeadRE.MatchString(head) {
+		return fmt.Errorf("refusing to use %s as a citation branch", head)
 	}
-	base, err := branchCommit(ctx, client, cfg, owner, repo, cfg.Branch)
+	_, err := branchCommit(ctx, client, cfg, owner, repo, head)
 	if err != nil {
-		return err
+		var missing *notFoundError
+		if !errors.As(err, &missing) {
+			return err
+		}
+		base, err := branchCommit(ctx, client, cfg, owner, repo, cfg.Branch)
+		if err != nil {
+			return err
+		}
+		if err := createCitationRef(ctx, client, cfg, owner, repo, head, base); err != nil {
+			if _, again := branchCommit(ctx, client, cfg, owner, repo, head); again != nil {
+				return err
+			}
+			// The create lost a race. Do not treat the branch that appeared
+			// as ours until its commits pass the same check.
+			return acceptCitationBranch(ctx, client, cfg, owner, repo, head)
+		}
+		got, err := branchCommit(ctx, client, cfg, owner, repo, head)
+		if err != nil {
+			return err
+		}
+		if got == base {
+			return nil
+		}
+		return acceptCitationBranch(ctx, client, cfg, owner, repo, head)
 	}
+	return acceptCitationBranch(ctx, client, cfg, owner, repo, head)
+}
+
+func createCitationRef(ctx context.Context, client *http.Client, cfg Config, owner, repo, head, base string) error {
 	raw, err := apiURL(cfg.APIBase, owner, repo, "git", "refs")
 	if err != nil {
 		return err
@@ -86,10 +133,201 @@ func ensureCitationBranch(ctx context.Context, client *http.Client, cfg Config, 
 	if status == http.StatusCreated || status == http.StatusOK {
 		return nil
 	}
-	if _, err := branchCommit(ctx, client, cfg, owner, repo, head); err == nil {
+	return fmt.Errorf("create branch %s: %s", head, apiMessage(status, data))
+}
+
+// acceptCitationBranch fails closed unless head is the default branch, is
+// strictly behind it, or is ahead of it by commits this workflow authored.
+func acceptCitationBranch(ctx context.Context, client *http.Client, cfg Config, owner, repo, head string) error {
+	tip, err := branchCommit(ctx, client, cfg, owner, repo, head)
+	if err != nil {
+		return err
+	}
+	base, err := branchCommit(ctx, client, cfg, owner, repo, cfg.Branch)
+	if err != nil {
+		return err
+	}
+	if tip == base {
 		return nil
 	}
-	return fmt.Errorf("create branch %s: %s", head, apiMessage(status, data))
+	cmp, err := compareCommits(ctx, client, cfg, owner, repo, base, tip)
+	if err != nil {
+		return err
+	}
+	if cmp.incomplete() {
+		return fmt.Errorf("refusing to reuse %s: the compare against %s is incomplete", head, cfg.Branch)
+	}
+	switch cmp.Status {
+	case "identical":
+		return fmt.Errorf("refusing to reuse %s: compare says identical but the tips differ", head)
+	case "behind":
+		// Every commit on head is already reachable from the default
+		// branch. Moving the ref forward to that commit is a fast-forward.
+		return fastForwardCitationBranch(ctx, client, cfg, owner, repo, head, base)
+	case "diverged":
+		return fmt.Errorf("refusing to reuse %s: it is not based on %s", head, cfg.Branch)
+	case "ahead":
+		for _, commit := range cmp.Commits {
+			if err := requireWorkflowCommit(commit); err != nil {
+				return fmt.Errorf("refusing to reuse %s: %w", head, err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("refusing to reuse %s: compare status %q", head, cmp.Status)
+	}
+}
+
+type branchCompare struct {
+	Status       string        `json:"status"`
+	AheadBy      int           `json:"ahead_by"`
+	BehindBy     int           `json:"behind_by"`
+	TotalCommits int           `json:"total_commits"`
+	Commits      []citedCommit `json:"commits"`
+	next         bool
+}
+
+func (c branchCompare) incomplete() bool {
+	if c.next {
+		return true
+	}
+	switch c.Status {
+	case "ahead", "diverged":
+		return c.AheadBy != len(c.Commits) || c.TotalCommits != len(c.Commits) || len(c.Commits) == 0
+	case "behind":
+		return len(c.Commits) != 0 || c.AheadBy != 0 || c.TotalCommits != 0 || c.BehindBy < 1
+	case "identical":
+		return len(c.Commits) != 0 || c.AheadBy != 0 || c.BehindBy != 0 || c.TotalCommits != 0
+	default:
+		return true
+	}
+}
+
+type citedCommit struct {
+	SHA     string `json:"sha"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
+	Commit struct {
+		Message string `json:"message"`
+		Author  struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"author"`
+		Committer struct {
+			Name  string `json:"name"`
+			Email string `json:"email"`
+		} `json:"committer"`
+		Verification *struct {
+			Verified bool   `json:"verified"`
+			Reason   string `json:"reason"`
+		} `json:"verification"`
+	} `json:"commit"`
+	Author    *gitHubAccount `json:"author"`
+	Committer *gitHubAccount `json:"committer"`
+}
+
+type gitHubAccount struct {
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
+func compareCommits(ctx context.Context, client *http.Client, cfg Config, owner, repo, base, head string) (branchCompare, error) {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "compare", base+"..."+head)
+	if err != nil {
+		return branchCompare{}, err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return branchCompare{}, err
+	}
+	q := u.Query()
+	q.Set("per_page", "100")
+	u.RawQuery = q.Encode()
+	status, data, hdr, err := doJSONHeader(ctx, client, http.MethodGet, u.String(), cfg.Token, nil)
+	if err != nil {
+		return branchCompare{}, err
+	}
+	if status != http.StatusOK {
+		return branchCompare{}, fmt.Errorf("compare %s...%s: %s", base, head, apiMessage(status, data))
+	}
+	var cmp branchCompare
+	if err := json.Unmarshal(data, &cmp); err != nil {
+		return branchCompare{}, err
+	}
+	next, err := nextPageURL(hdr)
+	if err != nil {
+		return branchCompare{}, fmt.Errorf("compare %s...%s: %w", base, head, err)
+	}
+	cmp.next = next != ""
+	return cmp, nil
+}
+
+// requireWorkflowCommit accepts one commit the contents API wrote for this
+// updater. Anything else — another account, an unverified signature, a
+// different message, or a merge — is refused. The message is not copied
+// into the error.
+func requireWorkflowCommit(commit citedCommit) error {
+	sha := strings.ToLower(strings.TrimSpace(commit.SHA))
+	if err := validateCommit(sha); err != nil {
+		return errors.New("a citation branch commit is not a sha")
+	}
+	if commit.Author == nil || commit.Author.Login != githubActionsBot || !strings.EqualFold(commit.Author.Type, "Bot") {
+		return fmt.Errorf("commit %s was not authored by the citation workflow", sha)
+	}
+	if commit.Committer == nil || commit.Committer.Login != githubActionsBot || !strings.EqualFold(commit.Committer.Type, "Bot") {
+		return fmt.Errorf("commit %s was not committed by the citation workflow", sha)
+	}
+	if commit.Commit.Author.Name != githubActionsBot || !strings.EqualFold(commit.Commit.Author.Email, githubActionsEmail) {
+		return fmt.Errorf("commit %s author is not the citation workflow", sha)
+	}
+	if commit.Commit.Committer.Name != githubActionsBot || !strings.EqualFold(commit.Commit.Committer.Email, githubActionsEmail) {
+		return fmt.Errorf("commit %s committer is not the citation workflow", sha)
+	}
+	if commit.Commit.Verification == nil || !commit.Commit.Verification.Verified || commit.Commit.Verification.Reason != "valid" {
+		return fmt.Errorf("commit %s is not a verified GitHub commit", sha)
+	}
+	if !strings.HasPrefix(commit.Commit.Message, citationCommitPrefix) {
+		return fmt.Errorf("commit %s was not created by the citation updater", sha)
+	}
+	if len(commit.Parents) != 1 || validateCommit(strings.ToLower(commit.Parents[0].SHA)) != nil {
+		return fmt.Errorf("commit %s is not a single-parent citation update", sha)
+	}
+	return nil
+}
+
+func fastForwardCitationBranch(ctx context.Context, client *http.Client, cfg Config, owner, repo, branch, sha string) error {
+	if branch == "" || branch == cfg.Branch || !strings.HasPrefix(branch, "citation/") {
+		return fmt.Errorf("refusing to move %s", branch)
+	}
+	if err := validateCommit(sha); err != nil {
+		return err
+	}
+	parts := []string{"git", "refs", "heads"}
+	parts = append(parts, strings.Split(branch, "/")...)
+	raw, err := apiURL(cfg.APIBase, owner, repo, parts...)
+	if err != nil {
+		return err
+	}
+	// sha only. Omitting force leaves GitHub's fast-forward check in place.
+	payload := struct {
+		SHA string `json:"sha"`
+	}{SHA: sha}
+	status, data, err := doJSON(ctx, client, http.MethodPatch, raw, cfg.Token, payload)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("refusing to move %s: %s", branch, apiMessage(status, data))
+	}
+	got, err := branchCommit(ctx, client, cfg, owner, repo, branch)
+	if err != nil {
+		return err
+	}
+	if got != sha {
+		return fmt.Errorf("branch %s is %s after update, not %s", branch, got, sha)
+	}
+	return nil
 }
 
 func branchCommit(ctx context.Context, client *http.Client, cfg Config, owner, repo, branch string) (string, error) {
@@ -228,11 +466,13 @@ func pullBody(result Result) string {
 type workflowRun struct {
 	ID         int64  `json:"id"`
 	HeadSHA    string `json:"head_sha"`
+	HeadBranch string `json:"head_branch"`
 	Event      string `json:"event"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	HTMLURL    string `json:"html_url"`
 	CreatedAt  string `json:"created_at"`
+	Path       string `json:"path"`
 }
 
 // ensureScan dispatches the citation gitleaks workflow on head and waits
@@ -392,9 +632,19 @@ func latestScanID(runs []workflowRun) int64 {
 	return id
 }
 
-func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha, target string) error {
-	if target == "" {
-		return errors.New("citation gitleaks run has no URL")
+func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha, branch string, listed workflowRun) error {
+	if err := validateCommit(sha); err != nil {
+		return err
+	}
+	// The list result is not enough. Read this run again and refuse to
+	// post the ruleset status unless that response is a successful scan
+	// of this exact head.
+	confirmed, err := loadScanRun(ctx, client, cfg, owner, repo, listed.ID)
+	if err != nil {
+		return err
+	}
+	if err := scanReady(confirmed, sha, branch); err != nil {
+		return err
 	}
 	raw, err := apiURL(cfg.APIBase, owner, repo, "statuses", sha)
 	if err != nil {
@@ -409,7 +659,7 @@ func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner,
 		State:       "success",
 		Context:     gitleaksCheck,
 		Description: "gitleaks scan of the citation pull request range passed",
-		TargetURL:   target,
+		TargetURL:   confirmed.HTMLURL,
 	}
 	status, data, err := doJSON(ctx, client, http.MethodPost, raw, cfg.Token, body)
 	if err != nil {
@@ -419,6 +669,67 @@ func postScanStatus(ctx context.Context, client *http.Client, cfg Config, owner,
 		return fmt.Errorf("post gitleaks status: %s", apiMessage(status, data))
 	}
 	return nil
+}
+
+func loadScanRun(ctx context.Context, client *http.Client, cfg Config, owner, repo string, id int64) (workflowRun, error) {
+	if id <= 0 {
+		return workflowRun{}, errors.New("citation gitleaks run id is missing")
+	}
+	raw, err := apiURL(cfg.APIBase, owner, repo, "actions", "runs", strconv.FormatInt(id, 10))
+	if err != nil {
+		return workflowRun{}, err
+	}
+	var run workflowRun
+	if err := getJSON(ctx, client, cfg.Token, raw, &run); err != nil {
+		return workflowRun{}, err
+	}
+	return run, nil
+}
+
+// scanReady is the check that must pass before statuses: write is used.
+// The ruleset does not pin the check to GitHub Actions, so this is what
+// stops the job from posting a success for a run it did not just confirm.
+func scanReady(run workflowRun, headSHA, branch string) error {
+	if run.ID <= 0 {
+		return errors.New("citation gitleaks run id is missing")
+	}
+	sha := strings.ToLower(strings.TrimSpace(run.HeadSHA))
+	if err := validateCommit(sha); err != nil || sha != headSHA {
+		return fmt.Errorf("citation gitleaks run %d is for %s, not %s", run.ID, shortAPI(run.HeadSHA), headSHA)
+	}
+	if run.HeadBranch != branch {
+		return fmt.Errorf("citation gitleaks run %d is on %s, not %s", run.ID, shortAPI(run.HeadBranch), branch)
+	}
+	if run.Event != "workflow_dispatch" {
+		return fmt.Errorf("citation gitleaks run %d is a %s event", run.ID, shortAPI(run.Event))
+	}
+	if run.Status != "completed" || run.Conclusion != "success" {
+		return fmt.Errorf("citation gitleaks run %d is %s/%s", run.ID, shortAPI(run.Status), shortAPI(run.Conclusion))
+	}
+	if run.Path != citationWorkflowPath {
+		return fmt.Errorf("citation gitleaks run %d is not %s", run.ID, citationWorkflowPath)
+	}
+	if err := validateRunURL(run.HTMLURL); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRunURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		return errors.New("citation gitleaks run URL is invalid")
+	}
+	return nil
+}
+
+func shortAPI(s string) string {
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\r", "")
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return s
 }
 
 // MergeConfig selects the citation pull request a completed pull-request
@@ -507,36 +818,185 @@ func Merge(ctx context.Context, cfg MergeConfig) (Result, error) {
 // StatusMerged means the citation pull request was merged into the default branch.
 const StatusMerged Status = "merged"
 
+type prFile struct {
+	Filename string `json:"filename"`
+	Status   string `json:"status"`
+}
+
 func citationPRFiles(ctx context.Context, client *http.Client, cfg Config, owner, repo string, number int) error {
-	raw, err := apiURL(cfg.APIBase, owner, repo, "pulls", fmt.Sprint(number), "files")
+	files, err := listCitationPRFiles(ctx, client, cfg, owner, repo, number)
 	if err != nil {
-		return err
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return err
-	}
-	q := u.Query()
-	q.Set("per_page", "100")
-	u.RawQuery = q.Encode()
-	status, data, err := doJSON(ctx, client, http.MethodGet, u.String(), cfg.Token, nil)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return fmt.Errorf("list pull request files: %s", apiMessage(status, data))
-	}
-	var files []struct {
-		Filename string `json:"filename"`
-		Status   string `json:"status"`
-	}
-	if err := json.Unmarshal(data, &files); err != nil {
 		return err
 	}
 	if len(files) != 1 || files[0].Filename != citationPath || files[0].Status == "removed" {
 		return fmt.Errorf("citation pull request #%d does not change only CITATION.cff", number)
 	}
 	return nil
+}
+
+// listCitationPRFiles follows Link rel=next on the same API host. A
+// malformed link, a link to another host, a repeated page, or a page past
+// the cap fails closed so a later page cannot hide a second file.
+func listCitationPRFiles(ctx context.Context, client *http.Client, cfg Config, owner, repo string, number int) ([]prFile, error) {
+	raw, err := apiURL(cfg.APIBase, owner, repo, "pulls", fmt.Sprint(number), "files")
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("per_page", "100")
+	u.RawQuery = q.Encode()
+	next := u.String()
+	seen := map[string]struct{}{}
+	var all []prFile
+	for page := 1; page <= maxCitationFilePages; page++ {
+		if _, ok := seen[next]; ok {
+			return nil, fmt.Errorf("pull request #%d files pagination repeated a page", number)
+		}
+		seen[next] = struct{}{}
+		if err := sameAPIHost(cfg.APIBase, next); err != nil {
+			return nil, err
+		}
+		status, data, hdr, err := doJSONHeader(ctx, client, http.MethodGet, next, cfg.Token, nil)
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("list pull request files: %s", apiMessage(status, data))
+		}
+		var files []prFile
+		if err := json.Unmarshal(data, &files); err != nil {
+			return nil, err
+		}
+		all = append(all, files...)
+		linkNext, err := nextPageURL(hdr)
+		if err != nil {
+			return nil, err
+		}
+		if linkNext == "" {
+			return all, nil
+		}
+		next = linkNext
+	}
+	return nil, fmt.Errorf("pull request #%d files response has too many pages", number)
+}
+
+func sameAPIHost(apiBase, raw string) error {
+	base, err := url.Parse(apiBase)
+	if err != nil || base.Host == "" || base.Scheme == "" {
+		return errors.New("API base URL is invalid")
+	}
+	next, err := url.Parse(raw)
+	if err != nil || next.Host == "" || next.Scheme == "" {
+		return errors.New("pagination link is malformed")
+	}
+	if next.User != nil {
+		return errors.New("refusing a pagination link with userinfo")
+	}
+	if !strings.EqualFold(next.Scheme, base.Scheme) || !strings.EqualFold(next.Host, base.Host) {
+		return errors.New("refusing a pagination link on another host")
+	}
+	return nil
+}
+
+func nextPageURL(h http.Header) (string, error) {
+	if len(h) == 0 {
+		return "", nil
+	}
+	var next string
+	saw := false
+	for _, value := range h.Values("Link") {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		for _, part := range splitLinkParts(value) {
+			raw, rel, err := parseLinkPart(part)
+			if err != nil {
+				return "", err
+			}
+			if rel != "next" {
+				continue
+			}
+			if saw && raw != next {
+				return "", errors.New("pagination link has more than one next URL")
+			}
+			saw = true
+			next = raw
+		}
+	}
+	return next, nil
+}
+
+func splitLinkParts(value string) []string {
+	var parts []string
+	var b strings.Builder
+	depth := 0
+	for _, r := range value {
+		switch r {
+		case '<':
+			depth++
+			b.WriteRune(r)
+		case '>':
+			if depth > 0 {
+				depth--
+			}
+			b.WriteRune(r)
+		case ',':
+			if depth == 0 {
+				parts = append(parts, b.String())
+				b.Reset()
+				continue
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() > 0 {
+		parts = append(parts, b.String())
+	}
+	return parts
+}
+
+func parseLinkPart(part string) (string, string, error) {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return "", "", errors.New("pagination link is malformed")
+	}
+	if !strings.HasPrefix(part, "<") {
+		return "", "", errors.New("pagination link is malformed")
+	}
+	end := strings.IndexByte(part, '>')
+	if end < 2 {
+		return "", "", errors.New("pagination link is malformed")
+	}
+	raw := part[1:end]
+	if raw == "" || strings.ContainsAny(raw, " \t\r\n") {
+		return "", "", errors.New("pagination link is malformed")
+	}
+	rel := ""
+	for _, param := range strings.Split(part[end+1:], ";") {
+		param = strings.TrimSpace(param)
+		if param == "" {
+			continue
+		}
+		key, val, ok := strings.Cut(param, "=")
+		if !ok {
+			return "", "", errors.New("pagination link is malformed")
+		}
+		if !strings.EqualFold(strings.TrimSpace(key), "rel") {
+			continue
+		}
+		val = strings.Trim(strings.TrimSpace(val), `"`)
+		if rel != "" && rel != val {
+			return "", "", errors.New("pagination link is malformed")
+		}
+		rel = val
+	}
+	return raw, rel, nil
 }
 
 func gitleaksStatusPassed(ctx context.Context, client *http.Client, cfg Config, owner, repo, sha string) (bool, error) {

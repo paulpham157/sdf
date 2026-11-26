@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -385,8 +386,8 @@ func TestSyncAnnotatedReleaseUsesCommit(t *testing.T) {
 	if result.Status != StatusMerged || result.HeadBranch != "citation/v0.2.0" || result.HeadSHA != headSHA || result.PullRequest != 7 {
 		t.Fatalf("%+v", result)
 	}
-	if len(gh.refs) != 1 || len(gh.pulls) != 1 || len(gh.dispatches) != 1 || len(gh.statuses) != 1 || len(gh.merges) != 1 {
-		t.Fatalf("refs %d pulls %d dispatches %d statuses %d merges %d", len(gh.refs), len(gh.pulls), len(gh.dispatches), len(gh.statuses), len(gh.merges))
+	if len(gh.refs) != 1 || len(gh.refUpdates) != 0 || len(gh.pulls) != 1 || len(gh.dispatches) != 1 || len(gh.statuses) != 1 || len(gh.merges) != 1 {
+		t.Fatalf("refs %d updates %d pulls %d dispatches %d statuses %d merges %d", len(gh.refs), len(gh.refUpdates), len(gh.pulls), len(gh.dispatches), len(gh.statuses), len(gh.merges))
 	}
 	if gh.refs[0]["ref"] != "refs/heads/citation/v0.2.0" || gh.refs[0]["sha"] != strings.Repeat("e", 40) {
 		t.Fatalf("ref create %#v", gh.refs[0])
@@ -856,6 +857,444 @@ func TestMergeOnlyCitationPR(t *testing.T) {
 	}
 }
 
+func TestSyncRefusesForeignCitationBranch(t *testing.T) {
+	old := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	foreign := strings.Repeat("a", 40)
+	cases := []struct {
+		name    string
+		status  string
+		ahead   int
+		behind  int
+		total   int
+		next    bool
+		commits []map[string]any
+		want    string
+		patch   bool
+		puts    int
+	}{
+		{
+			name:    "foreign commit",
+			status:  "ahead",
+			ahead:   1,
+			total:   1,
+			commits: []map[string]any{foreignCommitJSON(foreign, strings.Repeat("e", 40))},
+			want:    "not authored by the citation workflow",
+		},
+		{
+			name:    "unverified workflow commit",
+			status:  "ahead",
+			ahead:   1,
+			total:   1,
+			commits: []map[string]any{workflowCommitJSON(foreign, strings.Repeat("e", 40), false)},
+			want:    "not a verified GitHub commit",
+		},
+		{
+			name:    "diverged from the default branch",
+			status:  "diverged",
+			ahead:   1,
+			behind:  2,
+			total:   1,
+			commits: []map[string]any{workflowCommitJSON(foreign, strings.Repeat("1", 40), true)},
+			want:    "not based on",
+		},
+		{
+			name:   "compare has another page",
+			status: "ahead",
+			ahead:  1,
+			total:  1,
+			next:   true,
+			commits: []map[string]any{
+				workflowCommitJSON(foreign, strings.Repeat("e", 40), true),
+			},
+			want: "incomplete",
+		},
+		{
+			name:    "compare truncated",
+			status:  "ahead",
+			ahead:   3,
+			total:   3,
+			commits: []map[string]any{workflowCommitJSON(foreign, strings.Repeat("e", 40), true)},
+			want:    "incomplete",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gh := &fakeGitHub{
+				tagName:        "v0.2.0",
+				refType:        "commit",
+				refSHA:         otherCommit,
+				commit:         otherCommit,
+				file:           old,
+				blob:           strings.Repeat("b", 40),
+				citationExists: true,
+				citationSHA:    foreign,
+				citationFile:   old,
+				citationBlob:   strings.Repeat("b", 40),
+				compareStatus:  tc.status,
+				compareAhead:   tc.ahead,
+				compareBehind:  tc.behind,
+				compareTotal:   tc.total,
+				compareCommits: tc.commits,
+				compareNext:    tc.next,
+			}
+			srv := gh.server(t)
+			defer srv.Close()
+			_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err %v", err)
+			}
+			if len(gh.puts) != tc.puts || len(gh.refs) != 0 || len(gh.refUpdates) != 0 || len(gh.merges) != 0 || len(gh.statuses) != 0 {
+				t.Fatalf("puts %d refs %d updates %d merges %d statuses %d", len(gh.puts), len(gh.refs), len(gh.refUpdates), len(gh.merges), len(gh.statuses))
+			}
+		})
+	}
+}
+
+func TestSyncRefusesBranchThatAppearsDuringCreate(t *testing.T) {
+	old := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	foreign := strings.Repeat("a", 40)
+	gh := &fakeGitHub{
+		tagName:        "v0.2.0",
+		refType:        "commit",
+		refSHA:         otherCommit,
+		commit:         otherCommit,
+		file:           old,
+		blob:           strings.Repeat("b", 40),
+		citationSHA:    foreign,
+		citationFile:   old,
+		citationBlob:   strings.Repeat("b", 40),
+		createConflict: true,
+		compareStatus:  "ahead",
+		compareAhead:   1,
+		compareTotal:   1,
+		compareCommits: []map[string]any{foreignCommitJSON(foreign, strings.Repeat("e", 40))},
+	}
+	srv := gh.server(t)
+	defer srv.Close()
+	_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), "not authored by the citation workflow") {
+		t.Fatalf("err %v", err)
+	}
+	if len(gh.puts) != 0 || len(gh.refUpdates) != 0 || len(gh.merges) != 0 || len(gh.statuses) != 0 {
+		t.Fatalf("puts %d updates %d merges %d statuses %d", len(gh.puts), len(gh.refUpdates), len(gh.merges), len(gh.statuses))
+	}
+	if len(gh.refs) != 1 {
+		t.Fatalf("refs %#v", gh.refs)
+	}
+	if _, ok := gh.refs[0]["force"]; ok {
+		t.Fatal("create set force")
+	}
+}
+
+func TestSyncReusesWorkflowBranchAndFastForwardsBehind(t *testing.T) {
+	old := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	tip := strings.Repeat("a", 40)
+	base := strings.Repeat("e", 40)
+
+	t.Run("ahead by a workflow commit", func(t *testing.T) {
+		gh := &fakeGitHub{
+			tagName:        "v0.2.0",
+			refType:        "commit",
+			refSHA:         otherCommit,
+			commit:         otherCommit,
+			file:           old,
+			blob:           strings.Repeat("b", 40),
+			citationExists: true,
+			citationSHA:    tip,
+			citationFile:   old,
+			citationBlob:   strings.Repeat("b", 40),
+			compareStatus:  "ahead",
+			compareAhead:   1,
+			compareTotal:   1,
+			compareCommits: []map[string]any{workflowCommitJSON(tip, base, true)},
+		}
+		srv := gh.server(t)
+		defer srv.Close()
+		result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != StatusMerged || len(gh.refs) != 0 || len(gh.refUpdates) != 0 || len(gh.puts) != 1 {
+			t.Fatalf("%+v refs %d updates %d puts %d", result, len(gh.refs), len(gh.refUpdates), len(gh.puts))
+		}
+	})
+
+	t.Run("behind the default branch fast-forwards", func(t *testing.T) {
+		gh := &fakeGitHub{
+			tagName:        "v0.2.0",
+			refType:        "commit",
+			refSHA:         otherCommit,
+			commit:         otherCommit,
+			file:           old,
+			blob:           strings.Repeat("b", 40),
+			mainSHA:        base,
+			citationExists: true,
+			citationSHA:    strings.Repeat("1", 40),
+			citationFile:   old,
+			citationBlob:   strings.Repeat("b", 40),
+			compareStatus:  "behind",
+			compareBehind:  4,
+		}
+		srv := gh.server(t)
+		defer srv.Close()
+		result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != StatusMerged || len(gh.refs) != 0 || len(gh.refUpdates) != 1 {
+			t.Fatalf("%+v refs %d updates %#v", result, len(gh.refs), gh.refUpdates)
+		}
+		if gh.refUpdates[0]["sha"] != base || len(gh.refUpdates[0]) != 1 {
+			t.Fatalf("fast-forward %#v", gh.refUpdates[0])
+		}
+		if _, ok := gh.refUpdates[0]["force"]; ok {
+			t.Fatal("fast-forward set force")
+		}
+	})
+
+	t.Run("identical branch is not recreated", func(t *testing.T) {
+		gh := &fakeGitHub{
+			tagName:        "v0.2.0",
+			refType:        "commit",
+			refSHA:         otherCommit,
+			commit:         otherCommit,
+			file:           old,
+			blob:           strings.Repeat("b", 40),
+			mainSHA:        base,
+			citationExists: true,
+			citationSHA:    base,
+			citationFile:   old,
+			citationBlob:   strings.Repeat("b", 40),
+		}
+		srv := gh.server(t)
+		defer srv.Close()
+		result, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != StatusMerged || len(gh.refs) != 0 || len(gh.refUpdates) != 0 || len(gh.puts) != 1 {
+			t.Fatalf("%+v refs %d updates %d puts %d", result, len(gh.refs), len(gh.refUpdates), len(gh.puts))
+		}
+		for _, path := range gh.paths {
+			if strings.Contains(path, "/compare/") {
+				t.Fatalf("identical branch was compared: %s", path)
+			}
+		}
+	})
+}
+
+func TestSyncDoesNotPostStatusWithoutConfirmedRun(t *testing.T) {
+	old := []byte("version: 0.1.0\ndate-released: 2026-11-24\ncommit: " + v010Commit + "\n")
+	cases := []struct {
+		name string
+		set  func(*fakeGitHub)
+		want string
+	}{
+		{
+			name: "run head is a different commit",
+			set:  func(gh *fakeGitHub) { gh.runHeadSHA = otherCommit },
+			want: "not " + strings.Repeat("f", 40),
+		},
+		{
+			name: "run conclusion is not success",
+			set:  func(gh *fakeGitHub) { gh.runConclusion = "failure" },
+			want: "completed/failure",
+		},
+		{
+			name: "run is a different workflow",
+			set:  func(gh *fakeGitHub) { gh.runPath = ".github/workflows/pr.yml" },
+			want: "is not " + citationWorkflowPath,
+		},
+		{
+			name: "run lookup is missing",
+			set:  func(gh *fakeGitHub) { gh.runMissing = true },
+			want: "not found",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gh := &fakeGitHub{
+				tagName: "v0.2.0",
+				refType: "commit",
+				refSHA:  otherCommit,
+				commit:  otherCommit,
+				file:    old,
+				blob:    strings.Repeat("b", 40),
+			}
+			tc.set(gh)
+			srv := gh.server(t)
+			defer srv.Close()
+			_, err := Sync(context.Background(), gh.config(srv, "v0.2.0", "2026-12-02T00:00:00Z"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err %v", err)
+			}
+			if len(gh.statuses) != 0 || len(gh.merges) != 0 {
+				t.Fatalf("statuses %d merges %d", len(gh.statuses), len(gh.merges))
+			}
+		})
+	}
+}
+
+func TestCitationPRFilesFollowsPagesOrFailsClosed(t *testing.T) {
+	one := []map[string]string{{"filename": "CITATION.cff", "status": "modified"}}
+	extra := []map[string]string{{"filename": "README.md", "status": "modified"}}
+	type page struct {
+		files []map[string]string
+		link  string
+	}
+	cases := []struct {
+		name  string
+		pages []page
+		want  string
+		calls int
+	}{
+		{
+			name:  "second page has another file",
+			pages: []page{{one, "next"}, {extra, ""}},
+			want:  "does not change only CITATION.cff",
+			calls: 2,
+		},
+		{
+			name:  "empty second page still counts the first",
+			pages: []page{{one, "next"}, {nil, ""}},
+			calls: 2,
+		},
+		{
+			name:  "next link on another host",
+			pages: []page{{one, "https://evil.example/files?page=2"}},
+			want:  "another host",
+			calls: 1,
+		},
+		{
+			name:  "malformed link",
+			pages: []page{{one, "not-a-link"}},
+			want:  "malformed",
+			calls: 1,
+		},
+		{
+			name:  "repeated page",
+			pages: []page{{one, "repeat"}},
+			want:  "repeated a page",
+			calls: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != "/repos/paulpham157/sdf/pulls/7/files" {
+					t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				page := 1
+				if r.URL.Query().Get("page") == "2" {
+					page = 2
+				}
+				if page > len(tc.pages) {
+					t.Errorf("page %d", page)
+					http.NotFound(w, r)
+					return
+				}
+				got := tc.pages[page-1]
+				switch got.link {
+				case "":
+				case "next":
+					w.Header().Set("Link", `<`+srv.URL+`/repos/paulpham157/sdf/pulls/7/files?per_page=100&page=2>; rel="next"`)
+				case "repeat":
+					w.Header().Set("Link", `<`+srv.URL+r.URL.RequestURI()+`>; rel="next"`)
+				case "not-a-link":
+					w.Header().Set("Link", `not-a-link`)
+				default:
+					w.Header().Set("Link", `<`+got.link+`>; rel="next"`)
+				}
+				files := got.files
+				if files == nil {
+					files = []map[string]string{}
+				}
+				writeJSON(t, w, files)
+			}))
+			defer srv.Close()
+			client := srv.Client()
+			client.Timeout = 2 * time.Second
+			err := citationPRFiles(context.Background(), client, Config{
+				Token:   "test-token",
+				Repo:    "paulpham157/sdf",
+				APIBase: srv.URL,
+				Branch:  "main",
+			}, "paulpham157", "sdf", 7)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err %v", err)
+			}
+			if calls != tc.calls {
+				t.Fatalf("calls %d", calls)
+			}
+		})
+	}
+
+	t.Run("too many pages", func(t *testing.T) {
+		calls := 0
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			page := calls + 1
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/paulpham157/sdf/pulls/7/files?page=%d>; rel="next"`, srv.URL, page))
+			writeJSON(t, w, []map[string]string{{"filename": "CITATION.cff", "status": "modified"}})
+		}))
+		defer srv.Close()
+		err := citationPRFiles(context.Background(), srv.Client(), Config{
+			Token:   "test-token",
+			APIBase: srv.URL,
+		}, "paulpham157", "sdf", 7)
+		if err == nil || !strings.Contains(err.Error(), "too many pages") {
+			t.Fatalf("err %v", err)
+		}
+		if calls != maxCitationFilePages {
+			t.Fatalf("calls %d", calls)
+		}
+	})
+}
+
+func workflowCommitJSON(sha, parent string, verified bool) map[string]any {
+	reason := "valid"
+	if !verified {
+		reason = "unsigned"
+	}
+	return map[string]any{
+		"sha": sha,
+		"parents": []map[string]string{{
+			"sha": parent,
+		}},
+		"author":    map[string]string{"login": githubActionsBot, "type": "Bot"},
+		"committer": map[string]string{"login": githubActionsBot, "type": "Bot"},
+		"commit": map[string]any{
+			"message": "docs: update CITATION.cff for 0.2.0\n\nSet version 0.2.0.\n",
+			"author": map[string]string{
+				"name":  githubActionsBot,
+				"email": githubActionsEmail,
+			},
+			"committer": map[string]string{
+				"name":  githubActionsBot,
+				"email": githubActionsEmail,
+			},
+			"verification": map[string]any{"verified": verified, "reason": reason},
+		},
+	}
+}
+
+func foreignCommitJSON(sha, parent string) map[string]any {
+	commit := workflowCommitJSON(sha, parent, true)
+	commit["author"] = map[string]string{"login": "octocat", "type": "User"}
+	commit["committer"] = map[string]string{"login": "octocat", "type": "User"}
+	return commit
+}
+
 func TestConfigFromEnv(t *testing.T) {
 	env := map[string]string{
 		"GITHUB_TOKEN":          "test-token",
@@ -996,6 +1435,21 @@ type fakeGitHub struct {
 	missingFile    bool
 	redirectRef    bool
 	scanFail       bool
+	runHeadSHA     string
+	runHeadBranch  string
+	runConclusion  string
+	runPath        string
+	runEvent       string
+	runStatus      string
+	runMissing     bool
+	compareStatus  string
+	compareAhead   int
+	compareBehind  int
+	compareTotal   int
+	compareCommits []map[string]any
+	compareNext    bool
+	createConflict bool
+	refUpdates     []map[string]any
 	citationExists bool
 	citationFile   []byte
 	citationBlob   string
@@ -1049,6 +1503,42 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 			writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": f.commit}})
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/git/ref/heads/main":
 			writeJSON(t, w, map[string]any{"object": map[string]string{"type": "commit", "sha": f.mainSHA}})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/compare/"):
+			if f.compareStatus == "" {
+				t.Errorf("unexpected compare %s", r.URL.Path)
+				http.NotFound(w, r)
+				return
+			}
+			if f.compareNext {
+				w.Header().Set("Link", `<http://`+r.Host+`/repos/paulpham157/sdf/compare/next>; rel="next"`)
+			}
+			commits := f.compareCommits
+			if commits == nil {
+				commits = []map[string]any{}
+			}
+			writeJSON(t, w, map[string]any{
+				"status":        f.compareStatus,
+				"ahead_by":      f.compareAhead,
+				"behind_by":     f.compareBehind,
+				"total_commits": f.compareTotal,
+				"commits":       commits,
+			})
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/git/refs/heads/citation/"):
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("ref update: %v", err)
+				http.Error(w, `{"message":"bad json"}`, http.StatusBadRequest)
+				return
+			}
+			f.refUpdates = append(f.refUpdates, body)
+			if _, ok := body["force"]; ok {
+				t.Errorf("ref update set force")
+			}
+			sha, _ := body["sha"].(string)
+			f.citationSHA = sha
+			f.citationExists = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ref":"ok"}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/git/ref/heads/citation/"):
 			if !f.citationExists {
 				http.NotFound(w, r)
@@ -1069,6 +1559,12 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 			f.refs = append(f.refs, body)
 			if _, ok := body["force"]; ok {
 				t.Errorf("ref create set force")
+			}
+			if f.createConflict {
+				f.citationExists = true
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Reference already exists"}`))
+				return
 			}
 			f.citationExists = true
 			f.citationFile = append([]byte(nil), f.file...)
@@ -1211,6 +1707,46 @@ func (f *fakeGitHub) server(t *testing.T) *httptest.Server {
 				"html_url":   "https://example.test/runs/2",
 				"created_at": "2026-11-24T00:00:01Z",
 			}}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/paulpham157/sdf/actions/runs/2":
+			if f.runMissing {
+				http.NotFound(w, r)
+				return
+			}
+			sha := f.citationSHA
+			if f.runHeadSHA != "" {
+				sha = f.runHeadSHA
+			}
+			conclusion := "success"
+			if f.runConclusion != "" {
+				conclusion = f.runConclusion
+			}
+			headBranch := "citation/" + f.tagName
+			if f.runHeadBranch != "" {
+				headBranch = f.runHeadBranch
+			}
+			path := citationWorkflowPath
+			if f.runPath != "" {
+				path = f.runPath
+			}
+			event := "workflow_dispatch"
+			if f.runEvent != "" {
+				event = f.runEvent
+			}
+			runStatus := "completed"
+			if f.runStatus != "" {
+				runStatus = f.runStatus
+			}
+			writeJSON(t, w, map[string]any{
+				"id":          2,
+				"head_sha":    sha,
+				"head_branch": headBranch,
+				"event":       event,
+				"status":      runStatus,
+				"conclusion":  conclusion,
+				"html_url":    "https://example.test/runs/2",
+				"path":        path,
+				"created_at":  "2026-11-24T00:00:01Z",
+			})
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/repos/paulpham157/sdf/statuses/"):
 			var body map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
