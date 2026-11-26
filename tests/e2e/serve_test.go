@@ -175,6 +175,7 @@ type serveProc struct {
 	db       string
 	httpBase string
 	grpcAddr string
+	uiURL    string
 	stderr   *bytes.Buffer
 	done     chan struct{}
 	waitErr  error
@@ -231,10 +232,11 @@ func startServeArgs(t *testing.T, extra ...string) *serveProc {
 		mu.Lock()
 		snap := text.String()
 		mu.Unlock()
-		httpBase, grpcAddr, ok := parseListen(snap)
+		httpBase, grpcAddr, uiURL, ok := parseListen(snap)
 		if ok {
 			srv.httpBase = httpBase
 			srv.grpcAddr = grpcAddr
+			srv.uiURL = uiURL
 			waitHealth(t, httpBase)
 			return srv
 		}
@@ -269,7 +271,7 @@ func (s *serveProc) shutdown() {
 	}
 }
 
-func parseListen(text string) (httpBase, grpcAddr string, ok bool) {
+func parseListen(text string) (httpBase, grpcAddr, uiURL string, ok bool) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if rest, found := strings.CutPrefix(line, "OTLP/HTTP listening on "); found {
@@ -278,8 +280,11 @@ func parseListen(text string) (httpBase, grpcAddr string, ok bool) {
 		if rest, found := strings.CutPrefix(line, "OTLP/gRPC listening on "); found {
 			grpcAddr = strings.TrimSpace(rest)
 		}
+		if rest, found := strings.CutPrefix(line, "UI listening on "); found {
+			uiURL = strings.TrimSpace(rest)
+		}
 	}
-	return httpBase, grpcAddr, httpBase != "" && grpcAddr != ""
+	return httpBase, grpcAddr, uiURL, httpBase != "" && grpcAddr != ""
 }
 
 func waitHealth(t *testing.T, base string) {

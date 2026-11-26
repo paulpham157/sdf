@@ -124,7 +124,20 @@ func TestQwenWriteMergesInPlaceAndBacksUp(t *testing.T) {
     "model": {
         "name": "qwen3-coder-plus"
     },
-    "big": 123456789012345678901234567890
+    "big": 123456789012345678901234567890,
+    "hooks": {
+        "Stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent qwen || exit 0",
+                        "timeout": 2
+                    }
+                ]
+            }
+        ]
+    }
 }
 `
 	if string(body) != want {
@@ -150,7 +163,7 @@ func TestQwenWriteFreshFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := os.ReadFile(filepath.Join(home, ".qwen", "settings.json"))
-	want := "{\n  \"telemetry\": {\n    \"enabled\": true,\n    \"otlpEndpoint\": \"http://127.0.0.1:4318\",\n    \"otlpProtocol\": \"http\",\n    \"logPrompts\": false\n  }\n}\n"
+	want := "{\n  \"telemetry\": {\n    \"enabled\": true,\n    \"otlpEndpoint\": \"http://127.0.0.1:4318\",\n    \"otlpProtocol\": \"http\",\n    \"logPrompts\": false\n  },\n  \"hooks\": {\n    \"Stop\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent qwen || exit 0\",\n            \"timeout\": 2\n          }\n        ]\n      }\n    ]\n  }\n}\n"
 	if string(body) != want {
 		t.Fatalf("got\n%s", body)
 	}

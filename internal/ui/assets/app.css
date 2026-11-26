@@ -730,3 +730,47 @@ g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
   .dg * { transition: none !important; animation: none !important; }
   .dg-enter { animation: none; }
 }
+
+.charts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+}
+
+@media (min-width: 1100px) {
+  .charts { grid-template-columns: 1fr 1fr; }
+  .charts .chart-card:last-child { grid-column: 1 / -1; }
+}
+
+.chart-card {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.chart-card h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chart-plot {
+  margin: 8px 0 12px;
+  overflow-x: auto;
+}
+
+.chart-svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.chart-axis { stroke: var(--line-strong); stroke-width: 1; }
+.chart-grid { stroke: var(--line); stroke-width: 1; }
+.chart-line { stroke: var(--green); stroke-width: 2; }
+.chart-point { fill: var(--green); }
+.chart-bar-a { fill: var(--green); }
+.chart-bar-b { fill: var(--amber); }
+.chart-tick { font-size: 11px; fill: var(--ink-soft); }
+.chart-tick-left { text-anchor: end; }
+.chart-tick-right { text-anchor: start; }
+.chart-tick-x { text-anchor: middle; }
+.chart-legend { font-size: 11px; fill: var(--ink-soft); }
+.chart-empty { color: var(--ink-soft); font-size: 14px; margin: 8px 0; }
+
+.chart-table { margin-top: 4px; }
+.chart-table th, .chart-table td { font-size: 13px; }

@@ -1712,7 +1712,8 @@ lines.on("close", async () => {
     if (!el) throw new Error("runner: no element matches " + sel);
     return el;
   }
-  // The page fetches /api/snapshot, /api/decisions, and /api/summary before it
+  // The page fetches /api/snapshot, /api/decisions, /api/summary,
+  // /api/decisions/graph, and /api/overview-charts before it
   // draws. Those responses are not back within a fixed number of turns, so
   // count each fetch the page starts and read the page only once a whole turn
   // both starts and ends with none of them left in flight. That covers the

@@ -107,7 +107,7 @@ func InstallGitHooksWith(dir string, ep Endpoint, opt HookOptions) (Result, erro
 	} else {
 		fmt.Fprintf(&b, "sdf git hooks already installed in %s\n", hooksDir)
 	}
-	fmt.Fprintf(&b, "Events go to %s and nowhere else. The body is the commit SHA, checkout path, branch, and agent session id. The diff and the commit message are not sent.\n", url)
+	fmt.Fprintf(&b, "Events go to %s and nowhere else. The body is the commit SHA, checkout path, branch, agent session id, and any SDF-Decision trailer values. The subject, body, other trailers, and the diff are not sent.\n", url)
 	fmt.Fprintf(&b, "A commit still succeeds when that receiver is down. prepare-commit-msg adds an SDF-Session trailer only when a session id is present.\n")
 	b.WriteString(prePushNote(cfg))
 	b.WriteString("If sdf serve requires a token, the hooks send it when SDF_OTLP_TOKEN or SDF_OTLP_TOKEN_FILE is set where git runs; the token is not written to the hooks.\n")
@@ -334,7 +334,7 @@ func managerInstructions(manager, configPath, chain string) string {
 	case "pre-commit":
 		b.WriteString("pre-commit does not run post-commit unless you add a hook. Call the scripts from the hook files pre-commit installed, or from a local hook entry. A shell script that calls them has the same exit 0 rule.\n")
 	}
-	b.WriteString("The scripts post only to loopback. They send the commit SHA, checkout path, branch, and agent session id, not the diff or the commit message.\n")
+	b.WriteString("The scripts post only to loopback. They send the commit SHA, checkout path, branch, agent session id, and any SDF-Decision trailer values, not the subject, body, other trailers, or the diff.\n")
 	b.WriteString("The pre-push script sends nothing. It warns about pushed commits that implement no decision and never fails a push because SDF is unavailable.\n")
 	return b.String()
 }

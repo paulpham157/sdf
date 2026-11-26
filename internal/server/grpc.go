@@ -61,7 +61,7 @@ func ingest(srv *Server, signal string, msg proto.Message) error {
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "could not parse OTLP payload")
 	}
-	if _, err := srv.Store.Insert(records); err != nil {
+	if err := srv.insertRecords(records); err != nil {
 		return status.Error(codes.Internal, "store error")
 	}
 	return nil

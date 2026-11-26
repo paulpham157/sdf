@@ -72,6 +72,80 @@ and [Checking an action](outcomes.md#checking-an-action).
 | GitHub Copilot CLI | None. Environment only | Not injected | Run `sdf decision brief` |
 | Cursor | No `sdf init` target and no session hook to install | Not injected | Run `sdf decision brief` in the session, or install the skill if the agent will load it |
 
+## Decision reminder when a session stops
+
+SessionEnd cannot talk to the model. The Stop hook can. `sdf hook stop --agent AGENT`
+reads that event's JSON on stdin and, at most once per session, may refuse the
+stop with the reason `phiên này có quyết định nào chưa ghi không?`. It does
+that only when the session has an `sdf.git.commit` and either no stored
+decision is linked to the session or no `implements` edge runs from the
+session or from one of those commits. A `claude_code.tool_result` commit
+does not count. The store is opened read-only (`store.OpenReadOnlyBusy`,
+200ms). A missing session id, a missing or unreadable store, a payload that
+is not JSON, or a stop the agent already continued (`stop_hook_active`,
+Grok's `stopHookActive`, a Grok `reason` other than `end_turn`, Cursor's
+`loop_count` above 0 or a status of `aborted` or `error`) prints nothing and
+exits 0. The once-per-session marker is `<db>.stop-reminded`, mode 0600,
+next to the store file (default `sdf-telemetry.sqlite` in the working
+directory). The hook never creates the store.
+
+`sdf init --write` installs that command for the agents whose config it
+already writes. A second run does not add a second copy, and the existing
+SessionStart and SessionEnd hooks stay. OpenCode has no Stop gate, so its
+plugin is unchanged and the reminder there is the skill or `sdf decision
+list`. Copilot and Cursor have a Stop gate, and `sdf hook stop` speaks it,
+but `sdf init` does not write their hook files (Copilot's env snippet is
+not a hook file, and Cursor is not an `sdf init` agent). The command for
+those two is below so it can be installed by hand.
+
+| Agent | Event `sdf init` installs | Block JSON | Session id | Doc checked |
+| --- | --- | --- | --- | --- |
+| Claude Code | `Stop` in `~/.claude/settings.json`, 2s timeout, guarded so a Grok process that also reads that file exits | `{"decision":"block","reason":"..."}` | payload `session_id`, else `CLAUDE_CODE_SESSION_ID` | [Hooks reference](https://code.claude.com/docs/en/hooks) (Stop decision, `stop_hook_active`; cap 8) |
+| Codex CLI | `Stop` in `$CODEX_HOME/hooks.json`, 2s timeout | same `decision`/`reason` (the reason is the next prompt) | `CODEX_THREAD_ID`, else payload `session_id` | [codex-rs Stop input/output](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/schema.rs) (`stop_hook_active`, `decision: block`) |
+| Gemini CLI | `AfterAgent` in `~/.gemini/settings.json`, matcher `*`, timeout 2000 (milliseconds) | same `decision`/`reason` (`block` is an alias of `deny`) | payload `session_id`, else `GEMINI_SESSION_ID` | [Hooks reference](https://geminicli.com/docs/hooks/reference/) |
+| Qwen Code | `Stop` in the user `settings.json`, timeout 2 (seconds) | same `decision`/`reason` | payload `session_id`, else `QWEN_CODE_SESSION_ID` | [Qwen Code hooks](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) |
+| Grok CLI | `Stop` in `$GROK_HOME/hooks/sdf-session.json`, timeout 2 | same `decision`/`reason` | `GROK_SESSION_ID`, else `sessionId` | [Grok hooks](https://grokbook.dev/chapter/10-hooks) (`stopHookActive`, gate only `reason: end_turn`, cap 8) |
+| Pi | `agent_before_settle` in the sdf session extension | `{"continue":true,"entries":[{"type":"custom_message",...}]}`, appended after the entries earlier handlers proposed | payload `session_id` (`getSessionId()`), else `PI_SESSION_ID` | [Extensions](https://docs.pi.dev/latest/extensions) |
+| Copilot CLI | not installed (hook files live under `~/.copilot/hooks/` or `$COPILOT_HOME/hooks/`, which `sdf init` does not write) | same `decision`/`reason` | payload `sessionId` | [Copilot hooks](https://docs.github.com/en/copilot/reference/hooks-reference) (`agentStop`, cap 8) |
+| Cursor | not installed (no `sdf init` target; hooks are `~/.cursor/hooks.json` or `.cursor/hooks.json`) | `{"followup_message":"..."}` | payload `conversation_id` | [Cursor hooks](https://cursor.com/docs/hooks) (`stop`, `loop_count`, default cap 5) |
+| OpenCode | nothing (no Stop gate) | — | — | [Plugins](https://opencode.ai/docs/plugins/) |
+
+Copilot, by hand, in `~/.copilot/hooks/sdf-stop.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "agentStop": [
+      {
+        "type": "command",
+        "command": "command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent copilot || exit 0",
+        "timeoutSec": 2
+      }
+    ]
+  }
+}
+```
+
+Cursor, by hand, in `~/.cursor/hooks.json` (the `stop` value is an array of
+command objects, not Claude's matcher groups). Grok also runs the hooks in
+that file, so the command exits first when `GROK_HOOK_EVENT` is set, as the
+Claude Code hook does; otherwise a Grok stop could spend the session's one
+reminder on Cursor's `followup_message`, which Grok does not read:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "[ -z \"${GROK_HOOK_EVENT:-}\" ] || exit 0; command -v sdf >/dev/null 2>&1 || exit 0; sdf hook stop --agent cursor || exit 0"
+      }
+    ]
+  }
+}
+```
+
 The skill is not loaded from this repository automatically. Copy or symlink
 the whole `skills/sdf-decisions` folder (including `scripts/`) into the
 location your agent reads. Install paths are documented for
@@ -148,6 +222,10 @@ claude_code.interaction
     ├── claude_code.tool.blocked_on_user
     └── claude_code.tool.execution
 ```
+
+[![Claude Code default beta span tree: claude_code.interaction with llm_request and tool children; hook is not in this tree.](diagrams/12-claude-code-spans.png)](diagrams/12-claude-code-spans.png)
+
+Source: [12-claude-code-spans.tldr](diagrams/12-claude-code-spans.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 `claude_code.hook` is not part of that default hierarchy. It requires detailed
 beta tracing (`ENABLE_BETA_TRACING_DETAILED` and `BETA_TRACING_ENDPOINT`),
@@ -523,6 +601,10 @@ the datapoint attributes or the resource. Codex uses `conversation.id`.
 Claude Code and OpenCode use `session.id`. Pi logs set only `pi.session.id`.
 
 ## Qwen Code
+
+[![Qwen Code span types: qwen-code.interaction with llm_request and tool (blocked_on_user and execution children). subagent and hook are listed as span types; the docs do not specify their parent, so they are drawn as siblings.](diagrams/14-qwen-spans.png)](diagrams/14-qwen-spans.png)
+
+Source: [14-qwen-spans.tldr](diagrams/14-qwen-spans.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 > Mapping below is from QwenLM/qwen-code v0.28.4 (e8424c88, released
 > 2026-11-22): [docs/developers/development/telemetry.md](https://github.com/QwenLM/qwen-code/blob/v0.28.4/docs/developers/development/telemetry.md)
@@ -985,6 +1067,10 @@ agent.prompt                                session_id
 
 Startup (`startup.*`, `session.new_session`, `session.spawn`) is a separate
 trace, and teardown (`session_end.*`) hangs off a `session` span.
+
+[![Grok CLI internal spans that sdf summary keeps by default: agent.prompt, session.process_conversation_turn, turn.sampling, http.create_response_stream, tools.execute, permission.wait, and tool.execution.](diagrams/13-grok-spans.png)](diagrams/13-grok-spans.png)
+
+Source: [13-grok-spans.tldr](diagrams/13-grok-spans.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
 
 sdf's default tree keeps `agent.prompt`, `session.process_conversation_turn`,
 `turn.sampling`, `http.create_response_stream`, `tools.execute`,

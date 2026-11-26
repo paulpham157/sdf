@@ -1,5 +1,9 @@
 # Summary
 
+[![sdf summary reads the local store, derives duration and tokens by agent-specific precedence, prices them from the OpenRouter catalog, and can attach GitHub outcomes, cost per accepted, and a local budget.](diagrams/15-summary-cost.png)](diagrams/15-summary-cost.png)
+
+Source: [15-summary-cost.tldr](diagrams/15-summary-cost.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 ```bash
 ./sdf summary
 ./sdf summary --db PATH
@@ -92,7 +96,11 @@ the banner is collected from the full tree. `GET /api/summary` and
 `GET /api/snapshot` serve the tree nested to the same depth of 32; deeper
 spans are listed flat under the span at that depth, counted by
 `flattened_descendants` (see [Deep span trees](#deep-span-trees),
-issue #267).
+issue #267). The snapshot also includes `activity_by_day`, used by the
+overview cost and session charts: sessions are grouped by the UTC date of
+their start, with known computed costs summed for that day (unknown if any
+session that day has an unknown cost). Sessions with no start time are
+`undated_sessions`, not a day. See [The UI](receiver.md#the-ui).
 
 ## Precedence
 

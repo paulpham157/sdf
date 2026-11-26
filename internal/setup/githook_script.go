@@ -12,10 +12,13 @@ import (
 // prepare-commit-msg, or pre-push.
 //
 // The script sends the commit SHA, the checkout toplevel, the branch name,
-// and the agent session id. It does not read the diff or the commit message.
-// prepare-commit-msg only appends an SDF-Session trailer, and only when a
-// session id is present. A down receiver or a missing curl does not fail
-// the commit. Proxy variables are cleared so the POST cannot leave the machine.
+// the agent session id, and any SDF-Decision trailer values. It does not
+// read the subject, the body, other trailers, or the diff. Trailer values
+// are read with git log --format=%(trailers:key=SDF-Decision,valueonly),
+// not by dumping every trailer. prepare-commit-msg only appends an
+// SDF-Session trailer, and only when a session id is present; it does not
+// write SDF-Decision. A down receiver or a missing curl does not fail the
+// commit. Proxy variables are cleared so the POST cannot leave the machine.
 //
 // pre-push sends nothing. It runs sdf decision pre-push with the hook's
 // stdin, which reads the store and only the SDF-Decision trailer of the
@@ -25,8 +28,9 @@ import (
 const hookScriptTemplate = `#!/bin/sh
 # sdf-git-hook:v1
 # Installed by sdf init --git-hooks. Re-run that command to replace this file.
-# Posts the commit SHA, checkout path, branch, and agent session id to a
-# loopback sdf serve. It does not send the diff or the commit message.
+# Posts the commit SHA, checkout path, branch, agent session id, and any
+# SDF-Decision trailer values to a loopback sdf serve. It does not send
+# the subject, the body, other trailers, or the diff.
 # Failure is ignored, and the request cannot use an HTTP proxy.
 # A receiver token is read at run time from SDF_OTLP_TOKEN or
 # SDF_OTLP_TOKEN_FILE; it is never stored in this file.
@@ -141,6 +145,20 @@ sdf_ok_sha() {
   fi
   case "$sha" in
     *[!0-9a-fA-F]*) return 1 ;;
+  esac
+  return 0
+}
+
+# sdf_ok_decision_id is the decision id pattern: 1-128 letters, digits, dot,
+# underscore, or dash, starting with a letter or digit.
+sdf_ok_decision_id() {
+  id=$1
+  if [ -z "$id" ] || [ "${#id}" -gt 128 ]; then
+    return 1
+  fi
+  case "$id" in
+    [!A-Za-z0-9]*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
   esac
   return 0
 }
@@ -303,15 +321,19 @@ sdf_codex_service() {
 sdf_send_one() {
   sha=$1
   rewritten=$2
-  line=$(sdf_session || true)
-  if [ -z "$line" ]; then
-    return 0
-  fi
-  agent=${line%% *}
-  sid=${line#* }
-  sdf_ok_id "$sid" || return 0
   sdf_ok_sha "$sha" || return 0
   sha=$(printf '%s' "$sha" | tr 'ABCDEF' 'abcdef')
+  line=$(sdf_session || true)
+  agent=''
+  sid=''
+  if [ -n "$line" ]; then
+    agent=${line%% *}
+    sid=${line#* }
+    if ! sdf_ok_id "$sid"; then
+      agent=''
+      sid=''
+    fi
+  fi
   repo=$(git rev-parse --show-toplevel 2>/dev/null || true)
   if [ -z "$repo" ]; then
     return 0
@@ -328,40 +350,82 @@ sdf_send_one() {
   case "$now" in
     *[!0-9]*) now=0 ;;
   esac
-  esc_sid=$(sdf_json_escape "$sid")
+  # Read only SDF-Decision trailer values for this SHA. Never the subject,
+  # body, other trailers, or the diff. Do not dump every trailer (that would
+  # include Signed-off-by).
+  decision_items=''
+  decision_attr=''
+  ids=$(git log -1 --format='%(trailers:key=SDF-Decision,valueonly=true,unfold=true,separator=%x0a)' "$sha" 2>/dev/null || true)
+  if [ -n "$ids" ]; then
+    while IFS= read -r raw || [ -n "$raw" ]; do
+      id=$(printf '%s\n' "$raw" | sdf_trim)
+      if ! sdf_ok_decision_id "$id"; then
+        continue
+      fi
+      esc_id=$(sdf_json_escape "$id")
+      if [ -n "$decision_items" ]; then
+        decision_items="$decision_items,"
+      fi
+      decision_items="$decision_items{\"stringValue\":\"$esc_id\"}"
+    done <<SDF_DECISION_EOF
+$ids
+SDF_DECISION_EOF
+  fi
+  if [ -n "$decision_items" ]; then
+    decision_attr=$(printf '%s' "{\"key\":\"sdf.git.decision\",\"value\":{\"arrayValue\":{\"values\":[$decision_items]}}},")
+  fi
+  if [ -z "$sid" ] && [ -z "$decision_attr" ]; then
+    return 0
+  fi
   esc_repo=$(sdf_json_escape "$repo")
   esc_branch=$(sdf_json_escape "$branch")
   esc_sha=$(sdf_json_escape "$sha")
   service=''
   sess=''
-  case "$agent" in
-    pi)
-      service=pi
-      sess=$(printf '%s' \
-        "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
-        "{\"key\":\"pi.session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
-        "{\"key\":\"` + genai.AttrConversationID + `\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
-        "{\"key\":\"` + genai.AttrSystem + `\",\"value\":{\"stringValue\":\"pi\"}},")
-      ;;
-    opencode)
-      service=opencode
-      sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
-      ;;
-    grok-cli|claude-code|qwen-code)
-      service=$agent
-      sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
-      ;;
-    codex)
-      service=$(sdf_codex_service)
-      case "$service" in
-        ""|*[!A-Za-z0-9._-]*) service=codex_exec ;;
-      esac
-      sess=$(printf '%s' "{\"key\":\"conversation.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
-      ;;
-    *)
-      return 0
-      ;;
-  esac
+  agent_attr=''
+  if [ -n "$sid" ]; then
+    esc_sid=$(sdf_json_escape "$sid")
+    case "$agent" in
+      pi)
+        service=pi
+        sess=$(printf '%s' \
+          "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
+          "{\"key\":\"pi.session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
+          "{\"key\":\"` + genai.AttrConversationID + `\",\"value\":{\"stringValue\":\"$esc_sid\"}}," \
+          "{\"key\":\"` + genai.AttrSystem + `\",\"value\":{\"stringValue\":\"pi\"}},")
+        ;;
+      opencode)
+        service=opencode
+        sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
+        ;;
+      grok-cli|claude-code|qwen-code)
+        service=$agent
+        sess=$(printf '%s' "{\"key\":\"session.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
+        ;;
+      codex)
+        service=$(sdf_codex_service)
+        case "$service" in
+          ""|*[!A-Za-z0-9._-]*) service=codex_exec ;;
+        esac
+        sess=$(printf '%s' "{\"key\":\"conversation.id\",\"value\":{\"stringValue\":\"$esc_sid\"}},")
+        ;;
+      *)
+        if [ -z "$decision_attr" ]; then
+          return 0
+        fi
+        agent=''
+        sid=''
+        sess=''
+        service=sdf
+        ;;
+    esac
+    if [ -n "$agent" ]; then
+      esc_agent=$(sdf_json_escape "$agent")
+      agent_attr=$(printf '%s' "{\"key\":\"sdf.git.agent\",\"value\":{\"stringValue\":\"$esc_agent\"}},")
+    fi
+  else
+    service=sdf
+  fi
   rewrite_attr=''
   if sdf_ok_sha "$rewritten"; then
     rewritten=$(printf '%s' "$rewritten" | tr 'ABCDEF' 'abcdef')
@@ -370,7 +434,7 @@ sdf_send_one() {
   fi
   nano="${now}000000000"
   payload=$(printf '%s' \
-    '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"'"$service"'"}},{"key":"sdf.git.hook","value":{"stringValue":"1"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'"$nano"'","body":{"stringValue":"sdf.git.commit"},"attributes":[{"key":"event.name","value":{"stringValue":"sdf.git.commit"}},'"$sess"'{"key":"sdf.git.agent","value":{"stringValue":"'"$agent"'"}},{"key":"vcs.ref.head.revision","value":{"stringValue":"'"$esc_sha"'"}},{"key":"sdf.git.repo","value":{"stringValue":"'"$esc_repo"'"}},{"key":"sdf.git.branch","value":{"stringValue":"'"$esc_branch"'"}},'"$rewrite_attr"'{"key":"sdf.git.hook","value":{"stringValue":"1"}}]}]}]}]}')
+    '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"'"$service"'"}},{"key":"sdf.git.hook","value":{"stringValue":"1"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'"$nano"'","body":{"stringValue":"sdf.git.commit"},"attributes":[{"key":"event.name","value":{"stringValue":"sdf.git.commit"}},'"$sess$agent_attr$decision_attr$rewrite_attr"'{"key":"vcs.ref.head.revision","value":{"stringValue":"'"$esc_sha"'"}},{"key":"sdf.git.repo","value":{"stringValue":"'"$esc_repo"'"}},{"key":"sdf.git.branch","value":{"stringValue":"'"$esc_branch"'"}},{"key":"sdf.git.hook","value":{"stringValue":"1"}}]}]}]}]}')
   sdf_post "$payload"
 }
 

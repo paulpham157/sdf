@@ -8,6 +8,10 @@ the bind address on localhost. Override with `--host`, `--port` (HTTP),
 `--grpc-port`, and `--db`. `--otlp-token`, `--otlp-token-file`, `SDF_OTLP_TOKEN`, or
 `SDF_OTLP_TOKEN_FILE` is optional bearer authentication, described below.
 
+[![sdf serve: agent exporters, session hooks, and git hooks each POST to HTTP :4318 on their own (OTLP, JSON /v1/sessions, and /v1/logs); agents may also use gRPC :4317; an optional bearer token applies to both listeners; both paths run record.Redact inside Store.Insert before the row is written to local SQLite; the UI and read-only commands read that store.](diagrams/02-receiver.png)](diagrams/02-receiver.png)
+
+Source: [02-receiver.tldr](diagrams/02-receiver.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 The HTTP receiver stores a body only for `Content-Type: application/json`
 or `application/x-protobuf`. The type match is case-insensitive, and
 parameters such as `charset` are allowed. Any other type, including a
@@ -316,7 +320,12 @@ request reads to 30s, writes (including a GitHub lookup) to 3 minutes, and
 idle connections to 90s.
 
 The page has three views. Overview is the total across sessions and the cost
-per accepted outcome, including that figure per agent. Sessions lists every
+per accepted outcome, including that figure per agent, plus charts of
+decision-link recall over time, unlinked commits and unlinked decisions
+(the same gaps `sdf decision audit` reports), and sessions and computed
+cost by UTC day. The charts are inline SVG with a data table under each
+plot, and they are omitted when the store has no commits, decisions, or
+dated sessions. Sessions lists every
 stored session, newest first, with the agent, start time, duration, models,
 input and output tokens, computed cost, the cost the agent reported, the
 linked commit or pull request, and whether the link was exact, hook, trailer,
@@ -329,9 +338,20 @@ directory or commit, merge status not requested).
 Those numbers are the `sdf summary` report. The decision records and the budget are drawn on every view, the overview, the session list, and the session detail, and both are drawn even when the store has no sessions. The page does not price tokens
 again. `GET /api/summary` on the UI port is the same document as
 `sdf summary --json` for that database, including `--prices` and `--repo`.
-`GET /api/snapshot` is that report newest-first, plus the per-agent totals.
-`GET /api/decisions` reads the decision records. It is empty when none have
-been recorded, and recording one does not change the summary. All three are
+`GET /api/snapshot` is that report newest-first, plus the per-agent totals
+and `activity_by_day` (session counts and computed cost by the UTC day
+the session started; sessions with no start time are `undated_sessions`,
+not a day). `GET /api/decisions` reads the decision records. It is empty when none have
+been recorded, and recording one does not change the summary.
+`GET /api/overview-charts` is the decision-link recall and unlinked-gap
+series for the overview charts, reusing `sdf decision audit` on a
+read-only connection so a long read does not hold the writer's mutex
+(issue #272). Recall is the share of SDF-recorded commits that have an
+`implements` edge to a stored decision. `SDF-Decision` trailers are not
+in the store, so they are not counted (issue #281). Days are UTC
+calendar dates; a quiet day between the first and last event is included
+with zeros, and a day with no commits omits daily recall rather than
+calling it zero. All four routes are
 read-only. There is no route that writes or deletes. A response that cannot
 be encoded is `500` with a JSON error, not an empty `200` (issue #267).
 
@@ -823,14 +843,31 @@ The hook is POSIX `sh`. It uses `curl` when that is on `PATH`, otherwise
 `wget`. A missing client, a refused connection, or a slow receiver does not
 fail the commit (`--connect-timeout 1 --max-time 1`). The POST body is an
 OTLP log named `sdf.git.commit` with the commit SHA, the checkout toplevel,
-the branch name, and the agent session id. It does not include the diff or
-the commit message. `sdf summary` reads the subject from the local git
-object after the link, the same way it does for a SHA the agent exported.
+the branch name, the agent session id, and any `SDF-Decision` trailer
+values. It does not include the subject, the body, other trailers, or the
+diff. Trailer values are read with
+`git log --format=%(trailers:key=SDF-Decision,valueonly)` (the same form
+pre-push uses), never `git interpret-trailers --parse`, which would emit
+every trailer including `Signed-off-by`. A malformed id is dropped, is not
+sent, and does not fail the commit. `sdf summary` reads the subject from
+the local git object after the link, the same way it does for a SHA the
+agent exported.
+
+When `sdf serve` receives that event, it appends a `commit implements
+decision` edge for each valid `SDF-Decision` id, or, if no trailer ids were
+sent and the commit's session already implements exactly one active
+decision, for that decision. Unknown or retracted ids are rejected and
+logged (SHA and id only) and never become ghost edges. The id is not stored
+as a trailer record: only the implements edge is persisted. A 200 is not
+returned until that write has committed. A repeated event for the same SHA
+does not create a duplicate edge.
 
 `prepare-commit-msg` appends an `SDF-Session: <id>` trailer only when a
-session id is present. A commit made outside an agent gets neither a trailer
-nor an event. If two agents' ids are set at once, the commit is not
-attributed. Hooks installed by an older sdf do not read the Claude Code or
+session id is present. It does not write an `SDF-Decision` trailer. A
+commit made outside an agent gets no `SDF-Session` trailer, but it still
+gets an `sdf.git.commit` event when it carries a valid `SDF-Decision`
+trailer. If two agents' ids are set at once, the commit is not
+attributed (a trailer can still produce an event). Hooks installed by an older sdf do not read the Claude Code or
 Qwen Code variables; re-run `sdf init --git-hooks` to replace them in place.
 
 The id has to be the one the agent's telemetry already uses:
@@ -987,10 +1024,12 @@ sdf check does not run. Re-running `sdf init --git-hooks` with the same
 options changes nothing; `sdf init --uninstall-git-hooks` puts the previous
 hook back.
 
-**Privacy.** The other hooks never read the commit message. The pre-push
-check reads exactly one thing from it: the values of `SDF-Decision`
-trailers, with `git log --format=%(trailers:key=SDF-Decision,valueonly)`. It
-does not read the subject, the body, other trailers, or the diff, and it
-sends nothing anywhere. Nothing writes an `SDF-Decision` trailer for you
-yet, and a trailer is public once pushed; reading it on the server side is
-[#281](https://github.com/paulpham157/sdf/issues/281).
+**Privacy.** `prepare-commit-msg` still writes only an `SDF-Session`
+trailer. `post-commit` and `post-rewrite` read and send only
+`SDF-Decision` trailer values, never the subject, the body, other
+trailers, or the diff, using
+`git log --format=%(trailers:key=SDF-Decision,valueonly)`. The pre-push
+check reads that same trailer locally the same way and sends nothing
+anywhere. Nothing writes an `SDF-Decision` trailer for you; a trailer is
+public once pushed. The receiver stores only a `commit implements
+decision` edge, not the raw message or other trailer text.
