@@ -101,8 +101,18 @@ summarization.
 
 Each record has an id, one statement, and a status of `hypothesis` or
 `decision`. A hypothesis is an assumption, not a settled fact. Optional fields
-name who decided (`user` or `agent`), the alternatives that were on the table,
-a reason, and a source pointer. Time is `recorded_at`. A session is not stored
+name who decided, the alternatives that were on the table,
+a reason, and a source pointer. `decided_by` is the text the caller passed:
+`user`, `agent`, or empty. sdf stores that text. It does not check that a
+person, rather than an agent, supplied `user`. Time is `recorded_at`.
+[Decision categories](design/decision-category.md) specifies two changes
+that are not in the CLI. `decided_by` would be the GitHub login of the team
+member responsible, and an agent acting for a person would record that
+person's login. An optional `category` would default to `implementation`
+when unset. `sdf decision check` would still ignore `category`. The spec
+adds no warning that tries to tell a person from an agent.
+
+A session is not stored
 on the record; link it with an edge when the store already has that session.
 An edge connects two endpoints and uses one of
 `constrains`, `implements`, `supersedes`, `validates`, `contradicts`,
@@ -538,9 +548,11 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   edge, retraction, then the order the API lists them. A time with no zone
   is read as UTC, the zone the store writes; a time that cannot be read
   sorts last and is labelled "time unknown". It needs no other endpoint.
-  Ticks are spaced by event order; filled is a user decision, hollow an
-  agent one, a small dot an edge. The label at the playhead reads, for
-  example, `Nov 22 · 09:14 GMT+7 · agent-status · 10 of 13`: the time is in
+  Ticks are spaced by event order; filled is a decision stored as `user`,
+  hollow one stored as `agent`, a small dot an edge. The mark follows the
+  stored label. sdf does not check that a person typed `user`. The label
+  at the playhead reads, for example,
+  `Nov 22 · 09:14 GMT+7 · agent-status · 10 of 13`: the time is in
   the browser's time zone with its label, as every other time on the page.
   The slider is `role="slider"` with `aria-valuemin`, `aria-valuemax`,
   `aria-valuenow`, and `aria-valuetext`: ←/→ or `[`/`]` step one event
@@ -598,13 +610,15 @@ hypothesis that Load marked blocked or conflicted. `decision.Active` is
 unchanged (settled only); `sdf decision check` still reads that set, not
 this list. A record appears in at most one group, in this order:
 
-1. **Constraints.** An in-force settled decision that the user made, or that
-   is the source of a `constrains` edge. A locked constraint is a settled
-   user decision (`status` `decision`, `--decided-by user`); a user
-   hypothesis never counts. Locked constraints come first, newest first.
+1. **Constraints.** An in-force settled decision whose stored `decided_by`
+   is `user`, or that is the source of a `constrains` edge. A locked
+   constraint is a settled decision stored as `user` (`status` `decision`,
+   `--decided-by user`). A hypothesis is never locked. The lock matches
+   that stored word. It is not a check that a person made the decision.
+   Locked constraints come first, newest first.
    Other constraints, then blocked items, then conflicting items, stay in
-   insertion order inside each of those tiers. A locked user decision stays
-   in this group even when it is also blocked or conflicted. Each statement
+   insertion order inside each of those tiers. A locked decision stored as
+   `user` stays in this group even when it is also blocked or conflicted. Each statement
    is capped at 200 bytes, cut on a rune boundary, and ends in `…` when it
    is cut.
 2. **Blocked.** An active record that is not a constraint, and that Load
@@ -624,7 +638,7 @@ this list. A record appears in at most one group, in this order:
 
 A record that is none of these does not appear.
 
-Locked user rules are exempt from `--max-items`: every one is kept, newest
+Locked rules are exempt from `--max-items`: every one is kept, newest
 first, even when `--max-items` is 0. Other items then fill the remaining
 item slots and the bytes left after the locked tier. `--max-bytes` is a
 hard bound. When the locked tier does not fit at the 200-byte statement
@@ -654,8 +668,8 @@ fits about 9-10 typical items; statements near the 200-byte cap fit fewer.
 `--format json` prints indented JSON with an `items` array, an `omitted`
 count, and an `omitted_locked` count, all always present in that object
 when anything matched. Each item has `id`, `kind`, `statement`, `status`,
-`decided_by`, and `locked`. `locked` is true only for a constraint the
-user made. `--json` is not a flag.
+`decided_by`, and `locked`. `locked` is true only for a constraint stored
+with `decided_by` `user`. `--json` is not a flag.
 
 A path that does not exist (a missing file or a missing parent directory)
 prints nothing and exits 0. A path that exists but cannot be read — not a
