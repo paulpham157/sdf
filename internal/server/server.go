@@ -87,11 +87,18 @@ type Server struct {
 	// It is not set in production.
 	blockAfterInsert func(context.Context)
 
+	commits *commitGate
+	watches *watchTable
+
 	phaseMu sync.Mutex
 	// reading is the HTTP connections still in a read. Shutdown closes
 	// these and leaves a connection that has started its commit alone,
 	// so the client receives the 200 for a row that was stored.
 	reading map[net.Conn]struct{}
+	// reads is the gRPC calls still waiting for a message. Shutdown
+	// cancels them so GracefulStop can finish a commit that already
+	// started instead of closing that connection.
+	reads map[*readCtx]struct{}
 }
 
 // Start binds both listeners and serves until Shutdown.
@@ -156,6 +163,8 @@ func (s *Server) Start() error {
 	s.grpcLn = s.grpcLim
 	s.httpHost = httpHost
 	s.httpPort = httpPort
+	s.commits = newCommitGate()
+	s.watches = newWatchTable()
 	// OTLP Export RPCs are unary. The stream interceptor is defense in depth
 	// if a streaming method is added later. admitRPC runs before the body
 	// is read.
@@ -179,6 +188,7 @@ func (s *Server) Start() error {
 		grpc.UnaryInterceptor(s.authInterceptor),
 		grpc.StreamInterceptor(s.streamAuthInterceptor),
 		grpc.InTapHandle(s.admitRPC),
+		grpc.StatsHandler(s),
 	)
 	coltracepb.RegisterTraceServiceServer(s.grpcSrv, traceService{srv: s})
 	colmetricspb.RegisterMetricsServiceServer(s.grpcSrv, metricsService{srv: s})
@@ -186,7 +196,7 @@ func (s *Server) Start() error {
 	s.httpWG.Add(1)
 	go s.serveHTTP(s.httpLim)
 	go func() {
-		_ = s.grpcSrv.Serve(s.grpcLim)
+		_ = s.grpcSrv.Serve(&watchListener{Listener: s.grpcLim, table: s.watches})
 	}()
 	return nil
 }
@@ -209,16 +219,18 @@ func (s *Server) GRPCAddress() string {
 
 // grpcGraceTimeout is how long Shutdown waits for gRPC handlers to
 // finish before it closes their connections. A header-only stream would
-// otherwise hold GracefulStop until the read timeout or the connection
-// age. A commit that has already started fits in this window.
+// otherwise hold GracefulStop until the header timeout or the connection
+// age. A commit that has already started gets the same amount of time
+// again so its status can be written before the connection is closed.
 const grpcGraceTimeout = 2 * time.Second
 
 // Shutdown stops both listeners. It cancels the server context, closes
 // HTTP connections that are still reading, and leaves a connection that
 // has started its commit to finish and write the 200. It then waits for
 // those handlers and gracefully stops gRPC so an in-flight commit can
-// finish. If that stop is still waiting after grpcGraceTimeout, the
-// remaining RPCs are closed. A second call does nothing.
+// finish. If that stop is still waiting after grpcGraceTimeout, it waits
+// up to another grpcGraceTimeout for a commit that has already started,
+// then closes the remaining RPCs. A second call does nothing.
 func (s *Server) Shutdown() {
 	s.stopOnce.Do(func() {
 		s.phaseMu.Lock()
@@ -246,8 +258,20 @@ func (s *Server) Shutdown() {
 			select {
 			case <-done:
 			case <-time.After(grpcGraceTimeout):
-				s.grpcSrv.Stop()
-				<-done
+				// Header-only and stalled reads are what hold GracefulStop.
+				// Cancelling them lets a commit already in progress write
+				// its status on an open connection. Stop is the fallback
+				// when that still does not return.
+				s.cancelReadingRPCs()
+				if s.commits != nil {
+					s.commits.wait(grpcGraceTimeout)
+				}
+				select {
+				case <-done:
+				case <-time.After(grpcGraceTimeout):
+					s.grpcSrv.Stop()
+					<-done
+				}
 			}
 		}
 		if s.grpcLn != nil {

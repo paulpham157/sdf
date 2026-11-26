@@ -12,6 +12,11 @@
   a proxy the key is the proxy.
   Chunked HTTP and `Content-Length` are both accepted, and gRPC is a
   separate listener on port 4317. gRPC gzip uses the standard compressor.
+  Shutdown waits up to 2 seconds for a gRPC commit that has already
+  started, then up to another 2 seconds so that commit can write its
+  status, and then closes the connection. A commit still running after
+  that wait can be stored while the client sees the connection close and
+  retries, which can insert the same export again.
 - Codex's published config reference does not catalog events or metrics. The
   Codex lists in [docs/agents.md](../docs/agents.md) can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places

@@ -73,6 +73,9 @@ func ingest(ctx context.Context, srv *Server, signal string, msg proto.Message) 
 	if err := ctx.Err(); err != nil {
 		return status.FromContextError(err).Err()
 	}
+	// Count this commit until the status is written. Shutdown waits for
+	// that, bounded, before it force-closes the connection.
+	srv.enterGRPCCommit(ctx)
 	// Do not commit if shutdown has started. A successful return is a full
 	// success: partial_success stays unset.
 	if err := srv.beforeInsert(); err != nil {
@@ -84,6 +87,9 @@ func ingest(ctx context.Context, srv *Server, signal string, msg proto.Message) 
 	}
 	if err := srv.insertRecords(records); err != nil {
 		return status.Error(codes.Internal, "store error")
+	}
+	if srv.blockAfterInsert != nil {
+		srv.blockAfterInsert(ctx)
 	}
 	return nil
 }

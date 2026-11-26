@@ -71,8 +71,8 @@ body, so one accepted request always fits when nothing else is in flight.
 | Authenticated requests in flight | `--max-conns-per-token` | `SDF_MAX_CONNS_PER_TOKEN` | 64 |
 | One request body, including after gzip | `--max-body-bytes` | `SDF_MAX_BODY_BYTES` | 8000000 |
 | Bytes buffered at once | `--max-inflight-bytes` | `SDF_MAX_INFLIGHT_BYTES` | 67108864 |
-| Time to send headers | `--read-header-timeout` | `SDF_READ_HEADER_TIMEOUT` | 5s |
-| Time to send the body | `--read-timeout` | `SDF_READ_TIMEOUT` | 30s |
+| Time to send headers, or for a gRPC message to start | `--read-header-timeout` | `SDF_READ_HEADER_TIMEOUT` | 5s |
+| Time to send an HTTP body or a gRPC message | `--read-timeout` | `SDF_READ_TIMEOUT` | 30s |
 | Keep-alive idle time | `--idle-timeout` | `SDF_IDLE_TIMEOUT` | 90s |
 
 Durations use Go's notation (`5s`, `1m30s`). The same connection numbers
@@ -117,11 +117,14 @@ What is rejected, and with which status:
 - Headers that do not finish in time, or a connection that sends nothing,
   are closed with no response. OTLP says a client retries when the server
   disconnects. A body that stalls after the headers is HTTP **503** with
-  `Retry-After: 1`. A gRPC message that has not fully arrived within
-  `--read-timeout` is `DEADLINE_EXCEEDED`, which is retryable. The call
-  keeps its byte reservation until that deadline or until the message
-  arrives. The first byte of a later HTTP request starts the header
-  timer; until that byte, the idle timeout applies.
+  `Retry-After: 1`. A gRPC stream that has not sent a DATA frame within
+  `--read-header-timeout` is `DEADLINE_EXCEEDED`, which is retryable, and
+  it keeps its byte reservation until that deadline. Once a DATA frame
+  has arrived, a message that has not fully arrived within
+  `--read-timeout` is the same code. The call keeps its reservation until
+  that deadline or until the message arrives. The first byte of a later
+  HTTP request starts the header timer; until that byte, the idle timeout
+  applies.
 
 gRPC also caps streams on one connection (32), header metadata (1 MiB),
 the HTTP/2 handshake (`--read-header-timeout`), and how long a connection
@@ -133,13 +136,17 @@ That share is half the budget, and always enough for one maximum body.
 When `--max-inflight-bytes` equals `--max-body-bytes`, one body is the
 whole budget, so the gRPC share is the whole budget and HTTP is not left
 a separate remainder. A larger budget leaves HTTP the other half. The
-reservation stays until the message has fully arrived. `--read-timeout`
-cancels a call that has not arrived by then with `DEADLINE_EXCEEDED` and
-releases the reservation; a header-only stream does not keep the
-reservation past that deadline. The timer is stopped once the message is
-in hand, before the SQLite commit, and the reservation shrinks to the
-encoded size. A message larger than the body cap is `RESOURCE_EXHAUSTED` with
-no retry hint.
+reservation stays until the message has fully arrived. A stream that
+has not sent a DATA frame within `--read-header-timeout` is cancelled
+with `DEADLINE_EXCEEDED` and the reservation is released. A connection
+may have two RPCs waiting for that first DATA frame; another is
+`RESOURCE_EXHAUSTED` with `RetryInfo` of one second. After the first DATA
+byte, `--read-timeout` is the deadline. The timer is stopped once the
+message is in hand, before the SQLite commit, and the reservation
+shrinks to the encoded size. A message larger than the body cap is
+`RESOURCE_EXHAUSTED` with no retry hint. On shutdown, a commit that has
+already started is given another 2 seconds to finish and write its
+status before the remaining RPCs are closed.
 HTTP reserves the `Content-Length` (or each chunk, and both the compressed
 and the inflated bytes while gzip is expanding).
 
@@ -149,8 +156,9 @@ budget. That limit is recorded in `dev-docs/gaps.md`.
 None of these responses is a partial success. A stored export is answered
 only after the SQLite commit, with HTTP 200 and `partial_success` left
 unset (JSON `{}`, or an empty protobuf). A request that does not fit is
-not queued and is not acknowledged early. On shutdown, a gRPC call that
-is still reading is given 2 seconds to finish and is then closed, so a
+not queued and is not acknowledged early. On shutdown, gRPC is given
+2 seconds to finish. A commit already in progress gets another 2 seconds
+to write its status. Whatever is still open is then closed, so a
 header-only stream cannot hold the process until the connection age.
 
 Rows are one span, one metric point, or one log record. A span also stores
@@ -353,7 +361,12 @@ When a token is set, these requests must send `Authorization: Bearer <token>`:
   metadata key `authorization`
 
 A missing or wrong token is HTTP 401 or gRPC `Unauthenticated`. The comparison
-is constant-time. The token is not written to the request log. `GET /health`
+is constant-time. The token is not written to the request log. Without a
+token, any local process can open gRPC streams. Each stream that has not
+sent a message reserves a full body until `--read-header-timeout`, and one
+connection may hold two of those reservations. That can fill the gRPC share
+of the in-flight budget so other gRPC exports wait. Set a token: an
+unauthenticated stream is rejected before it reserves bytes. `GET /health`
 does not require the token, so `sdf init --check` still works. A valid token
 does not bypass the media-type, `Origin`, or loopback `Host` checks above.
 Those still return 415 or 403 and write nothing.

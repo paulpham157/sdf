@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	msgTooLarge     = "payload too large"
-	msgInFlight     = "inflight limit"
-	msgTooManyToken = "too many requests"
-	msgReadTimeout  = "read timeout"
-	msgStopping     = "server stopping"
+	msgTooLarge      = "payload too large"
+	msgInFlight      = "inflight limit"
+	msgTooManyToken  = "too many requests"
+	msgTooManyUnread = "too many streams waiting for a message"
+	msgReadTimeout   = "read timeout"
+	msgStopping      = "server stopping"
 
 	// maxConcurrentStreams bounds HTTP/2 streams on one gRPC connection.
 	// OTLP exports are unary; a local agent uses a few at a time. The
@@ -90,9 +91,10 @@ func (s *Server) beforeInsert() error {
 // token, a token cap, or an in-flight byte cap without buffering the
 // payload. An admitted RPC reserves the per-request maximum from the
 // gRPC share of the budget and keeps it until the message has fully
-// arrived. The read timer cancels the RPC with DEADLINE_EXCEEDED after
-// --read-timeout, which is what releases a header-only stream. The
-// handler stops that timer before the SQLite commit.
+// arrived. A stream with no DATA frame is cancelled with
+// DEADLINE_EXCEEDED after --read-header-timeout, which releases that
+// reservation. Once a DATA frame arrives the deadline is --read-timeout.
+// The handler stops that timer before the SQLite commit.
 //
 // The reservation is released when the returned context ends, including
 // when the RPC is rejected after the tap (unknown method, oversized
@@ -112,6 +114,14 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		}
 		releaseToken = rel
 	}
+	w, _ := ctx.Value(watchKey{}).(*frameWatch)
+	streamID, sawData, reject := w.claim()
+	if reject {
+		if releaseToken != nil {
+			releaseToken()
+		}
+		return nil, retryExhausted(msgTooManyUnread)
+	}
 	hold, ok := s.budget.ReserveGrpc(int64(s.lim.MaxBodyBytes))
 	if !ok {
 		if releaseToken != nil {
@@ -119,17 +129,30 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		}
 		return nil, retryExhausted(msgInFlight)
 	}
-	wait := s.lim.ReadTimeout
-	if wait <= 0 {
-		wait = netlimit.DefaultReadTimeout
+	headerWait := s.lim.ReadHeaderTimeout
+	if headerWait <= 0 {
+		headerWait = netlimit.DefaultReadHeaderTimeout
 	}
-	// The reservation stays until the message arrives or this timer
+	readWait := s.lim.ReadTimeout
+	if readWait <= 0 {
+		readWait = netlimit.DefaultReadTimeout
+	}
+	// The reservation stays until the message arrives or a timer
 	// cancels the read. Stopping the timer leaves the context alive, so
-	// the commit is not under the deadline.
-	live := newReadCtx(ctx, wait)
-	rh := &rpcHold{hold: hold, stop: live.stop}
+	// the commit is not under the deadline. A header-only stream uses
+	// the header timeout; the first DATA byte promotes it to the read timeout.
+	live := newReadCtx(ctx, headerWait, readWait, sawData)
+	s.trackRead(live)
+	if w != nil && !sawData && streamID != 0 {
+		w.arm(streamID, live.promote)
+	}
+	rh := &rpcHold{hold: hold, stop: live.stop, watch: w, stream: streamID}
 	context.AfterFunc(live, func() {
 		live.stop()
+		s.untrackRead(live)
+		if w != nil {
+			w.forget(streamID)
+		}
 		if releaseToken != nil {
 			releaseToken()
 		}
@@ -140,8 +163,12 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 
 // rpcHold is the pessimistic gRPC reservation for one RPC.
 type rpcHold struct {
-	hold *netlimit.Hold
-	stop func()
+	hold       *netlimit.Hold
+	stop       func()
+	watch      *frameWatch
+	stream     uint32
+	commitOnce sync.Once
+	commitDone func()
 }
 
 type rpcHoldKey struct{}
@@ -165,29 +192,74 @@ func (s *Server) noteGRPCBody(ctx context.Context, n int64) error {
 	return nil
 }
 
+// enterGRPCCommit counts a handler that is about to commit. The stats
+// End event drops the count after the status is written, so Shutdown can
+// wait for that response before it closes the connection.
+func (s *Server) enterGRPCCommit(ctx context.Context) {
+	if s == nil || s.commits == nil {
+		return
+	}
+	rh, _ := ctx.Value(rpcHoldKey{}).(*rpcHold)
+	if rh == nil {
+		return
+	}
+	s.commits.add()
+	rh.commitDone = s.commits.done
+	if rh.watch != nil {
+		rh.watch.trackCommit(rh.stream, func() { releaseGRPCCommit(ctx) })
+	}
+}
+
+func releaseGRPCCommit(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	rh, _ := ctx.Value(rpcHoldKey{}).(*rpcHold)
+	if rh == nil {
+		return
+	}
+	rh.commitOnce.Do(func() {
+		if rh.commitDone != nil {
+			rh.commitDone()
+		}
+	})
+}
+
 // readCtx is the stream context for one admitted RPC. Its timer cancels
-// the read with context.DeadlineExceeded. stop disarms that timer
-// without cancelling, which is how the commit stays off the deadline.
-// The parent cancel still ends the context, so the reservation is
-// released when the RPC finishes.
+// the read with context.DeadlineExceeded. Until a DATA frame arrives the
+// timer is the header timeout. promote moves it out to the read timeout
+// without cancelling. stop disarms the timer without cancelling, which
+// is how the commit stays off the deadline. The parent cancel still ends
+// the context, so the reservation is released when the RPC finishes.
 type readCtx struct {
 	context.Context
 	done     chan struct{}
+	started  time.Time
+	readWait time.Duration
 	deadline time.Time
 	mu       sync.Mutex
 	err      error
 	timer    *time.Timer
+	gen      int
 	stopped  bool
 	closed   bool
 }
 
-func newReadCtx(parent context.Context, wait time.Duration) *readCtx {
+func newReadCtx(parent context.Context, header, read time.Duration, sawData bool) *readCtx {
+	initial := header
+	if sawData || read < header {
+		initial = read
+	}
+	now := time.Now()
 	c := &readCtx{
 		Context:  parent,
 		done:     make(chan struct{}),
-		deadline: time.Now().Add(wait),
+		started:  now,
+		readWait: read,
+		deadline: now.Add(initial),
+		gen:      1,
 	}
-	c.timer = time.AfterFunc(wait, c.failRead)
+	c.timer = time.AfterFunc(initial, func() { c.failRead(1) })
 	go func() {
 		<-parent.Done()
 		c.fail(parent.Err())
@@ -217,11 +289,45 @@ func (c *readCtx) Deadline() (time.Time, bool) {
 	return deadline, true
 }
 
+// promote extends a header-only deadline to the read timeout. The first
+// DATA payload byte is what calls it. A timer that already fired stays
+// fired.
+func (c *readCtx) promote() {
+	c.mu.Lock()
+	if c.stopped || c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.gen++
+	gen := c.gen
+	t := c.timer
+	c.timer = nil
+	deadline := c.started.Add(c.readWait)
+	c.deadline = deadline
+	wait := time.Until(deadline)
+	c.mu.Unlock()
+	if t != nil {
+		t.Stop()
+	}
+	if wait <= 0 {
+		c.failRead(gen)
+		return
+	}
+	c.mu.Lock()
+	if c.stopped || c.closed || c.gen != gen {
+		c.mu.Unlock()
+		return
+	}
+	c.timer = time.AfterFunc(wait, func() { c.failRead(gen) })
+	c.mu.Unlock()
+}
+
 // stop disarms the read timer. A timer that has already cancelled the
 // read stays cancelled.
 func (c *readCtx) stop() {
 	c.mu.Lock()
 	c.stopped = true
+	c.gen++
 	t := c.timer
 	c.timer = nil
 	c.mu.Unlock()
@@ -230,15 +336,63 @@ func (c *readCtx) stop() {
 	}
 }
 
-func (c *readCtx) failRead() {
+func (c *readCtx) failRead(gen int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped || c.closed || c.gen != gen {
+		return
+	}
+	c.closed = true
+	c.err = context.DeadlineExceeded
+	close(c.done)
+}
+
+// failIfReading cancels a call that is still waiting for its message.
+// A call that already stopped the timer, because the message arrived,
+// is left alone so its commit can finish.
+func (c *readCtx) failIfReading() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stopped || c.closed {
 		return
 	}
 	c.closed = true
+	c.gen++
 	c.err = context.DeadlineExceeded
 	close(c.done)
+}
+
+func (s *Server) trackRead(c *readCtx) {
+	if s == nil || c == nil {
+		return
+	}
+	s.phaseMu.Lock()
+	if s.reads == nil {
+		s.reads = map[*readCtx]struct{}{}
+	}
+	s.reads[c] = struct{}{}
+	s.phaseMu.Unlock()
+}
+
+func (s *Server) untrackRead(c *readCtx) {
+	if s == nil || c == nil {
+		return
+	}
+	s.phaseMu.Lock()
+	delete(s.reads, c)
+	s.phaseMu.Unlock()
+}
+
+func (s *Server) cancelReadingRPCs() {
+	s.phaseMu.Lock()
+	reading := make([]*readCtx, 0, len(s.reads))
+	for c := range s.reads {
+		reading = append(reading, c)
+	}
+	s.phaseMu.Unlock()
+	for _, c := range reading {
+		c.failIfReading()
+	}
 }
 
 func (c *readCtx) fail(err error) {
