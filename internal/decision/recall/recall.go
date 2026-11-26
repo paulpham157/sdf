@@ -5,9 +5,10 @@
 // store.Insert, the same write the receiver uses after otlp.Decode.
 // It then calls a Recorder. SkillOnly, the default, writes no decision
 // and no edge: SDF does not infer a decision from telemetry, and this
-// package does not run the agent skill. A later auto-linker (issue
-// #281, internal/decision/autolink.go) can implement Recorder and be
-// passed to Measure. This package does not import that file.
+// package does not run the agent skill. decision.AutoLinkGitCommits
+// (pull request #323) can be wrapped in a Recorder and passed to
+// Measure. This package does not call it, so the CI gate stays
+// skill-only.
 //
 // Recorders used as a measurement must not read Fixture.Labels. Tests
 // may, to check the scorer.

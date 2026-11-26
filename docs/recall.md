@@ -87,9 +87,12 @@ page in the same change.
 
 The harness calls a `Recorder` after ingest. `SkillOnly` writes nothing.
 Pass another `Recorder` to `Measure` to score a writer. A recorder that is
-a measurement must not read `Fixture.Labels`. The package does not import
-an auto-linker. When `internal/decision/autolink.go` lands (#281), a
-recorder can call it and the same fixtures will score that path.
+a measurement must not read `Fixture.Labels`. This package does not call
+`decision.AutoLinkGitCommits`. That writer is on main
+([#323](https://github.com/paulpham157/sdf/pull/323), issue
+[#281](https://github.com/paulpham157/sdf/issues/281)): a recorder can call
+it and the same fixtures will score that path. CI still gates on
+`SkillOnly`.
 
 ## Baseline
 

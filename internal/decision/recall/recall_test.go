@@ -128,9 +128,9 @@ func TestMeasureNilRecorderIsSkillOnly(t *testing.T) {
 	}
 }
 
-// labelRecorder writes each fixture's own labels. It is a stand-in for a
-// future auto-linker (issue #281): Measure must score whatever AfterIngest
-// stored, not a hardcoded empty graph.
+// labelRecorder writes each fixture's own labels. It stands in for a
+// writer such as decision.AutoLinkGitCommits (pull request #323): Measure
+// must score whatever AfterIngest stored, not a hardcoded empty graph.
 type labelRecorder struct{}
 
 func (labelRecorder) Name() string { return "labels" }

@@ -199,8 +199,10 @@
   (`internal/decision/recall/fixtures`): decision recall 0/7, link recall
   0/6, precision undefined, because SDF does not infer a decision from
   telemetry. Issue #284's target (link recall at least 95 percent, precision
-  drop at most 5 points) waits on a recorder such as the auto-linker in
-  [#281](https://github.com/paulpham157/sdf/issues/281). Runs with k=5 on a
+  drop at most 5 points) is not this gate. Auto-link of `sdf.git.commit`
+  is on main (`decision.AutoLinkGitCommits`,
+  [#323](https://github.com/paulpham157/sdf/pull/323)); the harness does
+  not call it, so the measured baseline stays skill-only. Runs with k=5 on a
   cheap model, and A/B tests, are periodic and are not in this tree. See
   [docs/recall.md](recall.md). `sdf decision recall` reports the unlabeled
   proxy (`commits_linked / commits_in_decision_sessions`) from the local
