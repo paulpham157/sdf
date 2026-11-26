@@ -520,6 +520,7 @@ var decisionCommands = []struct {
 	{"check", cmdDecisionCheck},
 	{"retract", cmdDecisionRetract},
 	{"audit", cmdDecisionAudit},
+	{"recall", cmdDecisionRecall},
 	{"pre-push", cmdDecisionPrePush},
 }
 

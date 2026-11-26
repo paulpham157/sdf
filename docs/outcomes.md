@@ -373,6 +373,7 @@ sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|js
 sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
 sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
 sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
+sdf decision recall [--db PATH] [--json] [--since DURATION|RFC3339] [--until RFC3339]
 sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-push lines
 ```
 
@@ -907,6 +908,20 @@ The totals are denominators, counted over the same window as `commits[]`:
 `commits[]` items with `session_has_decision` and `linked` true. Commit link
 recall in sessions that recorded a decision is
 `commits_linked / commits_in_decision_sessions`.
+
+`sdf decision recall` prints that ratio for a store. It is link recall by
+proxy: there are no labels, and a commit in the window is a miss when its
+session has a decision and the commit itself has no `implements` edge. A
+session-only `implements` edge does not count that commit as linked. The
+denominator is `commits_in_decision_sessions`. When that is zero the ratio
+is unknown. `--since` is a Go duration (`24h`, `90m`) or an inclusive
+RFC3339 time. `--until` is exclusive RFC3339. The command opens the store
+with `OpenReadOnly` and exits 0 when the report is written, including when
+there are misses (unlike `sdf decision audit`, which exits 1 on findings),
+2 on a usage error, and 3 when the store cannot be read. The overview
+chart's recall is the share of every recorded commit that has an
+`implements` edge. The labeled harness, the fixture format, and the
+measured baseline are in [Decision and link recall](recall.md).
 
 ## Local budget
 

@@ -1,0 +1,334 @@
+{
+  "name": "long-session",
+  "notes": "The decision is in the first turn and the implementing commit is twelve hours and eight turns later. Distance is the gap, not a large file.",
+  "logs": [
+    {
+      "resourceLogs": [
+        {
+          "resource": {
+            "attributes": [
+              {
+                "key": "service.name",
+                "value": {
+                  "stringValue": "recall-fixture"
+                }
+              },
+              {
+                "key": "sdf.fixture",
+                "value": {
+                  "stringValue": "recall"
+                }
+              }
+            ]
+          },
+          "scopeLogs": [
+            {
+              "logRecords": [
+                {
+                  "timeUnixNano": "1795161600000000000",
+                  "body": {
+                    "stringValue": "Use WAL mode for the store."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "user"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795165200000000000",
+                  "body": {
+                    "stringValue": "Checking the log list."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795168800000000000",
+                  "body": {
+                    "stringValue": "Reading the store schema."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795172400000000000",
+                  "body": {
+                    "stringValue": "Looking at the migration notes."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795176000000000000",
+                  "body": {
+                    "stringValue": "Still working through the session log."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795179600000000000",
+                  "body": {
+                    "stringValue": "Comparing the two journal modes in the notes."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795186800000000000",
+                  "body": {
+                    "stringValue": "Drafting the change separately from the choice."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795190400000000000",
+                  "body": {
+                    "stringValue": "Rechecking the session timeline."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795197600000000000",
+                  "body": {
+                    "stringValue": "The commit comes after these turns."
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "recall.turn"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "recall.role",
+                      "value": {
+                        "stringValue": "assistant"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "timeUnixNano": "1795204800000000000",
+                  "body": {
+                    "stringValue": "sdf.git.commit"
+                  },
+                  "attributes": [
+                    {
+                      "key": "event.name",
+                      "value": {
+                        "stringValue": "sdf.git.commit"
+                      }
+                    },
+                    {
+                      "key": "session.id",
+                      "value": {
+                        "stringValue": "recall-long"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.agent",
+                      "value": {
+                        "stringValue": "recall"
+                      }
+                    },
+                    {
+                      "key": "vcs.ref.head.revision",
+                      "value": {
+                        "stringValue": "3333333333333333333333333333333333333333"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.repo",
+                      "value": {
+                        "stringValue": "/tmp/recall-fixture"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.branch",
+                      "value": {
+                        "stringValue": "main"
+                      }
+                    },
+                    {
+                      "key": "sdf.git.hook",
+                      "value": {
+                        "stringValue": "1"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "labels": {
+    "decisions": [
+      {
+        "id": "use-wal",
+        "statement": "Use WAL mode for the store.",
+        "status": "decision",
+        "decided_by": "user"
+      }
+    ],
+    "links": [
+      {
+        "commit": "3333333333333333333333333333333333333333",
+        "decision": "use-wal"
+      }
+    ]
+  }
+}

@@ -139,8 +139,9 @@ pull requests in the same SQLite file as sdf serve.
   check    sdf decision check <action> [--json]
   retract  sdf decision retract --id ID [--reason TEXT]
   audit    sdf decision audit [--json] [--since RFC3339] [--until RFC3339]
+  recall   sdf decision recall [--json] [--since DURATION|RFC3339] [--until RFC3339]
   pre-push run by the git pre-push hook: warns about pushed commits with no decision
-Run sdf decision <add|link|list|graph|brief|check|retract|audit|pre-push> --help for the flags.`
+Run sdf decision <add|link|list|graph|brief|check|retract|audit|recall|pre-push> --help for the flags.`
 
 const auditHelp = `Checks the hash-chained ledger that sdf task declare --ledger and sdf verify
 --ledger append to.
