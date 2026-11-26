@@ -98,8 +98,9 @@ A choice about what a person can do or see. "Show agent status in the UI"
 is product. The library used to draw it is implementation.
 
 A settled product decision is the user's. `hypothesis` is allowed for the
-user or the agent. Phase 3 warns when an agent adds one with
-`status=decision`. Useful relations: `supersedes`, `refines`, and
+user or the agent. A phase 3 warning when an agent adds one with
+`status=decision` is a proposal, pending owner confirmation. Useful
+relations: `supersedes`, `refines`, and
 `implements` from the session that built the behavior. `blocks` fits while
 an open question still holds the work.
 
@@ -120,9 +121,9 @@ The same sentence is also a forbid for `sdf decision check deploy`, because
 the statement matches, whatever the category is.
 
 A settled operations decision is the user's. `hypothesis` is allowed.
-Phase 3 warns when an agent adds one with `status=decision`. Useful
-relations: `constrains` when the rule limits later work, and `supersedes`
-when the rule is replaced.
+A phase 3 warning when an agent adds one with `status=decision` is a
+proposal, pending owner confirmation. Useful relations: `constrains` when
+the rule limits later work, and `supersedes` when the rule is replaced.
 
 ### Unset
 
@@ -136,16 +137,18 @@ category from the statement.
 | Category | Who normally decides a settled record | Status | Warning in phase 3 |
 | --- | --- | --- | --- |
 | `architecture` | User or agent | `hypothesis` or `decision` | None |
-| `policy` | User. An agent may record one | `decision` only | Agent add: the brief does not lock an agent policy |
-| `product` | User | `hypothesis` or `decision` | Agent add of a `decision` |
+| `policy` | User. An agent may record one | `decision` only | Decided: agent add, the brief does not lock an agent policy |
+| `product` | User | `hypothesis` or `decision` | Proposal: agent add of a `decision` |
 | `implementation` | Agent | `hypothesis` or `decision` | None |
-| `operations` | User | `hypothesis` or `decision` | Agent add of a `decision` |
+| `operations` | User | `hypothesis` or `decision` | Proposal: agent add of a `decision` |
 
-"Who normally decides" is advice for the skill and for the phase 3
-warning. It is not an access check. A caller can pass `--decided-by user`
-or `--decided-by agent` on any category. An empty `--decided-by` stays
-legal, as it is today, including on `product` and `operations`. The phase 3
-warning fires only when the flag is `agent`.
+"Who normally decides" is advice. It is not an access check. A caller can
+pass `--decided-by user` or `--decided-by agent` on any category. An empty
+`--decided-by` stays legal, as it is today, including on `product` and
+`operations`. The decided phase 3 warning is the agent `policy` warning,
+and it fires only when `--decided-by` is `agent`. A warning when an agent
+records a settled `product` or `operations` decision is a proposal, pending
+owner confirmation. It is not a decided rule.
 
 ## Check stays on the statement
 
@@ -216,8 +219,14 @@ that schema string (`schemaColumns`). A column that exists only in
 `addMissingColumns` is invisible to the view, and a `SELECT` that names
 `category` fails on a file no writer has migrated. Listing it in the schema
 string makes `sdf decision list`, `brief`, `check`, `graph`, and the UI
-read `NULL` until `sdf decision add` or `sdf serve` opens the file for
-write.
+read `NULL` until a command opens that file with `store.Open`, which runs
+`migrate`. The commands that do are `sdf serve` (`internal/cli/cli.go`
+line 300), `sdf decision add` (line 658), `sdf decision link` (line 746),
+and `sdf decision retract` (line 992). The recall harness also calls
+`store.Open`, on a temporary file it creates
+(`internal/decision/recall/recall.go` line 305), not on the user's store.
+`sdf redact` does not call `store.Open`. A scrub that is not a dry run
+calls `migrate` from `OpenForScrub` (`internal/store/scrub.go`).
 
 `InsertDecision` and `LoadDecisionsContext` name the column. An empty Go
 string is stored with `nullText`, which writes `NULL`. Scan into
@@ -232,8 +241,9 @@ inference from the statement text.
 
 - Trim space. Empty after trim is unset.
 - Any other value must be exactly one of the five lowercase tokens.
-  `Architecture`, `none`, and a second token are rejected. Status is not
-  case-folded today; category is not either.
+  `Architecture`, `none`, and a second token are rejected. Exact lowercase
+  is consistent with `status`: `hypothesis` and `decision` are matched as
+  written.
 - `policy` with `status` other than `decision` is rejected. Suggested
   error: `category "policy" requires status "decision"`.
 - Any other pair of category and status is stored.
@@ -291,13 +301,15 @@ every record, with the field present only when set.
 
 ### Skill and docs
 
-`skills/sdf-decisions/SKILL.md` tells the agent to always set `--category`
-for new records, the same obligation it already states for `--decided-by`.
-The flag stays optional on the CLI so an older record, and an older agent
-that does not send it, still adds. The skill states the five values, the
-`policy` status rule, and who normally decides. It says a settled product
-or operations decision is the user's, and that an agent policy is not a
-locked brief rule.
+Proposal, pending owner confirmation: phase 1 would tell
+`skills/sdf-decisions/SKILL.md` to always set `--category` for new records,
+alongside the obligation it already states for `--decided-by`. That
+obligation is not a decided rule. If the owner confirms it, the flag stays
+optional on the CLI so an older record, and an older agent that does not
+send it, still adds. The skill would state the five values, the decided
+`policy` status rule, and who normally decides. It would say a settled
+product or operations decision is the user's, and that an agent policy is
+not a locked brief rule.
 
 `docs/outcomes.md` gains the field on the decision-record description, the
 `add` and `list` usage lines, and the list columns. One sentence in
@@ -326,10 +338,12 @@ for items that have a category.
 
 ### Graph, UI, audit
 
-`decisiongraph.Node` already embeds `*decision.Record`, so the category
-appears on `node.decision` through `omitempty`. Do not copy it onto a
-second node field. Do not add a graph role for it. Roles stay `path`,
-`locked`, `hypothesis`, and the rest.
+`decisiongraph.Node` does not embed `*decision.Record`. It has a named
+field `Decision *decision.Record` with `json:"decision,omitempty"`
+(`internal/decisiongraph/decisiongraph.go` line 170). Once `Record` carries
+`category`, the JSON path is `node.decision.category`, omitted when unset.
+Do not copy category onto a second node field. Do not add a graph role for
+it. Roles stay `path`, `locked`, `hypothesis`, and the rest.
 
 Each chapter gains a tally of decision nodes by category, plus a count of
 uncategorised decision nodes (NULL, empty, or any stored string outside
@@ -355,12 +369,13 @@ keeps working.
 Warnings at add time. The record is stored. Exit 0. One line on stderr,
 the same shape as `sdf decision link: warning: …`:
 
-- `category=policy` and `--decided-by agent`: the brief does not lock an
-  agent policy. Locked brief rules are user decisions
+- Decided. `category=policy` and `--decided-by agent`: the brief does not
+  lock an agent policy. Locked brief rules are user decisions
   (`Item.Locked` in `internal/decision/brief/brief.go`).
-- `category` is `product` or `operations`, `status` is `decision`, and
-  `--decided-by agent`: settled product and operations decisions are
-  normally the user's.
+- Proposal, pending owner confirmation. `category` is `product` or
+  `operations`, `status` is `decision`, and `--decided-by agent`: settled
+  product and operations decisions are normally the user's. This warning
+  is not a decided rule.
 
 No warning for `architecture`, for `implementation`, for a hypothesis
 (other than the phase 1 rejection of a `policy` hypothesis), or for an
@@ -406,7 +421,10 @@ Phase 1:
 - `newRecord`: each of the five values, trim, empty, `none` rejected,
   wrong case rejected, `policy` plus `hypothesis` rejected and stored
   nowhere, `policy` plus `decision` accepted, category not written into
-  `status` or `decided_by`.
+  `status` or `decided_by`. `newRecord` is the only production write path:
+  `decision.Add` calls it, then `InsertDecision`. Tests and raw SQL can
+  bypass it by calling `InsertDecision` directly, so a store test that
+  inserts a bad category does not prove `newRecord` rejected it.
 - Store: `addMissingColumns` adds `category` on a file created without it,
   pre-existing rows read back unset, round-trip of each value,
   `OpenReadOnly` of an unmigrated file returns an empty category and does
@@ -421,8 +439,9 @@ Phase 1:
 
 Phase 2: brief JSON carries the field and `textLine` does not; the byte
 cap counts it; graph and audit totals; the UI list and the graph panel
-show the label. Phase 3: the two warnings on stderr, exit 0, and the row
-stored as given.
+show the label. Phase 3: the decided agent-policy warning on stderr,
+exit 0, and the row stored as given. The product and operations warning
+is tested only if the owner confirms that proposal.
 
 ## Prior art
 
@@ -462,7 +481,7 @@ the counts mean the same thing in every store.
 | Phase | What lands |
 | --- | --- |
 | 0 | This spec. |
-| 1 | Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`. `list --category` with a value or `none`. JSON `omitempty`. Skill text: always set it for new records. `docs/outcomes.md`. Tests, including the check regression. |
+| 1 | Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`. `list --category` with a value or `none`. JSON `omitempty`. `docs/outcomes.md`. Tests, including the check regression. Skill text that always sets `--category` is a proposal, pending owner confirmation. |
 | 2 | Brief JSON field, brief text columns unchanged. Graph and UI labels and counts. Audit totals. |
-| 3 | Warnings at add for an agent policy, and for an agent settling product or operations. |
+| 3 | Decided: a warning at add for an agent policy. Proposal, pending owner confirmation: a warning when an agent settles product or operations. |
 | 4 | Optional free tags, in their own field, if a later spec still wants them. |
