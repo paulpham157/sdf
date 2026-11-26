@@ -1,0 +1,111 @@
+# After a maintainer publishes the draft release created by release.yml,
+# open a pull request that sets version, date-released, and commit in
+# CITATION.cff. A pull request opened with GITHUB_TOKEN does not start PR
+# CI, so this job dispatches Citation gitleaks on the citation branch and
+# waits for that run. The scan is the pull request base..head range, the
+# same range PR CI scans. It is not a scan of every branch. The ruleset
+# check is named "gitleaks (full history)" because that is the PR CI job
+# name; the name is not what this scan walks.
+#
+# Posting that commit status and merging are off unless the repository
+# variable CITATION_AUTOMERGE is the exact string true. Off, this job still
+# opens the pull request, dispatches the scan, and waits, then leaves the
+# pull request for a human. It does not post the status and does not merge.
+#
+# Ruleset 26272056 requires that check name and does not pin it to GitHub
+# Actions (integration 15368). A raw commit status of that name satisfies
+# it, and this job's token has statuses: write, so any such token can
+# satisfy the check. Before setting CITATION_AUTOMERGE to true, pin that
+# required check to GitHub Actions integration 15368, or explicitly accept
+# the unpinned-check risk. Pinning alone breaks this post-and-merge path:
+# a commit status is not a GitHub Actions check, so the merge needs a
+# ruleset bypass as well. This workflow cannot change the ruleset.
+#
+# contents: write is repo-wide. Only the updater refuses to point the
+# contents API at the default branch. A merge done with GITHUB_TOKEN does
+# not start Main CI or the push gitleaks job. An existing
+# citation/vMAJOR.MINOR.PATCH branch is reused only when it matches the
+# default branch, when it is strictly behind that branch (the ref is
+# fast-forwarded), or when every commit the default branch does not
+# already contain was created by this workflow. Any other history fails
+# the job. The ref is not force-pushed.
+# GitHub's Cite this repository widget reads the default branch, so the
+# citation stays stale until the pull request merges.
+#
+# If pull request creation returns 403, the repository setting "Allow
+# GitHub Actions to create and approve pull requests" is off. The branch
+# is already written. Turn the setting on and re-run.
+#
+# Creating the draft does not emit `published`. Publishing a prerelease does
+# (`published` fires for pre-releases, including ones published from a draft),
+# and this job does not run for those. The updater also skips a tag that is
+# not vMAJOR.MINOR.PATCH, a file that already matches, and a release older
+# than the version already in CITATION.cff.
+#
+# commit is the peeled commit of the release tag. An annotated tag's object
+# id is not written into the file. When the tag is annotated, the log line
+# includes tag-object so the two ids can be compared. The release tag is
+# not moved.
+name: Citation
+
+on:
+  release:
+    types: [published]
+
+# No permissions by default. The job below is the only one that writes.
+permissions: {}
+
+concurrency:
+  # One citation update at a time. cancel-in-progress is false, so a job
+  # that has already started is not cancelled. A second publish cancels a
+  # citation job that is still queued.
+  group: citation-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  citation:
+    name: open CITATION.cff pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: "${{ github.event.action == 'published' && github.event.release.draft == false && github.event.release.prerelease == false }}"
+    permissions:
+      # contents: write is repo-wide. The updater refuses to point the
+      # contents API at the default branch; the permission does not.
+      # actions: write starts Citation gitleaks. statuses: write can post
+      # the ruleset status. The code posts it and merges only when
+      # CITATION_AUTOMERGE is exactly true, and only after the run lookup
+      # and a fresh read of the branch tip. These four are the only
+      # permissions on this job. The workflow default above is empty.
+      contents: write
+      pull-requests: write
+      actions: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The release event's SHA is the tagged commit. Run the updater
+          # from the default branch. The token is not left in .git/config.
+          # The citation commit is a contents API update of the
+          # citation/vMAJOR.MINOR.PATCH branch.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          # Same go.mod toolchain as release.yml.
+          go-version-file: go.mod
+          # This job can open a pull request, so it does not use the shared
+          # module cache. The updater imports only the standard library.
+          cache: false
+      - name: Open CITATION.cff pull request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CITATION_TAG: ${{ github.event.release.tag_name }}
+          CITATION_PUBLISHED_AT: ${{ github.event.release.published_at }}
+          CITATION_BRANCH: ${{ github.event.repository.default_branch }}
+          CITATION_PRERELEASE: ${{ github.event.release.prerelease }}
+          CITATION_DRAFT: ${{ github.event.release.draft }}
+          # Empty unless a maintainer set the repository variable to true.
+          # Passed as an environment value, not interpolated into the shell.
+          CITATION_AUTOMERGE: ${{ vars.CITATION_AUTOMERGE }}
+        run: go run ./internal/citeupdate

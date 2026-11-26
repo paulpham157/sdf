@@ -136,6 +136,7 @@ nav:
     - GitHub Action: action.md
     - Ledger: ledger.md
   - Reference:
+    - Decision categories: design/decision-category.md
     - Agent skills: skills/README.md
     - sdf-decisions skill: skills/sdf-decisions/SKILL.md
     - sdf-decisions scripts: skills/sdf-decisions/scripts/index.md

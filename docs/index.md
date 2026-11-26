@@ -79,6 +79,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Tasks](tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [Verify](verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [GitHub Action](action.md) | The `sdf verify` GitHub Action, and its threat model |
+| [Decision categories](design/decision-category.md) | Phase 0 spec for an optional `category` on a decision record. Not implemented yet |
 
 The product site is [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/).
 Source, issues, and releases are on [GitHub](https://github.com/paulpham157/sdf).

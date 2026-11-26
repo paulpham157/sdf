@@ -3,7 +3,11 @@
 # pushed. .goreleaser.yaml sets release.draft, so a maintainer reviews the
 # draft and publishes it by hand. Nothing else triggers
 # this workflow: pull requests and pushes to main only run the snapshot build
-# in main.yml, which never creates a release.
+# in main.yml, which never creates a release. Publishing the draft does not
+# run this workflow again. citation.yml opens a pull request that updates
+# CITATION.cff, dispatches the citation gitleaks scan, and merges that pull
+# request only after the required commit status passes. This workflow does
+# not edit CITATION.cff or move a tag.
 name: Release
 
 on:

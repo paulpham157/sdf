@@ -1,0 +1,59 @@
+# Scans the citation pull request range (base..head), not every branch.
+# citation.yml starts this with workflow_dispatch because a pull request
+# opened with GITHUB_TOKEN does not start PR CI. The job check from this
+# event is not a ruleset check: GitHub only evaluates workflow-job checks
+# from push, pull_request, pull_request_review, pull_request_target,
+# deployment, and deployment_status. The ruleset check is named
+# "gitleaks (full history)" because that is the PR CI job name. citation.yml
+# may post a commit status of that name after this run succeeds, and only
+# when CITATION_AUTOMERGE is exactly true. This workflow does not post that
+# status and does not merge. run-name carries the base and head SHAs because
+# the runs API does not return workflow inputs.
+name: Citation gitleaks
+run-name: scan ${{ inputs.base_sha }}..${{ inputs.head_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Pull request base commit
+        required: true
+        type: string
+      head_sha:
+        description: Citation branch head commit
+        required: true
+        type: string
+
+# No permissions by default. The scan job only reads the repository.
+permissions: {}
+
+jobs:
+  scan:
+    name: scan citation range
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # workflow_dispatch checks out the ref it was given, which is the
+          # citation branch. Depth 1 plus the unshallow in the scan fetches
+          # that commit and its ancestors. The token is not left in .git/config.
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Scan the citation pull request range
+        env:
+          # Same scanner and same base..head range as the pull_request job in
+          # pr.yml. The SHAs come from the dispatch inputs.
+          GITLEAKS_EVENT: pull_request
+          GITLEAKS_BASE_SHA: ${{ inputs.base_sha }}
+          GITLEAKS_HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_SHA" != "$GITLEAKS_HEAD_SHA" ]; then
+            echo "::error::refusing to scan ${GITHUB_SHA}; expected ${GITLEAKS_HEAD_SHA}"
+            exit 1
+          fi
+          printf '%s\n' "$GITHUB_REF" | grep -Eq '^refs/heads/citation/v[0-9]+\.[0-9]+\.[0-9]+$'
+          bash .github/scripts/gitleaks-scan.sh
