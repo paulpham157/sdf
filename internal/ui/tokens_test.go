@@ -101,7 +101,8 @@ func TestTokensStylesheetRoute(t *testing.T) {
 
 func TestChromeMarkAndRouteTitle(t *testing.T) {
 	logo := string(readRepoFile(t, "docs/images/logo.svg"))
-	paths := regexp.MustCompile(`<path d="([^"]+)"`).FindAllStringSubmatch(logo, -1)
+	// d is not always the first attribute, so match it anywhere on the path.
+	paths := regexp.MustCompile(`<path\b[^>]*\bd="([^"]+)"`).FindAllStringSubmatch(logo, -1)
 	if len(paths) != 7 {
 		t.Fatalf("logo.svg has %d paths, want 7", len(paths))
 	}

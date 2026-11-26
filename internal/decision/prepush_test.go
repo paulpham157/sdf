@@ -34,13 +34,13 @@ func TestCheckPushClassifiesCommits(t *testing.T) {
 		{SHA: sha('e'), SessionID: "s2"},
 	}
 	commits := []PushCommit{
-		{SHA: strings.ToUpper(sha('a'))}, // implements an active decision
-		{SHA: sha('b')},                  // implements a superseded one: still covered
-		{SHA: sha('c')},                  // implements only a retracted one
-		{SHA: sha('d')},                  // validates is not implements
+		{SHA: strings.ToUpper(sha('a'))},                        // implements an active decision
+		{SHA: sha('b')},                                         // implements a superseded one: still covered
+		{SHA: sha('c')},                                         // implements only a retracted one
+		{SHA: sha('d')},                                         // validates is not implements
 		{SHA: sha('e'), Trailers: []string{" other "}},          // trailer naming a stored decision
 		{SHA: sha('f'), Trailers: []string{"nope", "gone", ""}}, // unknown to SDF, trailers only
-		{SHA: sha('9')}, // unknown to SDF, no trailer: not judged
+		{SHA: sha('9')},                                         // unknown to SDF, no trailer: not judged
 	}
 	r := checkPush(g, events, commits)
 	if r.Pushed != 7 || r.Recorded != 6 || r.Covered != 3 || len(r.Missing) != 3 {
