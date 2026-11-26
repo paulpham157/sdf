@@ -413,8 +413,7 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 	if err != nil {
 		return summary.Report{}, nil, err
 	}
-	// report is shared with concurrent requests; ApplyBudget only sets
-	// report.Budget, on this copy.
+	// report is this caller's copy. ApplyBudget only sets report.Budget.
 	summary.ApplyBudget(&report, budget)
 	return report, cat, nil
 }
@@ -427,8 +426,8 @@ func (h *handler) load() (summary.Report, *pricing.Catalog, error) {
 // build when the build's snapshot covers the one this request observed,
 // so one page load makes one round of git and GitHub lookups. A request
 // that already observed a newer insert does not take an older build.
-// Callers must treat the shared report as read-only, apart from top-level
-// fields of their own copy.
+// The returned report is a deep copy of the cached value. A caller may
+// write its slices and maps. The catalog pointer is shared and not written.
 func (h *handler) report() (summary.Report, *pricing.Catalog, error) {
 	floor, floorOK, err := h.probeSnapshot()
 	if err != nil {

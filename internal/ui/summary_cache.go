@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
-	"slices"
 	"sync"
 
 	"github.com/paulpham157/sdf/internal/outcome"
@@ -35,7 +34,8 @@ func (c *summaryCache) lookup(snap store.RecordSnapshot, priceID string) (summar
 	if !c.valid || c.snap != snap || c.priceID != priceID {
 		return summary.Report{}, nil, false
 	}
-	return c.report, c.cat, true
+	// The caller gets its own slices and maps. The stored report stays put.
+	return cloneReport(c.report), c.cat, true
 }
 
 func (c *summaryCache) store(snap store.RecordSnapshot, priceID string, report summary.Report, cat *pricing.Catalog) {
@@ -48,7 +48,9 @@ func (c *summaryCache) store(snap store.RecordSnapshot, priceID string, report s
 	c.valid = true
 	c.snap = snap
 	c.priceID = priceID
-	c.report = report
+	// Store a copy so the caller's report, which finish hands back and
+	// which the caller may write into, is not the cached value.
+	c.report = cloneReport(report)
 	c.cat = cat
 }
 
@@ -121,12 +123,12 @@ func (h *handler) summarizeCached(floor store.RecordSnapshot, floorOK bool) (sum
 	return report, cat, snap, cacheable, nil
 }
 
-// finish copies the session list and attaches outcomes. The cached report
-// stays without outcomes, so a later request links git and GitHub again.
+// finish copies the report and attaches outcomes. The cached report stays
+// without outcomes, so a later request links git and GitHub again. The
+// copy is deep: the session list alone would still share Tokens.Vals,
+// Spans, and the other slices and maps with the cache.
 func (h *handler) finish(base summary.Report, cat *pricing.Catalog) (summary.Report, *pricing.Catalog) {
-	report := base
-	report.Sessions = slices.Clone(base.Sessions)
-	report.Unattributed = slices.Clone(base.Unattributed)
+	report := cloneReport(base)
 	report.Budget = nil
 	report.CostPerAccepted = nil
 	for i := range report.Sessions {

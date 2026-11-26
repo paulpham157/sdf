@@ -153,6 +153,129 @@ func TestSummaryCacheDoesNotServeAStaleFlight(t *testing.T) {
 	}
 }
 
+// A caller that writes into the slices and maps of a returned report must
+// not change the report the cache serves next.
+func TestSummaryCacheReportIsNotShared(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Insert([]record.Record{cacheLog("s", 1), cacheSpan("s", 2)}); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{store: db, prices: "bundled", log: io.Discard}
+	first, _, err := h.report()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Sessions) != 1 {
+		t.Fatalf("sessions %d, want 1", len(first.Sessions))
+	}
+	session := first.Sessions[0]
+	if len(session.Tokens.Vals) == 0 || len(session.Spans) == 0 || len(session.ServiceNames) == 0 || len(session.LogEvents) == 0 {
+		t.Fatalf("fixture left a slice empty: tokens %d spans %d services %d logs %d", len(session.Tokens.Vals), len(session.Spans), len(session.ServiceNames), len(session.LogEvents))
+	}
+	before := jsonReport(t, first)
+	mutateCachedReport(&first)
+	second, _, err := h.report()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := jsonReport(t, second); got != before {
+		t.Fatalf("mutating a returned report changed the cached summary\nbefore %s\nafter  %s", before, got)
+	}
+}
+
+// mutateCachedReport writes every slice and map a caller can reach from a
+// report: element overwrites and appends. A shared backing array or map
+// shows up in the next cached report.
+func mutateCachedReport(r *summary.Report) {
+	r.Sessions = append(r.Sessions, summary.SessionSummary{SessionID: "mutated-session"})
+	for i := range r.Sessions {
+		s := &r.Sessions[i]
+		if s.Tokens.Vals == nil {
+			s.Tokens.Vals = map[string]float64{}
+		}
+		for k := range s.Tokens.Vals {
+			s.Tokens.Vals[k] = -1
+		}
+		s.Tokens.Vals["mutated"] = -1
+		s.Tokens.Keys = append(s.Tokens.Keys, "mutated")
+		s.ServiceNames = append(s.ServiceNames, "mutated-service")
+		if len(s.ServiceNames) > 0 {
+			s.ServiceNames[0] = "mutated-service"
+		}
+		s.Models = append(s.Models, "mutated-model")
+		if len(s.Models) > 0 {
+			s.Models[0] = "mutated-model"
+		}
+		s.Spans = append(s.Spans, summary.SpanNode{Name: "mutated-span"})
+		for j := range s.Spans {
+			s.Spans[j].Name = "mutated-span"
+			s.Spans[j].Children = append(s.Spans[j].Children, summary.SpanNode{Name: "mutated-child"})
+			if len(s.Spans[j].Children) > 0 {
+				s.Spans[j].Children[0].Name = "mutated-child"
+			}
+		}
+		s.LogEvents = append(s.LogEvents, summary.LogLine{Name: "mutated-log"})
+		if len(s.LogEvents) > 0 {
+			s.LogEvents[0].Name = "mutated-log"
+		}
+		s.MetricLines = append(s.MetricLines, summary.MetricLine{Name: "mutated-metric"})
+		if len(s.MetricLines) > 0 {
+			s.MetricLines[0].Name = "mutated-metric"
+		}
+		s.Missing = append(s.Missing, summary.Missing{Signal: "mutated"})
+		if len(s.Missing) > 0 {
+			s.Missing[0].Signal = "mutated"
+		}
+		s.ToolCalls = append(s.ToolCalls, summary.ToolCall{Source: "mutated"})
+		if len(s.ToolCalls) > 0 {
+			s.ToolCalls[0].Source = "mutated"
+		}
+		s.Repository.WorkDirs = append(s.Repository.WorkDirs, "mutated-dir")
+		s.Repository.CommitSHAs = append(s.Repository.CommitSHAs, "mutated-sha")
+		s.Repository.HookCommits = append(s.Repository.HookCommits, summary.HookCommit{SHA: "mutated"})
+		if s.ComputedCost != nil {
+			s.ComputedCost.USD = "mutated"
+			s.ComputedCost.Components = append(s.ComputedCost.Components, pricing.Component{Name: "mutated"})
+			if len(s.ComputedCost.Components) > 0 {
+				s.ComputedCost.Components[0].Name = "mutated"
+			}
+		}
+		if s.Outcome != nil {
+			s.Outcome.Commits = append(s.Outcome.Commits, summary.LinkedCommit{SHA: "mutated"})
+			if len(s.Outcome.Commits) > 0 {
+				s.Outcome.Commits[0].SHA = "mutated"
+			}
+		}
+	}
+	r.Unattributed = append(r.Unattributed, summary.Unattributed{Tool: "mutated", Names: []string{"mutated"}})
+	for i := range r.Unattributed {
+		r.Unattributed[i].Names = append(r.Unattributed[i].Names, "mutated-name")
+		if len(r.Unattributed[i].Names) > 0 {
+			r.Unattributed[i].Names[0] = "mutated-name"
+		}
+	}
+}
+
+func cacheSpan(session string, when int64) record.Record {
+	id := session + "-span"
+	return record.Record{
+		Signal:        "traces",
+		ServiceName:   record.Str("claude-code"),
+		SessionID:     record.Str(session),
+		Name:          record.Str("claude_code.llm_request"),
+		StartUnixNano: record.Int64(when),
+		EndUnixNano:   record.Int64(when + 1_000_000),
+		TraceID:       record.Str(id),
+		SpanID:        record.Str(id),
+		Attributes:    map[string]any{"session.id": session},
+		Resource:      map[string]any{"service.name": "claude-code"},
+	}
+}
+
 func cacheLog(session string, when int64) record.Record {
 	return record.Record{
 		Signal:       "logs",
