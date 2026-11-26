@@ -112,12 +112,12 @@ is skipped. The line number is 1-based and counts blank lines.
 | text that is exactly `[Request interrupted by user]` or `[Request interrupted by user for tool use]` after trimming | skipped, on the whole prompt and on each text block before the join |
 | a larger string that only contains one of those interrupt sentences | kept |
 | two kept `text` blocks | joined with one `\n`, each block trimmed first |
-| well-formed `<system-reminder>` … `</system-reminder>`, including nested pairs, a different ASCII case, and an opening tag with whitespace or attributes | removed. A nested outer pair takes the tail inside it with it, so `tail</system-reminder>` does not leak |
+| well-formed `<system-reminder>` … `</system-reminder>`, including nested pairs, a different ASCII case, and an opening tag whose attributes begin with a space or a tab | removed. A nested outer pair takes the tail inside it with it, so `tail</system-reminder>` does not leak |
 | `<system-reminder>` with no closer, including inside one array block | left intact, and the text after the opener is kept. `how do I close <system-reminder> tags? also fix login` stays that string |
 | well-formed `<command-name>`, `<command-message>`, `<command-args>`, `<local-command-stdout>`, `<local-command-stderr>`, `<local-command-caveat>`, `<bash-input>`, `<bash-stdout>`, `<bash-stderr>` | removed, exact lowercase, no attributes. An unclosed opener of one of these tags is left intact, same as an unclosed reminder |
 | JSON that is not an object and not JSON `null`, or two JSON values on one line | line error `malformed json` |
 | raw line longer than `MaxLineBytes` (32 MiB, including the newline) | line error `ErrLineTooLong`; the parser resumes at the next newline |
-| more than `MaxTagDepth` (32) open tags of one name | the extra openers are literal text. Unclosed mentions do not fail the line and do not drop the prompt. A closed nest is stripped only for the openers the scanner tracked; one extra closer can remain |
+| more than `MaxTagDepth` (32) open tags of one name | the extra openers are literal text. Unclosed mentions do not fail the line and do not drop the prompt. When a closed nest is deeper than 32, Go strips only the 32 tracked openers, so up to N-32 closers and the text outside those tracked pairs can remain. If 32 unclosed openers already fill the cap, a later balanced pair is not pushed: its closer closes the 32nd opener still on the stack, and the cut runs from that opener through the closer |
 | stream caps `MaxInputBytes` (256 MiB), `MaxPrompts` (10000), `MaxOutputBytes` (32 MiB of extracted text), or `MaxErrors` (1000) | the extract fails closed for the whole stream. The error is `ErrInputTooLarge`, `ErrTooManyPrompts`, `ErrOutputTooLarge`, or `ErrTooManyErrors`, and `Result` is empty. Prompts already collected are discarded |
 | a read error from the underlying reader | returned; prompts and line errors already collected stay in the result |
 
@@ -165,8 +165,10 @@ This is a manual inspection filter for the same keep/drop rules, for a
 file you already trust and that is small enough to read by hand. It is
 not a parser for untrusted or large files: the regex strip can be
 quadratic. It prints one prompt per kept record and does not print line
-numbers. On a well-formed record the text matches `internal/promptextract`,
-except for the crossed-tag case below.
+numbers. Where the parity test compares them, the text matches
+`internal/promptextract`, including an opener that is only a space or a
+tab, with no newline, no unquoted `<`, and no self-closing slash. The
+list below is what still differs.
 
 Go and jq differ where the record is not well-formed, and on the caps:
 
@@ -194,9 +196,15 @@ Go and jq differ where the record is not well-formed, and on the caps:
   leaves `c</command-name>d` and jq leaves `<bash-stdout>ad`, because jq
   removes `<command-name>` before `<bash-stdout>`. Do not use the quick
   filter to check a crossed line.
-- jq's opening-tag scan for `<system-reminder` stops at the first `>`.
-  Go allows a `>` inside quotes. jq's closers do not allow whitespace
-  before `>`. Go does.
+- A `<` inside a quoted attribute is left in place by jq, because the
+  attribute class excludes `<`. Go allows that `<` and can strip the
+  pair. An unquoted `<`, a newline (before the attributes or inside a
+  quoted value), and a self-closing slash are left by both.
+- The attribute cap is 1023 code points in jq and 1023 bytes in Go: the
+  `>` has to fall inside the 1024-byte window that starts at the first
+  space or tab. A multibyte attribute near that cap can differ.
+- jq's closers do not allow whitespace before `>`. Go does, including a
+  newline. An opener's attribute list is a space or a tab in both.
 - `gsub`, not `index` plus a slice. jq's `index` on a string is a byte
   offset, and `.[n:m]` counts code points, so a slice at that offset cuts
   a multibyte prompt (the Vietnamese example) inside the tag.
@@ -205,7 +213,10 @@ Go and jq differ where the record is not well-formed, and on the caps:
 def strip_harness:
   # Innermost balanced pair, repeated until the string stops changing.
   def once:
-    gsub("(?i)<system-reminder(\\s[^>]*)?>(?:(?!</?system-reminder[\\s>])[\\s\\S])*?</system-reminder>"; "")
+    # Space or tab, then at most 1022 more code points. A newline, a "<",
+    # and a self-closing slash do not form an opener. A "<" inside quotes
+    # is the case listed above where this still differs from Go.
+    gsub("(?i)<system-reminder(?:[ \\t](?:[^<>\\n/]|/(?![ \\t]*>)){0,1022})?>(?:(?!</?system-reminder[\\s>])[\\s\\S])*?</system-reminder>"; "")
     | gsub("<command-name>(?:(?!</?command-name[\\s>])[\\s\\S])*?</command-name>"; "")
     | gsub("<command-message>(?:(?!</?command-message[\\s>])[\\s\\S])*?</command-message>"; "")
     | gsub("<command-args>(?:(?!</?command-args[\\s>])[\\s\\S])*?</command-args>"; "")
@@ -278,7 +289,7 @@ transcript.
 | User-pasted `<system-reminder>` | A well-formed pair is removed, including one the person pasted on purpose, including nested pairs, a different ASCII case, and an opener with attributes. The text on either side remains. An unclosed `<system-reminder>` stays, and the text after it stays (`how do I close <system-reminder> tags? also fix login`). | Decide whether pasted text must survive. Today's rule cannot tell a pasted pair from a harness pair. Confirm the live tag's case and attributes. |
 | Mixed `tool_result` and `text` in one array | `tool_result` blocks are dropped. Sibling `text` blocks are kept. A `text` field sitting on a `tool_result` block is not read. | **Open question before wiring.** Confirm on a live transcript that tool, web, and repo content never lands in a sibling `text` block. If it does, the sibling text is not user-typed and must not be kept. |
 | Nested `<system-reminder>` | The outer closer ends the outer opener. `<system-reminder>outer <system-reminder>inner</system-reminder> tail</system-reminder>sửa bug` becomes `sửa bug`. Openers past 32 of the same name stay literal, so a pile of unclosed mentions does not drop the prompt. jq strips a deeper closed nest entirely; Go strips only the openers it tracked. | Confirm the harness does not nest the tag, and how deep a live file nests it. |
-| Tag spelling | `<system-reminder>` matches ASCII case-insensitively and allows whitespace or attributes on the opener. The command, local-command, and bash tags are exact lowercase with no attributes. A self-closing tag is not stripped, including a space before the slash (`<system-reminder />`). | Confirm the live spelling of each tag. |
+| Tag spelling | `<system-reminder>` matches ASCII case-insensitively. Attributes on the opener begin with a space or a tab (`' '` / `'\t'`), not a newline. A newline anywhere in that opener, including inside quotes, means it is not a tag. A closer may still have ASCII whitespace, including a newline, before `>`. The command, local-command, and bash tags are exact lowercase with no attributes. A self-closing tag is not stripped, including a space or tab before the slash (`<system-reminder />`, `<system-reminder a="1"/>`). | Confirm the live spelling of each tag. |
 | `timestamp` / `uuid` / `sessionId` types | JSON strings. A number is a line error. `session_id` is ignored. | Confirm the live key names and JSON types. |
 | Other `type` values | Anything other than the string `user` is skipped, including a non-string `type` and values this note does not list. | List the `type` strings a real file contains (`assistant` and `summary` are the ones the tests name, plus `system`). |
 | Project-path encoding | Not implemented. The filter never opens the path. | Record one real directory name next to the project path it came from. |

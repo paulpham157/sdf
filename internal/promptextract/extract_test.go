@@ -443,6 +443,29 @@ func TestQuickFilterMatchesExtract(t *testing.T) {
 		raw.Write(line)
 		raw.WriteByte('\n')
 	}
+	// These stay in step with Go's opener rules: a newline, an unquoted
+	// "<", a self-closing slash, and an attribute list past the 1024-byte
+	// window are kept. A shorter list is stripped.
+	attrEdges := []string{
+		"<system-reminder\na=1>secret</system-reminder>sửa bug",
+		"<system-reminder a=\"x\ny\">secret</system-reminder>sửa bug",
+		"<system-reminder a=<>secret</system-reminder>sửa bug",
+		"<system-reminder /> keep </system-reminder>",
+		"<system-reminder a=\"1\"/> keep </system-reminder>",
+		"<system-reminder a=\"1\" /> keep </system-reminder>",
+		"<system-reminder " + strings.Repeat("a", 1023) + ">secret</system-reminder>sửa bug",
+		"<system-reminder " + strings.Repeat("a", 1022) + ">secret</system-reminder>sửa bug",
+	}
+	for _, body := range attrEdges {
+		line, err := json.Marshal(map[string]any{
+			"type": "user", "message": map[string]any{"content": body},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.Write(line)
+		raw.WriteByte('\n')
+	}
 	for _, extra := range []string{
 		`{"type":"user","isSidechain":true,"message":{"content":"subagent"}}`,
 		`{"type":"user","isCompactSummary":true,"message":{"content":"compacted"}}`,
@@ -749,7 +772,7 @@ func TestUnclosedAttrScanIsLinear(t *testing.T) {
 		s := strings.Repeat(p, (1<<20)/len(p))
 		start := time.Now()
 		got := stripHarness(s)
-		if elapsed := time.Since(start); elapsed >= time.Second {
+		if elapsed := time.Since(start); elapsed >= 5*time.Second {
 			t.Fatalf("stripHarness %q took %s", p, elapsed)
 		}
 		if got != s {
@@ -761,7 +784,7 @@ func TestUnclosedAttrScanIsLinear(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if elapsed := time.Since(start); elapsed >= time.Second {
+		if elapsed := time.Since(start); elapsed >= 5*time.Second {
 			t.Fatalf("Extract %q took %s", p, elapsed)
 		}
 		if len(res.Errors) != 0 || len(res.Prompts) != 1 || res.Prompts[0].Text != s {

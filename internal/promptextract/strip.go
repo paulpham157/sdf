@@ -210,7 +210,10 @@ func findTag(s string, i int, mark *scanMark) (tagHit, int, bool) {
 			if k < len(s) && s[k] == '>' {
 				return tagHit{kind: kind, open: true, start: i, end: k + 1}, 0, true
 			}
-			if spec.attrs && k < len(s) && isASCIISpace(s[k]) {
+			// A closer may use any ASCII space before ">", including a
+			// newline (isASCIISpace). An opener's attribute list is only
+			// a space or a tab. A newline here is not an attribute list.
+			if spec.attrs && k < len(s) && (s[k] == ' ' || s[k] == '\t') {
 				end, good, resume := scanTagAttrs(s, k, mark)
 				if good {
 					return tagHit{kind: kind, open: true, start: i, end: end}, 0, true
@@ -250,6 +253,8 @@ func matchTagName(got, name string, fold bool) bool {
 	return true
 }
 
+// isASCIISpace is the whitespace a closing tag may have before ">".
+// An opening attribute list is only ' ' or '\t'; findTag checks that.
 func isASCIISpace(c byte) bool {
 	switch c {
 	case ' ', '\t', '\n', '\r', '\f', '\v':
@@ -259,10 +264,11 @@ func isASCIISpace(c byte) bool {
 	}
 }
 
-// scanTagAttrs reads attributes starting at ASCII whitespace. end is the
+// scanTagAttrs reads attributes starting at a space or a tab. end is the
 // index after the closing ">" when the opener is well-formed. A ">" inside
 // quotes does not end the tag. The scan stops at maxTagAttrBytes, at a
-// newline, or at an unquoted "<", and then the opener is not a tag.
+// newline (including inside quotes), or at an unquoted "<", and then the
+// opener is not a tag.
 // resume, when greater than the caller's start, is the index the caller
 // should continue from so the stopped-at "<" is still seen. A slash
 // immediately before ">", with ASCII spaces between them allowed, is a
