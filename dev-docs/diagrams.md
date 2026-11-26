@@ -77,8 +77,7 @@ hooks that run brief or check.
 
 - Source: `internal/cli/cli.go` (`decisionCommands`); `docs/outcomes.md`; `docs/agents.md`; `skills/sdf-decisions/SKILL.md`
 - Files: [04-decision-commands.tldr](../docs/diagrams/04-decision-commands.tldr), [04-decision-commands.png](../docs/diagrams/04-decision-commands.png)
-
-[![sdf decision subcommands in help order, then the session-start brief and the check before an action.](../docs/diagrams/04-decision-commands.png){ .sdf-diagram }](../docs/diagrams/04-decision-commands.png)
+- Embedded in: [outcomes.md](../docs/outcomes.md)
 
 ### 05 Decision graph
 
@@ -137,8 +136,7 @@ from `sdf init --git-hooks`.
 
 - Source: `docs/receiver.md` (Git hooks, Pre-push decision check); `internal/setup/githook.go`, `githook_script.go`
 - Files: [10-git-hooks.tldr](../docs/diagrams/10-git-hooks.tldr), [10-git-hooks.png](../docs/diagrams/10-git-hooks.png)
-
-[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](../docs/diagrams/10-git-hooks.png){ .sdf-diagram }](../docs/diagrams/10-git-hooks.png)
+- Embedded in: [receiver.md](../docs/receiver.md)
 
 ### 11 Task declare
 
@@ -203,8 +201,9 @@ cost per accepted outcome.
   `qwen-code.subagent` and `qwen-code.hook` are listed as span types, but
   the docs do not say they are children of `qwen-code.interaction`. They
   are drawn as siblings, with that caveat on the diagram.
-- Diagrams 04 and 10 are drawn on this page. The other drawings are
-  inlined on the page that describes that flow.
+- Every drawing is inlined on the page that describes that flow.
+  Diagram 04 is on [outcomes.md](../docs/outcomes.md) and diagram 10 is
+  on [receiver.md](../docs/receiver.md).
 
 Topics covered only in prose, and not given a separate drawing, include
 `sdf check`, security file modes, known gaps, the verify and Action

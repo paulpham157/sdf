@@ -12,10 +12,12 @@ The Markdown under docs/ is left unchanged. At build time this hook:
   pointing at ../docs/...)
 - points the view-on-GitHub link on skill pages at the real source path
 - marks the File/Role table and lets table code wrap after a hyphen or "/"
+- writes static redirect pages for the developer notes that left the site
 """
 
 from __future__ import annotations
 
+import html
 import re
 from pathlib import Path
 
@@ -215,6 +217,44 @@ def on_page_content(
     html: str, page: Page, config: MkDocsConfig, files: Files
 ) -> str:
     return _table_code_breaks(html)
+
+
+# Old public URLs. Each page is a canonical link, a refresh, and a fallback
+# anchor. The targets are files in this repository, not pages on the site.
+REDIRECTS = {
+    "gaps/index.html": "https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md",
+    "design/tokens/index.html": "https://github.com/paulpham157/sdf/blob/main/design/tokens.md",
+    "research/session-boundary/index.html": (
+        "https://github.com/paulpham157/sdf/blob/main/dev-docs/research/session-boundary.md"
+    ),
+    "diagrams/index.html": "https://github.com/paulpham157/sdf/blob/main/dev-docs/diagrams.md",
+}
+
+
+def _redirect_page(url: str) -> str:
+    safe = html.escape(url, quote=True)
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f'<link rel="canonical" href="{safe}">\n'
+        f'<meta http-equiv="refresh" content="0; url={safe}">\n'
+        "<title>Moved</title>\n"
+        "</head>\n"
+        "<body>\n"
+        f'<p><a href="{safe}">This page has moved.</a></p>\n'
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def on_post_build(config: MkDocsConfig) -> None:
+    site = Path(config.site_dir)
+    for rel, url in REDIRECTS.items():
+        dest = site / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(_redirect_page(url), encoding="utf-8")
 
 
 def on_pre_page(page: Page, config: MkDocsConfig, files: Files) -> Page:

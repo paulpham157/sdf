@@ -198,7 +198,6 @@ before the row is written. Decisions are recorded separately; the
 summary does not infer them from telemetry. Task declaration, verify,
 and the ledger are optional and sit beside collection, not in its path.
 The GitHub Action runs `sdf verify`; it does not open a ledger today.
-How those drawings are edited is in [dev-docs/diagrams.md](dev-docs/diagrams.md).
 
 ## Documentation
 

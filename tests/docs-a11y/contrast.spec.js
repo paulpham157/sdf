@@ -240,17 +240,22 @@ test('diagram plates on user pages in both schemes', async ({ browser }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page, '/outcomes/');
     expect(await page.evaluate(() => window.__schemeAtPaint)).toBe(scheme.attribute);
-    const figure = page.locator('.md-typeset a:has(> img[src*="diagrams/"])').first();
-    await figure.scrollIntoViewIfNeeded();
-    await expect(figure).toHaveCSS('border-bottom-style', 'none');
-    const img = figure.locator('img');
-    await expect.poll(async () => {
-      const size = await img.boundingBox();
-      return size ? size.height : 0;
-    }).toBeGreaterThan(80);
-    if (scheme.name === 'dark') {
-      await expect(img).toHaveCSS('background-color', 'rgb(246, 241, 232)');
-      await expect(img).toHaveCSS('padding-top', '12px');
+    const figures = page.locator('.md-typeset a:has(> img[src*="diagrams/"])');
+    const count = await figures.count();
+    expect(count).toBeGreaterThan(1);
+    for (let i = 0; i < count; i++) {
+      const figure = figures.nth(i);
+      await figure.scrollIntoViewIfNeeded();
+      await expect(figure).toHaveCSS('border-bottom-style', 'none');
+      const img = figure.locator('img');
+      await expect.poll(async () => {
+        const size = await img.boundingBox();
+        return size ? size.height : 0;
+      }).toBeGreaterThan(80);
+      if (scheme.name === 'dark') {
+        await expect(img).toHaveCSS('background-color', 'rgb(246, 241, 232)');
+        await expect(img).toHaveCSS('padding-top', '12px');
+      }
     }
     await contrast(page);
     await shot(page, scheme.name + '-outcomes-1440.png');

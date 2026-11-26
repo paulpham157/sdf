@@ -756,6 +756,10 @@ trusted folder.
 
 ## Git hooks
 
+[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](diagrams/10-git-hooks.png)](diagrams/10-git-hooks.png)
+
+Source: [10-git-hooks.tldr](diagrams/10-git-hooks.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 Pi, OpenCode, Codex, Grok CLI, and Qwen Code do not export a commit SHA, and
 Claude Code exports one only with `OTEL_LOG_TOOL_DETAILS=1`. `sdf init --git-hooks`
 installs `post-commit`, `post-rewrite`, `prepare-commit-msg`, and `pre-push`

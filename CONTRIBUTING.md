@@ -108,9 +108,10 @@ default `GITHUB_TOKEN` with `pages: write` and `id-token: write`.
 
 The site at <https://docs.softwaredecisionfabric.tech/> is for people
 learning and using `sdf`. The notes below stay in this repository.
-`CONTRIBUTING.md` is their index. The agent skill pages stay on the site,
-under Reference, because they tell an agent how to record and check
-decisions.
+`CONTRIBUTING.md` is their index. Skill pages live in `skills/` and are
+published under Reference, because they tell an agent how to record and
+check decisions. Record user-visible changes in `CHANGELOG.md` under
+`[Unreleased]`.
 
 | Document | What it covers |
 | --- | --- |
