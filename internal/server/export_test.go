@@ -24,3 +24,15 @@ func (s *Server) BudgetUsed() int64 {
 	}
 	return s.budget.Used()
 }
+
+// ReadingRPCs is how many admitted gRPC calls are still tracked. The tap
+// creates that state only after auth succeeds. Tests use the count to
+// prove an unauthenticated client does not accumulate per-stream state.
+func (s *Server) ReadingRPCs() int {
+	if s == nil {
+		return 0
+	}
+	s.phaseMu.Lock()
+	defer s.phaseMu.Unlock()
+	return len(s.reads)
+}

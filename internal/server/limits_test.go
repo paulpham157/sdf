@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -868,43 +869,6 @@ func TestShutdownReturnsWithAHeaderOnlyGRPCStream(t *testing.T) {
 	}
 }
 
-func TestHeaderOnlyGRPCEndsAtHeaderTimeout(t *testing.T) {
-	const capBytes = 4096
-	srv, _ := startLimited(t, netlimit.Limits{
-		MaxBodyBytes:      capBytes,
-		MaxInFlightBytes:  capBytes * 2,
-		ReadHeaderTimeout: 200 * time.Millisecond,
-		ReadTimeout:       5 * time.Second,
-	})
-	statusc := writeStalledGRPC(t, srv.GRPCAddress(), false)
-	start := time.Now()
-	deadline := time.Now().Add(time.Second)
-	for srv.BudgetUsed() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("header-only stream was not admitted")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	select {
-	case status := <-statusc:
-		if status != "4" {
-			t.Fatalf("grpc-status %q, want 4 (DEADLINE_EXCEEDED)", status)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("header-only stream waited for the read timeout")
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("reservation held for %s", elapsed)
-	}
-	deadline = time.Now().Add(time.Second)
-	for srv.BudgetUsed() != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("reservation stuck at %d", srv.BudgetUsed())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func TestPartialGRPCKeepsTheReservationPastHeaderTimeout(t *testing.T) {
 	const capBytes = 4096
 	srv, _ := startLimited(t, netlimit.Limits{
@@ -935,41 +899,37 @@ func TestPartialGRPCKeepsTheReservationPastHeaderTimeout(t *testing.T) {
 	}
 }
 
-func TestHeaderOnlyStreamsAreCappedPerConnection(t *testing.T) {
-	const capBytes = 4096
-	srv, _ := startLimited(t, netlimit.Limits{
-		MaxBodyBytes:      capBytes,
-		MaxInFlightBytes:  capBytes * 8,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       5 * time.Second,
+func TestUnauthenticatedGRPCFramesCreateNoStreamState(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true,
+		Token: "t",
+		Limits: netlimit.Limits{
+			MaxBodyBytes:      4096,
+			MaxInFlightBytes:  8 << 20,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       30 * time.Second,
+		},
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = db.Close()
 	})
-	statuses := writeHeaderOnlyStreams(t, srv.GRPCAddress(), 3)
-	deadline := time.Now().Add(2 * time.Second)
-	for srv.BudgetUsed() < int64(capBytes*2) {
-		if time.Now().After(deadline) {
-			t.Fatalf("reservation %d, want two bodies", srv.BudgetUsed())
-		}
-		time.Sleep(5 * time.Millisecond)
+	sent := floodUnauthenticatedFrames(t, srv)
+	if sent < 64 {
+		t.Fatalf("sent %d frames before the connection closed", sent)
 	}
-	if got := srv.BudgetUsed(); got != int64(capBytes*2) {
-		t.Fatalf("reservation %d, want %d", got, capBytes*2)
+	if got := srv.ReadingRPCs(); got != 0 {
+		t.Fatalf("unauthenticated frames left %d tracked RPCs", got)
 	}
-	var rejected bool
-	deadline = time.Now().Add(2 * time.Second)
-	for !rejected && time.Now().Before(deadline) {
-		select {
-		case status := <-statuses:
-			if status == "8" {
-				rejected = true
-			}
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	if !rejected {
-		t.Fatal("third header-only stream was not rejected")
-	}
-	if got := srv.BudgetUsed(); got != int64(capBytes*2) {
-		t.Fatalf("rejected stream reserved bytes: %d", got)
+	if got := srv.BudgetUsed(); got != 0 {
+		t.Fatalf("unauthenticated frames reserved %d bytes", got)
 	}
 }
 
@@ -1150,21 +1110,22 @@ func readUntilSettings(fr *http2.Framer) (*http2.SettingsFrame, error) {
 	}
 }
 
-// writeHeaderOnlyStreams opens n Export streams and sends no DATA.
-// The returned channel receives each grpc-status value the server writes.
-func writeHeaderOnlyStreams(t *testing.T, addr string, n int) <-chan string {
+// floodUnauthenticatedFrames writes many Export HEADERS and 1-byte DATA
+// frames, with no bearer token, and returns how many streams were sent
+// before the connection stopped accepting them. It checks, while the
+// connection is still open, that the server has not admitted an RPC.
+func floodUnauthenticatedFrames(t *testing.T, srv *server.Server) int {
 	t.Helper()
-	c, err := net.DialTimeout("tcp", addr, time.Second)
+	c, err := net.DialTimeout("tcp", srv.GRPCAddress(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
-	_ = c.SetDeadline(time.Now().Add(8 * time.Second))
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := io.WriteString(c, http2.ClientPreface); err != nil {
 		t.Fatal(err)
 	}
 	fr := http2.NewFramer(c, c)
-	fr.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	if _, err := readUntilSettings(fr); err != nil {
 		t.Fatal(err)
 	}
@@ -1174,52 +1135,79 @@ func writeHeaderOnlyStreams(t *testing.T, addr string, n int) <-chan string {
 	if err := fr.WriteSettingsAck(); err != nil {
 		t.Fatal(err)
 	}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	sent := 0
 	var id uint32 = 1
-	for i := 0; i < n; i++ {
-		var block bytes.Buffer
-		enc := hpack.NewEncoder(&block)
-		for _, hf := range []hpack.HeaderField{
-			{Name: ":method", Value: "POST"},
-			{Name: ":scheme", Value: "http"},
-			{Name: ":path", Value: "/opentelemetry.proto.collector.trace.v1.TraceService/Export"},
-			{Name: ":authority", Value: addr},
-			{Name: "content-type", Value: "application/grpc"},
-			{Name: "te", Value: "trailers"},
-		} {
-			if err := enc.WriteField(hf); err != nil {
-				t.Fatal(err)
-			}
+	for i := 0; i < 4000; i++ {
+		if err := writeExportHeaders(fr, id, srv.GRPCAddress()); err != nil {
+			break
 		}
-		if err := fr.WriteHeaders(http2.HeadersFrameParam{
-			StreamID:      id,
-			EndStream:     false,
-			EndHeaders:    true,
-			BlockFragment: block.Bytes(),
-		}); err != nil {
-			t.Fatal(err)
+		if err := fr.WriteData(id, false, []byte{0}); err != nil {
+			break
+		}
+		sent++
+		id += 2
+		if srv.ReadingRPCs() != 0 || srv.BudgetUsed() != 0 {
+			t.Fatalf("after %d streams: tracked %d budget %d", sent, srv.ReadingRPCs(), srv.BudgetUsed())
+		}
+		if sent%32 == 0 {
+			drainFrames(c, fr)
+		}
+	}
+	// DATA on stream ids that never sent HEADERS. The server may close
+	// the connection. It must not keep a slot for those frames.
+	for i := 0; i < 1000; i++ {
+		if err := fr.WriteData(id, false, []byte{1}); err != nil {
+			break
 		}
 		id += 2
 	}
-	statusc := make(chan string, n)
-	go func() {
-		defer close(statusc)
-		for {
-			f, err := fr.ReadFrame()
-			if err != nil {
-				return
-			}
-			mh, ok := f.(*http2.MetaHeadersFrame)
-			if !ok {
-				continue
-			}
-			for _, hf := range mh.Fields {
-				if hf.Name == "grpc-status" {
-					statusc <- hf.Value
-				}
-			}
+	drainFrames(c, fr)
+	if srv.ReadingRPCs() != 0 || srv.BudgetUsed() != 0 {
+		t.Fatalf("after the flood: tracked %d budget %d", srv.ReadingRPCs(), srv.BudgetUsed())
+	}
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if after.HeapAlloc > before.HeapAlloc && after.HeapAlloc-before.HeapAlloc > 32<<20 {
+		t.Fatalf("heap grew by %d bytes while the connection was open", after.HeapAlloc-before.HeapAlloc)
+	}
+	return sent
+}
+
+func writeExportHeaders(fr *http2.Framer, id uint32, addr string) error {
+	var block bytes.Buffer
+	enc := hpack.NewEncoder(&block)
+	for _, hf := range []hpack.HeaderField{
+		{Name: ":method", Value: "POST"},
+		{Name: ":scheme", Value: "http"},
+		{Name: ":path", Value: "/opentelemetry.proto.collector.trace.v1.TraceService/Export"},
+		{Name: ":authority", Value: addr},
+		{Name: "content-type", Value: "application/grpc"},
+		{Name: "te", Value: "trailers"},
+	} {
+		if err := enc.WriteField(hf); err != nil {
+			return err
 		}
-	}()
-	return statusc
+	}
+	return fr.WriteHeaders(http2.HeadersFrameParam{
+		StreamID:      id,
+		EndStream:     false,
+		EndHeaders:    true,
+		BlockFragment: block.Bytes(),
+	})
+}
+
+func drainFrames(c net.Conn, fr *http2.Framer) {
+	_ = c.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	for {
+		if _, err := fr.ReadFrame(); err != nil {
+			break
+		}
+	}
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 }
 
 func rawRequest(path, host string, headers map[string]string, body string) string {

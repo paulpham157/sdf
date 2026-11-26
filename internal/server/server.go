@@ -88,7 +88,6 @@ type Server struct {
 	blockAfterInsert func(context.Context)
 
 	commits *commitGate
-	watches *watchTable
 
 	phaseMu sync.Mutex
 	// reading is the HTTP connections still in a read. Shutdown closes
@@ -164,7 +163,6 @@ func (s *Server) Start() error {
 	s.httpHost = httpHost
 	s.httpPort = httpPort
 	s.commits = newCommitGate()
-	s.watches = newWatchTable()
 	// OTLP Export RPCs are unary. The stream interceptor is defense in depth
 	// if a streaming method is added later. admitRPC runs before the body
 	// is read.
@@ -196,7 +194,7 @@ func (s *Server) Start() error {
 	s.httpWG.Add(1)
 	go s.serveHTTP(s.httpLim)
 	go func() {
-		_ = s.grpcSrv.Serve(&watchListener{Listener: s.grpcLim, table: s.watches})
+		_ = s.grpcSrv.Serve(s.grpcLim)
 	}()
 	return nil
 }
@@ -217,20 +215,19 @@ func (s *Server) GRPCAddress() string {
 	return s.grpcLn.Addr().String()
 }
 
-// grpcGraceTimeout is how long Shutdown waits for gRPC handlers to
-// finish before it closes their connections. A header-only stream would
-// otherwise hold GracefulStop until the header timeout or the connection
-// age. A commit that has already started gets the same amount of time
-// again so its status can be written before the connection is closed.
+// grpcGraceTimeout is one slice of the shutdown wait. GracefulStop gets
+// one slice, a commit already in progress gets another, and then Stop
+// runs if the server is still waiting. The three slices are about 6s.
 const grpcGraceTimeout = 2 * time.Second
 
 // Shutdown stops both listeners. It cancels the server context, closes
 // HTTP connections that are still reading, and leaves a connection that
 // has started its commit to finish and write the 200. It then waits for
-// those handlers and gracefully stops gRPC so an in-flight commit can
-// finish. If that stop is still waiting after grpcGraceTimeout, it waits
-// up to another grpcGraceTimeout for a commit that has already started,
-// then closes the remaining RPCs. A second call does nothing.
+// those handlers and gracefully stops gRPC. If that stop is still waiting
+// after grpcGraceTimeout, streams that have not finished their message
+// are cancelled and a commit already in progress gets another slice to
+// write its status. Stop then closes whatever is still open. The whole
+// wait is about 6s. A second call does nothing.
 func (s *Server) Shutdown() {
 	s.stopOnce.Do(func() {
 		s.phaseMu.Lock()

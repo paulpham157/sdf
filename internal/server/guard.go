@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/tap"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -18,12 +19,11 @@ import (
 )
 
 const (
-	msgTooLarge      = "payload too large"
-	msgInFlight      = "inflight limit"
-	msgTooManyToken  = "too many requests"
-	msgTooManyUnread = "too many streams waiting for a message"
-	msgReadTimeout   = "read timeout"
-	msgStopping      = "server stopping"
+	msgTooLarge     = "payload too large"
+	msgInFlight     = "inflight limit"
+	msgTooManyToken = "too many requests"
+	msgReadTimeout  = "read timeout"
+	msgStopping     = "server stopping"
 
 	// maxConcurrentStreams bounds HTTP/2 streams on one gRPC connection.
 	// OTLP exports are unary; a local agent uses a few at a time. The
@@ -89,12 +89,12 @@ func (s *Server) beforeInsert() error {
 
 // admitRPC runs before gRPC reads the message body. It rejects a bad
 // token, a token cap, or an in-flight byte cap without buffering the
-// payload. An admitted RPC reserves the per-request maximum from the
-// gRPC share of the budget and keeps it until the message has fully
-// arrived. A stream with no DATA frame is cancelled with
-// DEADLINE_EXCEEDED after --read-header-timeout, which releases that
-// reservation. Once a DATA frame arrives the deadline is --read-timeout.
-// The handler stops that timer before the SQLite commit.
+// payload. Auth runs before any per-stream state is kept. An admitted
+// RPC reserves the per-request maximum from the gRPC share of the budget
+// and keeps it until the message has fully arrived. The read timer
+// cancels the RPC with DEADLINE_EXCEEDED after --read-timeout, which
+// also releases a header-only stream. The handler stops that timer
+// before the SQLite commit.
 //
 // The reservation is released when the returned context ends, including
 // when the RPC is rejected after the tap (unknown method, oversized
@@ -114,14 +114,6 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		}
 		releaseToken = rel
 	}
-	w, _ := ctx.Value(watchKey{}).(*frameWatch)
-	streamID, sawData, reject := w.claim()
-	if reject {
-		if releaseToken != nil {
-			releaseToken()
-		}
-		return nil, retryExhausted(msgTooManyUnread)
-	}
 	hold, ok := s.budget.ReserveGrpc(int64(s.lim.MaxBodyBytes))
 	if !ok {
 		if releaseToken != nil {
@@ -129,30 +121,19 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		}
 		return nil, retryExhausted(msgInFlight)
 	}
-	headerWait := s.lim.ReadHeaderTimeout
-	if headerWait <= 0 {
-		headerWait = netlimit.DefaultReadHeaderTimeout
+	wait := s.lim.ReadTimeout
+	if wait <= 0 {
+		wait = netlimit.DefaultReadTimeout
 	}
-	readWait := s.lim.ReadTimeout
-	if readWait <= 0 {
-		readWait = netlimit.DefaultReadTimeout
-	}
-	// The reservation stays until the message arrives or a timer
+	// The reservation stays until the message arrives or this timer
 	// cancels the read. Stopping the timer leaves the context alive, so
-	// the commit is not under the deadline. A header-only stream uses
-	// the header timeout; the first DATA byte promotes it to the read timeout.
-	live := newReadCtx(ctx, headerWait, readWait, sawData)
+	// the commit is not under the deadline.
+	live := newReadCtx(ctx, wait)
 	s.trackRead(live)
-	if w != nil && !sawData && streamID != 0 {
-		w.arm(streamID, live.promote)
-	}
-	rh := &rpcHold{hold: hold, stop: live.stop, watch: w, stream: streamID}
+	rh := &rpcHold{hold: hold, stop: live.stop}
 	context.AfterFunc(live, func() {
 		live.stop()
 		s.untrackRead(live)
-		if w != nil {
-			w.forget(streamID)
-		}
 		if releaseToken != nil {
 			releaseToken()
 		}
@@ -165,8 +146,6 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 type rpcHold struct {
 	hold       *netlimit.Hold
 	stop       func()
-	watch      *frameWatch
-	stream     uint32
 	commitOnce sync.Once
 	commitDone func()
 }
@@ -205,9 +184,6 @@ func (s *Server) enterGRPCCommit(ctx context.Context) {
 	}
 	s.commits.add()
 	rh.commitDone = s.commits.done
-	if rh.watch != nil {
-		rh.watch.trackCommit(rh.stream, func() { releaseGRPCCommit(ctx) })
-	}
 }
 
 func releaseGRPCCommit(ctx context.Context) {
@@ -226,40 +202,28 @@ func releaseGRPCCommit(ctx context.Context) {
 }
 
 // readCtx is the stream context for one admitted RPC. Its timer cancels
-// the read with context.DeadlineExceeded. Until a DATA frame arrives the
-// timer is the header timeout. promote moves it out to the read timeout
-// without cancelling. stop disarms the timer without cancelling, which
-// is how the commit stays off the deadline. The parent cancel still ends
-// the context, so the reservation is released when the RPC finishes.
+// the read with context.DeadlineExceeded after --read-timeout. stop
+// disarms that timer without cancelling, which is how the commit stays
+// off the deadline. The parent cancel still ends the context, so the
+// reservation is released when the RPC finishes.
 type readCtx struct {
 	context.Context
 	done     chan struct{}
-	started  time.Time
-	readWait time.Duration
 	deadline time.Time
 	mu       sync.Mutex
 	err      error
 	timer    *time.Timer
-	gen      int
 	stopped  bool
 	closed   bool
 }
 
-func newReadCtx(parent context.Context, header, read time.Duration, sawData bool) *readCtx {
-	initial := header
-	if sawData || read < header {
-		initial = read
-	}
-	now := time.Now()
+func newReadCtx(parent context.Context, wait time.Duration) *readCtx {
 	c := &readCtx{
 		Context:  parent,
 		done:     make(chan struct{}),
-		started:  now,
-		readWait: read,
-		deadline: now.Add(initial),
-		gen:      1,
+		deadline: time.Now().Add(wait),
 	}
-	c.timer = time.AfterFunc(initial, func() { c.failRead(1) })
+	c.timer = time.AfterFunc(wait, c.failRead)
 	go func() {
 		<-parent.Done()
 		c.fail(parent.Err())
@@ -289,45 +253,11 @@ func (c *readCtx) Deadline() (time.Time, bool) {
 	return deadline, true
 }
 
-// promote extends a header-only deadline to the read timeout. The first
-// DATA payload byte is what calls it. A timer that already fired stays
-// fired.
-func (c *readCtx) promote() {
-	c.mu.Lock()
-	if c.stopped || c.closed {
-		c.mu.Unlock()
-		return
-	}
-	c.gen++
-	gen := c.gen
-	t := c.timer
-	c.timer = nil
-	deadline := c.started.Add(c.readWait)
-	c.deadline = deadline
-	wait := time.Until(deadline)
-	c.mu.Unlock()
-	if t != nil {
-		t.Stop()
-	}
-	if wait <= 0 {
-		c.failRead(gen)
-		return
-	}
-	c.mu.Lock()
-	if c.stopped || c.closed || c.gen != gen {
-		c.mu.Unlock()
-		return
-	}
-	c.timer = time.AfterFunc(wait, func() { c.failRead(gen) })
-	c.mu.Unlock()
-}
-
 // stop disarms the read timer. A timer that has already cancelled the
 // read stays cancelled.
 func (c *readCtx) stop() {
 	c.mu.Lock()
 	c.stopped = true
-	c.gen++
 	t := c.timer
 	c.timer = nil
 	c.mu.Unlock()
@@ -336,10 +266,10 @@ func (c *readCtx) stop() {
 	}
 }
 
-func (c *readCtx) failRead(gen int) {
+func (c *readCtx) failRead() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopped || c.closed || c.gen != gen {
+	if c.stopped || c.closed {
 		return
 	}
 	c.closed = true
@@ -357,7 +287,6 @@ func (c *readCtx) failIfReading() {
 		return
 	}
 	c.closed = true
-	c.gen++
 	c.err = context.DeadlineExceeded
 	close(c.done)
 }
@@ -420,3 +349,73 @@ func retryExhausted(msg string) error {
 	}
 	return st.Err()
 }
+
+// commitGate counts gRPC handlers that have passed beforeInsert and have
+// not yet had their status handed to the transport. Shutdown waits for
+// it, bounded, before Stop closes connections.
+type commitGate struct {
+	mu   sync.Mutex
+	cond *sync.Cond
+	n    int
+}
+
+func newCommitGate() *commitGate {
+	g := &commitGate{}
+	g.cond = sync.NewCond(&g.mu)
+	return g
+}
+
+func (g *commitGate) add() {
+	g.mu.Lock()
+	g.n++
+	g.mu.Unlock()
+}
+
+func (g *commitGate) done() {
+	g.mu.Lock()
+	if g.n > 0 {
+		g.n--
+	}
+	if g.n == 0 {
+		g.cond.Broadcast()
+	}
+	g.mu.Unlock()
+}
+
+func (g *commitGate) wait(d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		g.mu.Lock()
+		for g.n > 0 {
+			g.cond.Wait()
+		}
+		g.mu.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
+}
+
+// TagRPC keeps the stream context, including the reservation.
+func (s *Server) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+
+// HandleRPC releases the commit count after gRPC has accepted the status
+// for writing. That is the signal Shutdown waits on.
+func (s *Server) HandleRPC(ctx context.Context, rs stats.RPCStats) {
+	if _, ok := rs.(*stats.End); ok {
+		releaseGRPCCommit(ctx)
+	}
+}
+
+// TagConn is part of the stats handler. Per-stream state is created in
+// admitRPC, after auth, not from the connection.
+func (s *Server) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+
+// HandleConn is part of the stats handler.
+func (s *Server) HandleConn(context.Context, stats.ConnStats) {}
