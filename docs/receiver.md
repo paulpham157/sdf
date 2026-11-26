@@ -94,13 +94,17 @@ database on a local disk, not a network filesystem (NFS, SMB).
 
 ### Durability of ingested rows
 
-`sdf serve` sets `PRAGMA synchronous=NORMAL` on the writer connection after
-the telemetry file is in WAL mode. The pragma is per connection. It is not
-stored in the file, and a reader (`sdf summary`, any read-only open) keeps
-SQLite's default `FULL`. An in-memory store and a file that stays in
-rollback-journal mode also keep `FULL`: outside WAL, `NORMAL` can leave a
-database inconsistent after a power loss. The ledger is a different file
-and stays at `synchronous=FULL`; see [Journal mode](ledger.md#journal-mode-and-what-a-read-may-touch).
+The telemetry writer opened through `store.Open` sets `PRAGMA synchronous=NORMAL`
+on its connection after the file is in WAL mode. `sdf serve`, `sdf decision add`,
+`sdf decision link`, `sdf decision retract`, and the recall harness write
+through that open. The pool is one connection. When it is replaced, the new
+connection sets `NORMAL` again if that connection is in WAL mode. The pragma
+is per connection. It is not stored in the file, and a reader (`sdf summary`,
+any read-only open) keeps SQLite's default `FULL`. An in-memory store and a
+file that stays in rollback-journal mode also keep `FULL`: outside WAL,
+`NORMAL` can leave a database inconsistent after a power loss. The ledger is
+a different file and stays at `synchronous=FULL`; see
+[Journal mode](ledger.md#journal-mode-and-what-a-read-may-touch).
 
 Under WAL, `NORMAL` does not fsync the WAL on every commit. SQLite still
 syncs the WAL before a checkpoint and the database file after one. From
