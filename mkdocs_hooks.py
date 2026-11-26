@@ -8,9 +8,8 @@ The Markdown under docs/ is left unchanged. At build time this hook:
   scripts to the MkDocs file set
 - writes a small index page for the scripts directory
 - rewrites the few links whose repo-relative targets would miss the
-  site layout (docs pages pointing at ../skills/..., skill pages
-  pointing at ../docs/..., and docs/diagrams/README.md pointing at
-  ../../README.md and ../../CONTRIBUTING.md)
+  site layout (docs pages pointing at ../skills/..., and skill pages
+  pointing at ../docs/...)
 - points the view-on-GitHub link on skill pages at the real source path
 - marks the File/Role table and lets table code wrap after a hyphen or "/"
 """
@@ -49,19 +48,6 @@ PAGE_LINK_REWRITES = {
     ),
     "skills/sdf-decisions/SKILL.md": (
         (re.compile(r"\]\(\.\./\.\./docs/outcomes\.md\)"), "](../../outcomes.md)"),
-    ),
-    # PR #325: docs/diagrams/README.md links to repo-root files that are
-    # not part of the MkDocs docs_dir. Point those at GitHub so --strict
-    # still passes once that tree is merged.
-    "diagrams/README.md": (
-        (
-            re.compile(r"\]\(\.\./\.\./README\.md\)"),
-            "](https://github.com/paulpham157/sdf/blob/main/README.md)",
-        ),
-        (
-            re.compile(r"\]\(\.\./\.\./CONTRIBUTING\.md\)"),
-            "](https://github.com/paulpham157/sdf/blob/main/CONTRIBUTING.md)",
-        ),
     ),
 }
 
@@ -139,8 +125,8 @@ def on_page_markdown(
     src = page.file.src_uri.replace("\\", "/")
     for pattern, repl in PAGE_LINK_REWRITES.get(src, ()):
         markdown = pattern.sub(repl, markdown)
-    # docs/*.md and docs/research/*.md use ../skills/... ; the generated
-    # scripts index and skill pages do not.
+    # docs/*.md uses ../skills/... ; the generated scripts index and
+    # skill pages do not.
     if not src.startswith("skills/"):
         for pattern, repl in DOCS_SKILL_REWRITES:
             markdown = pattern.sub(repl, markdown)

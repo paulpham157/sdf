@@ -232,15 +232,15 @@ test('explicit light on a dark OS keeps a light canvas', async ({ browser }) => 
   await context.close();
 });
 
-test('diagrams page in both schemes', async ({ browser }) => {
+test('diagram plates on user pages in both schemes', async ({ browser }) => {
   for (const scheme of [LIGHT, DARK]) {
     const context = await browser.newContext();
     await installScheme(context, scheme.palette);
     const page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 900 });
-    await open(page, '/diagrams/');
+    await open(page, '/outcomes/');
     expect(await page.evaluate(() => window.__schemeAtPaint)).toBe(scheme.attribute);
-    const figure = page.locator('.md-typeset a:has(> img.sdf-diagram)').first();
+    const figure = page.locator('.md-typeset a:has(> img[src*="diagrams/"])').first();
     await figure.scrollIntoViewIfNeeded();
     await expect(figure).toHaveCSS('border-bottom-style', 'none');
     const img = figure.locator('img');
@@ -253,7 +253,7 @@ test('diagrams page in both schemes', async ({ browser }) => {
       await expect(img).toHaveCSS('padding-top', '12px');
     }
     await contrast(page);
-    await shot(page, scheme.name + '-diagrams-1440.png');
+    await shot(page, scheme.name + '-outcomes-1440.png');
     await context.close();
   }
 });

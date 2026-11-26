@@ -198,7 +198,7 @@ before the row is written. Decisions are recorded separately; the
 summary does not infer them from telemetry. Task declaration, verify,
 and the ledger are optional and sit beside collection, not in its path.
 The GitHub Action runs `sdf verify`; it does not open a ledger today.
-A fuller set of diagrams is in [docs/diagrams](docs/diagrams/README.md).
+How those drawings are edited is in [dev-docs/diagrams.md](dev-docs/diagrams.md).
 
 ## Documentation
 
@@ -215,9 +215,10 @@ A fuller set of diagrams is in [docs/diagrams](docs/diagrams/README.md).
 | [docs/tasks.md](docs/tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [docs/verify.md](docs/verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [docs/action.md](docs/action.md) | The `sdf verify` GitHub Action, and its threat model |
-| [docs/diagrams/README.md](docs/diagrams/README.md) | Architecture, receiver, decision, verify, ledger, CI, and agent-span diagrams (tldraw `.tldr` sources and PNG renders) |
-| [docs/gaps.md](docs/gaps.md) | Known limits of the collector and the summary |
-| [docs/research/session-boundary.md](docs/research/session-boundary.md) | How each agent marks session open and close |
+
+Design tokens, known gaps, session-boundary research, and diagram
+authoring are indexed in
+[CONTRIBUTING.md](CONTRIBUTING.md#developer-and-internal-documentation).
 
 Repository history from before this collector is preserved at the git
 tag `legacy-v1` (commit `38f45e80ed05fd72e9387c2327d7fd7286bcfac3`).

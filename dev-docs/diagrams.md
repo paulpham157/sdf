@@ -8,6 +8,10 @@ Each entry is a tldraw document (`.tldr`) and a PNG of the same boxes
 and labels. The official tldraw file extension is `.tldr`, not
 `.tldraw`.
 
+The `.tldr` sources and the PNG renders stay in `docs/diagrams/`. The
+user guides embed those images. This file is the authoring index for
+contributors.
+
 The checked-in PNG is a 2× render, 1152 pixels wide, meant to sit in
 the docs column at about 576 CSS pixels. The background is `#F6F1E8`.
 Text is charcoal `#2F3640`. A rust stroke `#C65A2E` marks one
@@ -30,7 +34,7 @@ page heading is the title.
 The [tldraw VS Code extension](https://marketplace.visualstudio.com/items?itemName=tldraw-org.tldraw-vscode)
 also opens `.tldr` files.
 
-This directory does not include a render toolchain. Keep the `.tldr`
+`docs/diagrams/` does not include a render toolchain. Keep the `.tldr`
 and `.png` names in lockstep.
 
 ## Diagrams
@@ -44,8 +48,8 @@ GitHub Action sit beside collection. The Action invokes verify and does
 not open a ledger.
 
 - Source: `README.md` and `docs/index.md` (How it works); `internal/cli/cli.go`; `internal/server`; `.github/actions/sdf-verify`
-- Files: [01-architecture.tldr](01-architecture.tldr), [01-architecture.png](01-architecture.png)
-- Embedded in: [README](../../README.md) and the [docs home](../index.md)
+- Files: [01-architecture.tldr](../docs/diagrams/01-architecture.tldr), [01-architecture.png](../docs/diagrams/01-architecture.png)
+- Embedded in: [README](../README.md) and the [docs home](../docs/index.md)
 
 ### 02 Receiver
 
@@ -53,8 +57,8 @@ OTLP on HTTP `:4318` and gRPC `:4317`, guards, `record.Redact` before
 insert, local SQLite, and the read-only UI.
 
 - Source: `docs/receiver.md`; `internal/server`; `internal/store/store.go`; `internal/record/redact.go`; `internal/ui/ui.go`
-- Files: [02-receiver.tldr](02-receiver.tldr), [02-receiver.png](02-receiver.png)
-- Embedded in: [receiver.md](../receiver.md)
+- Files: [02-receiver.tldr](../docs/diagrams/02-receiver.tldr), [02-receiver.png](../docs/diagrams/02-receiver.png)
+- Embedded in: [receiver.md](../docs/receiver.md)
 
 ### 03 Decision relations
 
@@ -63,8 +67,8 @@ Stored relations and the endpoint kinds they allow: `supersedes`,
 `contradicts`, and `constrains`.
 
 - Source: `docs/outcomes.md` (Link rules); `internal/decision/decision.go` (`Rel*` constants, `checkKinds`)
-- Files: [03-decision-relations.tldr](03-decision-relations.tldr), [03-decision-relations.png](03-decision-relations.png)
-- Embedded in: [outcomes.md](../outcomes.md)
+- Files: [03-decision-relations.tldr](../docs/diagrams/03-decision-relations.tldr), [03-decision-relations.png](../docs/diagrams/03-decision-relations.png)
+- Embedded in: [outcomes.md](../docs/outcomes.md)
 
 ### 04 Decision commands
 
@@ -72,9 +76,9 @@ Stored relations and the endpoint kinds they allow: `supersedes`,
 hooks that run brief or check.
 
 - Source: `internal/cli/cli.go` (`decisionCommands`); `docs/outcomes.md`; `docs/agents.md`; `skills/sdf-decisions/SKILL.md`
-- Files: [04-decision-commands.tldr](04-decision-commands.tldr), [04-decision-commands.png](04-decision-commands.png)
+- Files: [04-decision-commands.tldr](../docs/diagrams/04-decision-commands.tldr), [04-decision-commands.png](../docs/diagrams/04-decision-commands.png)
 
-[![sdf decision subcommands in help order, then the session-start brief and the check before an action.](04-decision-commands.png){ .sdf-diagram }](04-decision-commands.png)
+[![sdf decision subcommands in help order, then the session-start brief and the check before an action.](../docs/diagrams/04-decision-commands.png){ .sdf-diagram }](../docs/diagrams/04-decision-commands.png)
 
 ### 05 Decision graph
 
@@ -82,8 +86,8 @@ One Decisions-tab chapter: spine, left lane, right lane, roles, and
 derived edges.
 
 - Source: `docs/outcomes.md` (The decision graph); `internal/decisiongraph/decisiongraph.go`
-- Files: [05-decision-graph.tldr](05-decision-graph.tldr), [05-decision-graph.png](05-decision-graph.png)
-- Embedded in: [outcomes.md](../outcomes.md)
+- Files: [05-decision-graph.tldr](../docs/diagrams/05-decision-graph.tldr), [05-decision-graph.png](../docs/diagrams/05-decision-graph.png)
+- Embedded in: [outcomes.md](../docs/outcomes.md)
 
 ### 06 Verify pipeline
 
@@ -91,8 +95,8 @@ derived edges.
 `scanSecrets`, `prepareChecks`, `runCriterion`, then `finish`.
 
 - Source: `docs/verify.md` (What runs, in order); `internal/verify/verify.go` (`run.steps`, `loadTask`, `ledgerPinned`, `finish`)
-- Files: [06-verify-pipeline.tldr](06-verify-pipeline.tldr), [06-verify-pipeline.png](06-verify-pipeline.png)
-- Embedded in: [verify.md](../verify.md)
+- Files: [06-verify-pipeline.tldr](../docs/diagrams/06-verify-pipeline.tldr), [06-verify-pipeline.png](../docs/diagrams/06-verify-pipeline.png)
+- Embedded in: [verify.md](../docs/verify.md)
 
 ### 07 GitHub Action
 
@@ -102,8 +106,8 @@ protected base task (`--task-ref`, `--no-data-dir`). It does not open a
 ledger.
 
 - Source: `docs/action.md`; `.github/actions/sdf-verify/action.yml`
-- Files: [07-github-action-verify.tldr](07-github-action-verify.tldr), [07-github-action-verify.png](07-github-action-verify.png)
-- Embedded in: [action.md](../action.md)
+- Files: [07-github-action-verify.tldr](../docs/diagrams/07-github-action-verify.tldr), [07-github-action-verify.png](../docs/diagrams/07-github-action-verify.png)
+- Embedded in: [action.md](../docs/action.md)
 
 ### 08 Ledger chain
 
@@ -113,8 +117,8 @@ allowed) and `sdf verify`'s exact-head pin (a ledger grown past the pin
 is `TASK_UNTRUSTED`).
 
 - Source: `docs/ledger.md`; `internal/ledger/ledger.go`, `pin.go`; `internal/verify/verify.go` (`ledgerPinned`); `internal/task/ledger.go`
-- Files: [08-ledger-chain.tldr](08-ledger-chain.tldr), [08-ledger-chain.png](08-ledger-chain.png)
-- Embedded in: [ledger.md](../ledger.md)
+- Files: [08-ledger-chain.tldr](../docs/diagrams/08-ledger-chain.tldr), [08-ledger-chain.png](../docs/diagrams/08-ledger-chain.png)
+- Embedded in: [ledger.md](../docs/ledger.md)
 
 ### 09 Repository workflows
 
@@ -123,8 +127,8 @@ PR CI (including `release toolchain (go.mod)`), Main CI, Docs
 `v[0-9]+.[0-9]+.[0-9]+*`, and the Monday scheduled scan.
 
 - Source: `CONTRIBUTING.md`; `AGENTS.md`; `.github/workflows/pr.yml`; `.github/workflows/main.yml`; `.github/workflows/docs.yml`; `.github/workflows/release.yml`; `.github/workflows/schedule.yml`
-- Files: [09-ci-workflows.tldr](09-ci-workflows.tldr), [09-ci-workflows.png](09-ci-workflows.png)
-- Embedded in: [CONTRIBUTING.md](../../CONTRIBUTING.md)
+- Files: [09-ci-workflows.tldr](../docs/diagrams/09-ci-workflows.tldr), [09-ci-workflows.png](../docs/diagrams/09-ci-workflows.png)
+- Embedded in: [CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ### 10 Git hooks
 
@@ -132,9 +136,9 @@ PR CI (including `release toolchain (go.mod)`), Main CI, Docs
 from `sdf init --git-hooks`.
 
 - Source: `docs/receiver.md` (Git hooks, Pre-push decision check); `internal/setup/githook.go`, `githook_script.go`
-- Files: [10-git-hooks.tldr](10-git-hooks.tldr), [10-git-hooks.png](10-git-hooks.png)
+- Files: [10-git-hooks.tldr](../docs/diagrams/10-git-hooks.tldr), [10-git-hooks.png](../docs/diagrams/10-git-hooks.png)
 
-[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](10-git-hooks.png){ .sdf-diagram }](10-git-hooks.png)
+[![Git hooks from sdf init --git-hooks: post-commit, post-rewrite, prepare-commit-msg, and pre-push.](../docs/diagrams/10-git-hooks.png){ .sdf-diagram }](../docs/diagrams/10-git-hooks.png)
 
 ### 11 Task declare
 
@@ -143,8 +147,8 @@ from `sdf init --git-hooks`.
 the task from a protected `--task-ref`.
 
 - Source: `docs/tasks.md`; `internal/task/declare.go`, `jcs.go`; `internal/cli/task.go`
-- Files: [11-task-declare.tldr](11-task-declare.tldr), [11-task-declare.png](11-task-declare.png)
-- Embedded in: [tasks.md](../tasks.md)
+- Files: [11-task-declare.tldr](../docs/diagrams/11-task-declare.tldr), [11-task-declare.png](../docs/diagrams/11-task-declare.png)
+- Embedded in: [tasks.md](../docs/tasks.md)
 
 ### 12 Claude Code spans
 
@@ -152,16 +156,16 @@ The default beta span tree: `claude_code.interaction` with
 `llm_request` and `tool` children. Hook is not in this tree.
 
 - Source: `docs/agents.md` (Claude Code); the default keep-list in `docs/summary.md`
-- Files: [12-claude-code-spans.tldr](12-claude-code-spans.tldr), [12-claude-code-spans.png](12-claude-code-spans.png)
-- Embedded in: [agents.md](../agents.md)
+- Files: [12-claude-code-spans.tldr](../docs/diagrams/12-claude-code-spans.tldr), [12-claude-code-spans.png](../docs/diagrams/12-claude-code-spans.png)
+- Embedded in: [agents.md](../docs/agents.md)
 
 ### 13 Grok spans
 
 Grok CLI internal spans that `sdf summary` keeps by default.
 
 - Source: `docs/agents.md` (Grok CLI); `docs/summary.md`; `internal/summary`
-- Files: [13-grok-spans.tldr](13-grok-spans.tldr), [13-grok-spans.png](13-grok-spans.png)
-- Embedded in: [agents.md](../agents.md)
+- Files: [13-grok-spans.tldr](../docs/diagrams/13-grok-spans.tldr), [13-grok-spans.png](../docs/diagrams/13-grok-spans.png)
+- Embedded in: [agents.md](../docs/agents.md)
 
 ### 14 Qwen spans
 
@@ -170,8 +174,8 @@ Grok CLI internal spans that `sdf summary` keeps by default.
 they are drawn as siblings.
 
 - Source: `docs/agents.md` (Qwen Code)
-- Files: [14-qwen-spans.tldr](14-qwen-spans.tldr), [14-qwen-spans.png](14-qwen-spans.png)
-- Embedded in: [agents.md](../agents.md)
+- Files: [14-qwen-spans.tldr](../docs/diagrams/14-qwen-spans.tldr), [14-qwen-spans.png](../docs/diagrams/14-qwen-spans.png)
+- Embedded in: [agents.md](../docs/agents.md)
 
 ### 15 Summary and cost
 
@@ -180,8 +184,8 @@ agent-specific precedence, prices them from the OpenRouter catalog, and
 can attach GitHub outcomes, cost per accepted, and a local budget.
 
 - Source: `docs/summary.md`; `docs/outcomes.md` (`--github`, `--budget`); `internal/summary/summary.go`; `internal/pricing/price.go`
-- Files: [15-summary-cost.tldr](15-summary-cost.tldr), [15-summary-cost.png](15-summary-cost.png)
-- Embedded in: [summary.md](../summary.md)
+- Files: [15-summary-cost.tldr](../docs/diagrams/15-summary-cost.tldr), [15-summary-cost.png](../docs/diagrams/15-summary-cost.png)
+- Embedded in: [summary.md](../docs/summary.md)
 
 ### 16 Session outcomes
 
@@ -189,8 +193,8 @@ How a session is linked to a commit, a pull request, a decision, and
 cost per accepted outcome.
 
 - Source: `docs/outcomes.md` (Linking a session to a commit); git hook events
-- Files: [16-session-outcomes.tldr](16-session-outcomes.tldr), [16-session-outcomes.png](16-session-outcomes.png)
-- Embedded in: [outcomes.md](../outcomes.md)
+- Files: [16-session-outcomes.tldr](../docs/diagrams/16-session-outcomes.tldr), [16-session-outcomes.png](../docs/diagrams/16-session-outcomes.png)
+- Embedded in: [outcomes.md](../docs/outcomes.md)
 
 ## Notes
 

@@ -148,7 +148,7 @@ is the same as before. The size of each dropped text value is recorded as
 in `sdf.redacted`. A `git_commit_id` inside Claude Code's `tool_parameters`
 is copied to `sdf.git_commit_id` first, so commit links still work. Span
 events and metric exemplars are never stored. Content under a key sdf does
-not know is stored; see [gaps](gaps.md).
+not know is stored; see [known gaps](https://github.com/paulpham157/sdf/blob/main/dev-docs/gaps.md).
 
 To keep the text, opt in when starting the receiver:
 

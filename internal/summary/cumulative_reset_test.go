@@ -213,7 +213,7 @@ func TestCumulativeE3bConcurrentStartAndStartlessProcesses(t *testing.T) {
 }
 
 // TestCumulativeKnownLimits pins each bullet under "Retried delta exports"
-// in docs/gaps.md, so a change in behavior shows up here and in the docs.
+// in dev-docs/gaps.md, so a change in behavior shows up here and in the docs.
 func TestCumulativeKnownLimits(t *testing.T) {
 	// Bullet 3: without a start time, a restart whose first value is not lower than
 	// the last is not seen: 100 then a new run at 150 reads as 150.
