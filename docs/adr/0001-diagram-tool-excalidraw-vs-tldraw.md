@@ -154,14 +154,28 @@ development, testing, or staging.
 
 The [licence docs](https://tldraw.dev/community/license) say the default
 terms allow development only. Production needs a trial key (100 days,
-one per commercial unit, and the SDK phones home with a hash of the
-key), a commercial key (no watermark), or a hobby key (the "made with
-tldraw" watermark stays, and the grant is discretionary). The
-[FAQ](https://tldraw.dev/faq) says the SDK is free in development and,
+one per commercial unit, and during a trial the SDK sends tldraw a hash
+of the key), a commercial key, or a hobby key. A hobby key is
+discretionary, and that page requires the "made with tldraw" watermark
+on the canvas. The [FAQ](https://tldraw.dev/faq) says the SDK is free in development and,
 in production, needs one of those keys. It also says the SDK is source
 available and is not open source. The same FAQ says tldraw.com is the
 flagship demo, "a very good free whiteboard," and that early SDK builds
-ship there for testing. Using the website to draw a figure is the demo.
+ship there for testing. Using the website to draw a figure is use of
+that website and application.
+
+That use is governed by the
+[tldraw.com Terms of Service](https://tldraw.notion.site/terms-of-service),
+effective November 24, 2025. Section 4.1 defines "Your Data" as the
+content made available through the Services, including Boards. Section
+4.2 states that Your Data, and all worldwide intellectual property
+rights in it, is your exclusive property, and that rights not expressly
+granted remain yours. The same section grants tldraw a licence to use
+Your Data to provide and improve the Services during the term, and to
+use it in aggregated, anonymized form during and after the term. The
+`.tldr` and the PNG committed in this repository are the files the
+contributor saves locally.
+
 Embedding `<Tldraw>` in sdf, or shipping a script that imports the SDK
 for readers of the repo, is the SDK licence.
 
@@ -415,9 +429,13 @@ The wording was the point of drawing them.
 - The authoring page, the source lines, and the sixteen pairs already
   agree. Accepting this option changes no figure and no link.
 - Contributors use tldraw.com, which the FAQ describes as a free
-  whiteboard, or the VS Code extension. sdf does not import the SDK, so
-  the production-key and watermark rules are not in force for the
-  current workflow.
+  whiteboard, or the VS Code extension. Use of the website and
+  application is under the
+  [Terms of Service](https://tldraw.notion.site/terms-of-service)
+  (effective November 24, 2025). Section 4.2 states that Your Data, and
+  the intellectual property rights in it, is the user's exclusive
+  property. sdf does not import the SDK, so the production-key rules
+  and the hobby-licence watermark are not in force for this workflow.
 - The PNG, the alt text, the cream plate, and the axe check stay as
   they are.
 - The `.tldr` is one line and carries camera and instance state, so
@@ -592,6 +610,7 @@ required to store `.excalidraw` files.
 - tldraw licence: <https://github.com/tldraw/tldraw/blob/main/LICENSE.md>
 - tldraw licence docs: <https://tldraw.dev/community/license>
 - tldraw FAQ (editor and SDK): <https://tldraw.dev/faq>
+- tldraw.com Terms of Service (effective November 24, 2025; section 4.2 on Your Data): <https://tldraw.notion.site/terms-of-service>
 - tldraw file reader: <https://github.com/tldraw/tldraw/blob/main/packages/tldraw/src/lib/utils/tldr/file.ts>
 - tldraw CLI request: <https://github.com/tldraw/tldraw/issues/7539>
 - tldraw VS Code extension: <https://marketplace.visualstudio.com/items?itemName=tldraw-org.tldraw-vscode>
