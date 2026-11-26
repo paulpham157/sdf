@@ -145,6 +145,7 @@ nav:
     - Gaps: gaps.md
     - Session boundaries: research/session-boundary.md
     - Design tokens: design/tokens.md
+    - Decision categories: design/decision-category.md
     - Agent skills: skills/README.md
     - sdf-decisions skill: skills/sdf-decisions/SKILL.md
     - sdf-decisions scripts: skills/sdf-decisions/scripts/index.md
