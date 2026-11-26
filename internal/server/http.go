@@ -127,7 +127,7 @@ func (s *Server) handleRequest(conn net.Conn, reader *bufio.Reader, writer *bufi
 			s.logRequest(method, path, 400)
 			return closeAfter, nil
 		}
-		if _, err := s.Store.Insert(records); err != nil {
+		if err := s.insertRecords(records); err != nil {
 			writeResponse(writer, 500, "text/plain", []byte("store error"), true)
 			s.logRequest(method, path, 500)
 			return true, nil

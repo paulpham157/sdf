@@ -147,15 +147,19 @@
   points are the session's own and nothing is subtracted. The mapping and
   the `qwen_*.json` samples come from the v0.28.4 docs and source, not a
   live session.
-- The git hook sends the commit SHA, checkout path, and branch to the local
-  receiver. It does not send the diff or the message. The `SDF-Session`
-  trailer stays in the git object. A GitHub squash merge keeps that trailer
-  only when the squash commit message includes it. Husky, lefthook, and
+- The git hook sends the commit SHA, checkout path, branch, and any
+  `SDF-Decision` trailer values to the local receiver. It does not send
+  the subject, the body, other trailers, or the diff. The `SDF-Session`
+  trailer stays in the git object; `SDF-Decision` is also public once
+  pushed, and the receiver persists only a `commit implements decision`
+  edge, not the message. A GitHub squash merge keeps those trailers
+  only when the squash commit message includes them. Husky, lefthook, and
   pre-commit are not edited; `core.hooksPath` is left as it was. The
   Claude Code (`CLAUDE_CODE_SESSION_ID`) and Qwen Code
   (`QWEN_CODE_SESSION_ID`) session ids the hook reads come from their docs
   and source, not a live commit; a hook installed by an older sdf does not
-  read them until `sdf init --git-hooks` is run again.
+  read them, or send `SDF-Decision` values, until `sdf init --git-hooks` is
+  run again.
 - The pre-push decision check ([#286](https://github.com/paulpham157/sdf/issues/286))
   warns by default and never fails a push because SDF is unavailable, so it
   is a reminder, not enforcement: `git push --no-verify`, `SDF_PRE_PUSH=off`,
@@ -163,11 +167,14 @@
   `block` is opt-in per repository. It judges only commits SDF recorded (a
   hook event or an `SDF-Decision` trailer); a commit made where the hooks did
   not run (Codex's read-only `.git`, a GitHub web edit, a clone without the
-  hooks) is not judged. The `SDF-Decision` trailer satisfies the check but is
-  not stored as an edge, so `sdf decision audit` still reports it until
-  [#281](https://github.com/paulpham157/sdf/issues/281) reads it, and nothing
-  adds the trailer automatically. The check reads that one trailer from the
-  commit message locally (the other hooks read no message). It does not look
+  hooks) is not judged. When the post-commit hook can reach the receiver, an
+  `SDF-Decision` trailer or a session that already implements exactly one
+  active decision also appends an `implements` edge, so `sdf decision audit`
+  sees the link. Nothing adds the trailer automatically. If the hook could
+  not post (receiver down, no token, older hook), pre-push still accepts the
+  trailer locally, and audit will not until the edge exists. The check reads
+  that one trailer from the commit message locally, the same way post-commit
+  does. It does not look
   at which constraints a commit touches
   ([#305](https://github.com/paulpham157/sdf/issues/305)). The store path is fixed when the hook
   is installed (`--db`) or taken from `SDF_PRE_PUSH_DB`; without either the

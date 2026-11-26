@@ -7,3 +7,21 @@ dist/
 # Local static binary from `make build`.
 /sdf
 *.exe
+
+# Local MkDocs build and documentation virtualenv.
+/site/
+/.venv-docs/
+/.mkdocs-gen/
+
+# Byte copy of design/tokens.css written by mkdocs_hooks.py. Do not edit.
+/docs/stylesheets/tokens.css
+
+# Python bytecode from mkdocs_hooks.py.
+__pycache__/
+*.py[cod]
+
+# Docs contrast job. Screenshots are CI artifacts, not source.
+/tests/docs-a11y/node_modules/
+/tests/docs-a11y/output/
+/tests/docs-a11y/test-results/
+/tests/docs-a11y/playwright-report/

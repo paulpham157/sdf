@@ -1,5 +1,9 @@
 # Summary
 
+[![sdf summary reads the local store, derives duration and tokens by agent-specific precedence, prices them from the OpenRouter catalog, and can attach GitHub outcomes, cost per accepted, and a local budget.](diagrams/15-summary-cost.png)](diagrams/15-summary-cost.png)
+
+Source: [15-summary-cost.tldr](diagrams/15-summary-cost.tldr) (open in [tldraw](https://www.tldraw.com); the official file extension is `.tldr`).
+
 ```bash
 ./sdf summary
 ./sdf summary --db PATH
