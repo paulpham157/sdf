@@ -190,9 +190,11 @@ not distinguish a person from their agent. The hash-chained ledger in
 and its format does not change. Decisions are not ledger entries.
 
 sdf cannot tell a decision a person made from one their agent made. The
-caller can pass `--decided-by user`, confirm in the UI, or present a
-token, and an agent on the same machine can do each of those itself. A
-self-declared value is not evidence of a person. Signing every decision
+caller can pass `--decided-by user` or present a token, and an agent on
+the same machine can do each of those itself. A confirm control in the
+web UI is not a way to set the value: the UI and `GET /api/decisions` are
+read-only, and an agent on the same machine could drive a confirm anyway.
+A self-declared value is not evidence of a person. Signing every decision
 was considered and rejected: the cost of a signature on every record is
 too high for what this store is for. sdf does not warn when a record is
 added, and it does not treat `decided_by` as proof that a person, rather
@@ -309,11 +311,11 @@ that schema string (`schemaColumns`). A column that exists only in
 `category` fails on a file no writer has migrated. Listing it in the schema
 string makes `sdf decision list`, `brief`, `check`, `graph`, and the UI
 read `NULL` until a command opens that file with `store.Open`, which runs
-`migrate`. The commands that do are `sdf serve` (`internal/cli/cli.go`
-line 300), `sdf decision add` (line 658), `sdf decision link` (line 746),
-and `sdf decision retract` (line 992). The recall harness also calls
-`store.Open`, on a temporary file it creates
-(`internal/decision/recall/recall.go` line 305), not on the user's store.
+`migrate`. The commands that do are `cmdServe`, `cmdDecisionAdd`,
+`cmdDecisionLink`, and `cmdDecisionRetract` in `internal/cli/cli.go`.
+Each calls `store.Open` on the user's store. The recall harness also
+calls `store.Open`, in `runOne` (`internal/decision/recall/recall.go`),
+on a temporary file it creates, not on the user's store.
 `sdf redact` does not call `store.Open`. A scrub that is not a dry run
 calls `migrate` from `OpenForScrub` (`internal/store/scrub.go`).
 
@@ -363,9 +365,12 @@ the five tokens. Any other filter value exits 2. A missing value exits 2.
 
 Proposal, not implemented, the same display rule as Unset.
 `--category implementation` keeps a stored `implementation` and a `NULL`
-or empty category, because both are the category a reader sees.
-`--category none` keeps a stored string outside the five. It does not
-keep `NULL` or empty.
+or empty category. A reader sees both as `implementation`.
+`--category none` is a filter sentinel, not a stored category and not
+that display default. It keeps a stored string outside the five tokens.
+It does not keep `NULL` or empty: those display as `implementation` and
+match `--category implementation` instead. A row that holds the text
+`none` matches neither the sentinel nor any of the five tokens.
 
 Update `decisionListUsage` and the list help test that compares that string
 exactly.
@@ -478,9 +483,10 @@ Withdrawn. There is no warning at add time, for any category, that tries
 to tell a person from an agent. The phase 3 warning for an agent `policy`,
 and the proposed warning when an agent settled a `product` or
 `operations` decision, are both dropped. The reason is Attribution: a
-self-declared `--decided-by`, a UI confirm, and a token can each be
-produced by an agent on the same machine, and signing every decision was
-rejected as too costly. The phase 1 rejection of a `policy` hypothesis
+self-declared `--decided-by` and a token can each be produced by an agent
+on the same machine. The web UI is not a confirm step: it and
+`GET /api/decisions` are read-only. Signing every decision was rejected
+as too costly. The phase 1 rejection of a `policy` hypothesis
 stays. It is a validation error, exit 1, and it stores nothing. It is not
 a warning, and it does not read `decided_by`.
 
