@@ -100,7 +100,7 @@ func limitsHelp() string {
   --max-body-bytes N         one request body, including after gzip (default %d; SDF_MAX_BODY_BYTES)
   --max-inflight-bytes N     bytes buffered at once (default %d; SDF_MAX_INFLIGHT_BYTES)
   --read-header-timeout DUR  time to send headers (default %s; SDF_READ_HEADER_TIMEOUT)
-  --read-timeout DUR         time to send the body (default %s; SDF_READ_TIMEOUT)
+  --read-timeout DUR         time to send an HTTP body or a gRPC message (default %s; SDF_READ_TIMEOUT)
   --idle-timeout DUR         keep-alive idle time (default %s; SDF_IDLE_TIMEOUT)`,
 		netlimit.DefaultMaxConns,
 		netlimit.DefaultMaxConnsPerIP,

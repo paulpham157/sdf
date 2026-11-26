@@ -282,6 +282,11 @@ const refuseDrain = 64 << 10
 func (s *Server) refuse(conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, method, path string, status int, msg string) (bool, error) {
 	s.reply(conn, writer, status, "text/plain", []byte(msg), true)
 	s.logRequest(method, path, status)
+	// Send the refusal before the short drain, so a client that already
+	// wrote a small body can read it while the rest is discarded.
+	if err := writer.Flush(); err != nil {
+		return true, err
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	_, _ = io.CopyN(io.Discard, reader, refuseDrain)
 	return true, nil
@@ -399,7 +404,7 @@ func (s *Server) logRequest(method, path string, status int) {
 	if s.Quiet {
 		return
 	}
-	fmt.Fprintf(s.log, "%s %q %d\n", method, path, status)
+	fmt.Fprintf(s.log, "%q %q %d\n", method, path, status)
 }
 
 func readHeaders(r *bufio.Reader) (method, target string, headers []header, err error) {

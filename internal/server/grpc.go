@@ -65,7 +65,7 @@ func ingest(ctx context.Context, srv *Server, signal string, msg proto.Message) 
 		return status.Error(codes.ResourceExhausted, msgTooLarge)
 	}
 	// Shrink to the encoded size and stop the read timer before the
-	// commit, so the header timeout does not cover SQLite and a small
+	// commit, so --read-timeout does not cover SQLite and a small
 	// message does not keep holding the per-request maximum.
 	if err := srv.noteGRPCBody(ctx, int64(n)); err != nil {
 		return err

@@ -15,3 +15,12 @@ func (s *Server) SetBlockInsert(fn func(context.Context) error) {
 func (s *Server) SetBlockAfterInsert(fn func(context.Context)) {
 	s.blockAfterInsert = fn
 }
+
+// BudgetUsed is the in-flight byte reservation. Tests use it to prove a
+// stalled gRPC read still holds its reservation.
+func (s *Server) BudgetUsed() int64 {
+	if s == nil || s.budget == nil {
+		return 0
+	}
+	return s.budget.Used()
+}

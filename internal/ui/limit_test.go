@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -79,3 +80,84 @@ func TestUIConnectionCap(t *testing.T) {
 		t.Fatalf("%d %q retry %q", rejected.StatusCode, msg, rejected.Header.Get("Retry-After"))
 	}
 }
+
+func TestUIShutdownLetsARunningHandlerFinish(t *testing.T) {
+	db := openDB(t)
+	srv, err := ui.Start(ui.Config{
+		Addr:              "127.0.0.1:0",
+		Store:             db,
+		Prices:            "bundled",
+		ReadHeaderTimeout: 2 * time.Second,
+		IdleTimeout:       5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	srv.SetBlockHandler(func(context.Context) {
+		close(entered)
+		<-release
+	})
+	errc := make(chan error, 1)
+	okc := make(chan struct{}, 1)
+	go func() {
+		resp, err := http.Get(srv.URL())
+		if err != nil {
+			errc <- err
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			errc <- err
+			return
+		}
+		if resp.StatusCode != 200 || len(body) == 0 {
+			errc <- errStatus(resp.StatusCode, len(body))
+			return
+		}
+		okc <- struct{}{}
+	}()
+	select {
+	case <-entered:
+	case err := <-errc:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not start")
+	}
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		done <- srv.Shutdown(ctx)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown did not return")
+	}
+	select {
+	case err := <-errc:
+		t.Fatal(err)
+	case <-okc:
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not receive the handler response")
+	}
+}
+
+type statusErr struct {
+	code int
+	n    int
+}
+
+func (e statusErr) Error() string {
+	return "ui response " + strconv.Itoa(e.code) + " bytes " + strconv.Itoa(e.n)
+}
+
+func errStatus(code, n int) error { return statusErr{code, n} }

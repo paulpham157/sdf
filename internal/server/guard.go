@@ -88,11 +88,11 @@ func (s *Server) beforeInsert() error {
 
 // admitRPC runs before gRPC reads the message body. It rejects a bad
 // token, a token cap, or an in-flight byte cap without buffering the
-// payload. An admitted RPC reserves the per-request maximum, from the
-// gRPC share of the budget, until the message has arrived or the header
-// timeout fires. The timer releases the bytes and does not cancel the
-// RPC. The handler then keeps only the encoded size, and the SQLite
-// commit is not on that timer.
+// payload. An admitted RPC reserves the per-request maximum from the
+// gRPC share of the budget and keeps it until the message has fully
+// arrived. The read timer cancels the RPC with DEADLINE_EXCEEDED after
+// --read-timeout, which is what releases a header-only stream. The
+// handler stops that timer before the SQLite commit.
 //
 // The reservation is released when the returned context ends, including
 // when the RPC is rejected after the tap (unknown method, oversized
@@ -119,111 +119,139 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		}
 		return nil, retryExhausted(msgInFlight)
 	}
-	// The pessimistic reservation lasts until the message arrives or the
-	// header timeout fires. The timer releases the bytes. It does not
-	// cancel the RPC, so a body that is still arriving can finish, and
-	// the SQLite commit is not on this timer. The handler then keeps
-	// only the encoded size.
-	wait := s.lim.ReadHeaderTimeout
+	wait := s.lim.ReadTimeout
 	if wait <= 0 {
-		wait = netlimit.DefaultReadHeaderTimeout
+		wait = netlimit.DefaultReadTimeout
 	}
-	rh := &rpcHold{budget: s.budget, hold: hold}
-	rh.timer = time.AfterFunc(wait, rh.expire)
-	context.AfterFunc(ctx, func() {
-		rh.release()
+	// The reservation stays until the message arrives or this timer
+	// cancels the read. Stopping the timer leaves the context alive, so
+	// the commit is not under the deadline.
+	live := newReadCtx(ctx, wait)
+	rh := &rpcHold{hold: hold, stop: live.stop}
+	context.AfterFunc(live, func() {
+		live.stop()
 		if releaseToken != nil {
 			releaseToken()
 		}
+		hold.Release()
 	})
-	return context.WithValue(ctx, rpcHoldKey{}, rh), nil
+	return context.WithValue(live, rpcHoldKey{}, rh), nil
 }
 
 // rpcHold is the pessimistic gRPC reservation for one RPC.
 type rpcHold struct {
-	mu      sync.Mutex
-	budget  *netlimit.Budget
-	hold    *netlimit.Hold
-	timer   *time.Timer
-	settled bool
+	hold *netlimit.Hold
+	stop func()
 }
 
 type rpcHoldKey struct{}
 
-// expire drops the pessimistic reservation when the message has not
-// arrived. A later finish reserves the encoded size instead.
-func (rh *rpcHold) expire() {
-	rh.mu.Lock()
-	if rh.settled {
-		rh.mu.Unlock()
-		return
-	}
-	h := rh.hold
-	rh.hold = nil
-	rh.mu.Unlock()
-	if h != nil {
-		h.Release()
-	}
-}
-
-// release drops whatever this RPC still holds. It runs when the RPC
-// ends and makes a later finish a no-op, so a reservation cannot be
-// taken after the handler has returned.
-func (rh *rpcHold) release() {
-	rh.mu.Lock()
-	rh.settled = true
-	if rh.timer != nil {
-		rh.timer.Stop()
-	}
-	h := rh.hold
-	rh.hold = nil
-	rh.mu.Unlock()
-	if h != nil {
-		h.Release()
-	}
-}
-
-// finish keeps n bytes reserved for the rest of the RPC. n is the
-// encoded size, or 0 when the message will not be stored. A missing
-// hold means the header timer already released the pessimistic
-// reservation; the encoded size is reserved then. false means that
-// reservation did not fit.
-func (rh *rpcHold) finish(n int64) bool {
-	rh.mu.Lock()
-	defer rh.mu.Unlock()
-	if rh.settled {
-		return true
-	}
-	rh.settled = true
-	if rh.timer != nil {
-		rh.timer.Stop()
-	}
-	if rh.hold != nil {
-		rh.hold.Shrink(n)
-		return true
-	}
-	if n == 0 {
-		return true
-	}
-	h, ok := rh.budget.ReserveGrpc(n)
-	if !ok {
-		return false
-	}
-	rh.hold = h
-	return true
-}
-
 // noteGRPCBody stops the read timer and shrinks the reservation to n
-// bytes. A missing hold (ingest called without the tap) does nothing.
+// bytes, the encoded size, or 0 when the message will not be stored.
+// A missing hold (ingest called without the tap) does nothing. The
+// timer is stopped before the commit, so SQLite is not under the
+// read deadline.
 func (s *Server) noteGRPCBody(ctx context.Context, n int64) error {
 	rh, _ := ctx.Value(rpcHoldKey{}).(*rpcHold)
 	if rh == nil {
 		return nil
 	}
-	if !rh.finish(n) {
-		return retryExhausted(msgInFlight)
+	if rh.stop != nil {
+		rh.stop()
+	}
+	if rh.hold != nil {
+		rh.hold.Shrink(n)
 	}
 	return nil
+}
+
+// readCtx is the stream context for one admitted RPC. Its timer cancels
+// the read with context.DeadlineExceeded. stop disarms that timer
+// without cancelling, which is how the commit stays off the deadline.
+// The parent cancel still ends the context, so the reservation is
+// released when the RPC finishes.
+type readCtx struct {
+	context.Context
+	done     chan struct{}
+	deadline time.Time
+	mu       sync.Mutex
+	err      error
+	timer    *time.Timer
+	stopped  bool
+	closed   bool
+}
+
+func newReadCtx(parent context.Context, wait time.Duration) *readCtx {
+	c := &readCtx{
+		Context:  parent,
+		done:     make(chan struct{}),
+		deadline: time.Now().Add(wait),
+	}
+	c.timer = time.AfterFunc(wait, c.failRead)
+	go func() {
+		<-parent.Done()
+		c.fail(parent.Err())
+	}()
+	return c
+}
+
+func (c *readCtx) Done() <-chan struct{} { return c.done }
+
+func (c *readCtx) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil {
+		return c.err
+	}
+	return c.Context.Err()
+}
+
+func (c *readCtx) Deadline() (time.Time, bool) {
+	c.mu.Lock()
+	stopped := c.stopped
+	deadline := c.deadline
+	c.mu.Unlock()
+	if stopped {
+		return c.Context.Deadline()
+	}
+	return deadline, true
+}
+
+// stop disarms the read timer. A timer that has already cancelled the
+// read stays cancelled.
+func (c *readCtx) stop() {
+	c.mu.Lock()
+	c.stopped = true
+	t := c.timer
+	c.timer = nil
+	c.mu.Unlock()
+	if t != nil {
+		t.Stop()
+	}
+}
+
+func (c *readCtx) failRead() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped || c.closed {
+		return
+	}
+	c.closed = true
+	c.err = context.DeadlineExceeded
+	close(c.done)
+}
+
+func (c *readCtx) fail(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	if c.err == nil {
+		c.err = err
+	}
+	close(c.done)
 }
 
 // retryExhausted is RESOURCE_EXHAUSTED with RetryInfo. OTLP treats that

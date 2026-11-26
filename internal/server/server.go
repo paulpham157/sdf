@@ -35,6 +35,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -113,7 +114,9 @@ func (s *Server) Start() error {
 	s.lim = lim
 	s.budget = netlimit.NewBudget(lim.MaxInFlightBytes)
 	// gRPC may hold at most half the budget, and always enough for one
-	// body, so a burst of streams cannot take the whole budget from HTTP.
+	// body. When the in-flight budget is a single body, that share is
+	// the whole budget: one accepted message has to fit, and HTTP is
+	// not left a separate remainder.
 	grpcMax := lim.MaxInFlightBytes / 2
 	if grpcMax < int64(lim.MaxBodyBytes) {
 		grpcMax = int64(lim.MaxBodyBytes)
@@ -204,11 +207,18 @@ func (s *Server) GRPCAddress() string {
 	return s.grpcLn.Addr().String()
 }
 
+// grpcGraceTimeout is how long Shutdown waits for gRPC handlers to
+// finish before it closes their connections. A header-only stream would
+// otherwise hold GracefulStop until the read timeout or the connection
+// age. A commit that has already started fits in this window.
+const grpcGraceTimeout = 2 * time.Second
+
 // Shutdown stops both listeners. It cancels the server context, closes
 // HTTP connections that are still reading, and leaves a connection that
 // has started its commit to finish and write the 200. It then waits for
 // those handlers and gracefully stops gRPC so an in-flight commit can
-// finish. A second call does nothing.
+// finish. If that stop is still waiting after grpcGraceTimeout, the
+// remaining RPCs are closed. A second call does nothing.
 func (s *Server) Shutdown() {
 	s.stopOnce.Do(func() {
 		s.phaseMu.Lock()
@@ -228,7 +238,17 @@ func (s *Server) Shutdown() {
 		}
 		s.httpWG.Wait()
 		if s.grpcSrv != nil {
-			s.grpcSrv.GracefulStop()
+			done := make(chan struct{})
+			go func() {
+				s.grpcSrv.GracefulStop()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(grpcGraceTimeout):
+				s.grpcSrv.Stop()
+				<-done
+			}
 		}
 		if s.grpcLn != nil {
 			_ = s.grpcLn.Close()

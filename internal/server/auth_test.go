@@ -119,7 +119,7 @@ func TestTokenAcceptsCorrectBearerAndRejectsMissingOrWrong(t *testing.T) {
 	if strings.Contains(logged, testOTLPToken) || strings.Contains(logged, "wrong-token") {
 		t.Fatalf("token appeared in logs: %q", logged)
 	}
-	if !strings.Contains(logged, `POST "/v1/traces" 401`) || !strings.Contains(logged, `POST "/v1/traces" 200`) {
+	if !strings.Contains(logged, `"POST" "/v1/traces" 401`) || !strings.Contains(logged, `"POST" "/v1/traces" 200`) {
 		t.Fatalf("expected request lines in logs: %q", logged)
 	}
 }

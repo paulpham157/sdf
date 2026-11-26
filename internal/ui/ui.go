@@ -110,6 +110,9 @@ type Server struct {
 	// Shutdown closes the ones that are. A handler that has started is left
 	// to finish so http.Shutdown can write its response.
 	conns map[net.Conn]bool
+	// blockHandler, when set, runs after the connection is marked in the
+	// handler and before the route. Tests use it. It is not set in production.
+	blockHandler func(context.Context)
 }
 
 // Start listens and serves until Shutdown. A non-loopback address returns a
@@ -161,6 +164,9 @@ func Start(cfg Config) (*Server, error) {
 			// set Shutdown closes, so an in-flight response can finish.
 			if c, ok := r.Context().Value(uiConnKey{}).(net.Conn); ok {
 				srv.noteConn(c, false)
+			}
+			if fn := srv.handlerBlock(); fn != nil {
+				fn(r.Context())
 			}
 			h.ServeHTTP(w, r)
 		}),
@@ -246,6 +252,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.closeReading()
 	return s.http.Shutdown(ctx)
+}
+
+func (s *Server) handlerBlock() func(context.Context) {
+	s.phaseMu.Lock()
+	defer s.phaseMu.Unlock()
+	return s.blockHandler
 }
 
 func (s *Server) noteConn(c net.Conn, reading bool) {

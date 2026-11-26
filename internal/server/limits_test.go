@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/hpack"
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -801,6 +805,157 @@ func dial(t *testing.T, addr string, wait time.Duration) net.Conn {
 	t.Cleanup(func() { _ = c.Close() })
 	_ = c.SetDeadline(time.Now().Add(wait))
 	return c
+}
+
+func TestStalledGRPCKeepsTheReservationUntilReadTimeout(t *testing.T) {
+	const capBytes = 64 * 1024
+	srv, _ := startLimited(t, netlimit.Limits{
+		MaxBodyBytes:      capBytes,
+		MaxInFlightBytes:  capBytes,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       400 * time.Millisecond,
+	})
+	statusc := writeStalledGRPC(t, srv.GRPCAddress(), true)
+	deadline := time.Now().Add(time.Second)
+	for srv.BudgetUsed() != int64(capBytes) {
+		if time.Now().After(deadline) {
+			t.Fatalf("reservation %d, want %d", srv.BudgetUsed(), capBytes)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Past a header-sized wait, the stalled message still holds the
+	// reservation. The read timeout has not fired yet.
+	time.Sleep(150 * time.Millisecond)
+	if got := srv.BudgetUsed(); got != int64(capBytes) {
+		t.Fatalf("reservation dropped while the message was stalled: %d", got)
+	}
+	select {
+	case status := <-statusc:
+		if status != "4" {
+			t.Fatalf("grpc-status %q, want 4 (DEADLINE_EXCEEDED)", status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stalled call was not cancelled at the read timeout")
+	}
+	deadline = time.Now().Add(time.Second)
+	for srv.BudgetUsed() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("reservation stuck at %d", srv.BudgetUsed())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestShutdownReturnsWithAHeaderOnlyGRPCStream(t *testing.T) {
+	srv, _ := startLimited(t, netlimit.Limits{
+		MaxBodyBytes:      4096,
+		MaxInFlightBytes:  8192,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	})
+	_ = writeStalledGRPC(t, srv.GRPCAddress(), false)
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.BudgetUsed() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("header-only stream was not admitted")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	start := time.Now()
+	srv.Shutdown()
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("shutdown took %s", elapsed)
+	}
+}
+
+// writeStalledGRPC opens one Export stream and does not finish the
+// message. partial sends a length prefix larger than the bytes that
+// follow, so the server is waiting on the body. The returned channel
+// receives the grpc-status trailer when the server ends the call.
+func writeStalledGRPC(t *testing.T, addr string, partial bool) <-chan string {
+	t.Helper()
+	c, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	_ = c.SetDeadline(time.Now().Add(8 * time.Second))
+	if _, err := io.WriteString(c, http2.ClientPreface); err != nil {
+		t.Fatal(err)
+	}
+	fr := http2.NewFramer(c, c)
+	fr.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
+	if _, err := readUntilSettings(fr); err != nil {
+		t.Fatal(err)
+	}
+	if err := fr.WriteSettings(); err != nil {
+		t.Fatal(err)
+	}
+	if err := fr.WriteSettingsAck(); err != nil {
+		t.Fatal(err)
+	}
+	var block bytes.Buffer
+	enc := hpack.NewEncoder(&block)
+	for _, hf := range []hpack.HeaderField{
+		{Name: ":method", Value: "POST"},
+		{Name: ":scheme", Value: "http"},
+		{Name: ":path", Value: "/opentelemetry.proto.collector.trace.v1.TraceService/Export"},
+		{Name: ":authority", Value: addr},
+		{Name: "content-type", Value: "application/grpc"},
+		{Name: "te", Value: "trailers"},
+	} {
+		if err := enc.WriteField(hf); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fr.WriteHeaders(http2.HeadersFrameParam{
+		StreamID:      1,
+		EndStream:     false,
+		EndHeaders:    true,
+		BlockFragment: block.Bytes(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if partial {
+		payload := make([]byte, 15)
+		binary.BigEndian.PutUint32(payload[1:5], 1000)
+		if err := fr.WriteData(1, false, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statusc := make(chan string, 1)
+	go func() {
+		defer close(statusc)
+		for {
+			f, err := fr.ReadFrame()
+			if err != nil {
+				return
+			}
+			mh, ok := f.(*http2.MetaHeadersFrame)
+			if !ok {
+				continue
+			}
+			for _, hf := range mh.Fields {
+				if hf.Name == "grpc-status" {
+					statusc <- hf.Value
+					return
+				}
+			}
+		}
+	}()
+	return statusc
+}
+
+func readUntilSettings(fr *http2.Framer) (*http2.SettingsFrame, error) {
+	for {
+		f, err := fr.ReadFrame()
+		if err != nil {
+			return nil, err
+		}
+		if sf, ok := f.(*http2.SettingsFrame); ok && !sf.IsAck() {
+			return sf, nil
+		}
+	}
 }
 
 func rawRequest(path, host string, headers map[string]string, body string) string {

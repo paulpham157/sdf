@@ -117,8 +117,10 @@ What is rejected, and with which status:
 - Headers that do not finish in time, or a connection that sends nothing,
   are closed with no response. OTLP says a client retries when the server
   disconnects. A body that stalls after the headers is HTTP **503** with
-  `Retry-After: 1`. A gRPC message that stalls is `DEADLINE_EXCEEDED`,
-  which is retryable. The first byte of a later request starts the header
+  `Retry-After: 1`. A gRPC message that has not fully arrived within
+  `--read-timeout` is `DEADLINE_EXCEEDED`, which is retryable. The call
+  keeps its byte reservation until that deadline or until the message
+  arrives. The first byte of a later HTTP request starts the header
   timer; until that byte, the idle timeout applies.
 
 gRPC also caps streams on one connection (32), header metadata (1 MiB),
@@ -127,14 +129,16 @@ may live (idle from `--idle-timeout`, and 30 minutes even if it stays
 busy). A client that pings more often than every 10 seconds is
 disconnected. Pings with no active RPC are allowed. An admitted gRPC call
 reserves `--max-body-bytes` from a gRPC share of the in-flight budget.
-That share is half the budget, and always enough for one maximum body, so
-a burst of streams cannot take the whole budget from HTTP. The
-reservation lasts until the message arrives or `--read-header-timeout`
-fires, whichever is first. A stream that sends no message stops holding
-the maximum at that timeout. The call itself is not cancelled by that
-timer. Once the message is in hand the reservation shrinks to the encoded
-size (or is taken then, if the timer already released it), and that timer
-is stopped before the SQLite commit. A message larger than the body cap is `RESOURCE_EXHAUSTED` with
+That share is half the budget, and always enough for one maximum body.
+When `--max-inflight-bytes` equals `--max-body-bytes`, one body is the
+whole budget, so the gRPC share is the whole budget and HTTP is not left
+a separate remainder. A larger budget leaves HTTP the other half. The
+reservation stays until the message has fully arrived. `--read-timeout`
+cancels a call that has not arrived by then with `DEADLINE_EXCEEDED` and
+releases the reservation; a header-only stream does not keep the
+reservation past that deadline. The timer is stopped once the message is
+in hand, before the SQLite commit, and the reservation shrinks to the
+encoded size. A message larger than the body cap is `RESOURCE_EXHAUSTED` with
 no retry hint.
 HTTP reserves the `Content-Length` (or each chunk, and both the compressed
 and the inflated bytes while gzip is expanding).
@@ -145,7 +149,9 @@ budget. That limit is recorded in `dev-docs/gaps.md`.
 None of these responses is a partial success. A stored export is answered
 only after the SQLite commit, with HTTP 200 and `partial_success` left
 unset (JSON `{}`, or an empty protobuf). A request that does not fit is
-not queued and is not acknowledged early.
+not queued and is not acknowledged early. On shutdown, a gRPC call that
+is still reading is given 2 seconds to finish and is then closed, so a
+header-only stream cannot hold the process until the connection age.
 
 Rows are one span, one metric point, or one log record. A span also stores
 `status_code` (`UNSET`, `OK`, or `ERROR`) and `status_message`. Databases
