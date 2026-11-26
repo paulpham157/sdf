@@ -76,6 +76,15 @@ func TestOpenReadOnlyRollbackJournalDB(t *testing.T) {
 	if mode != "delete" || timeout != 5000 {
 		t.Fatalf("journal_mode %q busy_timeout %d, want delete and 5000", mode, timeout)
 	}
+	// NORMAL is set only when WAL is active. A rollback-journal file keeps
+	// the default FULL.
+	level, err := store.Synchronous(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if level != store.SynchronousFull {
+		t.Fatalf("synchronous %d, want FULL (%d)", level, store.SynchronousFull)
+	}
 	if _, err := s.Insert([]record.Record{{Signal: "logs", Attributes: map[string]any{}, Resource: map[string]any{}}}); err == nil {
 		t.Fatal("Insert into a read-only DB succeeded")
 	}

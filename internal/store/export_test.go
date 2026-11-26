@@ -22,6 +22,24 @@ func Pragmas(s *Store) (mode string, busyTimeout int, err error) {
 	return mode, busyTimeout, err
 }
 
+// SynchronousNormal is the integer PRAGMA synchronous returns for NORMAL.
+// SynchronousFull is SQLite's default, FULL.
+const (
+	SynchronousNormal = synchronousNormal
+	SynchronousFull   = 2
+)
+
+// Synchronous reports PRAGMA synchronous on s's connection. The value is
+// per connection: the writer pool is one connection, and a reader opened
+// on the same file has its own.
+func Synchronous(s *Store) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var level int
+	err := s.db.QueryRow(`PRAGMA synchronous`).Scan(&level)
+	return level, err
+}
+
 // DropRetractionsForTest removes decision_retractions from a file, to stand
 // in for a database the migration could not write.
 func DropRetractionsForTest(path string) error {

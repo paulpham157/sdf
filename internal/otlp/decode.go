@@ -107,15 +107,41 @@ func Decode(signal string, body []byte, contentType string) ([]record.Record, er
 	if err != nil {
 		return nil, errf("could not parse OTLP payload")
 	}
+	return recordsFrom(signal, msg)
+}
+
+// DecodeRequest reads an OTLP export that is already a protobuf message,
+// which is what a gRPC Export handler receives. It does not marshal the
+// message. signal must name the message: traces, metrics, or logs.
+func DecodeRequest(signal string, msg proto.Message) ([]record.Record, error) {
+	if signal != "traces" && signal != "metrics" && signal != "logs" {
+		return nil, errf("unknown signal " + signal)
+	}
+	if msg == nil {
+		return nil, errf("could not parse OTLP payload")
+	}
+	return recordsFrom(signal, msg)
+}
+
+func recordsFrom(signal string, msg proto.Message) ([]record.Record, error) {
 	switch m := msg.(type) {
 	case *coltracepb.ExportTraceServiceRequest:
+		if signal != "traces" {
+			return nil, errf("unknown signal " + signal)
+		}
 		return traces(m), nil
 	case *colmetricspb.ExportMetricsServiceRequest:
+		if signal != "metrics" {
+			return nil, errf("unknown signal " + signal)
+		}
 		return metrics(m), nil
 	case *collogspb.ExportLogsServiceRequest:
+		if signal != "logs" {
+			return nil, errf("unknown signal " + signal)
+		}
 		return logs(m), nil
 	default:
-		return nil, errf("unknown signal " + signal)
+		return nil, errf("could not parse OTLP payload")
 	}
 }
 

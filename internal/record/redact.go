@@ -133,6 +133,63 @@ var contentPrefixes = []string{
 	"ai",
 }
 
+// contentTree matches a content prefix on segment boundaries: the key equals
+// the prefix, or the prefix is followed by ".". A linear scan of the prefix
+// list was a large share of ingest CPU.
+var contentTree = func() *contentNode {
+	root := &contentNode{child: map[string]*contentNode{}}
+	for _, p := range contentPrefixes {
+		root.add(p)
+	}
+	return root
+}()
+
+type contentNode struct {
+	terminal bool
+	child    map[string]*contentNode
+}
+
+func (n *contentNode) add(prefix string) {
+	node := n
+	rest := prefix
+	for {
+		seg, next, ok := strings.Cut(rest, ".")
+		child := node.child[seg]
+		if child == nil {
+			child = &contentNode{child: map[string]*contentNode{}}
+			node.child[seg] = child
+		}
+		if !ok {
+			child.terminal = true
+			return
+		}
+		node = child
+		rest = next
+	}
+}
+
+// match reports whether key equals a content prefix or continues past one
+// with a dot. key must already be lower case.
+func (n *contentNode) match(key string) bool {
+	node := n
+	rest := key
+	for {
+		seg, next, ok := strings.Cut(rest, ".")
+		child := node.child[seg]
+		if child == nil {
+			return false
+		}
+		if child.terminal {
+			return true
+		}
+		if !ok {
+			return false
+		}
+		node = child
+		rest = next
+	}
+}
+
 // errorKeys hold error text on logs and spans (compared lower-cased).
 // They are dropped at any depth.
 var errorKeys = map[string]bool{
@@ -196,16 +253,42 @@ func isToken(v any) bool {
 // IsContentKey reports whether an attribute key names prompt, response,
 // message, or tool payload text. Case is ignored.
 func IsContentKey(key string) bool {
-	k := strings.ToLower(key)
-	if contentKeys[k] {
+	if contentKeys[key] || contentTree.match(key) {
 		return true
 	}
-	for _, p := range contentPrefixes {
-		if k == p || strings.HasPrefix(k, p+".") {
-			return true
+	folded, changed := foldASCIIKey(key)
+	if !changed {
+		return false
+	}
+	return contentKeys[folded] || contentTree.match(folded)
+}
+
+// foldASCIIKey returns key with A-Z folded to a-z. changed is false when
+// key is already ASCII lowercase, so the caller can skip a second lookup.
+// A non-ASCII byte uses strings.ToLower so the result matches the old
+// comparison.
+func foldASCIIKey(key string) (string, bool) {
+	upper := -1
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		if c >= 0x80 {
+			return strings.ToLower(key), true
+		}
+		if upper < 0 && c >= 'A' && c <= 'Z' {
+			upper = i
 		}
 	}
-	return false
+	if upper < 0 {
+		return key, false
+	}
+	b := make([]byte, len(key))
+	copy(b, key)
+	for j := upper; j < len(b); j++ {
+		if b[j] >= 'A' && b[j] <= 'Z' {
+			b[j] += 'a' - 'A'
+		}
+	}
+	return string(b), true
 }
 
 // RedactedKeys lists the exact content keys and the prefixes, for tests and

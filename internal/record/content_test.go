@@ -1,6 +1,9 @@
 package record
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsContentKey(t *testing.T) {
 	for _, key := range []string{
@@ -29,6 +32,40 @@ func TestIsContentKey(t *testing.T) {
 			t.Errorf("%s is not content", key)
 		}
 	}
+}
+
+// TestIsContentKeyMatchesPrefixScan compares the segment tree with the
+// previous linear scan, including mixed case and keys that share a prefix
+// up to a character that is not a dot.
+func TestIsContentKeyMatchesPrefixScan(t *testing.T) {
+	keys := []string{
+		"prompt", "Prompt", "PROMPT", "ai", "AI", "Ai.prompt", "aim", "air",
+		"ai.prompt", "ai.usage.promptTokens", "gen_ai.prompt", "gen_ai.prompt.0.content",
+		"gen_ai.prompt_tokens", "gen_ai.prompts", "Gen_AI.Input.Messages",
+		"GEN_AI.OUTPUT.MESSAGES", "gen_ai.input.messages_ref", "gen_ai.input.messages_count",
+		"input", "input.value", "input.value.extra", "input.mime_type", "tool.input",
+		"tool.input.x", "tool.inputs", "tool.output", "session.id", "", "ai.", ".ai",
+		"gen_ai.tool.call.arguments", "gen_ai.tool.call.arguments.0", "gen_ai.tool.call.id",
+		"llm.prompts.0", "İnput",
+	}
+	for _, key := range keys {
+		if got, want := IsContentKey(key), contentKeySlow(key); got != want {
+			t.Errorf("IsContentKey(%q) = %v, slow scan %v", key, got, want)
+		}
+	}
+}
+
+func contentKeySlow(key string) bool {
+	k := strings.ToLower(key)
+	if contentKeys[k] {
+		return true
+	}
+	for _, p := range contentPrefixes {
+		if k == p || strings.HasPrefix(k, p+".") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRedactNestedResourceBodyAndNumbers(t *testing.T) {

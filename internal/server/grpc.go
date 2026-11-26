@@ -50,14 +50,13 @@ func (l logsService) Export(_ context.Context, req *collogspb.ExportLogsServiceR
 }
 
 func ingest(srv *Server, signal string, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return status.Error(codes.InvalidArgument, "could not parse OTLP payload")
-	}
-	if len(body) > otlp.MaxBodyBytes {
+	// The gRPC server has already decoded the request. Marshal + Decode
+	// would encode it and parse it again. Size is the encoded length, the
+	// same limit the HTTP body uses.
+	if proto.Size(msg) > otlp.MaxBodyBytes {
 		return status.Error(codes.ResourceExhausted, "payload too large")
 	}
-	records, err := otlp.Decode(signal, body, "application/x-protobuf")
+	records, err := otlp.DecodeRequest(signal, msg)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, "could not parse OTLP payload")
 	}
