@@ -10,7 +10,7 @@ are shared. Each surface keeps its own layout and density.
 | `design/tokens.json` | Canonical source. W3C Design Tokens–style JSON (`$type`, `$value`, `{alias}` references). |
 | `design/tokens.css` | CSS custom properties generated from the JSON. Self-contained: no `@import`, no `url()`, no URLs. |
 | `design/tokens.py` | Generator and checker. Python 3 standard library only; not part of the Go build. |
-| `docs/design/tokens.md` | This spec. |
+| `design/tokens.md` | This spec. |
 
 Brand assets (mark, favicon) are canonical as they are and are not redrawn or
 recolored here. The mark is cream `#F6F1E8`, a charcoal `#2F3640` weave, and
@@ -938,11 +938,13 @@ Admonitions use the state colors and their soft fills.
 
 The homepage "How it works" figure is the PNG
 `docs/diagrams/01-architecture.png`, not a Mermaid fence. Diagram PNGs are
-drawn for a light page. In dark, images whose URL contains `diagrams/`,
-and images with the class `sdf-diagram` on the diagrams index, sit on
-`--sdf-color-diagram-plate` (cream `#F6F1E8`, radius `--sdf-radius-md`,
-padding 12px). They are not inverted. Screenshots under `docs/images/`,
-including `decisions-ui.png`, are not plated. `--md-mermaid-*` in
+drawn for a light page. In dark, images whose URL contains `diagrams/`
+sit on `--sdf-color-diagram-plate` (cream `#F6F1E8`, radius `--sdf-radius-md`,
+padding 12px). An image with class `sdf-diagram` is plated the same way
+when its URL has no `diagrams/` segment. The authoring notes that used
+that class live in `dev-docs/diagrams.md`. Plated images stay in their
+drawn colors. Screenshots under `docs/images/`, including
+`decisions-ui.png`, stay unplated. `--md-mermaid-*` in
 `extra.css` is the mapping for a future Mermaid fence. A future fence's
 edge labels use `--sdf-color-text-muted` in both schemes, because
 charcoal-400 (`#7A828C`) is 3.46:1 on cream.
