@@ -50,6 +50,12 @@ func (l logsService) Export(ctx context.Context, req *collogspb.ExportLogsServic
 }
 
 func ingest(ctx context.Context, srv *Server, signal string, msg proto.Message) error {
+	// entered is set before the defer so a cancel during this call does
+	// not release the reservation from the context callback. The defer
+	// is the only release once the handler has the decoded request.
+	if rh, _ := ctx.Value(rpcHoldKey{}).(*rpcHold); rh != nil {
+		rh.entered.Store(true)
+	}
 	// Drop the admission before returning. gRPC writes the status after
 	// this return, so the reservation and the token slot are free before
 	// the client can observe the result and start another call.

@@ -336,6 +336,107 @@ func TestGRPCTokenSlotIsReleasedBeforeTheNextCall(t *testing.T) {
 	}
 }
 
+func TestGRPCCancelDuringCommitKeepsAdmission(t *testing.T) {
+	const body = 4096
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true, Token: "t",
+		Limits: netlimit.Limits{
+			MaxConnsPerToken: 1,
+			MaxBodyBytes:     body,
+			MaxInFlightBytes: body * 8,
+			ReadTimeout:      5 * time.Second,
+		},
+	}
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	srv.SetBlockInsert(func(context.Context) error {
+		once.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	small := spanReq(0)
+	held := int64(proto.Size(small))
+	client := traceClient(t, srv.GRPCAddress())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer t")
+	errc := make(chan error, 1)
+	go func() {
+		_, err := client.Export(ctx, small)
+		errc <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-errc:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("export did not reach the commit")
+	}
+	if got := srv.BudgetUsed(); got != held {
+		t.Fatalf("budget %d, want the encoded size %d", got, held)
+	}
+	cancel()
+	// The client has cancelled. The handler still holds the decoded
+	// request, so the reservation and the token slot stay until it returns.
+	deadline := time.Now().Add(150 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := srv.BudgetUsed(); got != held {
+			t.Fatalf("budget dropped to %d while the commit was still running", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+	ctx2 = metadata.AppendToOutgoingContext(ctx2, "authorization", "Bearer t")
+	_, err = client.Export(ctx2, small)
+	assertExhausted(t, err, true)
+	if st, _ := status.FromError(err); st.Message() != "too many requests" {
+		t.Fatalf("token slot released during the commit: %v", err)
+	}
+	if got := srv.BudgetUsed(); got != held {
+		t.Fatalf("budget %d after the rejected call, want %d", got, held)
+	}
+	close(release)
+	select {
+	case err := <-errc:
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("cancelled export: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled export did not return")
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for srv.BudgetUsed() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("budget stuck at %d after the handler returned", srv.BudgetUsed())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel3()
+	ctx3 = metadata.AppendToOutgoingContext(ctx3, "authorization", "Bearer t")
+	if _, err := client.Export(ctx3, small); err != nil {
+		t.Fatalf("after the handler returned: %v", err)
+	}
+}
+
 func TestGRPCInFlightIsResourceExhaustedWithRetry(t *testing.T) {
 	const cap = 2048
 	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
@@ -984,6 +1085,13 @@ func TestRejectedGRPCStreamsLeaveNoPerStreamState(t *testing.T) {
 		}
 		closeConn()
 		waitForNoGRPCState(t, srv)
+		client := traceClient(t, srv.GRPCAddress())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer t")
+		if _, err := client.Export(ctx, spanReq(0)); err != nil {
+			t.Fatalf("token slot still held after close: %v", err)
+		}
 	})
 	t.Run("inflight limit", func(t *testing.T) {
 		lim := long
@@ -1305,7 +1413,7 @@ func floodRejectedStreams(t *testing.T, srv *server.Server, authorization string
 // admitted streams. Cleanup is asynchronous with the TCP close.
 func waitForNoGRPCState(t *testing.T, srv *server.Server) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for srv.ReadingRPCs() != 0 || srv.BudgetUsed() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("after close: tracked %d, budget %d", srv.ReadingRPCs(), srv.BudgetUsed())

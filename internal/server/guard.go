@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -99,12 +100,15 @@ func (s *Server) beforeInsert() error {
 // The handler releases the reservation, the per-token slot, and the
 // per-stream tracking before it returns. gRPC writes the status after
 // that return, so a client that has observed the result can start
-// another call without seeing this one as still in flight. A call that
-// never reaches the handler (client cancel, a length prefix over the
-// receive cap, connection close) releases when its stream context ends.
-// That callback runs in another goroutine. gRPC cancels the stream
-// context before it flushes the status, so the next admission reaps
-// finished calls first and does not lose the race to that goroutine.
+// another call without seeing this one as still in flight. Once the
+// handler has started, a client cancel does not release early: the
+// decoded request is still in memory until the handler returns. A call
+// that never reaches the handler (client cancel, a length prefix over
+// the receive cap, connection close) releases when its stream context
+// ends. That callback runs in another goroutine. gRPC cancels the
+// stream context before it flushes the status, so the next admission
+// reaps finished calls that have not entered the handler, and does not
+// lose the race to that goroutine.
 // Oversized messages are still RESOURCE_EXHAUSTED from the transport
 // and carry no RetryInfo, so a client must not retry them. A cap
 // rejection carries RetryInfo, so it is retryable.
@@ -146,7 +150,12 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 	}
 	live.rh = rh
 	s.trackRead(live)
-	context.AfterFunc(live, rh.release)
+	rh.stopAfter = context.AfterFunc(live, func() {
+		if rh.entered.Load() {
+			return
+		}
+		rh.release()
+	})
 	return context.WithValue(live, rpcHoldKey{}, rh), nil
 }
 
@@ -156,8 +165,10 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 type rpcHold struct {
 	hold         *netlimit.Hold
 	stop         func()
+	stopAfter    func() bool
 	releaseToken func()
 	untrack      func()
+	entered      atomic.Bool
 	releaseOnce  sync.Once
 	commitOnce   sync.Once
 	commitDone   func()
@@ -165,12 +176,16 @@ type rpcHold struct {
 
 // release returns the byte reservation and the token slot and drops the
 // per-stream tracking. The read timer is stopped so a late fire does not
-// cancel a call that already finished.
+// cancel a call that already finished. stopAfter detaches the context
+// callback so a handler release does not leave it registered.
 func (rh *rpcHold) release() {
 	if rh == nil {
 		return
 	}
 	rh.releaseOnce.Do(func() {
+		if rh.stopAfter != nil {
+			rh.stopAfter()
+		}
 		if rh.stop != nil {
 			rh.stop()
 		}
@@ -359,11 +374,13 @@ func (s *Server) untrackRead(c *readCtx) {
 	s.phaseMu.Unlock()
 }
 
-// reapFinishedReads releases admissions whose RPC has already ended.
-// The stream context is cancelled before the status is flushed, and the
-// context callback that releases the admission runs later, on another
-// goroutine. Walking the map here, on the goroutine that is about to
-// take a new slot, closes that gap.
+// reapFinishedReads releases admissions whose RPC has already ended and
+// that have not entered the handler. The stream context is cancelled
+// before the status is flushed, and the context callback that releases
+// the admission runs later, on another goroutine. Walking the map here,
+// on the goroutine that is about to take a new slot, closes that gap.
+// The scan is bounded by the listener cap and the per-connection stream
+// cap (<= 128*32).
 func (s *Server) reapFinishedReads() {
 	if s == nil {
 		return
@@ -377,6 +394,9 @@ func (s *Server) reapFinishedReads() {
 	}
 	s.phaseMu.Unlock()
 	for _, c := range done {
+		if c == nil || c.rh == nil || c.rh.entered.Load() {
+			continue
+		}
 		c.rh.release()
 	}
 }
