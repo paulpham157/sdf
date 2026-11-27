@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -868,11 +869,11 @@ func TestExtractStreamCaps(t *testing.T) {
 // claude_code_live_shape_v2_1_332.jsonl is hand-written. It follows the
 // Claude Code 2.1.332 record types observed on Linux, non-interactive, on
 // 2026-11-27. It is not a capture: paths, ids, and timestamps are synthetic.
-// Fifteen lines, because that pass named nine non-user types, two attachment
-// roles, three typed prompts, and one tool_result-only user record.
-// queue-operation repeats the greeting on message.content so a type-blind
-// read would double-count it. The live key for that duplicate is not
-// claimed here. last-prompt's duplicate is the observed lastPrompt field.
+// Fifteen lines: nine non-user types plus attachment in two roles, three
+// typed prompts, and one tool_result-only user record.
+// queue-operation repeats the greeting on content. last-prompt repeats a
+// typed prompt on lastPrompt. The scan below rejects Unicode combining
+// marks (category Mn). It does not check NFC normalization.
 func TestClaudeCodeLiveShapeFixture(t *testing.T) {
 	body := readTestdata(t, "claude_code_live_shape_v2_1_332.jsonl")
 	if !utf8.Valid(body) {
@@ -893,7 +894,7 @@ func TestClaudeCodeLiveShapeFixture(t *testing.T) {
 	want := []Prompt{
 		{Line: 3, UUID: "00000000-0000-4000-8000-000000000011", SessionID: session, Timestamp: "2026-11-27T00:00:01Z", Text: "Chào bạn 👋"},
 		{Line: 6, UUID: "00000000-0000-4000-8000-000000000012", SessionID: session, Timestamp: "2026-11-27T00:00:03Z", Text: "Đọc README.md rồi tóm tắt một câu."},
-		{Line: 12, UUID: "00000000-0000-4000-8000-000000000013", SessionID: session, Timestamp: "2026-11-27T00:00:07Z", Text: "Giữ nguyên <system-reminder> chưa đóng"},
+		{Line: 10, UUID: "00000000-0000-4000-8000-000000000013", SessionID: session, Timestamp: "2026-11-27T00:00:07Z", Text: "Giữ nguyên <system-reminder> chưa đóng"},
 	}
 	if len(res.Prompts) != len(want) {
 		t.Fatalf("prompts %#v", res.Prompts)
@@ -904,12 +905,28 @@ func TestClaudeCodeLiveShapeFixture(t *testing.T) {
 		}
 		for _, r := range p.Text {
 			if unicode.Is(unicode.Mn, r) {
-				t.Fatalf("prompt %d is not NFC: %q", i, p.Text)
+				t.Fatalf("prompt %d contains a combining mark: %q", i, p.Text)
 			}
+		}
+		if strings.Contains(p.Text, "synthetic tool output") {
+			t.Fatalf("toolUseResult leaked into prompt %d: %q", i, p.Text)
 		}
 	}
 	if !strings.Contains(res.Prompts[2].Text, "<system-reminder>") || strings.Contains(res.Prompts[2].Text, "</system-reminder>") {
 		t.Fatalf("unclosed reminder not preserved: %q", res.Prompts[2].Text)
+	}
+	var toolOnly map[string]any
+	if err := json.Unmarshal(lines[10], &toolOnly); err != nil {
+		t.Fatal(err)
+	}
+	if toolOnly["toolUseResult"] != "synthetic tool output" || toolOnly["sourceToolAssistantUUID"] != "00000000-0000-4000-8000-000000000021" {
+		t.Fatalf("tool result record %#v", toolOnly)
+	}
+	if _, ok := toolOnly["promptSource"]; ok {
+		t.Fatal("tool result record has promptSource")
+	}
+	if _, ok := toolOnly["sentAtMs"]; ok {
+		t.Fatal("tool result record has sentAtMs")
 	}
 }
 
@@ -926,38 +943,90 @@ func TestTestdataFixtureHygiene(t *testing.T) {
 	if len(entries) == 0 {
 		t.Fatal("testdata is empty")
 	}
-	forbidden := []string{
-		"/workspace/transcript-verify",
-		"/Users/",
-		"/home/",
-		"@anthropic.com",
-		"Asia/Ho_Chi_Minh",
-		"TOKENROUTER_API_KEY=",
+	uuidPattern := regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+	syntheticUUID := regexp.MustCompile(`^00000000-0000-4000-8000-[0-9]{12}$`)
+	banned := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`),
+		regexp.MustCompile(`(?i)sk-[A-Za-z0-9_\-]{16,}`),
+		regexp.MustCompile(`(?i)bearer\s`),
+		regexp.MustCompile(`(?i)api[_-]?key`),
+		regexp.MustCompile(`(?i)/root/`),
+		regexp.MustCompile(`(?i)/workspace/`),
+		regexp.MustCompile(`(?i)/home/`),
+		regexp.MustCompile(`(?i)/users/`),
+		regexp.MustCompile(`(?i)[a-z]:\\users`),
+		regexp.MustCompile(`(?i)\b[0-9a-f]{40}\b`),
 	}
+	dbSuffix := regexp.MustCompile(`(?i)(\.db|\.sqlite3?|-wal|-shm)$`)
 	sawFile := false
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() {
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("testdata symlink %s", name)
+			continue
+		}
+		if info.IsDir() {
 			t.Errorf("testdata subdirectory %s", name)
 			continue
 		}
 		sawFile = true
-		lower := strings.ToLower(name)
-		if strings.HasSuffix(lower, ".db") || strings.HasSuffix(lower, "-wal") || strings.HasSuffix(lower, "-shm") {
+		if !strings.HasPrefix(name, "claude_code_") {
+			t.Errorf("testdata file %s does not start with claude_code_", name)
+		}
+		if dbSuffix.MatchString(name) {
 			t.Errorf("testdata must not commit %s", name)
 		}
-		body, err := os.ReadFile(filepath.Join(dir, name))
+		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, s := range forbidden {
-			if bytes.Contains(body, []byte(s)) {
-				t.Errorf("%s contains %q", name, s)
+		for _, id := range uuidPattern.FindAll(body, -1) {
+			if !syntheticUUID.Match(id) {
+				t.Errorf("%s uuid %s", name, id)
+			}
+		}
+		for _, line := range bytes.Split(bytes.TrimSuffix(body, []byte("\n")), []byte("\n")) {
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			var v any
+			if err := json.Unmarshal(line, &v); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			walkJSONStrings(v, func(s string) {
+				if strings.HasPrefix(s, "/") && !strings.HasPrefix(s, "/tmp/example-project") {
+					t.Errorf("%s absolute path %q", name, s)
+				}
+			})
+		}
+		for _, re := range banned {
+			if loc := re.Find(body); loc != nil {
+				t.Errorf("%s matches %s: %q", name, re, loc)
 			}
 		}
 	}
 	if !sawFile {
 		t.Fatal("testdata has no fixture files")
+	}
+}
+
+func walkJSONStrings(v any, fn func(string)) {
+	switch t := v.(type) {
+	case map[string]any:
+		for _, child := range t {
+			walkJSONStrings(child, fn)
+		}
+	case []any:
+		for _, child := range t {
+			walkJSONStrings(child, fn)
+		}
+	case string:
+		fn(t)
 	}
 }
 

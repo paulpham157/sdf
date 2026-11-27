@@ -4,10 +4,14 @@ Checked against this repository on 2026-11-26. That pass is the OTLP
 baseline. A later capture, on 2026-11-27, did not re-verify OTLP fields.
 
 That 2026-11-27 capture ran on Linux, under an isolated `$HOME`, in
-non-interactive mode, through an OpenAI-compatible gateway. Eight CLIs
-were tested: six full 3-turn captures (Claude Code, Codex, OpenCode, Pi,
-Qwen, Grok), one partial capture (Gemini), and one auth-blocked run
-(Copilot). Raw captures are not committed.
+non-interactive mode, through a multi-protocol API gateway
+(Anthropic-compatible root for Claude, OpenAI-compatible for
+Codex/OpenCode/Pi/Qwen/Grok, Gemini protocol for Gemini; Copilot never
+reached the gateway). Eight CLIs were tested: six full 3-turn captures
+(Claude Code, Codex, OpenCode, Pi, Qwen, Grok), one partial capture
+(Gemini), and one auth-blocked run (Copilot). Raw captures are not
+committed. Local filename timestamps came from a UTC+7 box clock. This
+note does not record a zone name.
 
 Rules marked **specified** are the contract of this note and of
 `internal/promptextract`, covered by synthetic tests. Those tests include
@@ -28,10 +32,15 @@ Wiring still waits on an ADR under `docs/adr/`, on the edge cases that
 are still **needs verification**, and on the default below. The package
 stays pure Go, standard library only, and reads an `io.Reader`. It does
 not open `~/.claude`. The default stays: prompt text is stored only with
-an opt-in such as `--store-content`. On the other seven agents' sessions
-from the 2026-11-27 capture, this extractor returned no prompts and no
-line errors. An empty result does not prove the session had no prompts.
-See the pre-wiring contract.
+an opt-in such as `--store-content`. On the five other JSONL sessions
+from that capture (Codex, Pi, Qwen, Grok `chat_history` and
+`prompt_history`, and the partial Gemini file) this extractor returned
+0 prompts and 0 line errors. OpenCode's SQLite file is not that stream:
+reading it as JSONL yields hundreds of `malformed json` line errors.
+Copilot wrote no prompt transcript; feeding `workspace.yaml` yields
+`malformed json` errors. Neither an empty `Prompts` slice nor zero
+`Errors` identifies the format or the agent. An empty `Prompts` slice
+does not prove the session had no prompts. See the pre-wiring contract.
 
 "User-typed prompt text" (phần text bạn gõ vào prompt) is the plain text a
 person types into the prompt box and submits with Enter. The filter drops
@@ -57,8 +66,11 @@ removed even when `isMeta` is absent or JSON `false`.
 ## Claude Code session JSONL
 
 The path below is **verified (live)** for Claude Code 2.1.332 on Linux,
-non-interactive (`--print --bare`, entrypoint `sdk-cli`), on 2026-11-27.
-`Extract` does not open the path.
+non-interactive (`--print --bare --permission-mode bypassPermissions`,
+entrypoint `sdk-cli`), on 2026-11-27. The model was a non-Anthropic model
+the Claude CLI did not recognize. `--bare` suppresses hooks and context,
+so attachments may differ in normal use. Path encoding was observed on
+Linux only. `Extract` does not open the path.
 
 ```text
 ~/.claude/projects/<project-path-encoded>/<session-id>.jsonl
@@ -310,11 +322,15 @@ not open the path.
 ### Edge cases
 
 The 2026-11-27 capture was Claude Code 2.1.332, Linux, non-interactive
-(`--print --bare`, entrypoint `sdk-cli`). It did not re-verify OTLP.
-Interactive mode was not run. A row marked **verified (live)** is what
-that file did. A row marked **needs verification** was not in that
-capture. The synthetic tests still lock today's filter behavior. They do
-not prove an unobserved row has that shape on a live file.
+(`--print --bare --permission-mode bypassPermissions`, entrypoint
+`sdk-cli`). The model was a non-Anthropic model the Claude CLI did not
+recognize. `--bare` suppresses hooks and context, so attachments may
+differ in normal use. Path encoding was observed on Linux only. The
+capture did not re-verify OTLP. Interactive mode was not run. A row
+marked **verified (live)** is what that file did. A row marked **needs
+verification** was not in that capture. The synthetic tests still lock
+today's filter behavior. They do not prove an unobserved row has that
+shape on a live file.
 
 | Case | What the filter does today | 2026-11-27, Claude Code 2.1.332, Linux, non-interactive |
 | --- | --- | --- |
@@ -324,11 +340,11 @@ not prove an unobserved row has that shape on a live file.
 | `isSidechain` | JSON `true` skips the record. The filter treats that as a subagent prompt. Missing, `false`, and `null` do not skip. | **verified (live)** that kept user records had `isSidechain: false` and were kept. `isSidechain: true` was not in the file and is **needs verification**. |
 | `promptSource` | Not read. It does not skip a record. | **verified (live)** value `"sdk"` on the kept prompts. It is not an interactive marker. Other values are **needs verification**. |
 | `timestamp` / `uuid` / `sessionId` / `sentAtMs` | `timestamp`, `uuid`, and `sessionId` must be JSON strings. A number is a line error. `session_id` is ignored. `sentAtMs` is not read. | **verified (live)** JSON strings for `timestamp`, `uuid`, and `sessionId`, plus a separate numeric `sentAtMs`. A numeric `timestamp` was not in the file and is **needs verification**. |
-| `<system-reminder>` on `type: "attachment"` | `type` other than the string `user` is skipped, so the stripper never sees this record. | **verified (live).** The harness tag was on `type: "attachment"`, with `renderedRole` `"user"` and `"system"`. Those records were skipped. |
+| `<system-reminder>` on `type: "attachment"` | `type` other than the string `user` is skipped, so the stripper never sees this record. | **verified (live).** The harness tag was on `rendered[].content`, beside an `attachment` object, with `renderedRole` `"user"` and `"system"`. It was not a top-level `content` string. Those records were skipped. |
 | Unclosed user-typed `<system-reminder>` | An unclosed `<system-reminder>` stays, and the text after it stays. | **verified (live).** A user-typed unclosed `<system-reminder>` was kept intact. |
-| `tool_result`-only array | `tool_result` blocks are dropped. An array with no kept `text` block is skipped. A `text` field sitting on a `tool_result` block is not read. | **verified (live).** A `type: "user"` record whose `message.content` array held only a `tool_result` block, with no sibling `text` block, was dropped. |
-| Extra record types | Anything other than the string `user` is skipped, including a non-string `type`. | **verified (live)** types besides `user`: `atis-latch`, `queue-operation`, `api-request-shape`, `api-request`, `assistant` (with `tool_use`), `last-prompt`, `cost-state`, `tools-used`, `mode`, and `attachment`. `queue-operation` carried a duplicate of a typed prompt, and `last-prompt` carried that kind of duplicate on `lastPrompt`. Skipping them avoids counting the text twice. The capture does not prove a later file has no further types. |
-| Interactive mode | The filter has no mode flag. | **needs verification.** This capture was non-interactive only. |
+| `tool_result`-only array | `tool_result` blocks are dropped. An array with no kept `text` block is skipped. A `text` field sitting on a `tool_result` block is not read. `toolUseResult` and `sourceToolAssistantUUID` are not read. | **verified (live).** A `type: "user"` record whose `message.content` array held only a `tool_result` block, with no sibling `text` block, was dropped. That record also had top-level `toolUseResult` and `sourceToolAssistantUUID`, and it had no `promptSource` and no `sentAtMs`. |
+| Extra record types | Anything other than the string `user` is skipped, including a non-string `type`. | **verified (live)** types besides `user`: `atis-latch`, `queue-operation`, `api-request-shape`, `api-request`, `assistant` (with `tool_use`), `last-prompt`, `cost-state`, `tools-used`, `mode`, and `attachment`. `queue-operation` was `operation: "enqueue"` with the duplicate prompt on `content`. `last-prompt` carried `lastPrompt` and `leafUuid`, and that record had no `cwd` and no `timestamp`. Skipping them avoids counting the text twice. `mode` was `"normal"` on this `--print` run and is not an interactive marker. The capture does not prove a later file has no further types. |
+| Interactive mode | The filter has no mode flag. The JSON value `"normal"` does not skip or keep a record. | **needs verification.** This capture was non-interactive only. The `type: "mode"` record was `"normal"` anyway. Whether an interactive session changes that record is **needs verification**. |
 | Slash commands and `<command-name>`, `<command-message>`, `<command-args>` | A well-formed lowercase pair is removed even when `isMeta` is absent or `false`. Slash-command arguments inside `<command-args>` are dropped with the tag. An unclosed opener stays, with the text after it. Attributes and a different case are not stripped. | **needs verification.** Slash commands were not run in this capture. |
 | `<local-command-stdout>`, `<local-command-stderr>`, `<local-command-caveat>` | Same rule as the command tags. The payload is not user-typed text. | **needs verification.** Not observed. |
 | `<bash-input>`, `<bash-stdout>`, `<bash-stderr>` | A well-formed lowercase pair is removed, so shell output (which can hold secrets or environment variables) is not returned as user-typed text. An unclosed opener stays. | **needs verification.** Not observed. If a person pasted one of these tags on purpose, today's rule cannot tell that from harness output. |
@@ -359,13 +375,13 @@ cells marked **verified (live)** or **partial** are from that capture
 
 | Agent | Local transcript | OTLP user-prompt text in this repo | Meta / injected markers | Extractor |
 | --- | --- | --- | --- | --- |
-| claude-code 2.1.332 | **verified (live).** Linux, non-interactive `--print --bare` (entrypoint `sdk-cli`), 2026-11-27. `~/.claude/projects/<project-path-encoded>/<session-id>.jsonl`, `/` replaced with `-`, including the leading `/`. Observed keep/drop rules are in the edge-case table. Interactive mode and the unobserved rows stay **needs verification**. | **verified.** Log `claude_code.user_prompt`. Prompt text stays redacted unless `OTEL_LOG_USER_PROMPTS`. The published setup does not set it. sdf still drops the text unless `--store-content`. [docs/agents.md](../../docs/agents.md) Claude Code section. Not re-verified on 2026-11-27. | **verified (live)** that kept user records had `isSidechain: false`, omitted `isMeta` and `isCompactSummary`, and carried `promptSource: "sdk"`, which is not an interactive marker. `<system-reminder>` was on `type: "attachment"` (`renderedRole` `"user"` and `"system"`). **specified** that JSON `true` for those three flags skips the record. What a live file uses `isMeta: true`, `isSidechain: true`, or `isCompactSummary: true` for is **needs verification**. Not described on the OTLP event. | `internal/promptextract` (experimental, unwired, Claude-only). |
-| codex 0.172.0 | **verified (live).** Linux, `codex exec`, 2026-11-27. `~/.codex/sessions/YYYY/MM/DD/rollout-<local-ts>-<session-id>.jsonl`, plus SQLite sidecars. Do not commit those `.db`, `-wal`, or `-shm` files. Hook payloads in this repository still include `transcript_path` ([session-boundary.md](session-boundary.md), schemas at `69231e11`). That hook field is not this session path, and this capture did not re-check the hook. | **verified.** Log `codex.user_prompt`. Prompt text is `[REDACTED]` unless `otel.log_user_prompt = true`. User prompt text is not copied onto the trace-safe event. [docs/agents.md](../../docs/agents.md) Codex section. Not re-verified on 2026-11-27. | **verified (live).** Harness and user markers live inside `payload.internal_chat_message_metadata_passthrough.content_item_kinds` (`["user.text"]` versus `["environments.environment_context"]`) and `content_item_metadata[].provenance.type` (`"user"` versus `"harness"`). `event_msg` is a cleaner non-internal record: `payload.type` is `"item_completed"`, `payload.item.type` is `"UserMessage"`, and the text is `payload.item.content[].text`. A naive `role=user` read leaks the harness context. The documented OTLP marker is still the `[REDACTED]` placeholder. | none |
+| claude-code 2.1.332 | **verified (live).** Linux, non-interactive `--print --bare --permission-mode bypassPermissions` (entrypoint `sdk-cli`), 2026-11-27. The model was a non-Anthropic model the Claude CLI did not recognize. `--bare` suppresses hooks and context, so attachments may differ in normal use. `~/.claude/projects/<project-path-encoded>/<session-id>.jsonl`, `/` replaced with `-`, including the leading `/`. Path encoding was observed on Linux only. Filename timestamps came from a UTC+7 box clock; this note does not record a zone name. Observed keep/drop rules are in the edge-case table. `mode` was `"normal"` and is not an interactive marker. Interactive mode and the unobserved rows stay **needs verification**. | **verified.** Log `claude_code.user_prompt`. Prompt text stays redacted unless `OTEL_LOG_USER_PROMPTS`. The published setup does not set it. sdf still drops the text unless `--store-content`. [docs/agents.md](../../docs/agents.md) Claude Code section. Not re-verified on 2026-11-27. | **verified (live)** that kept user records had `isSidechain: false`, omitted `isMeta` and `isCompactSummary`, and carried `promptSource: "sdk"`, which is not an interactive marker. `<system-reminder>` was on `type: "attachment"` (`renderedRole` `"user"` and `"system"`). **specified** that JSON `true` for those three flags skips the record. What a live file uses `isMeta: true`, `isSidechain: true`, or `isCompactSummary: true` for is **needs verification**. Not described on the OTLP event. | `internal/promptextract` (experimental, unwired, Claude-only). |
+| codex 0.172.0 | **verified (live).** Linux, `codex exec`, 2026-11-27. `~/.codex/sessions/YYYY/MM/DD/rollout-<local-ts>-<session-id>.jsonl`, plus SQLite sidecars. Do not commit those `.db`, `-wal`, or `-shm` files. Hook payloads in this repository still include `transcript_path` ([session-boundary.md](session-boundary.md), schemas at `69231e11`). That hook field is not this session path, and this capture did not re-check the hook. | **verified.** Log `codex.user_prompt`. Prompt text is `[REDACTED]` unless `otel.log_user_prompt = true`. User prompt text is not copied onto the trace-safe event. [docs/agents.md](../../docs/agents.md) Codex section. Not re-verified on 2026-11-27. | **verified (live).** Harness and user markers live inside `payload.internal_chat_message_metadata_passthrough.content_item_kinds` (`["user.text"]` versus `["environments.environment_context"]`) and `payload.internal_chat_message_metadata_passthrough.content_item_metadata[].provenance.type` (`"user"` versus `"harness"`). `event_msg` is a cleaner non-internal record: `payload.type` is `"item_completed"`, `payload.item.type` is `"UserMessage"`, and the text is `payload.item.content[].text`. A naive `role=user` read leaks the harness context. The documented OTLP marker is still the `[REDACTED]` placeholder. | none |
 | opencode 2.4.2 | **verified (live).** Linux, `opencode run`, 2026-11-27. SQLite at `$XDG_DATA_HOME/opencode/opencode.db` (default `~/.local/share/opencode/opencode.db`). No session JSONL. Typed prompts are `session_message` rows (`type = 'user'`, JSON `data.text`, epoch-ms timestamps). Tool calls and results are in `session_part`. | **verified** as a limit. v2 exports runner spans with `session.id` and process logs. It has no `user_prompt` catalog. v1's `experimental.openTelemetry` flag is ignored by v2. [docs/agents.md](../../docs/agents.md) OpenCode section. The receiver still drops `ai.*` keys because that v1 stream sent `ai.prompt` and the rest ([docs/receiver.md](../../docs/receiver.md) content storage). Whether v2 puts prompt text on a span is **needs verification**. Not re-verified on 2026-11-27. | **needs verification.** Typed prompts are `session_message` with `type = 'user'`. This capture did not report a separate injected-text marker. | none. A reader has to speak SQLite, which rules out one shared `io.Reader`. |
-| pi 1.6.1 | **verified (live).** Linux, `-p`, 2026-11-27. `~/.pi/agent/sessions/--<dash-path>--/<UTC-ts-dashes>_<session-id>.jsonl`. Schema `version: 3`. The directory encoding strips the leading `/`, then replaces `/`, `\`, and `:` with `-`, and wraps that as `--<dash-path>--`. The basename `{timestamp}_{sessionId}.jsonl` was already **verified** here ([session-boundary.md](session-boundary.md); [docs/receiver.md](../../docs/receiver.md) `PI_SESSION_FILE`). An earlier note in this table said an ephemeral session has no file. This capture did not check that case, so it stays **needs verification**. | **verified** as a limit. pi-otel logs are `pi.session.start` and `pi.session.end` only. The agents doc says to leave content capture off and does not name a prompt attribute on `chat` spans. Not re-verified on 2026-11-27. | **verified (live).** `type: "message"`, `message.role: "user"`. Live `message.content` is an array `[{"type":"text","text":"..."}]`. A vendor example shows a bare string; a future reader should accept both. Tool results are a separate `message.role: "toolResult"`. An empty `role: "system"` record was present. No `isMeta`. | none |
-| qwen 0.28.7 | **verified (live).** Linux, `-p`, 2026-11-27. `~/.qwen/projects/<claude-style-encoded>/chats/<session-id>.jsonl`, plus `<session-id>.title.json` and `meta.json`. `~/.qwen/settings.json` is still settings, not this transcript. `type: "user"`, `provenance: "real_user"`, `message.parts: [{"text": "..."}]`. There is no `message.content`, so the Claude extractor yields no prompts (a silent miss on every typed line from this capture). Slash commands and skills stay **needs verification**. | **verified** from the v0.28.4 docs mapping, not a live capture. Events are `qwen-code.*` and include `user_prompt`. `logPrompts` defaults to true and puts `prompt`, `request_text`, `response_text`, and `function_args` on logs. `request_text` can hold file contents and reads of `~/.qwen/memories/`. `sdf init qwen` sets `logPrompts` false. `includeSensitiveSpanAttributes` defaults to false and, when true, copies messages and tool data into spans; `sdf init qwen` forces it back to false when it finds it on ([docs/agents.md](../../docs/agents.md) Qwen section, `internal/record/redact.go`). Every `tool_call` still sends `function_args`. sdf drops those keys unless `--store-content`. Which key on the `user_prompt` event is the typed sentence is **needs verification**. Not re-verified on 2026-11-27. | **verified** that log text is broader than the typed prompt (`request_text`, memories, tool arguments) and that `includeSensitiveSpanAttributes` is a separate span-content switch. **verified (live)** on the local file: a reminder on `type: "system"` (`subtype: "permission_context_snapshot"`) and a tool result on `type: "tool_result"`. Slash commands and skill bodies stay **needs verification**. | none |
-| grok 1.0.92 | **verified (live).** Linux, `-p`, 2026-11-27. Per session: `~/.grok/sessions/<url-encoded-cwd>/<session-id>/chat_history.jsonl` and `updates.jsonl`. Project-level: `~/.grok/sessions/<url-encoded-cwd>/prompt_history.jsonl`. The encoding replaces `/` with `%2F`. `prompt_history.jsonl` is project-scoped, so a reader must filter by `session_id`. Its records are `{timestamp, session_id, prompt, is_bash}` and the `prompt` text is unwrapped. `is_bash: true` is shell input and may hold secrets; it stays **needs verification**. The string `transcriptPath` in `internal/setup/grok_test.go` is still a decoy, not this schema. | **verified.** Logs `grok_code.*` include `user_prompt`. Prompt text is off unless `otel_log_user_prompts` / `OTEL_LOG_USER_PROMPTS`. `sdf init grok` pins the config keys false. The span name `agent.prompt` is a turn span, not the prompt body. [docs/agents.md](../../docs/agents.md) Grok section. Not re-verified on 2026-11-27. | **verified (live).** In `chat_history.jsonl`, some `type: "user"` lines are not typed prompts: they have no `prompt_index`, or they have `synthetic_reason: "system_reminder"`. Typed prompts have `prompt_index` and are wrapped in `<user_query>`. Do not add `<user_query>` to Claude's strip list. | none |
-| gemini 0.71.1 | **partial.** Linux, `-p`, 2026-11-27. `~/.gemini/projects.json` maps the cwd to a short name. The chat file is `~/.gemini/tmp/<short-name>/chats/session-<ts>-<shortid>.jsonl`. The file is an append-only patch log with `$set` and `$rewindTo`. The sixth line (`$rewindTo`) rewound turn 1 after a provider HTTP 500. Assistant records, tool records, multi-turn prompts, and the replay meaning of `$rewindTo` stay **needs verification**. `~/.gemini/settings.json` is still settings, not this transcript. | **verified** from the published telemetry doc and source at `eecccfcd`, not a live capture. Log event `gemini_cli.user_prompt`. `logPrompts` defaults to true and adds `prompt`, `request_text`, `response_text`, and `function_args`. The log body is a sentence such as a tool-call summary, not the prompt. Span prompts require `telemetry.traces=true`. sdf drops the text unless `--store-content`. Whether `prompt` is only the typed sentence is **needs verification**. Not re-verified on 2026-11-27. | **partial.** Turn 1's typed prompt and an injected `<session_context>` were both `type: "user"`, with top-level `content: [{"text": "..."}]` and no `message` wrapper. A `role=user` read leaks that harness context. Assistant, tool, and `$rewindTo` replay stay **needs verification**. | none |
+| pi 1.6.1 | **verified (live).** Linux, `-p`, 2026-11-27. `~/.pi/agent/sessions/--<dash-path>--/<UTC-ts-dashes>_<session-id>.jsonl`. Schema `version: 3`. The directory encoding strips the leading `/`, replaces `/` with `-`, and wraps that as `--<dash-path>--`. Replacing `\` and `:` with `-` was not exercised on this Linux path and stays **needs verification** off Linux. The entry `timestamp` is an ISO string. The nested `message.timestamp` is a Unix-ms integer. The basename `{timestamp}_{sessionId}.jsonl` was already **verified** here ([session-boundary.md](session-boundary.md); [docs/receiver.md](../../docs/receiver.md) `PI_SESSION_FILE`). An earlier note in this table said an ephemeral session has no file. This capture did not check that case, so it stays **needs verification**. | **verified** as a limit. pi-otel logs are `pi.session.start` and `pi.session.end` only. The agents doc says to leave content capture off and does not name a prompt attribute on `chat` spans. Not re-verified on 2026-11-27. | **verified (live).** `type: "message"`, `message.role: "user"`. Live `message.content` is an array `[{"type":"text","text":"..."}]`. A vendor example shows a bare string; a future reader should accept both. Tool results are a separate `message.role: "toolResult"`. An empty `role: "system"` record was present. No `isMeta`. | none |
+| qwen 0.28.7 | **verified (live).** Linux, `--auth-type openai -y`, 2026-11-27. `~/.qwen/projects/<claude-style-encoded>/chats/<session-id>.jsonl`, plus `<session-id>.title.json` and `meta.json`. `~/.qwen/settings.json` is still settings, not this transcript. `type: "user"`, `provenance: "real_user"`, `message.parts: [{"text": "..."}]`. There is no `message.content`, so the Claude extractor yields no prompts (a silent miss on every typed line from this capture). Slash commands and skills stay **needs verification**. | **verified** from the v0.28.4 docs mapping, not a live capture. Events are `qwen-code.*` and include `user_prompt`. `logPrompts` defaults to true and puts `prompt`, `request_text`, `response_text`, and `function_args` on logs. `request_text` can hold file contents and reads of `~/.qwen/memories/`. `sdf init qwen` sets `logPrompts` false. `includeSensitiveSpanAttributes` defaults to false and, when true, copies messages and tool data into spans; `sdf init qwen` forces it back to false when it finds it on ([docs/agents.md](../../docs/agents.md) Qwen section, `internal/record/redact.go`). Every `tool_call` still sends `function_args`. sdf drops those keys unless `--store-content`. Which key on the `user_prompt` event is the typed sentence is **needs verification**. Not re-verified on 2026-11-27. | **verified** that log text is broader than the typed prompt (`request_text`, memories, tool arguments) and that `includeSensitiveSpanAttributes` is a separate span-content switch. **verified (live)** on the local file: a reminder on `type: "system"` (`subtype: "permission_context_snapshot"`) and a tool result on `type: "tool_result"`. Slash commands and skill bodies stay **needs verification**. | none |
+| grok 1.0.92 | **verified (live).** Linux, `-p`, 2026-11-27. Per session: `~/.grok/sessions/<url-encoded-cwd>/<session-id>/chat_history.jsonl` and `updates.jsonl`. Project-level: `~/.grok/sessions/<url-encoded-cwd>/prompt_history.jsonl`. The encoding replaces `/` with `%2F`. `prompt_history.jsonl` spans sessions for the same cwd, so a reader must filter by `session_id`. Its records are `{timestamp, session_id, prompt, is_bash}` and the `prompt` text is unwrapped. `is_bash: true` is shell input and may hold secrets. Treat that as a trust rule: do not return it as user-typed prompt text until a live check says otherwise, and it stays **needs verification**. The session folder also holds `system_prompt.txt` (a vendor prompt). Never read or commit that file. `session_search.sqlite` is an FTS store that can hold secrets. It has the same unvacuumed WAL and freelist risk as any other live SQLite file: do not copy it and then delete rows. Do not commit the database or its `-wal` or `-shm` files. The string `transcriptPath` in `internal/setup/grok_test.go` is still a decoy, not this schema. | **verified.** Logs `grok_code.*` include `user_prompt`. Prompt text is off unless `otel_log_user_prompts` / `OTEL_LOG_USER_PROMPTS`. `sdf init grok` pins the config keys false. The span name `agent.prompt` is a turn span, not the prompt body. [docs/agents.md](../../docs/agents.md) Grok section. Not re-verified on 2026-11-27. | **verified (live).** In `chat_history.jsonl`, some `type: "user"` lines are not typed prompts: they have no `prompt_index`, or they have `synthetic_reason: "system_reminder"`. Typed prompts have `prompt_index` and are wrapped in `<user_query>`. Do not add `<user_query>` to Claude's strip list. | none |
+| gemini 0.71.1 | **partial.** Linux, `-p`, 2026-11-27. `~/.gemini/projects.json` maps the cwd to a short name. The chat file is `~/.gemini/tmp/<short-name>/chats/session-<ts>-<shortid>.jsonl`. The file is an append-only patch log with `$set` and `$rewindTo`. The sixth line (`$rewindTo`) rewound turn 1 after a provider HTTP 500 (`convert_request_failed`). Assistant records, tool records, multi-turn prompts, `$set` patch semantics, and the replay meaning of `$rewindTo` stay **needs verification**. `~/.gemini/settings.json` is still settings, not this transcript. | **verified** from the published telemetry doc and source at `eecccfcd`, not a live capture. Log event `gemini_cli.user_prompt`. `logPrompts` defaults to true and adds `prompt`, `request_text`, `response_text`, and `function_args`. The log body is a sentence such as a tool-call summary, not the prompt. Span prompts require `telemetry.traces=true`. sdf drops the text unless `--store-content`. Whether `prompt` is only the typed sentence is **needs verification**. Not re-verified on 2026-11-27. | **partial.** Turn 1's typed prompt and an injected `<session_context>` were both `type: "user"`, with top-level `content: [{"text": "..."}]` and no `message` wrapper. A `role=user` read leaks that harness context. Assistant, tool, `$set` patch semantics, and `$rewindTo` replay stay **needs verification**. | none |
 | copilot 1.0.116 | **needs verification (auth required).** Linux, 2026-11-27. The unauthenticated run wrote `~/.copilot/session-state/<uuid>/workspace.yaml` (metadata only) and `~/.copilot/logs/`. It did not write a prompt transcript. Do not mark the agent unsupported. `~/.copilot/hooks/` is still a hook directory. `COPILOT_OTEL_FILE_EXPORTER_PATH` in tests is still an OTLP file exporter, not a transcript. | **verified** from the docs and `copilot help monitoring` 1.0.114, not a live capture. Traces and metrics, no logs. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` defaults to `NO_CONTENT`. `SPAN_ONLY` and `SPAN_AND_EVENT` put prompts on spans. `EVENT_ONLY` puts them on span events, which sdf does not store. The attributes are `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`, and the tool-call keys. Each user message is one `invoke_agent` span. Separating the typed sentence from system and tool messages inside `gen_ai.input.messages` is **needs verification**. Not re-verified on 2026-11-27. | **verified** that the capture, when on, is the GenAI message list and not a single typed-text field. Local injected markers are **needs verification (auth required)**. | none |
 
 ### What to do on each agent
@@ -391,11 +407,11 @@ OTLP marked `sdf.fixture=sample`.
    verification (auth required)** as they are when the capture did not
    finish.
 
-The 2026-11-27 pass did steps 1–3 for the six full captures and recorded
-the partial Gemini file. It did not do step 4. OTLP fields were not
-re-verified. Copilot stopped at authentication, so its prompt transcript
-is still unknown. Paths in the matrix come from that capture, not from
-memory.
+The 2026-11-27 pass completed step 1, the short-prompt and tool-turn
+parts of step 2 (without the slash command, which remains **needs
+verification**), and step 3. Step 4 (OTLP) was not done. Copilot stopped
+at authentication, so its prompt transcript is still unknown. Paths in
+the matrix come from that capture, not from memory.
 
 Claude Code's well-formed pass is done for 2.1.332 on 2026-11-27.
 `promptextract.Extract` and the jq filter agreed 3/3 on the well-formed
@@ -478,32 +494,57 @@ table above.
 These rules apply before any reader is called from `sdf serve`. This
 package does not open session files.
 
-`internal/promptextract` does not apply to the other seven agents. On
-those sessions the 2026-11-27 capture saw 0 prompts and 0 line errors, a
-silent miss, for all seven. An empty `Result` does not prove the session
-had no prompts. A naive read of every `role=user` or every `type: "user"`
-leaks harness context on Codex (`environments.environment_context`,
-provenance `"harness"`), Grok (non-typed `type: "user"` lines, including
+There is no single multi-agent reader. OpenCode is SQLite. Gemini's chat
+file is a `$set` / `$rewindTo` event log. The JSONL shapes of Claude,
+Codex, Pi, Qwen, and Grok are not the same object. Each agent needs its
+own reader, selected from a known agent provenance. Callers do not sniff
+the file and guess the agent.
+
+`internal/promptextract` is the Claude reader only. On the five other
+JSONL sessions from the 2026-11-27 capture (Codex, Pi, Qwen, Grok
+`chat_history` and `prompt_history`, and the partial Gemini file) it
+returned 0 prompts and 0 line errors. That is a silent miss on those
+files, not a property of every byte those agents can write. OpenCode's
+SQLite file, read as JSONL, yields hundreds of `malformed json` line
+errors. Copilot wrote no prompt transcript; feeding `workspace.yaml`
+yields `malformed json` errors. Neither an empty `Prompts` slice nor
+zero `Errors` identifies the format or the agent. An empty `Prompts`
+slice does not prove the session had no prompts. A naive read of every
+`role=user` or every `type: "user"` leaks harness context on Codex
+(`environments.environment_context`, provenance `"harness"`, under
+`payload.internal_chat_message_metadata_passthrough.content_item_metadata[]`),
+Grok (non-typed `type: "user"` lines, including
 `synthetic_reason: "system_reminder"`), and Gemini (injected
-`<session_context>` on `type: "user"`). Callers select a reader from a
-known agent provenance. They do not sniff the file and guess the agent.
+`<session_context>` on `type: "user"`).
 
 OpenCode is SQLite. A future reader opens `file:<path>?mode=ro` and sets
-`PRAGMA query_only=ON`. It does not use `immutable=1` on a live WAL. It
-opens the `.db`, `-wal`, and `-shm` files with `O_NOFOLLOW` and `fstat`s
-those same descriptors. A corrupt database is untrusted input. The reader
-does not query `credential` or `account` tables. Do not build a fixture
-by copying a live database and then deleting rows. An unvacuumed WAL or
-freelist page can still hold the deleted secrets. This repository does
-not commit `.db`, `-wal`, or `-shm` files under
+`PRAGMA query_only=ON`. It does not use `immutable=1` on a live WAL.
+`mode=ro` against a live WAL database, including its `-shm` file, is
+**needs verification**. SQLite opens `-wal` and `-shm` by path itself, so
+`O_NOFOLLOW` and `fstat` on the descriptors the caller opened do not
+close that TOCTOU gap. Closing it takes a custom VFS or a containment
+check on the directory before SQLite opens the sidecars. A corrupt
+database is untrusted input. The reader does not query `credential`,
+`account`, or `control_account`. Do not build a fixture by copying a
+live database and then deleting rows. An unvacuumed WAL or freelist page
+can still hold the deleted secrets. Grok's `session_search.sqlite` is an
+FTS store that can hold secrets and has the same unvacuumed WAL and
+freelist risk. Grok's `prompt_history.jsonl` spans sessions for the same
+cwd. `is_bash: true` is shell input and may hold secrets; that is a trust
+rule, and the value stays **needs verification**. The Grok session folder
+holds `system_prompt.txt`, a vendor prompt. Never read or commit it.
+This repository does not commit `.db`, `-wal`, or `-shm` files under
 `internal/promptextract/testdata/`.
 
 Path encodings are lossy, so different project paths can land on the same
-directory name. Claude replaces `/` with `-`, including the leading `/`.
-Pi strips the leading `/`, replaces `/`, `\`, and `:` with `-`, and wraps
-the directory as `--<dash-path>--`. Grok replaces `/` with `%2F`. Treat
-the encoded directory name as one literal path component. Do not decode
-it and then join or walk. A decoded `%2F..%2F` is a traversal.
+directory name. Claude replaces `/` with `-`, including the leading `/`,
+observed on Linux only. Pi strips the leading `/`, replaces `/` with `-`,
+and wraps the directory as `--<dash-path>--`. Replacing `\` and `:` with
+`-` was not exercised on the Linux path and stays **needs verification**
+off Linux. Pi's entry `timestamp` is an ISO string. The nested
+`message.timestamp` is a Unix-ms integer. Grok replaces `/` with `%2F`.
+Treat the encoded directory name as one literal path component. Do not
+decode it and then join or walk. A decoded `%2F..%2F` is a traversal.
 
 The Claude well-formed pass is done. On 2.1.332 (Linux, non-interactive,
 2026-11-27) `Extract` and the jq filter agreed 3/3, and the golden
