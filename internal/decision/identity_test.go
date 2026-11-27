@@ -21,6 +21,38 @@ func TestValidDecidedBy(t *testing.T) {
 	}
 }
 
+func TestValidDecidedByHyphenLength(t *testing.T) {
+	// "a" plus "-b" repeated. Each "-b" is two characters, which the pattern's
+	// group bound counts as one, so a 41-character "a-b-b-…" used to match.
+	at39 := "a" + strings.Repeat("-b", 19)
+	if len(at39) != 39 {
+		t.Fatalf("39-char fixture length %d", len(at39))
+	}
+	at40 := at39 + "c"
+	at41 := "a" + strings.Repeat("-b", 20)
+	if len(at40) != 40 || len(at41) != 41 {
+		t.Fatalf("fixture lengths %d %d", len(at40), len(at41))
+	}
+	if !ValidDecidedBy(at39) {
+		t.Fatalf("want valid 39-char hyphenated login %q", at39)
+	}
+	for _, s := range []string{at40, at41, "-ab", "ab-", "a-", "-a-b", "a-b-", "a--b"} {
+		if ValidDecidedBy(s) {
+			t.Errorf("want invalid %q (len %d)", s, len(s))
+		}
+	}
+}
+
+func TestExecCommand(t *testing.T) {
+	out, err := ExecCommand("echo", "hello")
+	if err != nil || strings.TrimSpace(string(out)) != "hello" {
+		t.Fatalf("echo %q %v", out, err)
+	}
+	if _, err := ExecCommand("sdf-identity-missing-binary"); err == nil {
+		t.Fatal("missing binary succeeded")
+	}
+}
+
 func TestResolveDecidedBy(t *testing.T) {
 	calls := 0
 	boom := CommandRunner(func(string, ...string) ([]byte, error) {

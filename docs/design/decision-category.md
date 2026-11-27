@@ -36,8 +36,8 @@ named `constraint`. `sdf decision check` stays a match on the statement.
 
 This page also says what `decided_by` is for. It is the GitHub login of
 the team member responsible for the decision. The record does not
-distinguish that person from their agent. The CLI still stores only
-`user`, `agent`, or empty.
+distinguish that person from their agent. The CLI stores that login, the
+legacy words `user` and `agent`, or empty.
 
 ## Decisions
 
@@ -84,10 +84,11 @@ These are decided:
    for the decision, for example `paulpham157`. An agent acting for a
    person records that person's login. The decision record does not
    distinguish a person from their agent. The purpose of the field is to
-   show who on the team decided. The CLI does not do this yet: `newRecord`
-   accepts only empty, `user`, or `agent`. Resolving the login, and how
-   rows already stored as `user` or `agent` are shown, are proposals under
-   Attribution.
+   show who on the team decided. The CLI stores that login, the legacy
+   words `user` and `agent`, or empty. Resolving the login, and how rows
+   already stored as `user` or `agent` are shown, are under Attribution.
+   Phase 1 implements that resolution and the legacy display, with the
+   login-format deviation in the status above.
 
 The only pair the CLI refuses, once `category` exists, is `policy` with
 `hypothesis`. `decided_by` is not an access check.
@@ -222,10 +223,10 @@ too high for what this store is for. sdf does not warn when a record is
 added, and it does not treat `decided_by` as proof that a person, rather
 than an agent, settled the choice.
 
-The CLI today does not accept a login. `newRecord` in
-`internal/decision/decision.go` allows only empty, `user`, or `agent`, and
-any other `--decided-by` is rejected. The add stores nothing. This page
-does not change that code.
+Phase 1 accepts a login. `newRecord` in `internal/decision/decision.go`
+allows a GitHub login, empty, `user`, or `agent`. Any other
+`--decided-by` is rejected and the add stores nothing. The login is at
+most 39 characters; the 500-character cap below was the proposal.
 
 Proposal, not implemented. How the login is chosen, in this order:
 
@@ -434,12 +435,13 @@ states that the field is optional, that unset means `implementation`, that
 not read `category`. It does not say that a person, rather than an agent,
 must record a given category.
 
-The skill's working `--decided-by` values stay `user` and `agent` until
-`newRecord` accepts a login. A login passed today is rejected and the add
-stores nothing. The skill says that limit, and it says the login of the
-team member responsible is what the field is for once the CLI accepts it.
-An agent acting for a person records that person's login. sdf does not
-check the value.
+The skill's working `--decided-by` examples are GitHub logins. `user` and
+`agent` still store and display as legacy; the skill says not to pass
+those words for a new record. An agent acting for a person records that
+person's login. sdf does not check the value. The skill also records the
+phase-1 brief gap: `isConstraint` still keys on the literal `user`, so a
+policy stored with a login does not appear in the session-start brief and
+is not locked. `sdf decision check` still blocks from the statement.
 
 `docs/outcomes.md` gains the field on the decision-record description, the
 `add` and `list` usage lines, and the list columns, when the field is

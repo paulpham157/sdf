@@ -11,15 +11,24 @@ import (
 	"time"
 )
 
-// loginPattern is a GitHub login: letters and digits, hyphens only between
-// those characters, at most 39 characters. It cannot start or end with a
-// hyphen, and it cannot contain two hyphens in a row. The legacy words
-// "user" and "agent" match, and they stay legal writes.
+// loginPattern is a GitHub login's shape: letters and digits, hyphens only
+// between those characters. It cannot start or end with a hyphen, and it
+// cannot contain two hyphens in a row. The `{0,38}` bound counts groups.
+// A group may be two characters (a hyphen plus a letter or digit), so the
+// bound is not a 39-character cap. ValidDecidedBy enforces that cap. The
+// legacy words "user" and "agent" match, and they stay legal writes.
 var loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9]|-[A-Za-z0-9]){0,38}$`)
+
+// decidedByMaxLen is the GitHub login length limit, in bytes. Logins are
+// ASCII, so this is a character cap.
+const decidedByMaxLen = 39
 
 // ValidDecidedBy reports whether s is a GitHub login, including the legacy
 // words user and agent. Empty is not valid; the caller treats empty as unset.
 func ValidDecidedBy(s string) bool {
+	if len(s) > decidedByMaxLen {
+		return false
+	}
 	return loginPattern.MatchString(s)
 }
 

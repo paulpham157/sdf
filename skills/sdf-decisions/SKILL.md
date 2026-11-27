@@ -39,6 +39,7 @@ Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0`
 - When the store exists but cannot be read: stdout is `sdf decision brief unavailable: run sdf decision list`, and the command exits 0. Tell the user, and run `sdf decision list` if you need the records.
 - `sdf` missing from `PATH`, or the command cannot be run: continue without a brief; do not invent constraints. Unlike `sdf decision check`, a missing brief is not a reason to stop the session.
 - Locked decisions stored as `user` come first. The lock matches that stored word. sdf does not check that a person typed it. When items are cut, the text ends with `N more: run sdf decision list`, or `N more (K locked): run sdf decision list` when locked rules were dropped. Run `sdf decision list` to see the rest.
+- Known phase-1 gap: `isConstraint` in `internal/decision/brief/brief.go` still keys on the literal `user` (and on a `constrains` edge). A policy recorded with a GitHub login does not appear in the session-start brief and is not locked. `sdf decision check` still blocks by statement, including a decision recorded with a login. Do not pass `user` only to get the brief lock.
 
 ## Before a push, merge, release, deploy, or architecture change
 
@@ -174,11 +175,11 @@ Link rules. A rejected link stores nothing and exits 1 with one `sdf decision li
 **blocks and open questions.** Records never change status, so an open question is a `hypothesis` record. A blocker is settled once a `decision` record supersedes it. For example, when the user still has to approve a push:
 
 ```bash
-sdf decision add --id await-push-ok --statement "Waiting for the user's OK to push decision-relations." --status hypothesis --decided-by agent
-sdf decision add --id push-decision-relations --statement "Push decision-relations and open a PR." --status decision --decided-by agent
+sdf decision add --id await-push-ok --statement "Waiting for the user's OK to push decision-relations." --status hypothesis --decided-by paulpham157
+sdf decision add --id push-decision-relations --statement "Push decision-relations and open a PR." --status decision --decided-by paulpham157
 sdf decision link --relation blocks --from decision:await-push-ok --to decision:push-decision-relations
 # later, when the user says OK:
-sdf decision add --id user-ok-push --statement "User approved pushing decision-relations." --status decision --decided-by user
+sdf decision add --id user-ok-push --statement "User approved pushing decision-relations." --status decision --decided-by paulpham157
 sdf decision link --relation supersedes --from decision:user-ok-push --to decision:await-push-ok
 ```
 
