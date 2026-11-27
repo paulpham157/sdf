@@ -72,10 +72,11 @@ type Verdict struct {
 // Hit is one in-force decision whose statement forbids the action. Match is
 // the tag or phrase that fired, lowercased, with the whitespace collapsed.
 type Hit struct {
-	ID        string `json:"id"`
-	DecidedBy string `json:"decided_by"`
-	Statement string `json:"statement"`
-	Match     string `json:"match"`
+	ID              string `json:"id"`
+	DecidedBy       string `json:"decided_by"`
+	DecidedByLegacy bool   `json:"decided_by_legacy,omitempty"`
+	Statement       string `json:"statement"`
+	Match           string `json:"match"`
 }
 
 // CheckAction reports whether an in-force decision forbids action.
@@ -95,8 +96,8 @@ type Hit struct {
 //     architecture. A named-action forbid does not forbid an architecture
 //     change, and an architecture forbid does not forbid a named action.
 //   - The tag is reported in preference to a phrase when both match.
-//     Matching is case-insensitive. The id, the reason, and the source are
-//     not read. Edges are not read. The caller passes only settled decisions
+//     Matching is case-insensitive. The id, the reason, the source, and
+//     category are not read. Edges are not read. The caller passes only settled decisions
 //     that are still in force; a hypothesis, a retraction, or a superseded
 //     record in recs is still matched, so the caller has to filter first.
 func CheckAction(recs []Record, action string) (Verdict, error) {
@@ -111,10 +112,11 @@ func CheckAction(recs []Record, action string) (Verdict, error) {
 			continue
 		}
 		v.Blocking = append(v.Blocking, Hit{
-			ID:        d.ID,
-			DecidedBy: d.DecidedBy,
-			Statement: d.Statement,
-			Match:     match,
+			ID:              d.ID,
+			DecidedBy:       d.DecidedBy,
+			DecidedByLegacy: LegacyDecidedBy(d.DecidedBy),
+			Statement:       d.Statement,
+			Match:           match,
 		})
 	}
 	v.Allowed = len(v.Blocking) == 0
@@ -176,7 +178,8 @@ func WriteCheckJSON(w io.Writer, v Verdict) error {
 // WriteCheckText writes one verdict line, then one tab-separated row per
 // blocking decision. A named action prints "allowed: push" or
 // "forbidden: push". An architecture change adds " (architecture)". An empty
-// decided-by prints as "-". A field that holds a control character or
+// decided-by prints as "-". The legacy words user and agent print with
+// a marker. A field that holds a control character or
 // invalid UTF-8 is Go-quoted, the same rule as the decision list cells.
 func WriteCheckText(w io.Writer, v Verdict) error {
 	status := "allowed"
@@ -197,10 +200,7 @@ func WriteCheckText(w io.Writer, v Verdict) error {
 		return err
 	}
 	for _, h := range v.Blocking {
-		who := h.DecidedBy
-		if who == "" {
-			who = "-"
-		}
+		who := DecidedByText(h.DecidedBy)
 		row := cell(h.ID) + "\t" + cell(who) + "\t" + cell(h.Match) + "\t" + cell(h.Statement) + "\n"
 		if _, err := io.WriteString(w, row); err != nil {
 			return err

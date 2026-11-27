@@ -449,7 +449,7 @@ func TestDecisionListView(t *testing.T) {
 		t.Errorf("path order %q, want %q first", got, want)
 	}
 	text := res.Text
-	for _, s := range []string{"Chosen path, in order", "Not taken Parse the log", "Blocked by merge-first", "Conflicts with silent", "Constrained by capture", "Endings", "Locked ending", "ending, reached", "Off the path", "merge-first", "by you", "blocked"} {
+	for _, s := range []string{"Chosen path, in order", "Not taken Parse the log", "Blocked by merge-first", "Conflicts with silent", "Constrained by capture", "Endings", "Locked ending", "ending, reached", "Off the path", "merge-first", "by user (legacy)", "blocked"} {
 		if !strings.Contains(text, s) {
 			t.Errorf("List view is missing %q:\n%s", s, text)
 		}

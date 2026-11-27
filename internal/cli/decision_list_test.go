@@ -55,11 +55,11 @@ func TestDecisionListPrintsDecisionsAndEdgesAsTables(t *testing.T) {
 	lines := strings.Split(strings.TrimSuffix(out.stdout, "\n"), "\n")
 	want := [][]string{
 		{"Decisions: 2"},
-		{"ID", "STATUS", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"},
-		{"use-sqlite", "decision", "active", "user", graph.Decisions[0].RecordedAt, "issue 168", "Keep the collector store in SQLite."},
+		{"ID", "STATUS", "CATEGORY", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"},
+		{"use-sqlite", "decision", "implementation", "active", "user (legacy)", graph.Decisions[0].RecordedAt, "issue 168", "Keep the collector store in SQLite."},
 		{"", "", "", "", "", "", "alternatives: Postgres"},
 		{"", "", "", "", "", "", "reason: One file, no server."},
-		{"pure-go", "hypothesis", "active", "-", graph.Decisions[1].RecordedAt, "-", "The driver stays pure Go."},
+		{"pure-go", "hypothesis", "implementation", "active", "-", graph.Decisions[1].RecordedAt, "-", "The driver stays pure Go."},
 		{""},
 		{"Edges: 3"},
 		{"RELATION", "FROM", "TO", "RECORDED AT"},
@@ -212,7 +212,7 @@ func TestDecisionListReadsWithoutWriting(t *testing.T) {
 
 func TestDecisionListUsage(t *testing.T) {
 	help := run(t, "decision", "list", "--help")
-	if help.code != 0 || help.stdout != "usage: sdf decision list [--db PATH] [--json] [--session ID]\n" {
+	if help.code != 0 || help.stdout != "usage: sdf decision list [--db PATH] [--json] [--session ID] [--category architecture|policy|product|implementation|operations|none]\n" {
 		t.Fatalf("%d %q", help.code, help.stdout)
 	}
 	top := run(t, "decision", "--help")
@@ -257,9 +257,9 @@ func TestDecisionListShowsSupersededInTableJSONAndAPI(t *testing.T) {
 	}
 	lines := strings.Split(table.stdout, "\n")
 	for i, want := range [][]string{
-		{"use-sqlite", "decision", "superseded", "by", "use-sqlite-wal"},
-		{"use-sqlite-wal", "decision", "superseded", "by", "use-duckdb"},
-		{"use-duckdb", "decision", "active"},
+		{"use-sqlite", "decision", "implementation", "superseded", "by", "use-sqlite-wal"},
+		{"use-sqlite-wal", "decision", "implementation", "superseded", "by", "use-duckdb"},
+		{"use-duckdb", "decision", "implementation", "active"},
 	} {
 		got := strings.Fields(lines[2+i])
 		if len(got) < len(want) || strings.Join(got[:len(want)], " ") != strings.Join(want, " ") {

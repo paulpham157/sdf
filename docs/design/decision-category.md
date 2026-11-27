@@ -1,10 +1,32 @@
 # Decision categories
 
-Status: accepted design, not implemented. This page is phase 0. It specifies
-the change and does not change the schema, the CLI, the brief, the checker,
-or the UI. Current behavior stays as described in
+Status: phase 1 is implemented, including the unset-display and attribution
+proposals. `category` is an optional column. Unset is stored as SQL `NULL`
+and displayed as `implementation`. `decided_by` stores a GitHub login.
+`user` and `agent` remain legal writes and display as legacy. Existing rows
+are not rewritten. There is no add-time warning that tries to tell a person
+from an agent. Current behavior is described in
 [Decision records](../outcomes.md#decision-records) and
 [Checking an action](../outcomes.md#checking-an-action).
+
+Deviation from the attribution proposal: a new `decided_by` must be a
+GitHub login (letters, digits, and single hyphens, at most 39 characters)
+or the legacy words `user` or `agent`. The proposal's 500-character
+one-line cap is not what the CLI stores. A login resolved from `gh` or git
+config that is not in that form is skipped, so a display name does not fail
+the add. An explicit `--decided-by` that is not in that form is rejected
+and stores nothing. Lookup of `gh` and git is limited to 3 seconds.
+
+Phase 2 is not in this change: brief JSON does not carry `category` (the
+brief text line still has no category column), the graph and audit do not
+tally by category, and the brief's lock is still the literal `user`. The
+brief text and JSON do mark stored `user` and `agent` as legacy. The UI
+shows the category next to status and on the graph detail panel, and it
+shows a login or the legacy marker instead of "you" / "the agent".
+
+The sections below are the design record. Where they still say "proposal,
+not implemented" or "the CLI does not accept a login", phase 1 has landed
+that behavior, with the login-format deviation above.
 
 A decision record gains one optional field, `category`. It says what kind of
 choice the record is, so a reader can separate an architecture choice, a
@@ -587,7 +609,7 @@ the counts mean the same thing in every store.
 | Phase | What lands |
 | --- | --- |
 | 0 | This spec. |
-| 1 | Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (proposal: stored `NULL`, not rewritten). `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
+| 1 | Implemented. Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (stored `NULL`, not rewritten). `decided_by` is a GitHub login, with legacy `user` / `agent` kept. `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
 | 2 | Brief JSON field, brief text columns unchanged. Graph and UI labels and counts. Audit totals. `NULL` and empty count as `implementation`. |
 | 3 | Withdrawn. No add-time warning that tries to tell a person from an agent. |
 | 4 | Optional free tags, in their own field, if a later spec still wants them. |

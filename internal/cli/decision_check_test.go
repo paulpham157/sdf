@@ -25,7 +25,7 @@ func TestDecisionCheckForbidsFromTheStatement(t *testing.T) {
 	if forbid.code != 1 || forbid.stderr != "" {
 		t.Fatalf("%d %q %q", forbid.code, forbid.stdout, forbid.stderr)
 	}
-	if !strings.Contains(forbid.stdout, "forbidden: push\n") || !strings.Contains(forbid.stdout, "dont-push\tuser\tdo not push\t") {
+	if !strings.Contains(forbid.stdout, "forbidden: push\n") || !strings.Contains(forbid.stdout, "dont-push\tuser (legacy)\tdo not push\t") {
 		t.Fatalf("%q", forbid.stdout)
 	}
 	if strings.Contains(forbid.stdout, "use-sqlite") || strings.Contains(forbid.stdout, "maybe-merge") {
@@ -103,11 +103,11 @@ func TestDecisionCheckKeepsAgentForbidsAndDropsOutOfForce(t *testing.T) {
 	link("blocks", "wait", "no-deploy")
 
 	push := run(t, "decision", "check", "--db", dbPath, "push")
-	if push.code != 1 || !strings.Contains(push.stdout, "dont-push\tuser\t") || strings.Contains(push.stdout, "maybe") {
+	if push.code != 1 || !strings.Contains(push.stdout, "dont-push\tuser (legacy)\t") || strings.Contains(push.stdout, "maybe") {
 		t.Fatalf("push %d %q %q", push.code, push.stdout, push.stderr)
 	}
 	merge := run(t, "decision", "check", "--db", dbPath, "merge")
-	if merge.code != 1 || !strings.Contains(merge.stdout, "agent-merge\tagent\t") || strings.Contains(merge.stdout, "old-merge") {
+	if merge.code != 1 || !strings.Contains(merge.stdout, "agent-merge\tagent (legacy)\t") || strings.Contains(merge.stdout, "old-merge") {
 		t.Fatalf("merge %d %q %q", merge.code, merge.stdout, merge.stderr)
 	}
 	release := run(t, "decision", "check", "--db", dbPath, "release")
@@ -115,7 +115,7 @@ func TestDecisionCheckKeepsAgentForbidsAndDropsOutOfForce(t *testing.T) {
 		t.Fatalf("release %d %q %q", release.code, release.stdout, release.stderr)
 	}
 	deploy := run(t, "decision", "check", "--db", dbPath, "deploy")
-	if deploy.code != 1 || !strings.Contains(deploy.stdout, "no-deploy\tagent\t") {
+	if deploy.code != 1 || !strings.Contains(deploy.stdout, "no-deploy\tagent (legacy)\t") {
 		t.Fatalf("deploy %d %q %q", deploy.code, deploy.stdout, deploy.stderr)
 	}
 }

@@ -429,7 +429,7 @@ func TestOpenReadOnlyOldDecisionTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 || rows[0].ID != "zeta" || rows[1].ID != "alpha" || rows[0].DecidedBy != "" {
+	if len(rows) != 2 || rows[0].ID != "zeta" || rows[1].ID != "alpha" || rows[0].DecidedBy != "" || rows[0].Category != "" {
 		t.Fatalf("%+v", rows)
 	}
 	edges, err := s.LoadDecisionEdges()

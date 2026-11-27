@@ -230,7 +230,7 @@ func TestDecisionAddRecordsWhoDecidedAndOmitsEmptyOptionalFields(t *testing.T) {
 		"--id", "bad-actor",
 		"--statement", "Someone decided this.",
 		"--status", "decision",
-		"--decided-by", "owner")
+		"--decided-by", "a--b")
 	if rejected.code == 0 || rejected.stdout != "" {
 		t.Fatalf("bad decided-by accepted: %d %q %q", rejected.code, rejected.stdout, rejected.stderr)
 	}

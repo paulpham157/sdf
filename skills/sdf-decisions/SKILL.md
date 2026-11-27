@@ -77,7 +77,7 @@ Record a decision when the person you are working for:
 
 Also record a decision when you settle an important technical choice or working hypothesis that later work depends on (storage, API shape, a library, a security posture, an approach).
 
-Both kinds are decisions of that person. sdf does not distinguish a person from their agent, and it does not check which of you typed the record. See who decided below for the label the CLI accepts today.
+Both kinds are decisions of that person. sdf does not distinguish a person from their agent, and it does not check which of you typed the record. See who decided below.
 
 If a new choice replaces an earlier one, add a new record and link it with `supersedes`.
 
@@ -87,8 +87,8 @@ Do not record routine implementation details, typo fixes, or obvious next steps.
 
 Every record needs:
 
-- **who decided**: the GitHub login of the team member responsible, for example `paulpham157`. When you act for a person, that person's login is the value to record. sdf does not distinguish you from that person and does not check the flag. The CLI does not accept a login yet. Pass `user` or `agent` until it does (see `--decided-by` below). The design is [Decision categories](../../docs/design/decision-category.md).
-- **category**: optional. You are not required to set it. When it is unset, the category is `implementation`. The CLI has no `--category` flag yet. Do not invent one. `policy` is only a settled rule (`status` `decision`). `sdf decision check` does not read category.
+- **who decided**: the GitHub login of the team member responsible, for example `paulpham157`. When you act for a person, pass that person's login. sdf does not distinguish you from that person and does not check the flag. The design is [Decision categories](../../docs/design/decision-category.md).
+- **category**: optional. You are not required to set it. When it is unset, the category is `implementation` (stored as SQL `NULL`, displayed as `implementation`). `policy` is only a settled rule (`status` `decision`). `sdf decision check` does not read category.
 - **what was decided**: the choice itself, in `--statement`
 - **alternatives**: the options that were actually on the table, in `--alternatives`. Omit the flag if none were stated or discussed.
 - **reason**: only if one was given, in `--reason`. For a user decision, quote or paraphrase the user faithfully. If they gave no reason, omit `--reason`. Never invent a reason.
@@ -99,14 +99,15 @@ Every record needs:
 
 ```bash
 sdf decision add --id ID --statement TEXT --status hypothesis|decision \
-  [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] \
-  [--source TEXT] [--db PATH]
+  [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations] \
+  [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]
 ```
 
 - `--id`: a stable slug, 1–128 characters, starting with a letter or digit, then letters, digits, `.`, `_`, or `-`. Prefer a short kebab-case name of the choice (`dont-push`, `use-sqlite`). Ids are append-only and cannot be reused; if the id is taken, pick a more specific unused one.
 - `--statement`: one non-empty line, at most 500 characters, no newlines. State the choice itself, not the discussion around it.
 - `--status`: `hypothesis` for an assumption that is not settled; `decision` for a settled choice. Approvals, rejections, chosen options, and constraints are `decision`.
-- `--decided-by`: `user` or `agent` on the CLI that ships. Always set one of those two. The flag is optional on the CLI so older records can omit it, but new records from this skill must include it. `newRecord` accepts only empty, `user`, or `agent`, so those are the values that store. sdf does not treat the word as proof of who settled the choice. A GitHub login is rejected and the add stores nothing. Resolving a login (this flag, then a configured identity such as `gh api user` or git config), and showing stored `user` / `agent` as legacy, is proposed in [Decision categories](../../docs/design/decision-category.md) and is not implemented. When a login is accepted, pass the person's login.
+- `--decided-by`: the GitHub login of the team member responsible. Pass it when you know it. The flag is optional. When it is omitted, sdf tries `gh api user`, then `git config github.user`, then `git config user.name` if that value is a login. A missing `gh` does not fail the add; the field stays empty when nothing resolves. An explicit empty value stays empty. `user` and `agent` still store, and they display as legacy. Do not pass those words for a new record. sdf does not treat the value as proof of who settled the choice.
+- `--category`: optional. Omit it unless you know the category. Unset means `implementation`. `policy` requires `--status decision`. `sdf decision check` does not read this flag.
 - `--alternatives`: optional one line, at most 500 characters. The options that were on the table and not chosen. Omit the flag when there were none.
 - `--reason`: optional one line, at most 500 characters. Omit it when no reason was given. Do not invent one.
 - `--source`: optional one-line pointer (issue, PR, doc, or conversation), at most 500 characters. Omit it when there is none.
@@ -115,17 +116,17 @@ sdf decision add --id ID --statement TEXT --status hypothesis|decision \
 Examples:
 
 ```bash
-# The user forbade pushing
+# The person forbade pushing. category policy, status decision.
 sdf decision add --id dont-push \
   --statement "Do not push until the user says so." \
-  --status decision --decided-by user \
+  --status decision --decided-by paulpham157 --category policy \
   --alternatives "push the branch now" \
   --reason "The user said don't push."
 
-# The agent chose a storage approach
+# A technical choice. Category omitted: stored NULL, displayed as implementation.
 sdf decision add --id use-sqlite \
   --statement "Keep the collector store in SQLite." \
-  --status decision --decided-by agent \
+  --status decision --decided-by paulpham157 \
   --alternatives "PostgreSQL, or an in-memory store" \
   --reason "The collector is local and already uses a SQLite file."
 ```

@@ -608,6 +608,18 @@
     ]);
   }
 
+  function decisionCategoryLabel(record) {
+    return (record && record.category) || "implementation";
+  }
+
+  function decisionWho(record) {
+    if (!record || !record.decided_by) return "";
+    if (record.decided_by_legacy || record.decided_by === "user" || record.decided_by === "agent") {
+      return record.decided_by + " (legacy)";
+    }
+    return record.decided_by;
+  }
+
   function decisionsSection() {
     const records = decisions && decisions.decisions ? decisions.decisions : [];
     const edges = decisions && decisions.edges ? decisions.edges : [];
@@ -626,9 +638,10 @@
         const superseded = by.length > 0 && (retraction || record.effective_status === "superseded");
         const line = [
           h("span", { class: "status" }, [record.status || "unknown"]),
+          h("span", { class: "status" }, [decisionCategoryLabel(record)]),
         ];
         if (record.decided_by) {
-          line.push(h("span", { class: "status" }, [record.decided_by]));
+          line.push(h("span", { class: "status" }, [decisionWho(record)]));
         }
         if (retraction) {
           line.push(h("span", { class: "retracted" }, ["retracted"]));
@@ -1621,8 +1634,9 @@
     let tx = l + 12;
     let anchor = "start";
     if (node.decided_by) {
+      const letter = node.decided_by === "user" ? "U" : node.decided_by === "agent" ? "A" : node.decided_by.charAt(0).toUpperCase();
       kids.push(s("circle", { cx: l + 18, cy: p.y, r: 10, class: "dg-badge" }));
-      kids.push(s("text", { x: l + 18, y: p.y + 4, "text-anchor": "middle", class: "dg-badge-text" }, [node.decided_by === "user" ? "U" : "A"]));
+      kids.push(s("text", { x: l + 18, y: p.y + 4, "text-anchor": "middle", class: "dg-badge-text" }, [letter]));
       tx = l + 34;
     }
     if (node.kind === "start" || node.kind === "ending") {
@@ -1661,7 +1675,7 @@
   function dgAria(node) {
     const bits = [node.title + ": " + (node.detail || "")];
     bits.push((node.role || node.kind).replace(/_/g, " "));
-    if (node.decided_by) bits.push("by " + node.decided_by);
+    if (node.decided_by) bits.push(dgWho(node));
     const rec = node.decision || {};
     if (rec.blocked) bits.push("blocked");
     if (rec.conflicted) bits.push("conflicted");
@@ -2142,12 +2156,19 @@
     });
   }
 
+  function dgWho(node) {
+    if (!node || !node.decided_by) return "";
+    const rec = node.decision || {};
+    const legacy = rec.decided_by_legacy || node.decided_by === "user" || node.decided_by === "agent";
+    return "by " + node.decided_by + (legacy ? " (legacy)" : "");
+  }
+
   function dgListState(node) {
     const bits = [];
     if (node.kind === "start") bits.push("chapter start");
     else if (node.kind === "ending") bits.push(node.role === "locked_ending" ? "locked ending" : node.role === "reached" ? "ending, reached" : "ending, not reached");
     else bits.push((node.role || node.kind).replace(/_/g, " "));
-    if (node.decided_by) bits.push(node.decided_by === "user" ? "by you" : "by the agent");
+    if (node.decided_by) bits.push(dgWho(node));
     const rec = node.decision || {};
     if (rec.blocked) bits.push("blocked");
     if (rec.conflicted) bits.push("conflicted");
@@ -2242,13 +2263,13 @@
       return kids;
     }
     const rec = node.decision || {};
-    kids.push(h("p", { class: "kicker" }, ["Decision" + (node.decided_by ? " · by " + (node.decided_by === "user" ? "you" : "the agent") : "")]));
+    kids.push(h("p", { class: "kicker" }, ["Decision" + (node.decided_by ? " · " + dgWho(node) : "")]));
     kids.push(h("h2", null, [node.id]));
     // A decision not recorded yet at the replay point has no state then:
     // its chips (status, effective status, blocked, conflicted, challenged)
     // would be today's, so they are left out.
     if (!node.future) {
-      const chips = [h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
+      const chips = [h("span", { class: "dg-pchip" }, [decisionCategoryLabel(rec)]), h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
       if (rec.blocked) chips.push(h("span", { class: "dg-pchip dg-amber" }, ["🔒 blocked"]));
       if (rec.conflicted) chips.push(h("span", { class: "dg-pchip dg-red" }, ["⚡ conflicted"]));
       if (rec.challenged) chips.push(h("span", { class: "dg-pchip dg-red" }, ["challenged"]));

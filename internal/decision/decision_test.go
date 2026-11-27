@@ -282,7 +282,7 @@ func TestRejectedFields(t *testing.T) {
 		t.Fatal("short sha accepted")
 	}
 	if _, err := decision.Add(db, decision.RecordInput{
-		ID: "d", Statement: "ok", Status: decision.StatusDecision, DecidedBy: "owner",
+		ID: "d", Statement: "ok", Status: decision.StatusDecision, DecidedBy: "a--b",
 	}); err == nil {
 		t.Fatal("decided-by accepted")
 	}
@@ -394,11 +394,11 @@ func TestWriteTextLaysOutBothTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "Decisions: 2\n" +
-		"ID          STATUS      EFFECTIVE                       DECIDED BY  RECORDED AT                       SOURCE     STATEMENT\n" +
-		"use-sqlite  decision    superseded by pure-go, go-only  user        2026-11-23T15:00:00.000000+00:00  issue 168  Keep the collector store in SQLite.\n" +
-		"                                                                                                                 alternatives: Postgres, DuckDB\n" +
-		"                                                                                                                 reason: \"one\\tfile\\u202e\"\n" +
-		"pure-go     hypothesis  active                          -           2026-11-23T15:00:01.000000+00:00  -          \"The driver\\tstays pure Go.\\x1b[31m\"\n" +
+		"ID          STATUS      CATEGORY        EFFECTIVE                       DECIDED BY     RECORDED AT                       SOURCE     STATEMENT\n" +
+		"use-sqlite  decision    implementation  superseded by pure-go, go-only  user (legacy)  2026-11-23T15:00:00.000000+00:00  issue 168  Keep the collector store in SQLite.\n" +
+		"                                                                                                                                    alternatives: Postgres, DuckDB\n" +
+		"                                                                                                                                    reason: \"one\\tfile\\u202e\"\n" +
+		"pure-go     hypothesis  implementation  active                          -              2026-11-23T15:00:01.000000+00:00  -          \"The driver\\tstays pure Go.\\x1b[31m\"\n" +
 		"\n" +
 		"Edges: 1\n" +
 		"RELATION    FROM              TO                   RECORDED AT\n" +

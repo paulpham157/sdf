@@ -45,10 +45,10 @@ func TestClassifyRanksLockedConstraintsFirst(t *testing.T) {
 	}
 	got := brief.Classify(g)
 	want := []brief.Item{
-		{ID: "dont-push", Kind: brief.KindConstraint, Statement: "Do not push until the user says so.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByUser, Locked: true},
-		{ID: "keep-local", Kind: brief.KindConstraint, Statement: "Keep the store on this machine.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, Locked: false},
-		{ID: "ship-it", Kind: brief.KindBlocked, Statement: "Push the branch now.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, Locked: false},
-		{ID: "use-postgres", Kind: brief.KindConflicting, Statement: "Store telemetry in Postgres.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, Locked: false},
+		{ID: "dont-push", Kind: brief.KindConstraint, Statement: "Do not push until the user says so.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByUser, DecidedByLegacy: true, Locked: true},
+		{ID: "keep-local", Kind: brief.KindConstraint, Statement: "Keep the store on this machine.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, DecidedByLegacy: true, Locked: false},
+		{ID: "ship-it", Kind: brief.KindBlocked, Statement: "Push the branch now.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, DecidedByLegacy: true, Locked: false},
+		{ID: "use-postgres", Kind: brief.KindConflicting, Statement: "Store telemetry in Postgres.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, DecidedByLegacy: true, Locked: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d items, want %d: %+v", len(got), len(want), ids(got))
@@ -190,6 +190,7 @@ func TestFormatJSONShape(t *testing.T) {
       "statement": "Do not push until the user says so.",
       "status": "decision",
       "decided_by": "user",
+      "decided_by_legacy": true,
       "locked": true
     },
     {
@@ -198,6 +199,7 @@ func TestFormatJSONShape(t *testing.T) {
       "statement": "Push the branch now.",
       "status": "decision",
       "decided_by": "agent",
+      "decided_by_legacy": true,
       "locked": false
     },
     {
@@ -206,6 +208,7 @@ func TestFormatJSONShape(t *testing.T) {
       "statement": "Store telemetry in Postgres.",
       "status": "decision",
       "decided_by": "agent",
+      "decided_by_legacy": true,
       "locked": false
     }
   ],

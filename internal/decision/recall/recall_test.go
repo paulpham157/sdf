@@ -1,6 +1,7 @@
 package recall_test
 
 import (
+	"bytes"
 	"math"
 	"strings"
 	"testing"
@@ -114,6 +115,47 @@ func TestFixtureLinkMustNameAnIngestedCommit(t *testing.T) {
 	fsys := fstest.MapFS{"bad-link.json": &fstest.MapFile{Data: []byte(body)}}
 	_, err := recall.MeasureFS(fsys, recall.SkillOnly{})
 	if err == nil || !strings.Contains(err.Error(), "1111111111111111111111111111111111111111") {
+		t.Fatal(err)
+	}
+}
+
+func TestDecidedByAcceptsALoginAndLegacyValues(t *testing.T) {
+	base := []byte(`{
+	  "name": "login-label",
+	  "notes": "A labeled decision attributed to a GitHub login.",
+	  "logs": [{
+	    "resourceLogs": [{
+	      "scopeLogs": [{
+	        "logRecords": [{
+	          "timeUnixNano": "1579100000000000000",
+	          "body": {"stringValue": "Use WAL mode for the store."},
+	          "attributes": [
+	            {"key": "event.name", "value": {"stringValue": "recall.turn"}},
+	            {"key": "session.id", "value": {"stringValue": "recall-login"}}
+	          ]
+	        }]
+	      }]
+	    }]
+	  }],
+	  "labels": {
+	    "decisions": [{"id": "use-wal", "statement": "Use WAL mode for the store.", "status": "decision", "decided_by": "DECIDED"}],
+	    "links": []
+	  }
+	}`)
+	for _, by := range []string{"paulpham157", "user", "agent"} {
+		body := bytes.ReplaceAll(base, []byte("DECIDED"), []byte(by))
+		fsys := fstest.MapFS{"login-label.json": &fstest.MapFile{Data: body}}
+		rep, err := recall.MeasureFS(fsys, recall.SkillOnly{})
+		if err != nil {
+			t.Fatalf("%s: %v", by, err)
+		}
+		if rep.Decisions.Labeled != 1 || rep.Decisions.Hits != 0 || rep.Decisions.Recall != 0 {
+			t.Fatalf("%s changed the skill-only score: %+v", by, rep.Decisions)
+		}
+	}
+	bad := bytes.ReplaceAll(base, []byte("DECIDED"), []byte("not a login"))
+	fsys := fstest.MapFS{"login-label.json": &fstest.MapFile{Data: bad}}
+	if _, err := recall.MeasureFS(fsys, recall.SkillOnly{}); err == nil || !strings.Contains(err.Error(), "decided_by") {
 		t.Fatal(err)
 	}
 }

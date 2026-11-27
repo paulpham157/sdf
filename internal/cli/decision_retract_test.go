@@ -53,7 +53,7 @@ func TestDecisionRetract(t *testing.T) {
 
 	table := run(t, "decision", "list", "--db", dbPath)
 	lines := strings.Split(table.stdout, "\n")
-	if got := strings.Fields(lines[2]); len(got) < 6 || strings.Join(got[:6], " ") != "use-sqlite decision retracted, superseded by use-wal" {
+	if got := strings.Fields(lines[2]); len(got) < 7 || strings.Join(got[:7], " ") != "use-sqlite decision implementation retracted, superseded by use-wal" {
 		t.Fatalf("%q\n%s", lines[2], table.stdout)
 	}
 	if !strings.Contains(lines[3], "retracted: ") || !strings.HasSuffix(lines[3], `by user; reason: "Benchmark was\twrong"`) {

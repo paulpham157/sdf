@@ -160,9 +160,9 @@ the only command that calls the network for prices.
 const decisionHelp = `Records decisions and the links between decisions, sessions, commits, and
 pull requests in the same SQLite file as sdf serve.
 
-  add      sdf decision add --id ID --statement TEXT --status hypothesis|decision
+  add      sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations]
   link     sdf decision link --relation REL --from KIND:REF --to KIND:REF
-  list     sdf decision list [--json] [--session ID]
+  list     sdf decision list [--json] [--session ID] [--category architecture|policy|product|implementation|operations|none]
   graph    sdf decision graph [--json]
   brief    sdf decision brief [--format text|json] [--max-items N] [--max-bytes N]
   check    sdf decision check <action> [--json]

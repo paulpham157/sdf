@@ -24,10 +24,10 @@ func TestDecisionBriefPrintsRankedText(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSuffix(out.stdout, "\n"), "\n")
 	want := []string{
-		"constraint\tdont-push\tuser\tDo not push until the user says so.",
-		"constraint\tkeep-local\tagent\tKeep the store on this machine.",
-		"blocked\tship-it\tagent\tPush the branch now.",
-		"conflicting\tuse-postgres\tagent\tStore telemetry in Postgres.",
+		"constraint\tdont-push\tuser (legacy)\tDo not push until the user says so.",
+		"constraint\tkeep-local\tagent (legacy)\tKeep the store on this machine.",
+		"blocked\tship-it\tagent (legacy)\tPush the branch now.",
+		"conflicting\tuse-postgres\tagent (legacy)\tStore telemetry in Postgres.",
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("got %q", out.stdout)

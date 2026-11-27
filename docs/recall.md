@@ -52,7 +52,8 @@ file is one scenario:
 - `logs`: OTLP/JSON log export bodies. The harness decodes them with
   `otlp.Decode` and stores them with `store.Insert`.
 - `labels.decisions`: `id`, `statement`, `status` (`hypothesis` or
-  `decision`), and optional `decided_by` (`user` or `agent`). The
+  `decision`), and optional `decided_by` (a GitHub login, or the legacy
+  values `user` or `agent`). The
   statement must appear in a log body.
 - `labels.links`: `commit` (lowercase 40-character SHA) and `decision`
   (a labeled id). The SHA must be an `sdf.git.commit` event in `logs`.

@@ -239,7 +239,7 @@ func TestMigrationAddsDecisionColumns(t *testing.T) {
 	if len(rows) != 1 || rows[0].ID != "use-sqlite" || rows[0].Source != "issue 168" {
 		t.Fatalf("%+v", rows)
 	}
-	if rows[0].DecidedBy != "" || rows[0].Alternatives != "" || rows[0].Reason != "" {
+	if rows[0].DecidedBy != "" || rows[0].Alternatives != "" || rows[0].Reason != "" || rows[0].Category != "" {
 		t.Fatalf("old row had new fields set: %+v", rows[0])
 	}
 	if err := opened.InsertDecision(store.Decision{
