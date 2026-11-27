@@ -524,13 +524,14 @@ OpenCode is SQLite. A future reader opens `file:<path>?mode=ro` and sets
 `O_NOFOLLOW` and `fstat` on the descriptors the caller opened do not
 close that TOCTOU gap. Closing it takes a custom VFS or a containment
 check on the directory before SQLite opens the sidecars. A corrupt
-database is untrusted input. The reader does not query `credential` or `account`, the tables this
-capture observed. `control_account` was not observed in this capture. Do not build a fixture by copying a
-live database and then deleting rows. An unvacuumed WAL or freelist page
-can still hold the deleted secrets. Grok's `session_search.sqlite` is an
-FTS store that can hold secrets and has the same unvacuumed WAL and
-freelist risk. Grok's `prompt_history.jsonl` spans sessions for the same
-cwd. `is_bash: true` is shell input and may hold secrets; that is a trust
+database is untrusted input. The reader does not query `credential`,
+`account`, `account_state`, or `control_account`. `control_account` was
+present and empty in this OpenCode 2.4.2 capture. Do not build a fixture
+by copying a live database and then deleting rows. An unvacuumed WAL or
+freelist page can still hold the deleted secrets. Grok's
+`session_search.sqlite` is an FTS store that can hold secrets and has
+the same unvacuumed WAL and freelist risk. Grok's `prompt_history.jsonl`
+spans sessions for the same cwd. `is_bash: true` is shell input and may hold secrets; that is a trust
 rule, and the value stays **needs verification**. The Grok session folder
 holds `system_prompt.txt`, a vendor prompt. Never read or commit it.
 This repository does not commit `.db`, `-wal`, or `-shm` files under

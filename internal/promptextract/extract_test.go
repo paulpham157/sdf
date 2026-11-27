@@ -992,7 +992,7 @@ func TestTestdataFixtureHygiene(t *testing.T) {
 		}
 		for _, loc := range uuidPattern.FindAllIndex(body, -1) {
 			if !syntheticUUID.Match(body[loc[0]:loc[1]]) {
-				t.Errorf("%s line %d matches synthetic-uuid", name, hygieneLine(body, loc[0]))
+				t.Errorf("%s line %d matches non-synthetic-uuid", name, hygieneLine(body, loc[0]))
 			}
 		}
 		for i, line := range bytes.Split(bytes.TrimSuffix(body, []byte("\n")), []byte("\n")) {
@@ -1001,7 +1001,7 @@ func TestTestdataFixtureHygiene(t *testing.T) {
 			}
 			var v any
 			if err := json.Unmarshal(line, &v); err != nil {
-				t.Fatalf("%s line %d matches json", name, i+1)
+				t.Fatalf("%s line %d matches invalid-json", name, i+1)
 			}
 			lineNo := i + 1
 			walkJSONStrings(v, func(s string) {
