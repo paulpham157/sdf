@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -279,18 +280,202 @@ func TestGRPCMessageSizeIsResourceExhaustedWithoutRetry(t *testing.T) {
 	if n := proto.Size(big); n <= cap {
 		t.Fatalf("oversize fixture is %d bytes", n)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if _, err := client.Export(ctx, small); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Export(ctx, small); err != nil {
-		t.Fatalf("second small export, reservation was not released: %v", err)
+	// The in-flight budget is one maximum body. Each call reserves that
+	// maximum before the message arrives and must release it before the
+	// client observes success, or the next call is a retryable
+	// RESOURCE_EXHAUSTED instead of a real size rejection.
+	for i := 0; i < 32; i++ {
+		if _, err := client.Export(ctx, small); err != nil {
+			t.Fatalf("export %d, reservation was not released: %v", i, err)
+		}
+		if got := srv.BudgetUsed(); got != 0 {
+			t.Fatalf("export %d left %d bytes reserved", i, got)
+		}
 	}
 	_, err := client.Export(ctx, big)
 	assertExhausted(t, err, false)
 	if _, err := client.Export(ctx, small); err != nil {
 		t.Fatalf("after the oversized message: %v", err)
+	}
+	if got := srv.BudgetUsed(); got != 0 {
+		t.Fatalf("after the oversized message, %d bytes still reserved", got)
+	}
+}
+
+func TestGRPCTokenSlotIsReleasedBeforeTheNextCall(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true, Token: "t",
+		Limits: netlimit.Limits{
+			MaxConnsPerToken: 1,
+			MaxBodyBytes:     4096,
+			MaxInFlightBytes: 1 << 20,
+			ReadTimeout:      5 * time.Second,
+		},
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	client := traceClient(t, srv.GRPCAddress())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer t")
+	for i := 0; i < 32; i++ {
+		if _, err := client.Export(ctx, spanReq(0)); err != nil {
+			t.Fatalf("export %d: %v", i, err)
+		}
+	}
+}
+
+// TestAdmitRPCOnCancelledContext admits calls whose context is already
+// cancelled, from several goroutines. That overlaps the context callback
+// and reapFinishedReads with the stopAfter store.
+func TestAdmitRPCOnCancelledContext(t *testing.T) {
+	const body = 64
+	srv, _ := startLimited(t, netlimit.Limits{
+		MaxBodyBytes:     body,
+		MaxInFlightBytes: body * 4096,
+		ReadTimeout:      5 * time.Second,
+	})
+	var wg sync.WaitGroup
+	const workers = 8
+	const loops = 64
+	errc := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range loops {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				if _, err := srv.AdmitRPC(ctx); err != nil {
+					errc <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.BudgetUsed() != 0 || srv.ReadingRPCs() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("after cancelled admissions: tracked %d, budget %d", srv.ReadingRPCs(), srv.BudgetUsed())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestGRPCCancelDuringCommitKeepsAdmission(t *testing.T) {
+	const body = 4096
+	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &server.Server{
+		Host: "127.0.0.1", HTTPPort: 0, GRPCPort: 0, Store: db, Quiet: true, Token: "t",
+		Limits: netlimit.Limits{
+			MaxConnsPerToken: 1,
+			MaxBodyBytes:     body,
+			MaxInFlightBytes: body * 8,
+			ReadTimeout:      5 * time.Second,
+		},
+	}
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	srv.SetBlockInsert(func(context.Context) error {
+		once.Do(func() { close(entered) })
+		<-release
+		return nil
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+		srv.Shutdown()
+		_ = db.Close()
+	})
+	small := spanReq(0)
+	held := int64(proto.Size(small))
+	client := traceClient(t, srv.GRPCAddress())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer t")
+	errc := make(chan error, 1)
+	go func() {
+		_, err := client.Export(ctx, small)
+		errc <- err
+	}()
+	select {
+	case <-entered:
+	case err := <-errc:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("export did not reach the commit")
+	}
+	if got := srv.BudgetUsed(); got != held {
+		t.Fatalf("budget %d, want the encoded size %d", got, held)
+	}
+	cancel()
+	// The client has cancelled. The handler still holds the decoded
+	// request, so the reservation and the token slot stay until it returns.
+	deadline := time.Now().Add(150 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if got := srv.BudgetUsed(); got != held {
+			t.Fatalf("budget dropped to %d while the commit was still running", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+	ctx2 = metadata.AppendToOutgoingContext(ctx2, "authorization", "Bearer t")
+	_, err = client.Export(ctx2, small)
+	assertExhausted(t, err, true)
+	if st, _ := status.FromError(err); st.Message() != "too many requests" {
+		t.Fatalf("token slot released during the commit: %v", err)
+	}
+	if got := srv.BudgetUsed(); got != held {
+		t.Fatalf("budget %d after the rejected call, want %d", got, held)
+	}
+	close(release)
+	select {
+	case err := <-errc:
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("cancelled export: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled export did not return")
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for srv.BudgetUsed() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("budget stuck at %d after the handler returned", srv.BudgetUsed())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel3()
+	ctx3 = metadata.AppendToOutgoingContext(ctx3, "authorization", "Bearer t")
+	if _, err := client.Export(ctx3, small); err != nil {
+		t.Fatalf("after the handler returned: %v", err)
 	}
 }
 
@@ -910,7 +1095,7 @@ func TestRejectedGRPCStreamsLeaveNoPerStreamState(t *testing.T) {
 		lim := long
 		lim.MaxInFlightBytes = 8 << 20
 		srv := startRejected(t, "t", lim)
-		sent := floodRejectedStreams(t, srv, "", 0, 0)
+		sent, closeConn := floodRejectedStreams(t, srv, "", 0, 0)
 		if sent < 64 {
 			t.Fatalf("sent %d streams before the connection closed", sent)
 		}
@@ -920,21 +1105,34 @@ func TestRejectedGRPCStreamsLeaveNoPerStreamState(t *testing.T) {
 		if got := srv.BudgetUsed(); got != 0 {
 			t.Fatalf("bad-token streams reserved %d bytes", got)
 		}
+		closeConn()
+		waitForNoGRPCState(t, srv)
 	})
 	t.Run("too many waiting", func(t *testing.T) {
 		lim := long
 		lim.MaxInFlightBytes = body * 8
 		lim.MaxConnsPerToken = 1
 		srv := startRejected(t, "t", lim)
-		sent := floodRejectedStreams(t, srv, "Bearer t", 1, body)
+		sent, closeConn := floodRejectedStreams(t, srv, "Bearer t", 1, body)
 		if sent < 32 {
 			t.Fatalf("sent %d streams before the connection closed", sent)
 		}
+		// The flood connection is still open, so the admitted stream is
+		// still waiting on its body. closeConn drops it.
 		if got := srv.ReadingRPCs(); got != 1 {
 			t.Fatalf("token cap left %d tracked RPCs", got)
 		}
 		if got := srv.BudgetUsed(); got != body {
 			t.Fatalf("token cap budget %d, want %d", got, body)
+		}
+		closeConn()
+		waitForNoGRPCState(t, srv)
+		client := traceClient(t, srv.GRPCAddress())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer t")
+		if _, err := client.Export(ctx, spanReq(0)); err != nil {
+			t.Fatalf("token slot still held after close: %v", err)
 		}
 	})
 	t.Run("inflight limit", func(t *testing.T) {
@@ -942,7 +1140,7 @@ func TestRejectedGRPCStreamsLeaveNoPerStreamState(t *testing.T) {
 		lim.MaxInFlightBytes = body
 		lim.MaxConnsPerToken = 64
 		srv := startRejected(t, "t", lim)
-		sent := floodRejectedStreams(t, srv, "Bearer t", 1, body)
+		sent, closeConn := floodRejectedStreams(t, srv, "Bearer t", 1, body)
 		if sent < 32 {
 			t.Fatalf("sent %d streams before the connection closed", sent)
 		}
@@ -952,6 +1150,8 @@ func TestRejectedGRPCStreamsLeaveNoPerStreamState(t *testing.T) {
 		if got := srv.BudgetUsed(); got != body {
 			t.Fatalf("inflight budget %d, want %d", got, body)
 		}
+		closeConn()
+		waitForNoGRPCState(t, srv)
 	})
 }
 
@@ -1159,14 +1359,21 @@ func readUntilSettings(fr *http2.Framer) (*http2.SettingsFrame, error) {
 // open, holding budgetCap between them. Every stream after that, and a
 // trailing run of DATA frames on ids that never sent headers, must not
 // raise the tracked-RPC count or the budget. The returned count is how
-// many of those later streams were written.
-func floodRejectedStreams(t *testing.T, srv *server.Server, authorization string, admit int, budgetCap int64) int {
+// many of those later streams were written. closeConn ends the
+// connection; the caller checks per-stream state while it is still
+// open, then closes it. The connection is also closed when the test
+// ends.
+func floodRejectedStreams(t *testing.T, srv *server.Server, authorization string, admit int, budgetCap int64) (int, func()) {
 	t.Helper()
 	c, err := net.DialTimeout("tcp", srv.GRPCAddress(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	var closeOnce sync.Once
+	closeConn := func() {
+		closeOnce.Do(func() { _ = c.Close() })
+	}
+	t.Cleanup(closeConn)
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := io.WriteString(c, http2.ClientPreface); err != nil {
 		t.Fatal(err)
@@ -1241,7 +1448,20 @@ func floodRejectedStreams(t *testing.T, srv *server.Server, authorization string
 	if after.HeapAlloc > before.HeapAlloc && after.HeapAlloc-before.HeapAlloc > 32<<20 {
 		t.Fatalf("heap grew by %d bytes while the connection was open", after.HeapAlloc-before.HeapAlloc)
 	}
-	return sent
+	return sent, closeConn
+}
+
+// waitForNoGRPCState waits until a closed connection has dropped its
+// admitted streams. Cleanup is asynchronous with the TCP close.
+func waitForNoGRPCState(t *testing.T, srv *server.Server) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.ReadingRPCs() != 0 || srv.BudgetUsed() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("after close: tracked %d, budget %d", srv.ReadingRPCs(), srv.BudgetUsed())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func writeExportHeaders(fr *http2.Framer, id uint32, addr, authorization string) error {
