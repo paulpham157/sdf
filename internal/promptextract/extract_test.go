@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Fixtures in this file are synthetic. They are not a capture from a live
@@ -508,6 +510,31 @@ func TestQuickFilterMatchesExtract(t *testing.T) {
 	if !bytes.Equal(out, want.Bytes()) {
 		t.Fatalf("jq:\n%s\ngo:\n%s", out, want.Bytes())
 	}
+
+	// The hand-written 2.1.332-shaped fixture is part of this parity
+	// check. Extract and the doc's jq filter both keep 3 of 3 prompts.
+	fixture := readTestdata(t, "claude_code_live_shape_v2_1_332.jsonl")
+	cmd = exec.Command(jq, "-Rr", "-f", script)
+	cmd.Stdin = bytes.NewReader(fixture)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("jq fixture: %v\n%s", err, out)
+	}
+	res, err = Extract(bytes.NewReader(fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 0 || len(res.Prompts) != 3 {
+		t.Fatalf("fixture prompts %d errors %v", len(res.Prompts), res.Errors)
+	}
+	want.Reset()
+	for _, p := range res.Prompts {
+		want.WriteString(p.Text)
+		want.WriteByte('\n')
+	}
+	if !bytes.Equal(out, want.Bytes()) {
+		t.Fatalf("fixture jq:\n%s\ngo:\n%s", out, want.Bytes())
+	}
 }
 
 func TestQuickFilterNonObjectMessageAndCrossedTags(t *testing.T) {
@@ -836,6 +863,115 @@ func TestExtractStreamCaps(t *testing.T) {
 	if !errors.Is(err, ErrInputTooLarge) || res.Prompts != nil || res.Errors != nil {
 		t.Fatalf("input cap: %v %#v", err, res)
 	}
+}
+
+// claude_code_live_shape_v2_1_332.jsonl is hand-written. It follows the
+// Claude Code 2.1.332 record types observed on Linux, non-interactive, on
+// 2026-11-27. It is not a capture: paths, ids, and timestamps are synthetic.
+// Fifteen lines, because that pass named nine non-user types, two attachment
+// roles, three typed prompts, and one tool_result-only user record.
+// queue-operation repeats the greeting on message.content so a type-blind
+// read would double-count it. The live key for that duplicate is not
+// claimed here. last-prompt's duplicate is the observed lastPrompt field.
+func TestClaudeCodeLiveShapeFixture(t *testing.T) {
+	body := readTestdata(t, "claude_code_live_shape_v2_1_332.jsonl")
+	if !utf8.Valid(body) {
+		t.Fatal("fixture is not UTF-8")
+	}
+	lines := bytes.Split(bytes.TrimSuffix(body, []byte("\n")), []byte("\n"))
+	if len(lines) != 15 {
+		t.Fatalf("lines %d", len(lines))
+	}
+	res, err := Extract(bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Errors) != 0 {
+		t.Fatalf("errors %v", res.Errors)
+	}
+	session := "00000000-0000-4000-8000-000000000001"
+	want := []Prompt{
+		{Line: 3, UUID: "00000000-0000-4000-8000-000000000011", SessionID: session, Timestamp: "2026-11-27T00:00:01Z", Text: "Chào bạn 👋"},
+		{Line: 6, UUID: "00000000-0000-4000-8000-000000000012", SessionID: session, Timestamp: "2026-11-27T00:00:03Z", Text: "Đọc README.md rồi tóm tắt một câu."},
+		{Line: 12, UUID: "00000000-0000-4000-8000-000000000013", SessionID: session, Timestamp: "2026-11-27T00:00:07Z", Text: "Giữ nguyên <system-reminder> chưa đóng"},
+	}
+	if len(res.Prompts) != len(want) {
+		t.Fatalf("prompts %#v", res.Prompts)
+	}
+	for i, p := range res.Prompts {
+		if p != want[i] {
+			t.Fatalf("prompt %d %#v want %#v", i, p, want[i])
+		}
+		for _, r := range p.Text {
+			if unicode.Is(unicode.Mn, r) {
+				t.Fatalf("prompt %d is not NFC: %q", i, p.Text)
+			}
+		}
+	}
+	if !strings.Contains(res.Prompts[2].Text, "<system-reminder>") || strings.Contains(res.Prompts[2].Text, "</system-reminder>") {
+		t.Fatalf("unclosed reminder not preserved: %q", res.Prompts[2].Text)
+	}
+}
+
+func TestTestdataFixtureHygiene(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	dir := filepath.Join(filepath.Dir(file), "testdata")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("testdata is empty")
+	}
+	forbidden := []string{
+		"/workspace/transcript-verify",
+		"/Users/",
+		"/home/",
+		"@anthropic.com",
+		"Asia/Ho_Chi_Minh",
+		"TOKENROUTER_API_KEY=",
+	}
+	sawFile := false
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			t.Errorf("testdata subdirectory %s", name)
+			continue
+		}
+		sawFile = true
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".db") || strings.HasSuffix(lower, "-wal") || strings.HasSuffix(lower, "-shm") {
+			t.Errorf("testdata must not commit %s", name)
+		}
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range forbidden {
+			if bytes.Contains(body, []byte(s)) {
+				t.Errorf("%s contains %q", name, s)
+			}
+		}
+	}
+	if !sawFile {
+		t.Fatal("testdata has no fixture files")
+	}
+}
+
+func readTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(file), "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestNotWiredIntoSDF(t *testing.T) {

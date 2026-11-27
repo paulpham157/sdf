@@ -166,7 +166,7 @@ check decisions. Record user-visible changes in `CHANGELOG.md` under
 | [design/tokens.md](design/tokens.md) | Shared cream, charcoal, and rust tokens, and how the UI, the docs site, and the landing page use them. Sits beside `design/tokens.json`, `design/tokens.py`, and `design/tokens.css`. |
 | [dev-docs/gaps.md](dev-docs/gaps.md) | Known limits of the collector and the summary |
 | [dev-docs/research/session-boundary.md](dev-docs/research/session-boundary.md) | How each agent marks session open and close |
-| [dev-docs/research/user-prompt-extraction.md](dev-docs/research/user-prompt-extraction.md) | How to separate user-typed prompt text from harness text, and what is still unverified per agent. The experimental filter is `internal/promptextract`. |
+| [dev-docs/research/user-prompt-extraction.md](dev-docs/research/user-prompt-extraction.md) | How to separate user-typed prompt text from harness text. Local transcript shapes for the eight agents were checked live on 2026-11-27 (Linux, non-interactive); some rows remain needs verification. The experimental filter is `internal/promptextract`. |
 | [dev-docs/diagrams.md](dev-docs/diagrams.md) | How to open, edit, and re-export the tldraw diagrams. The `.tldr` sources and PNG renders stay in `docs/diagrams/` because the user guides embed them. |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records. [ADR 0001](docs/adr/0001-diagram-tool-excalidraw-vs-tldraw.md) proposes keeping tldraw for those diagrams. |
 
