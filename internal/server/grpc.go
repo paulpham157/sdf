@@ -50,6 +50,10 @@ func (l logsService) Export(ctx context.Context, req *collogspb.ExportLogsServic
 }
 
 func ingest(ctx context.Context, srv *Server, signal string, msg proto.Message) error {
+	// Drop the admission before returning. gRPC writes the status after
+	// this return, so the reservation and the token slot are free before
+	// the client can observe the result and start another call.
+	defer releaseAdmitted(ctx)
 	// The gRPC server has already decoded the request. Size is the encoded
 	// length. Zero means the server was not started and the package default
 	// applies, which is what a direct call and the benchmark use.

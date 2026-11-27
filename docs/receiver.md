@@ -137,8 +137,13 @@ reservation stays until the message has fully arrived. `--read-timeout`
 cancels a call that has not arrived by then with `DEADLINE_EXCEEDED` and
 releases the reservation, including a header-only stream. The timer is
 stopped once the message is in hand, before the SQLite commit, and the
-reservation shrinks to the encoded size. A message larger than the body
-cap is `RESOURCE_EXHAUSTED` with no retry hint. Without a token, any
+reservation shrinks to the encoded size. That shrunk reservation and the
+per-token slot are released when the handler returns, before gRPC writes
+the status, so the next call is not rejected for budget or a token slot
+the previous call has already finished with. A call that never reaches
+the handler releases once its stream context has ended, and the next
+admission does not wait on that cleanup goroutine. A message larger than
+the body cap is `RESOURCE_EXHAUSTED` with no retry hint. Without a token, any
 local process can open these streams and hold a full body reservation
 on each one until that deadline. On loopback every client shares one
 address, so a per-address connection cap cannot separate them, and the
