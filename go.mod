@@ -7,7 +7,7 @@ toolchain go1.26.11
 require (
 	github.com/BurntSushi/toml v1.6.0
 	go.opentelemetry.io/proto/otlp v1.11.1
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/sys v0.50.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b
 	google.golang.org/grpc v1.85.0
@@ -22,7 +22,7 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
