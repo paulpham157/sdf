@@ -2,11 +2,15 @@
 // session JSONL stream.
 //
 // The package is experimental. It is intentionally unwired from sdf serve,
-// the CLI, and the SQLite store until a future ADR under docs/adr/ accepts
-// it and a live transcript has been checked for each agent. Nothing in
-// this module imports it. Extract reads an io.Reader and does not open
-// ~/.claude. The default stays: prompt text is stored only with an opt-in
-// such as --store-content.
+// the CLI, and the SQLite store. Wiring still waits on an ADR under
+// docs/adr/, on the Claude edge cases that are still open, and on the
+// default that prompt text is stored only with an opt-in such as
+// --store-content. A well-formed Claude Code 2.1.332 pass (Linux,
+// non-interactive, 2026-11-27) is recorded in
+// dev-docs/research/user-prompt-extraction.md. This package stays
+// Claude-only: it does not read the other seven agents. Nothing in this
+// module imports it. Extract reads an io.Reader and does not open
+// ~/.claude.
 //
 // What the filter drops, on the rules in
 // dev-docs/research/user-prompt-extraction.md: a record whose type is not
