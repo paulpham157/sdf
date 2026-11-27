@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -945,24 +946,28 @@ func TestTestdataFixtureHygiene(t *testing.T) {
 	}
 	uuidPattern := regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 	syntheticUUID := regexp.MustCompile(`^00000000-0000-4000-8000-[0-9]{12}$`)
-	banned := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`),
-		regexp.MustCompile(`(?i)sk-[A-Za-z0-9_\-]{16,}`),
-		regexp.MustCompile(`(?i)bearer\s`),
-		regexp.MustCompile(`(?i)api[_-]?key`),
-		regexp.MustCompile(`(?i)/root/`),
-		regexp.MustCompile(`(?i)/workspace/`),
-		regexp.MustCompile(`(?i)/home/`),
-		regexp.MustCompile(`(?i)/users/`),
-		regexp.MustCompile(`(?i)[a-z]:\\users`),
-		regexp.MustCompile(`(?i)\b[0-9a-f]{40}\b`),
+	// Two backslashes: a JSONL line stores a Windows path as C:\\Users.
+	banned := []struct {
+		name string
+		re   *regexp.Regexp
+	}{
+		{"email", regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)},
+		{"secret-token", regexp.MustCompile(`(?i)sk-[A-Za-z0-9_\-]{16,}`)},
+		{"bearer", regexp.MustCompile(`(?i)bearer\s`)},
+		{"api-key", regexp.MustCompile(`(?i)api[_-]?key`)},
+		{"root-path", regexp.MustCompile(`(?i)/root/`)},
+		{"workspace-path", regexp.MustCompile(`(?i)/workspace/`)},
+		{"home-path", regexp.MustCompile(`(?i)/home/`)},
+		{"users-path", regexp.MustCompile(`(?i)/users/`)},
+		{"windows-users", regexp.MustCompile(`(?i)[a-z]:(\\\\|/)users`)},
+		{"commit-sha", regexp.MustCompile(`(?i)\b[0-9a-f]{40}\b`)},
 	}
 	dbSuffix := regexp.MustCompile(`(?i)(\.db|\.sqlite3?|-wal|-shm)$`)
 	sawFile := false
 	for _, e := range entries {
 		name := e.Name()
-		path := filepath.Join(dir, name)
-		info, err := os.Lstat(path)
+		fpath := filepath.Join(dir, name)
+		info, err := os.Lstat(fpath)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -981,37 +986,87 @@ func TestTestdataFixtureHygiene(t *testing.T) {
 		if dbSuffix.MatchString(name) {
 			t.Errorf("testdata must not commit %s", name)
 		}
-		body, err := os.ReadFile(path)
+		body, err := os.ReadFile(fpath)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, id := range uuidPattern.FindAll(body, -1) {
-			if !syntheticUUID.Match(id) {
-				t.Errorf("%s uuid %s", name, id)
+		for _, loc := range uuidPattern.FindAllIndex(body, -1) {
+			if !syntheticUUID.Match(body[loc[0]:loc[1]]) {
+				t.Errorf("%s line %d matches synthetic-uuid", name, hygieneLine(body, loc[0]))
 			}
 		}
-		for _, line := range bytes.Split(bytes.TrimSuffix(body, []byte("\n")), []byte("\n")) {
+		for i, line := range bytes.Split(bytes.TrimSuffix(body, []byte("\n")), []byte("\n")) {
 			if len(bytes.TrimSpace(line)) == 0 {
 				continue
 			}
 			var v any
 			if err := json.Unmarshal(line, &v); err != nil {
-				t.Fatalf("%s: %v", name, err)
+				t.Fatalf("%s line %d matches json", name, i+1)
 			}
+			lineNo := i + 1
 			walkJSONStrings(v, func(s string) {
-				if strings.HasPrefix(s, "/") && !strings.HasPrefix(s, "/tmp/example-project") {
-					t.Errorf("%s absolute path %q", name, s)
+				if windowsDrivePath.MatchString(s) || windowsUsersSegment.MatchString(s) {
+					t.Errorf("%s line %d matches windows-path", name, lineNo)
+				}
+				if strings.HasPrefix(s, "/") && !allowedExamplePath(s) {
+					t.Errorf("%s line %d matches example-path", name, lineNo)
 				}
 			})
 		}
-		for _, re := range banned {
-			if loc := re.Find(body); loc != nil {
-				t.Errorf("%s matches %s: %q", name, re, loc)
+		for _, rule := range banned {
+			if loc := rule.re.FindIndex(body); loc != nil {
+				t.Errorf("%s line %d matches %s", name, hygieneLine(body, loc[0]), rule.name)
 			}
 		}
 	}
 	if !sawFile {
 		t.Fatal("testdata has no fixture files")
+	}
+}
+
+// windowsDrivePath matches a decoded Windows path such as C:\ or C:/.
+// windowsUsersSegment matches a \Users\ or /Users/ segment in that string.
+var (
+	windowsDrivePath    = regexp.MustCompile(`(?i)^[a-z]:[\\/]`)
+	windowsUsersSegment = regexp.MustCompile(`(?i)[\\/]users[\\/]`)
+)
+
+func hygieneLine(body []byte, at int) int {
+	return bytes.Count(body[:at], []byte("\n")) + 1
+}
+
+// allowedExamplePath accepts the synthetic root and descendants that stay
+// under it. A sibling prefix and a .. segment are rejected. path.Clean
+// catches an escape that a raw segment check can miss.
+func allowedExamplePath(s string) bool {
+	const root = "/tmp/example-project"
+	if s != root && !strings.HasPrefix(s, root+"/") {
+		return false
+	}
+	for _, seg := range strings.Split(s, "/") {
+		if seg == ".." {
+			return false
+		}
+	}
+	cleaned := path.Clean(s)
+	return cleaned == root || strings.HasPrefix(cleaned, root+"/")
+}
+
+func TestFixtureHygienePathRules(t *testing.T) {
+	if !allowedExamplePath("/tmp/example-project") || !allowedExamplePath("/tmp/example-project/README.md") {
+		t.Fatal("example-path rejected the synthetic root")
+	}
+	if allowedExamplePath("/tmp/example-project-evil/x") || allowedExamplePath("/tmp/example-project/../homes/x") {
+		t.Fatal("example-path allowed an escape")
+	}
+	// JSONL stores one Windows backslash as two bytes.
+	raw := []byte(`{"cwd":"C:\\Users\\alice"}`)
+	if regexp.MustCompile(`(?i)[a-z]:(\\\\|/)users`).FindIndex(raw) == nil {
+		t.Fatal("windows-users missed a JSON-escaped drive path")
+	}
+	decoded := `C:\Users\alice`
+	if !windowsDrivePath.MatchString(decoded) || !windowsUsersSegment.MatchString(decoded) {
+		t.Fatal("windows-path missed a decoded drive path")
 	}
 }
 
