@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -96,16 +97,28 @@ func (s *Server) beforeInsert() error {
 // also releases a header-only stream. The handler stops that timer
 // before the SQLite commit.
 //
-// The reservation is released when the returned context ends, including
-// when the RPC is rejected after the tap (unknown method, oversized
-// length prefix, handler error). Oversized messages are still
-// RESOURCE_EXHAUSTED from the transport and carry no RetryInfo, so a
-// client must not retry them. A cap rejection carries RetryInfo, so it
-// is retryable.
+// The handler releases the reservation, the per-token slot, and the
+// per-stream tracking before it returns. gRPC writes the status after
+// that return, so a client that has observed the result can start
+// another call without seeing this one as still in flight. Once
+// `ingest` has started, a client cancel does not release early: the
+// decoded request is still in memory until the handler returns. A call
+// that never reaches the handler (client cancel, a length prefix over
+// the receive cap, connection close) releases when its stream context
+// ends. That callback runs in another goroutine. gRPC cancels the
+// stream context before it flushes the status, so the next admission
+// reaps finished calls that have not entered the handler, and does not
+// lose the race to that goroutine.
+// Oversized messages are still RESOURCE_EXHAUSTED from the transport
+// and carry no RetryInfo, so a client must not retry them. A cap
+// rejection carries RetryInfo, so it is retryable.
 func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, error) {
 	if err := s.checkGRPCAuth(ctx); err != nil {
 		return nil, err
 	}
+	// A finished call may still be in the map: its context was cancelled
+	// on the handler goroutine, and the release callback has not run.
+	s.reapFinishedReads()
 	var releaseToken func()
 	if s.Token != "" {
 		rel, ok := s.tokens.Acquire()
@@ -129,25 +142,82 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 	// cancels the read. Stopping the timer leaves the context alive, so
 	// the commit is not under the deadline.
 	live := newReadCtx(ctx, wait)
-	s.trackRead(live)
-	rh := &rpcHold{hold: hold, stop: live.stop}
-	context.AfterFunc(live, func() {
-		live.stop()
-		s.untrackRead(live)
-		if releaseToken != nil {
-			releaseToken()
+	rh := &rpcHold{
+		hold:         hold,
+		stop:         live.stop,
+		releaseToken: releaseToken,
+		untrack:      func() { s.untrackRead(live) },
+	}
+	live.rh = rh
+	stopAfter := context.AfterFunc(live, func() {
+		if rh.entered.Load() {
+			return
 		}
-		hold.Release()
+		rh.release()
 	})
+	rh.stopAfter.Store(&stopAfter)
+	s.trackRead(live)
+	// AfterFunc may have already run release when the stream context was
+	// done. That release untracked before this insert, so drop the entry
+	// again or the call stays in the map with nothing left to release it.
+	if rh.released.Load() {
+		s.untrackRead(live)
+	}
 	return context.WithValue(live, rpcHoldKey{}, rh), nil
 }
 
-// rpcHold is the pessimistic gRPC reservation for one RPC.
+// rpcHold is one admitted gRPC call's reservation, token slot, and
+// per-stream tracking. release is safe to call more than once and from
+// the handler, the context callback, and a later admission.
 type rpcHold struct {
-	hold       *netlimit.Hold
-	stop       func()
-	commitOnce sync.Once
-	commitDone func()
+	hold         *netlimit.Hold
+	stop         func()
+	stopAfter    atomic.Pointer[func() bool]
+	releaseToken func()
+	untrack      func()
+	entered      atomic.Bool
+	released     atomic.Bool
+	releaseOnce  sync.Once
+	commitOnce   sync.Once
+	commitDone   func()
+}
+
+// release returns the byte reservation and the token slot and drops the
+// per-stream tracking. The read timer is stopped so a late fire does not
+// cancel a call that already finished. stopAfter detaches the context
+// callback so a handler release does not leave it registered.
+func (rh *rpcHold) release() {
+	if rh == nil {
+		return
+	}
+	rh.releaseOnce.Do(func() {
+		rh.released.Store(true)
+		if f := rh.stopAfter.Load(); f != nil {
+			(*f)()
+		}
+		if rh.stop != nil {
+			rh.stop()
+		}
+		if rh.untrack != nil {
+			rh.untrack()
+		}
+		if rh.releaseToken != nil {
+			rh.releaseToken()
+		}
+		if rh.hold != nil {
+			rh.hold.Release()
+		}
+	})
+}
+
+// releaseAdmitted drops the admission stored by admitRPC. A context
+// without one (a direct ingest call, before Start) does nothing.
+func releaseAdmitted(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	rh, _ := ctx.Value(rpcHoldKey{}).(*rpcHold)
+	rh.release()
 }
 
 type rpcHoldKey struct{}
@@ -204,10 +274,11 @@ func releaseGRPCCommit(ctx context.Context) {
 // readCtx is the stream context for one admitted RPC. Its timer cancels
 // the read with context.DeadlineExceeded after --read-timeout. stop
 // disarms that timer without cancelling, which is how the commit stays
-// off the deadline. The parent cancel still ends the context, so the
-// reservation is released when the RPC finishes.
+// off the deadline. The parent cancel still ends the context. rh is the
+// admission to release when that happens or when the handler returns.
 type readCtx struct {
 	context.Context
+	rh       *rpcHold
 	done     chan struct{}
 	deadline time.Time
 	mu       sync.Mutex
@@ -310,6 +381,49 @@ func (s *Server) untrackRead(c *readCtx) {
 	s.phaseMu.Lock()
 	delete(s.reads, c)
 	s.phaseMu.Unlock()
+}
+
+// reapFinishedReads releases admissions whose RPC has already ended and
+// that have not entered the handler. The stream context is cancelled
+// before the status is flushed, and the context callback that releases
+// the admission runs later, on another goroutine. Walking the map here,
+// on the goroutine that is about to take a new slot, closes that gap.
+// The scan is bounded by the listener cap and the per-connection stream
+// cap (<= 128*32).
+func (s *Server) reapFinishedReads() {
+	if s == nil {
+		return
+	}
+	s.phaseMu.Lock()
+	var done []*readCtx
+	for c := range s.reads {
+		if c.finished() {
+			done = append(done, c)
+		}
+	}
+	s.phaseMu.Unlock()
+	for _, c := range done {
+		if c == nil || c.rh == nil || c.rh.entered.Load() {
+			continue
+		}
+		c.rh.release()
+	}
+}
+
+// finished reports that this call is no longer in flight. The done
+// channel is closed by the read timer and by parent cancellation once
+// that goroutine has run. The parent error is set earlier, on the
+// handler goroutine, before the status is flushed.
+func (c *readCtx) finished() bool {
+	if c == nil {
+		return false
+	}
+	select {
+	case <-c.done:
+		return true
+	default:
+	}
+	return c.Context != nil && c.Context.Err() != nil
 }
 
 func (s *Server) cancelReadingRPCs() {

@@ -25,6 +25,12 @@ func (s *Server) BudgetUsed() int64 {
 	return s.budget.Used()
 }
 
+// AdmitRPC runs the gRPC tap on ctx. Tests use it to admit a call whose
+// context is already cancelled.
+func (s *Server) AdmitRPC(ctx context.Context) (context.Context, error) {
+	return s.admitRPC(ctx, nil)
+}
+
 // ReadingRPCs is how many admitted gRPC calls are still tracked. The tap
 // creates that state only after auth succeeds. Tests use the count to
 // prove an unauthenticated client does not accumulate per-stream state.
