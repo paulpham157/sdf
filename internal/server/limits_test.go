@@ -336,6 +336,48 @@ func TestGRPCTokenSlotIsReleasedBeforeTheNextCall(t *testing.T) {
 	}
 }
 
+// TestAdmitRPCOnCancelledContext admits calls whose context is already
+// cancelled, from several goroutines. That overlaps the context callback
+// and reapFinishedReads with the stopAfter store.
+func TestAdmitRPCOnCancelledContext(t *testing.T) {
+	const body = 64
+	srv, _ := startLimited(t, netlimit.Limits{
+		MaxBodyBytes:     body,
+		MaxInFlightBytes: body * 4096,
+		ReadTimeout:      5 * time.Second,
+	})
+	var wg sync.WaitGroup
+	const workers = 8
+	const loops = 64
+	errc := make(chan error, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range loops {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				if _, err := srv.AdmitRPC(ctx); err != nil {
+					errc <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.BudgetUsed() != 0 || srv.ReadingRPCs() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("after cancelled admissions: tracked %d, budget %d", srv.ReadingRPCs(), srv.BudgetUsed())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestGRPCCancelDuringCommitKeepsAdmission(t *testing.T) {
 	const body = 4096
 	db, err := store.Open(filepath.Join(t.TempDir(), "telemetry.sqlite"))

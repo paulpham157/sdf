@@ -100,8 +100,8 @@ func (s *Server) beforeInsert() error {
 // The handler releases the reservation, the per-token slot, and the
 // per-stream tracking before it returns. gRPC writes the status after
 // that return, so a client that has observed the result can start
-// another call without seeing this one as still in flight. Once the
-// handler has started, a client cancel does not release early: the
+// another call without seeing this one as still in flight. Once
+// `ingest` has started, a client cancel does not release early: the
 // decoded request is still in memory until the handler returns. A call
 // that never reaches the handler (client cancel, a length prefix over
 // the receive cap, connection close) releases when its stream context
@@ -149,13 +149,20 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 		untrack:      func() { s.untrackRead(live) },
 	}
 	live.rh = rh
-	s.trackRead(live)
-	rh.stopAfter = context.AfterFunc(live, func() {
+	stopAfter := context.AfterFunc(live, func() {
 		if rh.entered.Load() {
 			return
 		}
 		rh.release()
 	})
+	rh.stopAfter.Store(&stopAfter)
+	s.trackRead(live)
+	// AfterFunc may have already run release when the stream context was
+	// done. That release untracked before this insert, so drop the entry
+	// again or the call stays in the map with nothing left to release it.
+	if rh.released.Load() {
+		s.untrackRead(live)
+	}
 	return context.WithValue(live, rpcHoldKey{}, rh), nil
 }
 
@@ -165,10 +172,11 @@ func (s *Server) admitRPC(ctx context.Context, _ *tap.Info) (context.Context, er
 type rpcHold struct {
 	hold         *netlimit.Hold
 	stop         func()
-	stopAfter    func() bool
+	stopAfter    atomic.Pointer[func() bool]
 	releaseToken func()
 	untrack      func()
 	entered      atomic.Bool
+	released     atomic.Bool
 	releaseOnce  sync.Once
 	commitOnce   sync.Once
 	commitDone   func()
@@ -183,8 +191,9 @@ func (rh *rpcHold) release() {
 		return
 	}
 	rh.releaseOnce.Do(func() {
-		if rh.stopAfter != nil {
-			rh.stopAfter()
+		rh.released.Store(true)
+		if f := rh.stopAfter.Load(); f != nil {
+			(*f)()
 		}
 		if rh.stop != nil {
 			rh.stop()
