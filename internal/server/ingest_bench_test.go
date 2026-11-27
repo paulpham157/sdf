@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -27,7 +28,7 @@ func BenchmarkIngest(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := ingest(srv, "logs", req); err != nil {
+		if err := ingest(context.Background(), srv, "logs", req); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestIngestRejectsAnOversizedProto(t *testing.T) {
 			}},
 		}},
 	}
-	err = ingest(&Server{Store: db, Quiet: true}, "logs", req)
+	err = ingest(context.Background(), &Server{Store: db, Quiet: true}, "logs", req)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("code %v err %v", status.Code(err), err)
 	}

@@ -54,6 +54,7 @@ import (
 	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/decisiongraph"
 	"github.com/paulpham157/sdf/internal/httphost"
+	"github.com/paulpham157/sdf/internal/netlimit"
 	"github.com/paulpham157/sdf/internal/pricing"
 	"github.com/paulpham157/sdf/internal/store"
 	"github.com/paulpham157/sdf/internal/summary"
@@ -65,15 +66,11 @@ const DefaultAddr = "127.0.0.1:4320"
 
 const csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-// Timeouts bound a slow or idle client. WriteTimeout includes handler time,
-// and a --github refresh calls the GitHub API inside the handler, so the
-// write budget is long enough for a few of those calls.
-const (
-	uiReadHeaderTimeout = 5 * time.Second
-	uiReadTimeout       = 30 * time.Second
-	uiWriteTimeout      = 3 * time.Minute
-	uiIdleTimeout       = 90 * time.Second
-)
+// uiWriteTimeout includes handler time, and a --github refresh calls the
+// GitHub API inside the handler, so the write budget is long enough for
+// a few of those calls. Header, read, and idle timeouts come from
+// netlimit so they match the OTLP receiver.
+const uiWriteTimeout = 3 * time.Minute
 
 //go:embed assets/index.html assets/tokens.css assets/app.css assets/app.js assets/favicon.svg assets/favicon.ico
 var assetFS embed.FS
@@ -93,7 +90,17 @@ type Config struct {
 	// Log receives a line when a response cannot be encoded. Nil is
 	// os.Stderr.
 	Log io.Writer
+	// MaxConns, MaxConnsPerIP, and the timeouts match the OTLP receiver.
+	// Zero uses the same defaults. The write timeout stays long enough
+	// for a --github refresh and is not taken from ReadTimeout.
+	MaxConns          int
+	MaxConnsPerIP     int
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	IdleTimeout       time.Duration
 }
+
+type uiConnKey struct{}
 
 // Server is the UI listener.
 type Server struct {
@@ -101,6 +108,15 @@ type Server struct {
 	http    *http.Server
 	warning string
 	h       *handler
+
+	phaseMu sync.Mutex
+	// conns maps an admitted connection to whether it is still reading.
+	// Shutdown closes the ones that are. A handler that has started is left
+	// to finish so http.Shutdown can write its response.
+	conns map[net.Conn]bool
+	// blockHandler, when set, runs after the connection is marked in the
+	// handler and before the route. Tests use it. It is not set in production.
+	blockHandler func(context.Context)
 }
 
 // Start listens and serves until Shutdown. A non-loopback address returns a
@@ -139,15 +155,78 @@ func Start(cfg Config) (*Server, error) {
 		mux:    http.NewServeMux(),
 	}
 	h.routes()
-	httpSrv := &http.Server{
-		Handler:           h,
-		ReadHeaderTimeout: uiReadHeaderTimeout,
-		ReadTimeout:       uiReadTimeout,
-		WriteTimeout:      uiWriteTimeout,
-		IdleTimeout:       uiIdleTimeout,
+	hdr, read, idle, maxConns, maxPerIP, err := cfg.listenerLimits()
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
 	}
-	go func() { _ = httpSrv.Serve(ln) }()
-	return &Server{ln: ln, http: httpSrv, warning: bindWarning(host), h: h}, nil
+	wrapped := netlimit.Wrap(ln, maxConns, maxPerIP)
+	srv := &Server{ln: ln, warning: bindWarning(host), h: h}
+	httpSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The handler has the request. Leave the connection out of the
+			// set Shutdown closes, so an in-flight response can finish.
+			if c, ok := r.Context().Value(uiConnKey{}).(net.Conn); ok {
+				srv.noteConn(c, false)
+			}
+			if fn := srv.handlerBlock(); fn != nil {
+				fn(r.Context())
+			}
+			h.ServeHTTP(w, r)
+		}),
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			return context.WithValue(ctx, uiConnKey{}, c)
+		},
+		ConnState: func(c net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew, http.StateActive, http.StateIdle:
+				srv.noteConn(c, true)
+			case http.StateClosed, http.StateHijacked:
+				srv.dropConn(c)
+			}
+		},
+		ReadHeaderTimeout: hdr,
+		ReadTimeout:       read,
+		WriteTimeout:      uiWriteTimeout,
+		IdleTimeout:       idle,
+		MaxHeaderBytes:    1 << 20,
+	}
+	srv.http = httpSrv
+	go func() { _ = httpSrv.Serve(wrapped) }()
+	return srv, nil
+}
+
+// listenerLimits fills the same defaults the OTLP receiver uses. A
+// negative value is rejected. The per-address cap is never above the
+// total cap.
+func (cfg Config) listenerLimits() (hdr, read, idle time.Duration, maxConns, maxPerIP int, err error) {
+	hdr = cfg.ReadHeaderTimeout
+	if hdr == 0 {
+		hdr = netlimit.DefaultReadHeaderTimeout
+	}
+	read = cfg.ReadTimeout
+	if read == 0 {
+		read = netlimit.DefaultReadTimeout
+	}
+	idle = cfg.IdleTimeout
+	if idle == 0 {
+		idle = netlimit.DefaultIdleTimeout
+	}
+	maxConns = cfg.MaxConns
+	if maxConns == 0 {
+		maxConns = netlimit.DefaultMaxConns
+	}
+	maxPerIP = cfg.MaxConnsPerIP
+	if maxPerIP == 0 {
+		maxPerIP = netlimit.DefaultMaxConnsPerIP
+	}
+	if hdr < 0 || read < 0 || idle < 0 || maxConns < 1 || maxPerIP < 1 {
+		return 0, 0, 0, 0, 0, fmt.Errorf("ui limits must be positive")
+	}
+	if maxPerIP > maxConns {
+		maxPerIP = maxConns
+	}
+	return hdr, read, idle, maxConns, maxPerIP, nil
 }
 
 // URL is the browser address, including the trailing slash.
@@ -167,16 +246,55 @@ func (s *Server) BindWarning() string {
 	return s.warning
 }
 
-// Shutdown stops the listener. A nil server is a no-op.
+// Shutdown stops the listener. Connections that are still reading are
+// closed so a stalled client cannot hold the process for the header
+// timeout. A request whose handler has started is left to finish, and
+// http.Shutdown waits for it. A nil server is a no-op.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.http == nil {
 		return nil
 	}
+	s.closeReading()
 	err := s.http.Shutdown(ctx)
 	if s.h != nil {
 		s.h.closeReadOnly()
 	}
 	return err
+}
+
+func (s *Server) handlerBlock() func(context.Context) {
+	s.phaseMu.Lock()
+	defer s.phaseMu.Unlock()
+	return s.blockHandler
+}
+
+func (s *Server) noteConn(c net.Conn, reading bool) {
+	s.phaseMu.Lock()
+	if s.conns == nil {
+		s.conns = map[net.Conn]bool{}
+	}
+	s.conns[c] = reading
+	s.phaseMu.Unlock()
+}
+
+func (s *Server) dropConn(c net.Conn) {
+	s.phaseMu.Lock()
+	delete(s.conns, c)
+	s.phaseMu.Unlock()
+}
+
+func (s *Server) closeReading() {
+	s.phaseMu.Lock()
+	var reading []net.Conn
+	for c, still := range s.conns {
+		if still {
+			reading = append(reading, c)
+		}
+	}
+	s.phaseMu.Unlock()
+	for _, c := range reading {
+		_ = c.Close()
+	}
 }
 
 func normalizeAddr(addr string) (string, string, error) {

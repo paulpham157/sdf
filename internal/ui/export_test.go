@@ -1,12 +1,22 @@
 package ui
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"sync"
 
 	"github.com/paulpham157/sdf/internal/store"
 )
+
+// SetBlockHandler runs fn at the start of each request, after the
+// connection is no longer one Shutdown closes. Tests use it to prove a
+// handler that has started still finishes.
+func (s *Server) SetBlockHandler(fn func(context.Context)) {
+	s.phaseMu.Lock()
+	s.blockHandler = fn
+	s.phaseMu.Unlock()
+}
 
 // WriteJSONForTest runs the handler's JSON writer with log as its log.
 func WriteJSONForTest(log io.Writer, w http.ResponseWriter, r *http.Request, encode func(io.Writer) error) {

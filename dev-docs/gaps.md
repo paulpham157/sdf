@@ -1,9 +1,28 @@
 # Gaps
 
 - Content encodings other than `identity` and `gzip` are rejected with
-  HTTP 415. Gzip is inflated only up to 8,000,000 decompressed bytes.
+  HTTP 415. At most one non-identity coding is accepted, so `gzip, gzip`
+  is 415. Gzip is inflated only up to the per-request body cap
+  (8,000,000 bytes by default).
+  The in-flight byte budget counts the body while it is buffered. Memory
+  used after that body has been decoded into records is not part of the
+  budget.
+  The per-address connection key is the full remote IP. Rotating inside
+  an IPv6 /64 gets a new bucket. `X-Forwarded-For` is not read, so behind
+  a proxy the key is the proxy.
   Chunked HTTP and `Content-Length` are both accepted, and gRPC is a
   separate listener on port 4317. gRPC gzip uses the standard compressor.
+  Without a token, any local process can open gRPC streams and hold a
+  full body reservation on each one until `--read-timeout`. On loopback
+  every client shares one address, so no per-address cap is a fair split
+  between them, and those reservations can fill the gRPC share. Set a
+  token. With a token, an unauthenticated client reserves nothing.
+  Shutdown gives gRPC about 6 seconds: 2 seconds to finish, then streams
+  still reading are cancelled and a commit already in progress gets
+  another 2 seconds to write its status, and then the connection is
+  closed. A commit still running after that wait can be stored while the
+  client sees the connection close and retries, which can insert the same
+  export again.
 - Codex's published config reference does not catalog events or metrics. The
   Codex lists in [docs/agents.md](../docs/agents.md) can drift from a newer CLI. The Claude list follows
   the monitoring doc, which is versioned by Claude Code release in places

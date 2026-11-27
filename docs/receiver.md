@@ -45,9 +45,122 @@ returns `{"status":"ok"}`. The UI port does not serve it. HTTP exports are
 `Transfer-Encoding: chunked`. OpenCode trace batches and pi-otel HTTP posts
 are chunked and omit `Content-Length`. When both headers are present, chunked
 encoding wins. `Content-Encoding: gzip` is inflated after the body is
-framed, and the decompressed size is capped at 8,000,000 bytes. Any other
-content encoding gets HTTP 415. gRPC clients call the OTLP `TraceService`,
+framed, and the decompressed size is capped at the per-request body limit
+(8,000,000 bytes unless `--max-body-bytes` says otherwise). At most one
+non-identity coding is accepted. `identity, gzip` and `gzip, identity`
+are that one gzip layer. A second gzip, or any other coding, is HTTP 415.
+gRPC clients call the OTLP `TraceService`,
 `MetricsService`, and `LogsService` `Export` RPCs, and may gzip the message.
+
+### Resource limits
+
+Each listener (OTLP/HTTP, OTLP/gRPC, and the UI) has its own connection
+cap. The numbers below are the defaults. They are large enough for several
+local agents and small enough that a client cannot open connections, or
+hold request bytes, without bound. A flag overrides the matching
+environment variable. Leaving both unset uses the default. `0` and a
+negative value are rejected at startup; they do not turn the limit off.
+A per-address or per-token cap higher than the connection cap is lowered
+to the connection cap. The in-flight budget must be at least one maximum
+body, so one accepted request always fits when nothing else is in flight.
+
+| Limit | Flag | Environment | Default |
+| --- | --- | --- | --- |
+| Connections on one listener | `--max-conns` | `SDF_MAX_CONNS` | 128 |
+| Connections from one address | `--max-conns-per-ip` | `SDF_MAX_CONNS_PER_IP` | 64 |
+| Authenticated requests in flight | `--max-conns-per-token` | `SDF_MAX_CONNS_PER_TOKEN` | 64 |
+| One request body, including after gzip | `--max-body-bytes` | `SDF_MAX_BODY_BYTES` | 8000000 |
+| Bytes buffered at once | `--max-inflight-bytes` | `SDF_MAX_INFLIGHT_BYTES` | 67108864 |
+| Time to send headers | `--read-header-timeout` | `SDF_READ_HEADER_TIMEOUT` | 5s |
+| Time to send an HTTP body or a gRPC message | `--read-timeout` | `SDF_READ_TIMEOUT` | 30s |
+| Keep-alive idle time | `--idle-timeout` | `SDF_IDLE_TIMEOUT` | 90s |
+
+Durations use Go's notation (`5s`, `1m30s`). The same connection numbers
+and the three timeouts apply to the UI. The UI's write timeout stays 3
+minutes so a `--github` refresh can finish. The byte caps apply to OTLP
+bodies only.
+
+An idle keep-alive connection counts toward the connection cap until it
+closes or the idle timeout fires. The same connection also closes after
+1000 requests or 10 minutes, whichever comes first. The per-token cap
+counts authenticated requests that have not finished yet, and only when a
+token is configured. `--max-conns-per-token` is that in-flight request
+cap. It does not count idle connections. `GET /health` does not take a
+token slot. When a token is set, a response that is not an authenticated
+write (`GET /health`, a 404, a 401, a 403) sends `Connection: close`, so
+an unauthenticated client cannot hold a slot by polling inside the idle
+timeout. On loopback every connection is the same address, so the
+per-address cap is the limit a local client can reach.
+
+The per-address key is the full remote IP. An IPv6 client that changes
+address inside one /64 is counted as a new address. The receiver does
+not read `X-Forwarded-For`. Behind a reverse proxy every connection is
+the proxy's address.
+
+What is rejected, and with which status:
+
+- A body larger than `--max-body-bytes`, including after gzip, is HTTP
+  **413** with no `Retry-After`. The same payload will not succeed if it
+  is retried. gRPC reports `RESOURCE_EXHAUSTED` with no retry hint, which
+  OTLP treats as not retryable.
+- The listener connection cap is HTTP **503** with `Retry-After: 1`.
+  One address over its own cap is HTTP **429** with `Retry-After: 1`.
+  Both are retryable. A gRPC connection past the cap is closed with no
+  bytes written. The client sees a broken connection and retries.
+- A forbidden Host or Origin (403) and a missing or wrong bearer token
+  (401) are answered without reserving in-flight bytes and without
+  allocating the `Content-Length`. The connection is closed.
+- The in-flight byte cap, and the per-token request cap, are HTTP **503**
+  (`inflight limit`) or **429** (`too many requests`), each with
+  `Retry-After: 1`. On gRPC both are `RESOURCE_EXHAUSTED` with `RetryInfo`
+  of one second, which is the retryable form of that code.
+- Headers that do not finish in time, or a connection that sends nothing,
+  are closed with no response. OTLP says a client retries when the server
+  disconnects. A body that stalls after the headers is HTTP **503** with
+  `Retry-After: 1`. A gRPC message that has not fully arrived within
+  `--read-timeout` is `DEADLINE_EXCEEDED`, which is retryable. The call
+  keeps its byte reservation until that deadline or until the message
+  arrives. The first byte of a later HTTP request starts the header
+  timer; until that byte, the idle timeout applies.
+
+gRPC also caps streams on one connection (32), header metadata (1 MiB),
+the HTTP/2 handshake (`--read-header-timeout`), and how long a connection
+may live (idle from `--idle-timeout`, and 30 minutes even if it stays
+busy). A client that pings more often than every 10 seconds is
+disconnected. Pings with no active RPC are allowed. An admitted gRPC call
+reserves `--max-body-bytes` from a gRPC share of the in-flight budget.
+That share is half the budget, and always enough for one maximum body.
+When `--max-inflight-bytes` equals `--max-body-bytes`, one body is the
+whole budget, so the gRPC share is the whole budget and HTTP is not left
+a separate remainder. A larger budget leaves HTTP the other half. The
+reservation stays until the message has fully arrived. `--read-timeout`
+cancels a call that has not arrived by then with `DEADLINE_EXCEEDED` and
+releases the reservation, including a header-only stream. The timer is
+stopped once the message is in hand, before the SQLite commit, and the
+reservation shrinks to the encoded size. A message larger than the body
+cap is `RESOURCE_EXHAUSTED` with no retry hint. Without a token, any
+local process can open these streams and hold a full body reservation
+on each one until that deadline. On loopback every client shares one
+address, so a per-address connection cap cannot separate them, and the
+gRPC share of the budget can stay full. Set a token. With a token, an
+unauthenticated client reserves nothing. On shutdown, gRPC gets about
+6 seconds: 2 seconds to finish, then streams still reading are cancelled
+and a commit already in progress gets another 2 seconds to write its
+status, and whatever is still open is closed.
+HTTP reserves the `Content-Length` (or each chunk, and both the compressed
+and the inflated bytes while gzip is expanding).
+
+Bytes used after a payload has been decoded into records are outside this
+budget. That limit is recorded in `dev-docs/gaps.md`.
+
+None of these responses is a partial success. A stored export is answered
+only after the SQLite commit, with HTTP 200 and `partial_success` left
+unset (JSON `{}`, or an empty protobuf). A request that does not fit is
+not queued and is not acknowledged early. On shutdown, gRPC is given
+about 6 seconds. Streams still reading after the first 2 seconds are
+cancelled, a commit already in progress gets another 2 seconds to write
+its status, and whatever is still open is then closed, so a header-only
+stream cannot hold the process until the connection age.
 
 Rows are one span, one metric point, or one log record. A span also stores
 `status_code` (`UNSET`, `OK`, or `ERROR`) and `status_message`. Databases
@@ -249,7 +362,13 @@ When a token is set, these requests must send `Authorization: Bearer <token>`:
   metadata key `authorization`
 
 A missing or wrong token is HTTP 401 or gRPC `Unauthenticated`. The comparison
-is constant-time. The token is not written to the request log. `GET /health`
+is constant-time. The token is not written to the request log. Without a
+token, any local process can open gRPC streams and hold a full body
+reservation on each one until `--read-timeout`. On loopback every client
+shares one address, so the per-address cap cannot separate them. That can
+fill the gRPC share of the in-flight budget so other gRPC exports wait.
+Set a token. With a token, an unauthenticated stream is rejected before it
+reserves bytes. `GET /health`
 does not require the token, so `sdf init --check` still works. A valid token
 does not bypass the media-type, `Origin`, or loopback `Host` checks above.
 Those still return 415 or 403 and write nothing.

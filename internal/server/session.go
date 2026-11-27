@@ -3,9 +3,11 @@ package server
 import (
 	"bufio"
 	"encoding/json"
+	"net"
 	"strings"
 	"time"
 
+	"github.com/paulpham157/sdf/internal/netlimit"
 	"github.com/paulpham157/sdf/internal/otlp"
 	"github.com/paulpham157/sdf/internal/record"
 )
@@ -31,29 +33,34 @@ type sessionEvent struct {
 // JSON, not an OTLP export, so it never reaches the OTLP decoder. A body the
 // collector cannot use is a 400 and stores nothing. A hook that posts nothing
 // useful still gets a response, so the agent is never blocked on it.
-func (s *Server) handleSession(reader *bufio.Reader, writer *bufio.Writer, headers []header, method, path string, closeAfter bool) (bool, error) {
-	body, err := readBody(reader, headers)
+func (s *Server) handleSession(conn net.Conn, reader *bufio.Reader, writer *bufio.Writer, headers []header, method, path string, closeAfter bool, plan *bodyPlan, hold *netlimit.Hold) (bool, error) {
+	body, err := s.readBody(reader, plan, hold)
 	if err != nil {
-		return s.writeBodyError(writer, method, path, err, closeAfter)
+		return s.writeBodyError(conn, writer, method, path, err, closeAfter)
 	}
 	// The hook posts application/json. text/plain is a CORS simple type, so a
 	// page could submit this JSON without a preflight if the type were ignored.
 	media, ok := otlp.HTTPMedia(headerGet(headers, "Content-Type"))
 	if !ok || media != "application/json" {
-		writeResponse(writer, 415, "text/plain", []byte("unsupported media type"), closeAfter)
+		s.reply(conn, writer, 415, "text/plain", []byte("unsupported media type"), closeAfter)
 		s.logRequest(method, path, 415)
 		return closeAfter, nil
 	}
 	rec, err := sessionRecord(body, time.Now())
 	if err != nil {
-		return s.writeBodyError(writer, method, path, err, closeAfter)
+		return s.writeBodyError(conn, writer, method, path, err, closeAfter)
+	}
+	if err := s.beginHTTPCommit(conn); err != nil {
+		s.reply(conn, writer, 503, "text/plain", []byte(msgStopping), true)
+		s.logRequest(method, path, 503)
+		return true, nil
 	}
 	if _, err := s.Store.Insert([]record.Record{rec}); err != nil {
-		writeResponse(writer, 500, "text/plain", []byte("store error"), true)
+		s.reply(conn, writer, 500, "text/plain", []byte("store error"), true)
 		s.logRequest(method, path, 500)
 		return true, nil
 	}
-	writeResponse(writer, 200, "application/json", []byte("{}"), closeAfter)
+	s.reply(conn, writer, 200, "application/json", []byte("{}"), closeAfter)
 	s.logRequest(method, path, 200)
 	return closeAfter, nil
 }

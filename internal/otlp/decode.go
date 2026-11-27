@@ -82,12 +82,26 @@ const grokSpanSessionKey = "session_id"
 // Decode parses an OTLP export body. contentType application/json selects
 // JSON. application/x-protobuf selects protobuf. Any other media type,
 // including an empty one, is rejected. Parameters such as charset are
-// allowed. The type match is case-insensitive.
+// allowed. The type match is case-insensitive. The body must be at most
+// MaxBodyBytes; DecodeLimited takes a different cap.
 func Decode(signal string, body []byte, contentType string) ([]record.Record, error) {
+	return decodeLimited(signal, body, contentType, MaxBodyBytes)
+}
+
+// DecodeLimited is Decode with an explicit body cap. A non-positive limit
+// is rejected so a caller cannot turn the check off.
+func DecodeLimited(signal string, body []byte, contentType string, limit int) ([]record.Record, error) {
+	if limit <= 0 {
+		return nil, errf("payload too large")
+	}
+	return decodeLimited(signal, body, contentType, limit)
+}
+
+func decodeLimited(signal string, body []byte, contentType string, limit int) ([]record.Record, error) {
 	if signal != "traces" && signal != "metrics" && signal != "logs" {
 		return nil, errf("unknown signal " + signal)
 	}
-	if len(body) > MaxBodyBytes {
+	if len(body) > limit {
 		return nil, errf("payload too large")
 	}
 	msg := newRequest(signal)
