@@ -3,14 +3,17 @@ package live
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +50,12 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	}
 	if opt.Parallel < 1 || opt.Parallel > 32 {
 		return Report{}, errors.New("parallel must be from 1 to 32")
+	}
+	if err := validateBase(opt.OpenAIBase); err != nil {
+		return Report{}, err
+	}
+	if err := validateBase(opt.AnthropicBase); err != nil {
+		return Report{}, err
 	}
 	agents, err := selectAgents(opt.Agents)
 	if err != nil {
@@ -86,6 +95,14 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 			return Report{}, err
 		}
 	}
+	if needRun && opt.Install {
+		prefix, err := os.MkdirTemp("", "sdf-recall-prefix-")
+		if err != nil {
+			return Report{}, err
+		}
+		defer os.RemoveAll(prefix)
+		opt.cliPrefix = prefix
+	}
 
 	type ready struct {
 		a   agent
@@ -105,7 +122,7 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		}
 		bin, lookErr := opt.look(a.Binary())
 		if lookErr != nil && opt.Install && len(a.InstallCommands()) > 0 {
-			_ = installCLI(ctx, a, opt.Key)
+			_ = installCLI(ctx, a, opt.Key, opt.cliPrefix)
 			bin, lookErr = opt.look(a.Binary())
 		}
 		if lookErr != nil {
@@ -309,6 +326,7 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 		OTLP:          "http://127.0.0.1:" + strconv.Itoa(otlpPort),
 		SkillSrc:      skill,
 		Prompt:        prompt,
+		LocalToken:    px.gate,
 	}
 	inv, err := a.Prepare(ctx, sp)
 	if err != nil {
@@ -320,8 +338,10 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 	runCtx, runCancel := context.WithTimeout(ctx, opt.RunTimeout)
 	defer runCancel()
 	cmd := exec.CommandContext(runCtx, bin, inv.Argv[1:]...)
+	isolateAgentCommand(cmd)
+	cmd.WaitDelay = 3 * time.Second
 	cmd.Dir = repo
-	cmd.Env = agentEnv(opt, home, filepath.Dir(sdfBin), a.Support().Protocol, inv)
+	cmd.Env = agentEnv(opt, home, filepath.Dir(sdfBin), a.Support().Protocol, inv, px.gate)
 	var stderrTail tailWriter
 	stderrTail.max = 64 << 10
 	logPath, logFile := openRunLog(opt, a.ID(), fx.Name, runIndex)
@@ -339,9 +359,17 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 	capped := px.cappedRun()
 	stopServe()
 	if runErr != nil {
-		detail := noiseTail(redact(stderrTail.String(), opt.Key), 4096)
-		if detail == "" {
-			detail = redact(runErr.Error(), opt.Key)
+		var detail string
+		switch {
+		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
+			detail = fmt.Sprintf("timeout after %s", opt.RunTimeout)
+		case runCtx.Err() != nil:
+			detail = "canceled"
+		default:
+			detail = noiseTail(redact(stderrTail.String(), opt.Key), 4096)
+			if detail == "" {
+				detail = redact(runErr.Error(), opt.Key)
+			}
 		}
 		if logPath != "" {
 			detail += " log: " + logPath
@@ -442,7 +470,10 @@ func resolveSDF(ctx context.Context, opt Options) (string, bool, error) {
 	return bin, true, nil
 }
 
-func installCLI(ctx context.Context, a agent, key string) error {
+func installCLI(ctx context.Context, a agent, key, prefix string) error {
+	if prefix == "" {
+		return errors.New("install prefix")
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	var last error
@@ -450,14 +481,49 @@ func installCLI(ctx context.Context, a agent, key string) error {
 		if len(argv) == 0 {
 			continue
 		}
+		argv = rewriteInstall(argv, prefix)
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-		cmd.Env = filterKey(os.Environ(), key)
+		cmd.Env = append(filterKey(os.Environ(), key),
+			"HOME="+prefix,
+			"NPM_CONFIG_PREFIX="+prefix,
+			"NPM_CONFIG_CACHE="+filepath.Join(prefix, "npm-cache"),
+			"PATH="+joinPath(filepath.Join(prefix, "bin")),
+		)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			last = fmt.Errorf("%s: %s", argv[0], truncate(redact(string(out), key), 200))
 		}
 	}
 	return last
+}
+
+// rewriteInstall points an npm -g install at prefix and keeps
+// --ignore-scripts. Commands that are not npm are unchanged. The prefix
+// is a directory this run created, not the user's npm prefix.
+func rewriteInstall(argv []string, prefix string) []string {
+	if len(argv) == 0 || argv[0] != "npm" || prefix == "" {
+		return argv
+	}
+	out := make([]string, 0, len(argv)+4)
+	out = append(out, argv[0])
+	ignore, hasPrefix := false, false
+	for i := 1; i < len(argv); i++ {
+		a := argv[i]
+		if a == "--ignore-scripts" {
+			ignore = true
+		}
+		if a == "--prefix" && i+1 < len(argv) {
+			hasPrefix = true
+		}
+		out = append(out, a)
+	}
+	if !hasPrefix {
+		out = append(out, "--prefix", prefix)
+	}
+	if !ignore {
+		out = append(out, "--ignore-scripts")
+	}
+	return out
 }
 
 func gitInit(ctx context.Context, repo, key string) error {
@@ -546,6 +612,12 @@ func waitPort(ctx context.Context, port int, d time.Duration) error {
 }
 
 func (o Options) look(name string) (string, error) {
+	if o.cliPrefix != "" {
+		p := filepath.Join(o.cliPrefix, "bin", name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p, nil
+		}
+	}
 	if o.LookPath != nil {
 		return o.LookPath(name)
 	}
@@ -561,9 +633,13 @@ func baseEnv(home, sdfDir, key string) []string {
 	}, key)
 }
 
-func agentEnv(opt Options, home, sdfDir string, proto protocol, inv invocation) []string {
+func agentEnv(opt Options, home, sdfDir string, proto protocol, inv invocation, token string) []string {
+	var binDir string
+	if opt.cliPrefix != "" {
+		binDir = filepath.Join(opt.cliPrefix, "bin")
+	}
 	env := []string{
-		"PATH=" + prependPath(sdfDir),
+		"PATH=" + joinPath(binDir, sdfDir),
 		"HOME=" + home,
 		"TMPDIR=" + os.TempDir(),
 		"LANG=C.UTF-8",
@@ -578,42 +654,68 @@ func agentEnv(opt Options, home, sdfDir string, proto protocol, inv invocation) 
 	default:
 		env = append(env, "SDF_RECALL_MODEL_BASE="+opt.proxyOpenAI)
 	}
-	for k, v := range inv.Env {
-		if opt.Key != "" && strings.Contains(v, opt.Key) {
-			continue
-		}
-		env = append(env, k+"="+v)
+	blocked := map[string]bool{
+		"SDF_RECALL_API_KEY":  true,
+		"TOKENROUTER_API_KEY": true,
+		localTokenEnv:         true,
 	}
-	secrets := map[string]bool{"SDF_RECALL_API_KEY": true}
 	for _, name := range inv.SecretEnv {
 		if name != "" {
-			secrets[name] = true
+			blocked[name] = true
 		}
 	}
-	for k, v := range opt.ExtraEnv {
-		if k == "" || secrets[k] {
-			continue
-		}
-		if opt.Key != "" && strings.Contains(v, opt.Key) {
+	for k, v := range inv.Env {
+		if blocked[k] || containsProviderKey(v, opt.Key) {
 			continue
 		}
 		env = append(env, k+"="+v)
 	}
-	for name := range secrets {
-		env = append(env, name+"="+opt.Key)
+	for k, v := range opt.ExtraEnv {
+		if k == "" || blocked[k] || containsProviderKey(v, opt.Key) {
+			continue
+		}
+		env = append(env, k+"="+v)
+	}
+	if token != "" {
+		env = append(env, localTokenEnv+"="+token)
+		for name := range blocked {
+			if name == "SDF_RECALL_API_KEY" || name == "TOKENROUTER_API_KEY" || name == localTokenEnv {
+				continue
+			}
+			env = append(env, name+"="+token)
+		}
 	}
 	return env
 }
 
+func containsProviderKey(v, key string) bool {
+	if key == "" || v == "" {
+		return false
+	}
+	if strings.Contains(v, key) {
+		return true
+	}
+	if enc := url.QueryEscape(key); enc != key && strings.Contains(v, enc) {
+		return true
+	}
+	return strings.Contains(v, base64.StdEncoding.EncodeToString([]byte(key)))
+}
+
 func prependPath(dir string) string {
-	path := os.Getenv("PATH")
-	if dir == "" {
-		return path
+	return joinPath(dir)
+}
+
+func joinPath(dirs ...string) string {
+	var parts []string
+	for _, d := range dirs {
+		if d != "" {
+			parts = append(parts, d)
+		}
 	}
-	if path == "" {
-		return dir
+	if p := os.Getenv("PATH"); p != "" {
+		parts = append(parts, p)
 	}
-	return dir + string(os.PathListSeparator) + path
+	return strings.Join(parts, string(os.PathListSeparator))
 }
 
 func filterKey(env []string, key string) []string {
@@ -642,8 +744,17 @@ func filterKey(env []string, key string) []string {
 }
 
 func mergeReportFiles(paths []string) (Report, error) {
+	seen := map[string]bool{}
 	var parts []Report
 	for _, path := range paths {
+		key := path
+		if abs, err := filepath.Abs(path); err == nil {
+			key = filepath.Clean(abs)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return Report{}, err
@@ -701,46 +812,42 @@ type redactWriter struct {
 }
 
 func (r *redactWriter) Write(p []byte) (int, error) {
-	if r.key == "" {
-		_, err := r.w.Write(p)
-		return len(p), err
+	r.hold = append(r.hold, p...)
+	keep := 512
+	if n := len(r.key) * 2; n > keep {
+		keep = n
 	}
-	data := append(append([]byte{}, r.hold...), p...)
-	r.hold = nil
-	s := string(data)
-	keep := len(r.key) - 1
-	if keep < 0 {
-		keep = 0
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		if strings.HasPrefix(s[i:], r.key) {
-			b.WriteString("[redacted]")
-			i += len(r.key)
-			continue
-		}
-		rest := s[i:]
-		if len(rest) <= keep && strings.HasPrefix(r.key, rest) {
-			r.hold = []byte(rest)
+	for {
+		i := bytes.IndexByte(r.hold, '\n')
+		if i < 0 {
 			break
 		}
-		b.WriteByte(s[i])
-		i++
+		line := redact(string(r.hold[:i+1]), r.key)
+		r.hold = append([]byte{}, r.hold[i+1:]...)
+		if _, err := io.WriteString(r.w, line); err != nil {
+			return len(p), err
+		}
 	}
-	if b.Len() == 0 {
-		return len(p), nil
+	if len(r.hold) > 64<<10 {
+		cut := len(r.hold) - keep
+		if cut < 1 {
+			return len(p), nil
+		}
+		if _, err := io.WriteString(r.w, redact(string(r.hold[:cut]), r.key)); err != nil {
+			return len(p), err
+		}
+		r.hold = append([]byte{}, r.hold[cut:]...)
 	}
-	_, err := r.w.Write([]byte(b.String()))
-	return len(p), err
+	return len(p), nil
 }
 
 func (r *redactWriter) Flush() error {
 	if len(r.hold) == 0 {
 		return nil
 	}
-	s := strings.ReplaceAll(string(r.hold), r.key, "[redacted]")
+	s := redact(string(r.hold), r.key)
 	r.hold = nil
-	_, err := r.w.Write([]byte(s))
+	_, err := io.WriteString(r.w, s)
 	return err
 }
 
@@ -810,14 +917,40 @@ func tailText(s string, n int) string {
 	return s[len(s)-n:]
 }
 
-// Redact replaces key with a placeholder. An empty key leaves text unchanged.
+var (
+	bearerRE = regexp.MustCompile(`(?i)Bearer\s+\S+`)
+	skRE     = regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{16,}`)
+)
+
+// Redact replaces the provider key and common token shapes with a
+// placeholder. An empty key still redacts Bearer and sk- tokens.
 func Redact(text, key string) string { return redact(text, key) }
 
 func redact(s, key string) string {
-	if key == "" || s == "" {
+	if s == "" {
 		return s
 	}
-	return strings.ReplaceAll(s, key, "[redacted]")
+	if key != "" {
+		s = strings.ReplaceAll(s, key, "[redacted]")
+		if enc := url.QueryEscape(key); enc != "" && enc != key {
+			s = strings.ReplaceAll(s, enc, "[redacted]")
+		}
+		if enc := url.PathEscape(key); enc != "" && enc != key {
+			s = strings.ReplaceAll(s, enc, "[redacted]")
+		}
+		for _, enc := range []string{
+			base64.StdEncoding.EncodeToString([]byte(key)),
+			base64.RawStdEncoding.EncodeToString([]byte(key)),
+			base64.URLEncoding.EncodeToString([]byte(key)),
+		} {
+			if enc != "" && enc != key {
+				s = strings.ReplaceAll(s, enc, "[redacted]")
+			}
+		}
+	}
+	s = bearerRE.ReplaceAllString(s, "Bearer [redacted]")
+	s = skRE.ReplaceAllString(s, "[redacted]")
+	return s
 }
 
 func truncate(s string, n int) string {

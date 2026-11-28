@@ -6,8 +6,9 @@
 // serve, to load the shipped sdf-decisions skill, and to call a model
 // through a localhost proxy. The proxy forwards to an OpenAI-compatible
 // base (Chat Completions and Responses) or an Anthropic Messages base,
-// retries HTTP 429 and 5xx, and holds the API key. Config files name an
-// environment variable for the key and do not contain it.
+// retries HTTP 429 and 5xx, and holds the API key. CLIs receive a per-run
+// local token, not that key. The proxy checks the token and then adds the
+// provider key on the upstream request.
 //
 // Gemini CLI is unsupported with this provider: it speaks Gemini
 // generateContent, and TokenRouter has no working generateContent

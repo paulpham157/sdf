@@ -15,7 +15,6 @@ import (
 
 func main() {
 	opt := live.ConfigFromEnv()
-	opt.Install = os.Getenv("SDF_RECALL_NO_INSTALL") != "1"
 	opt, mode, err := live.ParseArgs(os.Args[1:], opt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sdf-recall: %s\n", live.Redact(err.Error(), opt.Key))
@@ -27,6 +26,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-ctx.Done()
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		os.Exit(130)
+	}()
 	rep, err := live.Run(ctx, opt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sdf-recall: %s\n", live.Redact(err.Error(), opt.Key))

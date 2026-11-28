@@ -181,12 +181,19 @@ The model id defaults to `deepseek/deepseek-v4.1-flash-1017-free`
 (`SDF_RECALL_MODEL`). A full pass is 6 CLIs times 7 scenarios times k=5,
 210 runs, and each run makes several model calls. That default id is a
 free TokenRouter model. The free tier throttles; HTTP 429 is retried.
-Another model can cost money. The key is read from the environment and
-injected by a local proxy. It is not written into agent config, logs, the
-report, or git. Stderr from each run is written under `--out` (default
-`sdf-recall-out`, or `SDF_RECALL_OUT`), with the key redacted. The error
-line in the report is the tail of that stderr, up to 4 KB, after Node and
-npm warnings are dropped.
+Another model can cost money. The provider key is read from the
+environment and stays in the runner. Each CLI process gets a per-run
+local token instead, including Pi's `apiKey` field. `SDF_RECALL_API_KEY`
+is not set on the CLI, so a shell inside the agent cannot print the
+provider key. The proxy checks that local token and then adds the
+provider key on the upstream request. The provider key is not written
+into agent config, logs, the report, or git. Stderr and upstream error
+bodies are redacted: the key, its base64 and URL-encoded forms, `Bearer`
+tokens, and `sk-` tokens. Stderr from each run is written under `--out`
+(default `sdf-recall-out`, or `SDF_RECALL_OUT`). The error line in the
+report is the tail of that stderr, up to 4 KB, after Node and npm
+warnings are dropped. A run that reaches its timeout is reported as a
+timeout. A second interrupt exits immediately.
 
 | Agent | Protocol | Base |
 | --- | --- | --- |
@@ -216,7 +223,8 @@ alias to `SDF_RECALL_MODEL` on the way upstream and answers `GET /v1/models`
 with that id, so Copilot's model lookup is not a 404.
 
 Qwen Code's model comes from `OPENAI_BASE_URL`, `OPENAI_MODEL`, and
-`OPENAI_API_KEY`. Telemetry uses `QWEN_TELEMETRY_*` with protocol `http`
+`OPENAI_API_KEY`. That variable holds the local token, not the provider
+key. Telemetry uses `QWEN_TELEMETRY_*` with protocol `http`
 (OTLP/JSON). The generic `OTEL_EXPORTER_OTLP_ENDPOINT` is not set, because
 that variable overrides the Qwen endpoint and the stock exporter treats it
 as gRPC. `QWEN_HOME` is the temp config directory. System settings are
@@ -224,9 +232,10 @@ pointed at empty files so a machine-wide `settings.json` cannot replace
 this, and the temp repo is trusted so folder trust does not block tools.
 
 The CLIs talk to a proxy on `127.0.0.1`. Each run has its own proxy, so
-`--parallel` does not share the turn or token cap. The proxy adds the key,
-retries HTTP 429 and 5xx with backoff (honoring `Retry-After` up to 30
-seconds), and streams an upstream `text/event-stream` response without
+`--parallel` does not share the turn or token cap. The proxy checks the
+per-run local token, then adds the provider key, retries HTTP 429 and 5xx
+with backoff (honoring `Retry-After` up to 30 seconds), and streams an
+upstream `text/event-stream` response without
 buffering it or replacing its `Content-Type`. A run stops after the turn
 cap (default 30) or the token cap (default 1,000,000). One request from
 these CLIs is tens of kilobytes, so a 20,000 token cap ended the run after
@@ -237,14 +246,19 @@ a streaming request, the proxy sends a terminal event for that protocol
 broken stream. A capped run that still exits 0 is scored and marked
 capped. Other knobs are `SDF_RECALL_MAX_TURNS`, `SDF_RECALL_MAX_TOKENS`,
 `SDF_RECALL_RETRIES`, `SDF_RECALL_HTTP_TIMEOUT`, and
-`SDF_RECALL_RUN_TIMEOUT`.
+`SDF_RECALL_RUN_TIMEOUT`. An `http://` base whose host is not loopback
+is rejected. `https://` is unchanged.
 
-`--install` (the default) installs the packages this repo already names
-for OpenCode, Pi, Qwen Code, and Copilot when the binary is missing.
-Claude Code and Grok are located on `PATH` and are not installed.
-`--no-install` or `SDF_RECALL_NO_INSTALL=1` skips installation. An agent
-that is supported but has no binary is `unavailable`. Codex and Gemini
-are `unsupported` and are not looked up.
+`--install` installs the packages this repo already names for OpenCode
+(`@opencode/cli@2.4.1`), Pi (`@earendil-works/pi-coding-agent@1.5.1` and
+`pi-otel@0.3.0`), Qwen Code (`@qwen-code/qwen-code@0.28.4`), and Copilot
+(`@github/copilot@1.0.114`) when the binary is missing. It is off unless
+you pass `--install`. npm installs use `--ignore-scripts` and a prefix
+this run creates, not the user npm prefix and not the real home
+directory. Claude Code and Grok are located on `PATH` and are not
+installed. `--no-install` or `SDF_RECALL_NO_INSTALL=1` keeps installation
+off. An agent that is supported but has no binary is `unavailable`.
+Codex and Gemini are `unsupported` and are not looked up.
 
 ## Out of scope
 

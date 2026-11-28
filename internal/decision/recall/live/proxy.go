@@ -3,6 +3,9 @@ package live
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,16 +25,19 @@ const copilotModelAlias = "tokenrouter/recall"
 // key on the upstream request, retries 429 and 5xx, and stops a run that
 // crosses the turn or token cap. It does not log headers or bodies.
 type proxy struct {
-	openai    string
-	anthropic string
-	key       string
-	model     string
-	maxTurns  int
-	maxTokens int
-	retries   int
-	timeout   time.Duration
-	backoff   func(int) time.Duration
-	client    *http.Client
+	openai      string
+	anthropic   string
+	key         string
+	model       string
+	maxTurns    int
+	maxTokens   int
+	retries     int
+	timeout     time.Duration
+	backoff     func(int) time.Duration
+	bodyTimeout time.Duration
+	client      *http.Client
+	// gate is the per-run token a CLI must present. It is not the provider key.
+	gate string
 
 	mu     sync.Mutex
 	turns  int
@@ -49,18 +55,29 @@ func newProxy(opt Options) *proxy {
 			},
 		}
 	}
-	return &proxy{
-		openai:    opt.OpenAIBase,
-		anthropic: opt.AnthropicBase,
-		key:       opt.Key,
-		model:     opt.Model,
-		maxTurns:  opt.MaxTurns,
-		maxTokens: opt.MaxTokens,
-		retries:   opt.Retries,
-		timeout:   opt.HTTPTimeout,
-		backoff:   opt.Backoff,
-		client:    c,
+	p := &proxy{
+		openai:      opt.OpenAIBase,
+		anthropic:   opt.AnthropicBase,
+		key:         opt.Key,
+		model:       opt.Model,
+		maxTurns:    opt.MaxTurns,
+		maxTokens:   opt.MaxTokens,
+		retries:     opt.Retries,
+		timeout:     opt.HTTPTimeout,
+		bodyTimeout: 30 * time.Second,
+		backoff:     opt.Backoff,
+		client:      c,
 	}
+	p.gate, _ = newLocalToken()
+	return p
+}
+
+func newLocalToken() (string, error) {
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "recall-" + hex.EncodeToString(b[:]), nil
 }
 
 func (p *proxy) reset() {
@@ -78,6 +95,12 @@ func (p *proxy) cappedRun() bool {
 }
 
 func (p *proxy) start() (openaiBase, anthropicBase string, stop func(), err error) {
+	if p.gate == "" {
+		p.gate, err = newLocalToken()
+		if err != nil {
+			return "", "", nil, err
+		}
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", "", nil, err
@@ -102,12 +125,16 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method", http.StatusMethodNotAllowed)
 		return
 	}
+	if !p.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	upstream, kind, ok := p.route(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20+1))
+	body, err := p.readBody(w, r)
 	if err != nil || len(body) > 8<<20 {
 		http.Error(w, "body", http.StatusRequestEntityTooLarge)
 		return
@@ -131,7 +158,39 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
-	p.writeUpstream(w, resp)
+	p.writeUpstream(w, resp, kind)
+}
+
+func (p *proxy) authorized(r *http.Request) bool {
+	got := presentedToken(r)
+	if got == "" || p.gate == "" || len(got) != len(p.gate) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(p.gate)) == 1
+}
+
+func presentedToken(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); h != "" {
+		const prefix = "bearer "
+		if len(h) >= len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
+			return strings.TrimSpace(h[len(prefix):])
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("x-api-key")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(r.Header.Get("api-key"))
+}
+
+func (p *proxy) readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	d := p.bodyTimeout
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(d))
+	defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
+	return io.ReadAll(io.LimitReader(r.Body, 8<<20+1))
 }
 
 func (p *proxy) route(path string) (upstream, kind string, ok bool) {
@@ -221,7 +280,7 @@ func (b *cancelBody) Close() error {
 	return err
 }
 
-func (p *proxy) writeUpstream(w http.ResponseWriter, resp *http.Response) {
+func (p *proxy) writeUpstream(w http.ResponseWriter, resp *http.Response, kind string) {
 	ct := resp.Header.Get("Content-Type")
 	stream := strings.Contains(strings.ToLower(ct), "text/event-stream")
 	if ct != "" {
@@ -233,6 +292,11 @@ func (p *proxy) writeUpstream(w http.ResponseWriter, resp *http.Response) {
 		w.Header().Set("Cache-Control", "no-cache")
 	}
 	w.WriteHeader(resp.StatusCode)
+	if resp.StatusCode >= 400 {
+		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_, _ = w.Write([]byte(redact(string(buf), p.key)))
+		return
+	}
 	if !stream {
 		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20+1))
 		p.addTokens(usageTokens(buf))
@@ -241,8 +305,8 @@ func (p *proxy) writeUpstream(w http.ResponseWriter, resp *http.Response) {
 	}
 	fl, _ := w.(http.Flusher)
 	buf := make([]byte, 32<<10)
-	var line []byte
-	maxUsage := 0
+	var pending []byte
+	var acc usageAcc
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
@@ -251,30 +315,56 @@ func (p *proxy) writeUpstream(w http.ResponseWriter, resp *http.Response) {
 			if fl != nil {
 				fl.Flush()
 			}
-			line = append(line, chunk...)
+			pending = append(pending, chunk...)
 			for {
-				i := bytes.IndexByte(line, '\n')
+				i := bytes.IndexByte(pending, '\n')
 				if i < 0 {
 					break
 				}
-				one := line[:i]
-				line = append([]byte{}, line[i+1:]...)
-				if t := usageTokens(one); t > maxUsage {
-					maxUsage = t
-				}
+				acc.add(kind, pending[:i])
+				pending = pending[i+1:]
 			}
-			if len(line) > 1<<20 {
-				line = append([]byte{}, line[len(line)-4096:]...)
+			if len(pending) > 1<<20 {
+				pending = append([]byte{}, pending[len(pending)-4096:]...)
 			}
 		}
 		if err != nil {
 			break
 		}
 	}
-	if t := usageTokens(line); t > maxUsage {
-		maxUsage = t
+	acc.add(kind, pending)
+	p.addTokens(acc.total(kind))
+}
+
+type usageAcc struct {
+	max     int
+	in, out int
+}
+
+func (a *usageAcc) add(kind string, line []byte) {
+	in, out, total := usageParts(line)
+	if kind == "messages" {
+		a.in += in
+		a.out += out
+		if in == 0 && out == 0 && total > 0 {
+			a.max += total
+		}
+		return
 	}
-	p.addTokens(maxUsage)
+	n := total
+	if n == 0 {
+		n = in + out
+	}
+	if n > a.max {
+		a.max = n
+	}
+}
+
+func (a usageAcc) total(kind string) int {
+	if kind == "messages" {
+		return a.in + a.out + a.max
+	}
+	return a.max
 }
 
 func (p *proxy) addTokens(n int) {
@@ -432,6 +522,55 @@ func stopSSE(kind string) []byte {
 			"data: {\"id\":\"chatcmpl-cap\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
 			"data: [DONE]\n\n")
 	}
+}
+
+func usageParts(body []byte) (in, out, total int) {
+	body = bytes.TrimSpace(body)
+	if bytes.HasPrefix(body, []byte("data:")) {
+		body = bytes.TrimSpace(bytes.TrimPrefix(body, []byte("data:")))
+	}
+	if len(body) == 0 || bytes.Equal(body, []byte("[DONE]")) {
+		return 0, 0, 0
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(body, &m) != nil {
+		return 0, 0, 0
+	}
+	raw := m["usage"]
+	if raw == nil {
+		if msg, ok := m["message"]; ok {
+			var inner map[string]json.RawMessage
+			if json.Unmarshal(msg, &inner) == nil {
+				raw = inner["usage"]
+			}
+		}
+	}
+	if len(raw) == 0 {
+		return 0, 0, 0
+	}
+	var u map[string]any
+	if json.Unmarshal(raw, &u) != nil {
+		return 0, 0, 0
+	}
+	in, _ = asInt(u["input_tokens"])
+	if in == 0 {
+		in, _ = asInt(u["prompt_tokens"])
+	}
+	out, _ = asInt(u["output_tokens"])
+	if out == 0 {
+		out, _ = asInt(u["completion_tokens"])
+	}
+	total, _ = asInt(u["total_tokens"])
+	if in < 0 {
+		in = 0
+	}
+	if out < 0 {
+		out = 0
+	}
+	if total < 0 {
+		total = 0
+	}
+	return in, out, total
 }
 
 func usageTokens(body []byte) int {

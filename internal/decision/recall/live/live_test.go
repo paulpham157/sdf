@@ -3,11 +3,13 @@ package live
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,6 +86,7 @@ func TestConfigFromEnv(t *testing.T) {
 }
 
 func TestParseArgs(t *testing.T) {
+	t.Setenv("SDF_RECALL_NO_INSTALL", "")
 	opt, mode, err := ParseArgs([]string{"--agents", "opencode,claude-code", "--k", "3", "--json"}, Options{Install: true})
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +119,14 @@ func TestParseArgs(t *testing.T) {
 	}
 	if _, _, err := ParseArgs([]string{"--merge", "a.json", "--agents", "opencode"}, Options{}); err == nil {
 		t.Fatal("merge with agents")
+	}
+	opt, _, err = ParseArgs(nil, Options{})
+	if err != nil || opt.Install {
+		t.Fatal("install defaults on", err, opt.Install)
+	}
+	opt, _, err = ParseArgs([]string{"--install"}, Options{})
+	if err != nil || !opt.Install {
+		t.Fatal("install flag", err, opt.Install)
 	}
 }
 
@@ -248,6 +259,326 @@ func TestAdapterFilesOmitKey(t *testing.T) {
 	}
 }
 
+func TestAgentProcessDoesNotSeeProviderKey(t *testing.T) {
+	const sentinel = "sk-sentinel-recall-SHOULD-NOT-LEAK"
+	const token = "recall-local"
+	skill, err := findSkill("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := []string{
+		sentinel,
+		base64.StdEncoding.EncodeToString([]byte(sentinel)),
+		url.QueryEscape(sentinel),
+	}
+	for _, a := range registry() {
+		if !a.Support().OK {
+			continue
+		}
+		root := t.TempDir()
+		repo := filepath.Join(root, "repo")
+		home := filepath.Join(root, "home")
+		if err := os.MkdirAll(repo, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		inv, err := a.Prepare(context.Background(), spec{
+			Repo:          repo,
+			Home:          home,
+			OpenAIBase:    "http://127.0.0.1:9/v1",
+			AnthropicBase: "http://127.0.0.1:9",
+			Model:         defaultModel,
+			OTLP:          "http://127.0.0.1:8",
+			SkillSrc:      skill,
+			Prompt:        "record the decision",
+			LocalToken:    token,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", a.ID(), err)
+		}
+		env := agentEnv(Options{
+			Key: sentinel,
+			ExtraEnv: map[string]string{
+				"SDF_RECALL_API_KEY": sentinel,
+				"OPENAI_API_KEY":     sentinel,
+			},
+		}, home, "/tmp", a.Support().Protocol, inv, token)
+		blob := strings.Join(env, "\n") + "\n" + readAll(t, root)
+		for _, bad := range encoded {
+			if bad != "" && strings.Contains(blob, bad) {
+				t.Fatalf("%s contains provider key material", a.ID())
+			}
+		}
+		if envValue(env, "SDF_RECALL_API_KEY") != "" {
+			t.Fatalf("%s sets SDF_RECALL_API_KEY", a.ID())
+		}
+		if envValue(env, localTokenEnv) != token {
+			t.Fatalf("%s local token %q", a.ID(), envValue(env, localTokenEnv))
+		}
+		for _, name := range inv.SecretEnv {
+			if envValue(env, name) != token {
+				t.Fatalf("%s %s=%q", a.ID(), name, envValue(env, name))
+			}
+		}
+		if a.ID() == "pi" && strings.Contains(blob, "$SDF_RECALL_API_KEY") {
+			t.Fatal("pi config interpolates SDF_RECALL_API_KEY")
+		}
+		if a.ID() == "pi" && !strings.Contains(readAll(t, root), token) {
+			t.Fatal("pi config missing placeholder")
+		}
+	}
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return strings.TrimPrefix(e, prefix)
+		}
+	}
+	return ""
+}
+
+func TestRedactCoversTokenShapes(t *testing.T) {
+	const key = "provider-key/with space"
+	raw := key + " " + url.QueryEscape(key) + " " + base64.StdEncoding.EncodeToString([]byte(key)) +
+		" Bearer " + key + " sk-abcdefghijklmnopqrstuvwxyz"
+	out := redact(raw, key)
+	for _, bad := range []string{key, url.QueryEscape(key), base64.StdEncoding.EncodeToString([]byte(key)), "sk-abcdefghijklmnopqrstuvwxyz"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("left %q in %s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "Bearer [redacted]") || !strings.Contains(out, "[redacted]") {
+		t.Fatal(out)
+	}
+}
+
+func TestProxyRejectsMissingTokenAndRedactsErrors(t *testing.T) {
+	const leaked = "sk-sentinel-recall-SHOULD-NOT-LEAK"
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer "+leaked {
+			t.Errorf("upstream auth %q", r.Header.Get("Authorization"))
+		}
+		http.Error(w, "bad "+leaked+" "+base64.StdEncoding.EncodeToString([]byte(leaked))+" Bearer other-secret sk-abcdefghijklmnopqrstuvwxyz", http.StatusBadRequest)
+	}))
+	t.Cleanup(upstream.Close)
+	p := newProxy(Options{
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Key:           leaked,
+		Retries:       0,
+		HTTPTimeout:   2 * time.Second,
+		MaxTurns:      4,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	p.retries = 0
+	base, _, stop, err := p.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	resp, err := http.Post(base+"/chat/completions", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || calls != 0 {
+		t.Fatalf("status %d calls %d", resp.StatusCode, calls)
+	}
+	resp, err = proxyDo(t, p, http.MethodPost, base+"/chat/completions", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	text := string(b)
+	if resp.StatusCode != http.StatusBadRequest || calls != 1 {
+		t.Fatalf("status %d calls %d body %s", resp.StatusCode, calls, text)
+	}
+	for _, bad := range []string{leaked, base64.StdEncoding.EncodeToString([]byte(leaked)), "sk-abcdefghijklmnopqrstuvwxyz", "other-secret"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("error body leaked %q: %s", bad, text)
+		}
+	}
+}
+
+func TestProxySumsAnthropicSplitUsage(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+testKey {
+			t.Errorf("auth %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	p := newProxy(Options{
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Key:           testKey,
+		Retries:       0,
+		HTTPTimeout:   2 * time.Second,
+		MaxTurns:      4,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	p.retries = 0
+	_, anth, stop, err := p.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	resp, err := proxyDo(t, p, http.MethodPost, anth+"/v1/messages", `{"stream":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	p.mu.Lock()
+	got := p.tokens
+	p.mu.Unlock()
+	if got != 18 {
+		t.Fatalf("tokens %d", got)
+	}
+}
+
+func TestProxyBodyReadTimesOut(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(upstream.Close)
+	p := newProxy(Options{
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Key:           testKey,
+		Retries:       0,
+		HTTPTimeout:   2 * time.Second,
+		MaxTurns:      2,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	p.retries = 0
+	p.bodyTimeout = 150 * time.Millisecond
+	base, _, stop, err := p.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	pr, pw := io.Pipe()
+	req, err := http.NewRequest(http.MethodPost, base+"/chat/completions", pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.gate)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	go func() {
+		time.Sleep(800 * time.Millisecond)
+		_, _ = pw.Write([]byte(`{}`))
+		_ = pw.Close()
+	}()
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 400 {
+			t.Fatalf("status %d %s", resp.StatusCode, b)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls %d", calls)
+	}
+}
+
+func TestRunTimeoutIsReported(t *testing.T) {
+	bin := buildSDF(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream called")
+	}))
+	t.Cleanup(upstream.Close)
+	rep, err := Run(context.Background(), Options{
+		Agents:        []string{"opencode"},
+		FixtureNames:  []string{"decide-commit"},
+		K:             1,
+		Key:           testKey,
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Install:       false,
+		SDFBin:        bin,
+		LookPath:      stubLook(t),
+		ExtraEnv:      map[string]string{"SDF_RECALL_STUB": "1", "SDF_RECALL_STUB_SLEEP": "1"},
+		MaxTurns:      2,
+		RunTimeout:    400 * time.Millisecond,
+		HTTPTimeout:   2 * time.Second,
+		Retries:       0,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Agents) != 1 || len(rep.Agents[0].Scenarios) != 1 || rep.Agents[0].Scenarios[0].Failed != 1 {
+		t.Fatalf("%+v", rep.Agents)
+	}
+	msg := strings.Join(rep.Agents[0].Scenarios[0].Errors, "\n")
+	if !strings.Contains(msg, "timeout") || strings.Contains(msg, testKey) {
+		t.Fatal(msg)
+	}
+}
+
+func TestRejectsPublicHTTPBase(t *testing.T) {
+	if err := validateBase("http://127.0.0.1:9/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBase("http://localhost/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBase("https://example.com/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBase("http://example.com/v1"); err == nil {
+		t.Fatal("public http accepted")
+	}
+	_, err := Run(context.Background(), Options{Key: testKey, OpenAIBase: "http://example.com/v1", K: 1})
+	if err == nil || !strings.Contains(err.Error(), "non-loopback") {
+		t.Fatal(err)
+	}
+}
+
+func TestInstallIsOptInAndPinned(t *testing.T) {
+	t.Setenv("SDF_RECALL_NO_INSTALL", "")
+	opt, _, err := ParseArgs(nil, Options{})
+	if err != nil || opt.Install {
+		t.Fatal(err, opt.Install)
+	}
+	prefix := t.TempDir()
+	saw := false
+	for _, a := range registry() {
+		for _, argv := range a.InstallCommands() {
+			saw = true
+			got := rewriteInstall(argv, prefix)
+			joined := strings.Join(got, " ")
+			if argv[0] == "npm" {
+				if !strings.Contains(joined, "--prefix "+prefix) || !strings.Contains(joined, "--ignore-scripts") {
+					t.Fatalf("%s: %s", a.ID(), joined)
+				}
+			}
+			for _, arg := range argv {
+				if strings.Contains(arg, "@") || strings.HasPrefix(arg, "npm:") {
+					if !strings.ContainsAny(arg, "0123456789") {
+						t.Fatalf("%s unpinned %s", a.ID(), arg)
+					}
+				}
+			}
+		}
+	}
+	if !saw {
+		t.Fatal("no install commands")
+	}
+}
+
 func TestProxyRetries429AndCapsTurns(t *testing.T) {
 	var n int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +613,7 @@ func TestProxyRetries429AndCapsTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(stop)
-	resp, err := http.Post(base+"/chat/completions", "application/json", strings.NewReader(`{}`))
+	resp, err := proxyDo(t, p, http.MethodPost, base+"/chat/completions", `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +622,7 @@ func TestProxyRetries429AndCapsTurns(t *testing.T) {
 		t.Fatalf("status %d calls %d", resp.StatusCode, n)
 	}
 	before := n
-	resp, err = http.Post(base+"/chat/completions", "application/json", strings.NewReader(`{}`))
+	resp, err = proxyDo(t, p, http.MethodPost, base+"/chat/completions", `{}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,6 +678,7 @@ func TestProxyStreamsAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Authorization", "Bearer "+p.gate)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -389,6 +721,7 @@ func TestProxyStreamsAndStops(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		req.Header.Set("Authorization", "Bearer "+p.gate)
 		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -439,7 +772,7 @@ func TestProxyRewritesCopilotModelAndListsModels(t *testing.T) {
 	if resp.StatusCode != 200 || !bytes.Contains(b, []byte(defaultModel)) || !bytes.Contains(b, []byte(copilotModelAlias)) {
 		t.Fatalf("models %d %s", resp.StatusCode, b)
 	}
-	resp, err = http.Post(base+"/chat/completions", "application/json", strings.NewReader(`{"model":"tokenrouter/recall","stream":false}`))
+	resp, err = proxyDo(t, p, http.MethodPost, base+"/chat/completions", `{"model":"tokenrouter/recall","stream":false}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,6 +856,10 @@ func TestMergePoolsRuns(t *testing.T) {
 	again, err := mergeReportFiles([]string{path})
 	if err != nil || again.Agents[0].Overall.Decisions.Hits != 1 {
 		t.Fatal(err, again)
+	}
+	twice, err := mergeReportFiles([]string{path, path})
+	if err != nil || twice.Agents[0].Overall.Decisions.Hits != 1 || twice.K != 2 {
+		t.Fatalf("dedupe %+v %v", twice.Overall, err)
 	}
 }
 
@@ -830,6 +1167,18 @@ func buildSDF(t *testing.T) string {
 	return sdfBin
 }
 
+func proxyDo(t *testing.T, p *proxy, method, rawURL, body string) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequest(method, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodGet {
+		req.Header.Set("Authorization", "Bearer "+p.gate)
+	}
+	return http.DefaultClient.Do(req)
+}
+
 func stubLook(t *testing.T) func(string) (string, error) {
 	t.Helper()
 	exe, err := os.Executable()
@@ -852,6 +1201,10 @@ func stubLook(t *testing.T) func(string) (string, error) {
 }
 
 func stubMain() int {
+	if os.Getenv("SDF_RECALL_STUB_SLEEP") == "1" {
+		time.Sleep(5 * time.Second)
+		return 0
+	}
 	if os.Getenv("SDF_RECALL_STUB_NOISE") == "1" {
 		fmtErr("(node:1) Warning: ExperimentalWarning fake")
 		fmtErr("(Use `node --trace-warnings ...` to show where the warning was created)")
@@ -919,6 +1272,9 @@ func stubRound(client *http.Client, endpoint, kind string) ([]string, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if tok := os.Getenv("SDF_RECALL_LOCAL_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

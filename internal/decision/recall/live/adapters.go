@@ -44,7 +44,7 @@ func (opencodeAgent) Support() support {
 	return support{OK: true, Protocol: protocolChat}
 }
 func (opencodeAgent) InstallCommands() [][]string {
-	return [][]string{{"npm", "install", "-g", "@opencode/cli"}}
+	return [][]string{{"npm", "install", "-g", "--ignore-scripts", "@opencode/cli@2.4.1"}}
 }
 func (opencodeAgent) InstallHint() string {
 	return "Install with npm install -g @opencode/cli, or pass --install."
@@ -67,7 +67,7 @@ func (opencodeAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 		"providers": map[string]any{
 			"tokenrouter": map[string]any{
 				"name":    "TokenRouter",
-				"env":     []string{"SDF_RECALL_API_KEY"},
+				"env":     []string{localTokenEnv},
 				"package": "@opencode/ai/providers/openai-compatible",
 				"settings": map[string]any{
 					"baseURL": spec.OpenAIBase,
@@ -98,9 +98,8 @@ func (opencodeAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 	}, nil
 }
 
-// Pi reads ~/.pi/agent/models.json. api is openai-completions. The key is
-// the env interpolation $SDF_RECALL_API_KEY, which Pi expands and which is
-// not the key itself.
+// Pi reads ~/.pi/agent/models.json. api is openai-completions. apiKey is
+// the local placeholder itself, not an interpolation of SDF_RECALL_API_KEY.
 type piAgent struct{}
 
 func (piAgent) ID() string     { return "pi" }
@@ -111,8 +110,8 @@ func (piAgent) Support() support {
 }
 func (piAgent) InstallCommands() [][]string {
 	return [][]string{
-		{"npm", "install", "-g", "--ignore-scripts", "@earendil-works/pi-coding-agent"},
-		{"pi", "install", "npm:pi-otel"},
+		{"npm", "install", "-g", "--ignore-scripts", "@earendil-works/pi-coding-agent@1.5.1"},
+		{"pi", "install", "npm:pi-otel@0.3.0"},
 	}
 }
 func (piAgent) InstallHint() string {
@@ -133,7 +132,7 @@ func (piAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 				"name":       "TokenRouter",
 				"baseUrl":    spec.OpenAIBase,
 				"api":        "openai-completions",
-				"apiKey":     "$SDF_RECALL_API_KEY",
+				"apiKey":     spec.token(),
 				"authHeader": true,
 				"compat": map[string]any{
 					"supportsDeveloperRole": false,
@@ -181,7 +180,7 @@ func (qwenAgent) Support() support {
 	return support{OK: true, Protocol: protocolChat}
 }
 func (qwenAgent) InstallCommands() [][]string {
-	return [][]string{{"npm", "install", "-g", "@qwen-code/qwen-code"}}
+	return [][]string{{"npm", "install", "-g", "--ignore-scripts", "@qwen-code/qwen-code@0.28.4"}}
 }
 func (qwenAgent) InstallHint() string {
 	return "Install with npm install -g @qwen-code/qwen-code, or pass --install."
@@ -283,7 +282,7 @@ func (grokAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 		"model = " + tomlString(spec.Model),
 		"base_url = " + tomlString(spec.OpenAIBase),
 		`name = "recall"`,
-		`env_key = "SDF_RECALL_API_KEY"`,
+		`env_key = "` + localTokenEnv + `"`,
 		`api_backend = "chat_completions"`,
 		"",
 	}, "\n")
@@ -318,7 +317,7 @@ func (copilotAgent) Support() support {
 	return support{OK: true, Protocol: protocolChat}
 }
 func (copilotAgent) InstallCommands() [][]string {
-	return [][]string{{"npm", "install", "-g", "@github/copilot"}}
+	return [][]string{{"npm", "install", "-g", "--ignore-scripts", "@github/copilot@1.0.114"}}
 }
 func (copilotAgent) InstallHint() string {
 	return "Install with npm install -g @github/copilot, or pass --install."
@@ -338,7 +337,7 @@ func (copilotAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 				"type":          "openai",
 				"baseUrl":       spec.OpenAIBase,
 				"wireApi":       "completions",
-				"apiKeyCommand": "printenv SDF_RECALL_API_KEY",
+				"apiKeyCommand": "printenv " + localTokenEnv,
 			},
 		},
 		"models": []any{

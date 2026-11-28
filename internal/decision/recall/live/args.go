@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/paulpham157/sdf/internal/decision/recall"
@@ -107,7 +108,7 @@ func ParseArgs(args []string, opt Options) (Options, Mode, error) {
 		opt.Agents = ids
 	}
 	opt.Install = *install
-	if *noInstall {
+	if *noInstall || os.Getenv("SDF_RECALL_NO_INSTALL") == "1" {
 		opt.Install = false
 	}
 	if len(opt.Merge) > 0 && (len(opt.Agents) > 0 || len(opt.FixtureNames) > 0) {

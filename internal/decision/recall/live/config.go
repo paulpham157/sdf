@@ -1,7 +1,10 @@
 package live
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -63,6 +66,8 @@ type Options struct {
 	// are pointed here. The report keeps the upstream bases.
 	proxyOpenAI    string
 	proxyAnthropic string
+	// cliPrefix is a runner-owned npm prefix. Empty means do not install.
+	cliPrefix string
 }
 
 // ConfigFromEnv reads the measurement settings. An empty key means skip.
@@ -150,6 +155,27 @@ func (o Options) withDefaults() Options {
 	o.AnthropicBase = strings.TrimRight(o.AnthropicBase, "/")
 	o.Key = strings.TrimSpace(o.Key)
 	return o
+}
+
+// validateBase rejects an http URL whose host is not a loopback address.
+// https is left to the provider. Tests use http://127.0.0.1.
+func validateBase(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("base URL %q is not an http(s) URL", raw)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("base URL %q uses http to a non-loopback host", raw)
 }
 
 func defaultBackoff(attempt int) time.Duration {

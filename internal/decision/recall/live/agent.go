@@ -22,6 +22,11 @@ type support struct {
 	Protocol protocol
 }
 
+// localTokenEnv is the variable a CLI reads when it needs a credential for
+// the localhost proxy. The value is a per-run placeholder, not the provider
+// key. The runner does not set SDF_RECALL_API_KEY on the CLI.
+const localTokenEnv = "SDF_RECALL_LOCAL_TOKEN"
+
 type spec struct {
 	Repo          string
 	Home          string
@@ -31,16 +36,26 @@ type spec struct {
 	OTLP          string
 	SkillSrc      string
 	Prompt        string
+	// LocalToken is the placeholder the CLI sends to the proxy. Empty
+	// means the fixed non-secret word recall-local.
+	LocalToken string
+}
+
+func (s spec) token() string {
+	if s.LocalToken != "" {
+		return s.LocalToken
+	}
+	return "recall-local"
 }
 
 type invocation struct {
 	// Argv[0] is the CLI name. The runner replaces it with the looked-up path.
 	Argv []string
-	// Env is non-secret process environment. A value that contains the API
-	// key is dropped.
+	// Env is non-secret process environment. A value that contains the
+	// provider key is dropped.
 	Env map[string]string
-	// SecretEnv names variables the runner sets to the API key. The names
-	// are written into config files; the value is not.
+	// SecretEnv names variables the runner sets to the local placeholder.
+	// The provider key is not one of those values.
 	SecretEnv []string
 }
 
