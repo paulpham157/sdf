@@ -55,15 +55,28 @@ func TestOpenRetriesWALSwitchUnderReservedLock(t *testing.T) {
 	}
 }
 
-// TestSetWALTimeoutReportsDatabaseLocked holds the reserved lock for longer
-// than setWAL's retry budget. The open fails, and the error is still the
-// SQLite busy error, not the budget's context deadline.
+// TestSetWALTimeoutReportsDatabaseLocked holds a lock for longer than
+// setWAL's retry budget. A reserved lock makes the WAL pragma return
+// SQLITE_BUSY at once. A shared lock makes it wait. Both must fail with
+// the SQLite lock error, and neither may return before the budget: an
+// immediate error would pass a test that only checks the text.
 func TestSetWALTimeoutReportsDatabaseLocked(t *testing.T) {
+	t.Run("immediate", func(t *testing.T) {
+		assertWALTimeoutLocked(t, false)
+	})
+	t.Run("shared", func(t *testing.T) {
+		assertWALTimeoutLocked(t, true)
+	})
+}
+
+func assertWALTimeoutLocked(t *testing.T, shared bool) {
+	t.Helper()
+	const budget = 200 * time.Millisecond
 	path := writeDeleteJournalDB(t)
-	holdReservedLock(t, path)
+	holdLock(t, path, shared)
 	walSwitchMu.Lock()
 	prev := walSwitchWait
-	walSwitchWait = 200 * time.Millisecond
+	walSwitchWait = budget
 	walSwitchMu.Unlock()
 	t.Cleanup(func() {
 		walSwitchMu.Lock()
@@ -73,11 +86,15 @@ func TestSetWALTimeoutReportsDatabaseLocked(t *testing.T) {
 
 	started := time.Now()
 	_, err := openWithin(t, path, 2*time.Second)
+	elapsed := time.Since(started)
 	if err == nil {
-		t.Fatal("Open succeeded while the reserved lock was held")
+		t.Fatal("Open succeeded while the lock was held")
 	}
-	if time.Since(started) > 2*time.Second {
-		t.Fatalf("Open took %s, want the shortened budget", time.Since(started))
+	if elapsed < budget/2 {
+		t.Fatalf("Open returned in %s, want at least %s so an immediate busy error cannot pass", elapsed, budget/2)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("Open took %s, want the shortened budget", elapsed)
 	}
 	if !strings.Contains(err.Error(), "database is locked") {
 		t.Fatalf("Open: %v", err)
@@ -112,6 +129,14 @@ func setWALBusyHook(t *testing.T, hook func()) {
 // test ends.
 func holdReservedLock(t *testing.T, path string) *sql.Conn {
 	t.Helper()
+	return holdLock(t, path, false)
+}
+
+// holdLock takes a reserved lock, or a shared lock when shared is set.
+// A shared lock is a deferred transaction that has read a row: BEGIN alone
+// does not hold the database. The lock lasts until the test ends.
+func holdLock(t *testing.T, path string, shared bool) *sql.Conn {
+	t.Helper()
 	hold, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -122,10 +147,25 @@ func holdReservedLock(t *testing.T, path string) *sql.Conn {
 		hold.Close()
 		t.Fatal(err)
 	}
-	if _, err := conn.ExecContext(t.Context(), `BEGIN IMMEDIATE`); err != nil {
+	begin := `BEGIN IMMEDIATE`
+	if shared {
+		begin = `BEGIN`
+	}
+	if _, err := conn.ExecContext(t.Context(), begin); err != nil {
 		conn.Close()
 		hold.Close()
 		t.Fatal(err)
+	}
+	if shared {
+		// SELECT 1 does not read a database page, so it takes no lock.
+		// sqlite_master does, and the deferred transaction holds that shared
+		// lock until rollback.
+		var name string
+		if err := conn.QueryRowContext(t.Context(), `SELECT name FROM sqlite_master LIMIT 1`).Scan(&name); err != nil {
+			conn.Close()
+			hold.Close()
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() {
 		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)

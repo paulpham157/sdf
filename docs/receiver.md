@@ -184,11 +184,13 @@ sqlite3 sdf-telemetry.sqlite \
 `sdf serve` opens the database in SQLite WAL mode with a 5-second busy
 timeout, so `sdf summary` and other readers can run while the receiver
 writes. A file still in rollback-journal mode is switched to WAL on that
-open. When several processes do that together, the switch sets the busy
-timeout on its connection and retries `database is locked` for those 5
-seconds. If the lock is still held when that budget runs out, the error
-still says `database is locked`. An open that finds the file already in
-WAL mode leaves it there.
+open. When several processes do that together, the switch retries a locked
+`PRAGMA journal_mode=WAL` for 5 seconds. A reserved lock makes that
+pragma return `database is locked` at once. A shared lock makes it wait,
+and the wait is SQLite's busy timeout so cancelling it does not replace
+the SQLite error. If the lock is still held when the 5 seconds end, the
+open fails with `database is locked`. An open that finds the file already
+in WAL mode leaves it there.
 `sdf summary` only reads: it opens the file read-only
 (`mode=ro`, same busy timeout) and never creates it, applies the schema,
 adds columns, or changes its journal mode. A missing `--db` file in an

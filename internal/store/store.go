@@ -258,13 +258,13 @@ func sqliteCode(err error) int {
 // in either mode, as it did before Open set WAL.
 //
 // The change is made on one pinned connection. busy_timeout is set on that
-// connection before PRAGMA journal_mode=WAL. SQLite can still return
-// SQLITE_BUSY ("database is locked") from the switch without waiting the
-// timeout out, when another connection holds the reserved lock the change
-// needs (BEGIN IMMEDIATE on a rollback-journal file). Those results are
-// retried, with backoff, until walSwitchWait has passed. When that budget
-// runs out, the error is still the last SQLITE_BUSY or SQLITE_LOCKED, not
-// the budget's context deadline. A switch that reports the previous mode is
+// connection before PRAGMA journal_mode=WAL. A reserved lock (BEGIN
+// IMMEDIATE) makes that pragma return SQLITE_BUSY ("database is locked")
+// without waiting the timeout out. A shared lock makes the same pragma
+// wait. The wait uses busy_timeout, not the retry budget's cancel: cancelling
+// the query replaces the SQLite error with a context deadline. Retries stop
+// after walSwitchWait. If the lock is still held, the open fails with the
+// SQLite busy or locked error. A switch that reports the previous mode is
 // retried the same way. If another opener has already put the file in WAL
 // mode, reading journal_mode again is success and this connection does not
 // keep trying to change it.
@@ -313,7 +313,7 @@ func setWAL(db *sql.DB) error {
 		if strings.EqualFold(mode, "wal") {
 			return nil
 		}
-		mode, err = journalMode(ctx, conn, `PRAGMA journal_mode = WAL`)
+		mode, err = walJournalMode(ctx, conn)
 		if err != nil {
 			if sqliteCode(err)&0xff == sqliteReadonly {
 				return nil
@@ -337,6 +337,11 @@ func setWAL(db *sql.DB) error {
 			continue
 		}
 		if strings.EqualFold(mode, "wal") {
+			// walJournalMode shortens busy_timeout to the time left in the
+			// budget. The rest of Open uses the normal timeout.
+			if err := setConnBusyTimeout(context.Background(), conn); err != nil {
+				return err
+			}
 			return nil
 		}
 		// The pragma kept the previous mode and did not return an error.
@@ -385,6 +390,24 @@ func journalMode(ctx context.Context, conn *sql.Conn, query string) (string, err
 	return mode, err
 }
 
+// walJournalMode switches to WAL. The query is not bound to ctx: a shared
+// lock makes PRAGMA journal_mode=WAL wait, and cancelling that wait returns
+// context.DeadlineExceeded with no SQLite code. busy_timeout is the time
+// left on ctx, so SQLite itself returns SQLITE_BUSY when the lock outlasts
+// the budget.
+func walJournalMode(ctx context.Context, conn *sql.Conn) (string, error) {
+	ms := 1
+	if deadline, ok := ctx.Deadline(); ok {
+		if remain := time.Until(deadline); remain > time.Millisecond {
+			ms = int(remain / time.Millisecond)
+		}
+	}
+	if _, err := conn.ExecContext(context.Background(), fmt.Sprintf(`PRAGMA busy_timeout = %d`, ms)); err != nil {
+		return "", err
+	}
+	return journalMode(context.Background(), conn, `PRAGMA journal_mode = WAL`)
+}
+
 // walAlready reports whether the file is already in WAL mode. A read error
 // is returned to the caller; it is not treated as "not wal".
 func walAlready(ctx context.Context, conn *sql.Conn) (bool, error) {
@@ -420,8 +443,9 @@ func retryLock(ctx context.Context, err error) bool {
 }
 
 // finishLockWait is the error setWAL returns when the retry budget is over.
-// A context deadline from the budget is not the result: callers still see
-// the last BUSY or LOCKED SQLite error, and errors.As still finds it.
+// A lock that outlasts the budget is the SQLite busy or locked error from
+// the WAL pragma, and errors.As still finds it. A context error from the
+// budget is not wrapped: errors.Is would still see the deadline.
 func finishLockWait(wait time.Duration, ctx context.Context, err, last error) error {
 	timedOut := ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 	if !timedOut {
@@ -430,10 +454,13 @@ func finishLockWait(wait time.Duration, ctx context.Context, err, last error) er
 	if sqliteLock(err) {
 		last = err
 	}
-	if !sqliteLock(last) {
-		return err
+	if sqliteLock(last) {
+		return fmt.Errorf("store: switching to WAL: timed out after %s: %w", wait, last)
 	}
-	return fmt.Errorf("store: switching to WAL: timed out after %s: %w", wait, last)
+	// The budget ended before SQLite reported a code (the query was cancelled
+	// instead of returning BUSY). Do not wrap the context error: errors.Is
+	// would still see the deadline, and the text would not name the lock.
+	return fmt.Errorf("store: switching to WAL: timed out after %s: database is locked", wait)
 }
 
 // pauseLock waits delay, or until ctx ends, and returns the next delay.
