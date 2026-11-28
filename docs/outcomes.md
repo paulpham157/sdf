@@ -132,7 +132,7 @@ authentication. `git config user.name` is not read. A missing `gh`, a failed
 command, a display name, or `user` or `agent` in any case (`User`, `AGENT`)
 is skipped, and the field stays empty. `gh` has up to 3 seconds. If it
 hangs or fails, `git` still gets about 500ms of its own, so the add stays
-within about 3.5 seconds. Each command's stdout is capped at 64 KiB. The
+within a worst case of about 4.5 seconds: gh has 3 seconds, git has 0.5 seconds after that, and each killed command may take another 0.5 seconds to close its pipes. Each command's stdout is capped at 64 KiB. The
 lookup runs only after the rest of the record validates. An explicit empty `--decided-by` stays empty
 and does not fall through. An explicit value is stored with its exact case.
 `User` is not the legacy word `user`. An explicit value that is not a login or `user`
@@ -324,23 +324,19 @@ the `EFFECTIVE` cell, in that order, and prints `blocked by: IDS (open: IDS)`
 (or `(settled)`), `conflicts with: IDS`, and `refined by: IDS` lines under the
 statement:
 
-The samples below were laid out before `CATEGORY`. A current table inserts
-that column after `STATUS` (`implementation` when the stored value is NULL)
-and prints `user (legacy)` or `agent (legacy)` in `DECIDED BY`.
-
 ```text
 Decisions: 6
-ID             STATUS      EFFECTIVE           DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
-which-db       hypothesis  active              agent       2026-11-23T17:18:46.360788+00:00  -       Pick the store: SQLite or Postgres.
-design-schema  decision    active, blocked     agent       2026-11-23T17:18:46.367151+00:00  -       Design the rejections schema.
-                                                                                                     blocked by: which-db (open: which-db)
-use-sqlite     decision    active, conflicted  user        2026-11-23T17:18:46.373929+00:00  -       Keep the store in SQLite.
-                                                                                                     conflicts with: use-postgres
-use-postgres   decision    active, conflicted  agent       2026-11-23T17:18:46.381759+00:00  -       Move the store to Postgres.
-                                                                                                     conflicts with: use-sqlite
-dont-push      decision    active              user        2026-11-23T17:18:46.390932+00:00  -       Do not push without an OK.
-                                                                                                     refined by: push-after-ok
-push-after-ok  decision    active              user        2026-11-23T17:18:46.397456+00:00  -       Push feature branches once the user says OK.
+ID             STATUS      CATEGORY        EFFECTIVE           DECIDED BY       RECORDED AT                       SOURCE  STATEMENT
+which-db       hypothesis  implementation  active              agent (legacy)  2026-11-23T17:18:46.360788+00:00  -       Pick the store: SQLite or Postgres.
+design-schema  decision    implementation  active, blocked     agent (legacy)  2026-11-23T17:18:46.367151+00:00  -       Design the rejections schema.
+                                                                                                                       blocked by: which-db (open: which-db)
+use-sqlite     decision    implementation  active, conflicted  user (legacy)   2026-11-23T17:18:46.373929+00:00  -       Keep the store in SQLite.
+                                                                                                                       conflicts with: use-postgres
+use-postgres   decision    implementation  active, conflicted  agent (legacy)  2026-11-23T17:18:46.381759+00:00  -       Move the store to Postgres.
+                                                                                                                       conflicts with: use-sqlite
+dont-push      decision    implementation  active              user (legacy)   2026-11-23T17:18:46.390932+00:00  -       Do not push without an OK.
+                                                                                                                       refined by: push-after-ok
+push-after-ok  decision    implementation  active              user (legacy)   2026-11-23T17:18:46.397456+00:00  -       Push feature branches once the user says OK.
 
 Edges: 3
 RELATION        FROM                    TO                      RECORDED AT
@@ -510,10 +506,10 @@ the same cell rule as every column. The UI shows the same, and `--json` equals
 `GET /api/decisions`.
 
 ```text
-ID          STATUS    EFFECTIVE                         DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
-use-sqlite  decision  retracted, superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  -       Store telemetry in SQLite
-                                                                                                              retracted: 2026-11-23T15:00:03.000000+00:00 by user; reason: Benchmark was wrong
-use-wal     decision  active                            -           2026-11-23T15:00:01.000000+00:00  -       Store telemetry in SQLite with WAL
+ID          STATUS    CATEGORY        EFFECTIVE                         DECIDED BY     RECORDED AT                       SOURCE  STATEMENT
+use-sqlite  decision  implementation  retracted, superseded by use-wal  user (legacy)  2026-11-23T15:00:00.000000+00:00  -       Store telemetry in SQLite
+                                                                                                                                 retracted: 2026-11-23T15:00:03.000000+00:00 by user; reason: Benchmark was wrong
+use-wal     decision  implementation  active                            -              2026-11-23T15:00:01.000000+00:00  -       Store telemetry in SQLite with WAL
 ```
 
 **Migration.** Opening a store runs `CREATE TABLE IF NOT EXISTS

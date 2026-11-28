@@ -29,7 +29,7 @@ read uses every scope, including the repository-local config. The value
 is self-asserted attribution, not authentication. `git config user.name`
 is not read. The hosts.yml login takes precedence over `github.user`.
 `gh` has up to 3 seconds. If it hangs or fails, `git` still gets about
-500ms of its own, so the add stays within about 3.5 seconds. A configured
+500ms of its own. The worst case is about 4.5 seconds: those budgets, plus up to 500ms for each killed command to close its pipes. The budgets themselves are unchanged. A configured
 `user` or `agent` is skipped without regard to case. An explicit
 `--decided-by` is stored with its exact case. Captured stdout
 is capped at 64 KiB, and a command that does not exit has 500ms to close
