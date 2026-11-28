@@ -609,7 +609,12 @@
   }
 
   function decisionCategoryLabel(record) {
-    return (record && record.category) || "implementation";
+    const raw = record && record.category != null ? String(record.category).trim() : "";
+    return raw || "implementation";
+  }
+
+  function decisionCategoryStatus(record) {
+    return h("span", { class: "status" }, [h("span", { class: "sr-only" }, ["category "]), decisionCategoryLabel(record)]);
   }
 
   function decisionWho(record) {
@@ -638,7 +643,7 @@
         const superseded = by.length > 0 && (retraction || record.effective_status === "superseded");
         const line = [
           h("span", { class: "status" }, [record.status || "unknown"]),
-          h("span", { class: "status" }, [decisionCategoryLabel(record)]),
+          decisionCategoryStatus(record),
         ];
         if (record.decided_by) {
           line.push(h("span", { class: "status" }, [decisionWho(record)]));
@@ -1445,7 +1450,37 @@
 
   function dgMuted(node) {
     if (dgShow === "all" || node.kind !== "decision") return false;
-    return node.decided_by !== dgShow;
+    const by = node.decided_by || "";
+    if (dgShow === "login") return by === "" || by === "user" || by === "agent";
+    return by !== dgShow;
+  }
+
+  // Legacy words keep a single letter. A login uses the shortest prefix of
+  // at least two characters that no other login in the chapter shares, so
+  // "paul" and "peter" do not both read "P", and neither collides with U
+  // or A. The legend and the accessible name carry the full login.
+  function dgBadgeMarks(nodes) {
+    const logins = [];
+    (nodes || []).forEach(function (node) {
+      const by = node.decided_by || "";
+      if (!by || by === "user" || by === "agent" || logins.indexOf(by) >= 0) return;
+      logins.push(by);
+    });
+    const marks = { user: "U", agent: "A" };
+    logins.forEach(function (by) {
+      const upper = by.toUpperCase();
+      let n = 2;
+      while (n < by.length && n < 4) {
+        const pref = upper.slice(0, n);
+        const clash = logins.some(function (other) {
+          return other !== by && other.toUpperCase().slice(0, n) === pref;
+        });
+        if (!clash) break;
+        n++;
+      }
+      marks[by] = upper.slice(0, n);
+    });
+    return marks;
   }
 
   function dgPos(node) {
@@ -1609,7 +1644,7 @@
     return s("rect", { x: l - 6, y: t - 6, width: w + 12, height: hgt + 12, rx: 13, class: "dg-kb-ring", "aria-hidden": "true" });
   }
 
-  function dgNodeShape(node, w, focused) {
+  function dgNodeShape(node, w, focused, marks) {
     const p = dgPos(node);
     const l = p.x - w / 2;
     const t = p.y - DG.nodeH / 2;
@@ -1634,8 +1669,9 @@
     let tx = l + 12;
     let anchor = "start";
     if (node.decided_by) {
-      const letter = node.decided_by === "user" ? "U" : node.decided_by === "agent" ? "A" : node.decided_by.charAt(0).toUpperCase();
-      kids.push(s("circle", { cx: l + 18, cy: p.y, r: 10, class: "dg-badge" }));
+      const letter = (marks && marks[node.decided_by]) || (node.decided_by === "user" ? "U" : node.decided_by === "agent" ? "A" : node.decided_by.slice(0, 2).toUpperCase());
+      const r = letter.length > 1 ? 13 : 10;
+      kids.push(s("circle", { cx: l + 18, cy: p.y, r: r, class: "dg-badge" }));
       kids.push(s("text", { x: l + 18, y: p.y + 4, "text-anchor": "middle", class: "dg-badge-text" }, [letter]));
       tx = l + 34;
     }
@@ -1672,9 +1708,16 @@
     return kids;
   }
 
+  function dgCategoryBit(node) {
+    if (!node || node.kind !== "decision") return "";
+    return "category " + decisionCategoryLabel(node.decision || {});
+  }
+
   function dgAria(node) {
     const bits = [node.title + ": " + (node.detail || "")];
     bits.push((node.role || node.kind).replace(/_/g, " "));
+    const cat = dgCategoryBit(node);
+    if (cat) bits.push(cat);
     if (node.decided_by) bits.push(dgWho(node));
     const rec = node.decision || {};
     if (rec.blocked) bits.push("blocked");
@@ -1728,6 +1771,7 @@
       const group = s("g", { class: gcls || null }, parts);
       (edge.on_path ? path : off).push(group);
     });
+    const marks = dgBadgeMarks(chapter.nodes);
     const nodes = [];
     chapter.nodes.forEach(function (node) {
       if (!dgVisible(node)) return;
@@ -1739,7 +1783,9 @@
       if (muted) classes.push("dg-muted");
       if (node.future) classes.push("dg-future");
       if (node.enter) classes.push("dg-enter");
-      const kids = (node.future ? [] : [s("title", null, [node.title + ": " + (node.detail || "")])]).concat(dgNodeShape(node, width[node.id], focused));
+      let tip = node.title + ": " + (node.detail || "");
+      if (node.decided_by && node.decided_by !== "user" && node.decided_by !== "agent") tip += " (" + node.decided_by + ")";
+      const kids = (node.future ? [] : [s("title", null, [tip])]).concat(dgNodeShape(node, width[node.id], focused, marks));
       const hidden = (node.alternatives || []).filter(function (id) { return byId[id] && byId[id].lane === "none"; });
       if (hidden.length && dgNotTaken && !node.future) {
         const p = dgPos(node);
@@ -1761,8 +1807,8 @@
       }
       nodes.push(s("g", {
         class: classes.join(" "),
-        // A node the You/Agents filter mutes stays clickable but leaves the
-        // tab order.
+        // A node the legacy or login filter mutes stays clickable but leaves
+        // the tab order.
         tabindex: muted ? "-1" : "0",
         role: "button",
         "data-node": node.id,
@@ -1844,10 +1890,11 @@
     }, [defs, s("g", null, off), s("g", null, path), s("g", null, ghosts), s("g", null, nodes)]);
   }
 
-  const DG_SHOW = [["all", "Everyone"], ["user", "You"], ["agent", "Agents"]];
+  const DG_SHOW = [["all", "Everyone"], ["user", "user (legacy)"], ["agent", "agent (legacy)"], ["login", "Logins"]];
 
-  // Everyone / You / Agents is one choice of three: a radiogroup with a
-  // roving tabindex, where the arrows (and Home/End) move and select.
+  // Everyone / user (legacy) / agent (legacy) / Logins is one choice: a
+  // radiogroup with a roving tabindex, where the arrows (and Home/End)
+  // move and select. A login is not greyed under both legacy filters.
   function dgShowGroup() {
     function pick(value) {
       dgShow = value;
@@ -1922,21 +1969,30 @@
     function row(cls, label) {
       return h("li", null, [h("span", { class: "dg-key-swatch " + cls, "aria-hidden": "true" }), label]);
     }
+    const logins = [];
+    chapter.nodes.forEach(function (node) {
+      const by = node.decided_by || "";
+      if (!by || by === "user" || by === "agent" || logins.indexOf(by) >= 0) return;
+      logins.push(by);
+    });
+    const items = [
+      row("path", "Chosen path"),
+      row("off", "Off the path"),
+      row("user", "user (legacy)"),
+      row("agent", "agent (legacy)"),
+    ];
+    if (logins.length) logins.forEach(function (login) { items.push(row("login", login)); });
+    else items.push(row("login", "GitHub login"));
+    items.push(row("ghost", "Not taken"));
+    items.push(row("superseded", "Superseded"));
+    items.push(row("hypothesis", "Hypothesis ?"));
+    items.push(row("locked", "Locked"));
+    items.push(row("challenged", "Challenged"));
+    items.push(row("ending", "Ending"));
+    items.push(h("li", null, ["🔒 blocks · ⚡ conflicts · ↶ supersedes · ↑ refines"]));
     return h("details", { class: "dg-key", open: open ? "" : null, ontoggle: function (event) { dgKeyOpen = !!event.target.open; } }, [
       h("summary", null, ["Key"]),
-      h("ul", null, [
-        row("path", "Chosen path"),
-        row("off", "Off the path"),
-        row("user", "You (U)"),
-        row("agent", "Agent (A)"),
-        row("ghost", "Not taken"),
-        row("superseded", "Superseded"),
-        row("hypothesis", "Hypothesis ?"),
-        row("locked", "Locked"),
-        row("challenged", "Challenged"),
-        row("ending", "Ending"),
-        h("li", null, ["🔒 blocks · ⚡ conflicts · ↶ supersedes · ↑ refines"]),
-      ]),
+      h("ul", null, items),
     ]);
   }
 
@@ -1944,7 +2000,7 @@
     if (!dgHelp) return null;
     return h("div", { class: "dg-help", role: "note" }, [
       h("p", null, [h("strong", null, ["Shortcuts"])]),
-      h("p", null, ["Tab moves between nodes · Enter or Space focuses one · Esc closes it · ↑ ↓ walk the rows · ← → choose Everyone, You or Agents · t toggles tensions · / jumps to an id · ? shows this · List shows the chapter as a list"]),
+      h("p", null, ["Tab moves between nodes · Enter or Space focuses one · Esc closes it · ↑ ↓ walk the rows · ← → choose Everyone, user (legacy), agent (legacy), or Logins · t toggles tensions · / jumps to an id · ? shows this · List shows the chapter as a list"]),
       h("p", null, ["Replay: [ and ] step back and forward from anywhere on the tab · on the slider ← → step, PageUp PageDown jump a tenth, Home End go to the first or last event, Space plays or pauses"]),
     ]);
   }
@@ -2168,6 +2224,8 @@
     if (node.kind === "start") bits.push("chapter start");
     else if (node.kind === "ending") bits.push(node.role === "locked_ending" ? "locked ending" : node.role === "reached" ? "ending, reached" : "ending, not reached");
     else bits.push((node.role || node.kind).replace(/_/g, " "));
+    const cat = dgCategoryBit(node);
+    if (cat) bits.push(cat);
     if (node.decided_by) bits.push(dgWho(node));
     const rec = node.decision || {};
     if (rec.blocked) bits.push("blocked");
@@ -2269,7 +2327,7 @@
     // its chips (status, effective status, blocked, conflicted, challenged)
     // would be today's, so they are left out.
     if (!node.future) {
-      const chips = [h("span", { class: "dg-pchip" }, [decisionCategoryLabel(rec)]), h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
+      const chips = [h("span", { class: "dg-pchip" }, [h("span", { class: "sr-only" }, ["category "]), decisionCategoryLabel(rec)]), h("span", { class: "dg-pchip" }, [rec.status || "decision"]), h("span", { class: "dg-pchip" }, [rec.effective_status || "active"])];
       if (rec.blocked) chips.push(h("span", { class: "dg-pchip dg-amber" }, ["🔒 blocked"]));
       if (rec.conflicted) chips.push(h("span", { class: "dg-pchip dg-red" }, ["⚡ conflicted"]));
       if (rec.challenged) chips.push(h("span", { class: "dg-pchip dg-red" }, ["challenged"]));
@@ -2776,7 +2834,14 @@
   }
 
   function dgTickClass(ev, future) {
-    return "dg-tick dg-tick-" + ev.type + (ev.type === "decision" ? " dg-tick-" + (ev.by === "agent" ? "agent" : "user") : "") + (future ? " dg-tick-future" : "");
+    let who = "";
+    if (ev.type === "decision") {
+      if (ev.by === "agent") who = "agent";
+      else if (ev.by === "user") who = "user";
+      else if (ev.by) who = "login";
+      else who = "user";
+    }
+    return "dg-tick dg-tick-" + ev.type + (who ? " dg-tick-" + who : "") + (future ? " dg-tick-future" : "");
   }
 
   // dgTrack draws the scrubber track once per chapter. A step moves the

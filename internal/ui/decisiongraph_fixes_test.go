@@ -134,7 +134,7 @@ func TestDecisionFilterMutesWithoutOpacity(t *testing.T) {
 	db := openDB(t)
 	seedGraph(t, db)
 	srv := startUI(t, db)
-	res := renderPage(t, srv, "#/decisions", "click=~You")
+	res := renderPage(t, srv, "#/decisions", "click=~user (legacy)")
 	tag := func(id string) string {
 		return regexp.MustCompile(`<g [^>]*data-node="` + id + `"[^>]*>`).FindString(res.Markup)
 	}
@@ -157,8 +157,8 @@ func TestDecisionFilterMutesWithoutOpacity(t *testing.T) {
 	}
 }
 
-// Everyone / You / Agents is a radiogroup with a roving tabindex: one tab
-// stop, and the arrows, Home and End move and select.
+// Everyone / user (legacy) / agent (legacy) / Logins is a radiogroup with a
+// roving tabindex: one tab stop, and the arrows, Home and End move and select.
 func TestDecisionShowFilterIsRadiogroup(t *testing.T) {
 	db := openDB(t)
 	seedGraph(t, db)
@@ -171,7 +171,7 @@ func TestDecisionShowFilterIsRadiogroup(t *testing.T) {
 			t.Fatalf("no radiogroup:\n%s", res.Markup)
 		}
 		all := radios.FindAllString(res.Markup, -1)
-		if len(all) != 3 || strings.Count(strings.Join(all, ""), `tabindex="0"`) != 1 || strings.Count(strings.Join(all, ""), `aria-checked="true"`) != 1 {
+		if len(all) != 4 || strings.Count(strings.Join(all, ""), `tabindex="0"`) != 1 || strings.Count(strings.Join(all, ""), `aria-checked="true"`) != 1 {
 			t.Fatalf("%s: radios %q", flags, all)
 		}
 		for _, r := range all {
@@ -186,10 +186,10 @@ func TestDecisionShowFilterIsRadiogroup(t *testing.T) {
 	}
 	check("", "all")
 	check(`key=ArrowRight@[data-focus-key="show:all"]`, "user")
-	check(`key=ArrowLeft@[data-focus-key="show:all"]`, "agent")
-	check(`key=End@[data-focus-key="show:all"]`, "agent")
-	check(`key=ArrowRight@[data-focus-key="show:all"],key=ArrowDown,key=ArrowDown`, "all")
-	check(`click=~Agents,key=Home`, "all")
+	check(`key=ArrowLeft@[data-focus-key="show:all"]`, "login")
+	check(`key=End@[data-focus-key="show:all"]`, "login")
+	check(`key=ArrowRight@[data-focus-key="show:all"],key=ArrowDown,key=ArrowDown,key=ArrowDown`, "all")
+	check(`click=~Logins,key=Home`, "all")
 }
 
 // / focuses Jump, t toggles tensions and ? the shortcut sheet, from
