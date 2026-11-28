@@ -139,7 +139,7 @@ Notes:
 | `--sdf-color-link` | `{color.accent-text}` | `#8E3E1C` |
 | `--sdf-color-focus` | `{color.rust-500}` | `#C65A2E` |
 | `--sdf-color-accent-on-inverse` | `{color.rust-200}` | `#F3C7B6` |
-| `--sdf-color-focus-on-inverse` | `{color.rust-200}` | `#F3C7B6` |
+| `--sdf-color-focus-on-inverse` | `{color.rust-400}` | `#E0764A` |
 | `--sdf-color-success` | `{color.green-700}` | `#145C38` |
 | `--sdf-color-success-soft` | `{color.green-50}` | `#E6F1EA` |
 | `--sdf-color-warning` | `{color.amber-700}` | `#8A4B08` |
@@ -274,8 +274,12 @@ luminance formula, not by eye. Text needs 4.5:1. Large text and UI parts
 (strokes, borders that identify a control, focus rings, chart marks) need
 3:1. Rows marked "info only" are decorative or are documented limits that the
 rules above work around. `--check` fails if any text or UI row fails in the
-light table or the [dark table](#dark-contrast), and if
-`docs/stylesheets/extra.css` contains a raw hex or `rgb()` color.
+light table or the [dark table](#dark-contrast), if
+`docs/stylesheets/extra.css` contains a raw hex or `rgb()` color, and if
+`extra.css` or `internal/ui/assets/app.css` sets
+`--sdf-color-focus-on-inverse` as an outline color without a negative
+`outline-offset` in the same rule. That token is an inset ring on an
+inverse surface. On the page it is 2.72:1 in light and 2.25:1 in dark.
 `--sdf-color-bg` stands for `--sdf-color-surface` too (same value).
 
 | Foreground | Hex | Background | Hex | Ratio | Needs | Result |
@@ -372,7 +376,7 @@ light table or the [dark table](#dark-contrast), and if
 | `--sdf-chart-axis` | `#6B7480` | `--sdf-color-surface-raised` | `#FBF7F1` | 4.44:1 | UI 3.0 | pass |
 | `--sdf-chart-axis` | `#6B7480` | `--sdf-color-surface-sunken` | `#EBE3D6` | 3.72:1 | UI 3.0 | pass |
 | `--sdf-graph-muted-stroke` | `#7A828C` | `--sdf-graph-muted-fill` | `#EBE3D6` | 3.05:1 | UI 3.0 | pass |
-| `--sdf-color-focus-on-inverse` | `#F3C7B6` | `--sdf-color-surface-inverse` | `#2F3640` | 7.93:1 | UI 3.0 | pass |
+| `--sdf-color-focus-on-inverse` | `#E0764A` | `--sdf-color-surface-inverse` | `#2F3640` | 3.98:1 | UI 3.0 | pass |
 | `--sdf-color-text-inverse` | `#F6F1E8` | `--sdf-color-accent` | `#C65A2E` | 3.81:1 | info only | n/a |
 | `--sdf-color-accent` | `#C65A2E` | `--sdf-color-surface-inverse` | `#2F3640` | 2.85:1 | info only | n/a |
 | `--sdf-graph-chosen` | `#C65A2E` | `--sdf-graph-chosen-fill` | `#2F3640` | 2.85:1 | info only | n/a |
@@ -406,8 +410,13 @@ Pairings that do not pass and are therefore not allowed:
   Use `--sdf-color-accent-text`.
 - Cream text on a rust fill: 3.81:1. A rust button or badge uses the
   `--sdf-color-accent-text` fill (6.54:1) or is charcoal with a rust edge.
-- Rust on charcoal: 2.85:1. On `--sdf-color-surface-inverse` use
-  `--sdf-color-accent-on-inverse` and `--sdf-color-focus-on-inverse` (7.93:1).
+- Rust on charcoal: 2.85:1 for rust-500. On `--sdf-color-surface-inverse`
+  use `--sdf-color-accent-on-inverse` (rust-200, 7.93:1) or
+  `--sdf-color-focus-on-inverse` (rust-400, 3.98:1) as an inset ring.
+  No rust step clears 3:1 on both that charcoal and the cream page.
+  `--sdf-color-focus-on-inverse` on the page itself is 2.72:1 in light
+  (rust-400 on cream) and 2.25:1 in dark (rust-700 on `#1B1F25`). An
+  outset ring sits on the page and uses `--sdf-color-focus`.
 - `--sdf-color-border` to mark a control's edge: 1.21–1.44:1.
 
 ## Dark variant
@@ -461,8 +470,10 @@ charcoal with cream text. In dark `--sdf-color-surface-inverse` is
 sidebar's current page is that pair as a pill in dark, and cream
 `#F6F1E8` on charcoal `#2F3640` (10.84:1) in light. Background only, no
 vertical edge. `--sdf-color-accent-on-inverse` and `--sdf-color-focus-on-inverse` are
-rust-700 `#8E3E1C` (5.93:1 on the light band). Rust fill on that band is
-2.47:1, so it is not used there.
+rust-700 `#8E3E1C` (5.93:1 on the light band). The focus token is an inset
+ring on that band. On the dark page the same rust-700 is 2.25:1, so an
+outset ring uses `--sdf-color-focus` (rust-200, 10.76:1). Rust fill on that
+band is 2.47:1, so it is not used there.
 
 Graph and chart strokes that pointed at a dark primitive get a lighter
 `$dark` so they clear 3:1 on `#242A32`, the lightest dark surface.
@@ -493,7 +504,7 @@ text-inverse `#1B1F25`. The rust outline is the accent, drawn on the page
 | `--sdf-color-link` | `#8E3E1C` | `#F0A27E` |
 | `--sdf-color-focus` | `#C65A2E` | `#F3C7B6` |
 | `--sdf-color-accent-on-inverse` | `#F3C7B6` | `#8E3E1C` |
-| `--sdf-color-focus-on-inverse` | `#F3C7B6` | `#8E3E1C` |
+| `--sdf-color-focus-on-inverse` | `#E0764A` | `#8E3E1C` |
 | `--sdf-color-success` | `#145C38` | `#7CCB9C` |
 | `--sdf-color-success-soft` | `#E6F1EA` | `#163528` |
 | `--sdf-color-warning` | `#8A4B08` | `#E6B566` |
@@ -871,15 +882,13 @@ How it consumes `tokens.css`:
   Hover and keyboard focus keep that pair. Accent text is rust-700,
   1.66:1 on the charcoal chip, so it is not the label. Rust-500 on that
   chip is 2.85:1 and is not used there either. The focus ring is drawn
-  inside the chip so the sidebar scroller cannot clip it. In dark it is
-  `--sdf-color-focus-on-inverse` (rust-700 on the cream chip, 5.93:1).
-  In light, focus-on-inverse is rust-200: 7.93:1 on the charcoal chip and
-  1.37:1 on the cream page, a pale peach beside the rust-500 rings on the
-  other links. No rust step clears 3:1 on both of those surfaces. rust-400
-  is 3.98:1 on the chip and 2.72:1 on the page; rust-500 is 2.85:1 on the
-  chip and 3.81:1 on the page. The light ring uses `--sdf-color-rust-400`,
-  the step closest to the page focus color that still clears 3:1 on the
-  chip, which is the surface the ring is drawn on. The label
+  inside the chip so the sidebar scroller cannot clip it. Both schemes
+  use `--sdf-color-focus-on-inverse`: rust-400 `#E0764A` on the charcoal
+  chip (3.98:1) and rust-700 on the cream chip (5.93:1). The token is only
+  an inset ring on an inverse surface. No rust step
+  clears 3:1 on both the charcoal chip and the cream page (rust-400 is
+  2.72:1 on the page; rust-500 is 3.81:1 on the page and 2.85:1 on the
+  chip). The ring is drawn on the chip, so light uses rust-400. The label
   does not shift. At the desktop sidebar width the pill adds 4px of block
   padding and 8px of inline padding. The start margin gives back the inline
   padding so the label stays aligned. The end margin stays 0 so the chip
@@ -887,9 +896,11 @@ How it consumes `tokens.css`:
   Material's link gap and only gives back the 4px of block padding, and
   the bottom margin is the negative padding. The sticky title (and the
   on-this-page title) has no halo. One 8px gradient below both titles
-  fades links as they scroll under it, and it stays hidden until the
-  sidebar scrolls, so the resting chip keeps the gap it had before that
-  gradient. The title stays stuck while the list scrolls.
+  fades links as they scroll under it. Its opacity is 0 unless the
+  browser supports scroll-driven animations, in which case it eases in
+  over the first 8px of scroll. Firefox before 159 and Safari before 26
+  keep the hard edge and do not tint the resting chip. The title stays
+  stuck while the list scrolls.
   Ancestor and expanded section titles stay `--sdf-color-text` on
   a transparent background. Rust is a mark (the short rule under the page
   title, focus), not a panel.
@@ -1018,7 +1029,8 @@ Landing variable mapping:
 | `--stamp-deep` `#8e3e1c` | `--sdf-color-accent-text` |
 | `--pass` `#145c38` | `--sdf-color-success` |
 | `--anchor` `#f3e4d8` | `--sdf-color-accent-soft` |
-| `#f3c7b6` (light kicker, focus on charcoal) | `--sdf-color-accent-on-inverse`, `--sdf-color-focus-on-inverse` |
+| `#f3c7b6` (light kicker) | `--sdf-color-accent-on-inverse` |
+| `#e0764a` (focus on charcoal) | `--sdf-color-focus-on-inverse`. This mapping is an inset ring on the charcoal surface. On the cream page `#e0764a` is 2.72:1, so an outset ring uses `--sdf-color-focus`. |
 | `#e8e2d6` (light lede) | `--sdf-color-text-inverse-muted` (`#D9CFC0`) or `--sdf-color-text-inverse` |
 | `--shadow` | `--sdf-shadow-stamp` |
 | `#f4fff8`, `#4e5348` | To review with Frontend (verdict text, textarea text). |

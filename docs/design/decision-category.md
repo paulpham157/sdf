@@ -405,8 +405,11 @@ Two places learn the column, for the same reason `decided_by`,
   create.
 - `migrate` passes `category` to `addMissingColumns("decisions", …)`.
   `addMissingColumns` runs `ALTER TABLE decisions ADD COLUMN category TEXT`
-  when the column is absent. Existing rows become `NULL`. It does not
-  rewrite them.
+  when the column is absent. The re-check and that `ALTER` run in one
+  `BEGIN IMMEDIATE` transaction, so concurrent writers wait for
+  `busy_timeout`. A `duplicate column name` error is success when a fresh
+  read shows the column is present.
+  Existing rows become `NULL`. It does not rewrite them.
 
 `OpenReadOnly` does not call `migrate`. `addCompatViews` in
 `internal/store/readonly.go` builds a temporary view from the columns of

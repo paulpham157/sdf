@@ -401,36 +401,89 @@ func (s *Store) migrate() error {
 	return s.migrateRecordRevision()
 }
 
+// addMissingColumns adds any of cols that table does not already have.
+// It is idempotent. A table that already has every column is only read, so
+// opening a current file takes no write lock, and a read-only open never
+// reaches here (OpenReadOnly does not migrate).
+//
+// The gap this closes is two writers both seeing a missing column and both
+// running ALTER TABLE. SQLite then rejects the second with "duplicate
+// column name" and that open writes nothing. The re-check and the ALTER
+// run in one BEGIN IMMEDIATE transaction: the second writer waits for this
+// connection's busy_timeout, then reads the column the first writer
+// committed. A duplicate-column error is still success when a fresh read
+// shows that column is present, so the open stays idempotent if the alter
+// loses a race the lock did not cover.
 func (s *Store) addMissingColumns(table string, cols []string) error {
-	present, err := s.tableColumns(table)
+	ctx := context.Background()
+	missing, err := missingColumns(ctx, s.db, table, cols)
 	if err != nil {
 		return err
 	}
-	for _, col := range cols {
-		if present[col] {
-			continue
+	if len(missing) == 0 {
+		return nil
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
 		}
-		if _, err := s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + col + " TEXT"); err != nil {
+	}()
+	missing, err = missingColumns(ctx, conn, table, cols)
+	if err != nil {
+		return err
+	}
+	for _, col := range missing {
+		if err := addColumn(ctx, conn, table, col); err != nil {
 			return err
 		}
 	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
-func (s *Store) tableColumns(table string) (map[string]bool, error) {
-	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+// execQuerier is the connection that holds the migration transaction.
+// *sql.Conn and *sql.DB both implement it, and it satisfies querier.
+type execQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func missingColumns(ctx context.Context, q querier, table string, cols []string) ([]string, error) {
+	present, err := readTableColumns(ctx, q, table)
+	if err != nil {
+		return nil, err
+	}
+	var missing []string
+	for _, col := range cols {
+		if !present[col] {
+			missing = append(missing, col)
+		}
+	}
+	return missing, nil
+}
+
+func readTableColumns(ctx context.Context, q querier, table string) (map[string]bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	present := map[string]bool{}
 	for rows.Next() {
-		var cid int
-		var name, colType string
-		var notNull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+		var name string
+		if err := rows.Scan(&name); err != nil {
 			return nil, err
 		}
 		present[name] = true
@@ -439,6 +492,42 @@ func (s *Store) tableColumns(table string) (map[string]bool, error) {
 		return nil, err
 	}
 	return present, nil
+}
+
+// addColumn adds col to table. SQLite has no ADD COLUMN IF NOT EXISTS.
+// When the column was added between the check and this statement, the
+// error names it and the column is already there; that is success.
+func addColumn(ctx context.Context, conn execQuerier, table, col string) error {
+	_, err := conn.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+col+" TEXT")
+	if err == nil || !duplicateColumn(err, col) {
+		return err
+	}
+	present, rerr := readTableColumns(ctx, conn, table)
+	if rerr != nil {
+		return rerr
+	}
+	if !present[col] {
+		return err
+	}
+	return nil
+}
+
+// duplicateColumn reports whether err is SQLite refusing to add col because
+// that column is already on the table. The result code is the generic
+// SQLITE_ERROR, so the message is the signal. The name must end at the
+// message boundary: "decided_by" is a prefix of "decided_by_source".
+func duplicateColumn(err error, col string) bool {
+	if err == nil || col == "" {
+		return false
+	}
+	needle := "duplicate column name: " + col
+	msg := err.Error()
+	i := strings.Index(msg, needle)
+	if i < 0 {
+		return false
+	}
+	rest := msg[i+len(needle):]
+	return rest == "" || rest[0] == ' ' || rest[0] == '(' || rest[0] == '\n' || rest[0] == '\r'
 }
 
 // Close releases the database.

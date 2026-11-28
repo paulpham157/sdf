@@ -28,14 +28,10 @@ input:focus-visible, select:focus-visible, .dg-jump:focus-visible {
   outline-offset: 2px;
 }
 
-.nav a[aria-current="page"]:focus-visible,
-.filters button[aria-pressed="true"]:focus-visible,
-.dg-toolbar button[aria-pressed="true"]:focus-visible,
-.dg-toolbar button[aria-checked="true"]:focus-visible,
-.dg-play:focus-visible,
-.skip:focus-visible {
-  outline-color: var(--sdf-color-focus-on-inverse);
-}
+/* Inverse fills (current nav link, pressed filter, pressed graph-toolbar
+   button, Replay, skip link) keep this outset ring. It is drawn on the
+   page, where focus-on-inverse is 2.72:1 in light and 2.25:1 in dark.
+   An inset ring would land on the rust underline of the chips. */
 
 .skip {
   position: absolute;
