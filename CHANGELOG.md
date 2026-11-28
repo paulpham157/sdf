@@ -37,7 +37,8 @@ This file covers the first public release of the current product: a vendor-neutr
 - Center the README opening, title it Software Decision Fabric, and describe cost per accepted outcome, the decision layer, and that SDF runs locally without sending telemetry to an outside SaaS ([#319](https://github.com/paulpham157/sdf/pull/319)).
 - Add the Software Decision Fabric logo to the centered README opening ([#320](https://github.com/paulpham157/sdf/pull/320)).
 - Link [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/) from the centered README opening ([#329](https://github.com/paulpham157/sdf/pull/329)).
-- The current page in the docs sidebar is the surface-raised chip and accent text at medium weight. The rust inset edge on that item is gone at rest, on hover, on focus, and in the phone drawer, and the label does not shift. Ancestor and section titles stay plain. In dark the current page is an inverse pill with no edge.
+- The current page in the docs sidebar is an inverse chip at medium weight, at every level and in the phone drawer. In light the chip is charcoal with cream text (10.84:1). In dark it is cream with charcoal text (13.34:1). Hover and focus keep that pair. The rust inset edge is gone, and the label does not shift. Ancestor and section titles stay plain.
+- The sticky sidebar title no longer lays its shadow across the current-page chip. The chip sits fully below the title in light and dark, on a nested page as well as Home, and the on-this-page title gets the same treatment. The title stays sticky while the nav scrolls. The phone drawer is unchanged.
 
 ### Fixes
 
