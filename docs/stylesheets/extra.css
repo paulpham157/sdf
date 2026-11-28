@@ -338,21 +338,13 @@ body {
 }
 
 /* The ring is drawn inside the chip, so the sidebar scroller cannot clip
-   it. Dark keeps focus-on-inverse (rust-700 on the cream chip, 5.93:1).
-   Light cannot use that token: rust-200 is 7.93:1 on charcoal and 1.37:1
-   on the cream page, which reads as a pale peach next to the rust-500
-   rings on the other links. No rust step clears 3:1 on both surfaces.
-   rust-400 is the step closest to rust-500 that still clears 3:1 on the
-   chip (3.98:1). It is 2.72:1 on the page, and the ring does not sit there. */
+   it. Both schemes use focus-on-inverse: rust-400 on the charcoal chip
+   (3.98:1) and rust-700 on the cream chip (5.93:1). rust-500, the page
+   focus color, is 2.85:1 on charcoal. */
 .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible,
 .md-nav--primary .md-nav__link--active.focus-visible:not(.md-nav--secondary .md-nav__link) {
   outline-color: var(--sdf-color-focus-on-inverse);
   outline-offset: calc(var(--sdf-border-width-strong) * -1);
-}
-
-[data-md-color-scheme="default"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible,
-[data-md-color-scheme="default"] .md-nav--primary .md-nav__link--active.focus-visible:not(.md-nav--secondary .md-nav__link) {
-  outline-color: var(--sdf-color-rust-400);
 }
 
 .md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus-visible,
@@ -381,12 +373,13 @@ body {
 }
 
 /* Material's sticky title halo covered the chip at rest, so it stays off.
-   One 8px gradient hangs below both sticky titles and fades links that
-   scroll under them. It stays hidden until that sidebar scrolls, so it
-   does not tint the chip at rest and the list needs no extra padding.
-   overflow stays visible so the gradient is not clipped. 60em is the
-   on-this-page sidebar. Below 76.25em the primary sidebar is the drawer,
-   whose title is not this sticky bar, so those declarations are put back. */
+   One 8px gradient hangs below both sticky titles. Opacity starts at 0,
+   so a browser without scroll-driven animations keeps the hard edge and
+   does not tint the resting chip. Where animation-timeline is supported,
+   the gradient eases in over the first 8px of scroll. overflow stays
+   visible so the gradient is not clipped. 60em is the on-this-page
+   sidebar. Below 76.25em the primary sidebar is the drawer, whose title
+   is not this sticky bar, so those declarations are put back. */
 @keyframes sdf-sidebar-title-fade {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -416,18 +409,18 @@ body {
     height: calc(var(--sdf-space-2) * var(--docs-rem));
     background: linear-gradient(to bottom, var(--md-default-bg-color), transparent);
     pointer-events: none;
+    opacity: 0;
   }
 
   @supports (animation-timeline: scroll()) {
     .md-sidebar--secondary .md-nav__title::after,
     .md-sidebar--primary .md-nav--primary > .md-nav__title::after {
-      opacity: 0;
       animation-name: sdf-sidebar-title-fade;
       animation-duration: auto;
       animation-timing-function: linear;
       animation-fill-mode: both;
       animation-timeline: --sdf-sidebar-scroll;
-      animation-range: 0 1px;
+      animation-range: 0 8px;
     }
   }
 }
