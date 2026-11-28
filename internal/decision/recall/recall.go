@@ -127,6 +127,16 @@ func Measure(rec Recorder) (Report, error) {
 	return MeasureFS(sub, rec)
 }
 
+// Fixtures loads the embedded scenarios. Labels are ground truth; a
+// measurement must not show them to the thing being measured.
+func Fixtures() ([]Fixture, error) {
+	sub, err := fs.Sub(fixtureFS, "fixtures")
+	if err != nil {
+		return nil, err
+	}
+	return Load(sub)
+}
+
 // MeasureFS loads every *.json file in fsys, ingests each into its own
 // store, runs rec, and scores the graph against the labels.
 func MeasureFS(fsys fs.FS, rec Recorder) (Report, error) {
@@ -322,10 +332,14 @@ func runOne(fx Fixture, rec Recorder) (ScenarioResult, error) {
 	if err != nil {
 		return ScenarioResult{}, fmt.Errorf("%s: %w", fx.Name, err)
 	}
-	return score(fx, g), nil
+	return Score(fx, g), nil
 }
 
-func score(fx Fixture, g decision.Graph) ScenarioResult {
+// Score compares a stored decision graph with one fixture's labels. It is
+// the comparison Measure uses after a recorder runs. Link hits are
+// implements edges from a commit to the stored decision that matched the
+// label. Session edges are not links.
+func Score(fx Fixture, g decision.Graph) ScenarioResult {
 	used := map[int]bool{}
 	match := map[string]int{}
 	missedDec := []string{}

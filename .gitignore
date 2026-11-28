@@ -6,6 +6,9 @@ dist/
 
 # Local static binary from `make build`.
 /sdf
+
+# Opt-in live recall logs (`go run ./cmd/sdf-recall`).
+/sdf-recall-out/
 *.exe
 
 # Local MkDocs build and documentation virtualenv.
