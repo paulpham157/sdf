@@ -733,8 +733,12 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
-	if !decidedBySet {
-		in.DecidedBy = decision.ResolveDecidedBy("", false, identityRunner)
+	if decidedBySet {
+		if strings.TrimSpace(decidedBy) != "" {
+			in.DecidedBySource = decision.DecidedBySourceFlag
+		}
+	} else {
+		in.DecidedBy, in.DecidedBySource = decision.ResolveDecidedBy("", false, identityRunner)
 	}
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -1122,8 +1126,8 @@ store file in an existing directory is an empty store: exit 0, and the
 file is not created. A missing directory exits 3.
 
 The store is opened read-only with a 200ms busy timeout. --json prints
-action, kind, allowed, and blocking (id, decided_by, decided_by_legacy,
-statement, match).
+action, kind, allowed, and blocking (id, decided_by, decided_by_source
+when set, decided_by_legacy, statement, match).
 
 The sdf-decisions skill ships scripts/check, a helper that runs this
 command and keeps its exit code.`

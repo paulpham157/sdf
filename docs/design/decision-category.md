@@ -20,7 +20,9 @@ identity lookup that is not in that form, or that is the word `user` or
 `agent`, is skipped, so a display name does not fail the add and a
 container default of `user` is not stored as a locked constraint. An
 explicit `--decided-by` that is not in that form is rejected and stores
-nothing. An explicit empty value stays empty.
+nothing. An explicit case variant of `user` or `agent`, such as `User` or
+`AGENT`, is also rejected. The exact words stay legal and are not folded.
+An explicit empty value stays empty.
 
 Second deviation: when `--decided-by` is omitted, sdf does not call
 `gh api user` and it does not use the network. It reads
@@ -34,18 +36,29 @@ is not read. The hosts.yml login takes precedence over `github.user`.
 `user` or `agent` is skipped without regard to case. If neither command
 yields a login, sdf uses the OS username (`os/user` current user, with a
 Windows `DOMAIN\` prefix removed). That name is local and self-asserted,
-not a GitHub authentication. It is stored only when it is a login and not
-`user` or `agent` in any case. An explicit `--decided-by` is stored with
-its exact case. Captured stdout is capped at 64 KiB, and a command that
+not a GitHub authentication. It is stored with `decided_by_source` `os`
+only when it is a login, not `user` or `agent` in any case, and not a
+common service or system account (including `root`, `ubuntu`, `box`,
+`runner`, Windows `SYSTEM`, `LOCAL SERVICE`, `NETWORK SERVICE`, and a
+name ending in `$`). A denied name leaves the field empty. An OS-sourced
+name never locks and is not exempt from `--max-items`. An explicit
+`--decided-by` is stored with its exact case and source `flag`, except a
+case variant of the legacy words, which is rejected. Captured stdout is capped at 64 KiB, and a command that
 does not exit has 500ms to close its pipes after the deadline. On Unix
-the deadline kills the process group, so a child of `gh` does not keep
-running. The lookup runs only after the rest of the record validates.
+the deadline kills the process group, so a child of `gh` that stays in
+that group does not keep running. A child that calls `setsid` leaves the
+group and is not killed. The lookup runs only after the rest of the record validates.
 
 An active settled decision recorded with a GitHub login, or with the exact
-legacy word `user`, is a locked brief constraint. The exact word `agent`
+legacy word `user`, is a locked brief constraint when `decided_by_source`
+is `flag`, `gh`, `git`, or unset. Rows written after the login format
+landed and before this column, which have an unset source, become locked
+brief constraints on upgrade and are exempt from `--max-items`. The exact word `agent`
 is not: those rows stay out of the constraint group unless they are the
 source of a `constrains` edge, and then they are not locked. That keeps
-the brief behavior of rows stored as `agent` before logins. Brief JSON
+the brief behavior of rows stored as `agent` before logins. A name with
+source `os` never locks. It joins the constraint group only as the source
+of a `constrains` edge, and then it is not exempt from `--max-items`. Brief JSON
 does not carry `category` (the brief text line still has no category
 column), and the graph and audit do not tally by category. Those counts
 do not key on `decided_by`, so a login is included the same way any other
@@ -98,8 +111,8 @@ These are decided:
    `internal/decision/brief/brief.go` selects an active record whose
    `status` is `decision` and whose stored `decided_by` is a human
    identity, or that is the source of a `constrains` edge.
-   `decision.LockedDecidedBy` is that identity: a GitHub login, or the
-   exact legacy word `user`. The exact word `agent` is not. sdf does not
+   `decision.LocksBrief` is that identity: a GitHub login, or the
+   exact legacy word `user`, when `decided_by_source` is not `os`. The exact word `agent` is not. An OS-sourced name is not. sdf does not
    distinguish a person from their agent; a login is the team member
    responsible. `RelConstrains` (`constrains`) is a stored relation.
    A category and that derived group answer different questions, and a
@@ -108,7 +121,7 @@ These are decided:
    `policy` hypothesis and stores nothing. A `policy` with
    `status=decision` is stored for whatever `decided_by` the caller
    passed. There is no warning on that add. The brief sets `Locked` when
-   `LockedDecidedBy` is true (`Item.Locked` in the same file). A `policy`
+   `LocksBrief` is true (`Item.Locked` in the same file). A `policy`
    is not a constraint merely because its category is `policy`. A login
    is. The exact word `agent` stays unlocked, including when a
    `constrains` edge makes that row a constraint.
@@ -168,7 +181,7 @@ Useful relation: `constrains`, from this decision to whatever it limits.
 The relation name stays `constrains`. The category name stays `policy`.
 
 A decision of any category can still land in the brief's `constraint`
-group, because that group follows `LockedDecidedBy` and the `constrains`
+group, because that group follows `LocksBrief` and the `constrains`
 edge, not this field. A GitHub login is a locked constraint. That is the
 responsible team member's login, not proof that a person rather than
 their agent typed the row. The exact word `agent` is not a locked
@@ -272,7 +285,9 @@ Implemented, with the local-read deviation in the status above. How the
 login is chosen, in this order:
 
 1. An explicit `--decided-by`. The stored value is that string, trimmed,
-   with its exact case. `User` is not the legacy word `user`.
+   with its exact case, and `decided_by_source` is `flag`. A case variant
+   of the legacy words, such as `User` or `AGENT`, is rejected and stores
+   nothing. The exact words `user` and `agent` stay legal.
    sdf does not ask GitHub whether the account exists. An explicit empty
    value stays empty and does not fall through to the next step. An
    explicit value that is not a login or `user` or `agent` is rejected
@@ -288,9 +303,11 @@ login is chosen, in this order:
    any case is skipped.
 3. When neither command yields a login, the OS username. sdf reads
    `os/user` current user and strips a Windows `DOMAIN\` prefix. The
-   remainder is accepted only when it is a login and not `user` or
-   `agent` in any case. The name is local and self-asserted, not a
-   GitHub authentication, and this step does not run a command. When it
+   remainder is accepted only when it is a login, not `user` or
+   `agent` in any case, and not a common service or system account.
+   The name is local and self-asserted, not a
+   GitHub authentication, and this step does not run a command. It is
+   stored with `decided_by_source` `os` and it does not lock. When it
    is not accepted, the field stays empty. A nil command runner skips
    this step too, so a caller that turns lookup off stays empty.
 
@@ -305,15 +322,21 @@ graph, and the UI display that pair as legacy: the text form prints the
 stored word and a marker, for example `user (legacy)`, and JSON keeps the
 stored string and sets `decided_by_legacy` true for that pair only. The
 marker is omitted otherwise. A login displays as the login, with no
-marker. Empty stays empty and still prints as `-`. A new write of `user`
-or `agent` uses the same legacy display.
+marker, except a name sourced from the OS username, which prints as
+`ada (local)`. JSON includes `decided_by_source` when it is set and omits
+it when the column is SQL `NULL`. Empty stays empty and still prints as `-`. A new write of `user`
+or `agent` uses the same legacy display. Case variants of those words are
+rejected.
 
-Implemented. The brief's lock is `LockedDecidedBy`: a GitHub login, or
-the exact legacy word `user`. The exact word `agent` does not become
+Implemented. The brief's lock is `LocksBrief`: a GitHub login, or
+the exact legacy word `user`, when `decided_by_source` is `flag`, `gh`,
+`git`, or unset (SQL `NULL`). The exact word `agent` does not become
 locked. An `agent` row is a constraint only as the source of a
 `constrains` edge, and then it is not locked. Rows already stored as
-`agent` keep that behavior. A login is locked the same way `user` is,
-including the `--max-items` exemption and `omitted_locked`. Graph chapter
+`agent` keep that behavior. A login with an unset source, including one
+written after the login format landed, is locked the same way `user` is,
+including the `--max-items` exemption and `omitted_locked`. A name with
+source `os` never locks and is not exempt from `--max-items`. Graph chapter
 counts and audit totals do not filter on `decided_by`.
 
 ## Check stays on the statement
@@ -683,6 +706,6 @@ the counts mean the same thing in every store.
 | --- | --- |
 | 0 | This spec. |
 | 1 | Implemented. Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (stored `NULL`, not rewritten). `decided_by` is a GitHub login, with legacy `user` / `agent` kept. `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
-| 2 | Category brief JSON, graph category tallies, and audit category totals are not implemented. The decided_by lock is: an active settled decision whose `decided_by` is a GitHub login, or legacy `user`, is a locked brief constraint. The exact word `agent` is not, unless a `constrains` edge makes it an unlocked constraint. An omitted `--decided-by` falls back to the OS username after `gh` and `git config github.user`. |
+| 2 | Category brief JSON, graph category tallies, and audit category totals are not implemented. The decided_by lock is: an active settled decision whose `decided_by` is a GitHub login, or legacy `user`, and whose `decided_by_source` is `flag`, `gh`, `git`, or unset, is a locked brief constraint. Existing login rows with an unset source become locked on upgrade and are exempt from `--max-items`. The exact word `agent` is not, unless a `constrains` edge makes it an unlocked constraint. An omitted `--decided-by` falls back to the OS username after `gh` and `git config github.user`, stored as source `os`. That name never locks. Common service accounts are not stored from the OS fallback. |
 | 3 | Withdrawn. No add-time warning that tries to tell a person from an agent. |
 | 4 | Optional free tags, in their own field, if a later spec still wants them. |

@@ -65,7 +65,9 @@ type CommandRunner func(ctx context.Context, name string, args ...string) ([]byt
 // ExecCommand runs name with args under ctx. Stderr is discarded. Stdout
 // is capped at identityStdoutCap. WaitDelay bounds how long the pipes may
 // stay open after the process is killed. On Unix the deadline kills the
-// process group, so a child of gh does not keep running. GH_PROMPT_DISABLED
+// process group, so a child of gh that stays in that group does not keep
+// running. A child that calls setsid, or otherwise leaves the group, is
+// not killed. GH_PROMPT_DISABLED
 // and GIT_TERMINAL_PROMPT stop a missing credential from waiting on a
 // prompt. gh config get reads hosts.yml and does not use the network. git
 // config reads the local repository too.
@@ -129,48 +131,61 @@ func SetOSUserLookup(fn func() (string, error)) func() {
 	return func() { osUserLookup = prev }
 }
 
-// ResolveDecidedBy chooses the stored decided_by. When explicitSet is
-// true, the trimmed explicit value is returned, including empty and
-// including the legacy words, and run is not called. When the flag is
-// omitted, the first configured login that is non-empty, ValidDecidedBy,
-// and not a legacy word is used: `gh config get -h github.com user`, then
+// ResolveDecidedBy chooses the stored decided_by and where it came from.
+// The source is DecidedBySourceFlag, DecidedBySourceGH, DecidedBySourceGit,
+// or DecidedBySourceOS. Both results are empty when nothing is stored.
+// When explicitSet is true, the trimmed explicit value is returned,
+// including empty and including the legacy words, and run is not called.
+// A non-empty explicit value has source flag. When the flag is omitted,
+// the first configured login that is non-empty, ValidDecidedBy, and not a
+// legacy word is used: `gh config get -h github.com user`, then
 // `git config --get github.user`, then the OS username. git config
 // user.name is not read. A missing command, a failed command, a legacy
-// word, or a value that is not a login is skipped. When none is found,
-// the result is empty. sdf does not ask GitHub whether the account
-// exists, and this path does not use the network. gh has
-// identityLookupTimeout. git then has identityGitReserve of its own, so
-// a hung gh still leaves git a turn. The OS username is a local read,
-// not another command. Each killed command may then take
+// word, a deny-listed machine account, or a value that is not a login is
+// skipped. When none is found, the result is empty. sdf does not ask
+// GitHub whether the account exists, and this path does not use the
+// network. gh has identityLookupTimeout. git then has identityGitReserve
+// of its own, so a hung gh still leaves git a turn. The OS username is a
+// local read, not another command. Each killed command may then take
 // identityWaitDelay to drop its pipes, so the worst case is about 4.5
 // seconds. The budgets are not longer than that. The hosts.yml login
 // takes precedence over github.user, and either takes precedence over
 // the OS username. A nil run skips every source, including the OS
-// username.
-func ResolveDecidedBy(explicit string, explicitSet bool, run CommandRunner) string {
+// username. newRecord rejects a case variant of user or agent; this
+// function still returns the trimmed explicit bytes so the caller can
+// report that error.
+func ResolveDecidedBy(explicit string, explicitSet bool, run CommandRunner) (string, string) {
 	return resolveDecidedBy(explicit, explicitSet, run, osUserLookup, identityLookupTimeout)
 }
 
-func resolveDecidedBy(explicit string, explicitSet bool, run CommandRunner, userName func() (string, error), timeout time.Duration) string {
+func resolveDecidedBy(explicit string, explicitSet bool, run CommandRunner, userName func() (string, error), timeout time.Duration) (string, string) {
 	if explicitSet {
-		return strings.TrimSpace(explicit)
+		login := strings.TrimSpace(explicit)
+		if login == "" {
+			return "", ""
+		}
+		return login, DecidedBySourceFlag
 	}
 	if run == nil {
-		return ""
+		return "", ""
 	}
 	ghCtx, ghCancel := context.WithTimeout(context.Background(), timeout)
 	login, ok := acceptedLogin(configLine(ghCtx, run, "gh", "config", "get", "-h", "github.com", "user"))
 	ghCancel()
 	if ok {
-		return login
+		return login, DecidedBySourceGH
 	}
 	gitCtx, gitCancel := context.WithTimeout(context.Background(), identityGitReserve)
 	login, ok = acceptedLogin(configLine(gitCtx, run, "git", "config", "--get", "github.user"))
 	gitCancel()
 	if ok {
-		return login
+		return login, DecidedBySourceGit
 	}
-	return osLogin(userName)
+	login, ok = osLogin(userName)
+	if !ok {
+		return "", ""
+	}
+	return login, DecidedBySourceOS
 }
 
 // currentOSUser is the machine account name from os/user.Current. It does
@@ -190,21 +205,49 @@ func currentOSUser() (string, error) {
 // osLogin is the last auto-resolution source. The name is local and
 // self-asserted: it is the OS account, not a GitHub authentication.
 // A Windows DOMAIN\ prefix is stripped. The remainder must be an accepted
-// login. user and agent, in any case, are skipped. An error or an invalid
-// name leaves decided_by empty.
-func osLogin(userName func() (string, error)) string {
+// login and not a common service account. user and agent, in any case,
+// are skipped. An error, a deny-listed name, or an invalid name leaves
+// decided_by empty. A stored OS name has source os and does not lock.
+func osLogin(userName func() (string, error)) (string, bool) {
 	if userName == nil {
-		return ""
+		return "", false
 	}
 	name, err := userName()
 	if err != nil {
-		return ""
+		return "", false
 	}
-	login, ok := acceptedLogin(normalizeOSUser(name))
-	if !ok {
-		return ""
+	name = normalizeOSUser(name)
+	if osAccountDenied(name) {
+		return "", false
 	}
-	return login
+	return acceptedLogin(name)
+}
+
+// osAccountDeny is the OS-fallback deny list, compared without regard to
+// case. These are service and system accounts, not a person's login. A
+// match means no OS fallback. gh and git are not checked against this
+// list. Windows LOCAL SERVICE and NETWORK SERVICE are included even
+// though a space already fails the login pattern.
+var osAccountDeny = map[string]struct{}{
+	"root": {}, "admin": {}, "administrator": {}, "runner": {}, "ubuntu": {},
+	"ec2-user": {}, "node": {}, "vscode": {}, "codespace": {}, "box": {},
+	"docker": {}, "jenkins": {}, "github": {}, "gitlab-runner": {},
+	"circleci": {}, "build": {}, "buildkite-agent": {}, "nobody": {},
+	"daemon": {}, "www-data": {}, "system": {}, "user": {}, "agent": {},
+	"local service": {}, "network service": {},
+}
+
+// osAccountDenied reports a service or system account, or a Windows
+// machine account (a name ending in $). The comparison is case-insensitive.
+func osAccountDenied(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.HasSuffix(name, "$") {
+		return true
+	}
+	_, ok := osAccountDeny[strings.ToLower(name)]
+	return ok
 }
 
 // normalizeOSUser trims space and drops a Windows DOMAIN\ prefix. The
@@ -221,8 +264,9 @@ func normalizeOSUser(name string) string {
 // The legacy words stay legal on an explicit --decided-by, which keeps
 // the exact case the caller passed. Auto-resolution rejects user and
 // agent without regard to case, so User and AGENT are not stored. A
-// stored login, and the exact word user, are locked brief constraints.
-// The exact word agent is not.
+// stored login from flag, gh, or git, and the exact word user, are
+// locked brief constraints. A login from the OS username is not. The
+// exact word agent is not.
 func acceptedLogin(s string) (string, bool) {
 	if !ValidDecidedBy(s) || strings.EqualFold(s, DecidedByUser) || strings.EqualFold(s, DecidedByAgent) {
 		return "", false

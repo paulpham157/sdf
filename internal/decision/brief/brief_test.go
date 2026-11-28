@@ -102,6 +102,38 @@ func TestClassifyLoginIsLockedAndAgentIsNot(t *testing.T) {
 	}
 }
 
+func TestOSSourceIsNotALockedConstraint(t *testing.T) {
+	local := rec("from-os", decision.StatusDecision, "ada", decision.EffectiveActive, "Keep notes in the repo.")
+	local.DecidedBySource = decision.DecidedBySourceOS
+	routine := rec("routine", decision.StatusDecision, "ada", decision.EffectiveActive, "Write the note down.")
+	routine.DecidedBySource = decision.DecidedBySourceOS
+	login := rec("dont-push", decision.StatusDecision, "paulpham157", decision.EffectiveActive, "Do not push until the user says so.")
+	flagged := rec("keep-go", decision.StatusDecision, "octocat", decision.EffectiveActive, "Keep the driver pure Go.")
+	flagged.DecidedBySource = decision.DecidedBySourceFlag
+	g := decision.Graph{
+		Decisions: []decision.Record{routine, local, login, flagged},
+		Edges: []decision.Edge{
+			{Relation: decision.RelConstrains, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "from-os"}, To: decision.Endpoint{Kind: decision.KindSession, Ref: "sess"}},
+		},
+	}
+	got := brief.Classify(g)
+	if len(got) != 3 || got[0].ID != "keep-go" || !got[0].Locked || got[0].DecidedBySource != decision.DecidedBySourceFlag || got[1].ID != "dont-push" || !got[1].Locked || got[1].DecidedBySource != "" || got[2].ID != "from-os" || got[2].Locked || got[2].Kind != brief.KindConstraint || got[2].DecidedBySource != decision.DecidedBySourceOS {
+		t.Fatalf("%+v", got)
+	}
+	trimmed := brief.Trim(got, 0, -1, nil)
+	if trimmed.Omitted != 1 || trimmed.OmittedLocked != 0 || len(trimmed.Items) != 2 || trimmed.Items[0].ID != "keep-go" || trimmed.Items[1].ID != "dont-push" {
+		t.Fatalf("os-sourced row was exempt from max-items: %+v", trimmed)
+	}
+	text := brief.FormatText(brief.Trim([]brief.Item{got[2]}, 15, -1, nil))
+	if !strings.Contains(text, "ada (local)") {
+		t.Fatalf("local marker missing:\n%s", text)
+	}
+	js := brief.JSONBytes(brief.Trim([]brief.Item{got[2]}, 15, -1, nil))
+	if !strings.Contains(string(js), `"decided_by_source": "os"`) {
+		t.Fatalf("json omitted the os source: %s", js)
+	}
+}
+
 func TestClassifyUserDecisionStaysAConstraintWhenItAlsoConflicts(t *testing.T) {
 	user := rec("use-sqlite", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Keep the collector store in SQLite.")
 	user.Conflicted = true

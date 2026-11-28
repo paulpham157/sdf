@@ -11,10 +11,13 @@
 //  1. Constraints. An active settled decision (status decision) recorded
 //     with a human identity, or that is the source of a constrains edge.
 //     A human identity is a GitHub login or the legacy word user
-//     (decision.LockedDecidedBy). Those decisions are locked and come
+//     (decision.LocksBrief). A name sourced from the OS username is not.
+//     Locked decisions come
 //     first, newest first. The exact word agent is not a human identity,
 //     so an older agent row stays out of this group unless it is the
-//     source of a constrains edge, and then it is not locked. Other
+//     source of a constrains edge, and then it is not locked. An OS-sourced
+//     row is the same: a constraint only through a constrains edge, and
+//     then it is not locked. Other
 //     constraints follow in insertion order. A locked decision stays here
 //     even when it is also blocked or conflicted. Each statement is cut
 //     to statementBudget bytes on a rune boundary, ending in "…", so one long rule cannot
@@ -47,8 +50,9 @@ const (
 	statementBudget = 200
 
 	// KindConstraint is an active settled decision recorded with a human
-	// identity (a GitHub login or legacy user), or the source of a
-	// constrains edge. The exact word agent is not a human identity.
+	// identity (a GitHub login or legacy user, except a name sourced from
+	// the OS username), or the source of a constrains edge. The exact word
+	// agent is not a human identity.
 	KindConstraint = "constraint"
 	// KindBlocked is a decision Load marked Blocked: active, with a blocks
 	// edge whose blocker is still unsettled (open_blockers is not empty).
@@ -60,21 +64,24 @@ const (
 
 // Item is one decision in the brief. Kind is KindConstraint, KindBlocked,
 // or KindConflicting. Locked is true only for a constraint recorded with
-// a human identity: a GitHub login or legacy user. The exact word agent
-// is not locked. DecidedBy is empty when the record named none.
+// a human identity: a GitHub login or legacy user, and not a name sourced
+// from the OS username. The exact word agent is not locked. DecidedBy is
+// empty when the record named none. DecidedBySource is omitted when the
+// row did not record one.
 type Item struct {
 	ID              string `json:"id"`
 	Kind            string `json:"kind"`
 	Statement       string `json:"statement"`
 	Status          string `json:"status"`
 	DecidedBy       string `json:"decided_by"`
+	DecidedBySource string `json:"decided_by_source,omitempty"`
 	DecidedByLegacy bool   `json:"decided_by_legacy,omitempty"`
 	Locked          bool   `json:"locked"`
 }
 
 // Result is the ranked brief after caps. Items is never nil. Omitted is
 // how many ranked items were left off. OmittedLocked is how many of those
-// were locked rules (a login or legacy user); it is present even when
+// were locked rules (a login or legacy user, not an OS-sourced name); it is present even when
 // zero. Locked rules are dropped only when they cannot fit at the
 // statement floor.
 type Result struct {
@@ -111,7 +118,7 @@ func Classify(g decision.Graph) []Item {
 		if d.Status != decision.StatusDecision {
 			return false
 		}
-		return decision.LockedDecidedBy(d.DecidedBy) || constrainsFrom[d.ID]
+		return decision.LocksBrief(d.DecidedBy, d.DecidedBySource) || constrainsFrom[d.ID]
 	}
 
 	var locked, other, blockedItems, conflicting []Item
@@ -121,12 +128,13 @@ func Classify(g decision.Graph) []Item {
 			Statement:       fitStatement(d.Statement, statementBudget),
 			Status:          d.Status,
 			DecidedBy:       d.DecidedBy,
+			DecidedBySource: d.DecidedBySource,
 			DecidedByLegacy: decision.LegacyDecidedBy(d.DecidedBy),
 		}
 		switch {
 		case isConstraint(d):
 			item.Kind = KindConstraint
-			item.Locked = decision.LockedDecidedBy(d.DecidedBy)
+			item.Locked = decision.LocksBrief(d.DecidedBy, d.DecidedBySource)
 			if item.Locked {
 				locked = append(locked, item)
 			} else {
@@ -424,7 +432,7 @@ func itemBytes(item Item, later, jsonOut bool) int {
 }
 
 func textLine(item Item) string {
-	return item.Kind + "\t" + quoteField(item.ID) + "\t" + quoteField(decision.DecidedByText(item.DecidedBy)) + "\t" + quoteField(item.Statement) + "\n"
+	return item.Kind + "\t" + quoteField(item.ID) + "\t" + quoteField(decision.DecidedByText(item.DecidedBy, item.DecidedBySource)) + "\t" + quoteField(item.Statement) + "\n"
 }
 
 func jsonItem(item Item) []byte {

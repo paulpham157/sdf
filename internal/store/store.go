@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     recorded_at TEXT NOT NULL,
     source TEXT,
     decided_by TEXT,
+    decided_by_source TEXT,
     alternatives TEXT,
     reason TEXT,
     category TEXT
@@ -388,7 +389,7 @@ func (s *Store) migrate() error {
 	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
 		return err
 	}
-	if err := s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason", "category"}); err != nil {
+	if err := s.addMissingColumns("decisions", []string{"decided_by", "decided_by_source", "alternatives", "reason", "category"}); err != nil {
 		return err
 	}
 	if err := s.migrateRetractions(); err != nil {
@@ -702,18 +703,20 @@ func scanRecords(rows *sql.Rows) ([]record.Record, error) {
 // Decision is one append-only decision record. Status is "hypothesis" or
 // "decision". Source, DecidedBy, Alternatives, Reason, and Category are
 // empty when the record named none. DecidedBy is a GitHub login, or the
-// legacy words "user" or "agent", when set. Category is one of the five
-// tokens when set; empty is SQL NULL and is not rewritten.
+// legacy words "user" or "agent", when set. DecidedBySource is flag, gh,
+// git, or os when the writer recorded one; empty is SQL NULL. Category
+// is one of the five tokens when set; empty is SQL NULL and is not rewritten.
 type Decision struct {
-	ID           string
-	Statement    string
-	Status       string
-	RecordedAt   string
-	Source       string
-	DecidedBy    string
-	Alternatives string
-	Reason       string
-	Category     string
+	ID              string
+	Statement       string
+	Status          string
+	RecordedAt      string
+	Source          string
+	DecidedBy       string
+	DecidedBySource string
+	Alternatives    string
+	Reason          string
+	Category        string
 }
 
 // DecisionEdge is one directed edge. Kind is "decision", "session", or
@@ -734,9 +737,9 @@ func (s *Store) InsertDecision(d Decision) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, alternatives, reason, category)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.Alternatives), nullText(d.Reason), nullText(d.Category))
+		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, decided_by_source, alternatives, reason, category)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.DecidedBySource), nullText(d.Alternatives), nullText(d.Reason), nullText(d.Category))
 	return err
 }
 
@@ -753,7 +756,7 @@ func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason, category
+		SELECT id, statement, status, recorded_at, source, decided_by, decided_by_source, alternatives, reason, category
 		FROM decisions
 		ORDER BY rowid
 	`)
@@ -764,8 +767,8 @@ func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
 	var out []Decision
 	for rows.Next() {
 		var d Decision
-		var source, decidedBy, alternatives, reason, category sql.NullString
-		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &alternatives, &reason, &category); err != nil {
+		var source, decidedBy, decidedBySource, alternatives, reason, category sql.NullString
+		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &decidedBySource, &alternatives, &reason, &category); err != nil {
 			return nil, err
 		}
 		if source.Valid {
@@ -773,6 +776,9 @@ func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
 		}
 		if decidedBy.Valid {
 			d.DecidedBy = decidedBy.String
+		}
+		if decidedBySource.Valid {
+			d.DecidedBySource = decidedBySource.String
 		}
 		if alternatives.Valid {
 			d.Alternatives = alternatives.String

@@ -74,6 +74,7 @@ type Verdict struct {
 type Hit struct {
 	ID              string `json:"id"`
 	DecidedBy       string `json:"decided_by"`
+	DecidedBySource string `json:"decided_by_source,omitempty"`
 	DecidedByLegacy bool   `json:"decided_by_legacy,omitempty"`
 	Statement       string `json:"statement"`
 	Match           string `json:"match"`
@@ -114,6 +115,7 @@ func CheckAction(recs []Record, action string) (Verdict, error) {
 		v.Blocking = append(v.Blocking, Hit{
 			ID:              d.ID,
 			DecidedBy:       d.DecidedBy,
+			DecidedBySource: d.DecidedBySource,
 			DecidedByLegacy: LegacyDecidedBy(d.DecidedBy),
 			Statement:       d.Statement,
 			Match:           match,
@@ -200,7 +202,7 @@ func WriteCheckText(w io.Writer, v Verdict) error {
 		return err
 	}
 	for _, h := range v.Blocking {
-		who := DecidedByText(h.DecidedBy)
+		who := DecidedByText(h.DecidedBy, h.DecidedBySource)
 		row := cell(h.ID) + "\t" + cell(who) + "\t" + cell(h.Match) + "\t" + cell(h.Statement) + "\n"
 		if _, err := io.WriteString(w, row); err != nil {
 			return err

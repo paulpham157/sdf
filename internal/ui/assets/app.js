@@ -622,6 +622,9 @@
     if (record.decided_by_legacy || record.decided_by === "user" || record.decided_by === "agent") {
       return record.decided_by + " (legacy)";
     }
+    if (record.decided_by_source === "os") {
+      return record.decided_by + " (local)";
+    }
     return record.decided_by;
   }
 
@@ -2259,7 +2262,9 @@
     if (!node || !node.decided_by) return "";
     const rec = node.decision || {};
     const legacy = rec.decided_by_legacy || node.decided_by === "user" || node.decided_by === "agent";
-    return "by " + node.decided_by + (legacy ? " (legacy)" : "");
+    if (legacy) return "by " + node.decided_by + " (legacy)";
+    if (rec.decided_by_source === "os" || node.decided_by_source === "os") return "by " + node.decided_by + " (local)";
+    return "by " + node.decided_by;
   }
 
   function dgListState(node) {

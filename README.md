@@ -207,7 +207,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [docs/receiver.md](docs/receiver.md) | The receiver, content storage, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
-| [docs/design/decision-category.md](docs/design/decision-category.md) | Optional `category` (unset is SQL `NULL`, displayed as `implementation`) and `decided_by` as a team member's GitHub login. A login is a locked brief constraint, the same as legacy `user`. The exact word `agent` is not |
+| [docs/design/decision-category.md](docs/design/decision-category.md) | Optional `category` (unset is SQL `NULL`, displayed as `implementation`) and `decided_by` as a team member's GitHub login. A login is a locked brief constraint, the same as legacy `user`, unless it was taken from the OS username. The exact word `agent` is not |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records for the project. [ADR 0001](docs/adr/0001-diagram-tool-excalidraw-vs-tldraw.md) proposes keeping tldraw for the documentation diagrams |
 | [docs/security.md](docs/security.md) | Permissions on the SQLite store and ledger files |
 | [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record choices with `sdf decision`, run `scripts/brief` (or `sdf decision brief`) at session start, and run `scripts/check` (or `sdf decision check`) before a push, merge, release, deploy, or architecture change |

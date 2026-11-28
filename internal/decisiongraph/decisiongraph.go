@@ -155,21 +155,22 @@ type Attention struct {
 
 // Node is one box on the canvas.
 type Node struct {
-	ID           string           `json:"id"`
-	Kind         string           `json:"kind"`
-	Role         string           `json:"role"`
-	Lane         string           `json:"lane"`
-	Row          int              `json:"row"`
-	Title        string           `json:"title"`
-	Detail       string           `json:"detail,omitempty"`
-	DecidedBy    string           `json:"decided_by,omitempty"`
-	OnPath       bool             `json:"on_path"`
-	Parent       string           `json:"parent,omitempty"`
-	Command      string           `json:"command,omitempty"`
-	Alternatives []string         `json:"alternatives,omitempty"`
-	Decision     *decision.Record `json:"decision,omitempty"`
-	Links        []Link           `json:"links,omitempty"`
-	Ending       *Ending          `json:"ending,omitempty"`
+	ID              string           `json:"id"`
+	Kind            string           `json:"kind"`
+	Role            string           `json:"role"`
+	Lane            string           `json:"lane"`
+	Row             int              `json:"row"`
+	Title           string           `json:"title"`
+	Detail          string           `json:"detail,omitempty"`
+	DecidedBy       string           `json:"decided_by,omitempty"`
+	DecidedBySource string           `json:"decided_by_source,omitempty"`
+	OnPath          bool             `json:"on_path"`
+	Parent          string           `json:"parent,omitempty"`
+	Command         string           `json:"command,omitempty"`
+	Alternatives    []string         `json:"alternatives,omitempty"`
+	Decision        *decision.Record `json:"decision,omitempty"`
+	Links           []Link           `json:"links,omitempty"`
+	Ending          *Ending          `json:"ending,omitempty"`
 }
 
 // Link is one stored edge seen from a decision node. Direction is "in" when
@@ -756,7 +757,7 @@ func (b *builder) chapter(ids []string) Chapter {
 	for _, id := range ids {
 		d := b.rec(id)
 		role, lane := b.role(id)
-		n := Node{ID: id, Kind: KindDecision, Role: role, Lane: lane, Title: id, Detail: d.Statement, DecidedBy: d.DecidedBy, Decision: d}
+		n := Node{ID: id, Kind: KindDecision, Role: role, Lane: lane, Title: id, Detail: d.Statement, DecidedBy: d.DecidedBy, DecidedBySource: d.DecidedBySource, Decision: d}
 		anchor := lastSpine
 		switch lane {
 		case LaneSpine:
