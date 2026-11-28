@@ -595,7 +595,7 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 			DecidedBy:    d.DecidedBy,
 			Alternatives: d.Alternatives,
 			Reason:       d.Reason,
-			Category:     d.Category,
+			Category:     strings.TrimSpace(d.Category),
 		}))
 	}
 	for _, e := range edges {
@@ -1219,10 +1219,12 @@ func ValidCategoryFilter(s string) bool {
 	return s == CategoryNone || ValidCategory(s)
 }
 
-// DisplayCategory is the category a reader shows. An empty stored value
-// (SQL NULL) displays as implementation. Any other stored string, including
-// one outside the five tokens, is shown as itself.
+// DisplayCategory is the category a reader shows. Whitespace is trimmed
+// first. An empty stored value (SQL NULL, or only whitespace) displays as
+// implementation, matching the UI. Any other stored string, including one
+// outside the five tokens, is shown as the trimmed text.
 func DisplayCategory(stored string) string {
+	stored = strings.TrimSpace(stored)
 	if stored == "" {
 		return CategoryImplementation
 	}

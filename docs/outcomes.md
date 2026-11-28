@@ -106,6 +106,11 @@ a reason, a source pointer, and a category. Time is `recorded_at`.
 
 `decided_by` is the GitHub login of the team member responsible, for example
 `paulpham157`. An agent acting for a person records that person's login.
+A person-set rule or constraint is the exception: record it with
+`--decided-by user` until a later spec makes an active settled `policy`
+a constraint. That stored word displays as `user (legacy)` and is what
+the session-start brief locks. Everything else uses the responsible
+person's login.
 sdf does not distinguish a person from their agent, and it does not check
 that the account exists. A login is letters, digits, and single hyphens, at
 most 39 characters. It cannot start or end with a hyphen, and it cannot
@@ -120,14 +125,17 @@ sdf stores the first login it can read locally, and it does not use the
 network. This is a deviation from the attribution proposal, which named
 `gh api user`: the binary runs `gh config get -h github.com user` (the
 `user` key for github.com in the GitHub CLI's hosts.yml), then
-`git config --get github.user`. That git read uses every scope, including
+`git config --get github.user`. The hosts.yml login takes precedence over
+`github.user`. That git read uses every scope, including
 the repository-local config, and the value is self-asserted attribution, not
 authentication. `git config user.name` is not read. A missing `gh`, a failed
-command, a display name, or the legacy word `user` or `agent` is skipped,
-and the field stays empty. The two lookups share one 3 second deadline, and
-each command's stdout is capped at 64 KiB. The lookup runs only after the
-rest of the record validates. An explicit empty `--decided-by` stays empty
-and does not fall through. An explicit value that is not a login or `user`
+command, a display name, or `user` or `agent` in any case (`User`, `AGENT`)
+is skipped, and the field stays empty. `gh` has up to 3 seconds. If it
+hangs or fails, `git` still gets about 500ms of its own, so the add stays
+within a worst case of about 4.5 seconds: gh has 3 seconds, git has 0.5 seconds after that, and each killed command may take another 0.5 seconds to close its pipes. Each command's stdout is capped at 64 KiB. The
+lookup runs only after the rest of the record validates. An explicit empty `--decided-by` stays empty
+and does not fall through. An explicit value is stored with its exact case.
+`User` is not the legacy word `user`. An explicit value that is not a login or `user`
 or `agent` is rejected and the add stores nothing. There is no warning that
 tries to tell a person from an agent.
 
@@ -316,23 +324,19 @@ the `EFFECTIVE` cell, in that order, and prints `blocked by: IDS (open: IDS)`
 (or `(settled)`), `conflicts with: IDS`, and `refined by: IDS` lines under the
 statement:
 
-The samples below were laid out before `CATEGORY`. A current table inserts
-that column after `STATUS` (`implementation` when the stored value is NULL)
-and prints `user (legacy)` or `agent (legacy)` in `DECIDED BY`.
-
 ```text
 Decisions: 6
-ID             STATUS      EFFECTIVE           DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
-which-db       hypothesis  active              agent       2026-11-23T17:18:46.360788+00:00  -       Pick the store: SQLite or Postgres.
-design-schema  decision    active, blocked     agent       2026-11-23T17:18:46.367151+00:00  -       Design the rejections schema.
-                                                                                                     blocked by: which-db (open: which-db)
-use-sqlite     decision    active, conflicted  user        2026-11-23T17:18:46.373929+00:00  -       Keep the store in SQLite.
-                                                                                                     conflicts with: use-postgres
-use-postgres   decision    active, conflicted  agent       2026-11-23T17:18:46.381759+00:00  -       Move the store to Postgres.
-                                                                                                     conflicts with: use-sqlite
-dont-push      decision    active              user        2026-11-23T17:18:46.390932+00:00  -       Do not push without an OK.
-                                                                                                     refined by: push-after-ok
-push-after-ok  decision    active              user        2026-11-23T17:18:46.397456+00:00  -       Push feature branches once the user says OK.
+ID             STATUS      CATEGORY        EFFECTIVE           DECIDED BY       RECORDED AT                       SOURCE  STATEMENT
+which-db       hypothesis  implementation  active              agent (legacy)  2026-11-23T17:18:46.360788+00:00  -       Pick the store: SQLite or Postgres.
+design-schema  decision    implementation  active, blocked     agent (legacy)  2026-11-23T17:18:46.367151+00:00  -       Design the rejections schema.
+                                                                                                                       blocked by: which-db (open: which-db)
+use-sqlite     decision    implementation  active, conflicted  user (legacy)   2026-11-23T17:18:46.373929+00:00  -       Keep the store in SQLite.
+                                                                                                                       conflicts with: use-postgres
+use-postgres   decision    implementation  active, conflicted  agent (legacy)  2026-11-23T17:18:46.381759+00:00  -       Move the store to Postgres.
+                                                                                                                       conflicts with: use-sqlite
+dont-push      decision    implementation  active              user (legacy)   2026-11-23T17:18:46.390932+00:00  -       Do not push without an OK.
+                                                                                                                       refined by: push-after-ok
+push-after-ok  decision    implementation  active              user (legacy)   2026-11-23T17:18:46.397456+00:00  -       Push feature branches once the user says OK.
 
 Edges: 3
 RELATION        FROM                    TO                      RECORDED AT
@@ -437,6 +441,11 @@ sdf decision recall [--db PATH] [--json] [--since DURATION|RFC3339] [--until RFC
 sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-push lines
 ```
 
+`--decided-by` is the responsible person's GitHub login. The exception is a
+person-set rule or constraint: record that with `--decided-by user` until a
+later spec makes an active settled `policy` a constraint. That value displays
+as `user (legacy)`. Everything else uses the login.
+
 ```text
 Decisions: 3
 ID          STATUS      CATEGORY        EFFECTIVE              DECIDED BY      RECORDED AT                       SOURCE     STATEMENT
@@ -497,10 +506,10 @@ the same cell rule as every column. The UI shows the same, and `--json` equals
 `GET /api/decisions`.
 
 ```text
-ID          STATUS    EFFECTIVE                         DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
-use-sqlite  decision  retracted, superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  -       Store telemetry in SQLite
-                                                                                                              retracted: 2026-11-23T15:00:03.000000+00:00 by user; reason: Benchmark was wrong
-use-wal     decision  active                            -           2026-11-23T15:00:01.000000+00:00  -       Store telemetry in SQLite with WAL
+ID          STATUS    CATEGORY        EFFECTIVE                         DECIDED BY     RECORDED AT                       SOURCE  STATEMENT
+use-sqlite  decision  implementation  retracted, superseded by use-wal  user (legacy)  2026-11-23T15:00:00.000000+00:00  -       Store telemetry in SQLite
+                                                                                                                                 retracted: 2026-11-23T15:00:03.000000+00:00 by user; reason: Benchmark was wrong
+use-wal     decision  implementation  active                            -              2026-11-23T15:00:01.000000+00:00  -       Store telemetry in SQLite with WAL
 ```
 
 **Migration.** Opening a store runs `CREATE TABLE IF NOT EXISTS
@@ -662,6 +671,10 @@ this list. A record appears in at most one group, in this order:
    constraint is a settled decision stored as `user` (`status` `decision`,
    `--decided-by user`). A hypothesis is never locked. The lock matches
    that stored word. It is not a check that a person made the decision.
+   Until a later spec makes an active settled `policy` a constraint, a
+   person-set rule is recorded with `--decided-by user` so it still appears
+   here. Everything else uses the responsible person's login, and a login
+   is not a constraint by itself.
    Locked constraints come first, newest first.
    Other constraints, then blocked items, then conflicting items, stay in
    insertion order inside each of those tiers. A locked decision stored as

@@ -91,6 +91,11 @@ func TestResolveDecidedBy(t *testing.T) {
 	if got := ResolveDecidedBy("user", true, boom); got != "user" || calls != 0 {
 		t.Fatalf("explicit legacy %q calls %d", got, calls)
 	}
+	// An explicit value keeps its case. Auto-resolution is what folds the
+	// legacy-word check; the flag itself does not.
+	if got := ResolveDecidedBy("User", true, boom); got != "User" || calls != 0 {
+		t.Fatalf("explicit exact case %q calls %d", got, calls)
+	}
 	if got := ResolveDecidedBy("", false, nil); got != "" {
 		t.Fatalf("nil runner %q", got)
 	}
@@ -146,6 +151,16 @@ func TestResolveDecidedBy(t *testing.T) {
 		out []byte
 		err error
 	}{
+		gh:      {out: []byte("User\n")},
+		gitUser: {out: []byte("AGENT\n")},
+	})); got != "" {
+		t.Fatalf("case-variant legacy words from config stored %q", got)
+	}
+
+	if got := ResolveDecidedBy("", false, script(map[string]struct {
+		out []byte
+		err error
+	}{
 		gh:      {out: []byte("user\n")},
 		gitUser: {out: []byte("paulpham157\n")},
 	})); got != "paulpham157" {
@@ -175,30 +190,43 @@ func TestResolveDecidedBy(t *testing.T) {
 	}
 }
 
-func TestResolveDecidedByHangingCommand(t *testing.T) {
+func TestResolveDecidedByHungGHStillReadsGit(t *testing.T) {
 	start := time.Now()
-	calls := 0
 	got := resolveDecidedBy("", false, func(ctx context.Context, name string, _ ...string) ([]byte, error) {
-		calls++
 		if name == "gh" {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
 		select {
 		case <-ctx.Done():
+			t.Error("git budget was already spent by the hung gh")
 			return nil, ctx.Err()
 		default:
-			t.Error("git ran with a live deadline after gh hung")
 		}
-		return nil, errors.New("live")
+		return []byte("octocat\n"), nil
 	}, 150*time.Millisecond)
-	if got != "" {
-		t.Fatalf("hung lookup stored %q", got)
-	}
-	if calls < 1 {
-		t.Fatal("no lookup")
+	if got != "octocat" {
+		t.Fatalf("hung gh stored %q, want octocat from git", got)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("timeout not honored: %s", elapsed)
+		t.Fatalf("gh deadline not honored: %s", elapsed)
+	}
+}
+
+func TestResolveDecidedByHungGitAfterFailedGH(t *testing.T) {
+	start := time.Now()
+	got := ResolveDecidedBy("", false, func(ctx context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "gh" {
+			return nil, errors.New("missing")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if got != "" {
+		t.Fatalf("hung git stored %q", got)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 400*time.Millisecond || elapsed > 900*time.Millisecond {
+		t.Fatalf("git budget %s, want about 500ms", elapsed)
 	}
 }

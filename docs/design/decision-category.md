@@ -27,7 +27,11 @@ Second deviation: when `--decided-by` is omitted, sdf does not call
 GitHub CLI's hosts.yml), then `git config --get github.user`. That git
 read uses every scope, including the repository-local config. The value
 is self-asserted attribution, not authentication. `git config user.name`
-is not read. The two lookups share one 3 second deadline. Captured stdout
+is not read. The hosts.yml login takes precedence over `github.user`.
+`gh` has up to 3 seconds. If it hangs or fails, `git` still gets about
+500ms of its own. The worst case is about 4.5 seconds: those budgets, plus up to 500ms for each killed command to close its pipes. The budgets themselves are unchanged. A configured
+`user` or `agent` is skipped without regard to case. An explicit
+`--decided-by` is stored with its exact case. Captured stdout
 is capped at 64 KiB, and a command that does not exit has 500ms to close
 its pipes after the deadline. The lookup runs only after the rest of the
 record validates.
@@ -249,7 +253,8 @@ what the CLI stores.
 Implemented, with the local-read deviation in the status above. How the
 login is chosen, in this order:
 
-1. An explicit `--decided-by`. The stored value is that string, trimmed.
+1. An explicit `--decided-by`. The stored value is that string, trimmed,
+   with its exact case. `User` is not the legacy word `user`.
    sdf does not ask GitHub whether the account exists. An explicit empty
    value stays empty and does not fall through to the next step. An
    explicit value that is not a login or `user` or `agent` is rejected
@@ -261,8 +266,8 @@ login is chosen, in this order:
    accepted login, `git config --get github.user`. That read uses every
    scope, including the repository, and the value is self-asserted
    attribution, not authentication. `git config user.name` is not a
-   source. A value that is empty, not a login, or the legacy word `user`
-   or `agent` is skipped. When none is accepted, the field stays empty.
+   source. A value that is empty, not a login, or `user` or `agent` in
+   any case is skipped. When none is accepted, the field stays empty.
 
 Implemented. The allow-list of only `user` and `agent` is gone. `user`
 and `agent` stay legal writes, so a caller that still passes them keeps
@@ -520,6 +525,11 @@ The UI (`internal/ui/assets/app.js`) shows the category next to the
 decision's status in the list, and on the graph detail panel. The chapter
 tally sits with the existing facts line. A label is enough. No new color
 token.
+
+Accepted deviation, shipped with phase 1: the decision list, the graph
+list, node labels, and the detail panel already show the category, and
+the decided-by filter names legacy `user` and `agent` plus Logins. The
+chapter tally and the audit totals stay in this phase.
 
 `sdf decision audit` keeps schema `sdf.decision.audit/v1`
 (`AuditSchema` in `internal/decision/audit.go`). That name changes when a
