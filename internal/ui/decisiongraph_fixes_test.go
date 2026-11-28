@@ -2,6 +2,7 @@ package ui_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/paulpham157/sdf/internal/ui"
 	"io"
 	"net/http"
@@ -532,8 +533,11 @@ func TestLoginsFilterMutesLegacyAndTicksLogins(t *testing.T) {
 	if !strings.Contains(css, "max-height: 64px") || !strings.Contains(css, "overflow: auto") || !strings.Contains(css, ".dg-key-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }") {
 		t.Error("legend key can grow over the nodes")
 	}
-	if !strings.Contains(css, ".dg-tick-unset { fill: var(--sdf-color-bg); stroke: var(--sdf-color-text); }") {
-		t.Error("empty decided_by tick is not a token fill")
+	if !strings.Contains(css, ".dg-tick-unset { fill: var(--sdf-color-bg); stroke: var(--sdf-color-accent); stroke-width: 2.5; }") {
+		t.Error("empty decided_by tick is not distinct from the agent tick")
+	}
+	if !strings.Contains(css, ".dg-tick-agent { fill: var(--sdf-color-bg); }") {
+		t.Error("agent tick lost its hollow fill")
 	}
 	if !strings.Contains(css, ".dg-list-item > .detail { font-size: var(--sdf-font-size-xs); color: var(--sdf-color-text-muted); overflow-wrap: anywhere; }") {
 		t.Error("list detail does not wrap a long decided_by")
@@ -554,6 +558,10 @@ func TestLoginBadgesStayUnique(t *testing.T) {
 			delete(rec, "decided_by_legacy")
 		}
 	}
+	login38 := strings.Repeat("b", 38)
+	login39 := strings.Repeat("c", 39)
+	xstring := strings.Repeat("x", 39)
+	extra := []string{"A2", login38, login39, xstring}
 	res := graphPage(t, srv, func(doc map[string]any) {
 		for _, c := range doc["chapters"].([]any) {
 			for _, n := range c.(map[string]any)["nodes"].([]any) {
@@ -568,6 +576,7 @@ func TestLoginBadgesStayUnique(t *testing.T) {
 				}
 			}
 		}
+		addLoginNodes(t, doc, extra)
 	}, "#/decisions", "")
 	groups := regexp.MustCompile(`(?s)<g [^>]*data-node="[^"]+"[^>]*>.*?</g>`).FindAllString(res.Markup, -1)
 	badge := regexp.MustCompile(`<circle [^>]*r="([^"]+)"[^>]*class="dg-badge"[^>]*>\s*</circle>\s*<text [^>]*class="dg-badge-text"[^>]*>([^<]*)</text>`)
@@ -596,7 +605,7 @@ func TestLoginBadgesStayUnique(t *testing.T) {
 			loginMarks++
 		}
 	}
-	if loginMarks < 3 {
+	if loginMarks < 3+len(extra) {
 		t.Fatalf("login badges %d, marks %v", loginMarks, seen)
 	}
 	for mark, n := range seen {
@@ -604,13 +613,154 @@ func TestLoginBadgesStayUnique(t *testing.T) {
 			t.Errorf("mark %q used %d times", mark, n)
 		}
 	}
-	for _, login := range []string{"paul", "paula", "u"} {
+	for _, login := range append([]string{"paul", "paula", "u"}, extra...) {
 		if !strings.Contains(res.Markup, `title="`+login+`"`) {
 			t.Errorf("legend title missing %s", login)
+		}
+		if !strings.Contains(res.Markup, `aria-label="`) || !strings.Contains(res.Markup, " "+login+`"`) && !strings.Contains(res.Markup, `aria-label="`+login+`"`) {
+			t.Errorf("legend aria-label missing %s", login)
+		}
+		if !strings.Contains(res.Markup, ">"+login+"</span>") {
+			t.Errorf("legend text missing %s; a touch reader only had the title", login)
 		}
 		if !strings.Contains(res.Markup, "by "+login) {
 			t.Errorf("accessible name missing %s", login)
 		}
+	}
+	// paul shares a prefix with paula, so the swatch carries the short mark.
+	if !strings.Contains(res.Markup, `class="dg-key-swatch login">PA2</span>`) {
+		t.Error("legend swatch does not show the PA2 mark")
+	}
+	if !strings.Contains(res.Markup, `aria-label="PA2 paul"`) {
+		t.Error("legend aria-label does not pair PA2 with paul")
+	}
+	if !strings.Contains(res.Markup, `class="dg-key-swatch login">A2</span>`) {
+		t.Error("legend swatch does not show A2")
+	}
+}
+
+// A prefix family larger than the digit stems still gets a unique mark.
+// About two dozen logins can exhaust a short stem, and about 204 exhaust
+// every stem in one family; both sizes must stay unique and inside 3 characters.
+func TestLoginBadgesSurviveACrowdedPrefix(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	for _, n := range []int{30, 210} {
+		t.Run(fmt.Sprintf("%d", n), func(t *testing.T) {
+			logins := prefixFamily(n)
+			res := graphPage(t, srv, func(doc map[string]any) {
+				addLoginNodes(t, doc, logins)
+			}, "#/decisions", "")
+			assertLoginMarks(t, res.Markup, logins)
+		})
+	}
+}
+
+func prefixFamily(n int) []string {
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		// Every login shares the first three letters, so the prefix claim fails.
+		out[i] = "paul" + strconv.FormatInt(int64(i), 36)
+	}
+	return out
+}
+
+func addLoginNodes(t *testing.T, doc map[string]any, logins []string) {
+	t.Helper()
+	chapters := doc["chapters"].([]any)
+	ch := chapters[0].(map[string]any)
+	nodes := ch["nodes"].([]any)
+	var template map[string]any
+	for _, n := range nodes {
+		node := n.(map[string]any)
+		if node["kind"] == "decision" {
+			raw, err := json.Marshal(node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &template); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if template == nil {
+		t.Fatal("no decision node to copy")
+	}
+	for i, login := range logins {
+		raw, err := json.Marshal(template)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var node map[string]any
+		if err := json.Unmarshal(raw, &node); err != nil {
+			t.Fatal(err)
+		}
+		id := fmt.Sprintf("extra-login-%d", i)
+		node["id"] = id
+		node["title"] = "Login " + strconv.Itoa(i)
+		node["detail"] = login
+		node["decided_by"] = login
+		node["lane"] = "spine"
+		node["row"] = float64(30 + i)
+		node["on_path"] = false
+		delete(node, "parent")
+		delete(node, "alternatives")
+		if rec, ok := node["decision"].(map[string]any); ok {
+			rec["id"] = id
+			rec["decided_by"] = login
+			delete(rec, "decided_by_legacy")
+		}
+		nodes = append(nodes, node)
+	}
+	ch["nodes"] = nodes
+}
+
+func assertLoginMarks(t *testing.T, markup string, logins []string) {
+	t.Helper()
+	groups := regexp.MustCompile(`(?s)<g [^>]*data-node="[^"]+"[^>]*>.*?</g>`).FindAllString(markup, -1)
+	badge := regexp.MustCompile(`<text [^>]*class="dg-badge-text"[^>]*>([^<]*)</text>`)
+	who := regexp.MustCompile(`by ([^,<"]+)`)
+	got := map[string]string{}
+	for _, g := range groups {
+		m := badge.FindStringSubmatch(g)
+		wm := who.FindStringSubmatch(g)
+		if m == nil || wm == nil || strings.HasSuffix(wm[1], "(legacy)") {
+			continue
+		}
+		got[wm[1]] = m[1]
+	}
+	seen := map[string]string{}
+	for _, login := range logins {
+		mark := got[login]
+		if mark == "" || mark == "U" || mark == "A" || len(mark) > 3 {
+			t.Errorf("login %q mark %q", login, mark)
+			continue
+		}
+		if other := seen[mark]; other != "" {
+			t.Errorf("mark %q used by %s and %s", mark, other, login)
+		}
+		seen[mark] = login
+	}
+}
+
+// Arrow keys scroll the legend key. They do not walk the graph while focus
+// is inside it.
+func TestLegendKeyArrowsStayInTheKey(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	res := renderPage(t, srv, "#/decisions", "focus=.dg-key,key=ArrowDown,key=ArrowUp")
+	if res.Hash != "#/decisions" {
+		t.Fatalf("arrows in the key walked the graph: %s", res.Hash)
+	}
+	if !strings.Contains(res.Active, `class="dg-key"`) || !strings.Contains(res.Active, `tabindex="0"`) {
+		t.Fatalf("key is not the focused scroll region: %q", res.Active)
+	}
+	moved := renderPage(t, srv, "#/decisions", `key=ArrowDown@[data-node="capture"]`)
+	if moved.Hash == "#/decisions" {
+		t.Fatal("arrow on a node no longer walks the graph")
 	}
 }
 

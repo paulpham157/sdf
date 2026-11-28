@@ -576,11 +576,14 @@ footer p { margin: 0; }
   padding: 4px 10px;
   font-size: 11.5px;
 }
+.dg-key:focus-visible { outline: 2.5px solid var(--sdf-color-focus); outline-offset: 2px; }
 .dg-key summary { cursor: pointer; font-weight: var(--sdf-font-weight-semibold); }
 .dg-key ul { list-style: none; padding: 0; margin: 4px 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3px 8px; }
 .dg-key li:last-child { grid-column: 1 / -1; color: var(--sdf-color-text-muted); }
 .dg-key li { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .dg-key-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The open key is the touch path to a long login: the title still exists, and the full value wraps inside the scroll region. */
+.dg-key-label.login { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 .dg-key-swatch {
   display: inline-block;
   width: 20px;
@@ -600,9 +603,19 @@ footer p { margin: 0; }
   background: var(--sdf-color-text);
 }
 .dg-key-swatch.login {
-  border-radius: 50%;
-  background: var(--sdf-color-accent);
-  border-color: var(--sdf-color-accent);
+  width: auto;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border-radius: 11px;
+  background: var(--sdf-color-text);
+  color: var(--sdf-color-text-inverse);
+  border: 1.5px solid var(--sdf-color-accent);
+  font: 700 11px var(--sdf-font-sans);
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .dg-key-swatch.ghost { border: 1.5px dashed var(--sdf-graph-not-taken); background: var(--sdf-color-bg); }
 .dg-key-swatch.superseded {
@@ -881,7 +894,7 @@ g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
 .dg-track-base { stroke: var(--sdf-graph-track); stroke-width: 2; }
 .dg-track-done { stroke: var(--sdf-color-text); stroke-width: var(--sdf-border-width-heavy); }
 .dg-tick { stroke: var(--sdf-color-text); stroke-width: 1.5; }
-.dg-tick-unset { fill: var(--sdf-color-bg); stroke: var(--sdf-color-text); }
+.dg-tick-unset { fill: var(--sdf-color-bg); stroke: var(--sdf-color-accent); stroke-width: 2.5; }
 .dg-tick-user { fill: var(--sdf-color-text); }
 .dg-tick-agent { fill: var(--sdf-color-bg); }
 .dg-tick-login { fill: var(--sdf-color-accent); }

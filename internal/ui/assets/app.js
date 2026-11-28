@@ -1458,8 +1458,19 @@
   // Legacy words keep a single letter. A login mark is unique in the
   // graph and at most three characters, so it fits the 26px badge circle
   // (11px bold capitals run about 8px wide). A shared prefix takes a digit
-  // instead of growing. A one-character login is never the bare letter U
+  // instead of growing. When those digits run out, a base-36 counter still
+  // reserves a unique mark. A one-character login is never the bare letter U
   // or A. The legend, the accessible name, and the title carry the full login.
+  function dgTakeMark(used) {
+    for (let n = 0; n < 46656; n++) {
+      const mark = n.toString(36).toUpperCase();
+      if (!mark || mark.length > 3 || mark === "U" || mark === "A" || used[mark]) continue;
+      used[mark] = true;
+      return mark;
+    }
+    return "";
+  }
+
   function dgBadgeMarks(nodes) {
     const logins = [];
     (nodes || []).forEach(function (node) {
@@ -1487,12 +1498,12 @@
       const start = by.length === 1 ? 1 : 2;
       for (let n = start; n <= Math.min(3, upper.length); n++) {
         const pref = upper.slice(0, n);
-        if (!clashes(by, n) && !used[pref] && pref !== "U" && pref !== "A") {
+        if (!clashes(by, n) && claim(pref)) {
           mark = pref;
           break;
         }
       }
-      if (!claim(mark)) {
+      if (!mark) {
         const stems = [];
         const two = upper.slice(0, Math.min(2, upper.length));
         if (two.length === 2) stems.push(two);
@@ -1507,6 +1518,11 @@
           }
         }
       }
+      // Digit stems run out: a shared prefix can exhaust the short stem
+      // after a couple of dozen logins, and one prefix family exhausts
+      // every stem after about 204. The counter still reserves a mark, so
+      // the node fallback never paints a duplicate.
+      if (!mark) mark = dgTakeMark(used);
       marks[by] = mark;
     });
     return marks;
@@ -2005,11 +2021,13 @@
     const open = dgKeyOpen != null ? dgKeyOpen : !chapter.nodes.some(function (node) {
       return node.lane === "left" && node.row <= 3;
     });
-    function row(cls, label) {
+    const marks = dgBadgeMarks(chapter.nodes);
+    function row(cls, label, mark) {
       const full = String(label);
+      const props = { class: "dg-key-label" + (mark ? " login" : ""), title: full, "aria-label": mark ? mark + " " + full : full };
       return h("li", null, [
-        h("span", { class: "dg-key-swatch " + cls, "aria-hidden": "true" }),
-        h("span", { class: "dg-key-label", title: full }, [full]),
+        h("span", { class: "dg-key-swatch " + cls, "aria-hidden": "true" }, mark ? [mark] : []),
+        h("span", props, [full]),
       ]);
     }
     const logins = [];
@@ -2024,7 +2042,7 @@
       row("user", "user (legacy)"),
       row("agent", "agent (legacy)"),
     ];
-    if (logins.length) logins.forEach(function (login) { items.push(row("login", login)); });
+    if (logins.length) logins.forEach(function (login) { items.push(row("login", login, marks[login] || "")); });
     else items.push(row("login", "GitHub login"));
     items.push(row("ghost", "Not taken"));
     items.push(row("superseded", "Superseded"));
@@ -2033,7 +2051,7 @@
     items.push(row("challenged", "Challenged"));
     items.push(row("ending", "Ending"));
     items.push(h("li", null, ["🔒 blocks · ⚡ conflicts · ↶ supersedes · ↑ refines"]));
-    return h("details", { class: "dg-key", open: open ? "" : null, ontoggle: function (event) { dgKeyOpen = !!event.target.open; } }, [
+    return h("details", { class: "dg-key", tabindex: "0", open: open ? "" : null, ontoggle: function (event) { dgKeyOpen = !!event.target.open; } }, [
       h("summary", null, ["Key"]),
       h("ul", null, items),
     ]);
@@ -3289,6 +3307,9 @@
         onkeydown: function (event) {
           const key = event.key;
           if (event.target && event.target.tagName === "INPUT") return;
+          // The key is a scroll region. Arrow keys move its contents; they
+          // do not walk the graph while focus is inside it.
+          if (event.target && event.target.closest && event.target.closest(".dg-key")) return;
           if (key === "Escape") { dgClose(chapter, focus); return; }
           if (key === "ArrowDown" || key === "ArrowUp") {
             event.preventDefault();
