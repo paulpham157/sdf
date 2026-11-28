@@ -34,10 +34,13 @@ func ValidDecidedBy(s string) bool {
 	return loginPattern.MatchString(s)
 }
 
-// identityLookupTimeout is the one deadline shared by every lookup in a
-// single ResolveDecidedBy call. A hung gh does not grant git another
-// 3 seconds.
+// identityLookupTimeout is the deadline for the gh hosts.yml read.
+// identityGitReserve is a separate budget for git config github.user,
+// started after gh returns or times out. A hung gh does not skip git.
+// Together they bound an omitted --decided-by at about 3.5 seconds.
 const identityLookupTimeout = 3 * time.Second
+
+const identityGitReserve = 500 * time.Millisecond
 
 // identityWaitDelay is how long a command may keep its pipes open after
 // the deadline kills it. internal/verify sets the same field, there at
@@ -114,7 +117,9 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 // missing command, a failed command, a legacy word, or a value that is
 // not a login is skipped. When none is found, the result is empty. sdf
 // does not ask GitHub whether the account exists, and this path does not
-// use the network. The lookups share one deadline of identityLookupTimeout.
+// use the network. gh has identityLookupTimeout. git then has
+// identityGitReserve of its own, so a hung gh still leaves git a turn.
+// The hosts.yml login takes precedence over github.user.
 func ResolveDecidedBy(explicit string, explicitSet bool, run CommandRunner) string {
 	return resolveDecidedBy(explicit, explicitSet, run, identityLookupTimeout)
 }
@@ -126,23 +131,27 @@ func resolveDecidedBy(explicit string, explicitSet bool, run CommandRunner, time
 	if run == nil {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	if login, ok := acceptedLogin(configLine(ctx, run, "gh", "config", "get", "-h", "github.com", "user")); ok {
+	ghCtx, ghCancel := context.WithTimeout(context.Background(), timeout)
+	login, ok := acceptedLogin(configLine(ghCtx, run, "gh", "config", "get", "-h", "github.com", "user"))
+	ghCancel()
+	if ok {
 		return login
 	}
-	if login, ok := acceptedLogin(configLine(ctx, run, "git", "config", "--get", "github.user")); ok {
+	gitCtx, gitCancel := context.WithTimeout(context.Background(), identityGitReserve)
+	defer gitCancel()
+	if login, ok = acceptedLogin(configLine(gitCtx, run, "git", "config", "--get", "github.user")); ok {
 		return login
 	}
 	return ""
 }
 
 // acceptedLogin reports whether s may be stored by auto-resolution.
-// The legacy words stay legal on an explicit --decided-by. They are not
-// a result of looking up gh or git: git config user.name=user is a common
-// container default, and storing it would lock the brief.
+// The legacy words stay legal on an explicit --decided-by, which keeps
+// the exact case the caller passed. Auto-resolution rejects user and
+// agent without regard to case, so User and AGENT are not stored. The
+// brief lock still matches only the exact word user.
 func acceptedLogin(s string) (string, bool) {
-	if !ValidDecidedBy(s) || LegacyDecidedBy(s) {
+	if !ValidDecidedBy(s) || strings.EqualFold(s, DecidedByUser) || strings.EqualFold(s, DecidedByAgent) {
 		return "", false
 	}
 	return s, true

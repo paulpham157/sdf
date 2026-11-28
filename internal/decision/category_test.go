@@ -9,6 +9,21 @@ import (
 	"github.com/paulpham157/sdf/internal/store"
 )
 
+func TestDisplayCategoryTrimsBlank(t *testing.T) {
+	if got := DisplayCategory(""); got != CategoryImplementation {
+		t.Fatalf("empty %q", got)
+	}
+	if got := DisplayCategory(" \t "); got != CategoryImplementation {
+		t.Fatalf("whitespace %q", got)
+	}
+	if got := DisplayCategory("  architecture  "); got != CategoryArchitecture {
+		t.Fatalf("trimmed %q", got)
+	}
+	if got := DisplayCategory("custom"); got != "custom" {
+		t.Fatalf("other %q", got)
+	}
+}
+
 func TestNewRecordCategoryAndLogin(t *testing.T) {
 	for _, cat := range []string{CategoryArchitecture, CategoryPolicy, CategoryProduct, CategoryImplementation, CategoryOperations} {
 		status := StatusDecision
