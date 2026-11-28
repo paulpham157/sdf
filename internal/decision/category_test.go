@@ -1,6 +1,7 @@
 package decision
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -152,6 +153,9 @@ func TestFilterByCategory(t *testing.T) {
 			{ID: "bogus", Category: "security"},
 			{ID: "literal-none", Category: CategoryNone},
 			{ID: "old", Category: "", EffectiveStatus: EffectiveSuperseded},
+			{ID: "spaces", Category: "   "},
+			{ID: "pad-impl", Category: "  implementation  "},
+			{ID: "pad-arch", Category: " architecture "},
 		},
 		Edges: []Edge{
 			{From: Endpoint{Kind: KindDecision, Ref: "arch"}, To: Endpoint{Kind: KindDecision, Ref: "impl"}},
@@ -160,14 +164,14 @@ func TestFilterByCategory(t *testing.T) {
 		},
 	}
 	impl := FilterByCategory(g, CategoryImplementation)
-	if ids := decisionIDs(impl); ids != "impl unset old" {
+	if ids := decisionIDs(impl); ids != "impl unset old spaces pad-impl" {
 		t.Fatalf("implementation %s", ids)
 	}
 	if len(impl.Edges) != 2 {
 		t.Fatalf("edges %+v", impl.Edges)
 	}
 	arch := FilterByCategory(g, CategoryArchitecture)
-	if ids := decisionIDs(arch); ids != "arch" {
+	if ids := decisionIDs(arch); ids != "arch pad-arch" {
 		t.Fatalf("architecture %s", ids)
 	}
 	if len(arch.Edges) != 1 || arch.Edges[0].To.Ref != "impl" {
@@ -185,6 +189,39 @@ func decisionIDs(g Graph) string {
 		ids = append(ids, d.ID)
 	}
 	return strings.Join(ids, " ")
+}
+
+func TestLoadOmitsBlankCategory(t *testing.T) {
+	db := openDB(t)
+	for _, d := range []store.Decision{
+		{ID: "blank", Statement: "Blank.", Status: StatusDecision, RecordedAt: "t", Category: "   "},
+		{ID: "padded", Statement: "Padded.", Status: StatusDecision, RecordedAt: "t", Category: "  architecture  "},
+	} {
+		if err := db.InsertDecision(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, err := Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(g.Decisions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if g.Decisions[0].Category != "" {
+		t.Fatalf("blank stored %q", g.Decisions[0].Category)
+	}
+	if _, ok := rows[0]["category"]; ok {
+		t.Fatalf("blank category was not omitted: %s", raw)
+	}
+	if g.Decisions[1].Category != CategoryArchitecture || rows[1]["category"] != CategoryArchitecture {
+		t.Fatalf("padded category: %+v %s", g.Decisions[1], raw)
+	}
 }
 
 func TestCategoryColumnRoundTrip(t *testing.T) {

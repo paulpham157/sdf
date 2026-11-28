@@ -595,7 +595,7 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 			DecidedBy:    d.DecidedBy,
 			Alternatives: d.Alternatives,
 			Reason:       d.Reason,
-			Category:     d.Category,
+			Category:     strings.TrimSpace(d.Category),
 		}))
 	}
 	for _, e := range edges {

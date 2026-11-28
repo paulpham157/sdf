@@ -37,7 +37,9 @@ func ValidDecidedBy(s string) bool {
 // identityLookupTimeout is the deadline for the gh hosts.yml read.
 // identityGitReserve is a separate budget for git config github.user,
 // started after gh returns or times out. A hung gh does not skip git.
-// Together they bound an omitted --decided-by at about 3.5 seconds.
+// The command budgets themselves are 3.5 seconds. A killed command may
+// also hold its pipes for identityWaitDelay, once for gh and once for
+// git, so the worst case is about 4.5 seconds.
 const identityLookupTimeout = 3 * time.Second
 
 const identityGitReserve = 500 * time.Millisecond
@@ -119,7 +121,9 @@ func (c *capBuffer) Write(p []byte) (int, error) {
 // does not ask GitHub whether the account exists, and this path does not
 // use the network. gh has identityLookupTimeout. git then has
 // identityGitReserve of its own, so a hung gh still leaves git a turn.
-// The hosts.yml login takes precedence over github.user.
+// Each killed command may then take identityWaitDelay to drop its pipes,
+// so the worst case is about 4.5 seconds. The budgets are not longer
+// than that. The hosts.yml login takes precedence over github.user.
 func ResolveDecidedBy(explicit string, explicitSet bool, run CommandRunner) string {
 	return resolveDecidedBy(explicit, explicitSet, run, identityLookupTimeout)
 }

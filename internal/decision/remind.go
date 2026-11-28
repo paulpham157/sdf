@@ -115,12 +115,14 @@ func FilterByCategory(g Graph, filter string) Graph {
 }
 
 func categoryKept(stored, filter string) bool {
+	// Same trim as DisplayCategory: whitespace-only is implementation.
+	trimmed := strings.TrimSpace(stored)
 	switch filter {
 	case CategoryNone:
-		return stored != "" && stored != CategoryNone && !ValidCategory(stored)
+		return trimmed != "" && trimmed != CategoryNone && !ValidCategory(trimmed)
 	case CategoryImplementation:
-		return stored == "" || stored == CategoryImplementation
+		return DisplayCategory(stored) == CategoryImplementation
 	default:
-		return stored == filter
+		return trimmed == filter
 	}
 }

@@ -212,3 +212,21 @@ func TestResolveDecidedByHungGHStillReadsGit(t *testing.T) {
 		t.Fatalf("gh deadline not honored: %s", elapsed)
 	}
 }
+
+func TestResolveDecidedByHungGitAfterFailedGH(t *testing.T) {
+	start := time.Now()
+	got := ResolveDecidedBy("", false, func(ctx context.Context, name string, _ ...string) ([]byte, error) {
+		if name == "gh" {
+			return nil, errors.New("missing")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if got != "" {
+		t.Fatalf("hung git stored %q", got)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 400*time.Millisecond || elapsed > 900*time.Millisecond {
+		t.Fatalf("git budget %s, want about 500ms", elapsed)
+	}
+}
