@@ -1236,6 +1236,22 @@ func LegacyDecidedBy(s string) bool {
 	return s == DecidedByUser || s == DecidedByAgent
 }
 
+// LockedDecidedBy reports whether an active settled decision with this
+// decided_by is a locked brief constraint. A GitHub login is, and so is
+// the legacy word user. The exact word agent is not: rows stored as agent
+// before logins existed stay out of the locked tier, and out of the
+// constraint group unless they are the source of a constrains edge.
+// sdf does not distinguish a person from their agent. A login is the team
+// member responsible, whoever typed the record. Empty, and any string that
+// is not a login, are not locked. Agent is compared as the exact stored
+// bytes, so Agent is a login.
+func LockedDecidedBy(s string) bool {
+	if s == DecidedByAgent {
+		return false
+	}
+	return ValidDecidedBy(s)
+}
+
 // DecidedByText is the DECIDED BY cell. Empty prints as "-". The legacy
 // words print with a marker. A login prints as itself.
 func DecidedByText(s string) string {

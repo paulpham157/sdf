@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/cli"
+	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/store"
 )
 
@@ -115,6 +116,57 @@ func TestDecisionAddCategoryAndLogin(t *testing.T) {
 	}
 	if !strings.Contains(text.stdout, "policy") {
 		t.Fatalf("stored policy not shown:\n%s", text.stdout)
+	}
+}
+
+func TestDecisionAddFallsBackToOSUser(t *testing.T) {
+	name := `CORP\paulpham157`
+	restore := decision.SetOSUserLookup(func() (string, error) {
+		return name, nil
+	})
+	t.Cleanup(restore)
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	add := func(id string) {
+		t.Helper()
+		out := run(t, "decision", "add", "--db", dbPath, "--id", id,
+			"--statement", "Keep the collector store in SQLite.", "--status", "decision")
+		if out.code != 0 || out.stderr != "" {
+			t.Fatalf("%s: %d %q", id, out.code, out.stderr)
+		}
+	}
+	add("from-os")
+	name = `CORP\user`
+	add("legacy-word")
+	name = "not a login"
+	add("display-name")
+
+	restoreRun := cli.SetIdentityRunner(func(_ context.Context, cmdName string, args ...string) ([]byte, error) {
+		if cmdName == "gh" && strings.Join(args, " ") == "config get -h github.com user" {
+			return []byte("octocat\n"), nil
+		}
+		t.Errorf("unexpected %s %v", cmdName, args)
+		return nil, errIdentity
+	})
+	name = `CORP\paulpham157`
+	add("from-gh")
+	restoreRun()
+
+	db := openStore(t, dbPath)
+	rows, err := db.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("%+v", rows)
+	}
+	if rows[0].ID != "from-os" || rows[0].DecidedBy != "paulpham157" {
+		t.Fatalf("windows login %+v", rows[0])
+	}
+	if rows[1].DecidedBy != "" || rows[2].DecidedBy != "" {
+		t.Fatalf("invalid os user stored %+v %+v", rows[1], rows[2])
+	}
+	if rows[3].ID != "from-gh" || rows[3].DecidedBy != "octocat" {
+		t.Fatalf("gh should win %+v", rows[3])
 	}
 }
 

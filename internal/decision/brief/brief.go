@@ -8,12 +8,16 @@
 //
 // A decision is placed in at most one group. The groups, in rank order, are:
 //
-//  1. Constraints. An active settled decision (status decision) that the
-//     user made, or that is the source of a constrains edge. User decisions
-//     are locked and come first, newest first. Other constraints follow in
-//     insertion order. A locked user decision stays here even when it is
-//     also blocked or conflicted. Each statement is cut to statementBudget
-//     bytes on a rune boundary, ending in "…", so one long rule cannot
+//  1. Constraints. An active settled decision (status decision) recorded
+//     with a human identity, or that is the source of a constrains edge.
+//     A human identity is a GitHub login or the legacy word user
+//     (decision.LockedDecidedBy). Those decisions are locked and come
+//     first, newest first. The exact word agent is not a human identity,
+//     so an older agent row stays out of this group unless it is the
+//     source of a constrains edge, and then it is not locked. Other
+//     constraints follow in insertion order. A locked decision stays here
+//     even when it is also blocked or conflicted. Each statement is cut
+//     to statementBudget bytes on a rune boundary, ending in "…", so one long rule cannot
 //     crowd the others out.
 //  2. Blocked. Any active record Load marked Blocked, hypothesis or
 //     decision, that is not itself a constraint. An open question the
@@ -42,8 +46,9 @@ const (
 	// A longer statement is cut on a rune boundary and ends with "…".
 	statementBudget = 200
 
-	// KindConstraint is an active settled decision the user made, or the
-	// source of a constrains edge.
+	// KindConstraint is an active settled decision recorded with a human
+	// identity (a GitHub login or legacy user), or the source of a
+	// constrains edge. The exact word agent is not a human identity.
 	KindConstraint = "constraint"
 	// KindBlocked is a decision Load marked Blocked: active, with a blocks
 	// edge whose blocker is still unsettled (open_blockers is not empty).
@@ -54,8 +59,9 @@ const (
 )
 
 // Item is one decision in the brief. Kind is KindConstraint, KindBlocked,
-// or KindConflicting. Locked is true only for a constraint the user made.
-// DecidedBy is empty when the record named none.
+// or KindConflicting. Locked is true only for a constraint recorded with
+// a human identity: a GitHub login or legacy user. The exact word agent
+// is not locked. DecidedBy is empty when the record named none.
 type Item struct {
 	ID              string `json:"id"`
 	Kind            string `json:"kind"`
@@ -68,8 +74,9 @@ type Item struct {
 
 // Result is the ranked brief after caps. Items is never nil. Omitted is
 // how many ranked items were left off. OmittedLocked is how many of those
-// were locked user rules; it is present even when zero. Locked rules are
-// dropped only when they cannot fit at the statement floor.
+// were locked rules (a login or legacy user); it is present even when
+// zero. Locked rules are dropped only when they cannot fit at the
+// statement floor.
 type Result struct {
 	Items         []Item `json:"items"`
 	Omitted       int    `json:"omitted"`
@@ -104,7 +111,7 @@ func Classify(g decision.Graph) []Item {
 		if d.Status != decision.StatusDecision {
 			return false
 		}
-		return d.DecidedBy == decision.DecidedByUser || constrainsFrom[d.ID]
+		return decision.LockedDecidedBy(d.DecidedBy) || constrainsFrom[d.ID]
 	}
 
 	var locked, other, blockedItems, conflicting []Item
@@ -119,7 +126,7 @@ func Classify(g decision.Graph) []Item {
 		switch {
 		case isConstraint(d):
 			item.Kind = KindConstraint
-			item.Locked = d.DecidedBy == decision.DecidedByUser
+			item.Locked = decision.LockedDecidedBy(d.DecidedBy)
 			if item.Locked {
 				locked = append(locked, item)
 			} else {
@@ -149,8 +156,8 @@ func reverseItems(items []Item) {
 }
 
 // statementFloor is the shortest rendered statement budget used while
-// trying to keep every locked user rule. Only a pathological count drops
-// a locked rule, and then the oldest ones go first.
+// trying to keep every locked rule. Only a pathological count drops a
+// locked rule, and then the oldest ones go first.
 const statementFloor = 40
 
 // fitStatement cuts s so its rendered field (quoted, when quoting applies)
@@ -195,7 +202,7 @@ func Select(g decision.Graph, maxItems, maxBytes int, render func(Result) []byte
 }
 
 // Trim keeps items in Classify's priority order. maxItems or maxBytes below
-// zero means that cap is off. Locked user rules are exempt from maxItems:
+// zero means that cap is off. Locked rules are exempt from maxItems:
 // every one is kept, newest first. Other tiers fill the item slots and the
 // bytes left after the locked tier. maxBytes is a hard bound. When the
 // locked tier does not fit at statementBudget, every locked statement is

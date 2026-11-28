@@ -3,6 +3,10 @@ package decision
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +121,12 @@ func TestResolveDecidedBy(t *testing.T) {
 	miss := errors.New("missing")
 	gh := "gh config get -h github.com user"
 	gitUser := "git config --get github.user"
+	// Commands that do not yield a login must not pick up this machine's
+	// account. The OS-username cases pass their own function.
+	noUser := func() (string, error) { return "", errors.New("no os user") }
+	resolveCommands := func(run CommandRunner) string {
+		return resolveDecidedBy("", false, run, noUser, identityLookupTimeout)
+	}
 
 	if got := ResolveDecidedBy("", false, script(map[string]struct {
 		out []byte
@@ -137,7 +147,7 @@ func TestResolveDecidedBy(t *testing.T) {
 		t.Fatalf("non-zero gh should fall through to git, got %q", got)
 	}
 
-	if got := ResolveDecidedBy("", false, script(map[string]struct {
+	if got := resolveCommands(script(map[string]struct {
 		out []byte
 		err error
 	}{
@@ -147,7 +157,7 @@ func TestResolveDecidedBy(t *testing.T) {
 		t.Fatalf("legacy words from config stored %q", got)
 	}
 
-	if got := ResolveDecidedBy("", false, script(map[string]struct {
+	if got := resolveCommands(script(map[string]struct {
 		out []byte
 		err error
 	}{
@@ -169,7 +179,7 @@ func TestResolveDecidedBy(t *testing.T) {
 
 	// git config user.name is not a source, even when it is a login and
 	// even when it is the legacy word that would lock the brief.
-	if got := ResolveDecidedBy("", false, script(map[string]struct {
+	if got := resolveCommands(script(map[string]struct {
 		out []byte
 		err error
 	}{
@@ -179,7 +189,7 @@ func TestResolveDecidedBy(t *testing.T) {
 		t.Fatalf("user.name must not be read, got %q", got)
 	}
 
-	if got := ResolveDecidedBy("", false, script(map[string]struct {
+	if got := resolveCommands(script(map[string]struct {
 		out []byte
 		err error
 	}{
@@ -204,6 +214,9 @@ func TestResolveDecidedByHungGHStillReadsGit(t *testing.T) {
 		default:
 		}
 		return []byte("octocat\n"), nil
+	}, func() (string, error) {
+		t.Error("os user consulted after git returned a login")
+		return "", errors.New("unused")
 	}, 150*time.Millisecond)
 	if got != "octocat" {
 		t.Fatalf("hung gh stored %q, want octocat from git", got)
@@ -215,18 +228,122 @@ func TestResolveDecidedByHungGHStillReadsGit(t *testing.T) {
 
 func TestResolveDecidedByHungGitAfterFailedGH(t *testing.T) {
 	start := time.Now()
-	got := ResolveDecidedBy("", false, func(ctx context.Context, name string, _ ...string) ([]byte, error) {
+	got := resolveDecidedBy("", false, func(ctx context.Context, name string, _ ...string) ([]byte, error) {
 		if name == "gh" {
 			return nil, errors.New("missing")
 		}
 		<-ctx.Done()
 		return nil, ctx.Err()
-	})
+	}, func() (string, error) {
+		return "", errors.New("no os user")
+	}, identityLookupTimeout)
 	if got != "" {
 		t.Fatalf("hung git stored %q", got)
 	}
 	elapsed := time.Since(start)
 	if elapsed < 400*time.Millisecond || elapsed > 900*time.Millisecond {
 		t.Fatalf("git budget %s, want about 500ms", elapsed)
+	}
+}
+
+func TestLockedDecidedBy(t *testing.T) {
+	for _, s := range []string{"paulpham157", "user", "A", "a-b", "User"} {
+		if !LockedDecidedBy(s) {
+			t.Errorf("want locked %q", s)
+		}
+	}
+	for _, s := range []string{"", "agent", "not a login", "a_b", strings.Repeat("a", 40)} {
+		if LockedDecidedBy(s) {
+			t.Errorf("want unlocked %q", s)
+		}
+	}
+}
+
+func TestResolveDecidedByOSUser(t *testing.T) {
+	miss := errors.New("missing")
+	gh := "gh config get -h github.com user"
+	gitUser := "git config --get github.user"
+	bothMiss := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		key := name + " " + strings.Join(args, " ")
+		if key != gh && key != gitUser {
+			t.Errorf("unexpected command %s", key)
+		}
+		return nil, miss
+	}
+	calls := 0
+	user := func() (string, error) {
+		calls++
+		return `CORP\paulpham157`, nil
+	}
+	if got := resolveDecidedBy("", false, bothMiss, user, time.Second); got != "paulpham157" || calls != 1 {
+		t.Fatalf("windows user %q calls %d", got, calls)
+	}
+
+	calls = 0
+	if got := resolveDecidedBy("", false, func(_ context.Context, name string, _ ...string) ([]byte, error) {
+		if name != "gh" {
+			t.Errorf("git ran after a hosts.yml login")
+		}
+		return []byte("octocat\n"), nil
+	}, func() (string, error) {
+		calls++
+		return "paulpham157", nil
+	}, time.Second); got != "octocat" || calls != 0 {
+		t.Fatalf("gh should win, got %q calls %d", got, calls)
+	}
+
+	if got := resolveDecidedBy("", false, nil, func() (string, error) {
+		t.Fatal("nil runner consulted the os user")
+		return "paulpham157", nil
+	}, time.Second); got != "" {
+		t.Fatalf("nil runner %q", got)
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: `CORP\octocat`, want: "octocat"},
+		{name: "  CORP\\paulpham157  ", want: "paulpham157"},
+		{name: "ubuntu", want: "ubuntu"},
+		{name: `CORP\user`},
+		{name: `CORP\agent`},
+		{name: "User"},
+		{name: "AGENT"},
+		{name: "not a login"},
+		{name: "a_b"},
+		{name: strings.Repeat("a", 40)},
+		{name: `CORP\`},
+		{err: errors.New("lookup failed")},
+	}
+	for _, tc := range cases {
+		got := resolveDecidedBy("", false, bothMiss, func() (string, error) {
+			return tc.name, tc.err
+		}, time.Second)
+		if got != tc.want {
+			t.Errorf("os user %q err %v = %q, want %q", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestExecCommandKillsProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups")
+	}
+	marker := filepath.Join(t.TempDir(), "late")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	script := "(sleep 2; touch " + strconv.Quote(marker) + ") & sleep 30"
+	start := time.Now()
+	if _, err := ExecCommand(ctx, "sh", "-c", script); err == nil {
+		t.Fatal("expected timeout")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("deadline not honored: %s", time.Since(start))
+	}
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a child outlived the timed-out command")
 	}
 }

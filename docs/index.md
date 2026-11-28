@@ -79,7 +79,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [Tasks](tasks.md) | `sdf task declare` and `sdf task show`: a task's acceptance criteria, hashed before an agent runs |
 | [Verify](verify.md) | `sdf verify`: run a declared task's checks against a commit, with evidence and a verdict |
 | [GitHub Action](action.md) | The `sdf verify` GitHub Action, and its threat model |
-| [Decision categories](design/decision-category.md) | Optional `category` (unset is SQL `NULL`, displayed as `implementation`) and `decided_by` as a team member's GitHub login. Phase 1 is implemented |
+| [Decision categories](design/decision-category.md) | Optional `category` (unset is SQL `NULL`, displayed as `implementation`) and `decided_by` as a team member's GitHub login. A login is a locked brief constraint, the same as legacy `user`. The exact word `agent` is not |
 | [Architecture decisions](adr/README.md) | Records of choices about the project. The first one, still proposed, recommends keeping tldraw for the documentation diagrams |
 
 The product site is [softwaredecisionfabric.tech](https://softwaredecisionfabric.tech/).

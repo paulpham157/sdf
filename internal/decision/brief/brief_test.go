@@ -60,6 +60,48 @@ func TestClassifyRanksLockedConstraintsFirst(t *testing.T) {
 	}
 }
 
+func TestClassifyLoginIsLockedAndAgentIsNot(t *testing.T) {
+	login := rec("dont-push", decision.StatusDecision, "paulpham157", decision.EffectiveActive, "Do not push until the user says so.")
+	login.Blocked = true
+	agent := rec("rename", decision.StatusDecision, decision.DecidedByAgent, decision.EffectiveActive, "Rename the binary later.")
+	keep := rec("keep-local", decision.StatusDecision, decision.DecidedByAgent, decision.EffectiveActive, "Keep the store on this machine.")
+	hyp := rec("maybe", decision.StatusHypothesis, "paulpham157", decision.EffectiveActive, "Maybe ban deploys.")
+	hyp.Blocked = true
+	bad := rec("spaces", decision.StatusDecision, "not a login", decision.EffectiveActive, "Store it somewhere.")
+	g := decision.Graph{
+		Decisions: []decision.Record{
+			rec("old", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Do not merge."),
+			login,
+			agent,
+			keep,
+			hyp,
+			bad,
+		},
+		Edges: []decision.Edge{
+			{Relation: decision.RelConstrains, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-local"}, To: decision.Endpoint{Kind: decision.KindSession, Ref: "sess"}},
+		},
+	}
+	got := brief.Classify(g)
+	want := []brief.Item{
+		{ID: "dont-push", Kind: brief.KindConstraint, Statement: "Do not push until the user says so.", Status: decision.StatusDecision, DecidedBy: "paulpham157", Locked: true},
+		{ID: "old", Kind: brief.KindConstraint, Statement: "Do not merge.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByUser, DecidedByLegacy: true, Locked: true},
+		{ID: "keep-local", Kind: brief.KindConstraint, Statement: "Keep the store on this machine.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, DecidedByLegacy: true, Locked: false},
+		{ID: "maybe", Kind: brief.KindBlocked, Statement: "Maybe ban deploys.", Status: decision.StatusHypothesis, DecidedBy: "paulpham157", Locked: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	trimmed := brief.Trim(got, 0, -1, nil)
+	if trimmed.OmittedLocked != 0 || len(trimmed.Items) != 2 || trimmed.Items[0].ID != "dont-push" || !trimmed.Items[0].Locked || trimmed.Items[1].ID != "old" || trimmed.Omitted != 2 {
+		t.Fatalf("max-items 0 dropped a locked login: %+v", trimmed)
+	}
+}
+
 func TestClassifyUserDecisionStaysAConstraintWhenItAlsoConflicts(t *testing.T) {
 	user := rec("use-sqlite", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Keep the collector store in SQLite.")
 	user.Conflicted = true

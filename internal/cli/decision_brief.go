@@ -43,9 +43,9 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, decisionBriefUsage)
-			fmt.Fprintln(stdout, "Prints active constraints (locked user decisions first), then blocked decisions, then conflicting decisions.")
+			fmt.Fprintln(stdout, "Prints active constraints (locked decisions recorded with a login or legacy user first), then blocked decisions, then conflicting decisions.")
 			fmt.Fprintf(stdout, "Defaults: --max-items %d, --max-bytes %d, --format text. Retracted and superseded decisions are omitted.\n", defaultBriefItems, defaultBriefBytes)
-			fmt.Fprintln(stdout, "Locked user rules are exempt from --max-items, including --max-items 0. When the locked tier does not fit, statements shrink to a 40-byte floor before the oldest locked rules are dropped. Output is printed when any decision matched. When items are cut, the text ends with \"N more: run sdf decision list\", or \"N more (K locked): run sdf decision list\" when locked rules were dropped. JSON always includes omitted_locked. A missing database prints nothing and exits 0. When the path exists but cannot be read, the text is \"sdf decision brief unavailable: run sdf decision list\".")
+			fmt.Fprintln(stdout, "Locked rules (a GitHub login, or legacy user) are exempt from --max-items, including --max-items 0. The exact word agent is not locked. When the locked tier does not fit, statements shrink to a 40-byte floor before the oldest locked rules are dropped. Output is printed when any decision matched. When items are cut, the text ends with \"N more: run sdf decision list\", or \"N more (K locked): run sdf decision list\" when locked rules were dropped. JSON always includes omitted_locked. A missing database prints nothing and exits 0. When the path exists but cannot be read, the text is \"sdf decision brief unavailable: run sdf decision list\".")
 			fmt.Fprintln(stdout, "The sdf-decisions skill ships scripts/brief, a fail-open helper that runs this command.")
 			return 0
 		case arg == "--db":
