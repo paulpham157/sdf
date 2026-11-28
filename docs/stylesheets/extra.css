@@ -337,15 +337,22 @@ body {
   outline-offset: 2px;
 }
 
-/* The chip's ring sits on the inverse fill, so it uses focus-on-inverse
-   (rust-200 on charcoal, 7.93:1; rust-700 on the cream chip, 5.93:1).
-   A negative offset draws the 2px ring inside the chip. The page focus
-   color is rust-500, 2.85:1 on charcoal, and an outside ring is clipped
-   by the sidebar scroller. */
+/* The ring is drawn inside the chip, so the sidebar scroller cannot clip
+   it. Dark keeps focus-on-inverse (rust-700 on the cream chip, 5.93:1).
+   Light cannot use that token: rust-200 is 7.93:1 on charcoal and 1.37:1
+   on the cream page, which reads as a pale peach next to the rust-500
+   rings on the other links. No rust step clears 3:1 on both surfaces.
+   rust-400 is the step closest to rust-500 that still clears 3:1 on the
+   chip (3.98:1). It is 2.72:1 on the page, and the ring does not sit there. */
 .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible,
 .md-nav--primary .md-nav__link--active.focus-visible:not(.md-nav--secondary .md-nav__link) {
   outline-color: var(--sdf-color-focus-on-inverse);
   outline-offset: calc(var(--sdf-border-width-strong) * -1);
+}
+
+[data-md-color-scheme="default"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible,
+[data-md-color-scheme="default"] .md-nav--primary .md-nav__link--active.focus-visible:not(.md-nav--secondary .md-nav__link) {
+  outline-color: var(--sdf-color-rust-400);
 }
 
 .md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus-visible,
@@ -374,19 +381,33 @@ body {
 }
 
 /* Material's sticky title halo covered the chip at rest, so it stays off.
-   A short gradient hangs below the title and fades links as they scroll
-   under it. On the page background the gradient is invisible, and the
-   list padding keeps the resting chip below it. overflow stays visible
-   so the gradient is not clipped. 60em is the on-this-page sidebar;
-   76.25em is the primary sidebar. The phone drawer is left alone. */
+   One 8px gradient hangs below both sticky titles and fades links that
+   scroll under them. It stays hidden until that sidebar scrolls, so it
+   does not tint the chip at rest and the list needs no extra padding.
+   overflow stays visible so the gradient is not clipped. 60em is the
+   on-this-page sidebar. Below 76.25em the primary sidebar is the drawer,
+   whose title is not this sticky bar, so those declarations are put back. */
+@keyframes sdf-sidebar-title-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media screen and (min-width: 60em) {
-  .md-sidebar--secondary .md-nav__title {
+  .md-sidebar--secondary .md-sidebar__scrollwrap,
+  .md-sidebar--primary .md-sidebar__scrollwrap {
+    scroll-timeline-name: --sdf-sidebar-scroll;
+    scroll-timeline-axis: block;
+  }
+
+  .md-sidebar--secondary .md-nav__title,
+  .md-sidebar--primary .md-nav--primary > .md-nav__title {
     box-shadow: none;
     overflow: visible;
     padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
   }
 
-  .md-sidebar--secondary .md-nav__title::after {
+  .md-sidebar--secondary .md-nav__title::after,
+  .md-sidebar--primary .md-nav--primary > .md-nav__title::after {
     content: "";
     position: absolute;
     z-index: 1;
@@ -397,8 +418,29 @@ body {
     pointer-events: none;
   }
 
-  .md-sidebar--secondary .md-nav__title + .md-nav__list {
-    padding-top: calc(var(--sdf-space-1) * var(--docs-rem));
+  @supports (animation-timeline: scroll()) {
+    .md-sidebar--secondary .md-nav__title::after,
+    .md-sidebar--primary .md-nav--primary > .md-nav__title::after {
+      opacity: 0;
+      animation-name: sdf-sidebar-title-fade;
+      animation-duration: auto;
+      animation-timing-function: linear;
+      animation-fill-mode: both;
+      animation-timeline: --sdf-sidebar-scroll;
+      animation-range: 0 1px;
+    }
+  }
+}
+
+@media screen and (max-width: 76.249em) {
+  .md-sidebar--primary .md-nav--primary > .md-nav__title {
+    overflow: hidden;
+    padding-bottom: .2rem;
+    box-shadow: none;
+  }
+
+  .md-sidebar--primary .md-nav--primary > .md-nav__title::after {
+    content: none;
   }
 }
 
@@ -412,29 +454,6 @@ body {
    76.25em is Material's sidebar breakpoint (media em is 16px). Below
    that the drawer keeps its own padding. */
 @media screen and (min-width: 76.25em) {
-  .md-sidebar--primary .md-nav--primary > .md-nav__title {
-    box-shadow: none;
-    overflow: visible;
-    padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
-  }
-
-  .md-sidebar--primary .md-nav--primary > .md-nav__title::after {
-    content: "";
-    position: absolute;
-    z-index: 1;
-    inset-inline: 0;
-    top: 100%;
-    height: calc(var(--sdf-space-2) * var(--docs-rem));
-    background: linear-gradient(to bottom, var(--md-default-bg-color), transparent);
-    pointer-events: none;
-  }
-
-  /* The repository block sits between the title and the list, so the
-     list is not the title's next sibling. */
-  .md-sidebar--primary .md-nav--primary > .md-nav__list {
-    padding-top: calc(var(--sdf-space-2) * var(--docs-rem));
-  }
-
   .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
   .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
   .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
