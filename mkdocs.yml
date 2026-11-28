@@ -26,7 +26,7 @@ use_directory_urls: true
 # Theme partials live in docs/overrides/ (theme.custom_dir). Exclude that
 # tree so MkDocs does not copy the templates into the built site.
 exclude_docs: |
-  overrides/
+  /overrides/
 
 theme:
   name: material

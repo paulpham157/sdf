@@ -213,14 +213,8 @@ body {
   text-decoration: none;
 }
 
-/* Phone header. 30em is 480px (media-query em is the initial 16px), so
-   this covers 320–390px. The title is a flex item whose topic is
-   absolutely positioned; without a zero min-width the site name paints
-   across the search and Website buttons. Clip it so the ellipsis stays
-   inside the title. The Website control's box is 44px
-   ((--sdf-space-10 + --sdf-space-1) * --docs-rem at Material's 20px
-   root). Vertical margin fits that box in Material's 2.4rem title row
-   so the desktop header, which is above this breakpoint, is unchanged. */
+/* Narrow header. 30em is 480px (media-query em is the initial 16px).
+   The title ellipsizes inside its flex item. */
 @media screen and (max-width: 30em) {
   .md-header__title {
     min-width: 0;
@@ -243,7 +237,14 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
 
+/* 44px tap target where Material hides the source label (below 60em,
+   960px) and on a coarse pointer. 59.984375em matches Material's own
+   cutoff so a 60em desktop header is unchanged. The box is
+   (--sdf-space-10 + --sdf-space-1) * --docs-rem at Material's 20px root.
+   Vertical margin fits that box in the 2.4rem title row. */
+@media screen and (max-width: 59.984375em), screen and (pointer: coarse) {
   .md-header__button.md-header__website {
     box-sizing: border-box;
     display: inline-flex;

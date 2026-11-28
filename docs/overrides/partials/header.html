@@ -2,7 +2,7 @@
   Copy of mkdocs-material 9.8.2 partials/header.html plus the Website
   link. Re-sync this file when Material is upgraded.
 #}
-<!--
+{#
   Copyright (c) 2016-2025 Martin Donath <martin.donath@squidfunk.com>
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -22,9 +22,9 @@
   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
   IN THE SOFTWARE.
--->
+#}
 
-<!-- Determine classes -->
+{# Determine classes #}
 {% set class = "md-header" %}
 {% if "navigation.tabs.sticky" in features %}
   {% set class = class ~ " md-header--shadow md-header--lifted" %}
@@ -32,14 +32,14 @@
   {% set class = class ~ " md-header--shadow" %}
 {% endif %}
 
-<!-- Header -->
+{# Header #}
 <header class="{{ class }}" data-md-component="header">
   <nav
     class="md-header__inner md-grid"
     aria-label="{{ lang.t('header') }}"
   >
 
-    <!-- Link to home -->
+    {# Link to home #}
     <a
       href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}"
       title="{{ config.site_name | e }}"
@@ -50,13 +50,13 @@
       {% include "partials/logo.html" %}
     </a>
 
-    <!-- Button to open drawer -->
+    {# Button to open drawer #}
     <label class="md-header__button md-icon" for="__drawer">
       {% set icon = config.theme.icon.menu or "material/menu" %}
       {% include ".icons/" ~ icon ~ ".svg" %}
     </label>
 
-    <!-- Header title -->
+    {# Header title #}
     <div class="md-header__title" data-md-component="header-title">
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
@@ -76,41 +76,41 @@
       </div>
     </div>
 
-    <!-- Color palette toggle -->
+    {# Color palette toggle #}
     {% if config.theme.palette %}
       {% if not config.theme.palette is mapping %}
         {% include "partials/palette.html" %}
       {% endif %}
     {% endif %}
 
-    <!-- User preference: color palette -->
+    {# User preference: color palette #}
     {% if not config.theme.palette is mapping %}
       {% include "partials/javascripts/palette.html" %}
     {% endif %}
 
-    <!-- Site language selector -->
+    {# Site language selector #}
     {% if config.extra.alternate %}
       {% include "partials/alternate.html" %}
     {% endif %}
 
-    <!-- Button to open search modal -->
+    {# Button to open search modal #}
     {% if "material/search" in config.plugins %}
       {% set search = config.plugins["material/search"] | attr("config") %}
 
-      <!-- Check if search is actually enabled - see https://t.ly/DT_0V -->
+      {# Check if search is actually enabled - see https://t.ly/DT_0V #}
       {% if search.enabled %}
         <label class="md-header__button md-icon" for="__search">
           {% set icon = config.theme.icon.search or "material/magnify" %}
           {% include ".icons/" ~ icon ~ ".svg" %}
         </label>
 
-        <!-- Search interface -->
+        {# Search interface #}
         {% include "partials/search.html" %}
       {% endif %}
     {% endif %}
 
     {# Product site. Outside .md-header__source, which Material hides below 60em. #}
-    {% if config.extra.website %}
+    {% if config.extra.website is string and (config.extra.website.startswith('https://') or config.extra.website.startswith('http://')) %}
       <a
         class="md-header__button md-header__website"
         href="{{ config.extra.website | e }}"
@@ -119,7 +119,7 @@
       </a>
     {% endif %}
 
-    <!-- Repository information -->
+    {# Repository information #}
     {% if config.repo_url %}
       <div class="md-header__source">
         {% include "partials/source.html" %}
@@ -127,7 +127,7 @@
     {% endif %}
   </nav>
 
-  <!-- Navigation tabs (sticky) -->
+  {# Navigation tabs (sticky) #}
   {% if "navigation.tabs.sticky" in features %}
     {% if "navigation.tabs" in features %}
       {% include "partials/tabs.html" %}
