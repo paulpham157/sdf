@@ -135,8 +135,87 @@ itself does. `--since 24h` is the last 24 hours before the command runs.
 Exit 0 means the report was written, including when there are misses
 (unlike `sdf decision audit`, which exits 1 on findings).
 
+## Live agents
+
+`cmd/sdf-recall` drives the real agent CLIs through the same fixtures,
+k times each, and scores the decisions and commit links those CLIs
+actually write with `sdf`. It is opt-in. CI does not run it, and
+`go test ./...` does not call a model. The CI gate stays the skill-only
+baseline above.
+
+```bash
+export SDF_RECALL_API_KEY=...   # or TOKENROUTER_API_KEY
+go run ./cmd/sdf-recall
+go run ./cmd/sdf-recall --agents opencode,codex,claude-code --k 1
+go run ./cmd/sdf-recall --json
+go run ./cmd/sdf-recall --no-install
+```
+
+With no key the command prints a skip line and exits 0. Nothing is sent
+to a model. A written report also exits 0, including when recall is low.
+`--agents` selects ids from `sdf init` (`opencode`, `pi`, `qwen`, `grok`,
+`copilot`, `codex`, `claude-code`, `gemini`). `--k` is 1 to 100 and
+defaults to 5. `--json` and `--markdown` choose the encoding; the default
+is both. JSON uses schema `sdf.decision.recall.live/v1`.
+
+Each run is a temp git repo. The fixture's OTLP is loaded into
+`sdf-telemetry.sqlite` there, and a temp `sdf serve` receives whatever
+the CLI exports. The prompt is the fixture's log bodies and commit SHAs.
+It points at `skills/sdf-decisions/SKILL.md`. Labels and notes are not in
+the prompt. The agent records with the `sdf` binary built from this
+module, unless `SDF_BIN` is set.
+
+Recall and precision are pooled over scored runs. A process that exits
+non-zero, or that hits the run timeout, is a failed run. It is listed
+separately and is not a miss, so it is not in the recall denominator.
+A run that exits 0 and records nothing is a miss. The 95% Wilson interval
+is the interval of that pooled recall.
+
+The model id defaults to `deepseek/deepseek-v4.1-flash-1017-free`
+(`SDF_RECALL_MODEL`). A full pass is 7 CLIs times 7 scenarios times k=5,
+245 runs, and each run makes several model calls. That default id is a
+free TokenRouter model. The free tier throttles; HTTP 429 is retried.
+Another model can cost money. The key is read from the environment and
+injected by a local proxy. It is not written into agent config, logs, the
+report, or git.
+
+| Agent | Protocol | Base |
+| --- | --- | --- |
+| [OpenCode](agents.md#opencode-v2), [Pi](agents.md#pi), [Qwen Code](agents.md#qwen-code), [Grok CLI](agents.md#grok-cli), [Copilot CLI](agents.md#github-copilot-cli) | OpenAI Chat Completions, `POST /v1/chat/completions` | `SDF_RECALL_OPENAI_BASE_URL`, else `SDF_RECALL_BASE_URL`, else `https://api.tokenrouter.com/v1` |
+| [Codex](agents.md#codex-cli) | OpenAI Responses, `POST /v1/responses` (`wire_api = "responses"`) | the same OpenAI base |
+| [Claude Code](agents.md#claude-code) | Anthropic Messages, `POST /v1/messages` | `SDF_RECALL_ANTHROPIC_BASE_URL`, else `https://api.tokenrouter.com` (Claude appends `/v1/messages`) |
+| [Gemini CLI](agents.md#gemini-cli) | native `generateContent` | unsupported with this provider |
+
+Chat Completions, Responses, and Messages on TokenRouter were checked
+live with `deepseek/deepseek-v4.1-flash-1017-free` and returned HTTP 200.
+Codex setup is the [TokenRouter Codex guide](https://www.tokenrouter.com/docs/codex-chatgpt-setup/).
+Claude Code setup is the [TokenRouter Claude Code guide](https://www.tokenrouter.com/docs/claude-code-setup/).
+The Anthropic base does not fall back to the OpenAI base, because that
+URL already ends in `/v1`. Gemini's native `generateContent` paths on
+this provider do not succeed (the v1beta path returns HTTP 500 and the v1
+path returns HTTP 404). The runner reports Gemini CLI as unsupported
+with that reason. It does not point Gemini at Chat Completions.
+
+The CLIs talk to a proxy on `127.0.0.1`. The proxy adds the key, retries
+HTTP 429 and 5xx with backoff (honoring `Retry-After` up to 30 seconds),
+and stops a run that passes the turn cap (default 12) or the token cap
+(default 20000). A capped run that still exits 0 is scored and marked
+capped. Other knobs are `SDF_RECALL_MAX_TURNS`, `SDF_RECALL_MAX_TOKENS`,
+`SDF_RECALL_RETRIES`, `SDF_RECALL_HTTP_TIMEOUT`, and
+`SDF_RECALL_RUN_TIMEOUT`.
+
+`--install` (the default) installs the packages this repo already names
+for OpenCode, Pi, Qwen Code, and Copilot when the binary is missing.
+Claude Code, Codex, and Grok are located on `PATH` and are not installed.
+`--no-install` or `SDF_RECALL_NO_INSTALL=1` skips installation. An agent
+that is supported but has no binary is `unavailable`. Gemini is
+`unsupported` and is not looked up.
+
 ## Out of scope
 
-Real-agent runs (k=5 on a cheap model) and A/B tests of the skill against
-a new mechanism are periodic. They need a model API and the network, and
-this tree does not run them. The CI gate is the fixture harness only.
+Comparing the shipped skill with a new recorder, and labeling real
+sessions with an LLM judge, are still follow-ups. They are not this
+command. Gemini stays out until this provider has a working
+`generateContent` endpoint, or Gemini CLI can be pointed at an
+OpenAI-compatible base this runner can target. The CI gate is the
+fixture harness only.
