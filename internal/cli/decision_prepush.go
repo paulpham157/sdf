@@ -35,6 +35,10 @@ var prePushBudget = 5 * time.Second
 // of a long history checks the newest ones.
 const prePushMaxCommits = 1000
 
+// prePushMaxPaths bounds how many changed file names are matched. The rest
+// are counted and reported, not checked.
+const prePushMaxPaths = 20000
+
 // prePushStdin is the hook's stdin. Tests replace it.
 var prePushStdin io.Reader = os.Stdin
 
@@ -158,11 +162,12 @@ func runPrePush(ctx context.Context, input, dbPath, remote string, block bool, w
 		fmt.Fprintf(w, "sdf: pre-push decision check skipped: "+format+" The push continues.\n", a...)
 		return 0
 	}
-	commits, truncated, err := pushedCommits(ctx, input, remote)
+	touches := prePushTouches(ctx, w)
+	diff, err := pushedCommits(ctx, input, remote)
 	if err != nil {
 		return skip("%s.", displayErr(err))
 	}
-	if len(commits) == 0 {
+	if len(diff.Commits) == 0 {
 		return 0
 	}
 	if dbPath == "" {
@@ -178,16 +183,31 @@ func runPrePush(ctx context.Context, input, dbPath, remote string, block bool, w
 	if err != nil {
 		return skip("%s.", displayErr(err))
 	}
-	report, err := decision.CheckPush(db, commits)
+	g, err := decision.Load(db)
+	if err != nil {
+		_ = db.Close()
+		return skip("%s.", displayErr(err))
+	}
+	events, err := db.LoadCommitEvents()
 	_ = db.Close()
 	if err != nil {
 		return skip("%s.", displayErr(err))
 	}
+	report := decision.ClassifyPush(g, events, diff.Commits)
 	blocked := block && len(report.Missing) > 0
 	if err := decision.WritePushText(w, report, " --db "+shellWord(displayPath(store.AbsPath(dbPath))), blocked); err != nil {
 		return 0
 	}
-	if truncated {
+	if touches == "warn" {
+		found := decision.CheckTouches(g, diff.Paths)
+		if err := decision.WriteTouchText(w, found, decision.TouchForPush(!blocked)); err != nil {
+			return 0
+		}
+		if diff.PathsTruncated {
+			fmt.Fprintf(w, "sdf: pre-push: only the first %d changed paths were checked.\n", prePushMaxPaths)
+		}
+	}
+	if diff.CommitsTruncated {
 		fmt.Fprintf(w, "sdf: pre-push: only the newest %d pushed commits were checked.\n", prePushMaxCommits)
 	}
 	if blocked {
@@ -196,17 +216,50 @@ func runPrePush(ctx context.Context, input, dbPath, remote string, block bool, w
 	return 0
 }
 
+// prePushTouches is git config sdf.prePushTouches, else warn. It silences
+// only the path-scope warning. off, 0, false, no, skip, disable, and
+// disabled are off. An unknown value, including block, is warn, with a note.
+// A missing key or a git failure is warn.
+func prePushTouches(ctx context.Context, w io.Writer) string {
+	cmd := exec.CommandContext(ctx, "git", "config", "--get", "sdf.prePushTouches")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.Output()
+	if err != nil {
+		return "warn"
+	}
+	v := strings.ToLower(strings.TrimSpace(string(out)))
+	switch v {
+	case "", "warn":
+		return "warn"
+	case "off", "0", "false", "no", "skip", "disable", "disabled":
+		return "off"
+	}
+	fmt.Fprintf(w, "sdf: git config sdf.prePushTouches is %q; using warn (valid: warn, off)\n", v)
+	return "warn"
+}
+
+// pushDiff is the commits a push sends and the file names those commits
+// change. Paths are names only. CommitsTruncated and PathsTruncated report
+// the caps.
+type pushDiff struct {
+	Commits          []decision.PushCommit
+	Paths            []decision.PushPath
+	CommitsTruncated bool
+	PathsTruncated   bool
+}
+
 // pushedCommits reads git's pre-push lines (local_ref local_sha remote_ref
 // remote_sha) and lists the non-merge commits the push sends, newest first,
-// with their SDF-Decision trailer values. A delete (local sha all zeros)
-// sends no commits. A new branch (remote sha all zeros), or a remote sha
-// this repository does not have, is compared with the remote-tracking
-// branches of the remote (all remotes when the remote is a URL). Only
-// %(trailers:key=SDF-Decision) is read from the message; the diff is not.
-func pushedCommits(ctx context.Context, input, remote string) ([]decision.PushCommit, bool, error) {
-	var out []decision.PushCommit
+// with their SDF-Decision trailer values and changed file names. A delete
+// (local sha all zeros) sends no commits. A new branch (remote sha all
+// zeros), or a remote sha this repository does not have, is compared with
+// the remote-tracking branches of the remote (all remotes when the remote
+// is a URL). Only %(trailers:key=SDF-Decision) is read from the message.
+// File names come from --name-status; content is not read.
+func pushedCommits(ctx context.Context, input, remote string) (pushDiff, error) {
+	var out pushDiff
 	seen := map[string]bool{}
-	truncated := false
 	sc := bufio.NewScanner(strings.NewReader(input))
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
@@ -214,16 +267,17 @@ func pushedCommits(ctx context.Context, input, remote string) ([]decision.PushCo
 			continue
 		}
 		if len(fields) != 4 {
-			return nil, false, fmt.Errorf("unexpected pre-push input %q", sc.Text())
+			return pushDiff{}, fmt.Errorf("unexpected pre-push input %q", sc.Text())
 		}
 		local, remoteSHA := strings.ToLower(fields[1]), strings.ToLower(fields[3])
 		if !prePushSHA.MatchString(local) || !prePushSHA.MatchString(remoteSHA) {
-			return nil, false, fmt.Errorf("unexpected pre-push input %q", sc.Text())
+			return pushDiff{}, fmt.Errorf("unexpected pre-push input %q", sc.Text())
 		}
 		if allZero(local) {
 			continue
 		}
-		args := []string{"log", "--no-merges", fmt.Sprintf("--max-count=%d", prePushMaxCommits+1),
+		args := []string{"log", "--no-merges", "--name-status", "--no-renames", "-z",
+			fmt.Sprintf("--max-count=%d", prePushMaxCommits+1),
 			"--format=%H%x1f%(trailers:key=SDF-Decision,valueonly=true,unfold=true,separator=%x1f)%x1e", local}
 		if !allZero(remoteSHA) && gitHasCommit(ctx, remoteSHA) {
 			args = append(args, "^"+remoteSHA)
@@ -232,49 +286,60 @@ func pushedCommits(ctx context.Context, input, remote string) ([]decision.PushCo
 		} else {
 			args = append(args, "--not", "--remotes")
 		}
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		raw, err := cmd.Output()
+		raw, err := gitOutput(ctx, args)
 		if err != nil {
-			msg := strings.TrimSpace(stderr.String())
-			if msg == "" {
-				msg = err.Error()
-			}
-			return nil, false, fmt.Errorf("git log: %s", firstLine(msg))
+			return pushDiff{}, err
 		}
-		for _, rec := range strings.Split(string(raw), "\x1e") {
-			rec = strings.TrimLeft(rec, "\n")
-			if rec == "" {
+		parsed, err := parseNameStatusLog(raw)
+		if err != nil {
+			return pushDiff{}, err
+		}
+		for _, c := range parsed {
+			if seen[c.SHA] {
 				continue
 			}
-			parts := strings.Split(rec, "\x1f")
-			sha := strings.ToLower(strings.TrimSpace(parts[0]))
-			if !prePushSHA.MatchString(sha) || seen[sha] {
-				continue
-			}
-			if len(out) == prePushMaxCommits {
-				truncated = true
+			if len(out.Commits) == prePushMaxCommits {
+				out.CommitsTruncated = true
 				break
 			}
-			seen[sha] = true
-			c := decision.PushCommit{SHA: sha}
-			for _, v := range parts[1:] {
-				if v = strings.TrimSpace(v); v != "" {
-					c.Trailers = append(c.Trailers, v)
+			seen[c.SHA] = true
+			out.Commits = append(out.Commits, decision.PushCommit{SHA: c.SHA, Trailers: c.Trailers})
+			for _, p := range c.Paths {
+				if len(out.Paths) == prePushMaxPaths {
+					out.PathsTruncated = true
+					break
 				}
+				out.Paths = append(out.Paths, decision.PushPath{SHA: c.SHA, Path: p, Trailers: c.Trailers})
 			}
-			out = append(out, c)
 		}
 	}
-	return out, truncated, sc.Err()
+	return out, sc.Err()
 }
 
 func gitHasCommit(ctx context.Context, sha string) bool {
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "-e", sha+"^{commit}")
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", sha+"^{commit}")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = strings.NewReader("")
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
+}
+
+func gitOutput(ctx context.Context, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Stdin = strings.NewReader("")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("git log: %s", firstLine(msg))
+	}
+	return raw, nil
 }
 
 func allZero(sha string) bool {
@@ -296,13 +361,16 @@ A pushed commit SDF recorded (through the git hooks) or that carries an
 SDF-Decision: ID trailer should implement a decision: an implements edge
 from commit:SHA, or the trailer, naming a recorded decision that is not
 retracted. Commits SDF never saw are not judged. Only the SDF-Decision
-trailer is read from commit messages; the diff is never read.
+trailer is read from commit messages. File names of pushed commits are
+read, never content, and matched against path globs on active decisions.
+A path match warns and does not block, even with --mode block. git config
+sdf.prePushTouches off silences that warning only.
 
   --db PATH        the sdf serve store (default SDF_PRE_PUSH_DB; none: skip)
   --remote NAME    the remote being pushed to (the hook's first argument)
   --mode MODE      warn (default), block, or off; default SDF_PRE_PUSH,
                    then git config sdf.prePush
 
-Exit 0 lets the push go on, including whenever the check cannot run. Exit 1
-is block mode with a commit that implements no decision. Bypass with git
-push --no-verify or SDF_PRE_PUSH=off.`
+Exit 0 lets the push go on, including whenever the check cannot run and
+including a path match. Exit 1 is block mode with a commit that implements
+no decision. Bypass with git push --no-verify or SDF_PRE_PUSH=off.`

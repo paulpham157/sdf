@@ -552,6 +552,8 @@ var decisionCommands = []struct {
 	{"retract", cmdDecisionRetract},
 	{"audit", cmdDecisionAudit},
 	{"recall", cmdDecisionRecall},
+	{"scope", cmdDecisionScope},
+	{"touches", cmdDecisionTouches},
 	{"pre-push", cmdDecisionPrePush},
 }
 
@@ -589,7 +591,7 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-const decisionAddUsage = "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]"
+const decisionAddUsage = "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--path GLOB] [--db PATH]"
 
 // identityRunner resolves a GitHub login when --decided-by is omitted.
 // Tests replace it so a machine's gh or git config does not change rows.
@@ -619,6 +621,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	category := ""
 	alternatives := ""
 	reason := ""
+	var paths []string
 	idSet, statementSet, statusSet := false, false, false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -707,6 +710,15 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 			reason = v
 		case strings.HasPrefix(arg, "--reason="):
 			reason = strings.TrimPrefix(arg, "--reason=")
+		case arg == "--path":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --path requires a value")
+				return 2
+			}
+			paths = append(paths, v)
+		case strings.HasPrefix(arg, "--path="):
+			paths = append(paths, strings.TrimPrefix(arg, "--path="))
 		default:
 			unrecognizedArgs(stderr, arg)
 			return 2
@@ -725,6 +737,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		Alternatives: alternatives,
 		Reason:       reason,
 		Category:     category,
+		Paths:        paths,
 	}
 	// Validate the caller's fields before any identity lookup. An omitted
 	// --decided-by is empty here, which is legal; the lookup fills it only

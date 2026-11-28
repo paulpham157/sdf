@@ -11,7 +11,8 @@ import (
 // PushCommit is one commit a git push would send: its SHA (lowercase hex)
 // and the values of its SDF-Decision trailers, read by the caller with
 // git log --format=%(trailers:key=SDF-Decision,valueonly). Nothing else
-// from the commit message, and nothing from the diff, is read.
+// from the commit message is read. Changed file names, never content, are
+// a separate list (PushPath) for the path-scope warning.
 type PushCommit struct {
 	SHA      string
 	Trailers []string
@@ -66,7 +67,14 @@ func CheckPush(s *store.Store, commits []PushCommit) (PushReport, error) {
 	if err != nil {
 		return PushReport{}, err
 	}
-	return checkPush(g, events, commits), nil
+	return ClassifyPush(g, events, commits), nil
+}
+
+// ClassifyPush is CheckPush given a graph and commit events the caller
+// already loaded, so a pre-push run can classify links and path touches
+// from one read of the store.
+func ClassifyPush(g Graph, events []store.CommitEvent, commits []PushCommit) PushReport {
+	return checkPush(g, events, commits)
 }
 
 func checkPush(g Graph, events []store.CommitEvent, commits []PushCommit) PushReport {

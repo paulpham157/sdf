@@ -1130,9 +1130,11 @@ one session is not given to another session by the time-window heuristic.
 ### Pre-push decision check
 
 `pre-push` is the gate for decision records ([#286](https://github.com/paulpham157/sdf/issues/286)):
-when you push, it warns about pushed commits that implement no decision. It
-runs `sdf decision pre-push` with the hook's stdin and sends nothing to the
-receiver.
+when you push, it warns about pushed commits that implement no decision, and
+when a changed file name matches a path glob on an active decision
+([#305](https://github.com/paulpham157/sdf/issues/305)). It runs
+`sdf decision pre-push` with the hook's stdin and sends nothing to the
+receiver. File names of pushed commits are read, never content.
 
 ```text
 sdf: pre-push: 1 of 2 pushed commits recorded in SDF implement no decision:
@@ -1167,10 +1169,39 @@ active decisions as the likely `--to`. A trailer that names no recorded
 decision, or a retracted one, is reported.
 
 **Modes.** `warn` (default) prints and exits 0. `block` makes the push fail
-when a judged commit has no decision. `off` skips the check. Set the mode
-per repository with `git config sdf.prePush block`, or per command with
-`SDF_PRE_PUSH=block|warn|off`, which wins over git config. `git push
---no-verify` skips every pre-push hook.
+when a judged commit has no decision. `off` skips the check, including the
+path warning. Set the mode per repository with `git config sdf.prePush block`,
+or per command with `SDF_PRE_PUSH=block|warn|off`, which wins over git config.
+`git push --no-verify` skips every pre-push hook.
+
+**Paths on a decision.** `sdf decision add --path GLOB` (repeatable) and
+`sdf decision scope --id ID --path GLOB` record path globs on a decision.
+Globs are append-only: nothing updates or removes one; record another
+decision to change the scope. A glob is a small case-sensitive gitignore
+subset (`*`, `?`, `**`, a trailing `/` for a directory) with no `!`
+negation. At most 32 globs, each at most 256 bytes, no leading `/`, no `..`
+segment, no backslash. The check matches every active settled decision that
+has a glob (`effective_status` active and `status` decision). A hypothesis,
+a retraction, and a superseded decision are not matched, and a superseded
+decision's globs are not inherited. A `refines` edge leaves both decisions
+active, and each matches only its own globs. A commit already linked to
+that decision (an `implements` edge from `commit:SHA`, or an `SDF-Decision`
+trailer naming it) is not reported for it. A path match is a warning, exit
+0, even when `sdf.prePush` is `block`. `git config sdf.prePushTouches off`
+silences only that warning. `sdf decision touches` runs the same match for
+a range or for NUL-separated paths and exits 3 when something matches.
+
+```text
+sdf: pre-push: 2 pushed commits touch paths scoped by 1 active decision:
+  decision:no-cgo (locked) "Do not add cgo to the store"
+    internal/store/** matches internal/store/store.go (commit 1a2b3c4d), and 3 more
+Touching is not a violation; link the commit if it follows the decision (SDF-Decision: no-cgo). The push continues. Silence: git config sdf.prePushTouches off.
+```
+
+Changed paths are capped at 20000 (then `only the first 20000 changed paths
+were checked`), and each decision's warning shows at most 3 paths. A locked
+brief constraint is labelled `locked`. The changed paths are not written to
+the store and are not sent anywhere.
 
 **Fail open.** A push never fails because SDF is unavailable, in any mode.
 The check prints one line and the push continues when: no `sdf` binary is
@@ -1195,7 +1226,8 @@ trailer. `post-commit` and `post-rewrite` read and send only
 `SDF-Decision` trailer values, never the subject, the body, other
 trailers, or the diff, using
 `git log --format=%(trailers:key=SDF-Decision,valueonly)`. The pre-push
-check reads that same trailer locally the same way and sends nothing
-anywhere. Nothing writes an `SDF-Decision` trailer for you; a trailer is
+check reads that same trailer locally, and file names of pushed commits
+only, never content, and sends nothing anywhere. Those file names are not
+stored. Nothing writes an `SDF-Decision` trailer for you; a trailer is
 public once pushed. The receiver stores only a `commit implements
 decision` edge, not the raw message or other trailer text.

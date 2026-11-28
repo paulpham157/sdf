@@ -80,12 +80,22 @@ func Synchronous(s *Store) (int, error) {
 // DropRetractionsForTest removes decision_retractions from a file, to stand
 // in for a database the migration could not write.
 func DropRetractionsForTest(path string) error {
+	return execOnFile(path, `DROP TABLE IF EXISTS decision_retractions`)
+}
+
+// DropPathsForTest removes decision_paths from a file, to stand in for a
+// database the migration could not write.
+func DropPathsForTest(path string) error {
+	return execOnFile(path, `DROP TABLE IF EXISTS decision_paths`)
+}
+
+func execOnFile(path, query string) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`DROP TABLE IF EXISTS decision_retractions`)
+	_, err = db.Exec(query)
 	return err
 }
 
@@ -98,4 +108,15 @@ func LoadDecisionRetractionsAt(path string) ([]DecisionRetraction, error) {
 	}
 	defer db.Close()
 	return loadDecisionRetractions(context.Background(), db)
+}
+
+// LoadDecisionPathsAt reads path globs from path without running the
+// migration, as a read-only open would.
+func LoadDecisionPathsAt(path string) ([]DecisionPath, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return loadDecisionPaths(context.Background(), db)
 }

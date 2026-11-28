@@ -457,7 +457,7 @@ func gitOutput(dir string, args ...string) (string, error) {
 // prePushNote is the install text about the pre-push decision check.
 func prePushNote(cfg hookConfig) string {
 	var b strings.Builder
-	b.WriteString("pre-push warns about pushed commits SDF recorded that implement no decision. It sends nothing and only reads the SDF-Decision trailer of the pushed commits, never the diff. The push still succeeds (warn mode), including when SDF is unavailable. Skip it with git push --no-verify or SDF_PRE_PUSH=off; git config sdf.prePush block makes it block.\n")
+	b.WriteString("pre-push warns about pushed commits SDF recorded that implement no decision, and when changed file names of pushed commits match a path on an active decision. It sends nothing and reads the SDF-Decision trailer and file names of pushed commits only, never content. A path match warns and does not block, even with git config sdf.prePush block; git config sdf.prePushTouches off silences that warning. The push still succeeds (warn mode), including when SDF is unavailable. Skip the check with git push --no-verify or SDF_PRE_PUSH=off; git config sdf.prePush block makes a missing decision block.\n")
 	if cfg.db != "" {
 		fmt.Fprintf(&b, "pre-push reads the store %s.\n", ledger.Safe(cfg.db))
 	} else {

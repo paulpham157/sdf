@@ -21,10 +21,11 @@ import (
 // commit. Proxy variables are cleared so the POST cannot leave the machine.
 //
 // pre-push sends nothing. It runs sdf decision pre-push with the hook's
-// stdin, which reads the store and only the SDF-Decision trailer of the
-// pushed commits. It returns non-zero only when a chained hook fails or
-// when that command blocks (block mode); a missing sdf or any failure of
-// the check lets the push go on.
+// stdin. That command reads the store, the SDF-Decision trailer, and file
+// names of pushed commits only, never content. It returns non-zero only
+// when a chained hook fails or when that command blocks (block mode, a
+// missing decision); a path match does not block, and a missing sdf or any
+// failure of the check lets the push go on.
 const hookScriptTemplate = `#!/bin/sh
 # sdf-git-hook:v1
 # Installed by sdf init --git-hooks. Re-run that command to replace this file.
@@ -35,7 +36,8 @@ const hookScriptTemplate = `#!/bin/sh
 # A receiver token is read at run time from SDF_OTLP_TOKEN or
 # SDF_OTLP_TOKEN_FILE; it is never stored in this file.
 # pre-push posts nothing: it runs sdf decision pre-push, which warns about
-# pushed commits with no decision and reads only their SDF-Decision trailer.
+# pushed commits with no decision. That command reads the SDF-Decision
+# trailer and file names of pushed commits only, never content.
 # It never fails a push because sdf or its store is unavailable.
 # Skip it with git push --no-verify or SDF_PRE_PUSH=off.
 
