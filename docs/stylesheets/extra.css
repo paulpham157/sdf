@@ -369,11 +369,34 @@ body {
   box-shadow: none;
 }
 
+/* Material keeps the sidebar title and the on-this-page title sticky and
+   paints a same-color halo (box-shadow: 0 0 .4rem .4rem) so scrolled links
+   fade under them. That halo covers the current-page chip, which sits in
+   the first link's margin. Drop the halo. Padding under the title is the
+   gap, and the title background still covers links that scroll beneath it.
+   60em is where the on-this-page sidebar appears; 76.25em is the primary
+   sidebar. The phone drawer uses a different title and is left alone. */
+@media screen and (min-width: 60em) {
+  .md-sidebar--secondary .md-nav__title {
+    box-shadow: none;
+    padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
+  }
+}
+
 /* Desktop sidebar links have no padding, so the pill was flush with the
-   label. 4px block and 8px inline, pulled back by the same margin, keeps
-   the label aligned with its neighbors. 76.25em is Material's sidebar
-   breakpoint (media em is 16px). Below that the drawer keeps its own padding. */
+   label. 4px block and 8px inline, pulled back by the same amount, keeps
+   the label aligned with its neighbors. The top margin keeps Material's
+   0.625em gap and only gives back the padding: margin-block of -4px
+   replaced that gap, so the pill overlapped the sticky title and the
+   label sat high. The bottom margin stays the negative padding so it
+   collapses with the next item. 76.25em is Material's sidebar breakpoint
+   (media em is 16px). Below that the drawer keeps its own padding. */
 @media screen and (min-width: 76.25em) {
+  .md-sidebar--primary .md-nav--primary > .md-nav__title {
+    box-shadow: none;
+    padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
+  }
+
   [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
   [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
   [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
@@ -382,7 +405,8 @@ body {
   [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
     padding-block: calc(var(--sdf-space-1) * var(--docs-rem));
     padding-inline: calc(var(--sdf-space-2) * var(--docs-rem));
-    margin-block: calc(var(--sdf-space-1) * var(--docs-rem) * -1);
+    margin-top: calc(0.625em - var(--sdf-space-1) * var(--docs-rem));
+    margin-bottom: calc(var(--sdf-space-1) * var(--docs-rem) * -1);
     margin-inline: calc(var(--sdf-space-2) * var(--docs-rem) * -1);
   }
 }

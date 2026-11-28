@@ -870,8 +870,13 @@ How it consumes `tokens.css`:
   Keyboard focus keeps the focus outline. In dark the current page is an
   inverse pill: background `--sdf-color-surface-inverse`, label
   `--sdf-color-text-inverse`, and no edge. At the desktop sidebar width
-  the pill adds 4px of block padding and 8px of inline padding, with the
-  same negative margin so the label stays aligned with the other items. Ancestor and expanded section titles stay `--sdf-color-text` on
+  the pill adds 4px of block padding and 8px of inline padding. The top
+  margin keeps Material's link gap and only gives back that 4px, and the
+  bottom margin is the negative padding, so the label stays aligned with
+  the other items and the pill does not sit under the sticky title.
+  The sticky title (and the on-this-page title) has no halo; 8px of
+  padding under the title is the gap, and the title stays stuck while
+  the list scrolls. Ancestor and expanded section titles stay `--sdf-color-text` on
   a transparent background. Rust is a mark (the short rule under the page
   title, focus), not a panel.
 - The header uses the page background and text color. The logo stays the
