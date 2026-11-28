@@ -83,7 +83,12 @@ message is sdf's own, built from the kept error class and code, such as
 `tool error: FileNotFoundError` (see
 [content storage](receiver.md#content-storage)). `--json` includes
 `status_code`, `status_message`, and `error_type` on every span; a span
-with no status is `UNSET`. A tool-call span whose status is `ERROR` and that has no
+with no status is `UNSET`. A Qwen Code `qwen-code.hook` span whose status
+message is the empty-runner text ("hook runner returned no output without
+error detail"), or that was labeled `sdf.hook.unconfigured` at ingest, is
+not `status=ERROR`. The tree prints `no hook configured (<event>)`. That
+line is not in the error banner. A hook that failed with a different
+message stays `status=ERROR`. A tool-call span whose status is `ERROR` and that has no
 `success` attribute, no `pi.tool.is_error`, and no joined tool-result log is
 `success=false`. An explicit flag still wins. Duration prefers the execution
 child span, then the tool span, then the log.

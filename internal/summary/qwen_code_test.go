@@ -167,6 +167,101 @@ func TestQwenSampleSessionTokensToolsDurationAndCost(t *testing.T) {
 			t.Fatalf("span %s hidden by default (%v)", name, shown)
 		}
 	}
+	// The sample's PreToolUse hook is Qwen's empty-runner ERROR. It is not a failed tool.
+	var hook *SpanNode
+	var walkHook func([]SpanNode)
+	walkHook = func(nodes []SpanNode) {
+		for i := range nodes {
+			if nodes[i].Name == "qwen-code.hook" {
+				hook = &nodes[i]
+			}
+			walkHook(nodes[i].Children)
+		}
+	}
+	walkHook(s.Spans)
+	if hook == nil || hook.StatusCode != "UNSET" || deref(hook.StatusMessage) != "no hook configured (PreToolUse)" || hook.ErrorType != nil {
+		t.Fatalf("hook span %+v", hook)
+	}
+	text := Format(report)
+	if !strings.Contains(text, "no hook configured (PreToolUse)") || strings.Contains(text, "status=ERROR (hook error") {
+		t.Fatalf("hook rendered as a failure:\n%s", text)
+	}
+}
+
+func TestQwenEmptyHookIsNotAToolFailure(t *testing.T) {
+	tool := qwenHookSpan("qwen-code.tool", "tool", "", "UNSET", "", map[string]any{
+		"gen_ai.tool.name": "read_file", "gen_ai.tool.call.id": "c1", "success": true,
+	})
+	pre := qwenHookSpan("qwen-code.hook", "pre", "tool", "ERROR", "hook runner returned no output without error detail", map[string]any{
+		"hook_event": "PreToolUse", "error.type": "hook_error", "error": "hook runner returned no output without error detail", "success": false,
+	})
+	post := qwenHookSpan("qwen-code.hook", "post", "tool", "ERROR", "hook runner returned no output without error detail", map[string]any{
+		"hook_event": "PostToolUse", "error.type": "hook_error", "success": false,
+	})
+	stop := qwenHookSpan("qwen-code.hook", "stop", "tool", "ERROR", "hook crashed", map[string]any{
+		"hook_event": "Stop", "error.type": "hook_error", "error": "hook crashed",
+	})
+	raw := []record.Record{tool, pre, post, stop}
+	stored := record.Redact(append([]record.Record(nil), raw...))
+	for i, rows := range [][]record.Record{raw, stored} {
+		s := qwenSessionOf(t, Summarize(rows, false))
+		if len(s.ToolCalls) != 1 || deref(s.ToolCalls[0].Success) != "true" || deref(s.ToolCalls[0].Name) != "read_file" {
+			t.Fatalf("tool calls %+v", s.ToolCalls)
+		}
+		// Before redaction the failed Stop hook still shows its own message.
+		// After redaction that message is the kept class, and the empty
+		// PreToolUse and PostToolUse spans are notes.
+		failed := "status=ERROR (hook crashed) error_type=hook_error"
+		if i == 1 {
+			failed = "status=ERROR (hook error: hook_error)"
+		}
+		text := Format(Report{Sessions: []SessionSummary{s}})
+		for _, want := range []string{"no hook configured (PreToolUse)", "no hook configured (PostToolUse)", failed} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("missing %q\n%s", want, text)
+			}
+		}
+		if strings.Count(text, "status=ERROR") != 1 {
+			t.Fatalf("error count\n%s", text)
+		}
+	}
+	// The stored Stop hook is still a failure. The empty ones are not.
+	var preStored, stopStored record.Record
+	for _, rec := range stored {
+		switch deref(rec.SpanID) {
+		case "pre":
+			preStored = rec
+		case "stop":
+			stopStored = rec
+		}
+	}
+	if preStored.StatusCode != "UNSET" || preStored.Attributes["sdf.hook.unconfigured"] != "PreToolUse" || preStored.Attributes["error.type"] != nil {
+		t.Fatalf("stored pre %+v %v", preStored.StatusCode, preStored.Attributes)
+	}
+	if stopStored.StatusCode != "ERROR" || deref(stopStored.StatusMessage) != "hook error: hook_error" {
+		t.Fatalf("stored stop %s %s", stopStored.StatusCode, deref(stopStored.StatusMessage))
+	}
+}
+
+func qwenHookSpan(name, spanID, parent, status, msg string, attrs map[string]any) record.Record {
+	all := map[string]any{"session.id": qwenSession}
+	for k, v := range attrs {
+		all[k] = v
+	}
+	rec := record.Record{
+		Signal: "traces", ServiceName: record.Str("qwen-code"), SessionID: record.Str(qwenSession),
+		Name: record.Str(name), TraceID: record.Str("t-hook"), SpanID: record.Str(spanID),
+		StartUnixNano: record.Int64(1_000_000_000), EndUnixNano: record.Int64(2_000_000_000),
+		StatusCode: status, Attributes: all,
+		Resource: map[string]any{"service.name": "qwen-code"},
+	}
+	if parent != "" {
+		rec.ParentSpanID = record.Str(parent)
+	}
+	if msg != "" {
+		rec.StatusMessage = record.Str(msg)
+	}
+	return rec
 }
 
 func TestQwenTokensFallBackToSpansThenMetrics(t *testing.T) {

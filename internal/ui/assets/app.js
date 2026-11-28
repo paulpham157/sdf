@@ -1066,6 +1066,8 @@
       if (node.error_type && String(node.status_message || "").indexOf(node.error_type) < 0) status += " error_type=" + node.error_type;
       kids.push(document.createTextNode(" "));
       kids.push(h("span", { class: "span-status" }, [status]));
+    } else if (node && node.status_message && String(node.status_message).indexOf("no hook configured") === 0) {
+      kids.push(document.createTextNode(" " + node.status_message));
     }
     if (node && node.success != null && node.success !== "") {
       let success = "success=" + node.success;

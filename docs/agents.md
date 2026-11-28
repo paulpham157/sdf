@@ -156,7 +156,8 @@ Claude Code, Codex, and Qwen Code in [skills/README.md](../skills/README.md).
 Docs: [Monitoring](https://code.claude.com/docs/en/monitoring-usage).
 
 Telemetry is off until `CLAUDE_CODE_ENABLE_TELEMETRY=1`. Metrics, logs, and
-traces are separate exporters. Traces are beta.
+traces are separate exporters. Traces are beta. A custom gateway is in
+[Claude Code through a gateway](#claude-code-through-a-gateway).
 
 | Signal | Exporter variable | What it carries |
 | --- | --- | --- |
@@ -259,7 +260,10 @@ for its own export. Put an `[otel]` table in the user config
 --write` also merges a `SessionStart` and `SessionEnd` hook into `hooks.json`,
 even when `config.toml` already has an `[otel]` table (which it leaves as is).
 The hook posts only when the session id equals the thread id, so a descendant
-thread reports nothing.
+thread reports nothing. Codex does not run that `SessionStart` hook, so no
+`sdf.session.open` is recorded, until the hooks are trusted in Codex's
+`/hooks` screen. A strict OpenAI-compatible Responses gateway may also need
+the flags in [Codex CLI through a gateway](#codex-cli-through-a-gateway).
 
 Each signal has its own exporter, and the defaults are not the same:
 
@@ -354,7 +358,8 @@ does not add that field on top of the input and output counts.
 ## OpenCode v2
 
 OpenCode v2 is the `@opencode/cli` package, not npm `opencode-ai` (that package
-is still v1). v1's `experimental.openTelemetry` flag is ignored by v2. Export
+is still v1). v1's `experimental.openTelemetry` flag is ignored by v2. A custom
+gateway is in [OpenCode through a gateway](#opencode-through-a-gateway). Export
 turns on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `sdf init opencode --write`
 also installs a plugin that posts when a session is created. OpenCode has no
 event for a session ending. The plugin is a V2 plugin, a default export with
@@ -386,6 +391,8 @@ call is `unknown`.
 
 ## Pi
 
+A custom gateway is in [Pi through a gateway](#pi-through-a-gateway).
+
 Pi's own CLI does not export OpenTelemetry. `PI_TELEMETRY` only toggles an
 install ping and provider attribution headers. The official
 `@earendil-works/pi-telemetry` package is an in-process contract with no
@@ -403,7 +410,10 @@ The session id pi-otel exports is the session file's name, which is a
 timestamp joined to the id. `sdf init pi --write` installs an extension that
 reads the id from the session manager instead and posts the open and the close.
 A `session_shutdown` fired because the session was replaced, on `reload`,
-`new`, `resume`, or `fork`, is not a close and is not posted.
+`new`, `resume`, or `fork`, is not a close and is not posted. The open and
+the close wait for the POST, up to one second, and then continue. A
+fire-and-forget request was still in flight when `pi --print` exited, so
+`sdf.session.open` never arrived.
 
 The same switches can be set under `otel` in the project file
 `.pi/settings.json` or the global file `~/.pi/agent/settings.json` (pi-otel
@@ -540,7 +550,13 @@ signed-in `grok` 1.0.92 in headless mode (`grok -p --always-approve`) on
 
 - With only the `config.toml` that `--write` produced (no `OTEL_*` or
   `GROK_EXTERNAL_OTEL` in the environment), logs and metrics arrived with
-  `session.id`.
+  `session.id`. That was a signed-in session. A later run, a custom model
+  and no xAI login, exported nothing from that table alone. Export started
+  after `GROK_EXTERNAL_OTEL=1`, `OTEL_LOGS_EXPORTER=otlp`, and
+  `OTEL_METRICS_EXPORTER=otlp` were set in the shell (18 logs, 62 metrics).
+  Set the variables. The table is not a substitute in that case.
+  `GROK_INTERNAL_OTLP_TRACES_ENDPOINT` and `GROK_INTERNAL_OTLP_HEADERS`
+  exported no spans in that run.
 - The hook posted an open (`source` was `new`) and a close (`reason` was
   `shutdown`) for the same id the telemetry carried, with the repository
   path as `cwd`.
@@ -611,6 +627,8 @@ Source: [14-qwen-spans.tldr](diagrams/14-qwen-spans.tldr) (open in [tldraw](http
 > and `packages/core/src/telemetry`. It was not checked against a live
 > session. `tests/samples/qwen_*.json` are built from those sources with
 > `logPrompts: false`.
+
+A custom gateway is in [Qwen Code through a gateway](#qwen-code-through-a-gateway).
 
 Qwen Code forked Gemini CLI's telemetry and renamed it: events, metrics,
 and spans use `qwen-code.*` and `service.name` is `qwen-code`. It is off
@@ -703,12 +721,22 @@ error type, and records `function_args_bytes`, `error_bytes`, and
   `gen_ai.operation.name`; `QWEN_TELEMETRY_*` instead of
   `GEMINI_TELEMETRY_*`, and `OTEL_EXPORTER_OTLP_ENDPOINT` also sets the
   endpoint.
-- A published run of an earlier Qwen Code release (spencerclark.dev,
-  2026-10-10; it predates v0.28.4 and was not repeated here) had every
-  `qwen-code.hook` span marked ERROR with "hook runner returned no output without error
-  detail" even with no hooks configured. The summary shows them marked
-  ERROR; sdf stores the status message as "hook error", because a hook's
-  error text can carry the hook command's output.
+- Qwen Code marks a `qwen-code.hook` span ERROR, with status message
+  "hook runner returned no output without error detail" and `error.type`
+  `hook_error`, when the hook runner returns no output. That is what every
+  PreToolUse and PostToolUse span looks like when nothing is configured for
+  that event. `sdf init qwen --write` installs only a Stop hook, so those
+  two events are this empty-runner span on a normal run, including when the
+  tool call succeeded (seen on Qwen Code 0.29.0). sdf does not show them as
+  `status=ERROR`. The summary and the UI label the span
+  `no hook configured (PreToolUse)` (or whichever event it was), and the
+  default store clears the status and records `sdf.hook.unconfigured`. A
+  hook that failed with any other message, including the Stop hook sdf
+  installs, stays `status=ERROR` (`hook error`, plus the error class when
+  one was kept). A row already stored by an older sdf, whose message was
+  rewritten to `hook error` before this label existed, still shows as an
+  error. The same empty-runner text was also reported for an earlier
+  release (spencerclark.dev, 2026-10-10).
 
 ## OpenRouter
 
@@ -818,6 +846,8 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 > needs a Copilot subscription. `tests/samples/copilot_*.json` are built
 > from those documents.
 
+A custom gateway is in [Copilot CLI through a gateway](#copilot-cli-through-a-gateway).
+
 Copilot CLI exports **traces and metrics, no logs**. Export turns on when
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set (or `COPILOT_OTEL_ENABLED=true`, or a
 file exporter path). It speaks OTLP/HTTP only: `OTEL_EXPORTER_OTLP_PROTOCOL`
@@ -910,6 +940,8 @@ trace id.
 > (`grok_code.schema.version = v1`, status alpha) and then corrected against
 > an authenticated `grok` 1.0.92 session on 2026-11-23 (Asia/Bangkok).
 
+A custom model is in [Grok CLI through a gateway](#grok-cli-through-a-gateway).
+
 Grok CLI's external stream is **metrics and logs only** when both the master
 switch and an exporter are set (spans: see **Traces** below):
 
@@ -926,6 +958,16 @@ If the receiver has a token set, also export
 `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"`. The
 literal space always works; 1.0.92 also accepted `%20` (see
 [Optional receiver token](#optional-receiver-token)).
+
+Set those three exporter variables in the shell that launches `grok`.
+`sdf init grok --write` still writes the same keys under `[telemetry]`, and
+a signed-in grok 1.0.92 exported from that table alone (the 2026-11-23
+check below). A later run with a custom model and no xAI login exported
+nothing from the table until `GROK_EXTERNAL_OTEL=1`,
+`OTEL_LOGS_EXPORTER=otlp`, and `OTEL_METRICS_EXPORTER=otlp` were set (18
+logs, 62 metrics). `GROK_INTERNAL_OTLP_TRACES_ENDPOINT` and
+`GROK_INTERNAL_OTLP_HEADERS` exported no spans in that run. Spans still
+need an xAI login. The external stream has no traces exporter.
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
@@ -1029,7 +1071,9 @@ export GROK_INTERNAL_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
   stored row in the live database contained the token or `Authorization`.
 - Spans are exported only when Grok has a usable login and its telemetry
   mode has session metrics on ([provider.rs L164](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/provider.rs#L164)).
-  Unauthenticated, no spans arrived. Signed in, spans arrived with and
+  Unauthenticated, no spans arrived. A later run with a custom model and no
+  xAI login also exported no spans when `GROK_INTERNAL_OTLP_TRACES_ENDPOINT`
+  and `GROK_INTERNAL_OTLP_HEADERS` were set. Signed in, spans arrived with and
   without `GROK_TELEMETRY_ENABLED=true`. Turning Grok telemetry on also sends
   Grok's own analytics to xAI. `OTEL_TRACES_EXPORTER=none` turns these spans
   off ([endpoints.rs L212-L219](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L212-L219)).
@@ -1099,6 +1143,8 @@ and metrics POSTs returned 200 with a receiver token set), so 1.0.92 decodes
 > google-gemini/gemini-cli `eecccfcd5aff25de5e78135ca20f7abe3f566955`
 > (0.71.0-nightly, 2026-11-20 UTC). It has not been checked against a live,
 > signed-in session.
+
+A custom gateway is in [Gemini CLI through a gateway](#gemini-cli-through-a-gateway).
 
 Gemini CLI exports traces, logs, and metrics once `telemetry.enabled` is
 true. Settings live in the `telemetry` object of `~/.gemini/settings.json`. A
@@ -1188,3 +1234,173 @@ gemini
 
 gRPC works too: leave the protocol at its default and set
 `GEMINI_TELEMETRY_OTLP_ENDPOINT=http://127.0.0.1:4317`.
+
+## Using a custom or OpenAI-compatible gateway
+
+These notes are how each agent was pointed at an OpenAI-compatible gateway
+(TokenRouter, `https://api.tokenrouter.com`, with `/v1/chat/completions`,
+`/v1/responses`, and an Anthropic-style `/v1/messages` whose base is
+`https://api.tokenrouter.com` with no `/v1`). The placeholders are `$TOKENROUTER_API_KEY` and `<GATEWAY_API_KEY>`.
+Do not write a key into a config file. A model id that is not in the price table has computed cost
+`unknown` (see [Computed cost](summary.md#computed-cost)). It is not `$0`.
+
+### Claude Code through a gateway
+
+Claude Code appends `/v1/messages` itself, so the base has no `/v1`.
+
+```bash
+export ANTHROPIC_BASE_URL=https://api.tokenrouter.com
+export ANTHROPIC_AUTH_TOKEN="$TOKENROUTER_API_KEY"
+export ANTHROPIC_MODEL="<model id>"
+```
+
+`ANTHROPIC_API_KEY=""` keeps Claude from also sending a first-party key.
+The same variables, with an OpenRouter base, are in [OpenRouter](#openrouter).
+
+### Codex CLI through a gateway
+
+Codex talks to a custom provider through `model_providers` in
+`$CODEX_HOME/config.toml`. The Responses API is `wire_api = "responses"`.
+`env_key` names the environment variable. It is not the key.
+
+```toml
+model = "<model id>"
+model_provider = "tokenrouter"
+model_reasoning_effort = "low"
+
+[model_providers.tokenrouter]
+name = "TokenRouter"
+base_url = "https://api.tokenrouter.com/v1"
+wire_api = "responses"
+env_key = "TOKENROUTER_API_KEY"
+```
+
+A strict OpenAI-compatible Responses gateway can reject Codex's built-in
+tools and some reasoning values. TokenRouter rejected the `namespace` and
+`web_search` tools, and it rejected reasoning `""`, `none`, and `medium`.
+This run needed:
+
+```bash
+codex exec -c web_search='"disabled"' -c features.multi_agent=false -c features.goals=false "..."
+```
+
+with `model_reasoning_effort = "low"` in the config above. The `SessionStart`
+hook that posts `sdf.session.open` does not run until the hooks are trusted
+in Codex's `/hooks` screen.
+
+### Qwen Code through a gateway
+
+Qwen Code takes an OpenAI-compatible chat endpoint from the environment.
+`--auth-type openai` selects that provider.
+
+```bash
+export OPENAI_BASE_URL=https://api.tokenrouter.com/v1
+export OPENAI_API_KEY="$TOKENROUTER_API_KEY"
+export OPENAI_MODEL="<model id>"
+qwen --auth-type openai
+```
+
+`sdf init qwen --write` installs only a Stop hook. PreToolUse and
+PostToolUse spans from an unconfigured hook are labeled
+`no hook configured`, not `status=ERROR`. See the Qwen Code section above.
+
+### OpenCode through a gateway
+
+OpenCode loads `@ai-sdk/openai-compatible` from `opencode.json`. The key is
+`{env:TOKENROUTER_API_KEY}`, which reads the variable. It is not the key.
+
+```json
+{
+  "provider": {
+    "tokenrouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "TokenRouter",
+      "options": {
+        "baseURL": "https://api.tokenrouter.com/v1",
+        "apiKey": "{env:TOKENROUTER_API_KEY}"
+      },
+      "models": {
+        "<model id>": {
+          "name": "<model id>"
+        }
+      }
+    }
+  }
+}
+```
+
+### Pi through a gateway
+
+Pi reads `~/.pi/agent/models.json`. `api` is `openai-completions` for
+`/v1/chat/completions`. `apiKey` has to be a command. A bare environment
+variable name is sent as the key and the gateway returns 401.
+
+```json
+{
+  "providers": {
+    "tokenrouter": {
+      "baseUrl": "https://api.tokenrouter.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!printenv TOKENROUTER_API_KEY",
+      "models": [
+        {
+          "id": "<model id>",
+          "name": "<model id>"
+        }
+      ]
+    }
+  }
+}
+```
+
+### Copilot CLI through a gateway
+
+Copilot CLI bring-your-own-key mode uses `COPILOT_PROVIDER_*`. The base
+includes `/v1`. `COPILOT_PROVIDER_TYPE` is `openai` (the default), `azure`,
+or `anthropic`. A `~/.copilot/providers.json` that already has entries
+overrides these variables. Do not put a key in that file.
+
+```bash
+export COPILOT_PROVIDER_BASE_URL=https://api.tokenrouter.com/v1
+export COPILOT_PROVIDER_API_KEY="$TOKENROUTER_API_KEY"
+export COPILOT_MODEL="<model id>"
+```
+
+GitHub's docs say a model call in this mode does not need `copilot login`.
+Telemetry without that login was not observed in the run these notes come
+from. Treat that as unconfirmed.
+
+### Grok CLI through a gateway
+
+Grok reads a custom model from `[model.<name>]` in `~/.grok/config.toml`
+(`$GROK_HOME/config.toml`). `base_url` includes `/v1`. `env_key` names the
+variable. `api_key` in the file would be the key itself, so leave it out.
+`api_backend` defaults to `chat_completions`. `responses` and `messages`
+are the other values.
+
+```toml
+[model.tokenrouter]
+model = "<model id>"
+base_url = "https://api.tokenrouter.com/v1"
+name = "TokenRouter"
+env_key = "TOKENROUTER_API_KEY"
+```
+
+With this model and no xAI login, the `[telemetry]` table alone exported
+nothing. Set `GROK_EXTERNAL_OTEL=1`, `OTEL_LOGS_EXPORTER=otlp`, and
+`OTEL_METRICS_EXPORTER=otlp` in the shell. See the Grok CLI section above.
+That run exported logs and metrics and no spans, including with
+`GROK_INTERNAL_OTLP_TRACES_ENDPOINT` set.
+
+### Gemini CLI through a gateway
+
+Gemini CLI reads `GOOGLE_GEMINI_BASE_URL`. The gateway has to serve
+Gemini's native `/v1beta` API. An OpenAI-compatible `/v1/chat/completions`
+endpoint is not enough, and these notes do not add a key variable for it.
+
+```bash
+export GOOGLE_GEMINI_BASE_URL=https://api.tokenrouter.com
+```
+
+Computed cost for every agent above is `unknown` when `<model id>` is
+missing from the price table. See [Computed cost](summary.md#computed-cost).

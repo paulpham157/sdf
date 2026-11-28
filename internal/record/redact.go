@@ -303,6 +303,65 @@ var RedactedKeys = func() []string {
 	return out
 }()
 
+// qwenEmptyHookMessage is the status Qwen Code sets on qwen-code.hook when
+// the hook runner returns no output (v0.29.0 toolHookTriggers: success with
+// no output). With no hook configured for that event, every PreToolUse and
+// PostToolUse span is ERROR and error.type is hook_error, even when the
+// tool call succeeded. sdf init qwen installs only a Stop hook, so those
+// two events are this sentinel on a normal run.
+const qwenEmptyHookMessage = "hook runner returned no output without error detail"
+
+// QwenUnconfiguredHook is the hook event (PreToolUse, PostToolUse, ...) when
+// rec is that empty-runner span, or was already labeled sdf.hook.unconfigured
+// at ingest. A different status message is a hook that actually failed.
+func QwenUnconfiguredHook(rec Record) (string, bool) {
+	if !qwenHookSpan(rec) {
+		return "", false
+	}
+	if s, ok := rec.Attributes["sdf.hook.unconfigured"].(string); ok && hookEventToken(s) {
+		return s, true
+	}
+	return qwenEmptyHook(rec)
+}
+
+func qwenHookSpan(rec Record) bool {
+	if rec.Signal != "traces" || rec.Name == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(*rec.Name), "qwen-code.hook")
+}
+
+// qwenEmptyHook matches the span before redaction replaces the status
+// message. The event name is kept only when it is a short token; anything
+// else is stored as "unknown" so a status string cannot land in the label.
+func qwenEmptyHook(rec Record) (string, bool) {
+	if !qwenHookSpan(rec) || rec.StatusCode != "ERROR" || rec.StatusMessage == nil {
+		return "", false
+	}
+	if strings.TrimSpace(*rec.StatusMessage) != qwenEmptyHookMessage {
+		return "", false
+	}
+	event := "unknown"
+	if s, ok := rec.Attributes["hook_event"].(string); ok && hookEventToken(s) {
+		event = s
+	}
+	return event, true
+}
+
+func hookEventToken(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // errorKind is "hook error" for a hook span, "tool error" for a tool span,
 // and "error" otherwise. It reads the words of the span name in any case
 // and separator (Qwen-Code.Hook, execute_tool bash, Tool.execute,
@@ -566,10 +625,33 @@ func markKept(rec Record) Record {
 }
 
 func redactOne(rec Record) (Record, bool) {
+	// Read the sentinel before the status message is replaced. Qwen's
+	// empty-runner text is not a failed tool, and after this pass the
+	// original message is gone.
+	hookEvent, unconfigured := qwenEmptyHook(rec)
 	s := &scrub{}
 	errs := rec.Signal == "logs" || rec.Signal == "traces"
 	attrs := s.walk(rec.Attributes, "", errs, true)
 	resource := s.walk(rec.Resource, "resource", false, false)
+	if unconfigured {
+		// walk returns the input map when it drops nothing. Copy before
+		// writing so the caller's attributes stay as they arrived.
+		copied := make(map[string]any, len(attrs)+1)
+		for k, v := range attrs {
+			copied[k] = v
+		}
+		attrs = copied
+		attrs["sdf.hook.unconfigured"] = hookEvent
+		if et, ok := attrs["error.type"].(string); ok && et == "hook_error" {
+			delete(attrs, "error.type")
+			s.dropped = append(s.dropped, "error.type")
+		}
+		if rec.StatusMessage != nil && *rec.StatusMessage != "" {
+			s.dropped = append(s.dropped, "status.message")
+		}
+		rec.StatusCode = "UNSET"
+		rec.StatusMessage = nil
+	}
 	if rec.Body != nil && *rec.Body != "" && !bodyIsName(rec) {
 		body := *rec.Body
 		s.drop("body", "body_bytes", body)

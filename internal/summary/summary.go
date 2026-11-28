@@ -836,6 +836,15 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 	if label == "" {
 		label = "(unnamed)"
 	}
+	status, statusMsg, errType := statusCodeOf(rec), rec.StatusMessage, errorTypeOf(rec)
+	// Qwen marks an unconfigured PreToolUse or PostToolUse hook ERROR.
+	// That is not a failed tool. The note is the event name, not the
+	// runner's status text.
+	if event, ok := record.QwenUnconfiguredHook(rec); ok {
+		status = "UNSET"
+		statusMsg = record.Str("no hook configured (" + event + ")")
+		errType = nil
+	}
 	return SpanNode{
 		Name:            label,
 		DurationMS:      spanMS(rec),
@@ -847,9 +856,9 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 		WaitSource:      waitSource,
 		ExecutionMS:     execMS,
 		ExecutionSource: execSource,
-		StatusCode:      statusCodeOf(rec),
-		StatusMessage:   rec.StatusMessage,
-		ErrorType:       errorTypeOf(rec),
+		StatusCode:      status,
+		StatusMessage:   statusMsg,
+		ErrorType:       errType,
 		Children:        children,
 	}
 }
