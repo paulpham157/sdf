@@ -116,7 +116,11 @@ const busyTimeoutMS = 5000
 // blocks readers, so sdf summary can read while the receiver ingests. WAL
 // is a property of the file and persists, so it is set once after opening
 // (not as a DSN pragma, which can fail with SQLITE_BUSY while a connection
-// opens, before the busy timeout applies).
+// opens, before the busy timeout applies). setWAL sets the timeout on its
+// own connection again and retries a locked journal_mode change: several
+// opens of a rollback-journal file can still get SQLITE_BUSY from that
+// pragma without the timeout waiting it out. An open that finds the file
+// already in WAL mode leaves it there.
 //
 // When the file is in WAL mode, the writer connection sets
 // PRAGMA synchronous=NORMAL. The pool is one connection. When database/sql
@@ -228,9 +232,17 @@ func dsn(path, query string) (string, error) {
 	return (&url.URL{Scheme: "file", Path: p, RawQuery: query}).String(), nil
 }
 
-// sqliteReadonly is SQLITE_READONLY, the primary result code for a write to
-// a database this process cannot write.
-const sqliteReadonly = 8
+const (
+	// sqliteReadonly is SQLITE_READONLY, the primary result code for a write
+	// to a database this process cannot write.
+	sqliteReadonly = 8
+	// sqliteBusy is SQLITE_BUSY ("database is locked"). sqliteLocked is
+	// SQLITE_LOCKED. sqliteBusyTimeout is SQLITE_BUSY_TIMEOUT: the same
+	// primary code after the connection's busy handler has already waited.
+	sqliteBusy        = 5
+	sqliteLocked      = 6
+	sqliteBusyTimeout = sqliteBusy | (3 << 8)
+)
 
 func sqliteCode(err error) int {
 	var coded interface{ Code() int }
@@ -244,24 +256,235 @@ func sqliteCode(err error) int {
 // cannot write (a read-only file, directory, or mount) keeps its current
 // journal mode: switching needs a write, and reading it (sdf summary) works
 // in either mode, as it did before Open set WAL.
+//
+// The change is made on one pinned connection. busy_timeout is set on that
+// connection before PRAGMA journal_mode=WAL. A reserved lock (BEGIN
+// IMMEDIATE) makes that pragma return SQLITE_BUSY ("database is locked")
+// without waiting the timeout out. A shared lock makes the same pragma
+// wait. The wait uses busy_timeout, not the retry budget's cancel: cancelling
+// the query replaces the SQLite error with a context deadline. Retries stop
+// after walSwitchWait. If the lock is still held, the open fails with the
+// SQLite busy or locked error. A switch that reports the previous mode is
+// retried the same way. If another opener has already put the file in WAL
+// mode, reading journal_mode again is success and this connection does not
+// keep trying to change it.
 func setWAL(db *sql.DB) error {
-	var mode string
-	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
 		return err
 	}
-	if strings.EqualFold(mode, "wal") {
-		return nil
-	}
-	if err := db.QueryRow(`PRAGMA journal_mode = WAL`).Scan(&mode); err != nil {
-		if sqliteCode(err)&0xff == sqliteReadonly {
+	defer conn.Close()
+
+	walSwitchMu.Lock()
+	wait := walSwitchWait
+	hook := walBusyHook
+	walSwitchMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	delay := time.Millisecond
+	var last error
+	for {
+		if err := setConnBusyTimeout(ctx, conn); err != nil {
+			if !retryLock(ctx, err) {
+				return finishLockWait(wait, ctx, err, last)
+			}
+			last = err
+			delay, err = pauseLock(ctx, delay)
+			if err != nil {
+				return finishLockWait(wait, ctx, err, last)
+			}
+			continue
+		}
+		mode, err := journalMode(ctx, conn, `PRAGMA journal_mode`)
+		if err != nil {
+			if sqliteCode(err)&0xff == sqliteReadonly {
+				return nil
+			}
+			if !retryLock(ctx, err) {
+				return finishLockWait(wait, ctx, err, last)
+			}
+			last = err
+			delay, err = pauseLock(ctx, delay)
+			if err != nil {
+				return finishLockWait(wait, ctx, err, last)
+			}
+			continue
+		}
+		if strings.EqualFold(mode, "wal") {
 			return nil
 		}
+		mode, err = walJournalMode(ctx, conn)
+		if err != nil {
+			if sqliteCode(err)&0xff == sqliteReadonly {
+				// The pragma shortened busy_timeout before SQLite refused the
+				// write. Put the connection timeout back before this open uses it.
+				return setConnBusyTimeout(context.Background(), conn)
+			}
+			if done, derr := walAlready(ctx, conn); derr == nil && done {
+				return setConnBusyTimeout(context.Background(), conn)
+			}
+			if !retryLock(ctx, err) {
+				return finishLockWait(wait, ctx, err, last)
+			}
+			// The attempt saw the lock. A test holding it drops it here,
+			// before the retry wait, so the next attempt can switch the file.
+			if hook != nil {
+				hook()
+			}
+			last = err
+			delay, err = pauseLock(ctx, delay)
+			if err != nil {
+				return finishLockWait(wait, ctx, err, last)
+			}
+			continue
+		}
+		if strings.EqualFold(mode, "wal") {
+			// walJournalMode shortens busy_timeout to the time left in the
+			// budget. The rest of Open uses the normal timeout.
+			if err := setConnBusyTimeout(context.Background(), conn); err != nil {
+				return err
+			}
+			return nil
+		}
+		// The pragma kept the previous mode and did not return an error.
+		// Another opener may have finished the switch since.
+		if done, derr := walAlready(ctx, conn); derr == nil && done {
+			return setConnBusyTimeout(context.Background(), conn)
+		} else if derr != nil && sqliteCode(derr)&0xff == sqliteReadonly {
+			return setConnBusyTimeout(context.Background(), conn)
+		}
+		last = fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
+		if ctx.Err() != nil {
+			return finishLockWait(wait, ctx, ctx.Err(), last)
+		}
+		delay, err = pauseLock(ctx, delay)
+		if err != nil {
+			return finishLockWait(wait, ctx, err, last)
+		}
+	}
+}
+
+// walSwitchMu guards walSwitchWait and walBusyHook. Both are process-wide.
+// Tests that set them must not call t.Parallel.
+var walSwitchMu sync.Mutex
+
+// walSwitchWait is how long setWAL retries a locked journal_mode change.
+// Tests shorten it. Production is busyTimeoutMS.
+var walSwitchWait = time.Duration(busyTimeoutMS) * time.Millisecond
+
+// walBusyHook, when set, runs after PRAGMA journal_mode=WAL returns a lock
+// error that setWAL will retry. Tests release a reserved lock held across
+// that attempt. Nil in production. The hook is process-wide; a test that
+// sets it must not call t.Parallel.
+var walBusyHook func()
+
+func setConnBusyTimeout(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, busyTimeoutMS))
+	if err != nil && sqliteCode(err)&0xff == sqliteReadonly {
+		return nil
+	}
+	return err
+}
+
+func journalMode(ctx context.Context, conn *sql.Conn, query string) (string, error) {
+	var mode string
+	err := conn.QueryRowContext(ctx, query).Scan(&mode)
+	return mode, err
+}
+
+// walJournalMode switches to WAL. The query is not bound to ctx: a shared
+// lock makes PRAGMA journal_mode=WAL wait, and cancelling that wait returns
+// context.DeadlineExceeded with no SQLite code. busy_timeout is the time
+// left on ctx, so SQLite itself returns SQLITE_BUSY when the lock outlasts
+// the budget.
+func walJournalMode(ctx context.Context, conn *sql.Conn) (string, error) {
+	ms := 1
+	if deadline, ok := ctx.Deadline(); ok {
+		if remain := time.Until(deadline); remain > time.Millisecond {
+			ms = int(remain / time.Millisecond)
+		}
+	}
+	if _, err := conn.ExecContext(context.Background(), fmt.Sprintf(`PRAGMA busy_timeout = %d`, ms)); err != nil {
+		return "", err
+	}
+	return journalMode(context.Background(), conn, `PRAGMA journal_mode = WAL`)
+}
+
+// walAlready reports whether the file is already in WAL mode. A read error
+// is returned to the caller; it is not treated as "not wal".
+func walAlready(ctx context.Context, conn *sql.Conn) (bool, error) {
+	mode, err := journalMode(ctx, conn, `PRAGMA journal_mode`)
+	if err != nil {
+		return false, err
+	}
+	return strings.EqualFold(mode, "wal"), nil
+}
+
+// sqliteLock reports whether err is SQLITE_BUSY, SQLITE_LOCKED, or
+// SQLITE_BUSY_TIMEOUT. A driver that does not expose a code still names
+// the locked file.
+func sqliteLock(err error) bool {
+	if err == nil {
+		return false
+	}
+	c := sqliteCode(err)
+	if c == sqliteBusyTimeout || c&0xff == sqliteBusy || c&0xff == sqliteLocked {
+		return true
+	}
+	return c == 0 && strings.Contains(err.Error(), "database is locked")
+}
+
+// retryLock reports whether err is a lock conflict worth trying again
+// before ctx ends. SQLITE_BUSY_TIMEOUT is not: the busy handler already
+// waited.
+func retryLock(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || sqliteCode(err) == sqliteBusyTimeout {
+		return false
+	}
+	return sqliteLock(err)
+}
+
+// finishLockWait is the error setWAL returns when the retry budget is over.
+// A lock that outlasts the budget is the SQLite busy or locked error from
+// the WAL pragma, and errors.As still finds it. A context error from the
+// budget is not wrapped: errors.Is would still see the deadline.
+func finishLockWait(wait time.Duration, ctx context.Context, err, last error) error {
+	timedOut := ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	if !timedOut {
 		return err
 	}
-	if !strings.EqualFold(mode, "wal") {
-		return fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
+	if sqliteLock(err) {
+		last = err
 	}
-	return nil
+	if sqliteLock(last) {
+		return fmt.Errorf("store: switching to WAL: timed out after %s: %w", wait, last)
+	}
+	// The budget ended before SQLite reported a code (the query was cancelled
+	// instead of returning BUSY). Do not wrap the context error: errors.Is
+	// would still see the deadline, and the text would not name the lock.
+	return fmt.Errorf("store: switching to WAL: timed out after %s: database is locked", wait)
+}
+
+// pauseLock waits delay, or until ctx ends, and returns the next delay.
+// The error means the wait ended because ctx is done.
+func pauseLock(ctx context.Context, delay time.Duration) (time.Duration, error) {
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		return delay, ctx.Err()
+	case <-timer.C:
+	}
+	next := delay * 2
+	if next > 50*time.Millisecond {
+		next = 50 * time.Millisecond
+	}
+	return next, nil
 }
 
 // synchronousNormal is the integer PRAGMA synchronous returns for NORMAL.
@@ -406,14 +629,17 @@ func (s *Store) migrate() error {
 // opening a current file takes no write lock, and a read-only open never
 // reaches here (OpenReadOnly does not migrate).
 //
-// The gap this closes is two writers both seeing a missing column and both
-// running ALTER TABLE. SQLite then rejects the second with "duplicate
-// column name" and that open writes nothing. The re-check and the ALTER
-// run in one BEGIN IMMEDIATE transaction: the second writer waits for this
-// connection's busy_timeout, then reads the column the first writer
-// committed. A duplicate-column error is still success when a fresh read
-// shows that column is present, so the open stays idempotent if the alter
-// loses a race the lock did not cover.
+// When a column is still missing, the re-check and the ALTER run on one
+// pinned connection inside BEGIN IMMEDIATE. The connection is pinned because
+// the statements are separate Exec calls: database/sql would otherwise be
+// free to run them on different pooled connections, and a BEGIN on one
+// would not cover the ALTER on another. BEGIN IMMEDIATE takes the write
+// lock before the columns are read again. Another writer blocks in its own
+// BEGIN IMMEDIATE until the first commits, for up to the waiting
+// connection's busy_timeout, and the re-read then sees those columns, so
+// it does not ALTER them. SQLite has no ADD COLUMN IF NOT EXISTS. If ALTER
+// still reports "duplicate column name", that statement is success when a
+// fresh read on the pinned connection shows the column is present.
 func (s *Store) addMissingColumns(table string, cols []string) error {
 	ctx := context.Background()
 	missing, err := missingColumns(ctx, s.db, table, cols)
