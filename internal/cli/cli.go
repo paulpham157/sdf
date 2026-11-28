@@ -600,7 +600,7 @@ var identityRunner = decision.ExecCommand
 func SetIdentityRunner(run decision.CommandRunner) func() {
 	prev := identityRunner
 	if run == nil {
-		run = func(string, ...string) ([]byte, error) {
+		run = func(context.Context, string, ...string) ([]byte, error) {
 			return nil, errors.New("identity lookup disabled")
 		}
 	}
@@ -716,14 +716,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, decisionAddUsage)
 		return 2
 	}
-	decidedBy = decision.ResolveDecidedBy(decidedBy, decidedBySet, identityRunner)
-	db, err := store.Open(dbPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
-		return 1
-	}
-	defer db.Close()
-	if _, err := decision.Add(db, decision.RecordInput{
+	in := decision.RecordInput{
 		ID:           id,
 		Statement:    statement,
 		Status:       status,
@@ -732,7 +725,24 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		Alternatives: alternatives,
 		Reason:       reason,
 		Category:     category,
-	}); err != nil {
+	}
+	// Validate the caller's fields before any identity lookup. An omitted
+	// --decided-by is empty here, which is legal; the lookup fills it only
+	// when the rest of the record is acceptable.
+	if err := decision.ValidateRecord(in); err != nil {
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
+		return 1
+	}
+	if !decidedBySet {
+		in.DecidedBy = decision.ResolveDecidedBy("", false, identityRunner)
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
+		return 1
+	}
+	defer db.Close()
+	if _, err := decision.Add(db, in); err != nil {
 		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
@@ -909,8 +919,17 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	if sessionSet {
 		graph = decision.FilterBySession(graph, session)
 	}
+	preCategory := graph
 	if categorySet {
 		graph = decision.FilterByCategory(graph, category)
+	}
+	// A category filter that drops every row is not an empty store.
+	// WriteText's "No decisions in the store." is only for a graph that
+	// was already empty. --json stays the empty lists.
+	if categorySet && !asJSON && len(graph.Decisions) == 0 && len(graph.Edges) == 0 &&
+		(len(preCategory.Decisions) > 0 || len(preCategory.Edges) > 0) {
+		fmt.Fprintln(stdout, "No decisions match.")
+		return 0
 	}
 	write := decision.WriteText
 	if asJSON {
@@ -1103,7 +1122,8 @@ store file in an existing directory is an empty store: exit 0, and the
 file is not created. A missing directory exits 3.
 
 The store is opened read-only with a 200ms busy timeout. --json prints
-action, kind, allowed, and blocking (id, decided_by, statement, match).
+action, kind, allowed, and blocking (id, decided_by, decided_by_legacy,
+statement, match).
 
 The sdf-decisions skill ships scripts/check, a helper that runs this
 command and keeps its exit code.`

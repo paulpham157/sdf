@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"testing"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	cli.SetIdentityRunner(func(string, ...string) ([]byte, error) {
+	cli.SetIdentityRunner(func(context.Context, string, ...string) ([]byte, error) {
 		return nil, errors.New("identity lookup disabled in tests")
 	})
 	os.Exit(m.Run())

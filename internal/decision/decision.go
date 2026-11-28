@@ -204,6 +204,14 @@ type EdgeInput struct {
 	To       Endpoint
 }
 
+// ValidateRecord checks in the way Add does, without opening the store.
+// The CLI calls it before resolving an omitted --decided-by, so a rejected
+// record does not run gh or git.
+func ValidateRecord(in RecordInput) error {
+	_, err := newRecord(in, "1970-01-01T00:00:00.000000+00:00")
+	return err
+}
+
 // Add stores one decision. The id must be new. The statement is one line.
 func Add(s *store.Store, in RecordInput) (Record, error) {
 	rec, err := newRecord(in, now())

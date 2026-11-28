@@ -78,7 +78,7 @@ func TestPrePushHookWarnsBlocksAndFailsOpen(t *testing.T) {
 	}
 
 	must(nil, dir, binPath(t), "decision", "add", "--db", srv.db, "--id", "store-columns", "--status", "decision",
-		"--statement", "Store hot attributes in their own columns.")
+		"--decided-by=e2e", "--statement", "Store hot attributes in their own columns.")
 	must(nil, repo, "git", "config", "sdf.prePush", "block")
 	code, out = run(nil, repo, "git", "push", "origin", c2+":refs/heads/main")
 	if code != 0 || !strings.Contains(out, "each implements a decision") {

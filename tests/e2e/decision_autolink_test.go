@@ -48,7 +48,7 @@ func TestGitCommitAutoLinksFromSessionAndTrailer(t *testing.T) {
 	first := sh(gitEnv, repo, "git", "rev-parse", "HEAD")
 
 	sh(gitEnv, dir, binPath(t), "decision", "add", "--db", srv.db, "--id", "store-columns", "--status", "decision",
-		"--statement", "Store hot attributes in their own columns.")
+		"--decided-by=e2e", "--statement", "Store hot attributes in their own columns.")
 	sh(gitEnv, dir, binPath(t), "decision", "link", "--db", srv.db, "--relation", "implements",
 		"--from", "session:"+session, "--to", "decision:store-columns")
 

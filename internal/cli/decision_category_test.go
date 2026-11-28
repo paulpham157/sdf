@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -12,9 +13,11 @@ import (
 
 func TestDecisionAddCategoryAndLogin(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
-	restore := cli.SetIdentityRunner(func(name string, args ...string) ([]byte, error) {
-		if name == "gh" {
-			return []byte(`{"login":"paulpham157"}`), nil
+	calls := 0
+	restore := cli.SetIdentityRunner(func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		if name == "gh" && strings.Join(args, " ") == "config get -h github.com user" {
+			return []byte("paulpham157\n"), nil
 		}
 		t.Errorf("unexpected %s %v", name, args)
 		return nil, errIdentity
@@ -37,10 +40,14 @@ func TestDecisionAddCategoryAndLogin(t *testing.T) {
 	if login.code != 0 || login.stderr != "" {
 		t.Fatalf("login: %d %q", login.code, login.stderr)
 	}
+	afterValid := calls
 	badCat := run(t, "decision", "add", "--db", dbPath,
 		"--id", "bad-cat", "--statement", "Nope.", "--status", "decision", "--category", "none")
 	if badCat.code != 1 || badCat.stdout != "" || !strings.Contains(badCat.stderr, "category") {
 		t.Fatalf("bad category: %d %q %q", badCat.code, badCat.stdout, badCat.stderr)
+	}
+	if calls != afterValid {
+		t.Fatalf("rejected add looked up identity: %d calls, want %d", calls, afterValid)
 	}
 	missing := run(t, "decision", "add", "--db", dbPath,
 		"--id", "missing", "--statement", "Nope.", "--status", "decision", "--category")
@@ -172,6 +179,15 @@ func TestDecisionListCategoryFilter(t *testing.T) {
 	text := run(t, "decision", "list", "--db", dbPath, "--category", "architecture")
 	if text.code != 0 || !strings.Contains(text.stdout, "user (legacy)") || !strings.Contains(text.stdout, "architecture") {
 		t.Fatalf("%s", text.stdout)
+	}
+	noneMatch := run(t, "decision", "list", "--db", dbPath, "--category", "product")
+	if noneMatch.code != 0 || noneMatch.stdout != "No decisions match.\n" || strings.Contains(noneMatch.stdout, "No decisions in the store.") {
+		t.Fatalf("no match: %d %q", noneMatch.code, noneMatch.stdout)
+	}
+	emptyPath := filepath.Join(t.TempDir(), "missing.sqlite")
+	empty := run(t, "decision", "list", "--db", emptyPath, "--category", "product")
+	if empty.code != 0 || empty.stdout != "No decisions in the store.\n" {
+		t.Fatalf("empty store: %d %q", empty.code, empty.stdout)
 	}
 }
 
