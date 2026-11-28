@@ -262,10 +262,12 @@ func sqliteCode(err error) int {
 // SQLITE_BUSY ("database is locked") from the switch without waiting the
 // timeout out, when another connection holds the reserved lock the change
 // needs (BEGIN IMMEDIATE on a rollback-journal file). Those results are
-// retried, with backoff, until busyTimeoutMS has passed. A switch that
-// reports the previous mode is retried the same way. If another opener has
-// already put the file in WAL mode, reading journal_mode again is success
-// and this connection does not keep trying to change it.
+// retried, with backoff, until walSwitchWait has passed. When that budget
+// runs out, the error is still the last SQLITE_BUSY or SQLITE_LOCKED, not
+// the budget's context deadline. A switch that reports the previous mode is
+// retried the same way. If another opener has already put the file in WAL
+// mode, reading journal_mode again is success and this connection does not
+// keep trying to change it.
 func setWAL(db *sql.DB) error {
 	conn, err := db.Conn(context.Background())
 	if err != nil {
@@ -273,19 +275,23 @@ func setWAL(db *sql.DB) error {
 	}
 	defer conn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(busyTimeoutMS)*time.Millisecond)
+	walSwitchMu.Lock()
+	wait := walSwitchWait
+	hook := walBusyHook
+	walSwitchMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	delay := time.Millisecond
 	var last error
 	for {
 		if err := setConnBusyTimeout(ctx, conn); err != nil {
 			if !retryLock(ctx, err) {
-				return err
+				return finishLockWait(wait, ctx, err, last)
 			}
 			last = err
 			delay, err = pauseLock(ctx, delay)
 			if err != nil {
-				return last
+				return finishLockWait(wait, ctx, err, last)
 			}
 			continue
 		}
@@ -295,12 +301,12 @@ func setWAL(db *sql.DB) error {
 				return nil
 			}
 			if !retryLock(ctx, err) {
-				return err
+				return finishLockWait(wait, ctx, err, last)
 			}
 			last = err
 			delay, err = pauseLock(ctx, delay)
 			if err != nil {
-				return last
+				return finishLockWait(wait, ctx, err, last)
 			}
 			continue
 		}
@@ -316,17 +322,17 @@ func setWAL(db *sql.DB) error {
 				return nil
 			}
 			if !retryLock(ctx, err) {
-				return err
+				return finishLockWait(wait, ctx, err, last)
 			}
 			// The attempt saw the lock. A test holding it drops it here,
 			// before the retry wait, so the next attempt can switch the file.
-			if walBusyHook != nil {
-				walBusyHook()
+			if hook != nil {
+				hook()
 			}
 			last = err
 			delay, err = pauseLock(ctx, delay)
 			if err != nil {
-				return last
+				return finishLockWait(wait, ctx, err, last)
 			}
 			continue
 		}
@@ -342,18 +348,27 @@ func setWAL(db *sql.DB) error {
 		}
 		last = fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
 		if ctx.Err() != nil {
-			return last
+			return finishLockWait(wait, ctx, ctx.Err(), last)
 		}
 		delay, err = pauseLock(ctx, delay)
 		if err != nil {
-			return last
+			return finishLockWait(wait, ctx, err, last)
 		}
 	}
 }
 
+// walSwitchMu guards walSwitchWait and walBusyHook. Both are process-wide.
+// Tests that set them must not call t.Parallel.
+var walSwitchMu sync.Mutex
+
+// walSwitchWait is how long setWAL retries a locked journal_mode change.
+// Tests shorten it. Production is busyTimeoutMS.
+var walSwitchWait = time.Duration(busyTimeoutMS) * time.Millisecond
+
 // walBusyHook, when set, runs after PRAGMA journal_mode=WAL returns a lock
 // error that setWAL will retry. Tests release a reserved lock held across
-// that attempt. Nil in production.
+// that attempt. Nil in production. The hook is process-wide; a test that
+// sets it must not call t.Parallel.
 var walBusyHook func()
 
 func setConnBusyTimeout(ctx context.Context, conn *sql.Conn) error {
@@ -380,22 +395,45 @@ func walAlready(ctx context.Context, conn *sql.Conn) (bool, error) {
 	return strings.EqualFold(mode, "wal"), nil
 }
 
-// retryLock reports whether err is a lock conflict worth trying again
-// before ctx ends. SQLITE_BUSY_TIMEOUT is not: the busy handler already
-// waited. A driver that does not expose a code still names the locked file.
-func retryLock(ctx context.Context, err error) bool {
-	if err == nil || ctx.Err() != nil {
+// sqliteLock reports whether err is SQLITE_BUSY, SQLITE_LOCKED, or
+// SQLITE_BUSY_TIMEOUT. A driver that does not expose a code still names
+// the locked file.
+func sqliteLock(err error) bool {
+	if err == nil {
 		return false
 	}
 	c := sqliteCode(err)
-	if c == sqliteBusyTimeout {
-		return false
-	}
-	primary := c & 0xff
-	if primary == sqliteBusy || primary == sqliteLocked {
+	if c == sqliteBusyTimeout || c&0xff == sqliteBusy || c&0xff == sqliteLocked {
 		return true
 	}
 	return c == 0 && strings.Contains(err.Error(), "database is locked")
+}
+
+// retryLock reports whether err is a lock conflict worth trying again
+// before ctx ends. SQLITE_BUSY_TIMEOUT is not: the busy handler already
+// waited.
+func retryLock(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || sqliteCode(err) == sqliteBusyTimeout {
+		return false
+	}
+	return sqliteLock(err)
+}
+
+// finishLockWait is the error setWAL returns when the retry budget is over.
+// A context deadline from the budget is not the result: callers still see
+// the last BUSY or LOCKED SQLite error, and errors.As still finds it.
+func finishLockWait(wait time.Duration, ctx context.Context, err, last error) error {
+	timedOut := ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	if !timedOut {
+		return err
+	}
+	if sqliteLock(err) {
+		last = err
+	}
+	if !sqliteLock(last) {
+		return err
+	}
+	return fmt.Errorf("store: switching to WAL: timed out after %s: %w", wait, last)
 }
 
 // pauseLock waits delay, or until ctx ends, and returns the next delay.
