@@ -3,6 +3,7 @@ package live
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,9 @@ import (
 // other agents.
 func Run(ctx context.Context, opt Options) (Report, error) {
 	opt = opt.withDefaults()
+	if len(opt.Merge) > 0 {
+		return mergeReportFiles(opt.Merge)
+	}
 	rep := Report{
 		Schema:        schemaLive,
 		Model:         opt.Model,
@@ -40,6 +44,9 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	}
 	if opt.K < 1 || opt.K > 100 {
 		return Report{}, errors.New("k must be from 1 to 100")
+	}
+	if opt.Parallel < 1 || opt.Parallel > 32 {
+		return Report{}, errors.New("parallel must be from 1 to 32")
 	}
 	agents, err := selectAgents(opt.Agents)
 	if err != nil {
@@ -65,7 +72,6 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		}
 	}
 	var sdfBin, skill string
-	var px *proxy
 	if needRun {
 		var owned bool
 		sdfBin, owned, err = resolveSDF(ctx, opt)
@@ -79,22 +85,106 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		if err != nil {
 			return Report{}, err
 		}
-		px = newProxy(opt)
-		var stop func()
-		opt.proxyOpenAI, opt.proxyAnthropic, stop, err = px.start()
-		if err != nil {
-			return Report{}, err
-		}
-		defer stop()
 	}
+
+	type ready struct {
+		a   agent
+		bin string
+		ar  AgentReport
+		run bool
+	}
+	prepared := make([]ready, len(agents))
+	for i, a := range agents {
+		sup := a.Support()
+		ar := AgentReport{ID: a.ID(), Name: a.Name(), Protocol: string(sup.Protocol)}
+		if !sup.OK {
+			ar.Status = statusUnsupported
+			ar.Reason = sup.Reason
+			prepared[i] = ready{a: a, ar: ar}
+			continue
+		}
+		bin, lookErr := opt.look(a.Binary())
+		if lookErr != nil && opt.Install && len(a.InstallCommands()) > 0 {
+			_ = installCLI(ctx, a, opt.Key)
+			bin, lookErr = opt.look(a.Binary())
+		}
+		if lookErr != nil {
+			ar.Status = statusUnavailable
+			ar.Reason = a.Binary() + " is not on PATH"
+			if hint := a.InstallHint(); hint != "" {
+				ar.Reason += ". " + hint
+			}
+			prepared[i] = ready{a: a, ar: ar}
+			continue
+		}
+		ar.Status = statusMeasured
+		prepared[i] = ready{a: a, bin: bin, ar: ar, run: true}
+	}
+
+	type job struct {
+		ai, fi, n int
+	}
+	var jobs []job
+	acc := map[string]*scenarioAcc{}
+	for i, p := range prepared {
+		if !p.run {
+			continue
+		}
+		for fi, fx := range fixtures {
+			key := p.a.ID() + "\x00" + fx.Name
+			acc[key] = &scenarioAcc{}
+			for n := 0; n < opt.K; n++ {
+				jobs = append(jobs, job{ai: i, fi: fi, n: n})
+			}
+		}
+	}
+	sem := make(chan struct{}, opt.Parallel)
+	var wg sync.WaitGroup
+	for ji, j := range jobs {
+		if ctx.Err() != nil {
+			for _, rest := range jobs[ji:] {
+				key := prepared[rest.ai].a.ID() + "\x00" + fixtures[rest.fi].Name
+				acc[key].fail(redact("canceled", opt.Key))
+			}
+			break
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(j job) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			p := prepared[j.ai]
+			fx := fixtures[j.fi]
+			key := p.a.ID() + "\x00" + fx.Name
+			if ctx.Err() != nil {
+				acc[key].fail("canceled")
+				return
+			}
+			result, runErr := runOnce(ctx, opt, p.a, p.bin, fx, sdfBin, skill, j.n)
+			if runErr != nil {
+				acc[key].fail(redact(runErr.Error(), opt.Key))
+				return
+			}
+			acc[key].add(result.scored, result.capped)
+		}(j)
+	}
+	wg.Wait()
 
 	var grand counts
 	measured := 0
-	for _, a := range agents {
-		if ctx.Err() != nil {
-			return Report{}, ctx.Err()
+	for _, p := range prepared {
+		ar := p.ar
+		if p.run {
+			var agentCounts counts
+			for _, fx := range fixtures {
+				key := p.a.ID() + "\x00" + fx.Name
+				sc := acc[key].snapshot(fx.Name)
+				ar.Scenarios = append(ar.Scenarios, sc)
+				agentCounts.merge(countsFromScenario(sc))
+			}
+			pair := agentCounts.pair()
+			ar.Overall = &pair
 		}
-		ar := runAgent(ctx, opt, a, fixtures, sdfBin, skill, px)
 		rep.Agents = append(rep.Agents, ar)
 		if ar.Status == statusMeasured && ar.Overall != nil {
 			measured++
@@ -108,56 +198,32 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	return rep, nil
 }
 
-func runAgent(ctx context.Context, opt Options, a agent, fixtures []recall.Fixture, sdfBin, skill string, px *proxy) AgentReport {
-	sup := a.Support()
-	ar := AgentReport{ID: a.ID(), Name: a.Name(), Protocol: string(sup.Protocol)}
-	if !sup.OK {
-		ar.Status = statusUnsupported
-		ar.Reason = sup.Reason
-		return ar
+type scenarioAcc struct {
+	mu   sync.Mutex
+	c    counts
+	errs []string
+}
+
+func (s *scenarioAcc) fail(msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.c.fail()
+	if len(s.errs) < 8 && msg != "" {
+		s.errs = append(s.errs, msg)
 	}
-	bin, err := opt.look(a.Binary())
-	if err != nil && opt.Install && len(a.InstallCommands()) > 0 {
-		_ = installCLI(ctx, a, opt.Key)
-		bin, err = opt.look(a.Binary())
-	}
-	if err != nil {
-		ar.Status = statusUnavailable
-		ar.Reason = a.Binary() + " is not on PATH"
-		if hint := a.InstallHint(); hint != "" {
-			ar.Reason += ". " + hint
-		}
-		return ar
-	}
-	ar.Status = statusMeasured
-	var agentCounts counts
-	for _, fx := range fixtures {
-		var sc counts
-		var errs []string
-		for range opt.K {
-			if ctx.Err() != nil {
-				sc.fail()
-				if len(errs) < 8 {
-					errs = append(errs, "canceled")
-				}
-				continue
-			}
-			result, runErr := runOnce(ctx, opt, a, bin, fx, sdfBin, skill, px)
-			if runErr != nil {
-				sc.fail()
-				if len(errs) < 8 {
-					errs = append(errs, truncate(redact(runErr.Error(), opt.Key), 400))
-				}
-				continue
-			}
-			sc.add(result.scored, result.capped)
-		}
-		ar.Scenarios = append(ar.Scenarios, sc.scenario(fx.Name, errs))
-		agentCounts.merge(sc)
-	}
-	pair := agentCounts.pair()
-	ar.Overall = &pair
-	return ar
+}
+
+func (s *scenarioAcc) add(sc recall.ScenarioResult, capped bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.c.add(sc, capped)
+}
+
+func (s *scenarioAcc) snapshot(name string) ScenarioReport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	errs := append([]string(nil), s.errs...)
+	return s.c.scenario(name, errs)
 }
 
 type onceResult struct {
@@ -165,7 +231,7 @@ type onceResult struct {
 	capped bool
 }
 
-func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fixture, sdfBin, skill string, px *proxy) (onceResult, error) {
+func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fixture, sdfBin, skill string, runIndex int) (onceResult, error) {
 	if ctx.Err() != nil {
 		return onceResult{}, ctx.Err()
 	}
@@ -226,14 +292,19 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 		}
 		return onceResult{}, fmt.Errorf("sdf serve: %s", msg)
 	}
-	if px != nil {
-		px.reset()
+	px := newProxy(opt)
+	openaiBase, anthropicBase, stopProxy, err := px.start()
+	if err != nil {
+		return onceResult{}, err
 	}
+	defer stopProxy()
+	opt.proxyOpenAI = openaiBase
+	opt.proxyAnthropic = anthropicBase
 	sp := spec{
 		Repo:          repo,
 		Home:          home,
-		OpenAIBase:    opt.proxyOpenAI,
-		AnthropicBase: opt.proxyAnthropic,
+		OpenAIBase:    openaiBase,
+		AnthropicBase: anthropicBase,
 		Model:         opt.Model,
 		OTLP:          "http://127.0.0.1:" + strconv.Itoa(otlpPort),
 		SkillSrc:      skill,
@@ -251,18 +322,31 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 	cmd := exec.CommandContext(runCtx, bin, inv.Argv[1:]...)
 	cmd.Dir = repo
 	cmd.Env = agentEnv(opt, home, filepath.Dir(sdfBin), a.Support().Protocol, inv)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &limitWriter{buf: &stdout, n: 8192}
-	cmd.Stderr = &limitWriter{buf: &stderr, n: 8192}
+	var stderrTail tailWriter
+	stderrTail.max = 64 << 10
+	logPath, logFile := openRunLog(opt, a.ID(), fx.Name, runIndex)
+	stderrSink := io.Writer(&stderrTail)
+	if logFile != nil {
+		defer logFile.Close()
+		stderrSink = io.MultiWriter(&stderrTail, logFile)
+	}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = stderrSink
 	runErr := cmd.Run()
-	capped := px != nil && px.cappedRun()
+	if logFile != nil {
+		_ = logFile.Flush()
+	}
+	capped := px.cappedRun()
 	stopServe()
 	if runErr != nil {
-		detail := strings.TrimSpace(redact(stderr.String(), opt.Key))
+		detail := noiseTail(redact(stderrTail.String(), opt.Key), 4096)
 		if detail == "" {
 			detail = redact(runErr.Error(), opt.Key)
 		}
-		return onceResult{}, fmt.Errorf("%s: %s", a.ID(), truncate(detail, 400))
+		if logPath != "" {
+			detail += " log: " + logPath
+		}
+		return onceResult{}, fmt.Errorf("%s: %s", a.ID(), detail)
 	}
 	scored, err := scoreDB(db, fx)
 	if err != nil {
@@ -555,6 +639,175 @@ func filterKey(env []string, key string) []string {
 		out = append(out, e)
 	}
 	return out
+}
+
+func mergeReportFiles(paths []string) (Report, error) {
+	var parts []Report
+	for _, path := range paths {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return Report{}, err
+		}
+		var rep Report
+		if err := json.Unmarshal(b, &rep); err != nil {
+			return Report{}, fmt.Errorf("%s: %w", path, err)
+		}
+		parts = append(parts, rep)
+	}
+	return mergeReports(parts)
+}
+
+func openRunLog(opt Options, agent, scenario string, runIndex int) (string, *runLog) {
+	if opt.OutDir == "" {
+		return "", nil
+	}
+	path := filepath.Join(opt.OutDir, agent, scenario, fmt.Sprintf("run-%d.log", runIndex+1))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return "", nil
+	}
+	fmt.Fprintf(f, "agent=%s scenario=%s run=%d\n", agent, scenario, runIndex+1)
+	l := &runLog{f: f}
+	l.rw.w = f
+	l.rw.key = opt.Key
+	return path, l
+}
+
+type runLog struct {
+	f  *os.File
+	rw redactWriter
+}
+
+func (l *runLog) Write(p []byte) (int, error) { return l.rw.Write(p) }
+
+func (l *runLog) Flush() error { return l.rw.Flush() }
+
+func (l *runLog) Close() error {
+	err := l.rw.Flush()
+	err2 := l.f.Close()
+	if err != nil {
+		return err
+	}
+	return err2
+}
+
+type redactWriter struct {
+	w    io.Writer
+	key  string
+	hold []byte
+}
+
+func (r *redactWriter) Write(p []byte) (int, error) {
+	if r.key == "" {
+		_, err := r.w.Write(p)
+		return len(p), err
+	}
+	data := append(append([]byte{}, r.hold...), p...)
+	r.hold = nil
+	s := string(data)
+	keep := len(r.key) - 1
+	if keep < 0 {
+		keep = 0
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], r.key) {
+			b.WriteString("[redacted]")
+			i += len(r.key)
+			continue
+		}
+		rest := s[i:]
+		if len(rest) <= keep && strings.HasPrefix(r.key, rest) {
+			r.hold = []byte(rest)
+			break
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	if b.Len() == 0 {
+		return len(p), nil
+	}
+	_, err := r.w.Write([]byte(b.String()))
+	return len(p), err
+}
+
+func (r *redactWriter) Flush() error {
+	if len(r.hold) == 0 {
+		return nil
+	}
+	s := strings.ReplaceAll(string(r.hold), r.key, "[redacted]")
+	r.hold = nil
+	_, err := r.w.Write([]byte(s))
+	return err
+}
+
+type tailWriter struct {
+	mu  sync.Mutex
+	buf []byte
+	max int
+}
+
+func (w *tailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.max <= 0 {
+		w.max = 64 << 10
+	}
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = append([]byte{}, w.buf[len(w.buf)-w.max:]...)
+	}
+	return len(p), nil
+}
+
+func (w *tailWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return string(w.buf)
+}
+
+func noiseTail(s string, n int) string {
+	filtered := filterNoise(s)
+	if strings.TrimSpace(filtered) == "" {
+		filtered = s
+	}
+	return strings.TrimSpace(tailText(filtered, n))
+}
+
+func filterNoise(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || isNoise(t) {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func isNoise(t string) bool {
+	if strings.HasPrefix(t, "(node:") && strings.Contains(t, "Warning:") {
+		return true
+	}
+	if strings.HasPrefix(t, "(Use `node --trace-") {
+		return true
+	}
+	if strings.Contains(t, "ExperimentalWarning") || strings.Contains(t, "DeprecationWarning") {
+		return true
+	}
+	return strings.HasPrefix(t, "npm warn") || strings.HasPrefix(t, "npm WARN")
+}
+
+func tailText(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 // Redact replaces key with a placeholder. An empty key leaves text unchanged.

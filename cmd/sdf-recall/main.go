@@ -19,8 +19,11 @@ func main() {
 	opt, mode, err := live.ParseArgs(os.Args[1:], opt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sdf-recall: %s\n", live.Redact(err.Error(), opt.Key))
-		fmt.Fprintln(os.Stderr, "usage: sdf-recall [--agents id,id] [--k N] [--json] [--markdown] [--install] [--no-install]")
+		fmt.Fprintln(os.Stderr, "usage: sdf-recall [--agents id,id] [--scenarios name,name] [--k N] [--parallel N] [--out DIR] [--merge a.json,b.json] [--json] [--markdown] [--install] [--no-install]")
 		os.Exit(2)
+	}
+	if opt.OutDir == "" && len(opt.Merge) == 0 {
+		opt.OutDir = "sdf-recall-out"
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

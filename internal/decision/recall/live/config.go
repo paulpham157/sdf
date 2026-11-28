@@ -13,11 +13,12 @@ const (
 	defaultOpenAI      = "https://api.tokenrouter.com/v1"
 	defaultAnthropic   = "https://api.tokenrouter.com"
 	defaultK           = 5
-	defaultMaxTurns    = 12
-	defaultMaxTokens   = 20000
+	defaultMaxTurns    = 30
+	defaultMaxTokens   = 1_000_000
 	defaultRetries     = 4
 	defaultHTTPTimeout = 90 * time.Second
-	defaultRunTimeout  = 3 * time.Minute
+	defaultRunTimeout  = 5 * time.Minute
+	defaultParallel    = 1
 
 	schemaLive = "sdf.decision.recall.live/v1"
 )
@@ -28,9 +29,12 @@ const (
 type Options struct {
 	Agents []string
 	// FixtureNames limits the scenarios. Empty runs every embedded fixture.
-	// The sdf-recall command does not set this; it always runs the full set.
-	FixtureNames  []string
+	FixtureNames []string
+	// Merge pools JSON reports from earlier invocations instead of running.
+	Merge         []string
 	K             int
+	Parallel      int
+	OutDir        string
 	Model         string
 	OpenAIBase    string
 	AnthropicBase string
@@ -73,9 +77,19 @@ func ConfigFromEnv() Options {
 		AnthropicBase: os.Getenv("SDF_RECALL_ANTHROPIC_BASE_URL"),
 		SDFBin:        os.Getenv("SDF_BIN"),
 		SkillDir:      os.Getenv("SDF_RECALL_SKILL"),
+		OutDir:        os.Getenv("SDF_RECALL_OUT"),
+	}
+	if names := splitList(os.Getenv("SDF_RECALL_SCENARIOS")); len(names) > 0 {
+		o.FixtureNames = names
+	}
+	if paths := splitList(os.Getenv("SDF_RECALL_MERGE")); len(paths) > 0 {
+		o.Merge = paths
 	}
 	if n, err := strconv.Atoi(os.Getenv("SDF_RECALL_K")); err == nil && n > 0 {
 		o.K = n
+	}
+	if n, err := strconv.Atoi(os.Getenv("SDF_RECALL_PARALLEL")); err == nil && n > 0 {
+		o.Parallel = n
 	}
 	if n, err := strconv.Atoi(os.Getenv("SDF_RECALL_MAX_TURNS")); err == nil && n > 0 {
 		o.MaxTurns = n
@@ -110,6 +124,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.K == 0 {
 		o.K = defaultK
+	}
+	if o.Parallel == 0 {
+		o.Parallel = defaultParallel
 	}
 	if o.MaxTurns == 0 {
 		o.MaxTurns = defaultMaxTurns
@@ -147,6 +164,20 @@ func defaultBackoff(attempt int) time.Duration {
 		return 5 * time.Second
 	}
 	return d
+}
+
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func firstNonEmpty(vs ...string) string {

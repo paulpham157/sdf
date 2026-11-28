@@ -2,6 +2,7 @@ package live
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -243,4 +244,154 @@ func escapeCell(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "|", "/")
 	return s
+}
+
+func countsFromScenario(sc ScenarioReport) counts {
+	return counts{
+		runs:   sc.Runs,
+		scored: sc.Scored,
+		failed: sc.Failed,
+		capped: sc.Capped,
+		decL:   sc.Decisions.Labeled,
+		decR:   sc.Decisions.Recorded,
+		decH:   sc.Decisions.Hits,
+		linkL:  sc.Links.Labeled,
+		linkR:  sc.Links.Recorded,
+		linkH:  sc.Links.Hits,
+	}
+}
+
+// mergeReports pools scored runs from earlier reports. Recall, precision,
+// and the Wilson interval are recomputed from the summed counts. A failed
+// run stays a failure.
+func mergeReports(parts []Report) (Report, error) {
+	if len(parts) == 0 {
+		return Report{}, errors.New("no reports to merge")
+	}
+	out := Report{Schema: schemaLive}
+	agents := map[string]*AgentReport{}
+	var order []string
+	var model string
+	mixed := false
+	saw := false
+	for _, p := range parts {
+		if p.Schema != "" && p.Schema != schemaLive {
+			return Report{}, fmt.Errorf("report schema %q", p.Schema)
+		}
+		if p.Skipped {
+			continue
+		}
+		saw = true
+		if p.Model != "" {
+			if model == "" {
+				model = p.Model
+			} else if model != p.Model {
+				mixed = true
+			}
+		}
+		if out.OpenAIBase == "" {
+			out.OpenAIBase = p.OpenAIBase
+		}
+		if out.AnthropicBase == "" {
+			out.AnthropicBase = p.AnthropicBase
+		}
+		for _, a := range p.Agents {
+			dst, ok := agents[a.ID]
+			if !ok {
+				cp := a
+				cp.Scenarios = append([]ScenarioReport(nil), a.Scenarios...)
+				cp.Overall = nil
+				agents[a.ID] = &cp
+				order = append(order, a.ID)
+				continue
+			}
+			merged := mergeAgent(*dst, a)
+			*dst = merged
+		}
+	}
+	if !saw {
+		out.Skipped = true
+		return out, nil
+	}
+	if mixed {
+		model = "mixed"
+	}
+	out.Model = model
+	var grand counts
+	measured := 0
+	maxRuns := 0
+	for _, id := range order {
+		a := agents[id]
+		if a.Status == statusMeasured {
+			sortScenarios(a.Scenarios)
+			var c counts
+			for _, sc := range a.Scenarios {
+				c.merge(countsFromScenario(sc))
+				if sc.Runs > maxRuns {
+					maxRuns = sc.Runs
+				}
+			}
+			pair := c.pair()
+			a.Overall = &pair
+			grand.merge(c)
+			measured++
+		}
+		out.Agents = append(out.Agents, *a)
+	}
+	if measured > 0 {
+		pair := grand.pair()
+		out.Overall = &pair
+	}
+	out.K = maxRuns
+	return out, nil
+}
+
+func mergeAgent(a, b AgentReport) AgentReport {
+	if a.Status != statusMeasured {
+		if b.Status == statusMeasured {
+			b.Overall = nil
+			b.Scenarios = append([]ScenarioReport(nil), b.Scenarios...)
+			return b
+		}
+		return a
+	}
+	if b.Status != statusMeasured {
+		return a
+	}
+	if a.Protocol == "" {
+		a.Protocol = b.Protocol
+	}
+	by := map[string]int{}
+	for i, sc := range a.Scenarios {
+		by[sc.Name] = i
+	}
+	for _, sc := range b.Scenarios {
+		i, ok := by[sc.Name]
+		if !ok {
+			a.Scenarios = append(a.Scenarios, sc)
+			continue
+		}
+		a.Scenarios[i] = mergeScenario(a.Scenarios[i], sc)
+	}
+	return a
+}
+
+func mergeScenario(a, b ScenarioReport) ScenarioReport {
+	errs := append(append([]string{}, a.Errors...), b.Errors...)
+	if len(errs) > 8 {
+		errs = errs[:8]
+	}
+	c := countsFromScenario(a)
+	c.merge(countsFromScenario(b))
+	return c.scenario(a.Name, errs)
+}
+
+func sortScenarios(sc []ScenarioReport) {
+	for i := 1; i < len(sc); i++ {
+		j := i
+		for j > 0 && sc[j].Name < sc[j-1].Name {
+			sc[j], sc[j-1] = sc[j-1], sc[j]
+			j--
+		}
+	}
 }

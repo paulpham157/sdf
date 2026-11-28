@@ -194,6 +194,7 @@ func (qwenAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 	); err != nil {
 		return invocation{}, err
 	}
+	qwenHome := filepath.Join(spec.Home, ".qwen")
 	cfg := map[string]any{
 		"modelProviders": map[string]any{
 			"openai": []any{
@@ -206,7 +207,8 @@ func (qwenAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 			},
 		},
 		"security": map[string]any{
-			"auth": map[string]any{"selectedType": "openai"},
+			"auth":        map[string]any{"selectedType": "openai"},
+			"folderTrust": map[string]any{"enabled": true},
 		},
 		"model": map[string]any{"name": spec.Model},
 		"telemetry": map[string]any{
@@ -216,15 +218,39 @@ func (qwenAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 			"logPrompts":   false,
 		},
 	}
-	if err := writeJSON(filepath.Join(spec.Home, ".qwen", "settings.json"), cfg); err != nil {
+	if err := writeJSON(filepath.Join(qwenHome, "settings.json"), cfg); err != nil {
+		return invocation{}, err
+	}
+	// System settings override the user file. Point them at empty files so a
+	// machine-wide settings.json cannot force gRPC or drop the model. Trust
+	// the temp repo so folder trust does not block tools in a headless run.
+	if err := writeJSON(filepath.Join(qwenHome, "system-settings.json"), map[string]any{}); err != nil {
+		return invocation{}, err
+	}
+	if err := writeJSON(filepath.Join(qwenHome, "system-defaults.json"), map[string]any{}); err != nil {
+		return invocation{}, err
+	}
+	if err := writeJSON(filepath.Join(qwenHome, "trustedFolders.json"), map[string]string{
+		spec.Repo: "TRUST_FOLDER",
+	}); err != nil {
 		return invocation{}, err
 	}
 	return invocation{
 		Argv: []string{"qwen", "--yolo", "-p", spec.Prompt},
 		Env: map[string]string{
-			"OPENAI_BASE_URL":             spec.OpenAIBase,
-			"OPENAI_MODEL":                spec.Model,
-			"OTEL_EXPORTER_OTLP_ENDPOINT": spec.OTLP,
+			"QWEN_HOME":                            qwenHome,
+			"OPENAI_BASE_URL":                      spec.OpenAIBase,
+			"OPENAI_MODEL":                         spec.Model,
+			"QWEN_TELEMETRY_ENABLED":               "true",
+			"QWEN_TELEMETRY_OTLP_ENDPOINT":         spec.OTLP,
+			"QWEN_TELEMETRY_OTLP_PROTOCOL":         "http",
+			"QWEN_TELEMETRY_LOG_PROMPTS":           "false",
+			"QWEN_TELEMETRY_OTLP_TRACES_ENDPOINT":  signalURL(spec.OTLP, "traces"),
+			"QWEN_TELEMETRY_OTLP_LOGS_ENDPOINT":    signalURL(spec.OTLP, "logs"),
+			"QWEN_TELEMETRY_OTLP_METRICS_ENDPOINT": signalURL(spec.OTLP, "metrics"),
+			"QWEN_CODE_SYSTEM_SETTINGS_PATH":       filepath.Join(qwenHome, "system-settings.json"),
+			"QWEN_CODE_SYSTEM_DEFAULTS_PATH":       filepath.Join(qwenHome, "system-defaults.json"),
+			"QWEN_CODE_SUPPRESS_YOLO_WARNING":      "1",
 		},
 		SecretEnv: []string{"OPENAI_API_KEY"},
 	}, nil
@@ -339,56 +365,26 @@ func (copilotAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
 	}, nil
 }
 
-// Codex uses the Responses API on the OpenAI base. wire_api is responses.
-// env_key names SDF_RECALL_API_KEY. This matches TokenRouter's Codex setup.
+// Codex speaks the Responses API. TokenRouter returns HTTP 400 when that
+// request includes tool_choice or reasoning. Leaving model_reasoning_effort
+// unset does not stop Codex from sending those fields, and no provider flag
+// omits tool_choice. The runner does not rewrite the Responses body.
 type codexAgent struct{}
 
 func (codexAgent) ID() string     { return "codex" }
 func (codexAgent) Name() string   { return "Codex CLI" }
 func (codexAgent) Binary() string { return "codex" }
 func (codexAgent) Support() support {
-	return support{OK: true, Protocol: protocolResponses}
+	return support{
+		OK: false,
+		Reason: "Codex speaks the OpenAI Responses API. TokenRouter returns HTTP 400 when the request includes tool_choice or reasoning. " +
+			"Leaving model_reasoning_effort unset does not stop Codex from sending those fields, and there is no provider flag that omits them.",
+	}
 }
 func (codexAgent) InstallCommands() [][]string { return nil }
-func (codexAgent) InstallHint() string {
-	return "Install the Codex CLI so codex is on PATH. This runner does not install it."
-}
-func (codexAgent) Prepare(_ context.Context, spec spec) (invocation, error) {
-	if err := installSkills(spec,
-		filepath.Join(spec.Home, ".agents", "skills", "sdf-decisions"),
-		filepath.Join(spec.Repo, ".agents", "skills", "sdf-decisions"),
-	); err != nil {
-		return invocation{}, err
-	}
-	home := filepath.Join(spec.Home, ".codex")
-	body := strings.Join([]string{
-		"model = " + tomlString(spec.Model),
-		`model_provider = "tokenrouter"`,
-		"",
-		"[model_providers.tokenrouter]",
-		`name = "TokenRouter"`,
-		"base_url = " + tomlString(spec.OpenAIBase),
-		`wire_api = "responses"`,
-		`env_key = "SDF_RECALL_API_KEY"`,
-		"supports_websockets = false",
-		"",
-		"[otel]",
-		`environment = "recall"`,
-		"log_user_prompt = false",
-		"exporter = { otlp-http = { endpoint = " + tomlString(signalURL(spec.OTLP, "logs")) + `, protocol = "json" } }`,
-		"trace_exporter = { otlp-http = { endpoint = " + tomlString(signalURL(spec.OTLP, "traces")) + `, protocol = "json" } }`,
-		"metrics_exporter = { otlp-http = { endpoint = " + tomlString(signalURL(spec.OTLP, "metrics")) + `, protocol = "json" } }`,
-		"",
-	}, "\n")
-	if err := writePrivate(filepath.Join(home, "config.toml"), body); err != nil {
-		return invocation{}, err
-	}
-	return invocation{
-		Argv: []string{"codex", "exec", "-C", spec.Repo, "--sandbox", "danger-full-access", "--skip-git-repo-check", spec.Prompt},
-		Env: map[string]string{
-			"CODEX_HOME": home,
-		},
-	}, nil
+func (codexAgent) InstallHint() string         { return "" }
+func (codexAgent) Prepare(context.Context, spec) (invocation, error) {
+	return invocation{}, errUnsupported
 }
 
 // Claude Code speaks the Anthropic Messages API. ANTHROPIC_BASE_URL is the

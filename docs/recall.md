@@ -146,17 +146,23 @@ baseline above.
 ```bash
 export SDF_RECALL_API_KEY=...   # or TOKENROUTER_API_KEY
 go run ./cmd/sdf-recall
-go run ./cmd/sdf-recall --agents opencode,codex,claude-code --k 1
+go run ./cmd/sdf-recall --agents opencode,claude-code --scenarios decide-commit --k 1
+go run ./cmd/sdf-recall --parallel 4
 go run ./cmd/sdf-recall --json
+go run ./cmd/sdf-recall --merge a.json,b.json
 go run ./cmd/sdf-recall --no-install
 ```
 
 With no key the command prints a skip line and exits 0. Nothing is sent
 to a model. A written report also exits 0, including when recall is low.
 `--agents` selects ids from `sdf init` (`opencode`, `pi`, `qwen`, `grok`,
-`copilot`, `codex`, `claude-code`, `gemini`). `--k` is 1 to 100 and
-defaults to 5. `--json` and `--markdown` choose the encoding; the default
-is both. JSON uses schema `sdf.decision.recall.live/v1`.
+`copilot`, `codex`, `claude-code`, `gemini`). `--scenarios` limits the
+fixtures (the default is all seven). `--k` is 1 to 100 and defaults to 5.
+`--parallel` is how many scenario runs proceed at once (1 to 32, default
+1). `--merge` pools JSON reports from separate invocations into one
+recall, one precision, and one Wilson interval, and does not start a CLI.
+`--json` and `--markdown` choose the encoding; the default is both. JSON
+uses schema `sdf.decision.recall.live/v1`.
 
 Each run is a temp git repo. The fixture's OTLP is loaded into
 `sdf-telemetry.sqlite` there, and a temp `sdf serve` receives whatever
@@ -172,23 +178,32 @@ A run that exits 0 and records nothing is a miss. The 95% Wilson interval
 is the interval of that pooled recall.
 
 The model id defaults to `deepseek/deepseek-v4.1-flash-1017-free`
-(`SDF_RECALL_MODEL`). A full pass is 7 CLIs times 7 scenarios times k=5,
-245 runs, and each run makes several model calls. That default id is a
+(`SDF_RECALL_MODEL`). A full pass is 6 CLIs times 7 scenarios times k=5,
+210 runs, and each run makes several model calls. That default id is a
 free TokenRouter model. The free tier throttles; HTTP 429 is retried.
 Another model can cost money. The key is read from the environment and
 injected by a local proxy. It is not written into agent config, logs, the
-report, or git.
+report, or git. Stderr from each run is written under `--out` (default
+`sdf-recall-out`, or `SDF_RECALL_OUT`), with the key redacted. The error
+line in the report is the tail of that stderr, up to 4 KB, after Node and
+npm warnings are dropped.
 
 | Agent | Protocol | Base |
 | --- | --- | --- |
 | [OpenCode](agents.md#opencode-v2), [Pi](agents.md#pi), [Qwen Code](agents.md#qwen-code), [Grok CLI](agents.md#grok-cli), [Copilot CLI](agents.md#github-copilot-cli) | OpenAI Chat Completions, `POST /v1/chat/completions` | `SDF_RECALL_OPENAI_BASE_URL`, else `SDF_RECALL_BASE_URL`, else `https://api.tokenrouter.com/v1` |
-| [Codex](agents.md#codex-cli) | OpenAI Responses, `POST /v1/responses` (`wire_api = "responses"`) | the same OpenAI base |
+| [Codex](agents.md#codex-cli) | OpenAI Responses, `POST /v1/responses` | unsupported with this provider |
 | [Claude Code](agents.md#claude-code) | Anthropic Messages, `POST /v1/messages` | `SDF_RECALL_ANTHROPIC_BASE_URL`, else `https://api.tokenrouter.com` (Claude appends `/v1/messages`) |
 | [Gemini CLI](agents.md#gemini-cli) | native `generateContent` | unsupported with this provider |
 
-Chat Completions, Responses, and Messages on TokenRouter were checked
-live with `deepseek/deepseek-v4.1-flash-1017-free` and returned HTTP 200.
-Codex setup is the [TokenRouter Codex guide](https://www.tokenrouter.com/docs/codex-chatgpt-setup/).
+Chat Completions and Messages on TokenRouter were checked live with
+`deepseek/deepseek-v4.1-flash-1017-free` and returned HTTP 200. A plain
+`POST /v1/responses` also returned HTTP 200. Codex still
+sends `tool_choice` and `reasoning` on that path, and TokenRouter answers
+HTTP 400. Leaving `model_reasoning_effort` unset does not strip those
+fields, and Codex has no provider flag that omits `tool_choice`. The
+runner reports Codex unsupported for that reason and does not rewrite the
+body. The [TokenRouter Codex guide](https://www.tokenrouter.com/docs/codex-chatgpt-setup/)
+describes the provider block; this command does not apply it.
 Claude Code setup is the [TokenRouter Claude Code guide](https://www.tokenrouter.com/docs/claude-code-setup/).
 The Anthropic base does not fall back to the OpenAI base, because that
 URL already ends in `/v1`. Gemini's native `generateContent` paths on
@@ -196,20 +211,40 @@ this provider do not succeed (the v1beta path returns HTTP 500 and the v1
 path returns HTTP 404). The runner reports Gemini CLI as unsupported
 with that reason. It does not point Gemini at Chat Completions.
 
-The CLIs talk to a proxy on `127.0.0.1`. The proxy adds the key, retries
-HTTP 429 and 5xx with backoff (honoring `Retry-After` up to 30 seconds),
-and stops a run that passes the turn cap (default 12) or the token cap
-(default 20000). A capped run that still exits 0 is scored and marked
+Copilot selects the model as `tokenrouter/recall`. The proxy rewrites that
+alias to `SDF_RECALL_MODEL` on the way upstream and answers `GET /v1/models`
+with that id, so Copilot's model lookup is not a 404.
+
+Qwen Code's model comes from `OPENAI_BASE_URL`, `OPENAI_MODEL`, and
+`OPENAI_API_KEY`. Telemetry uses `QWEN_TELEMETRY_*` with protocol `http`
+(OTLP/JSON). The generic `OTEL_EXPORTER_OTLP_ENDPOINT` is not set, because
+that variable overrides the Qwen endpoint and the stock exporter treats it
+as gRPC. `QWEN_HOME` is the temp config directory. System settings are
+pointed at empty files so a machine-wide `settings.json` cannot replace
+this, and the temp repo is trusted so folder trust does not block tools.
+
+The CLIs talk to a proxy on `127.0.0.1`. Each run has its own proxy, so
+`--parallel` does not share the turn or token cap. The proxy adds the key,
+retries HTTP 429 and 5xx with backoff (honoring `Retry-After` up to 30
+seconds), and streams an upstream `text/event-stream` response without
+buffering it or replacing its `Content-Type`. A run stops after the turn
+cap (default 30) or the token cap (default 1,000,000). One request from
+these CLIs is tens of kilobytes, so a 20,000 token cap ended the run after
+a few calls. The run timeout defaults to 5 minutes. When the cap is hit on
+a streaming request, the proxy sends a terminal event for that protocol
+(Chat Completions `finish_reason`, Anthropic `message_stop`, Responses
+`response.completed`) instead of a JSON document the client treats as a
+broken stream. A capped run that still exits 0 is scored and marked
 capped. Other knobs are `SDF_RECALL_MAX_TURNS`, `SDF_RECALL_MAX_TOKENS`,
 `SDF_RECALL_RETRIES`, `SDF_RECALL_HTTP_TIMEOUT`, and
 `SDF_RECALL_RUN_TIMEOUT`.
 
 `--install` (the default) installs the packages this repo already names
 for OpenCode, Pi, Qwen Code, and Copilot when the binary is missing.
-Claude Code, Codex, and Grok are located on `PATH` and are not installed.
+Claude Code and Grok are located on `PATH` and are not installed.
 `--no-install` or `SDF_RECALL_NO_INSTALL=1` skips installation. An agent
-that is supported but has no binary is `unavailable`. Gemini is
-`unsupported` and is not looked up.
+that is supported but has no binary is `unavailable`. Codex and Gemini
+are `unsupported` and are not looked up.
 
 ## Out of scope
 
@@ -217,5 +252,6 @@ Comparing the shipped skill with a new recorder, and labeling real
 sessions with an LLM judge, are still follow-ups. They are not this
 command. Gemini stays out until this provider has a working
 `generateContent` endpoint, or Gemini CLI can be pointed at an
-OpenAI-compatible base this runner can target. The CI gate is the
-fixture harness only.
+OpenAI-compatible base this runner can target. Codex stays out until
+this provider accepts Responses requests that include `tool_choice` and
+`reasoning`. The CI gate is the fixture harness only.

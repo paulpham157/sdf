@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,12 +59,21 @@ func TestConfigFromEnv(t *testing.T) {
 	t.Setenv("SDF_RECALL_ANTHROPIC_BASE_URL", "https://example.test")
 	t.Setenv("SDF_RECALL_MODEL", "model-under-test")
 	t.Setenv("SDF_RECALL_K", "2")
+	t.Setenv("SDF_RECALL_MAX_TURNS", "")
+	t.Setenv("SDF_RECALL_MAX_TOKENS", "")
+	t.Setenv("SDF_RECALL_RUN_TIMEOUT", "")
 	opt := ConfigFromEnv().withDefaults()
 	if opt.Key != testKey || opt.OpenAIBase != "https://example.test/v1" || opt.AnthropicBase != "https://example.test" {
 		t.Fatalf("%+v", opt.OpenAIBase)
 	}
 	if opt.Model != "model-under-test" || opt.K != 2 {
 		t.Fatalf("model %s k %d", opt.Model, opt.K)
+	}
+	if opt.MaxTurns != defaultMaxTurns || opt.MaxTokens != defaultMaxTokens || opt.RunTimeout != defaultRunTimeout {
+		t.Fatalf("caps turns %d tokens %d timeout %s", opt.MaxTurns, opt.MaxTokens, opt.RunTimeout)
+	}
+	if defaultMaxTurns < 30 || defaultMaxTokens < 1_000_000 || defaultRunTimeout < 5*time.Minute {
+		t.Fatalf("defaults too small")
 	}
 	t.Setenv("SDF_RECALL_API_KEY", "primary-key")
 	t.Setenv("SDF_RECALL_OPENAI_BASE_URL", "https://openai.test/v1")
@@ -93,6 +103,19 @@ func TestParseArgs(t *testing.T) {
 	opt, mode, err = ParseArgs([]string{"--no-install"}, Options{Install: true})
 	if err != nil || opt.Install || mode != ModeBoth {
 		t.Fatal(err, opt.Install, mode)
+	}
+	opt, _, err = ParseArgs([]string{"--scenarios", "decide-commit,approve", "--parallel", "4", "--out", "logs"}, Options{})
+	if err != nil || len(opt.FixtureNames) != 2 || opt.Parallel != 4 || opt.OutDir != "logs" {
+		t.Fatal(err, opt.FixtureNames, opt.Parallel, opt.OutDir)
+	}
+	if _, _, err := ParseArgs([]string{"--scenarios", "nope"}, Options{}); err == nil {
+		t.Fatal("unknown scenario")
+	}
+	if _, _, err := ParseArgs([]string{"--parallel", "0"}, Options{}); err == nil {
+		t.Fatal("parallel 0")
+	}
+	if _, _, err := ParseArgs([]string{"--merge", "a.json", "--agents", "opencode"}, Options{}); err == nil {
+		t.Fatal("merge with agents")
 	}
 }
 
@@ -211,6 +234,17 @@ func TestAdapterFilesOmitKey(t *testing.T) {
 		if !fileHas(t, root, defaultModel) && !containsValue(inv.Env, defaultModel) && !strings.Contains(joined, defaultModel) {
 			t.Fatalf("%s missing model", a.ID())
 		}
+		if a.ID() == "qwen" {
+			if inv.Env["OTEL_EXPORTER_OTLP_ENDPOINT"] != "" {
+				t.Fatal("qwen sets the generic OTEL endpoint")
+			}
+			if inv.Env["QWEN_TELEMETRY_OTLP_PROTOCOL"] != "http" || inv.Env["QWEN_HOME"] == "" {
+				t.Fatalf("qwen env %+v", inv.Env)
+			}
+			if !fileHas(t, root, "TRUST_FOLDER") || !fileHas(t, root, `"otlpProtocol": "http"`) {
+				t.Fatal("qwen settings")
+			}
+		}
 	}
 }
 
@@ -271,6 +305,273 @@ func TestProxyRetries429AndCapsTurns(t *testing.T) {
 	}
 }
 
+func TestProxyStreamsAndStops(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	rel := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(rel)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"usage\":{\"total_tokens\":3}}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(started)
+		<-release
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(upstream.Close)
+	p := newProxy(Options{
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Key:           testKey,
+		Model:         defaultModel,
+		Retries:       0,
+		HTTPTimeout:   2 * time.Second,
+		MaxTurns:      2,
+		MaxTokens:     100,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	// Retries 0 is replaced by the default. Force a single try.
+	p.retries = 0
+	base, anth, stop, err := p.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", strings.NewReader(`{"stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("content-type %q", resp.Header.Get("Content-Type"))
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not flush")
+	}
+	buf := make([]byte, 64)
+	n, err := resp.Body.Read(buf)
+	if err != nil || !bytes.Contains(buf[:n], []byte("total_tokens")) {
+		t.Fatalf("first chunk %q %v", buf[:n], err)
+	}
+	rel()
+	rest, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(rest, []byte("[DONE]")) {
+		t.Fatalf("rest %s", rest)
+	}
+
+	for _, kind := range []struct {
+		url, body, needle string
+	}{
+		{base + "/chat/completions", `{"stream":true}`, `"finish_reason":"stop"`},
+		{base + "/responses", `{"stream":true}`, "response.completed"},
+		{anth + "/v1/messages", `{"stream":true}`, "message_stop"},
+	} {
+		p.reset()
+		p.mu.Lock()
+		p.turns = p.maxTurns
+		p.mu.Unlock()
+		req, err = http.NewRequest(http.MethodPost, kind.url, strings.NewReader(kind.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.Header.Get("Content-Type") != "text/event-stream" || !bytes.Contains(b, []byte(kind.needle)) || !bytes.Contains(b, []byte("turn cap reached")) {
+			t.Fatalf("%s type %q body %s", kind.url, resp.Header.Get("Content-Type"), b)
+		}
+	}
+}
+
+func TestProxyRewritesCopilotModelAndListsModels(t *testing.T) {
+	var gotModel string
+	var upstreamCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		var body struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+	p := newProxy(Options{
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Key:           testKey,
+		Model:         defaultModel,
+		MaxTurns:      4,
+		HTTPTimeout:   2 * time.Second,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	p.retries = 0
+	base, _, stop, err := p.start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	resp, err := http.Get(base + "/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Contains(b, []byte(defaultModel)) || !bytes.Contains(b, []byte(copilotModelAlias)) {
+		t.Fatalf("models %d %s", resp.StatusCode, b)
+	}
+	resp, err = http.Post(base+"/chat/completions", "application/json", strings.NewReader(`{"model":"tokenrouter/recall","stream":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotModel != defaultModel {
+		t.Fatalf("upstream model %q", gotModel)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls %d", upstreamCalls)
+	}
+}
+
+func TestCodexIsNotExecuted(t *testing.T) {
+	called := false
+	rep, err := Run(context.Background(), Options{
+		Agents: []string{"codex"},
+		Key:    testKey,
+		K:      1,
+		LookPath: func(string) (string, error) {
+			called = true
+			return "", errors.New("called")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("looked up codex")
+	}
+	if len(rep.Agents) != 1 || rep.Agents[0].Status != statusUnsupported {
+		t.Fatalf("%+v", rep.Agents)
+	}
+	if !strings.Contains(rep.Agents[0].Reason, "tool_choice") || !strings.Contains(rep.Agents[0].Reason, "reasoning") {
+		t.Fatal(rep.Agents[0].Reason)
+	}
+}
+
+func TestMergePoolsRuns(t *testing.T) {
+	one := func(hits int) Report {
+		recall := 1.0
+		return Report{
+			Schema: schemaLive,
+			Model:  defaultModel,
+			Agents: []AgentReport{{
+				ID:       "opencode",
+				Name:     "OpenCode",
+				Protocol: "openai-chat",
+				Status:   statusMeasured,
+				Scenarios: []ScenarioReport{{
+					Name:      "decide-commit",
+					Runs:      1,
+					Scored:    1,
+					Decisions: Ratio{Labeled: 1, Recorded: 1, Hits: hits, Recall: &recall},
+					Links:     Ratio{Labeled: 1, Recorded: 1, Hits: hits, Recall: &recall},
+				}},
+			}},
+		}
+	}
+	rep, err := mergeReports([]Report{one(1), one(0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.K != 2 || len(rep.Agents) != 1 || rep.Agents[0].Overall == nil {
+		t.Fatalf("%+v", rep)
+	}
+	if rep.Agents[0].Overall.Decisions.Hits != 1 || rep.Agents[0].Overall.Decisions.Labeled != 2 {
+		t.Fatalf("%+v", rep.Agents[0].Overall.Decisions)
+	}
+	if rep.Agents[0].Overall.Decisions.Recall == nil || *rep.Agents[0].Overall.Decisions.Recall != 0.5 {
+		t.Fatalf("recall %+v", rep.Agents[0].Overall.Decisions.Recall)
+	}
+	dir := t.TempDir()
+	body, err := rep.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "a.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := mergeReportFiles([]string{path})
+	if err != nil || again.Agents[0].Overall.Decisions.Hits != 1 {
+		t.Fatal(err, again)
+	}
+}
+
+func TestStderrTailDropsNodeNoise(t *testing.T) {
+	bin := buildSDF(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream called: %s", r.URL.Path)
+	}))
+	t.Cleanup(upstream.Close)
+	out := t.TempDir()
+	rep, err := Run(context.Background(), Options{
+		Agents:        []string{"opencode"},
+		FixtureNames:  []string{"decide-commit"},
+		K:             1,
+		Key:           testKey,
+		OpenAIBase:    upstream.URL + "/v1",
+		AnthropicBase: upstream.URL,
+		Install:       false,
+		SDFBin:        bin,
+		OutDir:        out,
+		LookPath:      stubLook(t),
+		ExtraEnv:      map[string]string{"SDF_RECALL_STUB": "1", "SDF_RECALL_STUB_NOISE": "1"},
+		MaxTurns:      4,
+		RunTimeout:    30 * time.Second,
+		HTTPTimeout:   2 * time.Second,
+		Retries:       1,
+		Backoff:       func(int) time.Duration { return time.Millisecond },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Agents) != 1 || len(rep.Agents[0].Scenarios) != 1 || rep.Agents[0].Scenarios[0].Failed != 1 {
+		t.Fatalf("%+v", rep.Agents)
+	}
+	msg := strings.Join(rep.Agents[0].Scenarios[0].Errors, "\n")
+	if !strings.Contains(msg, "late-error-marker") || strings.Contains(msg, "ExperimentalWarning") || strings.Contains(msg, testKey) {
+		t.Fatal(msg)
+	}
+	logPath := filepath.Join(out, "opencode", "decide-commit", "run-1.log")
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "ExperimentalWarning") || !strings.Contains(text, "late-error-marker") || strings.Contains(text, testKey) {
+		t.Fatalf("log %s", text)
+	}
+}
+
 func TestScriptedAgentsScoreDecideCommit(t *testing.T) {
 	bin := buildSDF(t)
 	var mu sync.Mutex
@@ -305,9 +606,10 @@ func TestScriptedAgentsScoreDecideCommit(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	rep, err := Run(context.Background(), Options{
-		Agents:        []string{"opencode", "codex", "claude-code"},
+		Agents:        []string{"opencode", "claude-code"},
 		FixtureNames:  []string{"decide-commit"},
 		K:             1,
+		Parallel:      2,
 		Key:           testKey,
 		Model:         defaultModel,
 		OpenAIBase:    upstream.URL + "/v1",
@@ -325,7 +627,7 @@ func TestScriptedAgentsScoreDecideCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Skipped || len(rep.Agents) != 3 {
+	if rep.Skipped || len(rep.Agents) != 2 {
 		t.Fatalf("%+v", rep)
 	}
 	for _, a := range rep.Agents {
@@ -345,13 +647,13 @@ func TestScriptedAgentsScoreDecideCommit(t *testing.T) {
 			t.Fatalf("%s wilson %+v", a.ID, a.Overall.Decisions.Wilson95)
 		}
 	}
-	if rep.Overall == nil || rep.Overall.Decisions.Hits != 3 || rep.Overall.Links.Hits != 3 {
+	if rep.Overall == nil || rep.Overall.Decisions.Hits != 2 || rep.Overall.Links.Hits != 2 {
 		t.Fatalf("overall %+v", rep.Overall)
 	}
 	mu.Lock()
 	got := append([]string(nil), paths...)
 	mu.Unlock()
-	for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
 		if pathCount(got, path) < 3 {
 			t.Fatalf("path %s count %d in %v", path, pathCount(got, path), got)
 		}
@@ -550,6 +852,14 @@ func stubLook(t *testing.T) func(string) (string, error) {
 }
 
 func stubMain() int {
+	if os.Getenv("SDF_RECALL_STUB_NOISE") == "1" {
+		fmtErr("(node:1) Warning: ExperimentalWarning fake")
+		fmtErr("(Use `node --trace-warnings ...` to show where the warning was created)")
+		fmtErr("secret " + os.Getenv("SDF_RECALL_API_KEY"))
+		fmtErr(strings.Repeat("x", 6000))
+		fmtErr("late-error-marker")
+		return 1
+	}
 	if os.Getenv("SDF_RECALL_STUB_FAIL") == "1" {
 		fmtErr("stub failed")
 		return 1

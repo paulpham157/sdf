@@ -11,5 +11,8 @@
 //
 // Gemini CLI is unsupported with this provider: it speaks Gemini
 // generateContent, and TokenRouter has no working generateContent
-// endpoint. The runner reports that reason and does not invent a session.
+// endpoint. Codex is unsupported too: TokenRouter returns HTTP 400 when a
+// Responses request includes tool_choice or reasoning, and Codex has no
+// setting that omits those fields. The runner reports those reasons and
+// does not invent a session.
 package live
