@@ -135,31 +135,18 @@ func TestRedactBuildsTheStatusFromKeptFields(t *testing.T) {
 	}
 }
 
-func TestRedactLabelsQwenEmptyHook(t *testing.T) {
+func TestRedactKeepsQwenHookStatus(t *testing.T) {
 	msg := "hook runner returned no output without error detail"
-	out := redactOneRec(t, Record{Signal: "traces", Name: Str("qwen-code.hook"), StatusCode: "ERROR", StatusMessage: Str(msg),
+	if len(msg) != 51 {
+		t.Fatalf("sentinel length %d", len(msg))
+	}
+	out := redactOneRec(t, Record{Signal: "traces", ServiceName: Str("qwen-code"), Name: Str("qwen-code.hook"), StatusCode: "ERROR", StatusMessage: Str(msg),
 		Attributes: map[string]any{"error": msg, "error.type": "hook_error", "hook_event": "PreToolUse", "success": false}})
-	if out.StatusCode != "UNSET" || out.StatusMessage != nil {
+	if out.StatusCode != "ERROR" || deref(out.StatusMessage) != "hook error: hook_error" {
 		t.Fatalf("status %s %q", out.StatusCode, deref(out.StatusMessage))
 	}
-	if out.Attributes["sdf.hook.unconfigured"] != "PreToolUse" || out.Attributes["hook_event"] != "PreToolUse" || out.Attributes["error"] != nil || out.Attributes["error.type"] != nil {
+	if out.Attributes["error.type"] != "hook_error" || out.Attributes["hook_event"] != "PreToolUse" || out.Attributes["error"] != nil || out.Attributes["sdf.hook.unconfigured"] != nil || out.Attributes["error_bytes"] != int64(51) {
 		t.Fatalf("%v", out.Attributes)
-	}
-	if !strings.Contains(out.Attributes["sdf.redacted"].(string), "status.message") || !strings.Contains(out.Attributes["sdf.redacted"].(string), "error.type") {
-		t.Fatalf("redacted %v", out.Attributes["sdf.redacted"])
-	}
-	// A free-text event name is not copied into the label.
-	odd := redactOneRec(t, Record{Signal: "traces", Name: Str("qwen-code.hook"), StatusCode: "ERROR", StatusMessage: Str(msg),
-		Attributes: map[string]any{"hook_event": "not a token", "error": msg}})
-	if odd.Attributes["sdf.hook.unconfigured"] != "unknown" || odd.StatusCode != "UNSET" {
-		t.Fatalf("%v %s", odd.Attributes, odd.StatusCode)
-	}
-	// A hook that actually failed stays an error. sdf installs Stop; this is that shape.
-	crash := "hook crashed"
-	failed := redactOneRec(t, Record{Signal: "traces", Name: Str("qwen-code.hook"), StatusCode: "ERROR", StatusMessage: Str(crash),
-		Attributes: map[string]any{"error": crash, "error.type": "hook_error", "hook_event": "Stop"}})
-	if failed.StatusCode != "ERROR" || deref(failed.StatusMessage) != "hook error: hook_error" || failed.Attributes["sdf.hook.unconfigured"] != nil {
-		t.Fatalf("%s %v", deref(failed.StatusMessage), failed.Attributes)
 	}
 }
 

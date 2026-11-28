@@ -41,11 +41,11 @@
 // and an OTLP exporter is set. The user config is $GROK_HOME/config.toml
 // (default ~/.grok/config.toml). A project .grok/config.toml cannot set
 // otel_*. Env vars win over that file. A signed-in grok 1.0.92 exported
-// from the [telemetry] table alone (2026-11-23). A later run with a custom
-// model and no xAI login did not: the table alone exported nothing until
-// GROK_EXTERNAL_OTEL, OTEL_LOGS_EXPORTER, and OTEL_METRICS_EXPORTER were
-// set, and GROK_INTERNAL_OTLP_* exported no spans. Checked against the xAI
-// monitoring guide and grok 1.0.92 on 2026-11-23.
+// from the [telemetry] table alone (2026-11-23). One later run, a custom
+// model and no xAI login, exported 18 logs and 62 metrics and no traces
+// once GROK_EXTERNAL_OTEL, OTEL_LOGS_EXPORTER, and OTEL_METRICS_EXPORTER
+// were set. Checked against the xAI monitoring guide and grok 1.0.92 on
+// 2026-11-23.
 // https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md
 package setup
 
@@ -462,11 +462,10 @@ func grok(req Request) (Result, error) {
 	block := grokBlock(req.Endpoint)
 	var b strings.Builder
 	fmt.Fprintf(&b, "Grok CLI exports metrics and logs, not traces.\n")
-	fmt.Fprintf(&b, "Set these in the shell that launches grok. A [telemetry] table in %s alone is not enough:\n", path)
-	fmt.Fprintf(&b, "with a custom model and no xAI login, that table exported nothing until GROK_EXTERNAL_OTEL=1, OTEL_LOGS_EXPORTER=otlp, and OTEL_METRICS_EXPORTER=otlp were set.\n")
-	fmt.Fprintf(&b, "GROK_INTERNAL_OTLP_TRACES_ENDPOINT and GROK_INTERNAL_OTLP_HEADERS exported no spans in that run. Spans still need an xAI login.\n")
+	fmt.Fprintf(&b, "Set these in the shell that launches grok.\n")
+	fmt.Fprintf(&b, "One run with a custom model and no xAI login exported 18 logs and 62 metrics, and no traces, once GROK_EXTERNAL_OTEL=1, OTEL_LOGS_EXPORTER=otlp, and OTEL_METRICS_EXPORTER=otlp were set.\n")
 	fmt.Fprintf(&b, "A project .grok/config.toml cannot set otel_*. Environment variables win over config.toml.\n")
-	fmt.Fprintf(&b, "Checked against grok 1.0.92 on 2026-11-23, and again with a custom model and no xAI login. The schema is grok_code.schema.version v1 (alpha).\n")
+	fmt.Fprintf(&b, "Checked against grok 1.0.92 on 2026-11-23, and that custom-model run. The schema is grok_code.schema.version v1 (alpha).\n")
 	fmt.Fprintf(&b, "https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md\n\n")
 	for _, line := range grokEnv(req.Endpoint) {
 		fmt.Fprintf(&b, "export %s\n", quoteEndpointLine(line))
@@ -661,7 +660,16 @@ func grokConfigured(req Request) string {
 	body, err := os.ReadFile(path)
 	has, parseErr := grokHasTelemetry(body)
 	fileHit := err == nil && parseErr == nil && has && strings.Contains(string(body), want)
-	return fmt.Sprintf("grok process env points at %s: %t; %s has [telemetry] pointing at %s: %t\n", want, envHit, path, want, fileHit)
+	line := fmt.Sprintf("grok process env points at %s: %t; %s has [telemetry] pointing at %s: %t\n", want, envHit, path, want, fileHit)
+	if fileHit && !grokExporterEnv() {
+		line += "config.toml alone may not be enough: set GROK_EXTERNAL_OTEL=1, OTEL_LOGS_EXPORTER=otlp, and OTEL_METRICS_EXPORTER=otlp in the shell that launches grok.\n"
+	}
+	return line
+}
+
+func grokExporterEnv() bool {
+	ext := os.Getenv("GROK_EXTERNAL_OTEL")
+	return (ext == "1" || ext == "true") && os.Getenv("OTEL_LOGS_EXPORTER") == "otlp" && os.Getenv("OTEL_METRICS_EXPORTER") == "otlp"
 }
 
 func piOtel(ep Endpoint) map[string]any {

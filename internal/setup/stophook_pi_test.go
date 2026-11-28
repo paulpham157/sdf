@@ -82,9 +82,13 @@ mod.default({ sessionManager: { getSessionId: () => "s1" }, on: (name, fn) => { 
 
 let release
 let openSignal
+let cancelled = false
 globalThis.fetch = (url, opts) => new Promise((resolve) => {
   openSignal = opts.signal
-  release = () => resolve({ ok: true })
+  release = () => resolve({
+    ok: true,
+    body: { cancel: () => { cancelled = true; return Promise.resolve() } },
+  })
 })
 let settled = false
 const pending = Promise.resolve(handlers.session_start({ reason: "startup" })).then(() => { settled = true })
@@ -103,7 +107,7 @@ const t0 = Date.now()
 await handlers.session_shutdown({ reason: "quit" })
 const ms = Date.now() - t0
 const skipped = handlers.session_shutdown({ reason: "reload" })
-console.log(JSON.stringify({ aborted, ms, skipped: skipped === undefined, hadSignal: !!openSignal }))
+console.log(JSON.stringify({ aborted, ms, skipped: skipped === undefined, hadSignal: !!openSignal, cancelled }))
 `
 	if err := os.WriteFile(driver, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
@@ -116,7 +120,7 @@ console.log(JSON.stringify({ aborted, ms, skipped: skipped === undefined, hadSig
 		t.Fatalf("%v %s", err, stderr.String())
 	}
 	got := strings.TrimSpace(string(out))
-	if !strings.Contains(got, `"aborted":true`) || !strings.Contains(got, `"skipped":true`) || !strings.Contains(got, `"hadSignal":true`) {
+	if !strings.Contains(got, `"aborted":true`) || !strings.Contains(got, `"skipped":true`) || !strings.Contains(got, `"hadSignal":true`) || !strings.Contains(got, `"cancelled":true`) {
 		t.Fatalf("%s", got)
 	}
 	// The abort is 1000ms. Allow slack for a slow CI runner, and reject a timeout that did not wait.

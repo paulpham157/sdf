@@ -384,6 +384,10 @@ export default function sdfSession(pi) {
       headers: sdfHeaders(),
       body: JSON.stringify({ tool: "pi", session_id: id, edge, reason: reason || "" }),
       signal: ctrl.signal,
+    }).then((res) => {
+      // Headers can arrive while the body sits open. Cancel it so a stalled
+      // receiver cannot keep the process alive after the handler returns.
+      if (res && res.body && typeof res.body.cancel === "function") return res.body.cancel()
     }).catch(() => {}).finally(() => clearTimeout(timer))
   }
   pi.on("session_start", (event) => post("open", event && event.reason))

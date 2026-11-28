@@ -42,7 +42,8 @@ func TestGrokPrintDoesNotWrite(t *testing.T) {
 		"not written",
 		"24-monitoring-usage.md",
 		"custom model and no xAI login",
-		"GROK_INTERNAL_OTLP_TRACES_ENDPOINT",
+		"18 logs and 62 metrics",
+		"no traces",
 	} {
 		if !strings.Contains(res.Text, want) {
 			t.Fatalf("missing %q in\n%s", want, res.Text)

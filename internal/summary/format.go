@@ -398,7 +398,7 @@ func spanLine(node SpanNode, indent int) string {
 		if node.ErrorType != nil && *node.ErrorType != "" && (node.StatusMessage == nil || !strings.Contains(*node.StatusMessage, *node.ErrorType)) {
 			bits = append(bits, "error_type="+*node.ErrorType)
 		}
-	} else if node.StatusMessage != nil && strings.HasPrefix(*node.StatusMessage, "no hook configured") {
+	} else if node.StatusMessage != nil && *node.StatusMessage == "hook returned no output" {
 		bits = append(bits, *node.StatusMessage)
 	}
 	if node.Success != nil && *node.Success != "" {

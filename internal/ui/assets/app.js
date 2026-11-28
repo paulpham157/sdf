@@ -992,6 +992,13 @@
   const SPAN_DEPTH_LIMIT = 32;
   const spanErrorFlag = new WeakMap();
 
+  // The summary already relabels a qwen-code PreToolUse or PostToolUse hook
+  // whose runner returned no output. The stored span stays ERROR. This label
+  // is not a failure, including when status_code is still ERROR.
+  function hookReturnedNoOutput(node) {
+    return !!(node && node.status_message === "hook returned no output");
+  }
+
   function annotateSpanTree(roots) {
     const errors = [];
     const ordered = [];
@@ -1002,7 +1009,7 @@
       const node = st.pop();
       if (!node) continue;
       ordered.push(node);
-      if (node.status_code === "ERROR") {
+      if (node.status_code === "ERROR" && !hookReturnedNoOutput(node)) {
         errors.push({ name: node.name || "(unnamed)", message: node.status_message || "" });
       }
       const kids = node.children || [];
@@ -1010,7 +1017,7 @@
     }
     for (let i = ordered.length - 1; i >= 0; i--) {
       const node = ordered[i];
-      let has = node.status_code === "ERROR";
+      let has = node.status_code === "ERROR" && !hookReturnedNoOutput(node);
       const kids = node.children || [];
       for (let j = 0; j < kids.length && !has; j++) {
         if (kids[j] && spanErrorFlag.get(kids[j])) has = true;
@@ -1060,14 +1067,14 @@
     if (node && node.duration_ms != null && node.duration_ms !== "") {
       kids.push(h("span", { class: "span-duration" }, [" " + formatSpanNum(node.duration_ms) + "ms"]));
     }
-    if (node && node.status_code === "ERROR") {
+    if (hookReturnedNoOutput(node)) {
+      kids.push(document.createTextNode(" hook returned no output"));
+    } else if (node && node.status_code === "ERROR") {
       let status = "status=ERROR";
       if (node.status_message) status += " (" + node.status_message + ")";
       if (node.error_type && String(node.status_message || "").indexOf(node.error_type) < 0) status += " error_type=" + node.error_type;
       kids.push(document.createTextNode(" "));
       kids.push(h("span", { class: "span-status" }, [status]));
-    } else if (node && node.status_message && String(node.status_message).indexOf("no hook configured") === 0) {
-      kids.push(document.createTextNode(" " + node.status_message));
     }
     if (node && node.success != null && node.success !== "") {
       let success = "success=" + node.success;
@@ -1124,7 +1131,7 @@
 
   function makeSpanItem(node, depth, jobs) {
     const kids = (node && node.children) || [];
-    const className = node && node.status_code === "ERROR" ? "span-node span-error" : "span-node";
+    const className = node && node.status_code === "ERROR" && !hookReturnedNoOutput(node) ? "span-node span-error" : "span-node";
     const line = spanLine(node);
     if (!kids.length) {
       return h("li", { class: className + " span-leaf" }, [line]);

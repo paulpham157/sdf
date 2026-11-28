@@ -12,7 +12,7 @@ What each tool exports:
 | Claude Code | Beta spans when `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1` and `OTEL_TRACES_EXPORTER=otlp` | Event catalog when `OTEL_LOGS_EXPORTER=otlp` | Counters, including tokens and cost, with `session.id` by default, when `OTEL_METRICS_EXPORTER=otlp` | Nothing is exported until `CLAUDE_CODE_ENABLE_TELEMETRY=1`. Traces also need both trace flags. HTTP is port 4318. gRPC is port 4317. |
 | Codex CLI | Process spans when `otel.trace_exporter` is an OTLP/HTTP URL | Session record (`codex.sse_event`, `codex.tool_result`, and the other `codex.*` events) | Large catalog. Turn metrics carry `conversation.id` only when every tag is valid | Does not read `OTEL_*`. `metrics_exporter` defaults to `statsig`. A model id containing `:` drops the turn metrics. |
 | Qwen Code (`@qwen-code/qwen-code`) | Built in. `qwen-code.interaction`, `qwen-code.llm_request`, `qwen-code.tool` (with `blocked_on_user` and `execution` children), `qwen-code.subagent`, and `qwen-code.hook` spans with `session.id` and `gen_ai.*` | `qwen-code.*` events (`api_response`, `tool_call`, `user_prompt`, ...) with `session.id`. Prompts and request/response text when `logPrompts` is on, which is the default. Every `tool_call` carries the full tool arguments and error text whatever `logPrompts` says. sdf stores none of that text unless `sdf serve --store-content` | `qwen-code.*` cumulative counters, including `qwen-code.token.usage`. No session id unless `telemetry.metrics.includeSessionId` | Off until `telemetry.enabled`. Default protocol is gRPC on port 4317. No cost metric. `sdf init qwen` sets `logPrompts: false`. Mapping is from the docs and source (v0.28.4), not a live capture. |
-| Grok CLI (`grok`) | Internal spans only, when `GROK_INTERNAL_OTLP_TRACES_ENDPOINT` points here and `GROK_INTERNAL_OTLP_HEADERS` replaces the xAI token. Undocumented schema, mapped from a live 1.0.92 run (`agent.prompt`, `tool.execution`, ...). The external OTEL stream is logs and metrics only | `grok_code.*` events (`user_prompt`, `api_request`, `tool_result`, `session_end`, ...) with `session.id`, when `GROK_EXTERNAL_OTEL=1` and `OTEL_LOGS_EXPORTER=otlp`. Prompt text and tool bodies are off by default | `grok_code.*` delta counters, including `grok_code.token.usage` and `grok_code.cost.usage` (USD), with `session.id` by default. Startup metrics have none | Off until `GROK_EXTERNAL_OTEL=1` and an exporter are both set. HTTP protobuf uses port 4318; gRPC uses port 4317. No working directory on the events; the session hook from `sdf init grok --write` supplies it, and `--repo` is the fallback. A literal space in the token header always works; 1.0.92 was also seen live to accept `%20`. Mapped from a live 1.0.92 session; `sdf init grok --write`, its session hook (with the working directory), and the git-hook session id were also checked live with 1.0.92. |
+| Grok CLI (`grok`) | The external stream has no traces. Internal spans are a separate pipeline, mapped from a signed-in 1.0.92 run (`agent.prompt`, `tool.execution`, ...), when `GROK_INTERNAL_OTLP_TRACES_ENDPOINT` points here and `GROK_INTERNAL_OTLP_HEADERS` replaces the xAI token. One custom-model run with no xAI login sent no traces | `grok_code.*` events (`user_prompt`, `api_request`, `tool_result`, `session_end`, ...) with `session.id`, when `GROK_EXTERNAL_OTEL=1` and `OTEL_LOGS_EXPORTER=otlp`. Prompt text and tool bodies are off by default | `grok_code.*` delta counters, including `grok_code.token.usage` and `grok_code.cost.usage` (USD), with `session.id` by default. Startup metrics have none | Off until `GROK_EXTERNAL_OTEL=1` and an exporter are both set. HTTP protobuf uses port 4318; gRPC uses port 4317. No working directory on the events; the session hook from `sdf init grok --write` supplies it, and `--repo` is the fallback. A literal space in the token header always works; 1.0.92 was also seen live to accept `%20`. Mapped from a live 1.0.92 session; `sdf init grok --write`, its session hook (with the working directory), and the git-hook session id were also checked live with 1.0.92. |
 | OpenCode v2 (`@opencode/cli`) | Built in. Chunked OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Runner spans set `session.id` | Process logs only (`cli starting`, watcher, shutdown). No `session.id` | Not exported | No per-session log catalog and no metrics. npm `opencode-ai` is v1, not this CLI. |
 | Gemini CLI (`@google/gemini-cli`) | Built in. `llm_call` and `tool_call` spans with `gen_ai.conversation.id`. Prompt and tool payloads only with `telemetry.traces=true`; sdf drops them before storing unless `sdf serve --store-content` | `gemini_cli.*` events (`config`, `user_prompt`, `api_request`, `api_response`, `api_error`, `tool_call`, ...) with `session.id` | Cumulative counters, including `gemini_cli.token.usage`, with `session.id` | Off until `telemetry.enabled`. Default protocol is gRPC on port 4317. No cost metric. `logPrompts` defaults to true; sdf drops the prompt text it adds unless `--store-content`. Mapping is from the docs and source, not a live capture. |
 | Pi (`@earendil-works/pi-coding-agent`) plus `pi-otel` | Extension spans (`invoke_agent`, `pi.turn`, `chat`, `execute_tool`) with `session.id` | `pi.session.start` and `pi.session.end` only, and only with `PI_OTEL_LOGS=1`. The id is `pi.session.id` | Counters and one duration histogram, only with `PI_OTEL_METRICS=1`. No session id | Not built in. Metrics and logs default off. Default protocol is gRPC on port 4317, which this receiver accepts. |
@@ -260,10 +260,12 @@ for its own export. Put an `[otel]` table in the user config
 --write` also merges a `SessionStart` and `SessionEnd` hook into `hooks.json`,
 even when `config.toml` already has an `[otel]` table (which it leaves as is).
 The hook posts only when the session id equals the thread id, so a descendant
-thread reports nothing. Codex does not run that `SessionStart` hook, so no
-`sdf.session.open` is recorded, until the hooks are trusted in Codex's
-`/hooks` screen. A strict OpenAI-compatible Responses gateway may also need
-the flags in [Codex CLI through a gateway](#codex-cli-through-a-gateway).
+thread reports nothing. Codex skips every sdf hook until it is trusted in
+`/hooks`. That includes the session open, the session close, and the decision
+brief. `codex exec` silently skips unreviewed hooks, so a run can finish with
+no `sdf.session.open` and no error. Read the hook command before trusting it.
+In our test, Codex only succeeded against a strict Responses gateway with the
+flags in [Codex CLI through a gateway](#codex-cli-through-a-gateway).
 
 Each signal has its own exporter, and the defaults are not the same:
 
@@ -550,13 +552,11 @@ signed-in `grok` 1.0.92 in headless mode (`grok -p --always-approve`) on
 
 - With only the `config.toml` that `--write` produced (no `OTEL_*` or
   `GROK_EXTERNAL_OTEL` in the environment), logs and metrics arrived with
-  `session.id`. That was a signed-in session. A later run, a custom model
-  and no xAI login, exported nothing from that table alone. Export started
-  after `GROK_EXTERNAL_OTEL=1`, `OTEL_LOGS_EXPORTER=otlp`, and
-  `OTEL_METRICS_EXPORTER=otlp` were set in the shell (18 logs, 62 metrics).
-  Set the variables. The table is not a substitute in that case.
-  `GROK_INTERNAL_OTLP_TRACES_ENDPOINT` and `GROK_INTERNAL_OTLP_HEADERS`
-  exported no spans in that run.
+  `session.id`. That was a signed-in session.
+- One later run used a custom model and no xAI login. Exporting produced
+  18 logs and 62 metrics, and no traces, once `GROK_EXTERNAL_OTEL=1`,
+  `OTEL_LOGS_EXPORTER=otlp`, and `OTEL_METRICS_EXPORTER=otlp` were set in
+  the shell.
 - The hook posted an open (`source` was `new`) and a close (`reason` was
   `shutdown`) for the same id the telemetry carried, with the repository
   path as `cwd`.
@@ -721,22 +721,22 @@ error type, and records `function_args_bytes`, `error_bytes`, and
   `gen_ai.operation.name`; `QWEN_TELEMETRY_*` instead of
   `GEMINI_TELEMETRY_*`, and `OTEL_EXPORTER_OTLP_ENDPOINT` also sets the
   endpoint.
-- Qwen Code marks a `qwen-code.hook` span ERROR, with status message
+- Qwen Code 0.29.0 marks a `qwen-code.hook` span ERROR, with status message
   "hook runner returned no output without error detail" and `error.type`
-  `hook_error`, when the hook runner returns no output. That is what every
-  PreToolUse and PostToolUse span looks like when nothing is configured for
-  that event. `sdf init qwen --write` installs only a Stop hook, so those
-  two events are this empty-runner span on a normal run, including when the
-  tool call succeeded (seen on Qwen Code 0.29.0). sdf does not show them as
-  `status=ERROR`. The summary and the UI label the span
-  `no hook configured (PreToolUse)` (or whichever event it was), and the
-  default store clears the status and records `sdf.hook.unconfigured`. A
-  hook that failed with any other message, including the Stop hook sdf
-  installs, stays `status=ERROR` (`hook error`, plus the error class when
-  one was kept). A row already stored by an older sdf, whose message was
-  rewritten to `hook error` before this label existed, still shows as an
-  error. The same empty-runner text was also reported for an earlier
-  release (spencerclark.dev, 2026-10-10).
+  `hook_error`, when the hook runner returns no output. That text is also
+  what a timeout, invalid JSON, a silent exit, a spawn failure, or a failed
+  HTTP hook produces, so it does not mean the hook was absent. `sdf init
+  qwen --write` installs only a Stop hook. At read time, the summary and the
+  UI label a span `hook returned no output` when the service is `qwen-code`,
+  the span name is `qwen-code.hook`, `hook_event` is `PreToolUse` or
+  `PostToolUse`, and the status message is that sentence. After the default
+  redaction the sentence is gone and the same label is used when
+  `error_bytes` is 51, the length of that sentence. The label is not a tool
+  failure. The stored status, `error.type`, and status message are left as
+  ingested. A `Stop` event, any other event, and the same span name from
+  another service stay `status=ERROR`. sdf does not read
+  `sdf.hook.unconfigured`. The same empty-output sentence was also reported
+  for an earlier release (spencerclark.dev, 2026-10-10).
 
 ## OpenRouter
 
@@ -959,15 +959,14 @@ If the receiver has a token set, also export
 literal space always works; 1.0.92 also accepted `%20` (see
 [Optional receiver token](#optional-receiver-token)).
 
-Set those three exporter variables in the shell that launches `grok`.
-`sdf init grok --write` still writes the same keys under `[telemetry]`, and
-a signed-in grok 1.0.92 exported from that table alone (the 2026-11-23
-check below). A later run with a custom model and no xAI login exported
-nothing from the table until `GROK_EXTERNAL_OTEL=1`,
-`OTEL_LOGS_EXPORTER=otlp`, and `OTEL_METRICS_EXPORTER=otlp` were set (18
-logs, 62 metrics). `GROK_INTERNAL_OTLP_TRACES_ENDPOINT` and
-`GROK_INTERNAL_OTLP_HEADERS` exported no spans in that run. Spans still
-need an xAI login. The external stream has no traces exporter.
+Set `GROK_EXTERNAL_OTEL=1`, `OTEL_LOGS_EXPORTER=otlp`, and
+`OTEL_METRICS_EXPORTER=otlp` in the shell that launches `grok`.
+`sdf init grok --write` still writes the same keys under `[telemetry]`.
+A signed-in grok 1.0.92 exported from that table alone (the 2026-11-23
+check below). One later run, a custom model and no xAI login, exported
+18 logs and 62 metrics, and no traces, once those three variables were set.
+`sdf init grok --check` says the table alone may not be enough when the
+shell does not have them. The external stream has no traces exporter.
 
 `service.name` is `grok-cli`. Events always carry `session.id`; metrics do
 too unless `OTEL_METRICS_INCLUDE_SESSION_ID=0`. Startup metrics
@@ -1071,9 +1070,7 @@ export GROK_INTERNAL_OTLP_HEADERS="Authorization=Bearer $SDF_OTLP_TOKEN"
   stored row in the live database contained the token or `Authorization`.
 - Spans are exported only when Grok has a usable login and its telemetry
   mode has session metrics on ([provider.rs L164](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-otel/src/provider.rs#L164)).
-  Unauthenticated, no spans arrived. A later run with a custom model and no
-  xAI login also exported no spans when `GROK_INTERNAL_OTLP_TRACES_ENDPOINT`
-  and `GROK_INTERNAL_OTLP_HEADERS` were set. Signed in, spans arrived with and
+  Unauthenticated, no spans arrived. Signed in, spans arrived with and
   without `GROK_TELEMETRY_ENABLED=true`. Turning Grok telemetry on also sends
   Grok's own analytics to xAI. `OTEL_TRACES_EXPORTER=none` turns these spans
   off ([endpoints.rs L212-L219](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-config/src/endpoints.rs#L212-L219)).
@@ -1275,18 +1272,16 @@ wire_api = "responses"
 env_key = "TOKENROUTER_API_KEY"
 ```
 
-A strict OpenAI-compatible Responses gateway can reject Codex's built-in
-tools and some reasoning values. TokenRouter rejected the `namespace` and
-`web_search` tools, and it rejected reasoning `""`, `none`, and `medium`.
-This run needed:
+In our test, Codex only succeeded with these flags:
 
 ```bash
 codex exec -c web_search='"disabled"' -c features.multi_agent=false -c features.goals=false "..."
 ```
 
-with `model_reasoning_effort = "low"` in the config above. The `SessionStart`
-hook that posts `sdf.session.open` does not run until the hooks are trusted
-in Codex's `/hooks` screen.
+and with `model_reasoning_effort = "low"` in the config above. Codex skips
+every sdf hook until it is trusted in `/hooks`, including the session open,
+the session close, and the decision brief. `codex exec` silently skips
+unreviewed hooks. Read the hook command before trusting it.
 
 ### Qwen Code through a gateway
 
@@ -1300,9 +1295,10 @@ export OPENAI_MODEL="<model id>"
 qwen --auth-type openai
 ```
 
-`sdf init qwen --write` installs only a Stop hook. PreToolUse and
-PostToolUse spans from an unconfigured hook are labeled
-`no hook configured`, not `status=ERROR`. See the Qwen Code section above.
+`sdf init qwen --write` installs only a Stop hook. A PreToolUse or
+PostToolUse span whose runner returned no output is labeled
+`hook returned no output` when the summary is read. The stored span stays
+`status=ERROR`. See the Qwen Code section above.
 
 ### OpenCode through a gateway
 
@@ -1332,8 +1328,12 @@ OpenCode loads `@ai-sdk/openai-compatible` from `opencode.json`. The key is
 ### Pi through a gateway
 
 Pi reads `~/.pi/agent/models.json`. `api` is `openai-completions` for
-`/v1/chat/completions`. `apiKey` has to be a command. A bare environment
-variable name is sent as the key and the gateway returns 401.
+`/v1/chat/completions`. `apiKey` accepts `$TOKENROUTER_API_KEY`,
+`${TOKENROUTER_API_KEY}`, a literal key, or a command such as
+`!printenv TOKENROUTER_API_KEY`. A bare name, with no `$`, `${}`, or `!`,
+is sent as the key and the gateway returns 401. The working run set
+`contextWindow`, `maxTokens`, `supportsDeveloperRole`, and
+`supportsReasoningEffort`. Use the model's own limits.
 
 ```json
 {
@@ -1345,7 +1345,13 @@ variable name is sent as the key and the gateway returns 401.
       "models": [
         {
           "id": "<model id>",
-          "name": "<model id>"
+          "name": "<model id>",
+          "contextWindow": 128000,
+          "maxTokens": 8192,
+          "compat": {
+            "supportsDeveloperRole": true,
+            "supportsReasoningEffort": true
+          }
         }
       ]
     }
@@ -1386,11 +1392,10 @@ name = "TokenRouter"
 env_key = "TOKENROUTER_API_KEY"
 ```
 
-With this model and no xAI login, the `[telemetry]` table alone exported
-nothing. Set `GROK_EXTERNAL_OTEL=1`, `OTEL_LOGS_EXPORTER=otlp`, and
-`OTEL_METRICS_EXPORTER=otlp` in the shell. See the Grok CLI section above.
-That run exported logs and metrics and no spans, including with
-`GROK_INTERNAL_OTLP_TRACES_ENDPOINT` set.
+One run with this kind of model and no xAI login exported 18 logs and 62
+metrics, and no traces, once `GROK_EXTERNAL_OTEL=1`,
+`OTEL_LOGS_EXPORTER=otlp`, and `OTEL_METRICS_EXPORTER=otlp` were set in the
+shell. See the Grok CLI section above.
 
 ### Gemini CLI through a gateway
 

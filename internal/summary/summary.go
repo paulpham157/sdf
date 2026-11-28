@@ -789,6 +789,37 @@ func interestingSpan(rec record.Record) bool {
 	return callID(rec) != nil || toolName(rec) != nil
 }
 
+// qwenEmptyHookMessage is the status Qwen Code 0.29.0 sets when a hook
+// runner returns no output. That includes an empty hook and a timeout,
+// invalid JSON, a silent exit, a spawn failure, or a failed HTTP hook.
+const qwenEmptyHookMessage = "hook runner returned no output without error detail"
+
+// qwenEmptyHookOutput is a display rule for one shape of stored span.
+// service.name is qwen-code, the span is qwen-code.hook, and hook_event is
+// PreToolUse or PostToolUse. The status message is the sentinel, or
+// redaction has replaced that message and error_bytes is 51 (the sentinel's
+// length). Stop and every other event stay errors. sdf.hook.unconfigured
+// is not read.
+func qwenEmptyHookOutput(rec record.Record) bool {
+	if rec.StatusCode != "ERROR" || !strings.EqualFold(deref(rec.ServiceName), "qwen-code") || deref(rec.Name) != "qwen-code.hook" {
+		return false
+	}
+	switch strAttr(rec.Attributes, "hook_event") {
+	case "PreToolUse", "PostToolUse":
+	default:
+		return false
+	}
+	if rec.StatusMessage != nil && *rec.StatusMessage == qwenEmptyHookMessage {
+		return true
+	}
+	msg := deref(rec.StatusMessage)
+	if msg != "hook error" && !strings.HasPrefix(msg, "hook error:") {
+		return false
+	}
+	n := record.Number(rec.Attributes["error_bytes"])
+	return n != nil && *n == 51
+}
+
 func spanHead(name string) string {
 	if name == "" {
 		return ""
@@ -837,12 +868,11 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 		label = "(unnamed)"
 	}
 	status, statusMsg, errType := statusCodeOf(rec), rec.StatusMessage, errorTypeOf(rec)
-	// Qwen marks an unconfigured PreToolUse or PostToolUse hook ERROR.
-	// That is not a failed tool. The note is the event name, not the
-	// runner's status text.
-	if event, ok := record.QwenUnconfiguredHook(rec); ok {
+	// Display only. The stored status, error.type, and message stay as
+	// ingested. sdf.hook.unconfigured is ignored: a caller can set it.
+	if qwenEmptyHookOutput(rec) {
 		status = "UNSET"
-		statusMsg = record.Str("no hook configured (" + event + ")")
+		statusMsg = record.Str("hook returned no output")
 		errType = nil
 	}
 	return SpanNode{
