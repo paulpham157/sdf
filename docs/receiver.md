@@ -183,7 +183,11 @@ sqlite3 sdf-telemetry.sqlite \
 
 `sdf serve` opens the database in SQLite WAL mode with a 5-second busy
 timeout, so `sdf summary` and other readers can run while the receiver
-writes. `sdf summary` only reads: it opens the file read-only
+writes. A file still in rollback-journal mode is switched to WAL on that
+open. When several processes do that together, the switch sets the busy
+timeout on its connection and retries `database is locked` for those 5
+seconds; an open that finds the file already in WAL mode leaves it there.
+`sdf summary` only reads: it opens the file read-only
 (`mode=ro`, same busy timeout) and never creates it, applies the schema,
 adds columns, or changes its journal mode. A missing `--db` file in an
 existing directory reports an empty store and leaves no file behind; a
