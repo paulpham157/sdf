@@ -525,20 +525,24 @@ func TestLoginsFilterMutesLegacyAndTicksLogins(t *testing.T) {
 	if cls := tick("status-ui recorded"); !strings.Contains(cls, "dg-tick-login") || strings.Contains(cls, "dg-tick-user") {
 		t.Errorf("login tick %q", cls)
 	}
-	if cls := tick("silent recorded"); strings.Contains(cls, "dg-tick-user") || strings.Contains(cls, "dg-tick-login") || strings.Contains(cls, "dg-tick-agent") {
+	if cls := tick("silent recorded"); !strings.Contains(cls, "dg-tick-unset") || strings.Contains(cls, "dg-tick-user") || strings.Contains(cls, "dg-tick-login") || strings.Contains(cls, "dg-tick-agent") {
 		t.Errorf("empty decided_by tick %q", cls)
 	}
 	css := readAsset(t, "app.css")
-	if !strings.Contains(css, "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)") || !strings.Contains(css, ".dg-key-label { min-width: 0; overflow-wrap: anywhere; }") {
-		t.Error("legend labels do not wrap inside the key")
+	if !strings.Contains(css, "max-height: 64px") || !strings.Contains(css, "overflow: auto") || !strings.Contains(css, ".dg-key-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }") {
+		t.Error("legend key can grow over the nodes")
+	}
+	if !strings.Contains(css, ".dg-tick-unset { fill: var(--sdf-color-bg); stroke: var(--sdf-color-text); }") {
+		t.Error("empty decided_by tick is not a token fill")
 	}
 	if !strings.Contains(css, ".dg-list-item > .detail { font-size: var(--sdf-font-size-xs); color: var(--sdf-color-text-muted); overflow-wrap: anywhere; }") {
 		t.Error("list detail does not wrap a long decided_by")
 	}
 }
 
-// Login badges stay unique in the chapter. A shared prefix is extended,
-// and a one-character login is never the bare letter U or A.
+// Login badges stay unique and fit the circle. 11px bold capitals are
+// about 7.5px wide, so three characters need a diameter of at least 23px.
+// The circle is r=13 (26px) once the mark is longer than one character.
 func TestLoginBadgesStayUnique(t *testing.T) {
 	db := openDB(t)
 	seedGraph(t, db)
@@ -565,18 +569,48 @@ func TestLoginBadgesStayUnique(t *testing.T) {
 			}
 		}
 	}, "#/decisions", "")
-	badges := regexp.MustCompile(`class="dg-badge-text"[^>]*>([^<]*)</text>`).FindAllStringSubmatch(res.Markup, -1)
-	gotMarks := map[string]int{}
-	for _, m := range badges {
-		gotMarks[m[1]]++
-	}
-	for _, want := range []string{"PAUL2", "PAULA", "U2"} {
-		if gotMarks[want] == 0 {
-			t.Errorf("missing badge %s in %v", want, gotMarks)
+	groups := regexp.MustCompile(`(?s)<g [^>]*data-node="[^"]+"[^>]*>.*?</g>`).FindAllString(res.Markup, -1)
+	badge := regexp.MustCompile(`<circle [^>]*r="([^"]+)"[^>]*class="dg-badge"[^>]*>\s*</circle>\s*<text [^>]*class="dg-badge-text"[^>]*>([^<]*)</text>`)
+	seen := map[string]int{}
+	const charPx = 7.5
+	var loginMarks int
+	for _, g := range groups {
+		m := badge.FindStringSubmatch(g)
+		if m == nil {
+			continue
+		}
+		r, err := strconv.ParseFloat(m[1], 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mark := m[2]
+		seen[mark]++
+		legacy := strings.Contains(g, "user (legacy)") || strings.Contains(g, "agent (legacy)")
+		if !legacy && (mark == "U" || mark == "A" || len(mark) > 3) {
+			t.Errorf("login mark %q does not fit the badge circle", mark)
+		}
+		if width := float64(len(mark)) * charPx; width > 2*r-2 {
+			t.Errorf("mark %q is %.1fpx wide inside a %.1fpx circle", mark, width, 2*r)
+		}
+		if !legacy {
+			loginMarks++
 		}
 	}
-	if gotMarks["U"] != 0 {
-		t.Errorf("one-character login used bare U: %v", gotMarks)
+	if loginMarks < 3 {
+		t.Fatalf("login badges %d, marks %v", loginMarks, seen)
+	}
+	for mark, n := range seen {
+		if n > 1 {
+			t.Errorf("mark %q used %d times", mark, n)
+		}
+	}
+	for _, login := range []string{"paul", "paula", "u"} {
+		if !strings.Contains(res.Markup, `title="`+login+`"`) {
+			t.Errorf("legend title missing %s", login)
+		}
+		if !strings.Contains(res.Markup, "by "+login) {
+			t.Errorf("accessible name missing %s", login)
+		}
 	}
 }
 

@@ -566,6 +566,10 @@ footer p { margin: 0; }
   left: 4px;
   z-index: 1;
   width: 250px;
+  /* The first left-lane node starts about 86px down the canvas. A taller
+     open key covers login-u and login-a. Scroll the rest. */
+  max-height: 64px;
+  overflow: auto;
   background: var(--sdf-color-surface-raised);
   border: 1px solid var(--sdf-color-border);
   border-radius: var(--sdf-radius-lg);
@@ -576,7 +580,7 @@ footer p { margin: 0; }
 .dg-key ul { list-style: none; padding: 0; margin: 4px 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3px 8px; }
 .dg-key li:last-child { grid-column: 1 / -1; color: var(--sdf-color-text-muted); }
 .dg-key li { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.dg-key-label { min-width: 0; overflow-wrap: anywhere; }
+.dg-key-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dg-key-swatch {
   display: inline-block;
   width: 20px;
@@ -877,13 +881,14 @@ g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
 .dg-track-base { stroke: var(--sdf-graph-track); stroke-width: 2; }
 .dg-track-done { stroke: var(--sdf-color-text); stroke-width: var(--sdf-border-width-heavy); }
 .dg-tick { stroke: var(--sdf-color-text); stroke-width: 1.5; }
+.dg-tick-unset { fill: var(--sdf-color-bg); stroke: var(--sdf-color-text); }
 .dg-tick-user { fill: var(--sdf-color-text); }
 .dg-tick-agent { fill: var(--sdf-color-bg); }
 .dg-tick-login { fill: var(--sdf-color-accent); }
 .dg-tick-edge { fill: var(--sdf-color-text-muted); stroke: none; }
 .dg-tick-retraction { fill: var(--sdf-color-bg); stroke: var(--sdf-color-error); }
 .dg-tick-future { stroke: var(--sdf-graph-future); }
-.dg-tick-future.dg-tick-user, .dg-tick-future.dg-tick-edge, .dg-tick-future.dg-tick-login { fill: var(--sdf-graph-track); }
+.dg-tick-future.dg-tick-user, .dg-tick-future.dg-tick-edge, .dg-tick-future.dg-tick-login, .dg-tick-future.dg-tick-unset { fill: var(--sdf-graph-track); }
 .dg-tick-future.dg-tick-edge { stroke: none; }
 .dg-playhead { stroke: var(--sdf-color-accent); stroke-width: 2; }
 .dg-thumb { fill: var(--sdf-color-surface-raised); stroke: var(--sdf-color-accent); stroke-width: var(--sdf-border-width-heavy); }
