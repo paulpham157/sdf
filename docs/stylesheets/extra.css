@@ -315,13 +315,13 @@ body {
   background-color: var(--sdf-color-surface-sunken);
 }
 
-/* The href hover above is as specific as the current-page color lock, and
-   it would replace the raised chip with the sunken hover fill. Keep the
-   chip. box-shadow stays none: an inset edge is not part of the cue, and
-   a border would shift the label by a pixel. */
+/* The href hover above is as specific as the current-page color lock.
+   It would replace the inverse chip with a sunken fill and rust text.
+   Rust on the charcoal chip is 2.85:1, so hover keeps the chip. */
 .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover {
-  background-color: var(--sdf-color-surface-raised);
+  color: var(--sdf-color-text-inverse);
+  background-color: var(--sdf-color-surface-inverse);
   box-shadow: none;
 }
 
@@ -340,10 +340,14 @@ body {
   color: var(--sdf-color-accent-text);
 }
 
+/* Current page is an inverse chip at every level, including the phone
+   drawer. Light is a charcoal fill with cream text (10.84:1). Dark is a
+   cream fill with charcoal text (13.34:1). Accent text is not used on
+   the chip. No vertical edge, so the label does not shift. */
 .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link) {
-  color: var(--sdf-color-accent-text);
+  color: var(--sdf-color-text-inverse);
   font-weight: var(--sdf-font-weight-medium);
-  background-color: var(--sdf-color-surface-raised);
+  background-color: var(--sdf-color-surface-inverse);
   box-shadow: none;
 }
 
@@ -351,13 +355,13 @@ body {
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
-  color: var(--sdf-color-accent-text);
-  background-color: var(--sdf-color-surface-raised);
+  color: var(--sdf-color-text-inverse);
+  background-color: var(--sdf-color-surface-inverse);
   box-shadow: none;
 }
 
-/* Dark active item is an inverse pill: surface-inverse fill, text-inverse
-   label. Background only. No vertical edge. The pair is the one --check tests. */
+/* Dark keeps the same tokens. They flip with the scheme, so this block
+   locks the light chip and dark text if a later light rule is added. */
 [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
 [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
 [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
@@ -397,12 +401,12 @@ body {
     padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
   }
 
-  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
-  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
-  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
-  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
-  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
-  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
+  .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+  .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
+  .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
+  .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
+  .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
+  .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
     padding-block: calc(var(--sdf-space-1) * var(--docs-rem));
     padding-inline: calc(var(--sdf-space-2) * var(--docs-rem));
     margin-top: calc(0.625em - var(--sdf-space-1) * var(--docs-rem));

@@ -458,8 +458,9 @@ on accent-text, so that pair is 8.02:1 as well.
 The inverse band flips so the same pairings still pass. In light it is
 charcoal with cream text. In dark `--sdf-color-surface-inverse` is
 `#EDE6DA` and `--sdf-color-text-inverse` is `#1B1F25` (13.34:1). The docs
-sidebar's current page is that pair as a pill: background only, no vertical
-edge. `--sdf-color-accent-on-inverse` and `--sdf-color-focus-on-inverse` are
+sidebar's current page is that pair as a pill in dark, and cream
+`#F6F1E8` on charcoal `#2F3640` (10.84:1) in light. Background only, no
+vertical edge. `--sdf-color-accent-on-inverse` and `--sdf-color-focus-on-inverse` are
 rust-700 `#8E3E1C` (5.93:1 on the light band). Rust fill on that band is
 2.47:1, so it is not used there.
 
@@ -862,14 +863,14 @@ How it consumes `tokens.css`:
   `--sdf-color-bg` or `--sdf-color-surface-sunken`. Text is
   `--sdf-color-text`. The accent is `--sdf-color-accent`. Links in the page
   are `--sdf-color-link`. In the primary sidebar, only the current page is
-  marked. In light that is accent text (`--sdf-color-accent-text`) at
-  medium weight, on a surface-raised background
-  (`--sdf-color-surface-raised`). That pair is 6.89:1. The cue is that fill
-  and weight. The item has no inset accent edge at rest, hover, or focus,
-  so the label does not shift. Hover keeps the same raised background.
-  Keyboard focus keeps the focus outline. In dark the current page is an
-  inverse pill: background `--sdf-color-surface-inverse`, label
-  `--sdf-color-text-inverse`, and no edge. At the desktop sidebar width
+  marked, at every level and in the phone drawer. The chip is the inverse
+  pair in both schemes: background `--sdf-color-surface-inverse`, label
+  `--sdf-color-text-inverse`, medium weight, and no edge. In light that is
+  cream text on a charcoal fill, 10.84:1. In dark it is charcoal text on
+  a cream fill, 13.34:1.
+  Hover and keyboard focus keep that pair. Accent text is not used on the
+  chip (rust on charcoal is 2.85:1). The focus outline stays
+  `--sdf-color-focus`. The label does not shift. At the desktop sidebar width
   the pill adds 4px of block padding and 8px of inline padding. The top
   margin keeps Material's link gap and only gives back that 4px, and the
   bottom margin is the negative padding, so the label stays aligned with
