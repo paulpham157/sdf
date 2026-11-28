@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -9,46 +10,53 @@ import (
 	"testing"
 )
 
-// TestConcurrentOpensSwitchDeleteJournalToWAL is the race on a
-// rollback-journal file: several processes open it together, and each
-// setWAL runs PRAGMA journal_mode=WAL while the others hold the file. A
-// goroutine with its own Open is a separate connection, which is the lock
-// SQLite takes between processes. Every open must succeed, including when
-// SQLite returns "database is locked" from the journal-mode change, and the
-// file must end in WAL mode. A read-only open is not part of this race: it
-// must not change a legacy journal mode.
+// TestConcurrentOpensSwitchDeleteJournalToWAL is the regression for a
+// rollback-journal file whose journal_mode change cannot take the lock.
+// Another connection holds BEGIN IMMEDIATE (a reserved lock), which is the
+// lock a second process holds. SQLite then returns SQLITE_BUSY ("database
+// is locked") from PRAGMA journal_mode=WAL immediately, without waiting out
+// busy_timeout. A setWAL that returns that error fails the open. This setWAL
+// retries; walBusyHook drops the reserved lock after that first busy result
+// so the next attempt can switch the file. The open must succeed and the
+// file must end in WAL mode.
 func TestConcurrentOpensSwitchDeleteJournalToWAL(t *testing.T) {
 	path := writeDeleteJournalDB(t)
+	ctx := t.Context()
 
-	const n = 32
-	start := make(chan struct{})
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			s, err := Open(path)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			errs[i] = s.Close()
-		}(i)
+	hold, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	close(start)
-	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Errorf("opener %d: %v", i, err)
-		}
-		if err != nil && strings.Contains(err.Error(), "database is locked") {
-			t.Errorf("opener %d: database is locked", i)
-		}
+	hold.SetMaxOpenConns(1)
+	conn, err := hold.Conn(ctx)
+	if err != nil {
+		hold.Close()
+		t.Fatal(err)
 	}
-	if t.Failed() {
-		return
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		conn.Close()
+		hold.Close()
+		t.Fatal(err)
+	}
+	var once sync.Once
+	walBusyHook = func() {
+		once.Do(func() {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		})
+	}
+	t.Cleanup(func() {
+		walBusyHook = nil
+		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		conn.Close()
+		hold.Close()
+	})
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	db, err := sql.Open("sqlite", path+"?mode=ro")

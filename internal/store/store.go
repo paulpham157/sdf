@@ -260,30 +260,30 @@ func sqliteCode(err error) int {
 // The change is made on one pinned connection. busy_timeout is set on that
 // connection before PRAGMA journal_mode=WAL. SQLite can still return
 // SQLITE_BUSY ("database is locked") from the switch without waiting the
-// timeout out, when other opens of a rollback-journal file hold the lock
-// the change needs. Those results are retried, with backoff, for
-// busyTimeoutMS. A switch that reports the previous mode is retried the
-// same way. If another opener has already put the file in WAL mode, reading
-// journal_mode again is success and this connection does not keep trying
-// to change it.
+// timeout out, when another connection holds the reserved lock the change
+// needs (BEGIN IMMEDIATE on a rollback-journal file). Those results are
+// retried, with backoff, until busyTimeoutMS has passed. A switch that
+// reports the previous mode is retried the same way. If another opener has
+// already put the file in WAL mode, reading journal_mode again is success
+// and this connection does not keep trying to change it.
 func setWAL(db *sql.DB) error {
-	ctx := context.Background()
-	conn, err := db.Conn(ctx)
+	conn, err := db.Conn(context.Background())
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	deadline := time.Now().Add(time.Duration(busyTimeoutMS) * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(busyTimeoutMS)*time.Millisecond)
+	defer cancel()
 	delay := time.Millisecond
 	var last error
 	for {
 		if err := setConnBusyTimeout(ctx, conn); err != nil {
-			if !retryLock(err, deadline) {
+			if !retryLock(ctx, err) {
 				return err
 			}
 			last = err
-			delay, err = pauseLock(deadline, delay)
+			delay, err = pauseLock(ctx, delay)
 			if err != nil {
 				return last
 			}
@@ -294,11 +294,11 @@ func setWAL(db *sql.DB) error {
 			if sqliteCode(err)&0xff == sqliteReadonly {
 				return nil
 			}
-			if !retryLock(err, deadline) {
+			if !retryLock(ctx, err) {
 				return err
 			}
 			last = err
-			delay, err = pauseLock(deadline, delay)
+			delay, err = pauseLock(ctx, delay)
 			if err != nil {
 				return last
 			}
@@ -315,11 +315,16 @@ func setWAL(db *sql.DB) error {
 			if done, derr := walAlready(ctx, conn); derr == nil && done {
 				return nil
 			}
-			if !retryLock(err, deadline) {
+			if !retryLock(ctx, err) {
 				return err
 			}
+			// The attempt saw the lock. A test holding it drops it here,
+			// before the retry wait, so the next attempt can switch the file.
+			if walBusyHook != nil {
+				walBusyHook()
+			}
 			last = err
-			delay, err = pauseLock(deadline, delay)
+			delay, err = pauseLock(ctx, delay)
 			if err != nil {
 				return last
 			}
@@ -336,15 +341,20 @@ func setWAL(db *sql.DB) error {
 			return nil
 		}
 		last = fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
-		if !time.Now().Before(deadline) {
+		if ctx.Err() != nil {
 			return last
 		}
-		delay, err = pauseLock(deadline, delay)
+		delay, err = pauseLock(ctx, delay)
 		if err != nil {
 			return last
 		}
 	}
 }
+
+// walBusyHook, when set, runs after PRAGMA journal_mode=WAL returns a lock
+// error that setWAL will retry. Tests release a reserved lock held across
+// that attempt. Nil in production.
+var walBusyHook func()
 
 func setConnBusyTimeout(ctx context.Context, conn *sql.Conn) error {
 	_, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA busy_timeout = %d`, busyTimeoutMS))
@@ -371,10 +381,10 @@ func walAlready(ctx context.Context, conn *sql.Conn) (bool, error) {
 }
 
 // retryLock reports whether err is a lock conflict worth trying again
-// before deadline. SQLITE_BUSY_TIMEOUT is not: the busy handler already
+// before ctx ends. SQLITE_BUSY_TIMEOUT is not: the busy handler already
 // waited. A driver that does not expose a code still names the locked file.
-func retryLock(err error, deadline time.Time) bool {
-	if err == nil || !time.Now().Before(deadline) {
+func retryLock(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil {
 		return false
 	}
 	c := sqliteCode(err)
@@ -388,17 +398,21 @@ func retryLock(err error, deadline time.Time) bool {
 	return c == 0 && strings.Contains(err.Error(), "database is locked")
 }
 
-// pauseLock waits delay, capped at the time left before deadline, and
-// returns the next delay. The error means the deadline has passed.
-func pauseLock(deadline time.Time, delay time.Duration) (time.Duration, error) {
-	remain := time.Until(deadline)
-	if remain <= 0 {
-		return delay, fmt.Errorf("store: journal_mode switch timed out")
+// pauseLock waits delay, or until ctx ends, and returns the next delay.
+// The error means the wait ended because ctx is done.
+func pauseLock(ctx context.Context, delay time.Duration) (time.Duration, error) {
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		return delay, ctx.Err()
+	case <-timer.C:
 	}
-	if delay > remain {
-		delay = remain
-	}
-	time.Sleep(delay)
 	next := delay * 2
 	if next > 50*time.Millisecond {
 		next = 50 * time.Millisecond
