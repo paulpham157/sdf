@@ -160,7 +160,7 @@ the only command that calls the network for prices.
 const decisionHelp = `Records decisions and the links between decisions, sessions, commits, and
 pull requests in the same SQLite file as sdf serve.
 
-  add      sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations]
+  add      sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations] [--path GLOB]
   link     sdf decision link --relation REL --from KIND:REF --to KIND:REF
   list     sdf decision list [--json] [--session ID] [--category architecture|policy|product|implementation|operations|none]
   graph    sdf decision graph [--json]
@@ -169,8 +169,10 @@ pull requests in the same SQLite file as sdf serve.
   retract  sdf decision retract --id ID [--reason TEXT]
   audit    sdf decision audit [--json] [--since RFC3339] [--until RFC3339]
   recall   sdf decision recall [--json] [--since DURATION|RFC3339] [--until RFC3339]
-  pre-push run by the git pre-push hook: warns about pushed commits with no decision
-Run sdf decision <add|link|list|graph|brief|check|retract|audit|recall|pre-push> --help for the flags.`
+  scope    sdf decision scope --id ID --path GLOB...
+  touches  sdf decision touches (--range A..B | --paths -)
+  pre-push run by the git pre-push hook: warns about pushed commits with no decision, and about changed file names that match an active decision's paths
+Run sdf decision <add|link|list|graph|brief|check|retract|audit|recall|scope|touches|pre-push> --help for the flags.`
 
 const auditHelp = `Checks the hash-chained ledger that sdf task declare --ledger and sdf verify
 --ledger append to.

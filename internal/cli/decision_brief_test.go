@@ -241,8 +241,16 @@ func TestDecisionBriefUsage(t *testing.T) {
 	if neg.code != 2 || !strings.Contains(neg.stderr, "--max-bytes must be a non-negative integer") {
 		t.Fatalf("%d %q", neg.code, neg.stderr)
 	}
-	alias := run(t, "decision", "brief", "--json")
-	if alias.code != 2 || alias.stdout != "" || !strings.Contains(alias.stderr, "unrecognized arguments") {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	alias := run(t, "decision", "brief", "--db", dbPath, "--json")
+	if alias.code != 0 || alias.stdout != "" || alias.stderr != "" {
 		t.Fatalf("--json: %d %q %q", alias.code, alias.stdout, alias.stderr)
 	}
 }

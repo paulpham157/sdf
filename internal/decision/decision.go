@@ -146,6 +146,9 @@ type Record struct {
 	EffectiveStatus string      `json:"effective_status"`
 	SupersededBy    []string    `json:"superseded_by,omitempty"`
 	Retraction      *Retraction `json:"retraction,omitempty"`
+	// Paths are the decision's path globs, in the order they were recorded.
+	// They live in decision_paths, not on the decision row. Empty is omitted.
+	Paths []string `json:"paths,omitempty"`
 
 	// The fields below are derived when the graph is read and never stored.
 	// They are omitted from JSON when empty or false. See resolve.
@@ -209,6 +212,8 @@ type RecordInput struct {
 	Alternatives    string
 	Reason          string
 	Category        string
+	// Paths are path globs recorded with the decision. Empty records none.
+	Paths []string
 }
 
 // EdgeInput is what a caller supplies for one edge.
@@ -222,8 +227,10 @@ type EdgeInput struct {
 // The CLI calls it before resolving an omitted --decided-by, so a rejected
 // record does not run gh or git.
 func ValidateRecord(in RecordInput) error {
-	_, err := newRecord(in, "1970-01-01T00:00:00.000000+00:00")
-	return err
+	if _, err := newRecord(in, "1970-01-01T00:00:00.000000+00:00"); err != nil {
+		return err
+	}
+	return ValidatePaths(in.Paths)
 }
 
 // Add stores one decision. The id must be new. The statement is one line.
@@ -232,7 +239,10 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	if err := s.InsertDecision(store.Decision{
+	if err := ValidatePaths(in.Paths); err != nil {
+		return Record{}, err
+	}
+	if err := s.InsertDecisionWithPaths(store.Decision{
 		ID:              rec.ID,
 		Statement:       rec.Statement,
 		Status:          rec.Status,
@@ -243,10 +253,60 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		Alternatives:    rec.Alternatives,
 		Reason:          rec.Reason,
 		Category:        rec.Category,
-	}); err != nil {
+	}, in.Paths, pathQuota(rec.ID, in.Paths)); err != nil {
 		return Record{}, err
 	}
+	if len(in.Paths) > 0 {
+		rec.Paths = append([]string(nil), in.Paths...)
+	}
 	return rec, nil
+}
+
+// AddPaths appends globs to a decision that is already stored. It does not
+// update or remove a glob. The decision may be retracted, superseded, or a
+// hypothesis: matching ignores those, and the rows stay.
+func AddPaths(s *store.Store, id string, globs []string) error {
+	id = strings.TrimSpace(id)
+	if !idPattern.MatchString(id) {
+		return fmt.Errorf("decision id must be 1-128 letters, digits, dot, underscore, or dash")
+	}
+	if len(globs) == 0 {
+		return fmt.Errorf("at least one path")
+	}
+	if err := ValidatePaths(globs); err != nil {
+		return err
+	}
+	if err := known(s, Endpoint{Kind: KindDecision, Ref: id}); err != nil {
+		return err
+	}
+	return appendPaths(s, id, now(), globs)
+}
+
+func appendPaths(s *store.Store, id, recordedAt string, globs []string) error {
+	return s.AppendDecisionPaths(id, recordedAt, globs, pathQuota(id, globs))
+}
+
+func pathQuota(id string, globs []string) func([]store.DecisionPath) error {
+	return func(existing []store.DecisionPath) error {
+		n := 0
+		have := map[string]bool{}
+		for _, p := range existing {
+			if p.DecisionID != id {
+				continue
+			}
+			n++
+			have[p.Glob] = true
+		}
+		if n+len(globs) > maxGlobsPerDecision {
+			return fmt.Errorf("a decision can have at most %d paths", maxGlobsPerDecision)
+		}
+		for _, g := range globs {
+			if have[g] {
+				return fmt.Errorf("path already recorded for this decision: %s", strconv.Quote(g))
+			}
+		}
+		return nil
+	}
 }
 
 // ErrSelfLink, ErrSupersedesKind, ErrSupersedesCycle, and ErrDuplicateEdge
@@ -599,6 +659,10 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 	if err != nil {
 		return Graph{}, err
 	}
+	pathRows, err := s.LoadDecisionPathsContext(ctx)
+	if err != nil {
+		return Graph{}, err
+	}
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
 		out.Decisions = append(out.Decisions, withLegacy(Record{
@@ -628,8 +692,15 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 			byID[r.DecisionID] = &Retraction{RetractedAt: r.RecordedAt, Reason: r.Reason, RetractedBy: r.RetractedBy}
 		}
 	}
+	pathsByID := map[string][]string{}
+	for _, p := range pathRows {
+		pathsByID[p.DecisionID] = append(pathsByID[p.DecisionID], p.Glob)
+	}
 	for i := range out.Decisions {
 		out.Decisions[i].Retraction = byID[out.Decisions[i].ID]
+		if ps := pathsByID[out.Decisions[i].ID]; len(ps) > 0 {
+			out.Decisions[i].Paths = ps
+		}
 	}
 	resolve(&out)
 	return out, nil
@@ -1048,6 +1119,11 @@ func WriteText(w io.Writer, g Graph) error {
 		for _, extra := range relationLines(d) {
 			line := make([]string, len(row))
 			line[len(row)-1] = extra
+			decisions = append(decisions, line)
+		}
+		for _, glob := range d.Paths {
+			line := make([]string, len(row))
+			line[len(row)-1] = "path: " + cell(glob)
 			decisions = append(decisions, line)
 		}
 		if r := d.Retraction; r != nil {

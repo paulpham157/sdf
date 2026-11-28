@@ -395,6 +395,9 @@ func (s *Store) migrate() error {
 	if err := s.migrateRetractions(); err != nil {
 		return err
 	}
+	if err := s.migratePaths(); err != nil {
+		return err
+	}
 	return s.migrateRecordRevision()
 }
 

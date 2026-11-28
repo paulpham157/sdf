@@ -193,10 +193,18 @@
   not post (receiver down, no token, older hook), pre-push still accepts the
   trailer locally, and audit will not until the edge exists. The check reads
   that one trailer from the commit message locally, the same way post-commit
-  does. It does not look
-  at which constraints a commit touches
-  ([#305](https://github.com/paulpham157/sdf/issues/305)). The store path is fixed when the hook
-  is installed (`--db`) or taken from `SDF_PRE_PUSH_DB`; without either the
+  does, and file names of pushed commits only, never content
+  ([#305](https://github.com/paulpham157/sdf/issues/305)). A path match warns
+  and does not block, even with `sdf.prePush=block`; `sdf.prePushTouches off`
+  silences it. Superseded globs are not inherited, globs are not removed,
+  content and symbols are not read, and the overview charts still do not
+  plot touch counts. A large or slow store can spend the 5 second budget
+  before the warning is printed; the check then skips and the push
+  continues, and the same skip happens when one git listing is larger
+  than 32 MiB. A trailing `/` matches paths inside that directory, not a
+  file of the same name, because the check sees file names only. The
+  store path is fixed when the hook is installed (`--db`) or taken from
+  `SDF_PRE_PUSH_DB`; without either the
   check is skipped with a note. A hook installed by an older sdf has no
   pre-push; run `sdf init --git-hooks --db PATH` again. Tested with real
   pushes to a local bare remote, not against a hosting service or from inside
@@ -207,7 +215,7 @@
   do not list every audit finding, do not include `SDF-Decision` trailers
   in recall (those are not stored; see
   [#281](https://github.com/paulpham157/sdf/issues/281)), and do not plot
-  constraint-touch metrics
+  path-touch warnings from the pre-push check
   ([#305](https://github.com/paulpham157/sdf/issues/305)).
   `GET /api/overview-charts`, `GET /api/summary`, and `GET /api/snapshot`
   read through a separate read-only connection and do not hold the

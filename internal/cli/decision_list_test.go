@@ -208,6 +208,9 @@ func TestDecisionListReadsWithoutWriting(t *testing.T) {
 	if err := check.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'decision_retractions'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("migrated on read: %d %v", n, err)
 	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'decision_paths'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("decision_paths migrated on read: %d %v", n, err)
+	}
 }
 
 func TestDecisionListUsage(t *testing.T) {

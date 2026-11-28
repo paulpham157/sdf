@@ -48,7 +48,7 @@ no API key or network connection.
   tokens or duration. A model with no published price is `unknown`, not
   zero
 - Decision records you write down (`sdf decision add`, `link`, `list`,
-  `graph`, `brief`, `check`, `retract`, `audit`, `pre-push`): who decided, alternatives,
+  `graph`, `brief`, `check`, `retract`, `audit`, `scope`, `touches`, `pre-push`): who decided, alternatives,
   links to sessions and commits, and a read-only graph in the UI
 - Prompt, response, tool, and error text is dropped before storing, for
   every agent, unless you opt in with `--store-content`
@@ -125,7 +125,7 @@ Every command prints its flags with `--help` (or `sdf help <command>`).
 | `sdf serve` | Receive OTLP, store it in local SQLite, and serve the UI |
 | `sdf init` | Print or write the settings that point an agent at the receiver |
 | `sdf summary` | Print sessions: duration, tokens, tool calls, and cost |
-| `sdf decision` | Record, link, list, graph, brief, check, retract, audit, or pre-push decisions (`add`, `link`, `list`, `graph`, `brief`, `check`, `retract`, `audit`, `pre-push`) |
+| `sdf decision` | Record, link, list, graph, brief, check, retract, audit, scope, check path touches, or pre-push decisions (`add`, `link`, `list`, `graph`, `brief`, `check`, `retract`, `audit`, `scope`, `touches`, `pre-push`) |
 | `sdf audit` | Verify or print the head of the optional hash-chained ledger (`verify`, `head`) |
 | `sdf task` | Declare or show a task's acceptance criteria (`declare`, `show`) |
 | `sdf verify` | Run a declared task's checks against a commit |

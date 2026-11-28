@@ -440,6 +440,10 @@ func TestOpenReadOnlyOldDecisionTables(t *testing.T) {
 	if err != nil || len(retractions) != 0 {
 		t.Fatalf("%v %v", retractions, err)
 	}
+	paths, err := s.LoadDecisionPaths()
+	if err != nil || len(paths) != 0 {
+		t.Fatalf("%v %v", paths, err)
+	}
 	_ = s.Close()
 	after, err := os.ReadFile(path)
 	if err != nil {

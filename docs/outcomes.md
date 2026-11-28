@@ -443,14 +443,16 @@ prints empty lists. A file that does not exist, in a directory that does, reads
 as such an empty store and is not created (exit 0). A missing directory exits
 1 with `sdf decision list: store: cannot open "PATH": directory "DIR" does not
 exist`, the same message `sdf summary` gives. A file written before a later
-column or table, such as one without `decision_retractions`, is read as is:
-the missing columns read as empty and the missing table as no retractions.
+column or table, such as one without `decision_retractions` or
+`decision_paths`, is read as is: the missing columns read as empty, a missing
+retractions table as no retractions, and a missing paths table as no path
+globs.
 
 ```bash
 sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
   --status decision [--decided-by LOGIN] \
   [--category architecture|policy|product|implementation|operations] \
-  [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]
+  [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--path GLOB] [--db PATH]
 sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
 sdf decision link --relation supersedes --from decision:use-wal \
@@ -462,6 +464,8 @@ sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
 sdf decision retract --id use-sqlite [--reason TEXT] [--retracted-by user|agent] [--db PATH]
 sdf decision audit [--db PATH] [--json] [--since RFC3339] [--until RFC3339]
 sdf decision recall [--db PATH] [--json] [--since DURATION|RFC3339] [--until RFC3339]
+sdf decision scope --id ID --path GLOB... [--db PATH]
+sdf decision touches [--db PATH] (--range A..B | --paths -)
 sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-push lines
 ```
 
@@ -1017,8 +1021,13 @@ a change that removes or renames one gets a new `schema` value. Every list is
 same rules to the commits a push sends and warns (or, with
 `sdf.prePush=block`, blocks) when one SDF recorded has no `implements` edge
 to a decision that is not retracted. Unlike audit, a session link does not
-satisfy it, and it also accepts an `SDF-Decision: <id>` trailer. See
-[Pre-push decision check](receiver.md#pre-push-decision-check).
+satisfy it, and it also accepts an `SDF-Decision: <id>` trailer. It also
+warns, without blocking, when a changed file name matches a path glob on an
+active decision. It reads file names of pushed commits only, never content.
+A trailing `/` matches paths inside that directory, not a file of the same
+name. A store read that uses the 5 second budget, or a git listing larger
+than 32 MiB, skips the check and the push continues.
+See [Pre-push decision check](receiver.md#pre-push-decision-check).
 
 The totals are denominators, counted over the same window as `commits[]`:
 `decisions_active - decisions_active_with_implements` is the number of

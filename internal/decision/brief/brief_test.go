@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestClassifyRanksLockedConstraintsFirst(t *testing.T) {
 		t.Fatalf("got %d items, want %d: %+v", len(got), len(want), ids(got))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Fatalf("item %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
@@ -92,7 +93,7 @@ func TestClassifyLoginIsLockedAndAgentIsNot(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Fatalf("item %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}

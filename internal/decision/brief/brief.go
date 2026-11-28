@@ -77,6 +77,8 @@ type Item struct {
 	DecidedBySource string `json:"decided_by_source,omitempty"`
 	DecidedByLegacy bool   `json:"decided_by_legacy,omitempty"`
 	Locked          bool   `json:"locked"`
+	// Paths are the decision's path globs, in recorded order. Empty is omitted.
+	Paths []string `json:"paths,omitempty"`
 }
 
 // Result is the ranked brief after caps. Items is never nil. Omitted is
@@ -130,6 +132,9 @@ func Classify(g decision.Graph) []Item {
 			DecidedBy:       d.DecidedBy,
 			DecidedBySource: d.DecidedBySource,
 			DecidedByLegacy: decision.LegacyDecidedBy(d.DecidedBy),
+		}
+		if len(d.Paths) > 0 {
+			item.Paths = d.Paths
 		}
 		switch {
 		case isConstraint(d):

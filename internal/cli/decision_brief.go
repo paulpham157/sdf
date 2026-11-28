@@ -14,7 +14,7 @@ import (
 	"github.com/paulpham157/sdf/internal/store"
 )
 
-const decisionBriefUsage = "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]"
+const decisionBriefUsage = "usage: sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json] [--json]"
 
 const (
 	defaultBriefItems = 15
@@ -83,6 +83,8 @@ func cmdDecisionBrief(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 			maxBytes = n
+		case arg == "--json":
+			format = "json"
 		case arg == "--format":
 			v, ok := take(&i, args)
 			if !ok || (v != "text" && v != "json") {

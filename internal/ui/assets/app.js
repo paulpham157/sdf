@@ -680,6 +680,8 @@
         else if (superseded) cls = "decision superseded";
         kids.push(h("p", { class: cls }, line));
         const extra = [];
+        const paths = Array.isArray(record.paths) ? record.paths : [];
+        if (paths.length) extra.push("paths " + paths.join(", "));
         if (record.alternatives) extra.push("alternatives " + record.alternatives);
         if (record.reason) extra.push("reason " + record.reason);
         if (blockers.length && !record.blocked) extra.push(blockerText);
