@@ -294,7 +294,7 @@ func (p *proxy) writeUpstream(w http.ResponseWriter, resp *http.Response, kind s
 	w.WriteHeader(resp.StatusCode)
 	if resp.StatusCode >= 400 {
 		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_, _ = w.Write([]byte(redact(string(buf), p.key)))
+		_, _ = w.Write([]byte(redactSecrets(string(buf), p.key, p.gate)))
 		return
 	}
 	if !stream {

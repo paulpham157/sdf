@@ -31,12 +31,13 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
+		// os.Exit skips defers, so sdf serve and the temp directory can remain.
 		os.Exit(130)
 	}()
 	rep, err := live.Run(ctx, opt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sdf-recall: %s\n", live.Redact(err.Error(), opt.Key))
-		os.Exit(1)
+		os.Exit(live.ExitCode(ctx, err))
 	}
 	if rep.Skipped {
 		fmt.Fprintln(os.Stderr, "sdf-recall: skipped, no API key (set SDF_RECALL_API_KEY or TOKENROUTER_API_KEY)")
@@ -51,5 +52,8 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Fprint(os.Stdout, body)
+	}
+	if code := live.ExitCode(ctx, nil); code != 0 {
+		os.Exit(code)
 	}
 }

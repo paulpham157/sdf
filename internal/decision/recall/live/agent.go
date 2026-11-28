@@ -65,6 +65,9 @@ type agent interface {
 	Binary() string
 	Support() support
 	InstallCommands() [][]string
+	// IgnoreInstallScripts is false only for a package whose postinstall
+	// is required to produce a runnable binary. OpenCode is that package.
+	IgnoreInstallScripts() bool
 	InstallHint() string
 	Prepare(ctx context.Context, spec spec) (invocation, error)
 }

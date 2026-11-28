@@ -44,8 +44,11 @@ func (opencodeAgent) Support() support {
 	return support{OK: true, Protocol: protocolChat}
 }
 func (opencodeAgent) InstallCommands() [][]string {
-	return [][]string{{"npm", "install", "-g", "--ignore-scripts", "@opencode/cli@2.4.1"}}
+	// postinstall downloads the platform binary. --ignore-scripts leaves a
+	// script with the wrong exec format.
+	return [][]string{{"npm", "install", "-g", "@opencode/cli@2.4.1"}}
 }
+func (opencodeAgent) IgnoreInstallScripts() bool { return false }
 func (opencodeAgent) InstallHint() string {
 	return "Install with npm install -g @opencode/cli, or pass --install."
 }
@@ -114,6 +117,7 @@ func (piAgent) InstallCommands() [][]string {
 		{"pi", "install", "npm:pi-otel@0.3.0"},
 	}
 }
+func (piAgent) IgnoreInstallScripts() bool { return true }
 func (piAgent) InstallHint() string {
 	return "Install with npm install -g --ignore-scripts @earendil-works/pi-coding-agent and pi install npm:pi-otel, or pass --install."
 }
@@ -182,6 +186,7 @@ func (qwenAgent) Support() support {
 func (qwenAgent) InstallCommands() [][]string {
 	return [][]string{{"npm", "install", "-g", "--ignore-scripts", "@qwen-code/qwen-code@0.28.4"}}
 }
+func (qwenAgent) IgnoreInstallScripts() bool { return true }
 func (qwenAgent) InstallHint() string {
 	return "Install with npm install -g @qwen-code/qwen-code, or pass --install."
 }
@@ -266,6 +271,7 @@ func (grokAgent) Support() support {
 	return support{OK: true, Protocol: protocolChat}
 }
 func (grokAgent) InstallCommands() [][]string { return nil }
+func (grokAgent) IgnoreInstallScripts() bool  { return true }
 func (grokAgent) InstallHint() string {
 	return "Install the Grok CLI so grok is on PATH. This runner does not install it."
 }
@@ -319,6 +325,7 @@ func (copilotAgent) Support() support {
 func (copilotAgent) InstallCommands() [][]string {
 	return [][]string{{"npm", "install", "-g", "--ignore-scripts", "@github/copilot@1.0.114"}}
 }
+func (copilotAgent) IgnoreInstallScripts() bool { return true }
 func (copilotAgent) InstallHint() string {
 	return "Install with npm install -g @github/copilot, or pass --install."
 }
@@ -381,6 +388,7 @@ func (codexAgent) Support() support {
 	}
 }
 func (codexAgent) InstallCommands() [][]string { return nil }
+func (codexAgent) IgnoreInstallScripts() bool  { return true }
 func (codexAgent) InstallHint() string         { return "" }
 func (codexAgent) Prepare(context.Context, spec) (invocation, error) {
 	return invocation{}, errUnsupported
@@ -397,6 +405,7 @@ func (claudeAgent) Support() support {
 	return support{OK: true, Protocol: protocolAnthropic}
 }
 func (claudeAgent) InstallCommands() [][]string { return nil }
+func (claudeAgent) IgnoreInstallScripts() bool  { return true }
 func (claudeAgent) InstallHint() string {
 	return "Install Claude Code so claude is on PATH. This runner does not install it."
 }
@@ -448,6 +457,7 @@ func (geminiAgent) Support() support {
 	}
 }
 func (geminiAgent) InstallCommands() [][]string { return nil }
+func (geminiAgent) IgnoreInstallScripts() bool  { return true }
 func (geminiAgent) InstallHint() string         { return "" }
 func (geminiAgent) Prepare(context.Context, spec) (invocation, error) {
 	return invocation{}, errUnsupported

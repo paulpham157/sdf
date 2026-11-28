@@ -265,6 +265,11 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return onceResult{}, err
 	}
+	if a.ID() == "pi" {
+		if err := restorePiAgent(opt.cliPrefix, home); err != nil {
+			return onceResult{}, err
+		}
+	}
 	if err := gitInit(ctx, repo, opt.Key); err != nil {
 		return onceResult{}, err
 	}
@@ -303,7 +308,7 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 	stopServe := func() { stopOnce.Do(func() { stopProcess(cmdServe) }) }
 	defer stopServe()
 	if err := waitPort(ctx, otlpPort, 8*time.Second); err != nil {
-		msg := truncate(redact(serveErr.String(), opt.Key), 300)
+		msg := truncate(redactSecrets(serveErr.String(), opt.Key), 300)
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -344,7 +349,7 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 	cmd.Env = agentEnv(opt, home, filepath.Dir(sdfBin), a.Support().Protocol, inv, px.gate)
 	var stderrTail tailWriter
 	stderrTail.max = 64 << 10
-	logPath, logFile := openRunLog(opt, a.ID(), fx.Name, runIndex)
+	logPath, logFile := openRunLog(opt, a.ID(), fx.Name, runIndex, px.gate)
 	stderrSink := io.Writer(&stderrTail)
 	if logFile != nil {
 		defer logFile.Close()
@@ -366,9 +371,9 @@ func runOnce(ctx context.Context, opt Options, a agent, bin string, fx recall.Fi
 		case runCtx.Err() != nil:
 			detail = "canceled"
 		default:
-			detail = noiseTail(redact(stderrTail.String(), opt.Key), 4096)
+			detail = noiseTail(redactSecrets(stderrTail.String(), opt.Key, px.gate), 4096)
 			if detail == "" {
-				detail = redact(runErr.Error(), opt.Key)
+				detail = redactSecrets(runErr.Error(), opt.Key, px.gate)
 			}
 		}
 		if logPath != "" {
@@ -461,7 +466,7 @@ func resolveSDF(ctx context.Context, opt Options) (string, bool, error) {
 	bin := filepath.Join(dir, "sdf")
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/sdf")
 	cmd.Dir = root
-	cmd.Env = append(filterKey(os.Environ(), opt.Key), "CGO_ENABLED=0")
+	cmd.Env = buildEnv(opt.Key)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		_ = os.RemoveAll(dir)
@@ -476,19 +481,22 @@ func installCLI(ctx context.Context, a agent, key, prefix string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	ignore := a.IgnoreInstallScripts()
 	var last error
 	for _, argv := range a.InstallCommands() {
 		if len(argv) == 0 {
 			continue
 		}
-		argv = rewriteInstall(argv, prefix)
+		home := prefix
+		if argv[0] == "pi" {
+			home = piInstallHome(prefix)
+			if err := os.MkdirAll(home, 0o700); err != nil {
+				return err
+			}
+		}
+		argv = rewriteInstall(argv, prefix, ignore)
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-		cmd.Env = append(filterKey(os.Environ(), key),
-			"HOME="+prefix,
-			"NPM_CONFIG_PREFIX="+prefix,
-			"NPM_CONFIG_CACHE="+filepath.Join(prefix, "npm-cache"),
-			"PATH="+joinPath(filepath.Join(prefix, "bin")),
-		)
+		cmd.Env = installEnv(ignore, home, prefix)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			last = fmt.Errorf("%s: %s", argv[0], truncate(redact(string(out), key), 200))
@@ -497,20 +505,68 @@ func installCLI(ctx context.Context, a agent, key, prefix string) error {
 	return last
 }
 
-// rewriteInstall points an npm -g install at prefix and keeps
-// --ignore-scripts. Commands that are not npm are unchanged. The prefix
-// is a directory this run created, not the user's npm prefix.
-func rewriteInstall(argv []string, prefix string) []string {
+// piInstallHome is where `pi install` writes ~/.pi. Each Pi run copies
+// that tree into its own home, which is where Pi loads extensions.
+func piInstallHome(prefix string) string {
+	return filepath.Join(prefix, "pi-home")
+}
+
+// installEnv is an allowlist. The parent environment is not copied, so
+// npm tokens and cloud keys are not visible to the installer. OpenCode
+// is the adapter that must run scripts, so it does not set
+// NPM_CONFIG_IGNORE_SCRIPTS.
+func installEnv(ignoreScripts bool, home, prefix string) []string {
+	env := allowEnv(home, joinPath(filepath.Join(prefix, "bin")))
+	env = append(env,
+		"NPM_CONFIG_PREFIX="+prefix,
+		"NPM_CONFIG_CACHE="+filepath.Join(prefix, "npm-cache"),
+	)
+	// OpenCode's postinstall downloads a platform binary, so the installer
+	// keeps the proxy and CA variables and nothing else from the parent.
+	for _, name := range []string{
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+		"http_proxy", "https_proxy", "no_proxy", "all_proxy",
+		"SSL_CERT_FILE", "SSL_CERT_DIR",
+	} {
+		if v := os.Getenv(name); v != "" && !strings.ContainsAny(v, "\r\n") {
+			env = append(env, name+"="+v)
+		}
+	}
+	if ignoreScripts {
+		env = append(env, "NPM_CONFIG_IGNORE_SCRIPTS=true")
+	}
+	return env
+}
+
+func restorePiAgent(prefix, home string) error {
+	if prefix == "" || home == "" {
+		return nil
+	}
+	src := filepath.Join(piInstallHome(prefix), ".pi")
+	if _, err := os.Stat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return copyTree(src, filepath.Join(home, ".pi"))
+}
+
+// rewriteInstall points an npm install at prefix. ignoreScripts adds
+// --ignore-scripts; otherwise that flag is removed so a required
+// postinstall can run. Commands that are not npm are unchanged. The
+// prefix is a directory this run created, not the user's npm prefix.
+func rewriteInstall(argv []string, prefix string, ignoreScripts bool) []string {
 	if len(argv) == 0 || argv[0] != "npm" || prefix == "" {
 		return argv
 	}
 	out := make([]string, 0, len(argv)+4)
 	out = append(out, argv[0])
-	ignore, hasPrefix := false, false
+	hasPrefix := false
 	for i := 1; i < len(argv); i++ {
 		a := argv[i]
 		if a == "--ignore-scripts" {
-			ignore = true
+			continue
 		}
 		if a == "--prefix" && i+1 < len(argv) {
 			hasPrefix = true
@@ -520,7 +576,7 @@ func rewriteInstall(argv []string, prefix string) []string {
 	if !hasPrefix {
 		out = append(out, "--prefix", prefix)
 	}
-	if !ignore {
+	if ignoreScripts {
 		out = append(out, "--ignore-scripts")
 	}
 	return out
@@ -536,7 +592,7 @@ func gitInit(ctx context.Context, repo, key string) error {
 	for _, args := range steps {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = repo
-		cmd.Env = append(filterKey(os.Environ(), key),
+		cmd.Env = append(allowEnv(os.Getenv("HOME"), os.Getenv("PATH")),
 			"GIT_AUTHOR_NAME=sdf-recall",
 			"GIT_AUTHOR_EMAIL=recall@example.invalid",
 			"GIT_COMMITTER_NAME=sdf-recall",
@@ -625,12 +681,63 @@ func (o Options) look(name string) (string, error) {
 }
 
 func baseEnv(home, sdfDir, key string) []string {
-	return filterKey([]string{
-		"PATH=" + prependPath(sdfDir),
+	return filterKey(allowEnv(home, prependPath(sdfDir)), key)
+}
+
+// allowEnv is the process environment for installers, git, and CLIs.
+// It does not copy os.Environ, so npm tokens and cloud credentials stay
+// out of those processes. TERM is copied when the parent set it.
+func allowEnv(home, path string) []string {
+	if home == "" {
+		home = os.TempDir()
+	}
+	env := []string{
+		"PATH=" + path,
 		"HOME=" + home,
 		"TMPDIR=" + os.TempDir(),
 		"LANG=C.UTF-8",
-	}, key)
+	}
+	if term := os.Getenv("TERM"); term != "" && !strings.ContainsAny(term, "\r\n") {
+		env = append(env, "TERM="+term)
+	}
+	return env
+}
+
+// buildEnv is the allowlist for `go build`. Go toolchain variables and
+// the usual proxy and certificate variables are kept. Everything else
+// from the parent, including npm and cloud credentials, is dropped.
+func buildEnv(key string) []string {
+	env := allowEnv(os.Getenv("HOME"), os.Getenv("PATH"))
+	for _, e := range os.Environ() {
+		name, val, ok := strings.Cut(e, "=")
+		if !ok || !allowedBuildVar(name) {
+			continue
+		}
+		if key != "" && strings.Contains(val, key) {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env, "CGO_ENABLED=0")
+	return env
+}
+
+func allowedBuildVar(name string) bool {
+	switch name {
+	case "PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "TERM", "LC_ALL", "LC_CTYPE", "CGO_ENABLED":
+		return false
+	}
+	if strings.HasPrefix(name, "GO") {
+		return true
+	}
+	switch name {
+	case "CC", "CXX", "AR",
+		"SSL_CERT_FILE", "SSL_CERT_DIR",
+		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+		"http_proxy", "https_proxy", "no_proxy", "all_proxy":
+		return true
+	}
+	return false
 }
 
 func agentEnv(opt Options, home, sdfDir string, proto protocol, inv invocation, token string) []string {
@@ -638,16 +745,13 @@ func agentEnv(opt Options, home, sdfDir string, proto protocol, inv invocation, 
 	if opt.cliPrefix != "" {
 		binDir = filepath.Join(opt.cliPrefix, "bin")
 	}
-	env := []string{
-		"PATH=" + joinPath(binDir, sdfDir),
-		"HOME=" + home,
-		"TMPDIR=" + os.TempDir(),
-		"LANG=C.UTF-8",
-		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
-		"XDG_DATA_HOME=" + filepath.Join(home, ".local", "share"),
-		"XDG_CACHE_HOME=" + filepath.Join(home, ".cache"),
-		"SDF_RECALL_PROTOCOL=" + string(proto),
-	}
+	env := allowEnv(home, joinPath(binDir, sdfDir))
+	env = append(env,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
+		"XDG_CACHE_HOME="+filepath.Join(home, ".cache"),
+		"SDF_RECALL_PROTOCOL="+string(proto),
+	)
 	switch proto {
 	case protocolAnthropic:
 		env = append(env, "SDF_RECALL_MODEL_BASE="+opt.proxyAnthropic)
@@ -768,7 +872,7 @@ func mergeReportFiles(paths []string) (Report, error) {
 	return mergeReports(parts)
 }
 
-func openRunLog(opt Options, agent, scenario string, runIndex int) (string, *runLog) {
+func openRunLog(opt Options, agent, scenario string, runIndex int, token string) (string, *runLog) {
 	if opt.OutDir == "" {
 		return "", nil
 	}
@@ -783,7 +887,7 @@ func openRunLog(opt Options, agent, scenario string, runIndex int) (string, *run
 	fmt.Fprintf(f, "agent=%s scenario=%s run=%d\n", agent, scenario, runIndex+1)
 	l := &runLog{f: f}
 	l.rw.w = f
-	l.rw.key = opt.Key
+	l.rw.secrets = secretList(opt.Key, token)
 	return path, l
 }
 
@@ -806,23 +910,25 @@ func (l *runLog) Close() error {
 }
 
 type redactWriter struct {
-	w    io.Writer
-	key  string
-	hold []byte
+	w       io.Writer
+	secrets []string
+	hold    []byte
 }
 
 func (r *redactWriter) Write(p []byte) (int, error) {
 	r.hold = append(r.hold, p...)
 	keep := 512
-	if n := len(r.key) * 2; n > keep {
-		keep = n
+	for _, s := range r.secrets {
+		if n := len(s) * 2; n > keep {
+			keep = n
+		}
 	}
 	for {
 		i := bytes.IndexByte(r.hold, '\n')
 		if i < 0 {
 			break
 		}
-		line := redact(string(r.hold[:i+1]), r.key)
+		line := redactSecrets(string(r.hold[:i+1]), r.secrets...)
 		r.hold = append([]byte{}, r.hold[i+1:]...)
 		if _, err := io.WriteString(r.w, line); err != nil {
 			return len(p), err
@@ -833,7 +939,7 @@ func (r *redactWriter) Write(p []byte) (int, error) {
 		if cut < 1 {
 			return len(p), nil
 		}
-		if _, err := io.WriteString(r.w, redact(string(r.hold[:cut]), r.key)); err != nil {
+		if _, err := io.WriteString(r.w, redactSecrets(string(r.hold[:cut]), r.secrets...)); err != nil {
 			return len(p), err
 		}
 		r.hold = append([]byte{}, r.hold[cut:]...)
@@ -845,7 +951,7 @@ func (r *redactWriter) Flush() error {
 	if len(r.hold) == 0 {
 		return nil
 	}
-	s := redact(string(r.hold), r.key)
+	s := redactSecrets(string(r.hold), r.secrets...)
 	r.hold = nil
 	_, err := io.WriteString(r.w, s)
 	return err
@@ -925,6 +1031,41 @@ var (
 // Redact replaces the provider key and common token shapes with a
 // placeholder. An empty key still redacts Bearer and sk- tokens.
 func Redact(text, key string) string { return redact(text, key) }
+
+// ExitCode is 130 when the run was interrupted, 1 for any other error,
+// and 0 for a finished or skipped report.
+func ExitCode(ctx context.Context, err error) int {
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return 130
+	}
+	if err != nil {
+		return 1
+	}
+	return 0
+}
+
+func secretList(parts ...string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range parts {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+func redactSecrets(s string, secrets ...string) string {
+	if len(secrets) == 0 {
+		return redact(s, "")
+	}
+	for _, sec := range secrets {
+		s = redact(s, sec)
+	}
+	return s
+}
 
 func redact(s, key string) string {
 	if s == "" {

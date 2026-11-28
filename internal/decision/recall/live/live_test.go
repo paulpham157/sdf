@@ -262,6 +262,8 @@ func TestAdapterFilesOmitKey(t *testing.T) {
 func TestAgentProcessDoesNotSeeProviderKey(t *testing.T) {
 	const sentinel = "sk-sentinel-recall-SHOULD-NOT-LEAK"
 	const token = "recall-local"
+	t.Setenv("NPM_TOKEN", "npm-secret-token")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-value")
 	skill, err := findSkill("")
 	if err != nil {
 		t.Fatal(err)
@@ -310,6 +312,9 @@ func TestAgentProcessDoesNotSeeProviderKey(t *testing.T) {
 		}
 		if envValue(env, "SDF_RECALL_API_KEY") != "" {
 			t.Fatalf("%s sets SDF_RECALL_API_KEY", a.ID())
+		}
+		if envValue(env, "NPM_TOKEN") != "" || envValue(env, "AWS_SECRET_ACCESS_KEY") != "" {
+			t.Fatalf("%s copied parent credentials", a.ID())
 		}
 		if envValue(env, localTokenEnv) != token {
 			t.Fatalf("%s local token %q", a.ID(), envValue(env, localTokenEnv))
@@ -547,6 +552,33 @@ func TestRejectsPublicHTTPBase(t *testing.T) {
 	}
 }
 
+func TestNoKeySkipsBadHTTPBase(t *testing.T) {
+	rep, err := Run(context.Background(), Options{
+		OpenAIBase:    "http://example.com/v1",
+		AnthropicBase: "http://example.com",
+	})
+	if err != nil || !rep.Skipped {
+		t.Fatalf("err=%v skipped=%v", err, rep.Skipped)
+	}
+}
+
+func TestInterruptedExitCode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if ExitCode(ctx, nil) != 130 {
+		t.Fatal(ExitCode(ctx, nil))
+	}
+	if ExitCode(ctx, errors.New("build")) != 130 {
+		t.Fatal("canceled error")
+	}
+	if ExitCode(context.Background(), nil) != 0 {
+		t.Fatal("clean")
+	}
+	if ExitCode(context.Background(), errors.New("build")) != 1 {
+		t.Fatal("error")
+	}
+}
+
 func TestInstallIsOptInAndPinned(t *testing.T) {
 	t.Setenv("SDF_RECALL_NO_INSTALL", "")
 	opt, _, err := ParseArgs(nil, Options{})
@@ -556,13 +588,24 @@ func TestInstallIsOptInAndPinned(t *testing.T) {
 	prefix := t.TempDir()
 	saw := false
 	for _, a := range registry() {
+		ignore := a.IgnoreInstallScripts()
+		if a.ID() == "opencode" && ignore {
+			t.Fatal("opencode must run its postinstall")
+		}
+		if a.ID() != "opencode" && !ignore {
+			t.Fatalf("%s must ignore scripts", a.ID())
+		}
 		for _, argv := range a.InstallCommands() {
 			saw = true
-			got := rewriteInstall(argv, prefix)
+			got := rewriteInstall(argv, prefix, ignore)
 			joined := strings.Join(got, " ")
 			if argv[0] == "npm" {
-				if !strings.Contains(joined, "--prefix "+prefix) || !strings.Contains(joined, "--ignore-scripts") {
+				if !strings.Contains(joined, "--prefix "+prefix) {
 					t.Fatalf("%s: %s", a.ID(), joined)
+				}
+				hasIgnore := strings.Contains(joined, "--ignore-scripts")
+				if hasIgnore != ignore {
+					t.Fatalf("%s ignore=%v: %s", a.ID(), ignore, joined)
 				}
 			}
 			for _, arg := range argv {
@@ -576,6 +619,93 @@ func TestInstallIsOptInAndPinned(t *testing.T) {
 	}
 	if !saw {
 		t.Fatal("no install commands")
+	}
+}
+
+func TestInstallEnvAllowlistAndPiHome(t *testing.T) {
+	t.Setenv("NPM_TOKEN", "npm-secret-token")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret-value")
+	t.Setenv("NODE_AUTH_TOKEN", "node-auth-secret")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+	prefix := t.TempDir()
+	var sawOpen, sawPi bool
+	for _, a := range registry() {
+		for _, argv := range a.InstallCommands() {
+			home := prefix
+			if argv[0] == "pi" {
+				sawPi = true
+				home = piInstallHome(prefix)
+			}
+			if a.ID() == "opencode" {
+				sawOpen = true
+			}
+			env := installEnv(a.IgnoreInstallScripts(), home, prefix)
+			blob := strings.Join(env, "\n")
+			for _, leak := range []string{"npm-secret-token", "aws-secret-value", "node-auth-secret", "NPM_TOKEN", "AWS_SECRET_ACCESS_KEY"} {
+				if strings.Contains(blob, leak) {
+					t.Fatalf("%s leaked %s in %s", a.ID(), leak, blob)
+				}
+			}
+			if !strings.Contains(blob, "HOME="+home) || !strings.Contains(blob, "NPM_CONFIG_PREFIX="+prefix) || !strings.Contains(blob, "HTTPS_PROXY=http://127.0.0.1:9") {
+				t.Fatalf("%s env %s", a.ID(), blob)
+			}
+			has := strings.Contains(blob, "NPM_CONFIG_IGNORE_SCRIPTS=true")
+			if has != a.IgnoreInstallScripts() {
+				t.Fatalf("%s ignore=%v env %s", a.ID(), a.IgnoreInstallScripts(), blob)
+			}
+		}
+	}
+	if !sawOpen || !sawPi {
+		t.Fatal(sawOpen, sawPi)
+	}
+	b := strings.Join(buildEnv("provider-key"), "\n")
+	if strings.Contains(b, "npm-secret-token") || strings.Contains(b, "aws-secret-value") {
+		t.Fatal(b)
+	}
+	if !strings.Contains(b, "CGO_ENABLED=0") {
+		t.Fatal(b)
+	}
+}
+
+func TestPiExtensionsLandInRunHome(t *testing.T) {
+	prefix := t.TempDir()
+	home := t.TempDir()
+	src := filepath.Join(piInstallHome(prefix), ".pi", "agent", "npm", "node_modules", "pi-otel", "index.js")
+	if err := os.MkdirAll(filepath.Dir(src), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("otel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := restorePiAgent(prefix, home); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(home, ".pi", "agent", "npm", "node_modules", "pi-otel", "index.js"))
+	if err != nil || string(got) != "otel" {
+		t.Fatal(err, got)
+	}
+	if err := restorePiAgent(t.TempDir(), home); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRedactLocalToken(t *testing.T) {
+	token := "recall-0123456789abcdef0123456789abcdef"
+	raw := "using " + token + " and Bearer " + token + " and " + base64.StdEncoding.EncodeToString([]byte(token))
+	out := redactSecrets(raw, "provider-key-value-xxxx", token)
+	if strings.Contains(out, token) || strings.Contains(out, base64.StdEncoding.EncodeToString([]byte(token))) {
+		t.Fatal(out)
+	}
+	var buf bytes.Buffer
+	rw := redactWriter{w: &buf, secrets: secretList(token)}
+	if _, err := io.WriteString(&rw, "log "+token+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), token) {
+		t.Fatal(buf.String())
 	}
 }
 

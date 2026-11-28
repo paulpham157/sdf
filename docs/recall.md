@@ -188,12 +188,15 @@ is not set on the CLI, so a shell inside the agent cannot print the
 provider key. The proxy checks that local token and then adds the
 provider key on the upstream request. The provider key is not written
 into agent config, logs, the report, or git. Stderr and upstream error
-bodies are redacted: the key, its base64 and URL-encoded forms, `Bearer`
-tokens, and `sk-` tokens. Stderr from each run is written under `--out`
+bodies are redacted: the key, the per-run local token, their base64 and
+URL-encoded forms, `Bearer` tokens, and `sk-` tokens. Stderr from each
+run is written under `--out`
 (default `sdf-recall-out`, or `SDF_RECALL_OUT`). The error line in the
 report is the tail of that stderr, up to 4 KB, after Node and npm
 warnings are dropped. A run that reaches its timeout is reported as a
-timeout. A second interrupt exits immediately.
+timeout. The first interrupt stops the run and the process exits 130.
+A second interrupt exits immediately and can leave `sdf serve` and the
+temp directory behind.
 
 | Agent | Protocol | Base |
 | --- | --- | --- |
@@ -247,15 +250,23 @@ broken stream. A capped run that still exits 0 is scored and marked
 capped. Other knobs are `SDF_RECALL_MAX_TURNS`, `SDF_RECALL_MAX_TOKENS`,
 `SDF_RECALL_RETRIES`, `SDF_RECALL_HTTP_TIMEOUT`, and
 `SDF_RECALL_RUN_TIMEOUT`. An `http://` base whose host is not loopback
-is rejected. `https://` is unchanged.
+is rejected when a key is set. With no key the command still skips and
+does not check the URL. `https://` is unchanged.
 
 `--install` installs the packages this repo already names for OpenCode
 (`@opencode/cli@2.4.1`), Pi (`@earendil-works/pi-coding-agent@1.5.1` and
 `pi-otel@0.3.0`), Qwen Code (`@qwen-code/qwen-code@0.28.4`), and Copilot
 (`@github/copilot@1.0.114`) when the binary is missing. It is off unless
-you pass `--install`. npm installs use `--ignore-scripts` and a prefix
-this run creates, not the user npm prefix and not the real home
-directory. Claude Code and Grok are located on `PATH` and are not
+you pass `--install`. Packages go into a prefix this run creates, with
+`HOME` set to a directory this run owns and an environment limited to
+`PATH`, `HOME`, `TMPDIR`, `LANG`, `TERM`, the npm prefix variables, and
+the process proxy and CA settings. OpenCode is the exception: `@opencode/cli` runs its postinstall, which
+places the platform binary. Without that script the `opencode` file is
+the wrong format and exec fails. Every other adapter keeps
+`--ignore-scripts`, and its install commands also set
+`NPM_CONFIG_IGNORE_SCRIPTS=true`, including `pi install`. Pi's extension
+is installed under that prefix and copied into each run's home, which is
+where Pi loads it. Claude Code and Grok are located on `PATH` and are not
 installed. `--no-install` or `SDF_RECALL_NO_INSTALL=1` keeps installation
 off. An agent that is supported but has no binary is `unavailable`.
 Codex and Gemini are `unsupported` and are not looked up.
