@@ -317,8 +317,9 @@ body {
 }
 
 /* The href hover above is as specific as the current-page color lock.
-   It would replace the inverse chip with a sunken fill and rust text.
-   Rust on the charcoal chip is 2.85:1, so hover keeps the chip. */
+   It would replace the inverse chip with a sunken fill and accent text.
+   Accent text is rust-700, 1.66:1 on the charcoal chip. Rust-500, the
+   focus and accent fill, is 2.85:1 there. Hover keeps the inverse pair. */
 .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
 .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover {
   color: var(--sdf-color-text-inverse);
@@ -334,6 +335,17 @@ body {
 .md-nav--primary .md-nav__link.focus-visible:not(.md-nav--secondary .md-nav__link) {
   outline: var(--sdf-border-width-strong) solid var(--sdf-color-focus);
   outline-offset: 2px;
+}
+
+/* The chip's ring sits on the inverse fill, so it uses focus-on-inverse
+   (rust-200 on charcoal, 7.93:1; rust-700 on the cream chip, 5.93:1).
+   A negative offset draws the 2px ring inside the chip. The page focus
+   color is rust-500, 2.85:1 on charcoal, and an outside ring is clipped
+   by the sidebar scroller. */
+.md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible,
+.md-nav--primary .md-nav__link--active.focus-visible:not(.md-nav--secondary .md-nav__link) {
+  outline-color: var(--sdf-color-focus-on-inverse);
+  outline-offset: calc(var(--sdf-border-width-strong) * -1);
 }
 
 .md-nav--primary .md-nav__link[href]:not(.md-nav--secondary .md-nav__link):focus-visible,
@@ -361,45 +373,66 @@ body {
   box-shadow: none;
 }
 
-/* Dark keeps the same tokens. They flip with the scheme, so this block
-   locks the light chip and dark text if a later light rule is added. */
-[data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
-[data-md-color-scheme="slate"] .md-nav--primary .md-nav__link--active[href]:not(.md-nav--secondary .md-nav__link):hover,
-[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
-[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):hover,
-[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus,
-[data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link--active:not(.md-nav--secondary .md-nav__link):focus-visible {
-  color: var(--sdf-color-text-inverse);
-  background-color: var(--sdf-color-surface-inverse);
-  box-shadow: none;
-}
-
-/* Material keeps the sidebar title and the on-this-page title sticky and
-   paints a same-color halo (box-shadow: 0 0 .4rem .4rem) so scrolled links
-   fade under them. That halo covers the current-page chip, which sits in
-   the first link's margin. Drop the halo. Padding under the title is the
-   gap, and the title background still covers links that scroll beneath it.
-   60em is where the on-this-page sidebar appears; 76.25em is the primary
-   sidebar. The phone drawer uses a different title and is left alone. */
+/* Material's sticky title halo covered the chip at rest, so it stays off.
+   A short gradient hangs below the title and fades links as they scroll
+   under it. On the page background the gradient is invisible, and the
+   list padding keeps the resting chip below it. overflow stays visible
+   so the gradient is not clipped. 60em is the on-this-page sidebar;
+   76.25em is the primary sidebar. The phone drawer is left alone. */
 @media screen and (min-width: 60em) {
   .md-sidebar--secondary .md-nav__title {
     box-shadow: none;
+    overflow: visible;
     padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
+  }
+
+  .md-sidebar--secondary .md-nav__title::after {
+    content: "";
+    position: absolute;
+    z-index: 1;
+    inset-inline: 0;
+    top: 100%;
+    height: calc(var(--sdf-space-2) * var(--docs-rem));
+    background: linear-gradient(to bottom, var(--md-default-bg-color), transparent);
+    pointer-events: none;
+  }
+
+  .md-sidebar--secondary .md-nav__title + .md-nav__list {
+    padding-top: calc(var(--sdf-space-1) * var(--docs-rem));
   }
 }
 
 /* Desktop sidebar links have no padding, so the pill was flush with the
-   label. 4px block and 8px inline, pulled back by the same amount, keeps
-   the label aligned with its neighbors. The top margin keeps Material's
-   0.625em gap and only gives back the padding: margin-block of -4px
-   replaced that gap, so the pill overlapped the sticky title and the
-   label sat high. The bottom margin stays the negative padding so it
-   collapses with the next item. 76.25em is Material's sidebar breakpoint
-   (media em is 16px). Below that the drawer keeps its own padding. */
+   label. 4px block and 8px inline, pulled back on the start side, keeps
+   the label aligned with its neighbors. The end margin stays 0: a
+   negative end margin pushed the chip into the sidebar scroller, which
+   clipped the rounded corner and the focus ring. The top margin keeps
+   Material's 0.625em gap and only gives back the padding. The bottom
+   margin stays the negative padding so it collapses with the next item.
+   76.25em is Material's sidebar breakpoint (media em is 16px). Below
+   that the drawer keeps its own padding. */
 @media screen and (min-width: 76.25em) {
   .md-sidebar--primary .md-nav--primary > .md-nav__title {
     box-shadow: none;
+    overflow: visible;
     padding-bottom: calc(var(--sdf-space-2) * var(--docs-rem));
+  }
+
+  .md-sidebar--primary .md-nav--primary > .md-nav__title::after {
+    content: "";
+    position: absolute;
+    z-index: 1;
+    inset-inline: 0;
+    top: 100%;
+    height: calc(var(--sdf-space-2) * var(--docs-rem));
+    background: linear-gradient(to bottom, var(--md-default-bg-color), transparent);
+    pointer-events: none;
+  }
+
+  /* The repository block sits between the title and the list, so the
+     list is not the title's next sibling. */
+  .md-sidebar--primary .md-nav--primary > .md-nav__list {
+    padding-top: calc(var(--sdf-space-2) * var(--docs-rem));
   }
 
   .md-nav--primary .md-nav__link--active:not(.md-nav--secondary .md-nav__link),
@@ -412,7 +445,8 @@ body {
     padding-inline: calc(var(--sdf-space-2) * var(--docs-rem));
     margin-top: calc(0.625em - var(--sdf-space-1) * var(--docs-rem));
     margin-bottom: calc(var(--sdf-space-1) * var(--docs-rem) * -1);
-    margin-inline: calc(var(--sdf-space-2) * var(--docs-rem) * -1);
+    margin-inline-start: calc(var(--sdf-space-2) * var(--docs-rem) * -1);
+    margin-inline-end: 0;
   }
 }
 

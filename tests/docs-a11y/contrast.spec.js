@@ -129,6 +129,13 @@ for (const scheme of [LIGHT, DARK]) {
           await expect(active).toHaveCSS('padding-left', '8px');
           await expect(active).toHaveCSS('padding-right', '8px');
         }
+        if (scheme.name === 'light') {
+          await expect(active).toHaveCSS('background-color', 'rgb(47, 54, 64)');
+          await expect(active).toHaveCSS('color', 'rgb(246, 241, 232)');
+          await expect(active).toHaveCSS('box-shadow', 'none');
+          await expect(active).toHaveCSS('padding-left', '8px');
+          await expect(active).toHaveCSS('padding-right', '8px');
+        }
         await contrast(page);
         await shot(page, scheme.name + '-' + item.name + '-1440.png');
       });

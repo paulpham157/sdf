@@ -868,16 +868,21 @@ How it consumes `tokens.css`:
   `--sdf-color-text-inverse`, medium weight, and no edge. In light that is
   cream text on a charcoal fill, 10.84:1. In dark it is charcoal text on
   a cream fill, 13.34:1.
-  Hover and keyboard focus keep that pair. Accent text is not used on the
-  chip (rust on charcoal is 2.85:1). The focus outline stays
-  `--sdf-color-focus`. The label does not shift. At the desktop sidebar width
-  the pill adds 4px of block padding and 8px of inline padding. The top
-  margin keeps Material's link gap and only gives back that 4px, and the
-  bottom margin is the negative padding, so the label stays aligned with
-  the other items and the pill does not sit under the sticky title.
-  The sticky title (and the on-this-page title) has no halo; 8px of
-  padding under the title is the gap, and the title stays stuck while
-  the list scrolls. Ancestor and expanded section titles stay `--sdf-color-text` on
+  Hover and keyboard focus keep that pair. Accent text is rust-700,
+  1.66:1 on the charcoal chip, so it is not the label. Rust-500 on that
+  chip is 2.85:1 and is not used there either. The focus ring on the chip
+  is `--sdf-color-focus-on-inverse`, drawn inside the chip: rust-200 on
+  charcoal is 7.93:1, and rust-700 on the cream chip is 5.93:1. The label
+  does not shift. At the desktop sidebar width the pill adds 4px of block
+  padding and 8px of inline padding. The start margin gives back the inline
+  padding so the label stays aligned. The end margin stays 0 so the chip
+  and its ring stay inside the sidebar scroller. The top margin keeps
+  Material's link gap and only gives back the 4px of block padding, and
+  the bottom margin is the negative padding. The sticky title (and the
+  on-this-page title) has no halo. An 8px gradient below the title fades
+  links as they scroll under it, and list padding keeps the resting chip
+  below that gradient. The title stays stuck while the list scrolls.
+  Ancestor and expanded section titles stay `--sdf-color-text` on
   a transparent background. Rust is a mark (the short rule under the page
   title, focus), not a panel.
 - The header uses the page background and text color. The logo stays the
