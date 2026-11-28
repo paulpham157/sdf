@@ -1455,10 +1455,11 @@
     return by !== dgShow;
   }
 
-  // Legacy words keep a single letter. A login uses the shortest prefix of
-  // at least two characters that no other login in the chapter shares, so
-  // "paul" and "peter" do not both read "P", and neither collides with U
-  // or A. The legend and the accessible name carry the full login.
+  // Legacy words keep a single letter. A login's mark is unique in the
+  // graph: the shortest prefix that no other login shares, extended to the
+  // whole login when the prefixes still collide, then a numeric suffix.
+  // A one-character login is never the bare letter U or A. The legend and
+  // the accessible name carry the full login.
   function dgBadgeMarks(nodes) {
     const logins = [];
     (nodes || []).forEach(function (node) {
@@ -1467,18 +1468,27 @@
       logins.push(by);
     });
     const marks = { user: "U", agent: "A" };
+    const used = { U: true, A: true };
+    function clashes(by, n) {
+      const pref = by.toUpperCase().slice(0, n);
+      if (pref === "U" || pref === "A") return true;
+      return logins.some(function (other) {
+        return other !== by && other.toUpperCase().slice(0, n) === pref;
+      });
+    }
     logins.forEach(function (by) {
       const upper = by.toUpperCase();
-      let n = 2;
-      while (n < by.length && n < 4) {
-        const pref = upper.slice(0, n);
-        const clash = logins.some(function (other) {
-          return other !== by && other.toUpperCase().slice(0, n) === pref;
-        });
-        if (!clash) break;
-        n++;
+      let n = by.length === 1 ? 1 : 2;
+      while (n < by.length && clashes(by, n)) n++;
+      let mark = upper.slice(0, n);
+      if (!mark || mark === "U" || mark === "A" || used[mark] || clashes(by, n)) {
+        const base = !mark || mark === "U" || mark === "A" ? (upper || by) : mark;
+        let i = 2;
+        while (used[base + i]) i++;
+        mark = base + i;
       }
-      marks[by] = upper.slice(0, n);
+      used[mark] = true;
+      marks[by] = mark;
     });
     return marks;
   }
@@ -1669,7 +1679,16 @@
     let tx = l + 12;
     let anchor = "start";
     if (node.decided_by) {
-      const letter = (marks && marks[node.decided_by]) || (node.decided_by === "user" ? "U" : node.decided_by === "agent" ? "A" : node.decided_by.slice(0, 2).toUpperCase());
+      let letter = marks && marks[node.decided_by];
+      if (!letter) {
+        if (node.decided_by === "user") letter = "U";
+        else if (node.decided_by === "agent") letter = "A";
+        else {
+          const upper = String(node.decided_by).toUpperCase();
+          letter = upper.slice(0, Math.min(2, upper.length));
+          if (letter === "U" || letter === "A") letter = upper + "2";
+        }
+      }
       const r = letter.length > 1 ? 13 : 10;
       kids.push(s("circle", { cx: l + 18, cy: p.y, r: r, class: "dg-badge" }));
       kids.push(s("text", { x: l + 18, y: p.y + 4, "text-anchor": "middle", class: "dg-badge-text" }, [letter]));
@@ -1967,7 +1986,10 @@
       return node.lane === "left" && node.row <= 3;
     });
     function row(cls, label) {
-      return h("li", null, [h("span", { class: "dg-key-swatch " + cls, "aria-hidden": "true" }), label]);
+      return h("li", null, [
+        h("span", { class: "dg-key-swatch " + cls, "aria-hidden": "true" }),
+        h("span", { class: "dg-key-label" }, [label]),
+      ]);
     }
     const logins = [];
     chapter.nodes.forEach(function (node) {
@@ -2839,7 +2861,6 @@
       if (ev.by === "agent") who = "agent";
       else if (ev.by === "user") who = "user";
       else if (ev.by) who = "login";
-      else who = "user";
     }
     return "dg-tick dg-tick-" + ev.type + (who ? " dg-tick-" + who : "") + (future ? " dg-tick-future" : "");
   }

@@ -449,7 +449,7 @@ func TestDecisionListView(t *testing.T) {
 		t.Errorf("path order %q, want %q first", got, want)
 	}
 	text := res.Text
-	for _, s := range []string{"Chosen path, in order", "Not taken Parse the log", "Blocked by merge-first", "Conflicts with silent", "Constrained by capture", "Endings", "Locked ending", "ending, reached", "Off the path", "merge-first", "by user (legacy)", "blocked"} {
+	for _, s := range []string{"Chosen path, in order", "Not taken Parse the log", "Blocked by merge-first", "Conflicts with silent", "Constrained by capture", "Endings", "Locked ending", "ending, reached", "Off the path", "merge-first", "by user (legacy)", "blocked", "category implementation"} {
 		if !strings.Contains(text, s) {
 			t.Errorf("List view is missing %q:\n%s", s, text)
 		}
@@ -458,6 +458,125 @@ func TestDecisionListView(t *testing.T) {
 	focused := renderPage(t, srv, "#/decisions", `click=~List,click=[data-node="capture"]`)
 	if focused.Hash != "#/decisions/ch-capture/capture" || !strings.Contains(focused.Active, `data-node="capture"`) || !strings.Contains(focused.Active, "dg-list-node") {
 		t.Errorf("list choice: hash %q focus %q", focused.Hash, focused.Active)
+	}
+}
+
+// Logins mutes legacy words and an empty decided_by, and keeps a login.
+// A login tick is dg-tick-login. An empty decided_by is not painted as user.
+func TestLoginsFilterMutesLegacyAndTicksLogins(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	setBy := func(node map[string]any, by string) {
+		rec, _ := node["decision"].(map[string]any)
+		if by == "" {
+			delete(node, "decided_by")
+			if rec != nil {
+				delete(rec, "decided_by")
+				delete(rec, "decided_by_legacy")
+			}
+			return
+		}
+		node["decided_by"] = by
+		if rec != nil {
+			rec["decided_by"] = by
+			if by == "user" || by == "agent" {
+				rec["decided_by_legacy"] = true
+			} else {
+				delete(rec, "decided_by_legacy")
+			}
+		}
+	}
+	res := graphPage(t, srv, func(doc map[string]any) {
+		for _, c := range doc["chapters"].([]any) {
+			for _, n := range c.(map[string]any)["nodes"].([]any) {
+				node := n.(map[string]any)
+				switch node["id"] {
+				case "status-ui":
+					setBy(node, "octocat")
+				case "silent":
+					setBy(node, "")
+				}
+			}
+		}
+	}, "#/decisions", "click=~Logins")
+	tag := func(id string) string {
+		t.Helper()
+		got := regexp.MustCompile(`<g [^>]*data-node="` + regexp.QuoteMeta(id) + `"[^>]*>`).FindString(res.Markup)
+		if got == "" {
+			t.Fatalf("no node %s:\n%s", id, res.Markup)
+		}
+		return got
+	}
+	if strings.Contains(tag("status-ui"), "dg-muted") {
+		t.Errorf("login was muted: %s", tag("status-ui"))
+	}
+	if !strings.Contains(tag("capture"), "dg-muted") || !strings.Contains(tag("merge-first"), "dg-muted") || !strings.Contains(tag("silent"), "dg-muted") {
+		t.Errorf("legacy or empty was not muted:\n%s\n%s\n%s", tag("capture"), tag("merge-first"), tag("silent"))
+	}
+	tick := func(label string) string {
+		t.Helper()
+		got := regexp.MustCompile(`<circle [^>]*class="([^"]*)"[^>]*>\s*<title>[^<]*` + regexp.QuoteMeta(label) + `</title>`).FindStringSubmatch(res.Markup)
+		if got == nil {
+			t.Fatalf("no tick for %s:\n%s", label, res.Markup)
+		}
+		return got[1]
+	}
+	if cls := tick("status-ui recorded"); !strings.Contains(cls, "dg-tick-login") || strings.Contains(cls, "dg-tick-user") {
+		t.Errorf("login tick %q", cls)
+	}
+	if cls := tick("silent recorded"); strings.Contains(cls, "dg-tick-user") || strings.Contains(cls, "dg-tick-login") || strings.Contains(cls, "dg-tick-agent") {
+		t.Errorf("empty decided_by tick %q", cls)
+	}
+	css := readAsset(t, "app.css")
+	if !strings.Contains(css, "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)") || !strings.Contains(css, ".dg-key-label { min-width: 0; overflow-wrap: anywhere; }") {
+		t.Error("legend labels do not wrap inside the key")
+	}
+	if !strings.Contains(css, ".dg-list-item > .detail { font-size: var(--sdf-font-size-xs); color: var(--sdf-color-text-muted); overflow-wrap: anywhere; }") {
+		t.Error("list detail does not wrap a long decided_by")
+	}
+}
+
+// Login badges stay unique in the chapter. A shared prefix is extended,
+// and a one-character login is never the bare letter U or A.
+func TestLoginBadgesStayUnique(t *testing.T) {
+	db := openDB(t)
+	seedGraph(t, db)
+	srv := startUI(t, db)
+	setBy := func(node map[string]any, by string) {
+		node["decided_by"] = by
+		if rec, ok := node["decision"].(map[string]any); ok {
+			rec["decided_by"] = by
+			delete(rec, "decided_by_legacy")
+		}
+	}
+	res := graphPage(t, srv, func(doc map[string]any) {
+		for _, c := range doc["chapters"].([]any) {
+			for _, n := range c.(map[string]any)["nodes"].([]any) {
+				node := n.(map[string]any)
+				switch node["id"] {
+				case "capture":
+					setBy(node, "paul")
+				case "status-ui":
+					setBy(node, "paula")
+				case "silent":
+					setBy(node, "u")
+				}
+			}
+		}
+	}, "#/decisions", "")
+	badges := regexp.MustCompile(`class="dg-badge-text"[^>]*>([^<]*)</text>`).FindAllStringSubmatch(res.Markup, -1)
+	gotMarks := map[string]int{}
+	for _, m := range badges {
+		gotMarks[m[1]]++
+	}
+	for _, want := range []string{"PAUL2", "PAULA", "U2"} {
+		if gotMarks[want] == 0 {
+			t.Errorf("missing badge %s in %v", want, gotMarks)
+		}
+	}
+	if gotMarks["U"] != 0 {
+		t.Errorf("one-character login used bare U: %v", gotMarks)
 	}
 }
 
