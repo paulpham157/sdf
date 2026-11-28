@@ -171,6 +171,7 @@ input:focus-visible, select:focus-visible, .dg-jump:focus-visible {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--sdf-color-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .hero-value {
@@ -368,6 +369,8 @@ h2.id {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--sdf-color-text-muted);
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 .crumb { margin: 18px 0 0; font-size: var(--sdf-font-size-sm); }
@@ -591,6 +594,11 @@ footer p { margin: 0; }
   clip-path: polygon(25% 0, 75% 0, 100% 30%, 100% 70%, 75% 100%, 25% 100%, 0 70%, 0 30%);
   background: var(--sdf-color-text);
 }
+.dg-key-swatch.login {
+  border-radius: 50%;
+  background: var(--sdf-color-accent);
+  border-color: var(--sdf-color-accent);
+}
 .dg-key-swatch.ghost { border: 1.5px dashed var(--sdf-graph-not-taken); background: var(--sdf-color-bg); }
 .dg-key-swatch.superseded {
   border-color: var(--sdf-graph-edge);
@@ -701,7 +709,7 @@ ul.dg-list { list-style: disc; }
 .dg-node.dg-on-path .dg-badge { fill: var(--sdf-color-text-inverse); }
 .dg-node.dg-on-path .dg-badge-text { fill: var(--sdf-graph-chosen-fill); }
 
-/* Focus mode and the You/Agents filter recolor the other nodes. Text stays
+/* Focus mode and the decided-by filter recolor the other nodes. Text stays
    charcoal on the sunken fill, so it is never faded below the text ratio. */
 g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
 .dg-node.dg-dim .dg-shape, .dg-node.dg-dim.dg-kind-decision.dg-role-locked .dg-shape,
@@ -870,10 +878,11 @@ g.dg-dim:not(.dg-node) { opacity: 0.45; filter: saturate(0); }
 .dg-tick { stroke: var(--sdf-color-text); stroke-width: 1.5; }
 .dg-tick-user { fill: var(--sdf-color-text); }
 .dg-tick-agent { fill: var(--sdf-color-bg); }
+.dg-tick-login { fill: var(--sdf-color-accent); }
 .dg-tick-edge { fill: var(--sdf-color-text-muted); stroke: none; }
 .dg-tick-retraction { fill: var(--sdf-color-bg); stroke: var(--sdf-color-error); }
 .dg-tick-future { stroke: var(--sdf-graph-future); }
-.dg-tick-future.dg-tick-user, .dg-tick-future.dg-tick-edge { fill: var(--sdf-graph-track); }
+.dg-tick-future.dg-tick-user, .dg-tick-future.dg-tick-edge, .dg-tick-future.dg-tick-login { fill: var(--sdf-graph-track); }
 .dg-tick-future.dg-tick-edge { stroke: none; }
 .dg-playhead { stroke: var(--sdf-color-accent); stroke-width: 2; }
 .dg-thumb { fill: var(--sdf-color-surface-raised); stroke: var(--sdf-color-accent); stroke-width: var(--sdf-border-width-heavy); }

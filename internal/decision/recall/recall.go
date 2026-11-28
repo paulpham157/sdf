@@ -66,7 +66,8 @@ type Labels struct {
 }
 
 // LabeledDecision is a choice the transcript contains. Status is
-// hypothesis or decision. DecidedBy is user, agent, or empty.
+// hypothesis or decision. DecidedBy is a GitHub login, the legacy words
+// user or agent, or empty. Empty is omitted from JSON.
 type LabeledDecision struct {
 	ID        string `json:"id"`
 	Statement string `json:"statement"`
@@ -257,8 +258,8 @@ func validate(fx Fixture) error {
 		if d.Status != decision.StatusHypothesis && d.Status != decision.StatusDecision {
 			return fmt.Errorf("decision %s status must be hypothesis or decision", d.ID)
 		}
-		if d.DecidedBy != "" && d.DecidedBy != decision.DecidedByUser && d.DecidedBy != decision.DecidedByAgent {
-			return fmt.Errorf("decision %s decided_by must be user or agent", d.ID)
+		if d.DecidedBy != "" && !decision.ValidDecidedBy(d.DecidedBy) {
+			return fmt.Errorf("decision %s decided_by must be a GitHub login or the legacy values user or agent", d.ID)
 		}
 		if !strings.Contains(text, d.Statement) {
 			return fmt.Errorf("decision %s statement is not in a log body", d.ID)

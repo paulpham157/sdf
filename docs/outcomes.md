@@ -102,15 +102,43 @@ summarization.
 Each record has an id, one statement, and a status of `hypothesis` or
 `decision`. A hypothesis is an assumption, not a settled fact. Optional fields
 name who decided, the alternatives that were on the table,
-a reason, and a source pointer. `decided_by` is the text the caller passed:
-`user`, `agent`, or empty. sdf stores that text. It does not check that a
-person, rather than an agent, supplied `user`. Time is `recorded_at`.
-[Decision categories](design/decision-category.md) specifies two changes
-that are not in the CLI. `decided_by` would be the GitHub login of the team
-member responsible, and an agent acting for a person would record that
-person's login. An optional `category` would default to `implementation`
-when unset. `sdf decision check` would still ignore `category`. The spec
-adds no warning that tries to tell a person from an agent.
+a reason, a source pointer, and a category. Time is `recorded_at`.
+
+`decided_by` is the GitHub login of the team member responsible, for example
+`paulpham157`. An agent acting for a person records that person's login.
+sdf does not distinguish a person from their agent, and it does not check
+that the account exists. A login is letters, digits, and single hyphens, at
+most 39 characters. It cannot start or end with a hyphen, and it cannot
+contain `--`. GitHub compares logins without regard to case. sdf stores the
+value as given and does not fold it, so `Paul` and `paul` are different
+stored strings. The brief lock matches the exact word `user`. The legacy
+words `user` and `agent` are still accepted and are not rewritten. List,
+brief, check, and the UI print them with a legacy marker (`user (legacy)`).
+JSON keeps the stored string and sets `decided_by_legacy` true for that pair
+only. Empty stays empty and prints as `-`. When `--decided-by` is omitted,
+sdf stores the first login it can read locally, and it does not use the
+network. This is a deviation from the attribution proposal, which named
+`gh api user`: the binary runs `gh config get -h github.com user` (the
+`user` key for github.com in the GitHub CLI's hosts.yml), then
+`git config --get github.user`. That git read uses every scope, including
+the repository-local config, and the value is self-asserted attribution, not
+authentication. `git config user.name` is not read. A missing `gh`, a failed
+command, a display name, or the legacy word `user` or `agent` is skipped,
+and the field stays empty. The two lookups share one 3 second deadline, and
+each command's stdout is capped at 64 KiB. The lookup runs only after the
+rest of the record validates. An explicit empty `--decided-by` stays empty
+and does not fall through. An explicit value that is not a login or `user`
+or `agent` is rejected and the add stores nothing. There is no warning that
+tries to tell a person from an agent.
+
+`category` is optional. The values are `architecture`, `policy`, `product`,
+`implementation`, and `operations`. Unset is stored as SQL `NULL` and
+displayed as `implementation`. Explicit `--category implementation` stores
+the token. Omitting the flag, or `--category=`, stores `NULL`. JSON omits
+`category` when it is unset; a missing key means `implementation`.
+`policy` requires `status` `decision`. `sdf decision check` does not read
+`category`. The design record is
+[Decision categories](design/decision-category.md).
 
 A session is not stored
 on the record; link it with an edge when the store already has that session.
@@ -127,7 +155,8 @@ the lowercase ref the edge stores.
 `GET /api/decisions` returns the records and edges in insertion order. An empty
 store returns empty lists. `sdf decision add` writes one record. It needs an id,
 a statement, and a status of `hypothesis` or `decision`. `--decided-by`,
-`--alternatives`, `--reason`, and `--source` are optional. `sdf decision link`
+`--category`, `--alternatives`, `--reason`, and `--source` are optional.
+`sdf decision link`
 writes one edge. It needs a relation and two `KIND:REF` endpoints, where
 `KIND` is `decision`, `session`, or `commit`. No route writes a record.
 `sdf decision brief` prints a ranked, size-capped prefix of the active
@@ -287,6 +316,10 @@ the `EFFECTIVE` cell, in that order, and prints `blocked by: IDS (open: IDS)`
 (or `(settled)`), `conflicts with: IDS`, and `refined by: IDS` lines under the
 statement:
 
+The samples below were laid out before `CATEGORY`. A current table inserts
+that column after `STATUS` (`implementation` when the stored value is NULL)
+and prints `user (legacy)` or `agent (legacy)` in `DECIDED BY`.
+
 ```text
 Decisions: 6
 ID             STATUS      EFFECTIVE           DECIDED BY  RECORDED AT                       SOURCE  STATEMENT
@@ -344,11 +377,16 @@ active. To find the latest replacement, follow `superseded_by`. A cycle, such as
 them from the same code. The UI shows "superseded by ID" next to the record.
 
 `sdf decision list` prints the records and then the edges, each as a table in
-insertion order. An empty source or `DECIDED BY` prints as `-`. When a record
+insertion order. Columns are `ID`, `STATUS`, `CATEGORY`, `EFFECTIVE`,
+`DECIDED BY`, `RECORDED AT`, `SOURCE`, and `STATEMENT`. An empty category
+prints as `implementation`. An empty source or `DECIDED BY` prints as `-`.
+`user` and `agent` print as `user (legacy)` and `agent (legacy)`. When a record
 has alternatives or a reason, each follows its row on its own line in the
 `STATEMENT` column, as `alternatives: TEXT` and `reason: TEXT`. They are free
 text up to 500 bytes, so they are kept out of the columns. `--json` carries
-the same fields as `decided_by`, `alternatives`, and `reason`. A cell that holds a
+the same fields as `decided_by`, `decided_by_legacy` (true only for stored
+`user` or `agent`), `alternatives`, `reason`, and `category` when one was
+stored. A cell that holds a
 non-printing character, such as a tab, DEL, or a right-to-left override like
 U+202E, or that is not valid UTF-8, is printed Go-quoted so it cannot break the
 columns or reorder the terminal line. Every column follows this rule, including
@@ -362,7 +400,14 @@ because both read the store through the same code. `--session ID` is not
 that response: it keeps only the edges that touch `session:ID` and the
 decisions those edges name, in the same insertion order, and drops the
 rest. With no such edge the text is `No decisions in the store.` and
-`--json` is the empty lists. Like `sdf summary`, it reads
+`--json` is the empty lists. `--category` keeps a stored token, and
+`--category implementation` also keeps a NULL category, which displays as
+`implementation`. `--category none` keeps a stored string outside the five
+tokens, except the text `none`, and does not keep NULL. An edge stays when
+at least one of its decision endpoints survived the filter. `--session` is
+applied first, then `--category`. When the store has records and
+`--category` keeps none of them, the text is `No decisions match.` and
+`--json` is the empty lists. That is not the empty-store line. Like `sdf summary`, it reads
 `sdf-telemetry.sqlite` unless `--db` names another file, and it opens the file
 read-only: it never writes, never migrates, and never creates a file. With no
 records and no edges it prints `No decisions in the store.`, and `--json`
@@ -375,13 +420,14 @@ the missing columns read as empty and the missing table as no retractions.
 
 ```bash
 sdf decision add --id use-sqlite --statement "Store telemetry in SQLite" \
-  --status decision [--decided-by user|agent] [--alternatives TEXT] \
-  [--reason TEXT] [--source TEXT] [--db PATH]
+  --status decision [--decided-by LOGIN] \
+  [--category architecture|policy|product|implementation|operations] \
+  [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]
 sdf decision link --relation implements --from session:SESSION_ID \
   --to decision:use-sqlite [--db PATH]
 sdf decision link --relation supersedes --from decision:use-wal \
   --to decision:use-sqlite [--db PATH]   # use-wal replaces use-sqlite
-sdf decision list [--db PATH] [--json] [--session ID]
+sdf decision list [--db PATH] [--json] [--session ID] [--category architecture|policy|product|implementation|operations|none]
 sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [--github]
 sdf decision brief [--db PATH] [--max-items N] [--max-bytes N] [--format text|json]
 sdf decision check push|merge|release|deploy|TEXT [--db PATH] [--json]
@@ -393,12 +439,12 @@ sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-
 
 ```text
 Decisions: 3
-ID          STATUS      EFFECTIVE              DECIDED BY  RECORDED AT                       SOURCE     STATEMENT
-use-sqlite  decision    superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
-                                                                                                        alternatives: Postgres, DuckDB
-                                                                                                        reason: One file, no server
-pure-go     hypothesis  active                 agent       2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
-use-wal     decision    active                 -           2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
+ID          STATUS      CATEGORY        EFFECTIVE              DECIDED BY      RECORDED AT                       SOURCE     STATEMENT
+use-sqlite  decision    implementation  superseded by use-wal  user (legacy)   2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
+                                                                                                                                     alternatives: Postgres, DuckDB
+                                                                                                                                     reason: One file, no server
+pure-go     hypothesis  implementation  active                 agent (legacy)  2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+use-wal     decision    implementation  active                 -               2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
 
 Edges: 2
 RELATION    FROM              TO                   RECORDED AT
@@ -549,7 +595,8 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   is read as UTC, the zone the store writes; a time that cannot be read
   sorts last and is labelled "time unknown". It needs no other endpoint.
   Ticks are spaced by event order; filled is a decision stored as `user`,
-  hollow one stored as `agent`, a small dot an edge. The mark follows the
+  hollow one stored as `agent`, accent one stored as a GitHub login, and a
+  small dot an edge. The legend names each login. The mark follows the
   stored label. sdf does not check that a person typed `user`. The label
   at the playhead reads, for example,
   `Nov 22 · 09:14 GMT+7 · agent-status · 10 of 13`: the time is in
@@ -649,7 +696,8 @@ does not fit is skipped, and a later shorter one can still be kept.
 
 Text is one tab-separated line per item: `kind`, `id`, `decided_by`, and
 `statement`. `kind` is `constraint`, `blocked`, or `conflicting`. An empty
-`decided_by` prints as `-`. A field that holds a tab or a control character,
+`decided_by` prints as `-`. Stored `user` and `agent` print as
+`user (legacy)` and `agent (legacy)`. A field that holds a tab or a control character,
 starts with `"`, or is invalid UTF-8 is quoted with `strconv.Quote`. Unicode
 is kept; this is not the `strconv.QuoteToASCII` form `sdf decision list`
 uses.
@@ -668,7 +716,8 @@ fits about 9-10 typical items; statements near the 200-byte cap fit fewer.
 `--format json` prints indented JSON with an `items` array, an `omitted`
 count, and an `omitted_locked` count, all always present in that object
 when anything matched. Each item has `id`, `kind`, `statement`, `status`,
-`decided_by`, and `locked`. `locked` is true only for a constraint stored
+`decided_by`, `decided_by_legacy` when the stored value is `user` or
+`agent`, and `locked`. `locked` is true only for a constraint stored
 with `decided_by` `user`. `--json` is not a flag.
 
 A path that does not exist (a missing file or a missing parent directory)
@@ -703,7 +752,7 @@ A decision forbids the action only when it is still in force and its
 does not forbid), `effective_status` is `active` (superseded does not), and
 it is not retracted. `blocked`, `conflicted`, and `challenged` do not clear
 a forbid: a settled "do not push" still forbids push while a blocker is
-open. The id, the reason, the source, and the edges are not matched.
+open. The id, the reason, the source, `category`, and the edges are not matched.
 `supersedes` and `retract` matter only because they take the record out of
 force.
 
@@ -741,7 +790,7 @@ the class so the rule that fired is obvious:
 ```text
 forbidden: push
 ID	DECIDED BY	MATCH	STATEMENT
-dont-push	user	do not push	Do not push until the user says so.
+dont-push	user (legacy)	do not push	Do not push until the user says so.
 ```
 
 ```text
@@ -750,8 +799,9 @@ allowed: replace sqlite (architecture)
 
 `--json` is one object, `action`, `kind` (`push`, `merge`, `release`,
 `deploy`, or `architecture`), `allowed`, and `blocking`. Each blocking entry
-is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
-or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
+is `id`, `decided_by` (empty when unset), `decided_by_legacy` (true only for
+stored `user` or `agent`), `statement`, and `match` (the tag or phrase,
+lowercased). `blocking` is `[]` when the action is allowed. The
 exit code is still 1 when it is forbidden.
 
 The rows are in insertion order. The command keeps the records

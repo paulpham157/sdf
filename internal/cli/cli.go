@@ -589,6 +589,25 @@ func cmdDecision(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+const decisionAddUsage = "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by LOGIN] [--category architecture|policy|product|implementation|operations] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]"
+
+// identityRunner resolves a GitHub login when --decided-by is omitted.
+// Tests replace it so a machine's gh or git config does not change rows.
+var identityRunner = decision.ExecCommand
+
+// SetIdentityRunner replaces the command runner used when --decided-by is
+// omitted. The returned function restores the previous runner.
+func SetIdentityRunner(run decision.CommandRunner) func() {
+	prev := identityRunner
+	if run == nil {
+		run = func(context.Context, string, ...string) ([]byte, error) {
+			return nil, errors.New("identity lookup disabled")
+		}
+	}
+	identityRunner = run
+	return func() { identityRunner = prev }
+}
+
 func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	dbPath := "sdf-telemetry.sqlite"
 	id := ""
@@ -596,6 +615,8 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 	status := ""
 	source := ""
 	decidedBy := ""
+	decidedBySet := false
+	category := ""
 	alternatives := ""
 	reason := ""
 	idSet, statementSet, statusSet := false, false, false
@@ -603,7 +624,7 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		arg := args[i]
 		switch {
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(stdout, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
+			fmt.Fprintln(stdout, decisionAddUsage)
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -656,9 +677,18 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "sdf decision add: --decided-by requires a value")
 				return 2
 			}
-			decidedBy = v
+			decidedBy, decidedBySet = v, true
 		case strings.HasPrefix(arg, "--decided-by="):
-			decidedBy = strings.TrimPrefix(arg, "--decided-by=")
+			decidedBy, decidedBySet = strings.TrimPrefix(arg, "--decided-by="), true
+		case arg == "--category":
+			v, ok := take(&i, args)
+			if !ok {
+				fmt.Fprintln(stderr, "sdf decision add: --category requires a value")
+				return 2
+			}
+			category = v
+		case strings.HasPrefix(arg, "--category="):
+			category = strings.TrimPrefix(arg, "--category=")
 		case arg == "--alternatives":
 			v, ok := take(&i, args)
 			if !ok {
@@ -683,16 +713,10 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if !idSet || !statementSet || !statusSet {
-		fmt.Fprintln(stderr, "usage: sdf decision add --id ID --statement TEXT --status hypothesis|decision [--decided-by user|agent] [--alternatives TEXT] [--reason TEXT] [--source TEXT] [--db PATH]")
+		fmt.Fprintln(stderr, decisionAddUsage)
 		return 2
 	}
-	db, err := store.Open(dbPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
-		return 1
-	}
-	defer db.Close()
-	if _, err := decision.Add(db, decision.RecordInput{
+	in := decision.RecordInput{
 		ID:           id,
 		Statement:    statement,
 		Status:       status,
@@ -700,7 +724,25 @@ func cmdDecisionAdd(args []string, stdout, stderr io.Writer) int {
 		DecidedBy:    decidedBy,
 		Alternatives: alternatives,
 		Reason:       reason,
-	}); err != nil {
+		Category:     category,
+	}
+	// Validate the caller's fields before any identity lookup. An omitted
+	// --decided-by is empty here, which is legal; the lookup fills it only
+	// when the rest of the record is acceptable.
+	if err := decision.ValidateRecord(in); err != nil {
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
+		return 1
+	}
+	if !decidedBySet {
+		in.DecidedBy = decision.ResolveDecidedBy("", false, identityRunner)
+	}
+	db, err := store.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
+		return 1
+	}
+	defer db.Close()
+	if _, err := decision.Add(db, in); err != nil {
 		fmt.Fprintf(stderr, "sdf decision add: %s\n", displayErr(err))
 		return 1
 	}
@@ -795,7 +837,7 @@ func cmdDecisionLink(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-const decisionListUsage = "usage: sdf decision list [--db PATH] [--json] [--session ID]"
+const decisionListUsage = "usage: sdf decision list [--db PATH] [--json] [--session ID] [--category architecture|policy|product|implementation|operations|none]"
 
 // cmdDecisionList prints every decision and edge. It reads through
 // decision.Load, the same path GET /api/decisions uses, and --json is that
@@ -809,6 +851,8 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	asJSON := false
 	session := ""
 	sessionSet := false
+	category := ""
+	categorySet := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -839,10 +883,27 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 			}
 		case arg == "--json":
 			asJSON = true
+		case arg == "--category":
+			v, ok := take(&i, args)
+			if !ok || v == "" {
+				fmt.Fprintln(stderr, "sdf decision list: --category requires a value")
+				return 2
+			}
+			category, categorySet = v, true
+		case strings.HasPrefix(arg, "--category="):
+			category, categorySet = strings.TrimPrefix(arg, "--category="), true
+			if category == "" {
+				fmt.Fprintln(stderr, "sdf decision list: --category requires a value")
+				return 2
+			}
 		default:
 			unrecognizedArgs(stderr, arg)
 			return 2
 		}
+	}
+	if categorySet && !decision.ValidCategoryFilter(category) {
+		fmt.Fprintln(stderr, "sdf decision list: --category must be architecture, policy, product, implementation, operations, or none")
+		return 2
 	}
 	db, err := store.OpenReadOnly(dbPath)
 	if err != nil {
@@ -857,6 +918,18 @@ func cmdDecisionList(args []string, stdout, stderr io.Writer) int {
 	}
 	if sessionSet {
 		graph = decision.FilterBySession(graph, session)
+	}
+	preCategory := graph
+	if categorySet {
+		graph = decision.FilterByCategory(graph, category)
+	}
+	// A category filter that drops every row is not an empty store.
+	// WriteText's "No decisions in the store." is only for a graph that
+	// was already empty. --json stays the empty lists.
+	if categorySet && !asJSON && len(graph.Decisions) == 0 && len(graph.Edges) == 0 &&
+		(len(preCategory.Decisions) > 0 || len(preCategory.Edges) > 0) {
+		fmt.Fprintln(stdout, "No decisions match.")
+		return 0
 	}
 	write := decision.WriteText
 	if asJSON {
@@ -1049,7 +1122,8 @@ store file in an existing directory is an empty store: exit 0, and the
 file is not created. A missing directory exits 3.
 
 The store is opened read-only with a 200ms busy timeout. --json prints
-action, kind, allowed, and blocking (id, decided_by, statement, match).
+action, kind, allowed, and blocking (id, decided_by, decided_by_legacy,
+statement, match).
 
 The sdf-decisions skill ships scripts/check, a helper that runs this
 command and keeps its exit code.`

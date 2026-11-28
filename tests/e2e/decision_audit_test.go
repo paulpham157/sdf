@@ -50,7 +50,7 @@ func TestDecisionAuditFindsAHookCommitUntilItsSessionIsLinked(t *testing.T) {
 	db := srv.db
 
 	sh(gitEnv, dir, binPath(t), "decision", "add", "--db", db, "--id", "store-columns", "--status", "decision",
-		"--statement", "Store hot attributes in their own columns.")
+		"--decided-by=e2e", "--statement", "Store hot attributes in their own columns.")
 
 	audit := func() (int, map[string]any) {
 		t.Helper()

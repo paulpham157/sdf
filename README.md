@@ -21,7 +21,7 @@ without merging. Without `--github`, accepted stays unknown. That
 figure is the computed cost of merged sessions, divided by how many
 there are — not only token or session counts.
 
-The decision layer records who decided (the caller sets `user` or `agent`), why, and which
+The decision layer records who decided (a GitHub login; the legacy words `user` and `agent` are still accepted, see [Decision records](docs/outcomes.md#decision-records)), why, and which
 alternatives were considered, and links each decision to the sessions and
 commits that implemented it. The Decisions graph shows the path taken,
 paths not taken, blocked or conflicting points, and the cost of that
@@ -207,7 +207,7 @@ The GitHub Action runs `sdf verify`; it does not open a ledger today.
 | [docs/receiver.md](docs/receiver.md) | The receiver, content storage, the UI, `sdf init`, and the git hooks |
 | [docs/summary.md](docs/summary.md) | How a session is summarized, and how cost is computed |
 | [docs/outcomes.md](docs/outcomes.md) | Linking a session to a commit or pull request, decision records, and the local budget |
-| [docs/design/decision-category.md](docs/design/decision-category.md) | Phase 0 spec. Optional `category`. Proposal: unset is stored as `NULL` and displayed as `implementation`. `decided_by` names a team member's GitHub login. Not implemented yet |
+| [docs/design/decision-category.md](docs/design/decision-category.md) | Optional `category` (unset is SQL `NULL`, displayed as `implementation`) and `decided_by` as a team member's GitHub login. Phase 1 is implemented |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records for the project. [ADR 0001](docs/adr/0001-diagram-tool-excalidraw-vs-tldraw.md) proposes keeping tldraw for the documentation diagrams |
 | [docs/security.md](docs/security.md) | Permissions on the SQLite store and ledger files |
 | [skills/README.md](skills/README.md) | The `sdf-decisions` agent skill: record choices with `sdf decision`, run `scripts/brief` (or `sdf decision brief`) at session start, and run `scripts/check` (or `sdf decision check`) before a push, merge, release, deploy, or architecture change |

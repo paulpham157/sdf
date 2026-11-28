@@ -57,12 +57,13 @@ const (
 // or KindConflicting. Locked is true only for a constraint the user made.
 // DecidedBy is empty when the record named none.
 type Item struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Statement string `json:"statement"`
-	Status    string `json:"status"`
-	DecidedBy string `json:"decided_by"`
-	Locked    bool   `json:"locked"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Statement       string `json:"statement"`
+	Status          string `json:"status"`
+	DecidedBy       string `json:"decided_by"`
+	DecidedByLegacy bool   `json:"decided_by_legacy,omitempty"`
+	Locked          bool   `json:"locked"`
 }
 
 // Result is the ranked brief after caps. Items is never nil. Omitted is
@@ -109,10 +110,11 @@ func Classify(g decision.Graph) []Item {
 	var locked, other, blockedItems, conflicting []Item
 	for _, d := range order {
 		item := Item{
-			ID:        d.ID,
-			Statement: fitStatement(d.Statement, statementBudget),
-			Status:    d.Status,
-			DecidedBy: d.DecidedBy,
+			ID:              d.ID,
+			Statement:       fitStatement(d.Statement, statementBudget),
+			Status:          d.Status,
+			DecidedBy:       d.DecidedBy,
+			DecidedByLegacy: decision.LegacyDecidedBy(d.DecidedBy),
 		}
 		switch {
 		case isConstraint(d):
@@ -415,11 +417,7 @@ func itemBytes(item Item, later, jsonOut bool) int {
 }
 
 func textLine(item Item) string {
-	by := item.DecidedBy
-	if by == "" {
-		by = "-"
-	}
-	return item.Kind + "\t" + quoteField(item.ID) + "\t" + quoteField(by) + "\t" + quoteField(item.Statement) + "\n"
+	return item.Kind + "\t" + quoteField(item.ID) + "\t" + quoteField(decision.DecidedByText(item.DecidedBy)) + "\t" + quoteField(item.Statement) + "\n"
 }
 
 func jsonItem(item Item) []byte {

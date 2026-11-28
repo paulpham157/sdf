@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     source TEXT,
     decided_by TEXT,
     alternatives TEXT,
-    reason TEXT
+    reason TEXT,
+    category TEXT
 );
 CREATE TABLE IF NOT EXISTS decision_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -387,7 +388,7 @@ func (s *Store) migrate() error {
 	if err := s.addMissingColumns("records", []string{"trace_id", "span_id", "parent_span_id", "status_code", "status_message"}); err != nil {
 		return err
 	}
-	if err := s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason"}); err != nil {
+	if err := s.addMissingColumns("decisions", []string{"decided_by", "alternatives", "reason", "category"}); err != nil {
 		return err
 	}
 	if err := s.migrateRetractions(); err != nil {
@@ -699,8 +700,10 @@ func scanRecords(rows *sql.Rows) ([]record.Record, error) {
 }
 
 // Decision is one append-only decision record. Status is "hypothesis" or
-// "decision". Source, DecidedBy, Alternatives, and Reason are empty when
-// the record named none. DecidedBy is "user" or "agent" when set.
+// "decision". Source, DecidedBy, Alternatives, Reason, and Category are
+// empty when the record named none. DecidedBy is a GitHub login, or the
+// legacy words "user" or "agent", when set. Category is one of the five
+// tokens when set; empty is SQL NULL and is not rewritten.
 type Decision struct {
 	ID           string
 	Statement    string
@@ -710,6 +713,7 @@ type Decision struct {
 	DecidedBy    string
 	Alternatives string
 	Reason       string
+	Category     string
 }
 
 // DecisionEdge is one directed edge. Kind is "decision", "session", or
@@ -730,9 +734,9 @@ func (s *Store) InsertDecision(d Decision) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.db.Exec(`
-		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, alternatives, reason)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.Alternatives), nullText(d.Reason))
+		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, alternatives, reason, category)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.Alternatives), nullText(d.Reason), nullText(d.Category))
 	return err
 }
 
@@ -749,7 +753,7 @@ func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason
+		SELECT id, statement, status, recorded_at, source, decided_by, alternatives, reason, category
 		FROM decisions
 		ORDER BY rowid
 	`)
@@ -760,8 +764,8 @@ func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
 	var out []Decision
 	for rows.Next() {
 		var d Decision
-		var source, decidedBy, alternatives, reason sql.NullString
-		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &alternatives, &reason); err != nil {
+		var source, decidedBy, alternatives, reason, category sql.NullString
+		if err := rows.Scan(&d.ID, &d.Statement, &d.Status, &d.RecordedAt, &source, &decidedBy, &alternatives, &reason, &category); err != nil {
 			return nil, err
 		}
 		if source.Valid {
@@ -775,6 +779,9 @@ func (s *Store) LoadDecisionsContext(ctx context.Context) ([]Decision, error) {
 		}
 		if reason.Valid {
 			d.Reason = reason.String
+		}
+		if category.Valid {
+			d.Category = category.String
 		}
 		out = append(out, d)
 	}

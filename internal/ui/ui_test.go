@@ -547,6 +547,34 @@ func TestPageShowsRetractedDecisions(t *testing.T) {
 	}
 }
 
+func TestPageRendersUnsetCategoryAndLegacyDecidedBy(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "keep-sqlite", Statement: "Keep the collector store in SQLite.", Status: decision.StatusDecision,
+		DecidedBy: decision.DecidedByUser,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	_, _, api := get(t, srv.URL()+"api/decisions")
+	if strings.Contains(api, `"category"`) {
+		t.Fatalf("JSON should omit an empty category:\n%s", api)
+	}
+	if !strings.Contains(api, `"decided_by": "user"`) {
+		t.Fatalf("JSON should keep the stored word user:\n%s", api)
+	}
+	page := renderedPage(t, srv)
+	if !strings.Contains(page, "implementation") {
+		t.Fatalf("empty category did not render as implementation:\n%s", page)
+	}
+	if !strings.Contains(page, "user (legacy)") {
+		t.Fatalf("user did not render as user (legacy):\n%s", page)
+	}
+	if !strings.Contains(page, "category") {
+		t.Fatalf("category prefix missing:\n%s", page)
+	}
+}
+
 func TestPageRendersDecisionActorAlternativesAndReason(t *testing.T) {
 	db := openDB(t)
 	if _, err := decision.Add(db, decision.RecordInput{

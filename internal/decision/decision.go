@@ -29,11 +29,25 @@ const StatusHypothesis = "hypothesis"
 // StatusDecision is a settled choice.
 const StatusDecision = "decision"
 
-// DecidedByUser is a choice the user made.
-const DecidedByUser = "user"
+// DecidedByUser and DecidedByAgent are legacy values stored before
+// decided_by became a GitHub login. New writes may still use them. They
+// display with a legacy marker. They are not a check of who typed them.
+const (
+	DecidedByUser  = "user"
+	DecidedByAgent = "agent"
+)
 
-// DecidedByAgent is a choice the agent made.
-const DecidedByAgent = "agent"
+// Category values. Unset is stored as empty (SQL NULL) and displayed as
+// CategoryImplementation. CategoryNone is a list filter sentinel, not a
+// stored value.
+const (
+	CategoryArchitecture   = "architecture"
+	CategoryPolicy         = "policy"
+	CategoryProduct        = "product"
+	CategoryImplementation = "implementation"
+	CategoryOperations     = "operations"
+	CategoryNone           = "none"
+)
 
 const (
 	KindDecision = "decision"
@@ -88,10 +102,12 @@ const (
 )
 
 // Record is one decision. Status is StatusHypothesis or StatusDecision, as
-// stored. Source, DecidedBy, Alternatives, and Reason are empty when the
-// record named none. DecidedBy is DecidedByUser or DecidedByAgent when set.
-// RecordedAt is UTC RFC3339 with a numeric zone, the same form the store
-// uses for received_at.
+// stored. Source, DecidedBy, Alternatives, Reason, and Category are empty
+// when the record named none. DecidedBy is a GitHub login, or the legacy
+// words DecidedByUser or DecidedByAgent. Category is one of the five
+// category tokens; empty is stored as SQL NULL and displayed as
+// CategoryImplementation. RecordedAt is UTC RFC3339 with a numeric zone,
+// the same form the store uses for received_at.
 //
 // EffectiveStatus and SupersededBy are not stored. Load computes them from
 // the edges: a record is EffectiveSuperseded when at least one supersedes
@@ -110,8 +126,10 @@ type Record struct {
 	RecordedAt      string      `json:"recorded_at"`
 	Source          string      `json:"source,omitempty"`
 	DecidedBy       string      `json:"decided_by,omitempty"`
+	DecidedByLegacy bool        `json:"decided_by_legacy,omitempty"`
 	Alternatives    string      `json:"alternatives,omitempty"`
 	Reason          string      `json:"reason,omitempty"`
+	Category        string      `json:"category,omitempty"`
 	EffectiveStatus string      `json:"effective_status"`
 	SupersededBy    []string    `json:"superseded_by,omitempty"`
 	Retraction      *Retraction `json:"retraction,omitempty"`
@@ -176,6 +194,7 @@ type RecordInput struct {
 	DecidedBy    string
 	Alternatives string
 	Reason       string
+	Category     string
 }
 
 // EdgeInput is what a caller supplies for one edge.
@@ -183,6 +202,14 @@ type EdgeInput struct {
 	Relation string
 	From     Endpoint
 	To       Endpoint
+}
+
+// ValidateRecord checks in the way Add does, without opening the store.
+// The CLI calls it before resolving an omitted --decided-by, so a rejected
+// record does not run gh or git.
+func ValidateRecord(in RecordInput) error {
+	_, err := newRecord(in, "1970-01-01T00:00:00.000000+00:00")
+	return err
 }
 
 // Add stores one decision. The id must be new. The statement is one line.
@@ -200,6 +227,7 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		DecidedBy:    rec.DecidedBy,
 		Alternatives: rec.Alternatives,
 		Reason:       rec.Reason,
+		Category:     rec.Category,
 	}); err != nil {
 		return Record{}, err
 	}
@@ -558,7 +586,7 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 	}
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
-		out.Decisions = append(out.Decisions, Record{
+		out.Decisions = append(out.Decisions, withLegacy(Record{
 			ID:           d.ID,
 			Statement:    d.Statement,
 			Status:       d.Status,
@@ -567,7 +595,8 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 			DecidedBy:    d.DecidedBy,
 			Alternatives: d.Alternatives,
 			Reason:       d.Reason,
-		})
+			Category:     d.Category,
+		}))
 	}
 	for _, e := range edges {
 		out.Edges = append(out.Edges, Edge{
@@ -972,7 +1001,9 @@ func WriteJSON(w io.Writer, g Graph) error {
 // GET /api/decisions write, so the two views cannot disagree. A cell that
 // holds a control character or invalid UTF-8 is printed Go-quoted so it
 // cannot break the columns or the terminal. An empty source or decided-by
-// prints as "-". EFFECTIVE is the read-time status Load computed, see
+// prints as "-". An empty category prints as "implementation". The legacy
+// decided-by words print with a marker, for example "user (legacy)".
+// EFFECTIVE is the read-time status Load computed, see
 // Record. Alternatives and reason, when set, follow the row on indented
 // "alternatives: " and "reason: " lines in the STATEMENT column, and a
 // retraction on a "retracted: TIME [by WHO][; reason: TEXT]" line.
@@ -981,9 +1012,9 @@ func WriteText(w io.Writer, g Graph) error {
 		_, err := io.WriteString(w, "No decisions in the store.\n")
 		return err
 	}
-	decisions := [][]string{{"ID", "STATUS", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"}}
+	decisions := [][]string{{"ID", "STATUS", "CATEGORY", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"}}
 	for _, d := range g.Decisions {
-		row := []string{d.ID, d.Status, effectiveText(d) + flagsText(d), orDash(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
+		row := []string{d.ID, d.Status, DisplayCategory(d.Category), effectiveText(d) + flagsText(d), DecidedByText(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
 		decisions = append(decisions, row)
 		// Alternatives and reason are free text, up to 500 bytes each, so
 		// they go on their own lines under STATEMENT instead of widening
@@ -1137,10 +1168,8 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 		return Record{}, fmt.Errorf("source must be one line")
 	}
 	decidedBy := strings.TrimSpace(in.DecidedBy)
-	switch decidedBy {
-	case "", DecidedByUser, DecidedByAgent:
-	default:
-		return Record{}, fmt.Errorf("decided-by must be %q or %q", DecidedByUser, DecidedByAgent)
+	if decidedBy != "" && !ValidDecidedBy(decidedBy) {
+		return Record{}, fmt.Errorf("decided-by must be a GitHub login (letters, digits, and single hyphens, at most 39 characters)")
 	}
 	alternatives := strings.TrimSpace(in.Alternatives)
 	if strings.ContainsAny(alternatives, "\r\n") || len(alternatives) > 500 {
@@ -1150,8 +1179,15 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	if strings.ContainsAny(reason, "\r\n") || len(reason) > 500 {
 		return Record{}, fmt.Errorf("reason must be one line")
 	}
+	category := strings.TrimSpace(in.Category)
+	if category != "" && !ValidCategory(category) {
+		return Record{}, fmt.Errorf("category must be %s", categoryList)
+	}
+	if category == CategoryPolicy && in.Status != StatusDecision {
+		return Record{}, fmt.Errorf("category %q requires status %q", CategoryPolicy, StatusDecision)
+	}
 	// A new id has no edges yet, so the record starts active.
-	return Record{
+	return withLegacy(Record{
 		ID:              id,
 		Statement:       statement,
 		Status:          in.Status,
@@ -1160,8 +1196,59 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 		DecidedBy:       decidedBy,
 		Alternatives:    alternatives,
 		Reason:          reason,
+		Category:        category,
 		EffectiveStatus: EffectiveActive,
-	}, nil
+	}), nil
+}
+
+const categoryList = "architecture, policy, product, implementation, or operations"
+
+// ValidCategory reports whether s is one of the five stored category tokens.
+func ValidCategory(s string) bool {
+	switch s {
+	case CategoryArchitecture, CategoryPolicy, CategoryProduct, CategoryImplementation, CategoryOperations:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidCategoryFilter reports whether s is a list --category value: one of
+// the five tokens, or the sentinel CategoryNone.
+func ValidCategoryFilter(s string) bool {
+	return s == CategoryNone || ValidCategory(s)
+}
+
+// DisplayCategory is the category a reader shows. An empty stored value
+// (SQL NULL) displays as implementation. Any other stored string, including
+// one outside the five tokens, is shown as itself.
+func DisplayCategory(stored string) string {
+	if stored == "" {
+		return CategoryImplementation
+	}
+	return stored
+}
+
+// LegacyDecidedBy reports whether s is the stored word user or agent.
+func LegacyDecidedBy(s string) bool {
+	return s == DecidedByUser || s == DecidedByAgent
+}
+
+// DecidedByText is the DECIDED BY cell. Empty prints as "-". The legacy
+// words print with a marker. A login prints as itself.
+func DecidedByText(s string) string {
+	if s == "" {
+		return "-"
+	}
+	if LegacyDecidedBy(s) {
+		return s + " (legacy)"
+	}
+	return s
+}
+
+func withLegacy(rec Record) Record {
+	rec.DecidedByLegacy = LegacyDecidedBy(rec.DecidedBy)
+	return rec
 }
 
 // newEdge checks the relation and both endpoints as the caller gave them,

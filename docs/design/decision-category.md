@@ -1,10 +1,47 @@
 # Decision categories
 
-Status: accepted design, not implemented. This page is phase 0. It specifies
-the change and does not change the schema, the CLI, the brief, the checker,
-or the UI. Current behavior stays as described in
+Status: phase 1 is implemented, including the unset-display and attribution
+proposals. `category` is an optional column. Unset is stored as SQL `NULL`
+and displayed as `implementation`. `decided_by` stores a GitHub login.
+`user` and `agent` remain legal writes and display as legacy. Existing rows
+are not rewritten. There is no add-time warning that tries to tell a person
+from an agent. Current behavior is described in
 [Decision records](../outcomes.md#decision-records) and
 [Checking an action](../outcomes.md#checking-an-action).
+
+Deviation from the attribution proposal: a new `decided_by` must be a
+GitHub login (letters, digits, and single hyphens, at most 39 characters,
+no leading or trailing hyphen, no `--`) or the legacy words `user` or
+`agent`. The proposal's 500-character one-line cap is not what the CLI
+stores. GitHub compares logins without regard to case. sdf stores the
+bytes it was given and does not fold them. A login resolved from the local
+identity lookup that is not in that form, or that is the word `user` or
+`agent`, is skipped, so a display name does not fail the add and a
+container default of `user` is not stored as a locked constraint. An
+explicit `--decided-by` that is not in that form is rejected and stores
+nothing. An explicit empty value stays empty.
+
+Second deviation: when `--decided-by` is omitted, sdf does not call
+`gh api user` and it does not use the network. It reads
+`gh config get -h github.com user` (the `user` key for github.com in the
+GitHub CLI's hosts.yml), then `git config --get github.user`. That git
+read uses every scope, including the repository-local config. The value
+is self-asserted attribution, not authentication. `git config user.name`
+is not read. The two lookups share one 3 second deadline. Captured stdout
+is capped at 64 KiB, and a command that does not exit has 500ms to close
+its pipes after the deadline. The lookup runs only after the rest of the
+record validates.
+
+Phase 2 is not in this change: brief JSON does not carry `category` (the
+brief text line still has no category column), the graph and audit do not
+tally by category, and the brief's lock is still the literal `user`. The
+brief text and JSON do mark stored `user` and `agent` as legacy. The UI
+shows the category next to status, with a category prefix, and on the
+graph detail panel. The decided-by filter labels `user` and `agent` as
+legacy and has a Logins choice, and the legend names each login.
+
+The sections below are the design record. Phase 1 has landed that behavior,
+with the login-format and local-lookup deviations above.
 
 A decision record gains one optional field, `category`. It says what kind of
 choice the record is, so a reader can separate an architecture choice, a
@@ -14,8 +51,8 @@ named `constraint`. `sdf decision check` stays a match on the statement.
 
 This page also says what `decided_by` is for. It is the GitHub login of
 the team member responsible for the decision. The record does not
-distinguish that person from their agent. The CLI still stores only
-`user`, `agent`, or empty.
+distinguish that person from their agent. The CLI stores that login, the
+legacy words `user` and `agent`, or empty.
 
 ## Decisions
 
@@ -33,14 +70,15 @@ These are decided:
    and `operations`. The field is optional. An agent is not required to set
    it. When it is unset, the category is `implementation`. Unset is still
    stored as SQL `NULL`: the column has no SQL default and no backfill.
-   How a reader shows that `NULL` is a proposal under Unset. There is no
+   Readers show that `NULL` as Unset specifies, and that display is
+   implemented. There is no
    `other`. Security, data, and UX do not get values: they cut across the
    five. A security rule that forbids an action is a `policy`. A security
    boundary in the design is `architecture`. Free tags that could name
    those cross-cutting concerns are deferred to phase 4.
 3. The value is `policy`, not `constraint`. `constraint` is already the
    brief's derived group. `isConstraint` in
-   `internal/decision/brief/brief.go` (the closure at line 102) selects an
+   `internal/decision/brief/brief.go` (the closure at line 103) selects an
    active record whose `status` is `decision` and whose stored
    `decided_by` is the literal `user`, or that is the source of a
    `constrains` edge. `RelConstrains` (`constrains`) is a stored relation.
@@ -62,10 +100,11 @@ These are decided:
    for the decision, for example `paulpham157`. An agent acting for a
    person records that person's login. The decision record does not
    distinguish a person from their agent. The purpose of the field is to
-   show who on the team decided. The CLI does not do this yet: `newRecord`
-   accepts only empty, `user`, or `agent`. Resolving the login, and how
-   rows already stored as `user` or `agent` are shown, are proposals under
-   Attribution.
+   show who on the team decided. The CLI stores that login, the legacy
+   words `user` and `agent`, or empty. Resolving the login, and how rows
+   already stored as `user` or `agent` are shown, are under Attribution.
+   Phase 1 implements that resolution and the legacy display, with the
+   login-format deviation in the status above.
 
 The only pair the CLI refuses, once `category` exists, is `policy` with
 `hypothesis`. `decided_by` is not an access check.
@@ -96,8 +135,8 @@ a later record.
 A rule, not a topic. "Do not push until the user says so" is a policy.
 "Waiting for the user's OK to push" is a hypothesis and cannot be category
 `policy`. Use `operations` when the open question is operational. Omitting
-the category stores `NULL` and, under the Unset proposal, displays as
-`implementation`, so set `operations` when that is the category.
+the category stores `NULL` and displays as `implementation`, so set
+`operations` when that is the category.
 
 `status` must be `decision`. `sdf decision check` still matches the
 statement, because check uses `decision.Active` (every in-force settled
@@ -147,7 +186,7 @@ Omitted means the default category, `implementation`. The column is still
 `NULL`. Nothing in phase 1 guesses a category from the statement. Old rows
 stay `NULL`. There is no backfill.
 
-Proposal, not implemented: readers display `NULL` and an empty string as
+Implemented: readers display `NULL` and an empty string as
 `implementation`, and they leave the stored `NULL` in place. JSON still
 omits the key (`json:"category,omitempty"`), and a missing key means
 `implementation`. A stored token is shown as itself. Explicit
@@ -164,7 +203,7 @@ column would need a backfill this spec already rejects. Display keeps the
 accepted storage rule (nullable, no SQL default, no backfill) and still
 gives every reader one category for an unset field.
 
-Under that proposal the text list prints `implementation` for `NULL` and
+The text list prints `implementation` for `NULL` and
 empty. `-` stays the placeholder `source` and `decided_by` use when empty.
 
 ## Status
@@ -200,40 +239,44 @@ too high for what this store is for. sdf does not warn when a record is
 added, and it does not treat `decided_by` as proof that a person, rather
 than an agent, settled the choice.
 
-The CLI today does not accept a login. `newRecord` in
-`internal/decision/decision.go` allows only empty, `user`, or `agent`, and
-any other `--decided-by` is rejected. The add stores nothing. This page
-does not change that code.
+Phase 1 accepts a login. `newRecord` in `internal/decision/decision.go`
+allows a GitHub login, empty, `user`, or `agent`. Any other
+`--decided-by` is rejected and the add stores nothing. The login is at
+most 39 characters. It cannot start or end with a hyphen, and it cannot
+contain `--`. The 500-character cap below was the proposal and is not
+what the CLI stores.
 
-Proposal, not implemented. How the login is chosen, in this order:
+Implemented, with the local-read deviation in the status above. How the
+login is chosen, in this order:
 
 1. An explicit `--decided-by`. The stored value is that string, trimmed.
    sdf does not ask GitHub whether the account exists. An explicit empty
-   value stays empty and does not fall through to the next step.
-2. When the flag is omitted, a configured identity. First the `login`
-   field from `gh api user`. If that command is missing or fails, a login
-   the operator configured in git, read with `git config` (for example
-   `github.user`, or `user.name` when the operator already uses the login
-   there). The first value that is non-empty is stored. When none is, the
-   field stays empty, as an omitted flag does today.
+   value stays empty and does not fall through to the next step. An
+   explicit value that is not a login or `user` or `agent` is rejected
+   and the add stores nothing.
+2. When the flag is omitted, and only after the rest of the record
+   validates, a configured identity read on this machine. First
+   `gh config get -h github.com user`, which reads hosts.yml and does not
+   use the network. If that command is missing, fails, or is not an
+   accepted login, `git config --get github.user`. That read uses every
+   scope, including the repository, and the value is self-asserted
+   attribution, not authentication. `git config user.name` is not a
+   source. A value that is empty, not a login, or the legacy word `user`
+   or `agent` is skipped. When none is accepted, the field stays empty.
 
-This change does not call `gh` or git, and it does not add a config key.
-The order above is the proposal, not a command the binary runs.
+Implemented. The allow-list of only `user` and `agent` is gone. `user`
+and `agent` stay legal writes, so a caller that still passes them keeps
+working. They are not a check of who typed them. Auto-resolution never
+stores those words.
 
-Proposal, not implemented. The allow-list of only `user` and `agent` goes
-away when this is built. The value is one line, with the same
-500-character cap as `source`, and no newline. `user` and `agent` stay
-legal writes, so a caller that still passes them keeps working. They are
-not a check of who typed them.
-
-Proposal, not implemented. Rows already stored as `user` or `agent` are
+Implemented. Rows already stored as `user` or `agent` are
 kept as those strings. Nothing rewrites them. List, brief, check, the
 graph, and the UI display that pair as legacy: the text form prints the
 stored word and a marker, for example `user (legacy)`, and JSON keeps the
 stored string and sets `decided_by_legacy` true for that pair only. The
 marker is omitted otherwise. A login displays as the login, with no
 marker. Empty stays empty and still prints as `-`. A new write of `user`
-or `agent`, after the allow-list is gone, uses the same legacy display.
+or `agent` uses the same legacy display.
 
 The brief's lock stays the literal `user` until a later change says
 otherwise. A login does not become locked, and a legacy `agent` does not
@@ -282,9 +325,11 @@ be allowed would bake the bug into the new tests.
 
 ## Phase 1
 
-Schema, domain, CLI, docs, and tests. The brief, the graph, the UI, and
-audit counts wait for phase 2. There is no add-time warning. Phase 3 is
-withdrawn. The skill does not gain a requirement to set `--category`.
+Schema, domain, CLI, docs, and tests. The list and the graph detail panel
+already show the category. Brief JSON `category`, the graph and audit
+tallies, and a change to `isConstraint` wait for phase 2. There is no
+add-time warning. Phase 3 is withdrawn. The skill does not gain a
+requirement to set `--category`.
 
 ### Schema
 
@@ -331,7 +376,7 @@ inference from the statement text.
 `newRecord` in `internal/decision/decision.go`:
 
 - Trim space. Empty after trim is unset (`NULL`). Readers display it as
-  `implementation` under the Unset proposal.
+  `implementation`, as specified under Unset.
 - Any other value must be exactly one of the five lowercase tokens.
   `Architecture`, `none`, and a second token are rejected. Exact lowercase
   is consistent with `status`: `hypothesis` and `decision` are matched as
@@ -363,7 +408,7 @@ sentinel. It is not a stored category, so a row that somehow holds the
 text `none` does not match `--category none` and does not match any of
 the five tokens. Any other filter value exits 2. A missing value exits 2.
 
-Proposal, not implemented, the same display rule as Unset.
+Implemented, the same display rule as Unset.
 `--category implementation` keeps a stored `implementation` and a `NULL`
 or empty category. A reader sees both as `implementation`.
 `--category none` is a filter sentinel, not a stored category and not
@@ -389,9 +434,10 @@ filter first, then the category filter.
 Text from `WriteText` gains a `CATEGORY` column after `STATUS`. The header
 in `internal/decision/decision.go` is today
 `ID, STATUS, EFFECTIVE, DECIDED BY, RECORDED AT, SOURCE, STATEMENT`.
-Proposal, not implemented: an empty category prints as `implementation`,
+Implemented: an empty category prints as `implementation`,
 not as `-` via `orDash`. Alternatives and reason stay on their own lines
-under `STATEMENT`.
+under `STATEMENT`. A `--category` filter that keeps nothing prints
+`No decisions match.` and does not say the store is empty.
 
 `--json` stays the graph `WriteJSON` already writes, which is the same
 document as `GET /api/decisions` when no filter is set. With a filter it is
@@ -412,12 +458,14 @@ states that the field is optional, that unset means `implementation`, that
 not read `category`. It does not say that a person, rather than an agent,
 must record a given category.
 
-The skill's working `--decided-by` values stay `user` and `agent` until
-`newRecord` accepts a login. A login passed today is rejected and the add
-stores nothing. The skill says that limit, and it says the login of the
-team member responsible is what the field is for once the CLI accepts it.
-An agent acting for a person records that person's login. sdf does not
-check the value.
+The skill's working `--decided-by` examples are GitHub logins, except a
+person-set rule, which uses `--decided-by user` until phase 2 and displays
+as `user (legacy)`. `user` and `agent` still store and display as legacy.
+An agent acting for a person records that person's login for any other
+record. sdf does not check the value. The skill also records the phase-1
+brief gap: `isConstraint` still keys on the literal `user`, so a policy
+stored with a login does not appear in the session-start brief and is not
+locked. `sdf decision check` still blocks from the statement.
 
 `docs/outcomes.md` gains the field on the decision-record description, the
 `add` and `list` usage lines, and the list columns, when the field is
@@ -436,6 +484,11 @@ Brief JSON, the graph, the UI, and audit counts.
 `isConstraint` is unchanged, so a `policy` is not automatically a brief
 constraint, and a decision stored as `user` of another category can still
 be one. A GitHub login is not treated as `user`.
+
+A later spec amendment should make an active settled policy a constraint:
+`status` `decision` and `category` `policy` and effective status `active`.
+That is not this phase. Until that amendment, a person-set rule is recorded
+with `--decided-by user` so the lock that exists today still matches it.
 
 `textLine` stays `kind`, id, decided-by, statement. The session-start hook
 and the text byte budget must not grow a column. Status is already absent
@@ -587,7 +640,7 @@ the counts mean the same thing in every store.
 | Phase | What lands |
 | --- | --- |
 | 0 | This spec. |
-| 1 | Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (proposal: stored `NULL`, not rewritten). `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
+| 1 | Implemented. Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (stored `NULL`, not rewritten). `decided_by` is a GitHub login, with legacy `user` / `agent` kept. `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
 | 2 | Brief JSON field, brief text columns unchanged. Graph and UI labels and counts. Audit totals. `NULL` and empty count as `implementation`. |
 | 3 | Withdrawn. No add-time warning that tries to tell a person from an agent. |
 | 4 | Optional free tags, in their own field, if a later spec still wants them. |

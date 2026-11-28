@@ -172,3 +172,35 @@ func TestWriteCheckTextAndJSON(t *testing.T) {
 		t.Fatalf("%q", archText.String())
 	}
 }
+
+func TestCheckActionIgnoresCategory(t *testing.T) {
+	stmt := "Do not push until the user says so."
+	var first decision.Verdict
+	for i, cat := range []string{"", decision.CategoryPolicy, decision.CategoryImplementation} {
+		got, err := decision.CheckAction([]decision.Record{{
+			ID: "dont-push", Statement: stmt, DecidedBy: decision.DecidedByUser, Category: cat,
+		}}, "push")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if got.Allowed != first.Allowed || len(got.Blocking) != len(first.Blocking) || got.Blocking[0].Match != first.Blocking[0].Match || got.Blocking[0].Statement != first.Blocking[0].Statement {
+			t.Fatalf("category %q changed the verdict: %+v vs %+v", cat, got, first)
+		}
+	}
+	allowed, err := decision.CheckAction([]decision.Record{{
+		ID: "show", Statement: "Show agent status in the UI.", Category: decision.CategoryPolicy,
+	}}, "push")
+	if err != nil || !allowed.Allowed || len(allowed.Blocking) != 0 {
+		t.Fatalf("%+v %v", allowed, err)
+	}
+	night, err := decision.CheckAction([]decision.Record{{
+		ID: "night", Statement: "Do not push notifications to users at night.", Category: decision.CategoryOperations,
+	}}, "push")
+	if err != nil || night.Allowed || len(night.Blocking) != 1 || night.Blocking[0].Match != "do not push" {
+		t.Fatalf("%+v %v", night, err)
+	}
+}

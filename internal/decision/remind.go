@@ -87,3 +87,40 @@ func FilterBySession(g Graph, sessionID string) Graph {
 	}
 	return Graph{Decisions: decisions, Edges: edges}
 }
+
+// FilterByCategory keeps decisions whose stored category matches filter,
+// and edges that touch at least one kept decision. filter is one of the
+// five tokens or CategoryNone. effective_status is not a filter.
+// CategoryImplementation also keeps an empty category, which displays as
+// implementation. CategoryNone keeps a stored string outside the five
+// tokens, except the text "none" itself, and does not keep an empty
+// category. Insertion order is kept. A kept edge may name a decision the
+// decision table omitted.
+func FilterByCategory(g Graph, filter string) Graph {
+	keep := map[string]bool{}
+	decisions := make([]Record, 0)
+	for _, d := range g.Decisions {
+		if categoryKept(d.Category, filter) {
+			keep[d.ID] = true
+			decisions = append(decisions, d)
+		}
+	}
+	edges := make([]Edge, 0)
+	for _, e := range g.Edges {
+		if (e.From.Kind == KindDecision && keep[e.From.Ref]) || (e.To.Kind == KindDecision && keep[e.To.Ref]) {
+			edges = append(edges, e)
+		}
+	}
+	return Graph{Decisions: decisions, Edges: edges}
+}
+
+func categoryKept(stored, filter string) bool {
+	switch filter {
+	case CategoryNone:
+		return stored != "" && stored != CategoryNone && !ValidCategory(stored)
+	case CategoryImplementation:
+		return stored == "" || stored == CategoryImplementation
+	default:
+		return stored == filter
+	}
+}

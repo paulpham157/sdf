@@ -40,7 +40,7 @@ func TestOverviewChartsEndpointServesRecallAndGaps(t *testing.T) {
 	postJSON(t, srv.httpBase+"/v1/logs", payload)
 
 	runDB(t, srv.db, "decision", "add", "--id", "store-columns", "--status", "decision",
-		"--statement", "Store hot attributes in their own columns.")
+		"--decided-by=e2e", "--statement", "Store hot attributes in their own columns.")
 
 	doc = getOverviewCharts(t, srv.uiURL)
 	totals = asMap(t, doc["totals"])
