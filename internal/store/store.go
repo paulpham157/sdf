@@ -316,10 +316,12 @@ func setWAL(db *sql.DB) error {
 		mode, err = walJournalMode(ctx, conn)
 		if err != nil {
 			if sqliteCode(err)&0xff == sqliteReadonly {
-				return nil
+				// The pragma shortened busy_timeout before SQLite refused the
+				// write. Put the connection timeout back before this open uses it.
+				return setConnBusyTimeout(context.Background(), conn)
 			}
 			if done, derr := walAlready(ctx, conn); derr == nil && done {
-				return nil
+				return setConnBusyTimeout(context.Background(), conn)
 			}
 			if !retryLock(ctx, err) {
 				return finishLockWait(wait, ctx, err, last)
@@ -347,9 +349,9 @@ func setWAL(db *sql.DB) error {
 		// The pragma kept the previous mode and did not return an error.
 		// Another opener may have finished the switch since.
 		if done, derr := walAlready(ctx, conn); derr == nil && done {
-			return nil
+			return setConnBusyTimeout(context.Background(), conn)
 		} else if derr != nil && sqliteCode(derr)&0xff == sqliteReadonly {
-			return nil
+			return setConnBusyTimeout(context.Background(), conn)
 		}
 		last = fmt.Errorf("store: could not switch the file to WAL (journal_mode is %q)", mode)
 		if ctx.Err() != nil {
