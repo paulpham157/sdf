@@ -77,6 +77,69 @@ async function contrast(page) {
   expect(results.violations).toEqual([]);
 }
 
+function channel(v) {
+  const x = v / 255;
+  return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+}
+
+function parseRgb(value) {
+  const match = String(value).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function contrastRatio(foreground, background) {
+  const lum = (rgb) => 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+  const hi = Math.max(lum(foreground), lum(background));
+  const lo = Math.min(lum(foreground), lum(background));
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+async function focusedChip(page) {
+  const active = page.locator('.md-sidebar--primary a.md-nav__link--active').first();
+  await active.focus();
+  return page.evaluate(() => {
+    const scroll = document.querySelector('.md-sidebar--primary .md-sidebar__scrollwrap');
+    const title = document.querySelector('.md-sidebar--primary .md-nav--primary > .md-nav__title');
+    const chip = [...document.querySelectorAll('.md-sidebar--primary .md-nav__link--active')].find(
+      (el) => el.getBoundingClientRect().height > 0,
+    );
+    const tocTitle = document.querySelector('.md-sidebar--secondary .md-nav__title');
+    const tocLink = document.querySelector('.md-sidebar--secondary .md-nav__link');
+    const cs = getComputedStyle(chip);
+    const cr = chip.getBoundingClientRect();
+    const sr = scroll.getBoundingClientRect();
+    const clipRight = sr.left + scroll.clientWidth;
+    const width = parseFloat(cs.outlineWidth);
+    const offset = parseFloat(cs.outlineOffset);
+    const outset = offset + width;
+    const ring = {
+      left: cr.left - Math.max(outset, 0),
+      right: cr.right + Math.max(outset, 0),
+      top: cr.top - Math.max(outset, 0),
+      bottom: cr.bottom + Math.max(outset, 0),
+    };
+    const fade = getComputedStyle(title, '::after');
+    return {
+      outline: cs.outlineColor,
+      color: cs.color,
+      bg: cs.backgroundColor,
+      page: getComputedStyle(document.body).backgroundColor,
+      inset: offset < 0 && outset <= 0,
+      inside:
+        ring.left >= sr.left - 0.5 &&
+        ring.right <= clipRight + 0.5 &&
+        ring.top >= sr.top - 0.5 &&
+        ring.bottom <= sr.top + scroll.clientHeight + 0.5,
+      chipRight: cr.right,
+      clipRight,
+      gap: cr.top - title.getBoundingClientRect().bottom,
+      tocGap: tocLink.getBoundingClientRect().top - tocTitle.getBoundingClientRect().bottom,
+      fadeHeight: fade.height,
+      fadeOpacity: fade.opacity,
+    };
+  });
+}
+
 async function shot(page, name) {
   fs.mkdirSync(OUT, { recursive: true });
   await page.screenshot({ path: path.join(OUT, name), fullPage: false });
@@ -125,6 +188,13 @@ for (const scheme of [LIGHT, DARK]) {
         if (scheme.name === 'dark') {
           await expect(active).toHaveCSS('background-color', 'rgb(237, 230, 218)');
           await expect(active).toHaveCSS('color', 'rgb(27, 31, 37)');
+          await expect(active).toHaveCSS('box-shadow', 'none');
+          await expect(active).toHaveCSS('padding-left', '8px');
+          await expect(active).toHaveCSS('padding-right', '8px');
+        }
+        if (scheme.name === 'light') {
+          await expect(active).toHaveCSS('background-color', 'rgb(47, 54, 64)');
+          await expect(active).toHaveCSS('color', 'rgb(246, 241, 232)');
           await expect(active).toHaveCSS('box-shadow', 'none');
           await expect(active).toHaveCSS('padding-left', '8px');
           await expect(active).toHaveCSS('padding-right', '8px');
@@ -259,6 +329,45 @@ test('diagram plates on user pages in both schemes', async ({ browser }) => {
     }
     await contrast(page);
     await shot(page, scheme.name + '-outcomes-1440.png');
+    await context.close();
+  }
+});
+
+test('active chip contrast, focus ring, and clip at 1440', async ({ browser }) => {
+  for (const scheme of [LIGHT, DARK]) {
+    const context = await browser.newContext();
+    await installScheme(context, scheme.palette);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, '/');
+    const chip = await focusedChip(page);
+    const text = contrastRatio(parseRgb(chip.color), parseRgb(chip.bg));
+    const ringOnChip = contrastRatio(parseRgb(chip.outline), parseRgb(chip.bg));
+    const ringOnPage = contrastRatio(parseRgb(chip.outline), parseRgb(chip.page));
+    expect(text).toBeGreaterThanOrEqual(4.5);
+    expect(ringOnChip).toBeGreaterThanOrEqual(3);
+    expect(chip.inset).toBe(true);
+    expect(chip.inside).toBe(true);
+    expect(chip.chipRight).toBeLessThanOrEqual(chip.clipRight);
+    expect(chip.gap).toBeGreaterThan(4);
+    expect(chip.gap).toBeLessThan(6);
+    expect(chip.tocGap).toBeGreaterThan(8);
+    expect(chip.tocGap).toBeLessThan(10);
+    expect(chip.fadeHeight).toBe('8px');
+    expect(chip.fadeOpacity).toBe('0');
+    if (scheme.name === 'light') {
+      expect(chip.bg).toBe('rgb(47, 54, 64)');
+      expect(chip.color).toBe('rgb(246, 241, 232)');
+      // rust-400. No rust step clears 3:1 on both this chip and the cream page.
+      expect(chip.outline).toBe('rgb(224, 118, 74)');
+      expect(ringOnPage).toBeGreaterThan(2.5);
+      expect(ringOnPage).toBeLessThan(3);
+    }
+    if (scheme.name === 'dark') {
+      expect(chip.bg).toBe('rgb(237, 230, 218)');
+      expect(chip.color).toBe('rgb(27, 31, 37)');
+      expect(chip.outline).toBe('rgb(142, 62, 28)');
+    }
     await context.close();
   }
 });
