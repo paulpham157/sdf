@@ -68,6 +68,24 @@ func TestExecCommandHonorsDeadline(t *testing.T) {
 	}
 }
 
+// A grandchild can keep stdout open after the child exits. WaitDelay must
+// drop that pipe. The production worst case is about 4.5 seconds because
+// gh and git each add this wait to their own budget; the helper here only
+// checks the wait, and it does not use the network.
+func TestExecCommandDropsStdoutHeldPastWaitDelay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := ExecCommand(ctx, "sh", "-c", "sleep 30 & echo held")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("a child holding stdout succeeded")
+	}
+	if elapsed < 350*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("WaitDelay did not bound the held pipe: %s (%v)", elapsed, err)
+	}
+}
+
 func TestExecCommandCapsStdout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

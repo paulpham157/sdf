@@ -55,10 +55,12 @@ const identityWaitDelay = 500 * time.Millisecond
 // memory or be stored as a login.
 const identityStdoutCap = 64 * 1024
 
-// CommandRunner runs name with args and returns stdout. ctx is the shared
-// deadline for the whole resolution. A missing binary, a non-zero exit, a
-// timeout, or stdout over identityStdoutCap is an error. ResolveDecidedBy
-// treats that as "no value" and tries the next source.
+// CommandRunner runs name with args and returns stdout. ctx is that one
+// command's deadline. gh and git are separate calls, each with its own
+// context: gh gets identityLookupTimeout, then git gets identityGitReserve.
+// A missing binary, a non-zero exit, a timeout, or stdout over
+// identityStdoutCap is an error. ResolveDecidedBy treats that as "no value"
+// and tries the next source.
 type CommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 // ExecCommand runs name with args under ctx. Stderr is discarded. Stdout

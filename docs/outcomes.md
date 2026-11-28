@@ -130,9 +130,10 @@ network. This is a deviation from the attribution proposal, which named
 the repository-local config, and the value is self-asserted attribution, not
 authentication. `git config user.name` is not read. A missing `gh`, a failed
 command, a display name, or `user` or `agent` in any case (`User`, `AGENT`)
-is skipped, and the field stays empty. `gh` has up to 3 seconds. If it
-hangs or fails, `git` still gets about 500ms of its own, so the add stays
-within a worst case of about 4.5 seconds: gh has 3 seconds, git has 0.5 seconds after that, and each killed command may take another 0.5 seconds to close its pipes. Each command's stdout is capped at 64 KiB. The
+is skipped, and the field stays empty. The worst case is about 4.5 seconds:
+`gh` has up to 3 seconds, and if it hangs or fails, `git` still gets about
+500ms of its own. Each killed command may then take another 500ms to close
+its pipes. Each command's stdout is capped at 64 KiB. The
 lookup runs only after the rest of the record validates. An explicit empty `--decided-by` stays empty
 and does not fall through. An explicit value is stored with its exact case.
 `User` is not the legacy word `user`. An explicit value that is not a login or `user`
@@ -326,16 +327,16 @@ statement:
 
 ```text
 Decisions: 6
-ID             STATUS      CATEGORY        EFFECTIVE           DECIDED BY       RECORDED AT                       SOURCE  STATEMENT
+ID             STATUS      CATEGORY        EFFECTIVE           DECIDED BY      RECORDED AT                       SOURCE  STATEMENT
 which-db       hypothesis  implementation  active              agent (legacy)  2026-11-23T17:18:46.360788+00:00  -       Pick the store: SQLite or Postgres.
 design-schema  decision    implementation  active, blocked     agent (legacy)  2026-11-23T17:18:46.367151+00:00  -       Design the rejections schema.
-                                                                                                                       blocked by: which-db (open: which-db)
+                                                                                                                         blocked by: which-db (open: which-db)
 use-sqlite     decision    implementation  active, conflicted  user (legacy)   2026-11-23T17:18:46.373929+00:00  -       Keep the store in SQLite.
-                                                                                                                       conflicts with: use-postgres
+                                                                                                                         conflicts with: use-postgres
 use-postgres   decision    implementation  active, conflicted  agent (legacy)  2026-11-23T17:18:46.381759+00:00  -       Move the store to Postgres.
-                                                                                                                       conflicts with: use-sqlite
+                                                                                                                         conflicts with: use-sqlite
 dont-push      decision    implementation  active              user (legacy)   2026-11-23T17:18:46.390932+00:00  -       Do not push without an OK.
-                                                                                                                       refined by: push-after-ok
+                                                                                                                         refined by: push-after-ok
 push-after-ok  decision    implementation  active              user (legacy)   2026-11-23T17:18:46.397456+00:00  -       Push feature branches once the user says OK.
 
 Edges: 3
@@ -450,8 +451,8 @@ as `user (legacy)`. Everything else uses the login.
 Decisions: 3
 ID          STATUS      CATEGORY        EFFECTIVE              DECIDED BY      RECORDED AT                       SOURCE     STATEMENT
 use-sqlite  decision    implementation  superseded by use-wal  user (legacy)   2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
-                                                                                                                                     alternatives: Postgres, DuckDB
-                                                                                                                                     reason: One file, no server
+                                                                                                                            alternatives: Postgres, DuckDB
+                                                                                                                            reason: One file, no server
 pure-go     hypothesis  implementation  active                 agent (legacy)  2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
 use-wal     decision    implementation  active                 -               2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
 
