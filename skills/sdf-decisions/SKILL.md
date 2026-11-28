@@ -38,8 +38,7 @@ Claude Code's command is prefixed with `[ -z "${GROK_HOOK_EVENT:-}" ] || exit 0`
 - A missing store, or no matching decisions: the command prints nothing and exits 0. Continue; do not invent constraints.
 - When the store exists but cannot be read: stdout is `sdf decision brief unavailable: run sdf decision list`, and the command exits 0. Tell the user, and run `sdf decision list` if you need the records.
 - `sdf` missing from `PATH`, or the command cannot be run: continue without a brief; do not invent constraints. Unlike `sdf decision check`, a missing brief is not a reason to stop the session.
-- Locked decisions stored as `user` come first. The lock matches that stored word. sdf does not check that a person typed it. When items are cut, the text ends with `N more: run sdf decision list`, or `N more (K locked): run sdf decision list` when locked rules were dropped. Run `sdf decision list` to see the rest.
-- Known phase-1 gap: `isConstraint` in `internal/decision/brief/brief.go` still keys on the literal `user` (and on a `constrains` edge). A policy recorded with a GitHub login does not appear in the session-start brief and is not locked. `sdf decision check` still blocks by statement, including a decision recorded with a login. Do not pass `user` only to get the brief lock.
+- Locked decisions stored as `user` come first. The lock matches that stored word. sdf does not check that a person typed it. A person-set rule or constraint is recorded with `--decided-by user` until phase 2. It displays as `user (legacy)`. A policy recorded with a GitHub login does not appear in this brief and is not locked, because `isConstraint` in `internal/decision/brief/brief.go` still keys on the literal `user` and on a `constrains` edge. `sdf decision check` still blocks by statement, including a decision recorded with a login. When items are cut, the text ends with `N more: run sdf decision list`, or `N more (K locked): run sdf decision list` when locked rules were dropped. Run `sdf decision list` to see the rest.
 
 ## Before a push, merge, release, deploy, or architecture change
 
@@ -51,7 +50,7 @@ sh scripts/check ACTION [--db PATH] [--json]
 # Underlying command: sdf decision check ACTION [--db PATH] [--json]
 ```
 
-`ACTION` is one argument: exactly `push`, `merge`, `release`, or `deploy`, or one free-text architecture change such as `replace sqlite`. `git push` is not the named action `push`; pass `push`. Use the same `--db` as the other `sdf decision` commands. `--json` prints `action`, `kind`, `allowed`, and `blocking` (`id`, `decided_by`, `statement`, `match`). The helper passes `ACTION` and those flags through as arguments (no eval). You can also run `sdf decision check` directly.
+`ACTION` is one argument: exactly `push`, `merge`, `release`, or `deploy`, or one free-text architecture change such as `replace sqlite`. `git push` is not the named action `push`; pass `push`. Use the same `--db` as the other `sdf decision` commands. `--json` prints `action`, `kind`, `allowed`, and `blocking` (`id`, `decided_by`, `decided_by_legacy`, `statement`, `match`). `decided_by_legacy` is true only when the stored value is `user` or `agent`. The helper passes `ACTION` and those flags through as arguments (no eval). You can also run `sdf decision check` directly.
 
 - Exit 0, and a line starting with `allowed`: nothing in force forbids it. You may proceed.
 - Exit 1, and a line starting with `forbidden`: stop. Do not do the action. Show the user every blocking id, who set it (`decided_by`), and the statement, and ask how to proceed. Do not retract, supersede, or reword a decision to get past this check unless the user tells you to.
@@ -88,7 +87,7 @@ Do not record routine implementation details, typo fixes, or obvious next steps.
 
 Every record needs:
 
-- **who decided**: the GitHub login of the team member responsible, for example `paulpham157`. When you act for a person, pass that person's login. sdf does not distinguish you from that person and does not check the flag. The design is [Decision categories](../../docs/design/decision-category.md).
+- **who decided**: the GitHub login of the team member responsible, for example `paulpham157`. When you act for a person, pass that person's login. For a person-set rule or constraint, pass `--decided-by user` until phase 2 so the session-start brief still locks it; that value displays as `user (legacy)`. A login is letters, digits, and single hyphens, at most 39 characters. It cannot start or end with a hyphen and it cannot contain `--`. GitHub compares logins without regard to case. sdf stores the value as given and does not fold it. sdf does not distinguish you from that person and does not check the flag. The design is [Decision categories](../../docs/design/decision-category.md).
 - **category**: optional. You are not required to set it. When it is unset, the category is `implementation` (stored as SQL `NULL`, displayed as `implementation`). `policy` is only a settled rule (`status` `decision`). `sdf decision check` does not read category.
 - **what was decided**: the choice itself, in `--statement`
 - **alternatives**: the options that were actually on the table, in `--alternatives`. Omit the flag if none were stated or discussed.
@@ -107,7 +106,7 @@ sdf decision add --id ID --statement TEXT --status hypothesis|decision \
 - `--id`: a stable slug, 1–128 characters, starting with a letter or digit, then letters, digits, `.`, `_`, or `-`. Prefer a short kebab-case name of the choice (`dont-push`, `use-sqlite`). Ids are append-only and cannot be reused; if the id is taken, pick a more specific unused one.
 - `--statement`: one non-empty line, at most 500 characters, no newlines. State the choice itself, not the discussion around it.
 - `--status`: `hypothesis` for an assumption that is not settled; `decision` for a settled choice. Approvals, rejections, chosen options, and constraints are `decision`.
-- `--decided-by`: the GitHub login of the team member responsible. Pass it when you know it. The flag is optional. When it is omitted, sdf tries `gh api user`, then `git config github.user`, then `git config user.name` if that value is a login. A missing `gh` does not fail the add; the field stays empty when nothing resolves. An explicit empty value stays empty. `user` and `agent` still store, and they display as legacy. Do not pass those words for a new record. sdf does not treat the value as proof of who settled the choice.
+- `--decided-by`: the GitHub login of the team member responsible. Pass it when you know it. The flag is optional. When it is omitted, sdf reads a login locally and does not use the network: `gh config get -h github.com user` (the GitHub CLI's hosts.yml), then `git config github.user`. That git value is read from every scope, including the repository, and it is self-asserted attribution, not authentication. `git config user.name` is not read. A missing `gh` does not fail the add; the field stays empty when nothing resolves. A configured value that is not a login, or that is the word `user` or `agent`, is skipped. An explicit empty value stays empty. An explicit value that is not a login or `user` or `agent` is rejected and the add stores nothing. `user` and `agent` still store, and they display as legacy. Use `user` for a person-set rule or constraint until phase 2. sdf does not treat the value as proof of who settled the choice. The lookup runs only after the rest of the record validates.
 - `--category`: optional. Omit it unless you know the category. Unset means `implementation`. `policy` requires `--status decision`. `sdf decision check` does not read this flag.
 - `--alternatives`: optional one line, at most 500 characters. The options that were on the table and not chosen. Omit the flag when there were none.
 - `--reason`: optional one line, at most 500 characters. Omit it when no reason was given. Do not invent one.
@@ -120,7 +119,7 @@ Examples:
 # The person forbade pushing. category policy, status decision.
 sdf decision add --id dont-push \
   --statement "Do not push until the user says so." \
-  --status decision --decided-by paulpham157 --category policy \
+  --status decision --decided-by user --category policy \
   --alternatives "push the branch now" \
   --reason "The user said don't push."
 
@@ -218,10 +217,12 @@ For a commit SHA, `git rev-parse HEAD` is the usual source, but link it only whe
 ## Read records back
 
 ```bash
-sdf decision list [--db PATH] [--json]
+sdf decision list [--db PATH] [--json] [--session ID] [--category architecture|policy|product|implementation|operations|none]
 ```
 
-`--json` is the same document as `GET /api/decisions`. Each record keeps the `status` it was recorded with (`hypothesis` or `decision`). sdf also adds two fields that are **computed when the records are read, not stored**:
+The text table has a `CATEGORY` column after `STATUS`. An empty category prints as `implementation`. `--category` keeps a stored token. `--category implementation` also keeps a NULL category. `--category none` keeps a stored string outside the five tokens, except the text `none`, and does not keep NULL. `--session` is applied first, then `--category`. A category filter that keeps nothing prints `No decisions match.` and does not say the store is empty.
+
+`--json` is the same document as `GET /api/decisions`. Each record keeps the `status` it was recorded with (`hypothesis` or `decision`). `category` is present only when one was stored; a missing key means `implementation`. `decided_by` keeps the stored string, including `user` and `agent`. `decided_by_legacy` is true only for that pair. sdf also adds two fields that are **computed when the records are read, not stored**:
 
 - `effective_status`: `superseded` when another stored decision supersedes it, otherwise `active`.
 - `superseded_by`: the ids of the decisions that supersede it. It is omitted when the record is active. Replacement is direct, so to find the current choice, follow `superseded_by` until a record is `active`.

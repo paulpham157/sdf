@@ -21,7 +21,7 @@ without merging. Without `--github`, accepted stays unknown. That
 figure is the computed cost of merged sessions, divided by how many
 there are — not only token or session counts.
 
-The decision layer records who decided (the caller sets `user` or `agent`), why, and which
+The decision layer records who decided (a GitHub login; the legacy words `user` and `agent` are still accepted, see [Decision records](docs/outcomes.md#decision-records)), why, and which
 alternatives were considered, and links each decision to the sessions and
 commits that implemented it. The Decisions graph shows the path taken,
 paths not taken, blocked or conflicting points, and the cost of that

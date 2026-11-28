@@ -108,17 +108,28 @@ a reason, a source pointer, and a category. Time is `recorded_at`.
 `paulpham157`. An agent acting for a person records that person's login.
 sdf does not distinguish a person from their agent, and it does not check
 that the account exists. A login is letters, digits, and single hyphens, at
-most 39 characters. The legacy words `user` and `agent` are still accepted
-and are not rewritten. List, brief, check, and the UI print them with a
-legacy marker (`user (legacy)`). JSON keeps the stored string and sets
-`decided_by_legacy` true for that pair only. Empty stays empty and prints
-as `-`. When `--decided-by` is omitted, sdf stores the first login it can
-read: the `login` field of `gh api user`, then `git config github.user`,
-then `git config user.name` when that value is itself a login. A missing
-`gh`, a failed command, or a display name is skipped, and the field stays
-empty. An explicit `--decided-by` (including an empty one) is stored as
-given and does not fall through. There is no warning that tries to tell a
-person from an agent.
+most 39 characters. It cannot start or end with a hyphen, and it cannot
+contain `--`. GitHub compares logins without regard to case. sdf stores the
+value as given and does not fold it, so `Paul` and `paul` are different
+stored strings. The brief lock matches the exact word `user`. The legacy
+words `user` and `agent` are still accepted and are not rewritten. List,
+brief, check, and the UI print them with a legacy marker (`user (legacy)`).
+JSON keeps the stored string and sets `decided_by_legacy` true for that pair
+only. Empty stays empty and prints as `-`. When `--decided-by` is omitted,
+sdf stores the first login it can read locally, and it does not use the
+network. This is a deviation from the attribution proposal, which named
+`gh api user`: the binary runs `gh config get -h github.com user` (the
+`user` key for github.com in the GitHub CLI's hosts.yml), then
+`git config --get github.user`. That git read uses every scope, including
+the repository-local config, and the value is self-asserted attribution, not
+authentication. `git config user.name` is not read. A missing `gh`, a failed
+command, a display name, or the legacy word `user` or `agent` is skipped,
+and the field stays empty. The two lookups share one 3 second deadline, and
+each command's stdout is capped at 64 KiB. The lookup runs only after the
+rest of the record validates. An explicit empty `--decided-by` stays empty
+and does not fall through. An explicit value that is not a login or `user`
+or `agent` is rejected and the add stores nothing. There is no warning that
+tries to tell a person from an agent.
 
 `category` is optional. The values are `architecture`, `policy`, `product`,
 `implementation`, and `operations`. Unset is stored as SQL `NULL` and
@@ -394,7 +405,9 @@ rest. With no such edge the text is `No decisions in the store.` and
 `implementation`. `--category none` keeps a stored string outside the five
 tokens, except the text `none`, and does not keep NULL. An edge stays when
 at least one of its decision endpoints survived the filter. `--session` is
-applied first, then `--category`. Like `sdf summary`, it reads
+applied first, then `--category`. When the store has records and
+`--category` keeps none of them, the text is `No decisions match.` and
+`--json` is the empty lists. That is not the empty-store line. Like `sdf summary`, it reads
 `sdf-telemetry.sqlite` unless `--db` names another file, and it opens the file
 read-only: it never writes, never migrates, and never creates a file. With no
 records and no edges it prints `No decisions in the store.`, and `--json`
@@ -426,12 +439,12 @@ sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-
 
 ```text
 Decisions: 3
-ID          STATUS      EFFECTIVE              DECIDED BY  RECORDED AT                       SOURCE     STATEMENT
-use-sqlite  decision    superseded by use-wal  user        2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
-                                                                                                        alternatives: Postgres, DuckDB
-                                                                                                        reason: One file, no server
-pure-go     hypothesis  active                 agent       2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
-use-wal     decision    active                 -           2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
+ID          STATUS      CATEGORY        EFFECTIVE              DECIDED BY      RECORDED AT                       SOURCE     STATEMENT
+use-sqlite  decision    implementation  superseded by use-wal  user (legacy)   2026-11-23T15:00:00.000000+00:00  issue 168  Store telemetry in SQLite
+                                                                                                                                     alternatives: Postgres, DuckDB
+                                                                                                                                     reason: One file, no server
+pure-go     hypothesis  implementation  active                 agent (legacy)  2026-11-23T15:00:01.000000+00:00  -          The driver stays pure Go
+use-wal     decision    implementation  active                 -               2026-11-23T15:00:02.000000+00:00  -          Store telemetry in SQLite with WAL
 
 Edges: 2
 RELATION    FROM              TO                   RECORDED AT
@@ -582,7 +595,8 @@ sdf decision graph [--db PATH] [--json] [--prices bundled|PATH] [--repo PATH] [-
   is read as UTC, the zone the store writes; a time that cannot be read
   sorts last and is labelled "time unknown". It needs no other endpoint.
   Ticks are spaced by event order; filled is a decision stored as `user`,
-  hollow one stored as `agent`, a small dot an edge. The mark follows the
+  hollow one stored as `agent`, accent one stored as a GitHub login, and a
+  small dot an edge. The legend names each login. The mark follows the
   stored label. sdf does not check that a person typed `user`. The label
   at the playhead reads, for example,
   `Nov 22 · 09:14 GMT+7 · agent-status · 10 of 13`: the time is in
@@ -776,7 +790,7 @@ the class so the rule that fired is obvious:
 ```text
 forbidden: push
 ID	DECIDED BY	MATCH	STATEMENT
-dont-push	user	do not push	Do not push until the user says so.
+dont-push	user (legacy)	do not push	Do not push until the user says so.
 ```
 
 ```text
@@ -785,8 +799,9 @@ allowed: replace sqlite (architecture)
 
 `--json` is one object, `action`, `kind` (`push`, `merge`, `release`,
 `deploy`, or `architecture`), `allowed`, and `blocking`. Each blocking entry
-is `id`, `decided_by` (empty when unset), `statement`, and `match` (the tag
-or phrase, lowercased). `blocking` is `[]` when the action is allowed. The
+is `id`, `decided_by` (empty when unset), `decided_by_legacy` (true only for
+stored `user` or `agent`), `statement`, and `match` (the tag or phrase,
+lowercased). `blocking` is `[]` when the action is allowed. The
 exit code is still 1 when it is forbidden.
 
 The rows are in insertion order. The command keeps the records
