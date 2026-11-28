@@ -5,7 +5,8 @@ Python 3 standard library only. Not part of the Go build.
 
   python3 design/tokens.py            write design/tokens.css
   python3 design/tokens.py --check    fail if tokens.css is stale, a pairing fails,
-                                      or docs/stylesheets/extra.css has a raw color
+                                      docs/stylesheets/extra.css has a raw color, or
+                                      focus-on-inverse is an outline without an inset offset
   python3 design/tokens.py --table    print the light and dark contrast tables
 """
 import json
@@ -16,6 +17,11 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 SRC, OUT = HERE / "tokens.json", HERE / "tokens.css"
 EXTRA = HERE.parent / "docs" / "stylesheets" / "extra.css"
+APP = HERE.parent / "internal" / "ui" / "assets" / "app.css"
+# Stylesheets that may paint a focus ring. focus-on-inverse is legal only
+# as an inset ring on an inverse surface; an outset ring is on the page.
+FOCUS_STYLES = (EXTRA, APP)
+FOCUS_ON_INVERSE = "var(--sdf-color-focus-on-inverse)"
 REF = re.compile(r"^\{([^}]+)\}$")
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
 # extra.css may only name tokens. A raw color would drift from tokens.json.
@@ -241,6 +247,10 @@ PAIRS += [(f, SURFACES, UI) for f in (
     "chart.axis")]
 PAIRS += [
     ("graph.muted-stroke", ["graph.muted-fill"], UI),
+    # Inset ring on the inverse surface only. On the page this color is
+    # under 3:1 (light 2.72:1, dark 2.25:1). check_focus_on_inverse_scope
+    # requires a negative outline-offset in the same rule, and checks the
+    # page surfaces when a rule uses the token without that inset.
     ("color.focus-on-inverse", ["color.surface-inverse"], UI),
     ("color.text-inverse", ["color.accent"], DECOR),
     ("color.accent", ["color.surface-inverse"], DECOR),
@@ -314,6 +324,103 @@ def check_extra_css():
     return bool(bad)
 
 
+def iter_decl_blocks(text):
+    """Yield (prelude, declarations) for each style rule, including inside groups."""
+    i, n = 0, len(text)
+    while True:
+        start = text.find("{", i)
+        if start < 0:
+            return
+        depth, j = 1, start + 1
+        while j < n and depth:
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+            j += 1
+        body = text[start + 1:j - 1]
+        if "{" in body:
+            yield from iter_decl_blocks(body)
+        else:
+            yield text[i:start].strip(), body
+        i = j
+
+
+def declarations(body):
+    for part in body.split(";"):
+        if ":" not in part:
+            continue
+        prop, val = part.split(":", 1)
+        yield prop.strip().lower(), val.strip()
+
+
+def offset_is_inset(value):
+    """True when an outline-offset is negative, so the ring sits on the element."""
+    if re.search(r"(^|[\s,(])-\d", value):
+        return True
+    return re.search(r"\*\s*-\s*1\b", value) is not None
+
+
+def focus_outline_problems(text):
+    """Rules that paint focus-on-inverse as an outline without an inset offset.
+
+    An outset ring is drawn on the page behind the control. The same
+    declaration block has to set a negative outline-offset; a positive or
+    inherited offset does not count.
+    """
+    problems = []
+    for prelude, body in iter_decl_blocks(strip_comments(text)):
+        props = dict(declarations(body))
+        outline = props.get("outline", "")
+        color = props.get("outline-color", "")
+        if FOCUS_ON_INVERSE not in outline and FOCUS_ON_INVERSE not in color:
+            continue
+        if not offset_is_inset(props.get("outline-offset", "")):
+            problems.append(" ".join(prelude.split()))
+    return problems
+
+
+def check_focus_on_inverse_scope(tokens):
+    """Fail when focus-on-inverse is used as a page ring, and self-test the scan."""
+    samples = [
+        ("button:focus-visible { outline-color: " + FOCUS_ON_INVERSE + "; }", True),
+        ("a:focus-visible { outline-color: " + FOCUS_ON_INVERSE + "; outline-offset: 2px; }", True),
+        ("a:focus-visible { outline-color: " + FOCUS_ON_INVERSE
+         + "; outline-offset: calc(var(--sdf-border-width-strong) * -1); }", False),
+        ("@media (min-width: 10em) { a { outline-color: " + FOCUS_ON_INVERSE
+         + "; outline-offset: -2px; } }", False),
+    ]
+    failed = False
+    for sample, expect_problem in samples:
+        got = bool(focus_outline_problems(sample))
+        if got != expect_problem:
+            print(f"focus scope self-test failed: {sample!r} -> {got}, want problem {expect_problem}",
+                  file=sys.stderr)
+            failed = True
+    for path in FOCUS_STYLES:
+        if not path.exists():
+            print("missing " + str(path), file=sys.stderr)
+            failed = True
+            continue
+        problems = focus_outline_problems(path.read_text(encoding="utf-8"))
+        if not problems:
+            continue
+        failed = True
+        print(path.relative_to(HERE.parent).as_posix()
+              + " uses focus-on-inverse without an inset outline-offset.", file=sys.stderr)
+        print("That ring sits on the page. Measured contrast against color.bg:", file=sys.stderr)
+        for dark, label in ((False, "light"), (True, "dark")):
+            for bg in SURFACES:
+                fg_hex = resolve_mode(tokens, "color.focus-on-inverse", dark)
+                bg_hex = resolve_mode(tokens, bg, dark)
+                r = ratio(fg_hex, bg_hex)
+                mark = "FAIL" if r + 1e-9 < UI else "pass"
+                print(f"  {label} {fg_hex} on {bg} {bg_hex} {r:.2f}:1 {mark}", file=sys.stderr)
+        for prelude in problems:
+            print("  " + prelude, file=sys.stderr)
+    return failed
+
+
 def print_table(rows):
     print("| Foreground | Hex | Background | Hex | Ratio | Needs | Result |")
     print("| --- | --- | --- | --- | ---: | --- | --- |")
@@ -327,7 +434,8 @@ def main(argv):
     light_rows, light_failed = check_contrast(tokens, dark=False)
     dark_rows, dark_failed = check_contrast(tokens, dark=True)
     extra_failed = check_extra_css()
-    failed = light_failed or dark_failed or extra_failed
+    focus_failed = check_focus_on_inverse_scope(tokens)
+    failed = light_failed or dark_failed or extra_failed or focus_failed
     if "--table" in argv:
         print_table(light_rows)
         print()

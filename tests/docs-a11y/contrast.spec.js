@@ -358,7 +358,7 @@ test('active chip contrast, focus ring, and clip at 1440', async ({ browser }) =
     if (scheme.name === 'light') {
       expect(chip.bg).toBe('rgb(47, 54, 64)');
       expect(chip.color).toBe('rgb(246, 241, 232)');
-      // rust-400. No rust step clears 3:1 on both this chip and the cream page.
+      // focus-on-inverse is rust-400. No rust step clears 3:1 on both this chip and the cream page.
       expect(chip.outline).toBe('rgb(224, 118, 74)');
       expect(ringOnPage).toBeGreaterThan(2.5);
       expect(ringOnPage).toBeLessThan(3);
@@ -370,4 +370,154 @@ test('active chip contrast, focus ring, and clip at 1440', async ({ browser }) =
     }
     await context.close();
   }
+});
+
+test('drawer active chip below the sidebar breakpoint', async ({ browser }) => {
+  for (const scheme of [LIGHT, DARK]) {
+    const context = await browser.newContext();
+    await installScheme(context, scheme.palette);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await open(page, '/');
+    await page.locator('.md-header label[for="__drawer"]').click();
+    const active = page.locator('.md-sidebar--primary .md-nav__link--active:visible').first();
+    await expect(active).toBeVisible();
+    if (scheme.name === 'light') {
+      await expect(active).toHaveCSS('background-color', 'rgb(47, 54, 64)');
+      await expect(active).toHaveCSS('color', 'rgb(246, 241, 232)');
+    } else {
+      await expect(active).toHaveCSS('background-color', 'rgb(237, 230, 218)');
+      await expect(active).toHaveCSS('color', 'rgb(27, 31, 37)');
+    }
+    const fade = await page.evaluate(() => {
+      const title = document.querySelector('.md-sidebar--primary .md-nav--primary > .md-nav__title');
+      return getComputedStyle(title, '::after').content;
+    });
+    expect(fade).toBe('none');
+    await context.close();
+  }
+});
+
+test('sticky fade is hidden at rest and eases in over 8px, including the TOC', async ({ browser }) => {
+  for (const scheme of [LIGHT, DARK]) {
+    const context = await browser.newContext();
+    await installScheme(context, scheme.palette);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 520 });
+    await open(page, '/adr/0001-diagram-tool-excalidraw-vs-tldraw/');
+    const read = () => page.evaluate(async () => {
+      const primary = document.querySelector('.md-sidebar--primary .md-sidebar__scrollwrap');
+      const secondary = document.querySelector('.md-sidebar--secondary .md-sidebar__scrollwrap');
+      const primaryTitle = document.querySelector('.md-sidebar--primary .md-nav--primary > .md-nav__title');
+      const tocTitle = document.querySelector('.md-sidebar--secondary .md-nav__title');
+      const opacity = (title) => getComputedStyle(title, '::after').opacity;
+      primary.scrollTop = 0;
+      secondary.scrollTop = 0;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const rest = { primary: opacity(primaryTitle), toc: opacity(tocTitle) };
+      primary.scrollTop = 4;
+      secondary.scrollTop = 4;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const mid = { primary: Number(opacity(primaryTitle)), toc: Number(opacity(tocTitle)) };
+      primary.scrollTop = 40;
+      secondary.scrollTop = 40;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const scrolled = {
+        primary: opacity(primaryTitle),
+        toc: opacity(tocTitle),
+        primaryMax: primary.scrollHeight - primary.clientHeight,
+        tocMax: secondary.scrollHeight - secondary.clientHeight,
+      };
+      return { rest, mid, scrolled };
+    });
+    const fade = await read();
+    expect(fade.scrolled.primaryMax).toBeGreaterThan(8);
+    expect(fade.scrolled.tocMax).toBeGreaterThan(8);
+    expect(fade.rest.primary).toBe('0');
+    expect(fade.rest.toc).toBe('0');
+    expect(fade.mid.primary).toBeGreaterThan(0);
+    expect(fade.mid.primary).toBeLessThan(1);
+    expect(fade.mid.toc).toBeGreaterThan(0);
+    expect(fade.mid.toc).toBeLessThan(1);
+    expect(fade.scrolled.primary).toBe('1');
+    expect(fade.scrolled.toc).toBe('1');
+    await context.close();
+  }
+});
+
+test('non-active sidebar links use the page focus ring', async ({ browser }) => {
+  for (const scheme of [LIGHT, DARK]) {
+    const context = await browser.newContext();
+    await installScheme(context, scheme.palette);
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, '/');
+    const link = page.locator('.md-sidebar--primary a.md-nav__link:not(.md-nav__link--active):visible').first();
+    await link.focus();
+    const ring = await link.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { color: cs.outlineColor, offset: cs.outlineOffset };
+    });
+    expect(ring.offset).toBe('2px');
+    if (scheme.name === 'light') expect(ring.color).toBe('rgb(198, 90, 46)');
+    else expect(ring.color).toBe('rgb(243, 199, 182)');
+    await context.close();
+  }
+});
+
+test('gradient stays hidden when scroll-driven animation is unsupported', async ({ browser }) => {
+  const context = await browser.newContext();
+  await installScheme(context, LIGHT.palette);
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 1440, height: 520 });
+  await open(page, '/adr/0001-diagram-tool-excalidraw-vs-tldraw/');
+  const rules = await page.evaluate(() => {
+    const found = [];
+    const walk = (list, supports) => {
+      for (const rule of list) {
+        if (rule.type === CSSRule.SUPPORTS_RULE) walk(rule.cssRules, true);
+        else if (rule.type === CSSRule.MEDIA_RULE) walk(rule.cssRules, supports);
+        else if (rule.type === CSSRule.STYLE_RULE && rule.selectorText && rule.selectorText.includes('md-nav__title::after')) {
+          found.push({
+            supports,
+            opacity: rule.style.getPropertyValue('opacity'),
+            name: rule.style.getPropertyValue('animation-name'),
+            range: rule.style.getPropertyValue('animation-range'),
+          });
+        }
+      }
+    };
+    for (const sheet of document.styleSheets) {
+      let cssRules;
+      try {
+        cssRules = sheet.cssRules;
+      } catch (err) {
+        continue;
+      }
+      walk(cssRules, false);
+    }
+    return found;
+  });
+  expect(rules.some((rule) => !rule.supports && rule.opacity === '0' && rule.name === '')).toBe(true);
+  expect(rules.some((rule) => rule.supports && rule.name === 'sdf-sidebar-title-fade' && rule.range.includes('8px'))).toBe(true);
+  expect(rules.some((rule) => rule.supports && rule.opacity === '0')).toBe(false);
+  await page.addStyleTag({
+    content: '.md-nav__title::after { animation-name: none !important; }',
+  });
+  const faded = await page.evaluate(async () => {
+    const scroll = document.querySelector('.md-sidebar--primary .md-sidebar__scrollwrap');
+    const title = document.querySelector('.md-sidebar--primary .md-nav--primary > .md-nav__title');
+    const tocScroll = document.querySelector('.md-sidebar--secondary .md-sidebar__scrollwrap');
+    const tocTitle = document.querySelector('.md-sidebar--secondary .md-nav__title');
+    scroll.scrollTop = 40;
+    tocScroll.scrollTop = 40;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return {
+      primary: getComputedStyle(title, '::after').opacity,
+      toc: getComputedStyle(tocTitle, '::after').opacity,
+    };
+  });
+  expect(faded.primary).toBe('0');
+  expect(faded.toc).toBe('0');
+  await context.close();
 });

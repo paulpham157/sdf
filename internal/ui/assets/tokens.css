@@ -77,7 +77,7 @@
   --sdf-color-link: var(--sdf-color-accent-text);
   --sdf-color-focus: var(--sdf-color-rust-500);
   --sdf-color-accent-on-inverse: var(--sdf-color-rust-200);
-  --sdf-color-focus-on-inverse: var(--sdf-color-rust-200);
+  --sdf-color-focus-on-inverse: var(--sdf-color-rust-400);
   --sdf-color-success: var(--sdf-color-green-700);
   --sdf-color-success-soft: var(--sdf-color-green-50);
   --sdf-color-warning: var(--sdf-color-amber-700);
