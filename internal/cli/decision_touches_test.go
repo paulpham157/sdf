@@ -553,6 +553,31 @@ func TestPrePushStubGitReadsNoContent(t *testing.T) {
 	}
 }
 
+func TestDecisionTouchesMissingDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.sqlite")
+	code, stdout, stderr := runSDF("decision", "touches", "--db", path, "--paths", "-")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "missing.sqlite") {
+		t.Fatalf("%d %q %q", code, stdout, stderr)
+	}
+}
+
+func TestPrePushGitOutputCapFailsOpen(t *testing.T) {
+	stub := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\ncase \"$1\" in\n  log) dd if=/dev/zero bs=200 count=1 status=none; exit 0 ;;\nesac\nexit 0\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+"/usr/bin"+string(os.PathListSeparator)+"/bin")
+	prev := prePushMaxGitBytes
+	prePushMaxGitBytes = 64
+	t.Cleanup(func() { prePushMaxGitBytes = prev })
+	withPrePushStdin(t, pushLine(strings.Repeat("ab", 20), zeroSHA()))
+	code, _, stderr := runSDF("decision", "pre-push", "--db", filepath.Join(t.TempDir(), "db.sqlite"), "--remote", "origin", "--mode", "warn")
+	if code != 0 || !strings.Contains(stderr, "output exceeded 64 bytes") || !strings.Contains(stderr, "The push continues.") {
+		t.Fatalf("%d %q", code, stderr)
+	}
+}
+
 func TestPrePushTimeoutFailsOpen(t *testing.T) {
 	stub := filepath.Join(t.TempDir(), "git")
 	script := "#!/bin/sh\ncase \"$1\" in\n  log) sleep 30 ;;\nesac\nexit 0\n"

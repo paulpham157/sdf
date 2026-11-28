@@ -198,8 +198,13 @@
   and does not block, even with `sdf.prePush=block`; `sdf.prePushTouches off`
   silences it. Superseded globs are not inherited, globs are not removed,
   content and symbols are not read, and the overview charts still do not
-  plot touch counts. The store path is fixed when the hook
-  is installed (`--db`) or taken from `SDF_PRE_PUSH_DB`; without either the
+  plot touch counts. A large or slow store can spend the 5 second budget
+  before the warning is printed; the check then skips and the push
+  continues, and the same skip happens when one git listing is larger
+  than 32 MiB. A trailing `/` matches paths inside that directory, not a
+  file of the same name, because the check sees file names only. The
+  store path is fixed when the hook is installed (`--db`) or taken from
+  `SDF_PRE_PUSH_DB`; without either the
   check is skipped with a note. A hook installed by an older sdf has no
   pre-push; run `sdf init --git-hooks --db PATH` again. Tested with real
   pushes to a local bare remote, not against a hosting service or from inside

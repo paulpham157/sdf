@@ -142,6 +142,35 @@ func TestWriteTouchTextSamplesAndEscapes(t *testing.T) {
 	}
 }
 
+func TestWriteTouchTextGroupsByGlob(t *testing.T) {
+	sha := "1a2b3c4d5e6f7890abcdef1234567890abcdef12"
+	matches := []TouchMatch{
+		{Glob: "a/**", Path: "a/1.go", SHA: sha},
+		{Glob: "b/**", Path: "b/1.go", SHA: sha},
+		{Glob: "a/**", Path: "a/2.go", SHA: sha},
+		{Glob: "a/**", Path: "a/3.go", SHA: sha},
+	}
+	var buf bytes.Buffer
+	if err := WriteTouchText(&buf, TouchReport{Decisions: []TouchDecision{{
+		ID: "d", Statement: "One.", Matches: matches,
+	}}}, TouchForPush(true)); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if strings.Count(got, "a/** matches") != 1 {
+		t.Fatalf("glob printed on more than one line:\n%s", got)
+	}
+	if !strings.Contains(got, "a/** matches a/1.go (commit 1a2b3c4d), a/2.go (commit 1a2b3c4d)\n") {
+		t.Fatalf("%s", got)
+	}
+	if !strings.Contains(got, "b/** matches b/1.go (commit 1a2b3c4d), and 1 more\n") {
+		t.Fatalf("%s", got)
+	}
+	if strings.Contains(strings.Split(got, "b/**")[0], "and 1 more") {
+		t.Fatalf("remainder belongs on the last line:\n%s", got)
+	}
+}
+
 func TestCheckTouchesPerf(t *testing.T) {
 	// A decision stores at most 32 globs. Two decisions hold 50 patterns,
 	// and the matching one is last, so every path tries all 50. 20_000

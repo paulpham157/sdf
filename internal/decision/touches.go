@@ -265,11 +265,15 @@ func writeTouchDecision(b *strings.Builder, d TouchDecision) {
 		matches []TouchMatch
 	}
 	var groups []group
+	index := map[string]int{}
 	for _, m := range shown {
-		if len(groups) == 0 || groups[len(groups)-1].glob != m.Glob {
+		i, ok := index[m.Glob]
+		if !ok {
+			i = len(groups)
+			index[m.Glob] = i
 			groups = append(groups, group{glob: m.Glob})
 		}
-		groups[len(groups)-1].matches = append(groups[len(groups)-1].matches, m)
+		groups[i].matches = append(groups[i].matches, m)
 	}
 	for i, g := range groups {
 		more := 0

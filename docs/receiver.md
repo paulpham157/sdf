@@ -1179,9 +1179,13 @@ or per command with `SDF_PRE_PUSH=block|warn|off`, which wins over git config.
 Globs are append-only: nothing updates or removes one; record another
 decision to change the scope. A glob is a small case-sensitive gitignore
 subset (`*`, `?`, `**`, a trailing `/` for a directory) with no `!`
-negation. At most 32 globs, each at most 256 bytes, no leading `/`, no `..`
-segment, no backslash. The check matches every active settled decision that
-has a glob (`effective_status` active and `status` decision). A hypothesis,
+negation. At most 32 globs, each at most 256 bytes, no leading `/`, no `.`
+or `..` segment, no backslash. A trailing `/` matches paths inside that
+directory, not a file whose name is the directory: `build/` matches
+`build/out.o` and does not match a file named `build`. The check sees
+file names only, so it cannot tell a directory from a file of the same
+name. The check matches every active settled decision that has a glob
+(`effective_status` active and `status` decision). A hypothesis,
 a retraction, and a superseded decision are not matched, and a superseded
 decision's globs are not inherited. A `refines` edge leaves both decisions
 active, and each matches only its own globs. A commit already linked to
@@ -1189,7 +1193,8 @@ that decision (an `implements` edge from `commit:SHA`, or an `SDF-Decision`
 trailer naming it) is not reported for it. A path match is a warning, exit
 0, even when `sdf.prePush` is `block`. `git config sdf.prePushTouches off`
 silences only that warning. `sdf decision touches` runs the same match for
-a range or for NUL-separated paths and exits 3 when something matches.
+a range or for NUL-separated paths and exits 3 when something matches,
+and exits 1 when the store file is missing.
 
 ```text
 sdf: pre-push: 2 pushed commits touch paths scoped by 1 active decision:
@@ -1208,7 +1213,10 @@ The check prints one line and the push continues when: no `sdf` binary is
 found (the hook runs the binary that installed it, else `sdf` on `PATH`), an
 older `sdf` lacks the command, no store is configured, the store file is
 missing or unreadable, git cannot list the range, or the check takes more
-than 5 seconds. `sdf serve` itself does not need to be running: the check
+than 5 seconds. A large or slow local store, including one written to
+stall a reader, can use that whole budget; the hook then prints the skip
+line and the push continues, so the path warning is not shown. The same
+skip happens when one git listing is larger than 32 MiB. `sdf serve` itself does not need to be running: the check
 opens the store read-only (`OpenReadOnly`, like `sdf decision audit`), so it
 never writes, migrates, or creates it. `SDF_PRE_PUSH_DB` overrides the store
 the hook was installed with. Without `--db` and without that variable, the

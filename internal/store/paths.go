@@ -65,6 +65,69 @@ func (s *Store) LoadDecisionPathsContext(ctx context.Context) ([]DecisionPath, e
 	return loadDecisionPaths(ctx, s.db)
 }
 
+// InsertDecisionWithPaths appends one decision and, when globs is not
+// empty, its path globs, in one transaction. A failed path check or a
+// missing decision_paths table rolls the decision row back, so a retry
+// does not see an id that was stored without its paths. check sees the
+// paths already stored for that id and may be nil when globs is empty.
+// The caller has validated the record and the globs.
+func (s *Store) InsertDecisionWithPaths(d Decision, globs []string, check func(existing []DecisionPath) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO decisions (id, statement, status, recorded_at, source, decided_by, decided_by_source, alternatives, reason, category)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, d.ID, d.Statement, d.Status, d.RecordedAt, nullText(d.Source), nullText(d.DecidedBy), nullText(d.DecidedBySource), nullText(d.Alternatives), nullText(d.Reason), nullText(d.Category)); err != nil {
+		return err
+	}
+	if len(globs) > 0 {
+		ok, err := hasPathsTable(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrNoPathsTable
+		}
+		existing, err := loadDecisionPaths(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if check != nil {
+			if err := check(existing); err != nil {
+				return err
+			}
+		}
+		for _, g := range globs {
+			if _, err := conn.ExecContext(ctx, `
+				INSERT INTO decision_paths (decision_id, glob, recorded_at)
+				VALUES (?, ?, ?)
+			`, d.ID, g, d.RecordedAt); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
 // AppendDecisionPaths appends globs for decisionID only if check, given
 // every path already stored, returns nil. As with AppendDecisionRetraction,
 // the read, the check, and the inserts run in one BEGIN IMMEDIATE

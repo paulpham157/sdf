@@ -33,13 +33,13 @@ func TestGlobMatch(t *testing.T) {
 		},
 		{
 			glob: "docs/",
-			yes:  []string{"docs", "docs/a", "src/docs", "src/docs/a.go"},
-			no:   []string{"docs2", "src/docs2/a"},
+			yes:  []string{"docs/a", "src/docs/a.go"},
+			no:   []string{"docs", "src/docs", "docs2", "src/docs2/a"},
 		},
 		{
 			glob: "internal/store/",
-			yes:  []string{"internal/store", "internal/store/a.go"},
-			no:   []string{"internal/stored", "internal/store2/a"},
+			yes:  []string{"internal/store/a.go"},
+			no:   []string{"internal/store", "internal/stored", "internal/store2/a"},
 		},
 		{
 			glob: "a?c",
@@ -87,6 +87,9 @@ func TestGlobRejects(t *testing.T) {
 		`back\slash`,
 		"/abs",
 		"..",
+		".",
+		"./a",
+		"a/./b",
 		"foo/../bar",
 		"../x",
 		"!negated",
@@ -113,6 +116,12 @@ func TestGlobRejects(t *testing.T) {
 		t.Fatalf("%s", re)
 	}
 	if err := ValidateGlob("keep!this"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateGlob("a/.hidden/b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateGlob("foo/..bar"); err != nil {
 		t.Fatal(err)
 	}
 	if err := ValidateGlob("foo/..bar"); err != nil {

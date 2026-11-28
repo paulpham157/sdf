@@ -1024,6 +1024,9 @@ to a decision that is not retracted. Unlike audit, a session link does not
 satisfy it, and it also accepts an `SDF-Decision: <id>` trailer. It also
 warns, without blocking, when a changed file name matches a path glob on an
 active decision. It reads file names of pushed commits only, never content.
+A trailing `/` matches paths inside that directory, not a file of the same
+name. A store read that uses the 5 second budget, or a git listing larger
+than 32 MiB, skips the check and the push continues.
 See [Pre-push decision check](receiver.md#pre-push-decision-check).
 
 The totals are denominators, counted over the same window as `commits[]`:

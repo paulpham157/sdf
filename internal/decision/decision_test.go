@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -366,6 +367,44 @@ func TestAgentDecisionIsDistinctFromUser(t *testing.T) {
 	}
 	if loaded.Decisions[0].DecidedBy != decision.DecidedByAgent {
 		t.Fatalf("%q", loaded.Decisions[0].DecidedBy)
+	}
+}
+
+func TestAddRollsBackWhenPathsCannotBeRecorded(t *testing.T) {
+	db := openDB(t)
+	globs := make([]string, 32)
+	for i := range globs {
+		globs[i] = fmt.Sprintf("seed-%d/**", i)
+	}
+	if err := db.AppendDecisionPaths("retry-me", "2026-11-23T16:00:00.000000+00:00", globs, func([]store.DecisionPath) error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := decision.Add(db, decision.RecordInput{
+		ID:        "retry-me",
+		Statement: "Keep the retry id free.",
+		Status:    decision.StatusDecision,
+		Paths:     []string{"one-more/**"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "at most 32") {
+		t.Fatalf("%v", err)
+	}
+	loaded, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range loaded.Decisions {
+		if d.ID == "retry-me" {
+			t.Fatal("decision stored after the path write failed")
+		}
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID:        "retry-me",
+		Statement: "Keep the retry id free.",
+		Status:    decision.StatusDecision,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

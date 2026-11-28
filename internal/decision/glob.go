@@ -18,10 +18,11 @@ const (
 
 // ValidateGlob reports whether glob is a path pattern this package stores.
 // It is a small gitignore subset: * and ? match inside one path segment,
-// ** matches across segments, and a trailing / matches a directory. There
-// is no ! negation. The pattern is case-sensitive. It must be at most 256
-// bytes, valid UTF-8, with no NUL or other control character, no backslash,
-// no leading /, and no .. segment.
+// ** matches across segments, and a trailing / matches paths inside that
+// directory, not a file whose name is the directory. There is no !
+// negation. The pattern is case-sensitive. It must be at most 256 bytes,
+// valid UTF-8, with no NUL or other control character, no backslash, no
+// leading /, and no . or .. segment.
 func ValidateGlob(glob string) error {
 	if glob == "" {
 		return fmt.Errorf("invalid path glob %s: empty", strconv.Quote(glob))
@@ -56,6 +57,9 @@ func ValidateGlob(glob string) error {
 		}
 		if seg == ".." {
 			return fmt.Errorf("invalid path glob %s: .. segment", strconv.Quote(glob))
+		}
+		if seg == "." {
+			return fmt.Errorf("invalid path glob %s: . segment", strconv.Quote(glob))
 		}
 	}
 	if _, err := compileGlob(glob); err != nil {
@@ -97,8 +101,10 @@ func CompileGlob(glob string) (*regexp.Regexp, error) {
 // inside one segment. ** is the gitignore form: a leading **/ matches in
 // every directory, a trailing /** matches everything inside, and /**/
 // matches zero or more directories. A pattern with no / (ignoring one
-// trailing slash) matches in any directory. A trailing slash matches that
-// directory and everything under it. Other characters are literal.
+// trailing slash) matches in any directory. A trailing slash matches
+// paths inside that directory, not a file with the directory's name
+// (build/ matches build/out.o and not a file named build). Other
+// characters are literal.
 func compileGlob(glob string) (*regexp.Regexp, error) {
 	dirOnly := strings.HasSuffix(glob, "/")
 	body := strings.TrimSuffix(glob, "/")
@@ -109,7 +115,7 @@ func compileGlob(glob string) (*regexp.Regexp, error) {
 	}
 	writeGlobBody(&b, body)
 	if dirOnly {
-		b.WriteString(`(?:(?s:/.*))?`)
+		b.WriteString(`(?s:/.*)`)
 	}
 	b.WriteString("$")
 	return regexp.Compile(b.String())

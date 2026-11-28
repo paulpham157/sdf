@@ -27,7 +27,7 @@ func cmdDecisionTouches(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case arg == "--help" || arg == "-h":
 			fmt.Fprintln(stdout, decisionTouchesUsage)
-			fmt.Fprintln(stdout, "Reports changed file names that match a path glob on an active decision. --range is a git revision range. --paths - reads NUL-separated paths from stdin. File content is not read. Exit 0 is no match, 3 is a match, 2 is usage.")
+			fmt.Fprintln(stdout, "Reports changed file names that match a path glob on an active decision. --range is a git revision range. --paths - reads NUL-separated paths from stdin. File content is not read. Exit 0 is no match, 3 is a match, 2 is usage, 1 when the store cannot be read.")
 			return 0
 		case arg == "--db":
 			v, ok := take(&i, args)
@@ -70,6 +70,10 @@ func cmdDecisionTouches(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "sdf decision touches: %s\n", displayErr(err))
 			return 2
 		}
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Fprintf(stderr, "sdf decision touches: %s\n", displayErr(err))
+		return 1
 	}
 	var paths []decision.PushPath
 	var commitsTrunc, pathsTrunc bool

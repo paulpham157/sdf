@@ -39,6 +39,11 @@ const prePushMaxCommits = 1000
 // are counted and reported, not checked.
 const prePushMaxPaths = 20000
 
+// prePushMaxGitBytes bounds one git invocation's stdout. Past it the
+// pre-push check fails open with the same skip line as a git error.
+// 32 MiB covers the path cap with long names.
+var prePushMaxGitBytes = 32 << 20
+
 // prePushStdin is the hook's stdin. Tests replace it.
 var prePushStdin io.Reader = os.Stdin
 
@@ -331,11 +336,30 @@ func gitOutput(ctx context.Context, args []string) ([]byte, error) {
 	cmd.Stdin = strings.NewReader("")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	raw, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		return nil, fmt.Errorf("git log: %s", firstLine(err.Error()))
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("git log: %s", firstLine(err.Error()))
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(stdout, int64(prePushMaxGitBytes)+1))
+	if len(raw) > prePushMaxGitBytes {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_, _ = io.Copy(io.Discard, stdout)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("git log: output exceeded %d bytes", prePushMaxGitBytes)
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, fmt.Errorf("git log: %s", firstLine(readErr.Error()))
+	}
+	if waitErr != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			msg = err.Error()
+			msg = waitErr.Error()
 		}
 		return nil, fmt.Errorf("git log: %s", firstLine(msg))
 	}

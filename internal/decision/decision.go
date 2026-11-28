@@ -242,7 +242,7 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 	if err := ValidatePaths(in.Paths); err != nil {
 		return Record{}, err
 	}
-	if err := s.InsertDecision(store.Decision{
+	if err := s.InsertDecisionWithPaths(store.Decision{
 		ID:              rec.ID,
 		Statement:       rec.Statement,
 		Status:          rec.Status,
@@ -253,13 +253,10 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		Alternatives:    rec.Alternatives,
 		Reason:          rec.Reason,
 		Category:        rec.Category,
-	}); err != nil {
+	}, in.Paths, pathQuota(rec.ID, in.Paths)); err != nil {
 		return Record{}, err
 	}
 	if len(in.Paths) > 0 {
-		if err := appendPaths(s, rec.ID, rec.RecordedAt, in.Paths); err != nil {
-			return Record{}, err
-		}
 		rec.Paths = append([]string(nil), in.Paths...)
 	}
 	return rec, nil
@@ -286,7 +283,11 @@ func AddPaths(s *store.Store, id string, globs []string) error {
 }
 
 func appendPaths(s *store.Store, id, recordedAt string, globs []string) error {
-	return s.AppendDecisionPaths(id, recordedAt, globs, func(existing []store.DecisionPath) error {
+	return s.AppendDecisionPaths(id, recordedAt, globs, pathQuota(id, globs))
+}
+
+func pathQuota(id string, globs []string) func([]store.DecisionPath) error {
+	return func(existing []store.DecisionPath) error {
 		n := 0
 		have := map[string]bool{}
 		for _, p := range existing {
@@ -305,7 +306,7 @@ func appendPaths(s *store.Store, id, recordedAt string, globs []string) error {
 			}
 		}
 		return nil
-	})
+	}
 }
 
 // ErrSelfLink, ErrSupersedesKind, ErrSupersedesCycle, and ErrDuplicateEdge
