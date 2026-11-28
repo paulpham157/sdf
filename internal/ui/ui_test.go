@@ -821,6 +821,54 @@ func TestSessionPageShowsErrorsWithoutContent(t *testing.T) {
 	}
 }
 
+// A classified Qwen empty-output hook arrives as UNSET and is not an error.
+// An ERROR span whose message is the same words, kept by --store-content,
+// still counts: the banner and the error class key only on status_code.
+func TestSessionPageCountsAnErrorThatSaysHookReturnedNoOutput(t *testing.T) {
+	db := openDB(t)
+	db.KeepContent(func(record.Record) bool { return true })
+	sentinel := "hook runner returned no output without error detail"
+	hook := record.Record{
+		Signal: "traces", ServiceName: record.Str("qwen-code"), SessionID: record.Str("ses-qwen-hook"),
+		Name: record.Str("qwen-code.hook"), SpanID: record.Str("hook"),
+		StartUnixNano: record.Int64(1_000_000_000), EndUnixNano: record.Int64(1_001_000_000),
+		StatusCode: "ERROR", StatusMessage: record.Str(sentinel),
+		Attributes: map[string]any{
+			"session.id": "ses-qwen-hook", "hook_event": "PreToolUse",
+			"error.type": "hook_error", "error": sentinel,
+		},
+		Resource: map[string]any{"service.name": "qwen-code"},
+	}
+	real := record.Record{
+		Signal: "traces", ServiceName: record.Str("opencode"), SessionID: record.Str("ses-real-hook-text"),
+		Name: record.Str("Tool.execute"), SpanID: record.Str("tool"),
+		StartUnixNano: record.Int64(1_000_000_000), EndUnixNano: record.Int64(1_100_000_000),
+		StatusCode: "ERROR", StatusMessage: record.Str("hook returned no output"),
+		Attributes: map[string]any{"gen_ai.tool.name": "write", "gen_ai.tool.call.id": "call_real"},
+		Resource:   map[string]any{},
+	}
+	if _, err := db.Insert([]record.Record{hook, real}); err != nil {
+		t.Fatal(err)
+	}
+	srv := startUI(t, db)
+	qwen := renderPage(t, srv, "#/sessions/ses-qwen-hook", "")
+	if !strings.Contains(qwen.Text, "hook returned no output") || strings.Contains(qwen.Text, "status=ERROR") || strings.Contains(qwen.Markup, "span-error") {
+		t.Fatalf("relabeled hook should not be an error:\n%s\n%s", qwen.Text, qwen.Markup)
+	}
+	page := renderPage(t, srv, "#/sessions/ses-real-hook-text", "")
+	for _, want := range []string{
+		"status=ERROR (hook returned no output)",
+		"This session has a span with status=ERROR.",
+	} {
+		if !strings.Contains(page.Text, want) {
+			t.Fatalf("missing %q:\n%s", want, page.Text)
+		}
+	}
+	if !strings.Contains(page.Markup, `<p class="span-error-message">Tool.execute: hook returned no output</p>`) || !strings.Contains(page.Markup, `class="span-node span-error span-leaf"`) {
+		t.Fatalf("error span dropped from the banner or the error class:\n%s", page.Markup)
+	}
+}
+
 func TestSessionPageCapsLongSpanTrees(t *testing.T) {
 	db := openDB(t)
 	var recs []record.Record

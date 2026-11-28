@@ -328,8 +328,16 @@ func TestGrokConfiguredReadsEnvAndFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(grokHome, "config.toml"), []byte("[telemetry]\notel_endpoint = \"http://127.0.0.1:4318\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("OTEL_LOGS_EXPORTER", "")
+	t.Setenv("OTEL_METRICS_EXPORTER", "")
 	text, err = Configured(Request{Agent: "grok", Home: home, GrokHome: grokHome, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
-	if err != nil || !strings.Contains(text, "pointing at http://127.0.0.1:4318: true") {
+	if err != nil || !strings.Contains(text, "pointing at http://127.0.0.1:4318: true") || !strings.Contains(text, "config.toml alone may not be enough") {
+		t.Fatal(err, text)
+	}
+	t.Setenv("OTEL_LOGS_EXPORTER", "otlp")
+	t.Setenv("OTEL_METRICS_EXPORTER", "otlp")
+	text, err = Configured(Request{Agent: "grok", Home: home, GrokHome: grokHome, Endpoint: Endpoint{Host: "127.0.0.1", HTTPPort: 4318}})
+	if err != nil || strings.Contains(text, "config.toml alone may not be enough") {
 		t.Fatal(err, text)
 	}
 }

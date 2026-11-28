@@ -789,6 +789,48 @@ func interestingSpan(rec record.Record) bool {
 	return callID(rec) != nil || toolName(rec) != nil
 }
 
+// qwenEmptyHookMessage is the status Qwen Code 0.29.0 sets when a hook
+// runner returns no output. That includes an empty hook and a timeout,
+// invalid JSON, a silent exit, a spawn failure, or a failed HTTP hook.
+const qwenEmptyHookMessage = "hook runner returned no output without error detail"
+
+// qwenEmptyHookMaxMS is the longest span this label accepts. The empty-output
+// hooks in the Qwen sample finish in 0-1ms. Five milliseconds leaves room
+// for clock noise and still rejects a real hook error that happens to leave
+// a 51-byte error_bytes value.
+const qwenEmptyHookMaxMS = 5
+
+// qwenEmptyHookOutput is a display rule for one shape of stored span.
+// service.name is qwen-code, the span is qwen-code.hook, hook_event is
+// PreToolUse or PostToolUse, and the span is at most qwenEmptyHookMaxMS.
+// The status message is the sentinel, including when --store-content kept
+// it, or redaction has replaced that message and error_bytes is 51 (the
+// sentinel's length). A longer span stays an error. Stop and every other
+// event stay errors. sdf.hook.unconfigured is not read.
+func qwenEmptyHookOutput(rec record.Record) bool {
+	if rec.StatusCode != "ERROR" || !strings.EqualFold(deref(rec.ServiceName), "qwen-code") || deref(rec.Name) != "qwen-code.hook" {
+		return false
+	}
+	switch strAttr(rec.Attributes, "hook_event") {
+	case "PreToolUse", "PostToolUse":
+	default:
+		return false
+	}
+	ms := spanMS(rec)
+	if ms == nil || *ms > qwenEmptyHookMaxMS {
+		return false
+	}
+	if rec.StatusMessage != nil && *rec.StatusMessage == qwenEmptyHookMessage {
+		return true
+	}
+	msg := deref(rec.StatusMessage)
+	if msg != "hook error" && !strings.HasPrefix(msg, "hook error:") {
+		return false
+	}
+	n := record.Number(rec.Attributes["error_bytes"])
+	return n != nil && *n == 51
+}
+
 func spanHead(name string) string {
 	if name == "" {
 		return ""
@@ -836,6 +878,14 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 	if label == "" {
 		label = "(unnamed)"
 	}
+	status, statusMsg, errType := statusCodeOf(rec), rec.StatusMessage, errorTypeOf(rec)
+	// Display only. The stored status, error.type, and message stay as
+	// ingested. sdf.hook.unconfigured is ignored: a caller can set it.
+	if qwenEmptyHookOutput(rec) {
+		status = "UNSET"
+		statusMsg = record.Str("hook returned no output")
+		errType = nil
+	}
 	return SpanNode{
 		Name:            label,
 		DurationMS:      spanMS(rec),
@@ -847,9 +897,9 @@ func spanNode(rec record.Record, children []SpanNode, logs map[string]record.Rec
 		WaitSource:      waitSource,
 		ExecutionMS:     execMS,
 		ExecutionSource: execSource,
-		StatusCode:      statusCodeOf(rec),
-		StatusMessage:   rec.StatusMessage,
-		ErrorType:       errorTypeOf(rec),
+		StatusCode:      status,
+		StatusMessage:   statusMsg,
+		ErrorType:       errType,
 		Children:        children,
 	}
 }

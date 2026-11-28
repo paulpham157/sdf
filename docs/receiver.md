@@ -669,7 +669,12 @@ records.
 
 `sdf init grok` (alias `grok-cli`) prints the Grok CLI variables as `export`
 lines, the receiver-token header, and the same settings as a `[telemetry]`
-table: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
+table. Set the variables in the shell that launches grok. On a signed-in
+grok 1.0.92 the table alone exported. One later run, a custom model with no
+xAI login, exported 18 logs and 62 metrics and no traces once
+`GROK_EXTERNAL_OTEL`, `OTEL_LOGS_EXPORTER`, and `OTEL_METRICS_EXPORTER` were
+set. `--check` warns that the table alone may not be enough when those
+variables are unset. The table is: `otel_enabled = true`, `otel_metrics_exporter = "otlp"`,
 `otel_logs_exporter = "otlp"`, `otel_protocol = "http/protobuf"`, and
 `otel_endpoint` (the HTTP receiver), plus the four content gates pinned
 off: `otel_log_user_prompts`, `otel_log_assistant_responses`,

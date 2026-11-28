@@ -369,21 +369,32 @@ func piExtension(url string) string {
 import { spawnSync } from "node:child_process"
 
 export default function sdfSession(pi) {
+  // Pi awaits the handler (ExtensionRunner.emit). A bare fetch returns
+  // before the POST finishes, and pi --print exits with no sdf.session.open.
+  // One second matches the curl -m 1 on the other session hooks: a hung
+  // collector cannot hold the process, and the abort settles the promise.
   const post = (edge, reason) => {
     let id = ""
     try { id = pi.sessionManager.getSessionId() } catch (e) { return }
     if (!id) return
-    fetch(%q, {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 1000)
+    return fetch(%q, {
       method: "POST",
       headers: sdfHeaders(),
       body: JSON.stringify({ tool: "pi", session_id: id, edge, reason: reason || "" }),
-    }).catch(() => {})
+      signal: ctrl.signal,
+    }).then((res) => {
+      // Headers can arrive while the body sits open. Cancel it so a stalled
+      // receiver cannot keep the process alive after the handler returns.
+      if (res && res.body && typeof res.body.cancel === "function") return res.body.cancel()
+    }).catch(() => {}).finally(() => clearTimeout(timer))
   }
   pi.on("session_start", (event) => post("open", event && event.reason))
   pi.on("session_shutdown", (event) => {
     const reason = event && event.reason
     if (reason === "reload" || reason === "new" || reason === "resume" || reason === "fork") return
-    post("close", reason)
+    return post("close", reason)
   })
   // One more turn, at most, when this session committed and did not record
   // the decision. spawnSync throws nothing on a missing sdf; a non-zero

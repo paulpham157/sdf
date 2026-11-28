@@ -167,6 +167,149 @@ func TestQwenSampleSessionTokensToolsDurationAndCost(t *testing.T) {
 			t.Fatalf("span %s hidden by default (%v)", name, shown)
 		}
 	}
+	// The sample's PreToolUse hook is Qwen's empty-runner ERROR. It is not a failed tool.
+	var hook *SpanNode
+	var walkHook func([]SpanNode)
+	walkHook = func(nodes []SpanNode) {
+		for i := range nodes {
+			if nodes[i].Name == "qwen-code.hook" {
+				hook = &nodes[i]
+			}
+			walkHook(nodes[i].Children)
+		}
+	}
+	walkHook(s.Spans)
+	if hook == nil || hook.StatusCode != "UNSET" || deref(hook.StatusMessage) != "hook returned no output" || hook.ErrorType != nil {
+		t.Fatalf("hook span %+v", hook)
+	}
+	text := Format(report)
+	if !strings.Contains(text, "hook returned no output") || strings.Contains(text, "status=ERROR (hook error") {
+		t.Fatalf("hook rendered as a failure:\n%s", text)
+	}
+}
+
+func TestQwenEmptyHookOutputIsNotAToolFailure(t *testing.T) {
+	sentinel := "hook runner returned no output without error detail"
+	tool := qwenHookSpan("qwen-code", "qwen-code.tool", "tool", "", "UNSET", "", 1_000_000_000, map[string]any{
+		"gen_ai.tool.name": "read_file", "gen_ai.tool.call.id": "c1", "success": true,
+	})
+	pre := qwenHookSpan("qwen-code", "qwen-code.hook", "pre", "tool", "ERROR", sentinel, 1_000_000, map[string]any{
+		"hook_event": "PreToolUse", "error.type": "hook_error", "error": sentinel, "success": false,
+	})
+	post := qwenHookSpan("qwen-code", "qwen-code.hook", "post", "tool", "ERROR", sentinel, 0, map[string]any{
+		"hook_event": "PostToolUse", "error.type": "hook_error", "error": sentinel, "success": false,
+	})
+	raw := []record.Record{tool, pre, post}
+	stored := record.Redact(append([]record.Record(nil), raw...))
+	for _, rec := range stored {
+		if deref(rec.SpanID) != "pre" && deref(rec.SpanID) != "post" {
+			continue
+		}
+		if rec.StatusCode != "ERROR" || deref(rec.StatusMessage) != "hook error: hook_error" || rec.Attributes["error.type"] != "hook_error" || rec.Attributes["sdf.hook.unconfigured"] != nil || rec.Attributes["error_bytes"] != int64(51) {
+			t.Fatalf("stored status changed: %s %q %v", rec.StatusCode, deref(rec.StatusMessage), rec.Attributes)
+		}
+	}
+	for _, rows := range [][]record.Record{raw, stored} {
+		s := qwenSessionOf(t, Summarize(rows, false))
+		if len(s.ToolCalls) != 1 || deref(s.ToolCalls[0].Success) != "true" {
+			t.Fatalf("tool calls %+v", s.ToolCalls)
+		}
+		text := Format(Report{Sessions: []SessionSummary{s}})
+		if strings.Count(text, "hook returned no output") != 2 || strings.Contains(text, "status=ERROR") {
+			t.Fatalf("label\n%s", text)
+		}
+	}
+
+	// Another service, a Stop event, and a spoofed attribute stay errors.
+	// The spoof is checked on the default store and with content kept.
+	other := qwenHookSpan("other-agent", "qwen-code.hook", "other", "", "ERROR", sentinel, 1_000_000, map[string]any{
+		"hook_event": "PreToolUse", "error.type": "hook_error", "error": sentinel,
+	})
+	stop := qwenHookSpan("qwen-code", "qwen-code.hook", "stop", "", "ERROR", sentinel, 1_000_000, map[string]any{
+		"hook_event": "Stop", "error.type": "hook_error", "error": sentinel, "sdf.hook.unconfigured": "PreToolUse",
+	})
+	spoof := qwenHookSpan("qwen-code", "qwen-code.hook", "spoof", "", "ERROR", "hook crashed", 1_000_000, map[string]any{
+		"hook_event": "PreToolUse", "error.type": "hook_error", "error": "hook crashed", "sdf.hook.unconfigured": "PreToolUse",
+	})
+	kept := record.RedactWith([]record.Record{spoof}, func(record.Record) bool { return true })
+	for _, rows := range [][]record.Record{
+		{other},
+		{stop},
+		record.Redact([]record.Record{stop}),
+		{spoof},
+		record.Redact([]record.Record{spoof}),
+		kept,
+	} {
+		text := Format(Summarize(rows, false))
+		if strings.Contains(text, "hook returned no output") || !strings.Contains(text, "status=ERROR") {
+			t.Fatalf("relabeled a real error\n%s", text)
+		}
+	}
+	if kept[0].StatusCode != "ERROR" || deref(kept[0].StatusMessage) != "hook crashed" || kept[0].Attributes["error.type"] != "hook_error" {
+		t.Fatalf("kept row %s %q %v", kept[0].StatusCode, deref(kept[0].StatusMessage), kept[0].Attributes)
+	}
+}
+
+func TestQwenEmptyHookNeedsAShortSpan(t *testing.T) {
+	sentinel := "hook runner returned no output without error detail"
+	otherText := strings.Repeat("x", 51)
+	if len(sentinel) != 51 || otherText == sentinel {
+		t.Fatalf("fixture lengths %d", len(sentinel))
+	}
+	attrs := func(event, text string) map[string]any {
+		return map[string]any{"hook_event": event, "error.type": "hook_error", "error": text}
+	}
+	// A different 51-byte error that ran for a normal span stays an error,
+	// stored and with the text kept.
+	longOther := qwenHookSpan("qwen-code", "qwen-code.hook", "long", "", "ERROR", otherText, 100_000_000, attrs("PreToolUse", otherText))
+	for _, rows := range [][]record.Record{record.Redact([]record.Record{longOther}), record.RedactWith([]record.Record{longOther}, func(record.Record) bool { return true })} {
+		text := Format(Summarize(rows, false))
+		if strings.Contains(text, "hook returned no output") || !strings.Contains(text, "status=ERROR") {
+			t.Fatalf("long non-sentinel relabeled\n%s", text)
+		}
+	}
+	// The sentinel at 0ms and 1ms is relabeled. The same sentence at 6ms is not.
+	for _, dur := range []int64{0, 1_000_000} {
+		short := qwenHookSpan("qwen-code", "qwen-code.hook", "short", "", "ERROR", sentinel, dur, attrs("PostToolUse", sentinel))
+		for _, rows := range [][]record.Record{record.Redact([]record.Record{short}), record.RedactWith([]record.Record{short}, func(record.Record) bool { return true })} {
+			s := qwenSessionOf(t, Summarize(rows, false))
+			if len(s.Spans) != 1 || s.Spans[0].StatusCode != "UNSET" || deref(s.Spans[0].StatusMessage) != "hook returned no output" {
+				t.Fatalf("dur %d %+v", dur, s.Spans)
+			}
+		}
+	}
+	slow := qwenHookSpan("qwen-code", "qwen-code.hook", "slow", "", "ERROR", sentinel, 6_000_000, attrs("PreToolUse", sentinel))
+	for _, rows := range [][]record.Record{record.Redact([]record.Record{slow}), record.RedactWith([]record.Record{slow}, func(record.Record) bool { return true })} {
+		text := Format(Summarize(rows, false))
+		if strings.Contains(text, "hook returned no output") || !strings.Contains(text, "status=ERROR") {
+			t.Fatalf("6ms sentinel relabeled\n%s", text)
+		}
+	}
+	if n := record.Number(record.Redact([]record.Record{longOther})[0].Attributes["error_bytes"]); n == nil || *n != 51 {
+		t.Fatalf("error_bytes %v", record.Redact([]record.Record{longOther})[0].Attributes["error_bytes"])
+	}
+}
+
+func qwenHookSpan(service, name, spanID, parent, status, msg string, durNS int64, attrs map[string]any) record.Record {
+	all := map[string]any{"session.id": qwenSession}
+	for k, v := range attrs {
+		all[k] = v
+	}
+	start := int64(1_000_000_000)
+	rec := record.Record{
+		Signal: "traces", ServiceName: record.Str(service), SessionID: record.Str(qwenSession),
+		Name: record.Str(name), TraceID: record.Str("t-hook"), SpanID: record.Str(spanID),
+		StartUnixNano: record.Int64(start), EndUnixNano: record.Int64(start + durNS),
+		StatusCode: status, Attributes: all,
+		Resource: map[string]any{"service.name": "qwen-code"},
+	}
+	if parent != "" {
+		rec.ParentSpanID = record.Str(parent)
+	}
+	if msg != "" {
+		rec.StatusMessage = record.Str(msg)
+	}
+	return rec
 }
 
 func TestQwenTokensFallBackToSpansThenMetrics(t *testing.T) {

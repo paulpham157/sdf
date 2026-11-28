@@ -1062,7 +1062,9 @@
     if (node && node.duration_ms != null && node.duration_ms !== "") {
       kids.push(h("span", { class: "span-duration" }, [" " + formatSpanNum(node.duration_ms) + "ms"]));
     }
-    if (node && node.status_code === "ERROR") {
+    if (node && node.status_code === "UNSET" && node.status_message === "hook returned no output") {
+      kids.push(document.createTextNode(" hook returned no output"));
+    } else if (node && node.status_code === "ERROR") {
       let status = "status=ERROR";
       if (node.status_message) status += " (" + node.status_message + ")";
       if (node.error_type && String(node.status_message || "").indexOf(node.error_type) < 0) status += " error_type=" + node.error_type;

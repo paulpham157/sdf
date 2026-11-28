@@ -135,6 +135,21 @@ func TestRedactBuildsTheStatusFromKeptFields(t *testing.T) {
 	}
 }
 
+func TestRedactKeepsQwenHookStatus(t *testing.T) {
+	msg := "hook runner returned no output without error detail"
+	if len(msg) != 51 {
+		t.Fatalf("sentinel length %d", len(msg))
+	}
+	out := redactOneRec(t, Record{Signal: "traces", ServiceName: Str("qwen-code"), Name: Str("qwen-code.hook"), StatusCode: "ERROR", StatusMessage: Str(msg),
+		Attributes: map[string]any{"error": msg, "error.type": "hook_error", "hook_event": "PreToolUse", "success": false}})
+	if out.StatusCode != "ERROR" || deref(out.StatusMessage) != "hook error: hook_error" {
+		t.Fatalf("status %s %q", out.StatusCode, deref(out.StatusMessage))
+	}
+	if out.Attributes["error.type"] != "hook_error" || out.Attributes["hook_event"] != "PreToolUse" || out.Attributes["error"] != nil || out.Attributes["sdf.hook.unconfigured"] != nil || out.Attributes["error_bytes"] != int64(51) {
+		t.Fatalf("%v", out.Attributes)
+	}
+}
+
 func stringOf(v any) string {
 	switch t := v.(type) {
 	case string:
