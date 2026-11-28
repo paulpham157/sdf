@@ -274,8 +274,12 @@ luminance formula, not by eye. Text needs 4.5:1. Large text and UI parts
 (strokes, borders that identify a control, focus rings, chart marks) need
 3:1. Rows marked "info only" are decorative or are documented limits that the
 rules above work around. `--check` fails if any text or UI row fails in the
-light table or the [dark table](#dark-contrast), and if
-`docs/stylesheets/extra.css` contains a raw hex or `rgb()` color.
+light table or the [dark table](#dark-contrast), if
+`docs/stylesheets/extra.css` contains a raw hex or `rgb()` color, and if
+`extra.css` or `internal/ui/assets/app.css` sets
+`--sdf-color-focus-on-inverse` as an outline color without a negative
+`outline-offset` in the same rule. That token is an inset ring on an
+inverse surface. On the page it is 2.72:1 in light and 2.25:1 in dark.
 `--sdf-color-bg` stands for `--sdf-color-surface` too (same value).
 
 | Foreground | Hex | Background | Hex | Ratio | Needs | Result |
@@ -408,8 +412,11 @@ Pairings that do not pass and are therefore not allowed:
   `--sdf-color-accent-text` fill (6.54:1) or is charcoal with a rust edge.
 - Rust on charcoal: 2.85:1 for rust-500. On `--sdf-color-surface-inverse`
   use `--sdf-color-accent-on-inverse` (rust-200, 7.93:1) or
-  `--sdf-color-focus-on-inverse` (rust-400, 3.98:1). No rust step clears
-  3:1 on both that charcoal and the cream page.
+  `--sdf-color-focus-on-inverse` (rust-400, 3.98:1) as an inset ring.
+  No rust step clears 3:1 on both that charcoal and the cream page.
+  `--sdf-color-focus-on-inverse` on the page itself is 2.72:1 in light
+  (rust-400 on cream) and 2.25:1 in dark (rust-700 on `#1B1F25`). An
+  outset ring sits on the page and uses `--sdf-color-focus`.
 - `--sdf-color-border` to mark a control's edge: 1.21–1.44:1.
 
 ## Dark variant
@@ -463,8 +470,10 @@ charcoal with cream text. In dark `--sdf-color-surface-inverse` is
 sidebar's current page is that pair as a pill in dark, and cream
 `#F6F1E8` on charcoal `#2F3640` (10.84:1) in light. Background only, no
 vertical edge. `--sdf-color-accent-on-inverse` and `--sdf-color-focus-on-inverse` are
-rust-700 `#8E3E1C` (5.93:1 on the light band). Rust fill on that band is
-2.47:1, so it is not used there.
+rust-700 `#8E3E1C` (5.93:1 on the light band). The focus token is an inset
+ring on that band. On the dark page the same rust-700 is 2.25:1, so an
+outset ring uses `--sdf-color-focus` (rust-200, 10.76:1). Rust fill on that
+band is 2.47:1, so it is not used there.
 
 Graph and chart strokes that pointed at a dark primitive get a lighter
 `$dark` so they clear 3:1 on `#242A32`, the lightest dark surface.
@@ -875,7 +884,8 @@ How it consumes `tokens.css`:
   chip is 2.85:1 and is not used there either. The focus ring is drawn
   inside the chip so the sidebar scroller cannot clip it. Both schemes
   use `--sdf-color-focus-on-inverse`: rust-400 `#E0764A` on the charcoal
-  chip (3.98:1) and rust-700 on the cream chip (5.93:1). No rust step
+  chip (3.98:1) and rust-700 on the cream chip (5.93:1). The token is only
+  an inset ring on an inverse surface. No rust step
   clears 3:1 on both the charcoal chip and the cream page (rust-400 is
   2.72:1 on the page; rust-500 is 3.81:1 on the page and 2.85:1 on the
   chip). The ring is drawn on the chip, so light uses rust-400. The label
@@ -1020,7 +1030,7 @@ Landing variable mapping:
 | `--pass` `#145c38` | `--sdf-color-success` |
 | `--anchor` `#f3e4d8` | `--sdf-color-accent-soft` |
 | `#f3c7b6` (light kicker) | `--sdf-color-accent-on-inverse` |
-| `#e0764a` (focus on charcoal) | `--sdf-color-focus-on-inverse` |
+| `#e0764a` (focus on charcoal) | `--sdf-color-focus-on-inverse`. This mapping is an inset ring on the charcoal surface. On the cream page `#e0764a` is 2.72:1, so an outset ring uses `--sdf-color-focus`. |
 | `#e8e2d6` (light lede) | `--sdf-color-text-inverse-muted` (`#D9CFC0`) or `--sdf-color-text-inverse` |
 | `--shadow` | `--sdf-shadow-stamp` |
 | `#f4fff8`, `#4e5348` | To review with Frontend (verdict text, textarea text). |
