@@ -106,6 +106,11 @@ a reason, a source pointer, and a category. Time is `recorded_at`.
 
 `decided_by` is the GitHub login of the team member responsible, for example
 `paulpham157`. An agent acting for a person records that person's login.
+A person-set rule or constraint is the exception: record it with
+`--decided-by user` until a later spec makes an active settled `policy`
+a constraint. That stored word displays as `user (legacy)` and is what
+the session-start brief locks. Everything else uses the responsible
+person's login.
 sdf does not distinguish a person from their agent, and it does not check
 that the account exists. A login is letters, digits, and single hyphens, at
 most 39 characters. It cannot start or end with a hyphen, and it cannot
@@ -120,14 +125,17 @@ sdf stores the first login it can read locally, and it does not use the
 network. This is a deviation from the attribution proposal, which named
 `gh api user`: the binary runs `gh config get -h github.com user` (the
 `user` key for github.com in the GitHub CLI's hosts.yml), then
-`git config --get github.user`. That git read uses every scope, including
+`git config --get github.user`. The hosts.yml login takes precedence over
+`github.user`. That git read uses every scope, including
 the repository-local config, and the value is self-asserted attribution, not
 authentication. `git config user.name` is not read. A missing `gh`, a failed
-command, a display name, or the legacy word `user` or `agent` is skipped,
-and the field stays empty. The two lookups share one 3 second deadline, and
-each command's stdout is capped at 64 KiB. The lookup runs only after the
-rest of the record validates. An explicit empty `--decided-by` stays empty
-and does not fall through. An explicit value that is not a login or `user`
+command, a display name, or `user` or `agent` in any case (`User`, `AGENT`)
+is skipped, and the field stays empty. `gh` has up to 3 seconds. If it
+hangs or fails, `git` still gets about 500ms of its own, so the add stays
+within about 3.5 seconds. Each command's stdout is capped at 64 KiB. The
+lookup runs only after the rest of the record validates. An explicit empty `--decided-by` stays empty
+and does not fall through. An explicit value is stored with its exact case.
+`User` is not the legacy word `user`. An explicit value that is not a login or `user`
 or `agent` is rejected and the add stores nothing. There is no warning that
 tries to tell a person from an agent.
 
@@ -437,6 +445,11 @@ sdf decision recall [--db PATH] [--json] [--since DURATION|RFC3339] [--until RFC
 sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-push lines
 ```
 
+`--decided-by` is the responsible person's GitHub login. The exception is a
+person-set rule or constraint: record that with `--decided-by user` until a
+later spec makes an active settled `policy` a constraint. That value displays
+as `user (legacy)`. Everything else uses the login.
+
 ```text
 Decisions: 3
 ID          STATUS      CATEGORY        EFFECTIVE              DECIDED BY      RECORDED AT                       SOURCE     STATEMENT
@@ -662,6 +675,10 @@ this list. A record appears in at most one group, in this order:
    constraint is a settled decision stored as `user` (`status` `decision`,
    `--decided-by user`). A hypothesis is never locked. The lock matches
    that stored word. It is not a check that a person made the decision.
+   Until a later spec makes an active settled `policy` a constraint, a
+   person-set rule is recorded with `--decided-by user` so it still appears
+   here. Everything else uses the responsible person's login, and a login
+   is not a constraint by itself.
    Locked constraints come first, newest first.
    Other constraints, then blocked items, then conflicting items, stay in
    insertion order inside each of those tiers. A locked decision stored as
