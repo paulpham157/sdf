@@ -84,11 +84,16 @@ message is sdf's own, built from the kept error class and code, such as
 [content storage](receiver.md#content-storage)). `--json` includes
 `status_code`, `status_message`, and `error_type` on every span; a span
 with no status is `UNSET`. A Qwen Code `qwen-code.hook` span for
-`PreToolUse` or `PostToolUse` whose status message is "hook runner returned
-no output without error detail" (or, after redaction, whose `error_bytes`
-is 51) is shown as `hook returned no output`. That line is not
-`status=ERROR` and it is not in the error banner. The stored row is
-unchanged. Any other hook event stays `status=ERROR`. A tool-call span whose status is `ERROR` and that has no
+`PreToolUse` or `PostToolUse` is shown as `hook returned no output` when
+the span lasted at most 5ms and the status message is "hook runner returned
+no output without error detail". After redaction that sentence is gone, and
+the same label is used when `error_bytes` is 51, the length of the sentence,
+and the span is still at most 5ms. `--store-content` keeps the sentence and
+uses the same 5ms bound. A longer span, including a different 51-byte error,
+stays `status=ERROR`. The text summary, `--json`, and the API report
+`status_code` `UNSET` for a span this rule relabels. The stored row stays
+`ERROR`, with the ingested status message and `error.type`. That line is
+not in the error banner. Any other hook event stays `status=ERROR`. A tool-call span whose status is `ERROR` and that has no
 `success` attribute, no `pi.tool.is_error`, and no joined tool-result log is
 `success=false`. An explicit flag still wins. Duration prefers the execution
 child span, then the tool span, then the log.

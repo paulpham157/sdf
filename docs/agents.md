@@ -264,7 +264,7 @@ thread reports nothing. Codex skips every sdf hook until it is trusted in
 `/hooks`. That includes the session open, the session close, and the decision
 brief. `codex exec` silently skips unreviewed hooks, so a run can finish with
 no `sdf.session.open` and no error. Read the hook command before trusting it.
-In our test, Codex only succeeded against a strict Responses gateway with the
+In our test, Codex succeeded against a strict Responses gateway with the
 flags in [Codex CLI through a gateway](#codex-cli-through-a-gateway).
 
 Each signal has its own exporter, and the defaults are not the same:
@@ -729,11 +729,14 @@ error type, and records `function_args_bytes`, `error_bytes`, and
   qwen --write` installs only a Stop hook. At read time, the summary and the
   UI label a span `hook returned no output` when the service is `qwen-code`,
   the span name is `qwen-code.hook`, `hook_event` is `PreToolUse` or
-  `PostToolUse`, and the status message is that sentence. After the default
-  redaction the sentence is gone and the same label is used when
-  `error_bytes` is 51, the length of that sentence. The label is not a tool
-  failure. The stored status, `error.type`, and status message are left as
-  ingested. A `Stop` event, any other event, and the same span name from
+  `PostToolUse`, the span lasted at most 5ms, and the status message is that
+  sentence. After the default redaction the sentence is gone and the same
+  label is used when `error_bytes` is 51, the length of that sentence, and
+  the span is still at most 5ms. `--store-content` keeps the sentence and
+  uses the same duration bound. A longer span stays `status=ERROR`. The
+  label is not a tool failure. `--json` and the API show `UNSET` for a span
+  this rule relabels. The stored status, `error.type`, and status message
+  are left as ingested. A `Stop` event, any other event, and the same span name from
   another service stay `status=ERROR`. sdf does not read
   `sdf.hook.unconfigured`. The same empty-output sentence was also reported
   for an earlier release (spencerclark.dev, 2026-10-10).
@@ -1272,7 +1275,7 @@ wire_api = "responses"
 env_key = "TOKENROUTER_API_KEY"
 ```
 
-In our test, Codex only succeeded with these flags:
+In our test, Codex succeeded with these flags:
 
 ```bash
 codex exec -c web_search='"disabled"' -c features.multi_agent=false -c features.goals=false "..."
@@ -1332,8 +1335,8 @@ Pi reads `~/.pi/agent/models.json`. `api` is `openai-completions` for
 `${TOKENROUTER_API_KEY}`, a literal key, or a command such as
 `!printenv TOKENROUTER_API_KEY`. A bare name, with no `$`, `${}`, or `!`,
 is sent as the key and the gateway returns 401. The working run set
-`contextWindow`, `maxTokens`, `supportsDeveloperRole`, and
-`supportsReasoningEffort`. Use the model's own limits.
+`contextWindow` and `maxTokens`, and set `supportsDeveloperRole` and
+`supportsReasoningEffort` to false. Use the model's own limits.
 
 ```json
 {
@@ -1349,8 +1352,8 @@ is sent as the key and the gateway returns 401. The working run set
           "contextWindow": 128000,
           "maxTokens": 8192,
           "compat": {
-            "supportsDeveloperRole": true,
-            "supportsReasoningEffort": true
+            "supportsDeveloperRole": false,
+            "supportsReasoningEffort": false
           }
         }
       ]

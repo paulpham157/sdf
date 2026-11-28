@@ -794,12 +794,19 @@ func interestingSpan(rec record.Record) bool {
 // invalid JSON, a silent exit, a spawn failure, or a failed HTTP hook.
 const qwenEmptyHookMessage = "hook runner returned no output without error detail"
 
+// qwenEmptyHookMaxMS is the longest span this label accepts. The empty-output
+// hooks in the Qwen sample finish in 0-1ms. Five milliseconds leaves room
+// for clock noise and still rejects a real hook error that happens to leave
+// a 51-byte error_bytes value.
+const qwenEmptyHookMaxMS = 5
+
 // qwenEmptyHookOutput is a display rule for one shape of stored span.
-// service.name is qwen-code, the span is qwen-code.hook, and hook_event is
-// PreToolUse or PostToolUse. The status message is the sentinel, or
-// redaction has replaced that message and error_bytes is 51 (the sentinel's
-// length). Stop and every other event stay errors. sdf.hook.unconfigured
-// is not read.
+// service.name is qwen-code, the span is qwen-code.hook, hook_event is
+// PreToolUse or PostToolUse, and the span is at most qwenEmptyHookMaxMS.
+// The status message is the sentinel, including when --store-content kept
+// it, or redaction has replaced that message and error_bytes is 51 (the
+// sentinel's length). A longer span stays an error. Stop and every other
+// event stay errors. sdf.hook.unconfigured is not read.
 func qwenEmptyHookOutput(rec record.Record) bool {
 	if rec.StatusCode != "ERROR" || !strings.EqualFold(deref(rec.ServiceName), "qwen-code") || deref(rec.Name) != "qwen-code.hook" {
 		return false
@@ -807,6 +814,10 @@ func qwenEmptyHookOutput(rec record.Record) bool {
 	switch strAttr(rec.Attributes, "hook_event") {
 	case "PreToolUse", "PostToolUse":
 	default:
+		return false
+	}
+	ms := spanMS(rec)
+	if ms == nil || *ms > qwenEmptyHookMaxMS {
 		return false
 	}
 	if rec.StatusMessage != nil && *rec.StatusMessage == qwenEmptyHookMessage {
