@@ -105,22 +105,30 @@ name who decided, the alternatives that were on the table,
 a reason, a source pointer, and a category. Time is `recorded_at`.
 
 `decided_by` is the GitHub login of the team member responsible, for example
-`paulpham157`. An agent acting for a person records that person's login.
-A person-set rule or constraint is the exception: record it with
-`--decided-by user` until a later spec makes an active settled `policy`
-a constraint. That stored word displays as `user (legacy)` and is what
-the session-start brief locks. Everything else uses the responsible
-person's login.
+`paulpham157`. An agent acting for a person records that person's login, or
+omits `--decided-by` and lets sdf resolve it.
 sdf does not distinguish a person from their agent, and it does not check
 that the account exists. A login is letters, digits, and single hyphens, at
 most 39 characters. It cannot start or end with a hyphen, and it cannot
 contain `--`. GitHub compares logins without regard to case. sdf stores the
 value as given and does not fold it, so `Paul` and `paul` are different
-stored strings. The brief lock matches the exact word `user`. The legacy
-words `user` and `agent` are still accepted and are not rewritten. List,
-brief, check, and the UI print them with a legacy marker (`user (legacy)`).
-JSON keeps the stored string and sets `decided_by_legacy` true for that pair
-only. Empty stays empty and prints as `-`. When `--decided-by` is omitted,
+stored strings. An active settled decision recorded with a login, or with
+the exact legacy word `user`, is a locked brief constraint when
+`decided_by_source` is `flag`, `gh`, `git`, or unset. A row written before
+`decided_by_source` existed, including a login stored after the login
+format landed, has an unset source and locks on upgrade. That locked rule
+is exempt from `--max-items`. The exact word
+`agent` is not locked and is not a constraint unless it is the source of a
+`constrains` edge, which keeps rows stored as `agent` on their previous
+brief behavior. A name taken from the OS username is stored with
+`decided_by_source` `os`. It never locks, and it is a constraint only when
+it is the source of a `constrains` edge. It is not exempt from
+`--max-items`. The legacy words `user` and `agent` are still accepted and are not rewritten. A case variant such as `User` or `AGENT` is rejected. List,
+brief, check, and the UI print the exact words with a legacy marker (`user (legacy)`).
+An OS-sourced name prints as `ada (local)`.
+JSON keeps the stored string, sets `decided_by_legacy` true for that pair
+only, and includes `decided_by_source` when one was stored. The key is
+omitted when the column is SQL `NULL`. Empty stays empty and prints as `-`. When `--decided-by` is omitted,
 sdf stores the first login it can read locally, and it does not use the
 network. This is a deviation from the attribution proposal, which named
 `gh api user`: the binary runs `gh config get -h github.com user` (the
@@ -130,12 +138,27 @@ network. This is a deviation from the attribution proposal, which named
 the repository-local config, and the value is self-asserted attribution, not
 authentication. `git config user.name` is not read. A missing `gh`, a failed
 command, a display name, or `user` or `agent` in any case (`User`, `AGENT`)
-is skipped, and the field stays empty. `gh` has up to 3 seconds. If it
-hangs or fails, `git` still gets about 500ms of its own, so the add stays
-within a worst case of about 4.5 seconds: gh has 3 seconds, git has 0.5 seconds after that, and each killed command may take another 0.5 seconds to close its pipes. Each command's stdout is capped at 64 KiB. The
-lookup runs only after the rest of the record validates. An explicit empty `--decided-by` stays empty
-and does not fall through. An explicit value is stored with its exact case.
-`User` is not the legacy word `user`. An explicit value that is not a login or `user`
+is skipped. If neither command yields a login, sdf uses the OS username
+(`os/user` current user, with a Windows `DOMAIN\` prefix removed). That
+name is local and self-asserted, not a GitHub authentication and not a
+network call. It is stored only when it is a login, not `user` or
+`agent` in any case, and not a common service or system account
+(`root`, `ubuntu`, `runner`, `box`, `node`, `vscode`, Windows `SYSTEM`,
+`LOCAL SERVICE`, `NETWORK SERVICE`, a name ending in `$`, and the rest of
+the same list). A denied or invalid name leaves the field empty. The
+stored OS name does not lock. `gh` has up to 3
+seconds. If it hangs or fails, `git` still gets about 500ms of its own,
+so a slow `gh` does not skip `github.user`. The add stays within a worst
+case of about 4.5 seconds: gh has 3 seconds, git has 0.5 seconds after
+that, and each killed command may take another 0.5 seconds to close its
+pipes. On Unix a timed-out lookup is killed as a process group, so a
+child of `gh` that stays in that group does not keep running. A child
+that calls `setsid` leaves the group and is not killed. Each command's stdout is capped at
+64 KiB. The lookup runs only after the rest of the record validates. An explicit empty `--decided-by` stays empty
+and does not fall through. An explicit value is stored with its exact case
+and with `decided_by_source` `flag`. A case variant of the legacy words,
+such as `User` or `AGENT`, is rejected and stores nothing. The exact words
+`user` and `agent` stay legal. An explicit value that is not a login or `user`
 or `agent` is rejected and the add stores nothing. There is no warning that
 tries to tell a person from an agent.
 
@@ -384,11 +407,12 @@ them from the same code. The UI shows "superseded by ID" next to the record.
 insertion order. Columns are `ID`, `STATUS`, `CATEGORY`, `EFFECTIVE`,
 `DECIDED BY`, `RECORDED AT`, `SOURCE`, and `STATEMENT`. An empty category
 prints as `implementation`. An empty source or `DECIDED BY` prints as `-`.
-`user` and `agent` print as `user (legacy)` and `agent (legacy)`. When a record
+`user` and `agent` print as `user (legacy)` and `agent (legacy)`. An OS-sourced name prints as `ada (local)`. When a record
 has alternatives or a reason, each follows its row on its own line in the
 `STATEMENT` column, as `alternatives: TEXT` and `reason: TEXT`. They are free
 text up to 500 bytes, so they are kept out of the columns. `--json` carries
-the same fields as `decided_by`, `decided_by_legacy` (true only for stored
+the same fields as `decided_by`, `decided_by_source` (`flag`, `gh`, `git`,
+or `os`, omitted when SQL `NULL`), `decided_by_legacy` (true only for stored
 `user` or `agent`), `alternatives`, `reason`, and `category` when one was
 stored. A cell that holds a
 non-printing character, such as a tab, DEL, or a right-to-left override like
@@ -441,10 +465,10 @@ sdf decision recall [--db PATH] [--json] [--since DURATION|RFC3339] [--until RFC
 sdf decision pre-push [--db PATH] [--remote NAME] [--mode warn|block|off] < pre-push lines
 ```
 
-`--decided-by` is the responsible person's GitHub login. The exception is a
-person-set rule or constraint: record that with `--decided-by user` until a
-later spec makes an active settled `policy` a constraint. That value displays
-as `user (legacy)`. Everything else uses the login.
+`--decided-by` is the responsible person's GitHub login. Omit the flag to
+resolve it from `gh`, then `git config github.user`, then the OS username.
+`user` and `agent` still store and display as legacy. A login and legacy
+`user` are locked brief constraints. The exact word `agent` is not.
 
 ```text
 Decisions: 3
@@ -667,18 +691,27 @@ unchanged (settled only); `sdf decision check` still reads that set, not
 this list. A record appears in at most one group, in this order:
 
 1. **Constraints.** An in-force settled decision whose stored `decided_by`
-   is `user`, or that is the source of a `constrains` edge. A locked
-   constraint is a settled decision stored as `user` (`status` `decision`,
-   `--decided-by user`). A hypothesis is never locked. The lock matches
-   that stored word. It is not a check that a person made the decision.
-   Until a later spec makes an active settled `policy` a constraint, a
-   person-set rule is recorded with `--decided-by user` so it still appears
-   here. Everything else uses the responsible person's login, and a login
-   is not a constraint by itself.
+   is a GitHub login or the exact legacy word `user`, and whose
+   `decided_by_source` is not `os`, or that is the source
+   of a `constrains` edge. A locked constraint is a settled decision stored
+   with a login or with `user` (`status` `decision`) when the source is
+   `flag`, `gh`, `git`, or unset. A hypothesis is never
+   locked. The lock is not a check that a person, rather than their agent,
+   typed the record: `decided_by` is the login of the responsible team
+   member. Existing login rows with an unset source, the rows written
+   after the login format landed and before this column, become locked
+   on upgrade and are exempt from `--max-items`. The exact stored word `agent` is not locked. An `agent` row is a constraint only when it is the
+   source of a `constrains` edge, and then it is not locked. That keeps
+   rows written as `agent` before logins on their previous brief behavior.
+   An OS-sourced name never locks. It is a constraint only through a
+   `constrains` edge, and then it is not exempt from `--max-items`.
+   `category` `policy` is not by itself a constraint.
    Locked constraints come first, newest first.
    Other constraints, then blocked items, then conflicting items, stay in
-   insertion order inside each of those tiers. A locked decision stored as
-   `user` stays in this group even when it is also blocked or conflicted. Each statement
+   insertion order inside each of those tiers. A locked decision stays in
+   this group even when it is also blocked or conflicted. The decision
+   graph's chapter counts and `sdf decision audit` totals do not key on
+   `decided_by`, so a login is already included in those counts. Each statement
    is capped at 200 bytes, cut on a rune boundary, and ends in `…` when it
    is cut.
 2. **Blocked.** An active record that is not a constraint, and that Load
@@ -710,7 +743,8 @@ does not fit is skipped, and a later shorter one can still be kept.
 Text is one tab-separated line per item: `kind`, `id`, `decided_by`, and
 `statement`. `kind` is `constraint`, `blocked`, or `conflicting`. An empty
 `decided_by` prints as `-`. Stored `user` and `agent` print as
-`user (legacy)` and `agent (legacy)`. A field that holds a tab or a control character,
+`user (legacy)` and `agent (legacy)`. An OS-sourced name prints as
+`ada (local)`. A field that holds a tab or a control character,
 starts with `"`, or is invalid UTF-8 is quoted with `strconv.Quote`. Unicode
 is kept; this is not the `strconv.QuoteToASCII` form `sdf decision list`
 uses.
@@ -729,9 +763,12 @@ fits about 9-10 typical items; statements near the 200-byte cap fit fewer.
 `--format json` prints indented JSON with an `items` array, an `omitted`
 count, and an `omitted_locked` count, all always present in that object
 when anything matched. Each item has `id`, `kind`, `statement`, `status`,
-`decided_by`, `decided_by_legacy` when the stored value is `user` or
-`agent`, and `locked`. `locked` is true only for a constraint stored
-with `decided_by` `user`. `--json` is not a flag.
+`decided_by`, `decided_by_source` when one was stored, `decided_by_legacy` when the stored value is `user` or
+`agent`, and `locked`. `locked` is true for a constraint stored with a
+GitHub login or with `decided_by` `user` when the source is `flag`, `gh`,
+`git`, or unset. It is false for the exact word
+`agent`, including when a `constrains` edge put that row in the constraint
+group, and it is false for `decided_by_source` `os`. `--json` is not a flag.
 
 A path that does not exist (a missing file or a missing parent directory)
 prints nothing and exits 0. A path that exists but cannot be read — not a
@@ -812,7 +849,8 @@ allowed: replace sqlite (architecture)
 
 `--json` is one object, `action`, `kind` (`push`, `merge`, `release`,
 `deploy`, or `architecture`), `allowed`, and `blocking`. Each blocking entry
-is `id`, `decided_by` (empty when unset), `decided_by_legacy` (true only for
+is `id`, `decided_by` (empty when unset), `decided_by_source` when one was
+stored, `decided_by_legacy` (true only for
 stored `user` or `agent`), `statement`, and `match` (the tag or phrase,
 lowercased). `blocking` is `[]` when the action is allowed. The
 exit code is still 1 when it is forbidden.

@@ -39,6 +39,65 @@ func TestDecisionBriefPrintsRankedText(t *testing.T) {
 	}
 }
 
+func TestDecisionBriefLocksALogin(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(id, statement, status, by string) {
+		t.Helper()
+		if _, err := decision.Add(db, decision.RecordInput{ID: id, Statement: statement, Status: status, DecidedBy: by}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("dont-push", "Do not push until the user says so.", decision.StatusDecision, "paulpham157")
+	add("rename", "Rename the binary later.", decision.StatusDecision, decision.DecidedByAgent)
+	add("keep-local", "Keep the store on this machine.", decision.StatusDecision, decision.DecidedByAgent)
+	add("maybe", "Maybe ban deploys.", decision.StatusHypothesis, "paulpham157")
+	if _, err := decision.Link(db, decision.EdgeInput{
+		Relation: decision.RelConstrains,
+		From:     decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-local"},
+		To:       decision.Endpoint{Kind: decision.KindDecision, Ref: "dont-push"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out := run(t, "decision", "brief", "--db", dbPath, "--max-items", "0")
+	if out.code != 0 || out.stderr != "" {
+		t.Fatalf("%d %q %q", out.code, out.stdout, out.stderr)
+	}
+	// The login is locked, so --max-items 0 still prints it. The agent
+	// row is a constraint only because of the constrains edge, and it is
+	// not locked, so the item cap drops it. A bare agent decision and a
+	// login hypothesis are not constraints.
+	if out.stdout != "constraint\tdont-push\tpaulpham157\tDo not push until the user says so.\n1 more: run sdf decision list\n" {
+		t.Fatalf("%q", out.stdout)
+	}
+
+	js := run(t, "decision", "brief", "--db", dbPath, "--format", "json", "--max-items", "0")
+	var doc struct {
+		Items []struct {
+			ID              string `json:"id"`
+			Kind            string `json:"kind"`
+			DecidedBy       string `json:"decided_by"`
+			DecidedByLegacy bool   `json:"decided_by_legacy"`
+			Locked          bool   `json:"locked"`
+		} `json:"items"`
+		Omitted       int `json:"omitted"`
+		OmittedLocked int `json:"omitted_locked"`
+	}
+	if err := json.Unmarshal([]byte(js.stdout), &doc); err != nil {
+		t.Fatalf("%v %q", err, js.stdout)
+	}
+	if doc.Omitted != 1 || doc.OmittedLocked != 0 || len(doc.Items) != 1 || doc.Items[0].ID != "dont-push" || doc.Items[0].Kind != "constraint" || doc.Items[0].DecidedBy != "paulpham157" || doc.Items[0].DecidedByLegacy || !doc.Items[0].Locked {
+		t.Fatalf("%+v", doc)
+	}
+}
+
 func TestDecisionBriefJSONAndCaps(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
 	seedBrief(t, dbPath)

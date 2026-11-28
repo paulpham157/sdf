@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/paulpham157/sdf/internal/cli"
+	"github.com/paulpham157/sdf/internal/decision"
 	"github.com/paulpham157/sdf/internal/store"
 )
 
@@ -99,13 +100,16 @@ func TestDecisionAddCategoryAndLogin(t *testing.T) {
 	if _, ok := doc.Decisions[0]["category"]; ok {
 		t.Fatalf("unset category was present: %#v", doc.Decisions[0])
 	}
-	if doc.Decisions[0]["decided_by"] != "paulpham157" {
+	if doc.Decisions[0]["decided_by"] != "paulpham157" || doc.Decisions[0]["decided_by_source"] != "gh" {
 		t.Fatalf("%#v", doc.Decisions[0])
 	}
 	if _, ok := doc.Decisions[0]["decided_by_legacy"]; ok {
 		t.Fatalf("login marked legacy: %#v", doc.Decisions[0])
 	}
-	if doc.Decisions[2]["category"] != "policy" || doc.Decisions[2]["decided_by"] != "octocat" {
+	if _, ok := doc.Decisions[1]["decided_by_source"]; ok || doc.Decisions[1]["decided_by"] != nil {
+		t.Fatalf("empty decided-by kept a source: %#v", doc.Decisions[1])
+	}
+	if doc.Decisions[2]["category"] != "policy" || doc.Decisions[2]["decided_by"] != "octocat" || doc.Decisions[2]["decided_by_source"] != "flag" {
 		t.Fatalf("%#v", doc.Decisions[2])
 	}
 
@@ -115,6 +119,94 @@ func TestDecisionAddCategoryAndLogin(t *testing.T) {
 	}
 	if !strings.Contains(text.stdout, "policy") {
 		t.Fatalf("stored policy not shown:\n%s", text.stdout)
+	}
+}
+
+func TestDecisionAddFallsBackToOSUser(t *testing.T) {
+	name := `CORP\paulpham157`
+	restore := decision.SetOSUserLookup(func() (string, error) {
+		return name, nil
+	})
+	t.Cleanup(restore)
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	add := func(id string) {
+		t.Helper()
+		out := run(t, "decision", "add", "--db", dbPath, "--id", id,
+			"--statement", "Keep the collector store in SQLite.", "--status", "decision")
+		if out.code != 0 || out.stderr != "" {
+			t.Fatalf("%s: %d %q", id, out.code, out.stderr)
+		}
+	}
+	add("from-os")
+	name = `CORP\user`
+	add("legacy-word")
+	name = "not a login"
+	add("display-name")
+
+	restoreRun := cli.SetIdentityRunner(func(_ context.Context, cmdName string, args ...string) ([]byte, error) {
+		if cmdName == "gh" && strings.Join(args, " ") == "config get -h github.com user" {
+			return []byte("octocat\n"), nil
+		}
+		t.Errorf("unexpected %s %v", cmdName, args)
+		return nil, errIdentity
+	})
+	name = `CORP\paulpham157`
+	add("from-gh")
+	restoreRun()
+
+	db := openStore(t, dbPath)
+	rows, err := db.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("%+v", rows)
+	}
+	if rows[0].ID != "from-os" || rows[0].DecidedBy != "paulpham157" || rows[0].DecidedBySource != decision.DecidedBySourceOS {
+		t.Fatalf("windows login %+v", rows[0])
+	}
+	if rows[1].DecidedBy != "" || rows[1].DecidedBySource != "" || rows[2].DecidedBy != "" || rows[2].DecidedBySource != "" {
+		t.Fatalf("invalid os user stored %+v %+v", rows[1], rows[2])
+	}
+	if rows[3].ID != "from-gh" || rows[3].DecidedBy != "octocat" || rows[3].DecidedBySource != decision.DecidedBySourceGH {
+		t.Fatalf("gh should win %+v", rows[3])
+	}
+
+	name = "ubuntu"
+	add("service-account")
+	name = `NT AUTHORITY\SYSTEM`
+	add("windows-system")
+	db = openStore(t, dbPath)
+	rows, err = db.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 6 || rows[4].DecidedBy != "" || rows[4].DecidedBySource != "" || rows[5].DecidedBy != "" {
+		t.Fatalf("deny-listed os user stored %+v", rows[4:])
+	}
+}
+
+func TestDecisionAddRejectsLegacyCaseVariant(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
+	for _, by := range []string{"User", "AGENT"} {
+		out := run(t, "decision", "add", "--db", dbPath, "--id", "bad-"+by,
+			"--statement", "Do not push.", "--status", "decision", "--decided-by", by)
+		if out.code == 0 || !strings.Contains(out.stderr, "exact legacy word") {
+			t.Fatalf("%s: %d %q", by, out.code, out.stderr)
+		}
+	}
+	out := run(t, "decision", "add", "--db", dbPath, "--id", "legacy-user",
+		"--statement", "Do not push.", "--status", "decision", "--decided-by", "user")
+	if out.code != 0 {
+		t.Fatal(out.stderr)
+	}
+	db := openStore(t, dbPath)
+	rows, err := db.LoadDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].DecidedBy != "user" || rows[0].DecidedBySource != decision.DecidedBySourceFlag {
+		t.Fatalf("%+v", rows)
 	}
 }
 

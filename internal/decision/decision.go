@@ -37,6 +37,18 @@ const (
 	DecidedByAgent = "agent"
 )
 
+// DecidedBySource values name where a stored decided_by came from.
+// Empty is SQL NULL: a row written before the column existed, or a write
+// that did not record a source. flag is an explicit --decided-by. gh is
+// hosts.yml. git is git config github.user. os is the machine account
+// from os/user, which is local and self-asserted.
+const (
+	DecidedBySourceFlag = "flag"
+	DecidedBySourceGH   = "gh"
+	DecidedBySourceGit  = "git"
+	DecidedBySourceOS   = "os"
+)
+
 // Category values. Unset is stored as empty (SQL NULL) and displayed as
 // CategoryImplementation. CategoryNone is a list filter sentinel, not a
 // stored value.
@@ -126,6 +138,7 @@ type Record struct {
 	RecordedAt      string      `json:"recorded_at"`
 	Source          string      `json:"source,omitempty"`
 	DecidedBy       string      `json:"decided_by,omitempty"`
+	DecidedBySource string      `json:"decided_by_source,omitempty"`
 	DecidedByLegacy bool        `json:"decided_by_legacy,omitempty"`
 	Alternatives    string      `json:"alternatives,omitempty"`
 	Reason          string      `json:"reason,omitempty"`
@@ -187,14 +200,15 @@ type Graph struct {
 
 // RecordInput is what a caller supplies. RecordedAt is filled here.
 type RecordInput struct {
-	ID           string
-	Statement    string
-	Status       string
-	Source       string
-	DecidedBy    string
-	Alternatives string
-	Reason       string
-	Category     string
+	ID              string
+	Statement       string
+	Status          string
+	Source          string
+	DecidedBy       string
+	DecidedBySource string
+	Alternatives    string
+	Reason          string
+	Category        string
 }
 
 // EdgeInput is what a caller supplies for one edge.
@@ -219,15 +233,16 @@ func Add(s *store.Store, in RecordInput) (Record, error) {
 		return Record{}, err
 	}
 	if err := s.InsertDecision(store.Decision{
-		ID:           rec.ID,
-		Statement:    rec.Statement,
-		Status:       rec.Status,
-		RecordedAt:   rec.RecordedAt,
-		Source:       rec.Source,
-		DecidedBy:    rec.DecidedBy,
-		Alternatives: rec.Alternatives,
-		Reason:       rec.Reason,
-		Category:     rec.Category,
+		ID:              rec.ID,
+		Statement:       rec.Statement,
+		Status:          rec.Status,
+		RecordedAt:      rec.RecordedAt,
+		Source:          rec.Source,
+		DecidedBy:       rec.DecidedBy,
+		DecidedBySource: rec.DecidedBySource,
+		Alternatives:    rec.Alternatives,
+		Reason:          rec.Reason,
+		Category:        rec.Category,
 	}); err != nil {
 		return Record{}, err
 	}
@@ -587,15 +602,16 @@ func LoadContext(ctx context.Context, s *store.Store) (Graph, error) {
 	out := Graph{Decisions: make([]Record, 0, len(decisions)), Edges: make([]Edge, 0, len(edges))}
 	for _, d := range decisions {
 		out.Decisions = append(out.Decisions, withLegacy(Record{
-			ID:           d.ID,
-			Statement:    d.Statement,
-			Status:       d.Status,
-			RecordedAt:   d.RecordedAt,
-			Source:       d.Source,
-			DecidedBy:    d.DecidedBy,
-			Alternatives: d.Alternatives,
-			Reason:       d.Reason,
-			Category:     strings.TrimSpace(d.Category),
+			ID:              d.ID,
+			Statement:       d.Statement,
+			Status:          d.Status,
+			RecordedAt:      d.RecordedAt,
+			Source:          d.Source,
+			DecidedBy:       d.DecidedBy,
+			DecidedBySource: d.DecidedBySource,
+			Alternatives:    d.Alternatives,
+			Reason:          d.Reason,
+			Category:        strings.TrimSpace(d.Category),
 		}))
 	}
 	for _, e := range edges {
@@ -1014,7 +1030,7 @@ func WriteText(w io.Writer, g Graph) error {
 	}
 	decisions := [][]string{{"ID", "STATUS", "CATEGORY", "EFFECTIVE", "DECIDED BY", "RECORDED AT", "SOURCE", "STATEMENT"}}
 	for _, d := range g.Decisions {
-		row := []string{d.ID, d.Status, DisplayCategory(d.Category), effectiveText(d) + flagsText(d), DecidedByText(d.DecidedBy), d.RecordedAt, orDash(d.Source), d.Statement}
+		row := []string{d.ID, d.Status, DisplayCategory(d.Category), effectiveText(d) + flagsText(d), DecidedByText(d.DecidedBy, d.DecidedBySource), d.RecordedAt, orDash(d.Source), d.Statement}
 		decisions = append(decisions, row)
 		// Alternatives and reason are free text, up to 500 bytes each, so
 		// they go on their own lines under STATEMENT instead of widening
@@ -1171,6 +1187,18 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 	if decidedBy != "" && !ValidDecidedBy(decidedBy) {
 		return Record{}, fmt.Errorf("decided-by must be a GitHub login (letters, digits, and single hyphens, at most 39 characters)")
 	}
+	if legacyCaseVariant(decidedBy) {
+		return Record{}, fmt.Errorf("decided-by %q must be the exact legacy word %q or %q", decidedBy, DecidedByUser, DecidedByAgent)
+	}
+	decidedBySource := strings.TrimSpace(in.DecidedBySource)
+	switch decidedBySource {
+	case "", DecidedBySourceFlag, DecidedBySourceGH, DecidedBySourceGit, DecidedBySourceOS:
+	default:
+		return Record{}, fmt.Errorf("decided-by source must be %q, %q, %q, or %q", DecidedBySourceFlag, DecidedBySourceGH, DecidedBySourceGit, DecidedBySourceOS)
+	}
+	if decidedBy == "" {
+		decidedBySource = ""
+	}
 	alternatives := strings.TrimSpace(in.Alternatives)
 	if strings.ContainsAny(alternatives, "\r\n") || len(alternatives) > 500 {
 		return Record{}, fmt.Errorf("alternatives must be one line")
@@ -1194,6 +1222,7 @@ func newRecord(in RecordInput, recordedAt string) (Record, error) {
 		RecordedAt:      recordedAt,
 		Source:          source,
 		DecidedBy:       decidedBy,
+		DecidedBySource: decidedBySource,
 		Alternatives:    alternatives,
 		Reason:          reason,
 		Category:        category,
@@ -1236,14 +1265,59 @@ func LegacyDecidedBy(s string) bool {
 	return s == DecidedByUser || s == DecidedByAgent
 }
 
+// legacyCaseVariant reports a case variant of the legacy words, such as
+// User or AGENT. The exact words user and agent stay legal. New writes
+// reject the variants instead of folding them, so a stored row keeps the
+// bytes the caller passed when those bytes are the exact legacy words.
+func legacyCaseVariant(s string) bool {
+	if s == DecidedByUser || s == DecidedByAgent {
+		return false
+	}
+	return strings.EqualFold(s, DecidedByUser) || strings.EqualFold(s, DecidedByAgent)
+}
+
+// LockedDecidedBy reports whether an active settled decision with this
+// decided_by value is a locked brief constraint when its source is not os.
+// A GitHub login is, and so is the legacy word user. The exact word agent
+// is not: rows stored as agent before logins existed stay out of the locked
+// tier, and out of the constraint group unless they are the source of a
+// constrains edge. sdf does not distinguish a person from their agent. A
+// login is the team member responsible, whoever typed the record. Empty,
+// and any string that is not a login, are not locked. Agent is compared
+// as the exact stored bytes. LocksBrief applies the source rule.
+func LockedDecidedBy(s string) bool {
+	if s == DecidedByAgent {
+		return false
+	}
+	return ValidDecidedBy(s)
+}
+
+// LocksBrief reports whether an active settled decision is a locked brief
+// constraint. A decided_by_source of os never locks: that name is the
+// machine account, local and self-asserted, and it is not exempt from
+// --max-items. flag, gh, git, and an empty source (a row written before
+// the column, including a login stored after the login format landed)
+// lock when LockedDecidedBy is true.
+func LocksBrief(decidedBy, source string) bool {
+	if source == DecidedBySourceOS {
+		return false
+	}
+	return LockedDecidedBy(decidedBy)
+}
+
 // DecidedByText is the DECIDED BY cell. Empty prints as "-". The legacy
-// words print with a marker. A login prints as itself.
-func DecidedByText(s string) string {
+// words print with a marker. A value sourced from the OS username prints
+// with a local marker, for example "ada (local)". Any other login prints
+// as itself.
+func DecidedByText(s, source string) string {
 	if s == "" {
 		return "-"
 	}
 	if LegacyDecidedBy(s) {
 		return s + " (legacy)"
+	}
+	if source == DecidedBySourceOS {
+		return s + " (local)"
 	}
 	return s
 }

@@ -248,10 +248,10 @@ func TestDecisionAddRecordsWhoDecidedAndOmitsEmptyOptionalFields(t *testing.T) {
 		t.Fatalf("%#v", raw.Decisions)
 	}
 	got := raw.Decisions[0]
-	if got["id"] != "dont-push" || got["decided_by"] != "user" || got["alternatives"] != "push the branch now" || got["reason"] != "The user said don't push." {
+	if got["id"] != "dont-push" || got["decided_by"] != "user" || got["decided_by_source"] != "flag" || got["alternatives"] != "push the branch now" || got["reason"] != "The user said don't push." {
 		t.Fatalf("%#v", got)
 	}
-	for _, key := range []string{"decided_by", "alternatives", "reason", "source"} {
+	for _, key := range []string{"decided_by", "decided_by_source", "alternatives", "reason", "source"} {
 		if _, ok := raw.Decisions[1][key]; ok {
 			t.Fatalf("empty %s was written: %#v", key, raw.Decisions[1])
 		}

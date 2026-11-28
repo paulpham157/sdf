@@ -1,7 +1,8 @@
 # Decision categories
 
 Status: phase 1 is implemented, including the unset-display and attribution
-proposals. `category` is an optional column. Unset is stored as SQL `NULL`
+proposals. The decided_by lock described below is also implemented.
+`category` is an optional column. Unset is stored as SQL `NULL`
 and displayed as `implementation`. `decided_by` stores a GitHub login.
 `user` and `agent` remain legal writes and display as legacy. Existing rows
 are not rewritten. There is no add-time warning that tries to tell a person
@@ -19,7 +20,9 @@ identity lookup that is not in that form, or that is the word `user` or
 `agent`, is skipped, so a display name does not fail the add and a
 container default of `user` is not stored as a locked constraint. An
 explicit `--decided-by` that is not in that form is rejected and stores
-nothing. An explicit empty value stays empty.
+nothing. An explicit case variant of `user` or `agent`, such as `User` or
+`AGENT`, is also rejected. The exact words stay legal and are not folded.
+An explicit empty value stays empty.
 
 Second deviation: when `--decided-by` is omitted, sdf does not call
 `gh api user` and it does not use the network. It reads
@@ -30,22 +33,45 @@ is self-asserted attribution, not authentication. `git config user.name`
 is not read. The hosts.yml login takes precedence over `github.user`.
 `gh` has up to 3 seconds. If it hangs or fails, `git` still gets about
 500ms of its own. The worst case is about 4.5 seconds: those budgets, plus up to 500ms for each killed command to close its pipes. The budgets themselves are unchanged. A configured
-`user` or `agent` is skipped without regard to case. An explicit
-`--decided-by` is stored with its exact case. Captured stdout
-is capped at 64 KiB, and a command that does not exit has 500ms to close
-its pipes after the deadline. The lookup runs only after the rest of the
-record validates.
+`user` or `agent` is skipped without regard to case. If neither command
+yields a login, sdf uses the OS username (`os/user` current user, with a
+Windows `DOMAIN\` prefix removed). That name is local and self-asserted,
+not a GitHub authentication. It is stored with `decided_by_source` `os`
+only when it is a login, not `user` or `agent` in any case, and not a
+common service or system account (including `root`, `ubuntu`, `box`,
+`runner`, Windows `SYSTEM`, `LOCAL SERVICE`, `NETWORK SERVICE`, and a
+name ending in `$`). A denied name leaves the field empty. An OS-sourced
+name never locks and is not exempt from `--max-items`. An explicit
+`--decided-by` is stored with its exact case and source `flag`, except a
+case variant of the legacy words, which is rejected. Captured stdout is capped at 64 KiB, and a command that
+does not exit has 500ms to close its pipes after the deadline. On Unix
+the deadline kills the process group, so a child of `gh` that stays in
+that group does not keep running. A child that calls `setsid` leaves the
+group and is not killed. The lookup runs only after the rest of the record validates.
 
-Phase 2 is not in this change: brief JSON does not carry `category` (the
-brief text line still has no category column), the graph and audit do not
-tally by category, and the brief's lock is still the literal `user`. The
+An active settled decision recorded with a GitHub login, or with the exact
+legacy word `user`, is a locked brief constraint when `decided_by_source`
+is `flag`, `gh`, `git`, or unset. Rows written after the login format
+landed and before this column, which have an unset source, become locked
+brief constraints on upgrade and are exempt from `--max-items`. The exact word `agent`
+is not: those rows stay out of the constraint group unless they are the
+source of a `constrains` edge, and then they are not locked. That keeps
+the brief behavior of rows stored as `agent` before logins. A name with
+source `os` never locks. It joins the constraint group only as the source
+of a `constrains` edge, and then it is not exempt from `--max-items`. Brief JSON
+does not carry `category` (the brief text line still has no category
+column), and the graph and audit do not tally by category. Those counts
+do not key on `decided_by`, so a login is included the same way any other
+decision is. `omitted_locked` counts a dropped login rule the same way it
+counts a dropped `user` rule. The
 brief text and JSON do mark stored `user` and `agent` as legacy. The UI
 shows the category next to status, with a category prefix, and on the
 graph detail panel. The decided-by filter labels `user` and `agent` as
 legacy and has a Logins choice, and the legend names each login.
 
-The sections below are the design record. Phase 1 has landed that behavior,
-with the login-format and local-lookup deviations above.
+The sections below are the design record. Phase 1 landed the category
+column and the local login lookup, with the deviations above. The
+decided_by lock and the OS-username fallback are also implemented.
 
 A decision record gains one optional field, `category`. It says what kind of
 choice the record is, so a reader can separate an architecture choice, a
@@ -82,20 +108,23 @@ These are decided:
    those cross-cutting concerns are deferred to phase 4.
 3. The value is `policy`, not `constraint`. `constraint` is already the
    brief's derived group. `isConstraint` in
-   `internal/decision/brief/brief.go` (the closure at line 103) selects an
-   active record whose `status` is `decision` and whose stored
-   `decided_by` is the literal `user`, or that is the source of a
-   `constrains` edge. `RelConstrains` (`constrains`) is a stored relation.
+   `internal/decision/brief/brief.go` selects an active record whose
+   `status` is `decision` and whose stored `decided_by` is a human
+   identity, or that is the source of a `constrains` edge.
+   `decision.LocksBrief` is that identity: a GitHub login, or the
+   exact legacy word `user`, when `decided_by_source` is not `os`. The exact word `agent` is not. An OS-sourced name is not. sdf does not
+   distinguish a person from their agent; a login is the team member
+   responsible. `RelConstrains` (`constrains`) is a stored relation.
    A category and that derived group answer different questions, and a
-   record can be one without being the other. The literal `user` is the
-   vocabulary stored today. It is not a check that a person made the
-   decision. See Attribution.
+   record can be one without being the other. See Attribution.
 4. `policy` requires `status=decision`. `sdf decision add` rejects a
    `policy` hypothesis and stores nothing. A `policy` with
    `status=decision` is stored for whatever `decided_by` the caller
-   passed. There is no warning on that add. The brief sets `Locked` only
-   when `decided_by` is the literal `user` (`Item.Locked` in the same
-   file). This spec does not change `isConstraint`.
+   passed. There is no warning on that add. The brief sets `Locked` when
+   `LocksBrief` is true (`Item.Locked` in the same file). A `policy`
+   is not a constraint merely because its category is `policy`. A login
+   is. The exact word `agent` stays unlocked, including when a
+   `constrains` edge makes that row a constraint.
 5. `sdf decision check` never reads `category`. It stays statement-only
    (`CheckAction` in `internal/decision/check.go`). A forbid that was filed
    under the wrong category must still block. Gating the check on
@@ -152,9 +181,11 @@ Useful relation: `constrains`, from this decision to whatever it limits.
 The relation name stays `constrains`. The category name stays `policy`.
 
 A decision of any category can still land in the brief's `constraint`
-group, because that group follows the stored `decided_by` word `user` and
-the `constrains` edge, not this field. This spec does not change
-`isConstraint`, and it does not treat a GitHub login as proof of a person.
+group, because that group follows `LocksBrief` and the `constrains`
+edge, not this field. A GitHub login is a locked constraint. That is the
+responsible team member's login, not proof that a person rather than
+their agent typed the row. The exact word `agent` is not a locked
+constraint.
 
 ### product
 
@@ -254,7 +285,9 @@ Implemented, with the local-read deviation in the status above. How the
 login is chosen, in this order:
 
 1. An explicit `--decided-by`. The stored value is that string, trimmed,
-   with its exact case. `User` is not the legacy word `user`.
+   with its exact case, and `decided_by_source` is `flag`. A case variant
+   of the legacy words, such as `User` or `AGENT`, is rejected and stores
+   nothing. The exact words `user` and `agent` stay legal.
    sdf does not ask GitHub whether the account exists. An explicit empty
    value stays empty and does not fall through to the next step. An
    explicit value that is not a login or `user` or `agent` is rejected
@@ -267,7 +300,16 @@ login is chosen, in this order:
    scope, including the repository, and the value is self-asserted
    attribution, not authentication. `git config user.name` is not a
    source. A value that is empty, not a login, or `user` or `agent` in
-   any case is skipped. When none is accepted, the field stays empty.
+   any case is skipped.
+3. When neither command yields a login, the OS username. sdf reads
+   `os/user` current user and strips a Windows `DOMAIN\` prefix. The
+   remainder is accepted only when it is a login, not `user` or
+   `agent` in any case, and not a common service or system account.
+   The name is local and self-asserted, not a
+   GitHub authentication, and this step does not run a command. It is
+   stored with `decided_by_source` `os` and it does not lock. When it
+   is not accepted, the field stays empty. A nil command runner skips
+   this step too, so a caller that turns lookup off stays empty.
 
 Implemented. The allow-list of only `user` and `agent` is gone. `user`
 and `agent` stay legal writes, so a caller that still passes them keeps
@@ -280,12 +322,22 @@ graph, and the UI display that pair as legacy: the text form prints the
 stored word and a marker, for example `user (legacy)`, and JSON keeps the
 stored string and sets `decided_by_legacy` true for that pair only. The
 marker is omitted otherwise. A login displays as the login, with no
-marker. Empty stays empty and still prints as `-`. A new write of `user`
-or `agent` uses the same legacy display.
+marker, except a name sourced from the OS username, which prints as
+`ada (local)`. JSON includes `decided_by_source` when it is set and omits
+it when the column is SQL `NULL`. Empty stays empty and still prints as `-`. A new write of `user`
+or `agent` uses the same legacy display. Case variants of those words are
+rejected.
 
-The brief's lock stays the literal `user` until a later change says
-otherwise. A login does not become locked, and a legacy `agent` does not
-become locked. This spec does not retarget `isConstraint`.
+Implemented. The brief's lock is `LocksBrief`: a GitHub login, or
+the exact legacy word `user`, when `decided_by_source` is `flag`, `gh`,
+`git`, or unset (SQL `NULL`). The exact word `agent` does not become
+locked. An `agent` row is a constraint only as the source of a
+`constrains` edge, and then it is not locked. Rows already stored as
+`agent` keep that behavior. A login with an unset source, including one
+written after the login format landed, is locked the same way `user` is,
+including the `--max-items` exemption and `omitted_locked`. A name with
+source `os` never locks and is not exempt from `--max-items`. Graph chapter
+counts and audit totals do not filter on `decided_by`.
 
 ## Check stays on the statement
 
@@ -331,8 +383,10 @@ be allowed would bake the bug into the new tests.
 ## Phase 1
 
 Schema, domain, CLI, docs, and tests. The list and the graph detail panel
-already show the category. Brief JSON `category`, the graph and audit
-tallies, and a change to `isConstraint` wait for phase 2. There is no
+already show the category. Brief JSON `category` and the graph and audit
+category tallies are not implemented. The decided_by lock is: a login and
+legacy `user` are locked constraints, and the exact word `agent` is not.
+There is no
 add-time warning. Phase 3 is withdrawn. The skill does not gain a
 requirement to set `--category`.
 
@@ -463,14 +517,12 @@ states that the field is optional, that unset means `implementation`, that
 not read `category`. It does not say that a person, rather than an agent,
 must record a given category.
 
-The skill's working `--decided-by` examples are GitHub logins, except a
-person-set rule, which uses `--decided-by user` until phase 2 and displays
-as `user (legacy)`. `user` and `agent` still store and display as legacy.
-An agent acting for a person records that person's login for any other
-record. sdf does not check the value. The skill also records the phase-1
-brief gap: `isConstraint` still keys on the literal `user`, so a policy
-stored with a login does not appear in the session-start brief and is not
-locked. `sdf decision check` still blocks from the statement.
+The skill's working `--decided-by` examples are GitHub logins. Omitting
+the flag auto-resolves. `user` and `agent` still store and display as
+legacy. An agent acting for a person records that person's login. sdf
+does not check the value. A settled decision stored with that login is a
+locked brief constraint. The exact word `agent` is not. `sdf decision
+check` still blocks from the statement.
 
 `docs/outcomes.md` gains the field on the decision-record description, the
 `add` and `list` usage lines, and the list columns, when the field is
@@ -486,14 +538,17 @@ Brief JSON, the graph, the UI, and audit counts.
 
 `brief.Item` gains `Category` with `json:"category,omitempty"`.
 `Classify` copies it from the record and does not read it for grouping.
-`isConstraint` is unchanged, so a `policy` is not automatically a brief
-constraint, and a decision stored as `user` of another category can still
-be one. A GitHub login is not treated as `user`.
+`isConstraint` does not read `category`, so a `policy` is not
+automatically a brief constraint. It does treat a GitHub login, and the
+exact legacy word `user`, as a locked constraint. The exact word `agent`
+is not. A decision stored as `user` of another category can still be a
+constraint. A login of another category can too.
 
-A later spec amendment should make an active settled policy a constraint:
-`status` `decision` and `category` `policy` and effective status `active`.
-That is not this phase. Until that amendment, a person-set rule is recorded
-with `--decided-by user` so the lock that exists today still matches it.
+Making an active settled policy a constraint by category
+(`status` `decision`, `category` `policy`, effective status `active`)
+is a later amendment. It is not required for the login lock. A person-set
+rule is recorded with the responsible person's login, or with
+`--decided-by` omitted.
 
 `textLine` stays `kind`, id, decided-by, statement. The session-start hook
 and the text byte budget must not grow a column. Status is already absent
@@ -651,6 +706,6 @@ the counts mean the same thing in every store.
 | --- | --- |
 | 0 | This spec. |
 | 1 | Implemented. Nullable column via the schema string and `addMissingColumns`. Validation in `newRecord`. `add --category`, optional. `list --category` with a value or `none`. JSON `omitempty`. Unset displays as `implementation` (stored `NULL`, not rewritten). `decided_by` is a GitHub login, with legacy `user` / `agent` kept. `docs/outcomes.md`. Tests, including the check regression. The skill does not require `--category`. |
-| 2 | Brief JSON field, brief text columns unchanged. Graph and UI labels and counts. Audit totals. `NULL` and empty count as `implementation`. |
+| 2 | Category brief JSON, graph category tallies, and audit category totals are not implemented. The decided_by lock is: an active settled decision whose `decided_by` is a GitHub login, or legacy `user`, and whose `decided_by_source` is `flag`, `gh`, `git`, or unset, is a locked brief constraint. Existing login rows with an unset source become locked on upgrade and are exempt from `--max-items`. The exact word `agent` is not, unless a `constrains` edge makes it an unlocked constraint. An omitted `--decided-by` falls back to the OS username after `gh` and `git config github.user`, stored as source `os`. That name never locks. Common service accounts are not stored from the OS fallback. |
 | 3 | Withdrawn. No add-time warning that tries to tell a person from an agent. |
 | 4 | Optional free tags, in their own field, if a later spec still wants them. |

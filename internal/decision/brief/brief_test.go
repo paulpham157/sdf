@@ -60,6 +60,80 @@ func TestClassifyRanksLockedConstraintsFirst(t *testing.T) {
 	}
 }
 
+func TestClassifyLoginIsLockedAndAgentIsNot(t *testing.T) {
+	login := rec("dont-push", decision.StatusDecision, "paulpham157", decision.EffectiveActive, "Do not push until the user says so.")
+	login.Blocked = true
+	agent := rec("rename", decision.StatusDecision, decision.DecidedByAgent, decision.EffectiveActive, "Rename the binary later.")
+	keep := rec("keep-local", decision.StatusDecision, decision.DecidedByAgent, decision.EffectiveActive, "Keep the store on this machine.")
+	hyp := rec("maybe", decision.StatusHypothesis, "paulpham157", decision.EffectiveActive, "Maybe ban deploys.")
+	hyp.Blocked = true
+	bad := rec("spaces", decision.StatusDecision, "not a login", decision.EffectiveActive, "Store it somewhere.")
+	g := decision.Graph{
+		Decisions: []decision.Record{
+			rec("old", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Do not merge."),
+			login,
+			agent,
+			keep,
+			hyp,
+			bad,
+		},
+		Edges: []decision.Edge{
+			{Relation: decision.RelConstrains, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "keep-local"}, To: decision.Endpoint{Kind: decision.KindSession, Ref: "sess"}},
+		},
+	}
+	got := brief.Classify(g)
+	want := []brief.Item{
+		{ID: "dont-push", Kind: brief.KindConstraint, Statement: "Do not push until the user says so.", Status: decision.StatusDecision, DecidedBy: "paulpham157", Locked: true},
+		{ID: "old", Kind: brief.KindConstraint, Statement: "Do not merge.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByUser, DecidedByLegacy: true, Locked: true},
+		{ID: "keep-local", Kind: brief.KindConstraint, Statement: "Keep the store on this machine.", Status: decision.StatusDecision, DecidedBy: decision.DecidedByAgent, DecidedByLegacy: true, Locked: false},
+		{ID: "maybe", Kind: brief.KindBlocked, Statement: "Maybe ban deploys.", Status: decision.StatusHypothesis, DecidedBy: "paulpham157", Locked: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("item %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	trimmed := brief.Trim(got, 0, -1, nil)
+	if trimmed.OmittedLocked != 0 || len(trimmed.Items) != 2 || trimmed.Items[0].ID != "dont-push" || !trimmed.Items[0].Locked || trimmed.Items[1].ID != "old" || trimmed.Omitted != 2 {
+		t.Fatalf("max-items 0 dropped a locked login: %+v", trimmed)
+	}
+}
+
+func TestOSSourceIsNotALockedConstraint(t *testing.T) {
+	local := rec("from-os", decision.StatusDecision, "ada", decision.EffectiveActive, "Keep notes in the repo.")
+	local.DecidedBySource = decision.DecidedBySourceOS
+	routine := rec("routine", decision.StatusDecision, "ada", decision.EffectiveActive, "Write the note down.")
+	routine.DecidedBySource = decision.DecidedBySourceOS
+	login := rec("dont-push", decision.StatusDecision, "paulpham157", decision.EffectiveActive, "Do not push until the user says so.")
+	flagged := rec("keep-go", decision.StatusDecision, "octocat", decision.EffectiveActive, "Keep the driver pure Go.")
+	flagged.DecidedBySource = decision.DecidedBySourceFlag
+	g := decision.Graph{
+		Decisions: []decision.Record{routine, local, login, flagged},
+		Edges: []decision.Edge{
+			{Relation: decision.RelConstrains, From: decision.Endpoint{Kind: decision.KindDecision, Ref: "from-os"}, To: decision.Endpoint{Kind: decision.KindSession, Ref: "sess"}},
+		},
+	}
+	got := brief.Classify(g)
+	if len(got) != 3 || got[0].ID != "keep-go" || !got[0].Locked || got[0].DecidedBySource != decision.DecidedBySourceFlag || got[1].ID != "dont-push" || !got[1].Locked || got[1].DecidedBySource != "" || got[2].ID != "from-os" || got[2].Locked || got[2].Kind != brief.KindConstraint || got[2].DecidedBySource != decision.DecidedBySourceOS {
+		t.Fatalf("%+v", got)
+	}
+	trimmed := brief.Trim(got, 0, -1, nil)
+	if trimmed.Omitted != 1 || trimmed.OmittedLocked != 0 || len(trimmed.Items) != 2 || trimmed.Items[0].ID != "keep-go" || trimmed.Items[1].ID != "dont-push" {
+		t.Fatalf("os-sourced row was exempt from max-items: %+v", trimmed)
+	}
+	text := brief.FormatText(brief.Trim([]brief.Item{got[2]}, 15, -1, nil))
+	if !strings.Contains(text, "ada (local)") {
+		t.Fatalf("local marker missing:\n%s", text)
+	}
+	js := brief.JSONBytes(brief.Trim([]brief.Item{got[2]}, 15, -1, nil))
+	if !strings.Contains(string(js), `"decided_by_source": "os"`) {
+		t.Fatalf("json omitted the os source: %s", js)
+	}
+}
+
 func TestClassifyUserDecisionStaysAConstraintWhenItAlsoConflicts(t *testing.T) {
 	user := rec("use-sqlite", decision.StatusDecision, decision.DecidedByUser, decision.EffectiveActive, "Keep the collector store in SQLite.")
 	user.Conflicted = true

@@ -435,3 +435,44 @@ func TestWriteTextEdgesWithoutDecisions(t *testing.T) {
 		t.Fatalf("%q", buf.String())
 	}
 }
+
+func TestDecidedBySourceJSONOmitsNull(t *testing.T) {
+	db := openDB(t)
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "from-os", Statement: "Keep notes in the repo.", Status: decision.StatusDecision,
+		DecidedBy: "ada", DecidedBySource: decision.DecidedBySourceOS,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decision.Add(db, decision.RecordInput{
+		ID: "old-login", Statement: "Do not push.", Status: decision.StatusDecision, DecidedBy: "paulpham157",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := decision.Load(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := decision.WriteJSON(&buf, loaded); err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Decisions []map[string]any `json:"decisions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Decisions[0]["decided_by"] != "ada" || doc.Decisions[0]["decided_by_source"] != "os" {
+		t.Fatalf("os source %#v", doc.Decisions[0])
+	}
+	if doc.Decisions[1]["decided_by"] != "paulpham157" {
+		t.Fatalf("%#v", doc.Decisions[1])
+	}
+	if _, ok := doc.Decisions[1]["decided_by_source"]; ok {
+		t.Fatalf("null source was written: %#v", doc.Decisions[1])
+	}
+	if !strings.Contains(decision.DecidedByText("ada", decision.DecidedBySourceOS), "ada (local)") {
+		t.Fatal(decision.DecidedByText("ada", decision.DecidedBySourceOS))
+	}
+}
